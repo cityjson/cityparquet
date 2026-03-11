@@ -1,0 +1,36 @@
+# Rust
+/target/
+**/*.rs.bk
+**/*.swp
+**/*.swo
+Cargo.lock
+
+# IDEs and editors
+.idea/
+.vscode/
+*.iml
+*.sublime-workspace
+*.sublime-project
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# By-products
+*.log
+*.tmp
+*.bak
+
+# Test output
+/coverage/
+
+# Misc
+*.old
+*.orig
+*.rej
+
+# Ignore backup files
+*~
+
+# Ignore by default, but track if explicitly added!
+!/.gitkeep
