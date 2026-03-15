@@ -35,3 +35,28 @@ pub async fn get_metadata(
 
     Ok(metadata)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::core::interface::repository::CityLakeRepository;
+    use crate::tests::helpers;
+
+    #[tokio::test]
+    async fn test_get_metadata_unsupported_format() {
+        let service = helpers::setup();
+        let result = service.get_metadata("/tmp/test.fcb").await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Metadata extraction not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_get_metadata_unknown_format() {
+        let service = helpers::setup();
+        let result = service.get_metadata("/tmp/test.csv").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cannot detect"));
+    }
+}

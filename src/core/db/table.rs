@@ -72,3 +72,67 @@ pub async fn table_exists(
 
     Ok(count > 0)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::core::interface::repository::CityLakeRepository;
+    use crate::tests::helpers;
+
+    #[test]
+    fn test_validate_table_name_valid() {
+        assert!(super::validate_table_name("buildings").is_ok());
+        assert!(super::validate_table_name("my_table_123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_table_name_invalid() {
+        let result = super::validate_table_name("bad-name!");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid characters"));
+    }
+
+    #[test]
+    fn test_validate_table_name_empty() {
+        let result = super::validate_table_name("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_table_exists_true() {
+        let service = helpers::setup_with_table("test_exists");
+        let exists = service.table_exists("test_exists").await.unwrap();
+        assert!(exists);
+    }
+
+    #[tokio::test]
+    async fn test_table_exists_false() {
+        let service = helpers::setup();
+        let exists = service.table_exists("nonexistent").await.unwrap();
+        assert!(!exists);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_invalid_name_rejected() {
+        let service = helpers::setup();
+        let result = service.create_table("bad-name!", "test.city.jsonl").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid characters"));
+    }
+
+    #[tokio::test]
+    async fn test_create_table_empty_name_rejected() {
+        let service = helpers::setup();
+        let result = service.create_table("", "test.city.jsonl").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_create_table_unknown_format_rejected() {
+        let service = helpers::setup();
+        let result = service.create_table("test", "test.csv").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cannot detect"));
+    }
+}

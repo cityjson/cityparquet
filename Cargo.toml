@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Database
-duckdb = { version = "1", features = ["bundled"] }
+duckdb = { version = "1", features = ["bundled", "json"] }
 
 # Web framework (only needed for binary/server)
 axum = { version = "0.7", features = ["multipart"], optional = true }
@@ -42,6 +42,10 @@ tracing-subscriber = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
+http = "1"
 
 [features]
 default = ["server"]

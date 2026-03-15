@@ -73,3 +73,31 @@ fn get_file_count(conn: &Connection, _table_name: &str) -> RepositoryResult<usiz
     let _ = conn;
     Ok(1)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::core::interface::repository::CityLakeRepository;
+    use crate::tests::helpers;
+
+    #[tokio::test]
+    async fn test_compact_table() {
+        let service = helpers::setup_with_table("compact_test");
+        let stats = service.compact_table("compact_test").await.unwrap();
+        assert_eq!(stats.rows_compacted, 3, "Expected 3 rows compacted from test data");
+        assert!(stats.files_after >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_compact_preserves_data() {
+        let service = helpers::setup_with_table("compact_preserve");
+        use crate::core::interface::types::QueryParams;
+
+        let params = QueryParams { filter: None, limit: None, offset: None };
+        let before = service.query_objects("compact_preserve", &params).await.unwrap();
+
+        service.compact_table("compact_preserve").await.unwrap();
+
+        let after = service.query_objects("compact_preserve", &params).await.unwrap();
+        assert_eq!(before.len(), after.len(), "Compaction should preserve all rows");
+    }
+}

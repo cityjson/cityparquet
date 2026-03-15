@@ -55,3 +55,19 @@ pub async fn update_object(
     tracing::info!("Updated object '{id}' in table '{table_name}'");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::core::interface::repository::CityLakeRepository;
+    use crate::tests::helpers;
+
+    #[tokio::test]
+    async fn test_update_nonexistent_object() {
+        let service = helpers::setup_with_table("update_test");
+        let result = service
+            .update_object("update_test", "nonexistent_id", "{}")
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No record found"));
+    }
+}

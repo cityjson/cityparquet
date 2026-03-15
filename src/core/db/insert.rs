@@ -53,3 +53,26 @@ pub async fn insert_objects(
 
     Ok(inserted)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::core::interface::repository::CityLakeRepository;
+    use crate::tests::helpers;
+
+    #[tokio::test]
+    async fn test_insert_invalid_format() {
+        let service = helpers::setup_with_table("insert_fmt");
+        let result = service
+            .insert_objects("insert_fmt", "/tmp/bad_file.csv")
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cannot detect"));
+    }
+
+    #[test]
+    fn test_input_format_detection() {
+        use crate::core::interface::types::InputFormat;
+        assert!(InputFormat::from_path("data.city.jsonl").is_some());
+        assert!(InputFormat::from_path("data.csv").is_none());
+    }
+}

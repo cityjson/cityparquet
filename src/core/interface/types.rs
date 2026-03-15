@@ -196,3 +196,73 @@ pub struct QueryParams {
     /// Offset for pagination
     pub offset: Option<usize>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_city_lake_config_default() {
+        let config = CityLakeConfig::default();
+        assert_eq!(config.storage_path, "data");
+        assert_eq!(config.catalog_path, "metadata.ducklake");
+        assert!(!config.auto_compact);
+        assert_eq!(config.host, "127.0.0.1");
+        assert_eq!(config.port, 3000);
+    }
+
+    #[test]
+    fn test_compaction_threshold_default() {
+        let threshold = CompactionThreshold::default();
+        assert_eq!(threshold.min_file_count, 10);
+        assert!((threshold.fragmentation_ratio - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_export_format_duckdb_format() {
+        assert_eq!(ExportFormat::CityJson.as_duckdb_format(), "cityjson");
+        assert_eq!(ExportFormat::CityJsonSeq.as_duckdb_format(), "cityjsonseq");
+        assert_eq!(ExportFormat::FlatCityBuf.as_duckdb_format(), "flatcitybuf");
+    }
+
+    #[test]
+    fn test_export_format_file_extension() {
+        assert_eq!(ExportFormat::CityJson.file_extension(), ".city.json");
+        assert_eq!(ExportFormat::CityJsonSeq.file_extension(), ".city.jsonl");
+        assert_eq!(ExportFormat::FlatCityBuf.file_extension(), ".fcb");
+    }
+
+    #[test]
+    fn test_export_format_display() {
+        assert_eq!(format!("{}", ExportFormat::CityJson), "cityjson");
+        assert_eq!(format!("{}", ExportFormat::CityJsonSeq), "cityjsonseq");
+        assert_eq!(format!("{}", ExportFormat::FlatCityBuf), "flatcitybuf");
+    }
+
+    #[test]
+    fn test_input_format_from_path() {
+        assert!(matches!(InputFormat::from_path("test.city.json"), Some(InputFormat::CityJson)));
+        assert!(matches!(InputFormat::from_path("test.cityjson"), Some(InputFormat::CityJson)));
+        assert!(matches!(InputFormat::from_path("test.city.jsonl"), Some(InputFormat::CityJsonSeq)));
+        assert!(matches!(InputFormat::from_path("test.cityjsonl"), Some(InputFormat::CityJsonSeq)));
+        assert!(matches!(InputFormat::from_path("test.jsonl"), Some(InputFormat::CityJsonSeq)));
+        assert!(matches!(InputFormat::from_path("test.fcb"), Some(InputFormat::FlatCityBuf)));
+        assert!(matches!(InputFormat::from_path("test.flatcitybuf"), Some(InputFormat::FlatCityBuf)));
+        assert!(InputFormat::from_path("test.csv").is_none());
+        assert!(InputFormat::from_path("test.json").is_none());
+    }
+
+    #[test]
+    fn test_input_format_read_function() {
+        assert_eq!(InputFormat::CityJson.read_function(), "read_cityjson");
+        assert_eq!(InputFormat::CityJsonSeq.read_function(), "read_cityjsonseq");
+        assert_eq!(InputFormat::FlatCityBuf.read_function(), "read_flatcitybuf");
+    }
+
+    #[test]
+    fn test_input_format_metadata_function() {
+        assert_eq!(InputFormat::CityJson.metadata_function(), Some("cityjson_metadata"));
+        assert_eq!(InputFormat::CityJsonSeq.metadata_function(), Some("cityjsonseq_metadata"));
+        assert_eq!(InputFormat::FlatCityBuf.metadata_function(), None);
+    }
+}

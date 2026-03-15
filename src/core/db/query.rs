@@ -53,3 +53,83 @@ pub async fn query_objects(
 
     Ok(results)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::core::interface::repository::CityLakeRepository;
+    use crate::core::interface::types::QueryParams;
+    use crate::tests::helpers;
+
+    fn empty_params() -> QueryParams {
+        QueryParams {
+            filter: None,
+            limit: None,
+            offset: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_query_all_objects() {
+        let service = helpers::setup_with_table("query_all");
+        let results = service
+            .query_objects("query_all", &empty_params())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 3, "Expected 3 objects from test data");
+    }
+
+    #[tokio::test]
+    async fn test_query_with_limit() {
+        let service = helpers::setup_with_table("query_limit");
+        let params = QueryParams {
+            limit: Some(1),
+            ..empty_params()
+        };
+        let results = service
+            .query_objects("query_limit", &params)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_query_with_offset() {
+        let service = helpers::setup_with_table("query_offset");
+        let params = QueryParams {
+            offset: Some(2),
+            ..empty_params()
+        };
+        let results = service
+            .query_objects("query_offset", &params)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1, "Expected 1 object after offset=2 of 3 total");
+    }
+
+    #[tokio::test]
+    async fn test_query_with_filter() {
+        let service = helpers::setup_with_table("query_filter");
+        let params = QueryParams {
+            filter: Some("id = 'building_001'".to_string()),
+            ..empty_params()
+        };
+        let results = service
+            .query_objects("query_filter", &params)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_query_returns_json() {
+        let service = helpers::setup_with_table("query_json");
+        let results = service
+            .query_objects("query_json", &empty_params())
+            .await
+            .unwrap();
+        assert!(!results.is_empty());
+        for val in &results {
+            assert!(val.is_object(), "Expected JSON object, got: {val}");
+        }
+    }
+}

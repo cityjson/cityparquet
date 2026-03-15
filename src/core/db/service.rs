@@ -60,6 +60,46 @@ impl DuckLakeService {
     pub fn config(&self) -> &CityLakeConfig {
         &self.config
     }
+
+    /// Create a DuckLakeService for testing without requiring external extensions.
+    ///
+    /// Uses a plain in-memory DuckDB with a `citylake` schema instead of
+    /// the ducklake extension. Does not load cityjson or ducklake extensions.
+    #[cfg(test)]
+    pub fn new_for_testing() -> RepositoryResult<Self> {
+        let conn = Connection::open_in_memory()
+            .map_err(|e| format!("Failed to open DuckDB connection: {e}"))?;
+
+        // Disable auto-install/load of extensions to prevent network timeouts in tests.
+        // Then explicitly load the bundled json extension (needed for to_json()).
+        conn.execute_batch(
+            "SET autoinstall_known_extensions=false; SET autoload_known_extensions=false; LOAD json;",
+        )
+        .map_err(|e| format!("Failed to configure extensions: {e}"))?;
+
+        // Attach a second in-memory database as "citylake" to mimic the
+        // DuckLake catalog attachment used in production.
+        conn.execute_batch("ATTACH ':memory:' AS citylake;")
+            .map_err(|e| format!("Failed to attach citylake catalog: {e}"))?;
+
+        let config = CityLakeConfig {
+            storage_path: String::new(),
+            catalog_path: String::new(),
+            auto_compact: false,
+            ..Default::default()
+        };
+
+        Ok(Self {
+            connection: Arc::new(Mutex::new(conn)),
+            config,
+        })
+    }
+
+    /// Get a reference to the underlying connection (for test setup).
+    #[cfg(test)]
+    pub fn connection(&self) -> &Arc<Mutex<Connection>> {
+        &self.connection
+    }
 }
 
 #[async_trait]
@@ -115,5 +155,34 @@ impl CityLakeRepository for DuckLakeService {
         params: &QueryParams,
     ) -> RepositoryResult<Vec<serde_json::Value>> {
         super::query::query_objects(&self.connection, table_name, params).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tests::helpers;
+
+    #[test]
+    fn test_new_service_success() {
+        let service = helpers::setup();
+        // Service created with empty storage_path in test mode
+        assert_eq!(service.config().storage_path, "");
+    }
+
+    #[test]
+    fn test_new_for_testing_creates_schema() {
+        let service = helpers::setup();
+        let conn = service.connection().lock().unwrap();
+        // Verify citylake schema exists by creating a table in it
+        conn.execute_batch("CREATE TABLE citylake.test_schema_check (id INTEGER);")
+            .expect("citylake schema should exist");
+    }
+
+    #[test]
+    fn test_config_accessor() {
+        let service = helpers::setup();
+        let config = service.config();
+        assert!(!config.auto_compact);
+        assert_eq!(config.host, "127.0.0.1");
     }
 }
