@@ -17,10 +17,10 @@ path = "src/main.rs"
 duckdb = { version = "1", features = ["bundled", "json"] }
 
 # Web framework (only needed for binary/server)
-axum = { version = "0.7", features = ["multipart"], optional = true }
+axum = { version = "0.8", features = ["multipart"], optional = true }
 tokio = { version = "1", features = ["full"] }
-tower = { version = "0.4", optional = true }
-tower-http = { version = "0.5", features = ["cors", "trace"], optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -30,7 +30,7 @@ serde_json = "1"
 async-trait = "0.1"
 
 # Error handling
-thiserror = "1"
+thiserror = "2"
 anyhow = "1"
 
 # File operations
@@ -43,7 +43,7 @@ tracing-subscriber = { version = "0.3", optional = true }
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 http = "1"
 

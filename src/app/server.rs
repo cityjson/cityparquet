@@ -12,32 +12,32 @@ use super::middleware;
 pub fn build_router(repo: Arc<dyn CityLakeRepository>) -> Router {
     Router::new()
         // Table operations
-        .route("/tables/:table_name", post(handlers::table::create_table))
+        .route("/tables/{table_name}", post(handlers::table::create_table))
         .route(
-            "/tables/:table_name/upload",
+            "/tables/{table_name}/upload",
             post(handlers::table::create_table_upload),
         )
         // Object CRUD
         .route(
-            "/tables/:table_name/objects",
+            "/tables/{table_name}/objects",
             post(handlers::insert::insert_objects).get(handlers::query::query_objects),
         )
         .route(
-            "/tables/:table_name/objects/upload",
+            "/tables/{table_name}/objects/upload",
             post(handlers::insert::insert_objects_upload),
         )
         .route(
-            "/tables/:table_name/objects/:id",
+            "/tables/{table_name}/objects/{id}",
             put(handlers::update::update_object).delete(handlers::delete::delete_object),
         )
         // Compaction
         .route(
-            "/tables/:table_name/compact",
+            "/tables/{table_name}/compact",
             post(handlers::compaction::compact_table),
         )
         // Export
         .route(
-            "/tables/:table_name/export",
+            "/tables/{table_name}/export",
             post(handlers::export::export_table),
         )
         // Health check

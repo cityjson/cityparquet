@@ -14,21 +14,21 @@ use crate::tests::helpers;
 /// Build a test router without middleware (avoids potential issues with tracing).
 fn build_test_router(repo: Arc<dyn CityLakeRepository>) -> Router {
     Router::new()
-        .route("/tables/:table_name", post(handlers::table::create_table))
+        .route("/tables/{table_name}", post(handlers::table::create_table))
         .route(
-            "/tables/:table_name/objects",
+            "/tables/{table_name}/objects",
             post(handlers::insert::insert_objects).get(handlers::query::query_objects),
         )
         .route(
-            "/tables/:table_name/objects/:id",
+            "/tables/{table_name}/objects/{id}",
             put(handlers::update::update_object).delete(handlers::delete::delete_object),
         )
         .route(
-            "/tables/:table_name/compact",
+            "/tables/{table_name}/compact",
             post(handlers::compaction::compact_table),
         )
         .route(
-            "/tables/:table_name/export",
+            "/tables/{table_name}/export",
             post(handlers::export::export_table),
         )
         .route("/health", get(|| async { "ok" }))
