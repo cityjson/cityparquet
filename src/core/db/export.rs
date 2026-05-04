@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use crate::core::interface::repository::RepositoryResult;
 use crate::core::interface::types::ExportFormat;
 
+use super::table::validate_identifier;
+
 /// Export a table to a CityJSON format file using the cityjson extension's COPY TO.
 pub async fn export_table(
     connection: &Arc<Mutex<Connection>>,
@@ -11,12 +13,15 @@ pub async fn export_table(
     output_path: &str,
     format: ExportFormat,
 ) -> RepositoryResult<()> {
+    validate_identifier(table_name, "Table name")?;
+
     let conn = connection
         .lock()
         .map_err(|e| format!("Failed to lock connection: {e}"))?;
 
+    let path_lit = output_path.replace('\'', "''");
     let sql = format!(
-        "COPY (SELECT * FROM citylake.{table_name}) TO '{output_path}' (FORMAT {fmt})",
+        "COPY (SELECT * FROM citylake.{table_name}) TO '{path_lit}' (FORMAT {fmt})",
         fmt = format.as_duckdb_format(),
     );
 

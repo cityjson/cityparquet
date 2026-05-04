@@ -7,6 +7,8 @@ use std::sync::Arc;
 use crate::core::interface::repository::CityLakeRepository;
 use crate::core::interface::types::UpdateRequest;
 
+use super::table::repo_error;
+
 /// PUT /tables/:table_name/objects/:id
 ///
 /// Update a CityJSON object by its ID.
@@ -17,14 +19,7 @@ pub async fn update_object(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     repo.update_object(&table_name, &id, &body.cityjson_data)
         .await
-        .map_err(|e| {
-            let status = if e.to_string().contains("No record found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            (status, Json(json!({"error": e.to_string()})))
-        })?;
+        .map_err(repo_error)?;
 
     Ok(Json(json!({
         "message": format!("Updated object '{}' in table '{}'", id, table_name),

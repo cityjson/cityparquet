@@ -20,7 +20,8 @@ pub async fn get_metadata(
         .lock()
         .map_err(|e| format!("Failed to lock connection: {e}"))?;
 
-    let sql = format!("SELECT to_json(m) AS json_row FROM {metadata_fn}('{file_path}') m");
+    let path_lit = file_path.replace('\'', "''");
+    let sql = format!("SELECT to_json(m) AS json_row FROM {metadata_fn}('{path_lit}') m");
 
     let mut stmt = conn
         .prepare(&sql)

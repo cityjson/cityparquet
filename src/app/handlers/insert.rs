@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::core::interface::repository::CityLakeRepository;
 use crate::core::interface::types::InsertRequest;
 
-use super::table::{internal, parse_lod};
+use super::table::{parse_lod, repo_error};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct InsertUploadQuery {
@@ -37,7 +37,7 @@ pub async fn insert_objects(
     let count = repo
         .insert_objects(&base_name, &source_path, lod.as_ref())
         .await
-        .map_err(|e| internal(e.to_string()))?;
+        .map_err(repo_error)?;
 
     Ok(Json(json!({
         "message": format!("Inserted {count} objects under base '{base_name}'"),
@@ -62,7 +62,7 @@ pub async fn insert_objects_upload(
 
     let _ = std::fs::remove_file(&temp_path);
 
-    let count = result.map_err(|e| internal(e.to_string()))?;
+    let count = result.map_err(repo_error)?;
 
     Ok(Json(json!({
         "message": format!("Inserted {count} objects under base '{base_name}' from upload"),

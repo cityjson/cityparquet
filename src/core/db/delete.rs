@@ -3,12 +3,16 @@ use std::sync::{Arc, Mutex};
 
 use crate::core::interface::repository::RepositoryResult;
 
+use super::table::validate_identifier;
+
 /// Delete a CityJSON object by its ID.
 pub async fn delete_object(
     connection: &Arc<Mutex<Connection>>,
     table_name: &str,
     id: &str,
 ) -> RepositoryResult<()> {
+    validate_identifier(table_name, "Table name")?;
+
     let conn = connection
         .lock()
         .map_err(|e| format!("Failed to lock connection: {e}"))?;
@@ -60,5 +64,14 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No record found"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_rejects_sql_injection_in_table_name() {
+        let service = helpers::setup_with_table("del_inj");
+        let malicious = "x'; DROP TABLE del_inj; --";
+        let result = service.delete_object(malicious, "id").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid characters"));
     }
 }

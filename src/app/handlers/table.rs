@@ -40,7 +40,7 @@ pub async fn create_table(
     let created = repo
         .create_table(Some(base), &source_path, lod.as_ref())
         .await
-        .map_err(|e| internal(e.to_string()))?;
+        .map_err(repo_error)?;
 
     Ok(Json(json!({
         "message": format!("Created {} table(s) for base '{}'", created.len(), base),
@@ -70,7 +70,7 @@ pub async fn create_table_upload(
 
     let _ = std::fs::remove_file(&temp_path);
 
-    let created = result.map_err(|e| internal(e.to_string()))?;
+    let created = result.map_err(repo_error)?;
 
     Ok(Json(json!({
         "message": format!("Created {} table(s) for base '{}' from upload", created.len(), base),
@@ -150,9 +150,29 @@ pub(crate) fn parse_lod(
     }
 }
 
-pub(crate) fn internal(msg: String) -> (StatusCode, Json<serde_json::Value>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({"error": msg})),
-    )
+/// Map a repository error string to an HTTP error response. Validation-style
+/// errors that originate from user input are surfaced as 400; the rest become
+/// 500 (genuinely internal). Markers are kept conservative — anything we don't
+/// recognise stays 500 so we don't accidentally leak internals as user errors.
+pub(crate) fn repo_error(err: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
+    let msg = err.to_string();
+    let user_input_markers = [
+        "invalid characters",
+        "cannot be empty",
+        "Cannot detect",
+        "missing a '_lod_X_Y' suffix",
+        "No LOD geometry columns",
+        "Invalid LOD",
+        "LOD cannot be empty",
+        "Metadata extraction not supported",
+    ];
+    let status = if user_input_markers.iter().any(|m| msg.contains(m)) {
+        StatusCode::BAD_REQUEST
+    } else if msg.contains("No record found") {
+        StatusCode::NOT_FOUND
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, Json(json!({"error": msg})))
 }
+

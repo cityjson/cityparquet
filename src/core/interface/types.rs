@@ -172,7 +172,10 @@ impl InputFormat {
 pub struct LodKey(String);
 
 impl LodKey {
-    /// Parse and validate a LOD string. Accepts `\d+(\.\d+)?` (e.g. `"2"`, `"2.2"`).
+    /// Parse, validate, and canonicalise a LOD string. Accepts `\d+(\.\d+)?`
+    /// (e.g. `"2"`, `"2.2"`). Each numeric part is stripped of leading zeros so
+    /// that `"02.20"` and `"2.20"` and `"2.2"` collapse to the same key — this
+    /// prevents the same logical LOD from mapping to different table names.
     pub fn parse(s: &str) -> Result<Self, String> {
         if s.is_empty() {
             return Err("LOD cannot be empty".to_string());
@@ -188,7 +191,12 @@ impl LodKey {
         if s.starts_with('.') || s.ends_with('.') {
             return Err(format!("Invalid LOD '{s}': leading or trailing '.' not allowed"));
         }
-        Ok(LodKey(s.to_string()))
+        let canonical = s
+            .split('.')
+            .map(strip_leading_zeros)
+            .collect::<Vec<_>>()
+            .join(".");
+        Ok(LodKey(canonical))
     }
 
     /// Original LOD string, e.g. `"2.2"`.
@@ -206,6 +214,15 @@ impl LodKey {
 impl fmt::Display for LodKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+fn strip_leading_zeros(part: &str) -> String {
+    let trimmed = part.trim_start_matches('0');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -354,5 +371,18 @@ mod tests {
         assert_eq!(LodKey::parse("2.2").unwrap().as_suffix(), "lod_2_2");
         assert_eq!(LodKey::parse("1").unwrap().as_suffix(), "lod_1");
         assert_eq!(LodKey::parse("0.0").unwrap().as_suffix(), "lod_0_0");
+    }
+
+    #[test]
+    fn test_lod_key_canonicalization() {
+        // Leading zeros are stripped so semantically equivalent LODs collapse.
+        assert_eq!(LodKey::parse("02.2").unwrap(), LodKey::parse("2.2").unwrap());
+        assert_eq!(LodKey::parse("2.02").unwrap().as_str(), "2.2");
+        assert_eq!(LodKey::parse("002.020").unwrap().as_str(), "2.20");
+        // A lone zero stays as "0".
+        assert_eq!(LodKey::parse("0").unwrap().as_str(), "0");
+        assert_eq!(LodKey::parse("00").unwrap().as_str(), "0");
+        assert_eq!(LodKey::parse("0.0").unwrap().as_str(), "0.0");
+        assert_eq!(LodKey::parse("00.00").unwrap().as_str(), "0.0");
     }
 }

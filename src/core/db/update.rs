@@ -6,6 +6,7 @@ use tempfile::NamedTempFile;
 use crate::core::interface::repository::RepositoryResult;
 
 use super::lod::lod_from_table_name;
+use super::table::validate_identifier;
 
 /// Update a CityJSON object by its ID in a LOD-suffixed table.
 ///
@@ -24,6 +25,7 @@ pub async fn update_object(
     id: &str,
     cityjson_data: &str,
 ) -> RepositoryResult<()> {
+    validate_identifier(table_name, "Table name")?;
     let lod = lod_from_table_name(table_name).ok_or_else(|| {
         format!("Table '{table_name}' is missing a '_lod_X_Y' suffix; cannot determine LOD for update")
     })?;
@@ -93,5 +95,15 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("missing a '_lod_X_Y' suffix"));
+    }
+
+    #[tokio::test]
+    async fn test_update_rejects_sql_injection_in_table_name() {
+        let service = helpers::setup_with_table("inj_lod_2_2");
+        // A name that would be lethal if interpolated raw into SQL.
+        let malicious = "x; DROP TABLE inj_lod_2_2; --_lod_2_2";
+        let result = service.update_object(malicious, "id", "{}").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid characters"));
     }
 }

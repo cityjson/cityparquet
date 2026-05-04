@@ -7,6 +7,8 @@ use std::sync::Arc;
 use crate::core::interface::repository::CityLakeRepository;
 use crate::core::interface::types::QueryParams;
 
+use super::table::repo_error;
+
 /// GET /tables/:table_name/objects
 ///
 /// Query objects from a table. Supports optional query parameters:
@@ -21,12 +23,7 @@ pub async fn query_objects(
     let results = repo
         .query_objects(&table_name, &params)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
-            )
-        })?;
+        .map_err(repo_error)?;
 
     Ok(Json(json!({
         "table": table_name,

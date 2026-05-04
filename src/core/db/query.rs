@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use crate::core::interface::repository::RepositoryResult;
 use crate::core::interface::types::QueryParams;
 
+use super::table::validate_identifier;
+
 /// Query objects from a table with optional filters and pagination.
 ///
 /// Returns rows as JSON values. Each row is converted to a JSON object
@@ -13,6 +15,8 @@ pub async fn query_objects(
     table_name: &str,
     params: &QueryParams,
 ) -> RepositoryResult<Vec<serde_json::Value>> {
+    validate_identifier(table_name, "Table name")?;
+
     let conn = connection
         .lock()
         .map_err(|e| format!("Failed to lock connection: {e}"))?;

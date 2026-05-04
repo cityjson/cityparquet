@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use crate::core::interface::repository::RepositoryResult;
 use crate::core::interface::types::CompactionStats;
 
+use super::table::validate_identifier;
+
 /// Compact a DuckLake table by merging small Parquet files.
 ///
 /// DuckLake stores data as Parquet files and may accumulate many small files
@@ -12,6 +14,8 @@ pub async fn compact_table(
     connection: &Arc<Mutex<Connection>>,
     table_name: &str,
 ) -> RepositoryResult<CompactionStats> {
+    validate_identifier(table_name, "Table name")?;
+
     let conn = connection
         .lock()
         .map_err(|e| format!("Failed to lock connection: {e}"))?;
