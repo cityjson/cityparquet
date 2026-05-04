@@ -194,7 +194,7 @@ async fn test_delete_nonexistent_returns_404() {
 
 #[tokio::test]
 async fn test_update_nonexistent_returns_404() {
-    let service = helpers::setup_with_table("upd_404");
+    let service = helpers::setup_with_table("upd_404_lod_2_2");
     let repo: Arc<dyn CityLakeRepository> = Arc::new(service);
     let app = build_test_router(repo);
 
@@ -202,7 +202,7 @@ async fn test_update_nonexistent_returns_404() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/tables/upd_404/objects/nonexistent_id")
+                .uri("/tables/upd_404_lod_2_2/objects/nonexistent_id")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({"cityjson_data": "{}"}).to_string(),

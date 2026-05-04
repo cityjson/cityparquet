@@ -34,3 +34,6 @@ Thumbs.db
 
 # Ignore by default, but track if explicitly added!
 !/.gitkeep
+
+.env
+.env.keys

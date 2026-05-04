@@ -87,20 +87,41 @@ src/
 - **Thread safety**: DuckDB Connection is not Send. Wrap in `Arc<Mutex<Connection>>`.
 - **Feature flags**: The `server` feature gates web framework dependencies. The library can be used without the server.
 
+## Storage layout — LOD-aware tables
+
+Every ingested dataset produces **one table per LOD** plus a single shared metadata
+table. Naming convention: `{base}_lod_X_Y` for LOD `X.Y` (e.g. `buildings_lod_2_2`).
+The base name defaults to `city_objects` when not supplied. Available LODs are
+discovered from the source via `DESCRIBE SELECT * FROM read_cityjson*('path')`,
+scanning for columns matching `geom_lodX_Y` — no Rust-side parsing.
+
+The shared `cityjson_metadata` table accumulates one row per ingest, prefixed with
+`dataset` (= base name) and `source_path` columns; the rest of the columns mirror
+the cityjson extension's `*_metadata()` table function.
+
+LOD strings are validated through the `LodKey` newtype (`src/core/interface/types.rs`).
+
 ## Key SQL Patterns
 
 ```sql
--- Create table from CityJSON source
-CREATE TABLE citylake.{table} AS SELECT * FROM read_cityjsonseq('{path}');
+-- Create per-LOD table from a CityJSON source
+CREATE TABLE citylake.{base}_lod_2_2 AS
+  SELECT * FROM read_cityjsonseq('{path}', lod => '2.2');
 
--- Insert from file
-INSERT INTO citylake.{table} SELECT * FROM read_cityjsonseq('{path}');
+-- Insert into a specific LOD table
+INSERT INTO citylake.{base}_lod_2_2
+  SELECT * FROM read_cityjsonseq('{path}', lod => '2.2');
 
--- Export
-COPY (SELECT * FROM citylake.{table}) TO '{path}' (FORMAT cityjsonseq);
+-- Export a single LOD table (multi-LOD round-trip is deferred — see tasks.md)
+COPY (SELECT * FROM citylake.{base}_lod_2_2) TO '{path}' (FORMAT cityjsonseq);
 
--- Metadata
-SELECT * FROM cityjsonseq_metadata('{path}');
+-- Persist metadata (first ingest creates the table)
+CREATE TABLE citylake.cityjson_metadata AS
+  SELECT '{base}' AS dataset, '{path}' AS source_path, m.*
+  FROM cityjsonseq_metadata('{path}') m;
+INSERT INTO citylake.cityjson_metadata
+  SELECT '{base}' AS dataset, '{path}' AS source_path, m.*
+  FROM cityjsonseq_metadata('{path}') m;
 ```
 
 ## Dev Commands
@@ -119,12 +140,17 @@ extension auto-install to avoid network flakiness — production code path uses
 
 ## API Endpoints
 
+The `:base_name` path parameter is the *base* of LOD-derived table names; CRUD endpoints
+that target a specific LOD must use the full table name (e.g. `buildings_lod_2_2`).
+
 ```
-POST   /tables/:name           — Create table from CityJSON source
-POST   /tables/:name/objects   — Insert objects (file upload or server path)
-GET    /tables/:name/objects   — Query objects (optional ?filter=...)
-PUT    /tables/:name/objects/:id    — Update object by ID
-DELETE /tables/:name/objects/:id    — Delete object by ID
-POST   /tables/:name/compact   — Trigger compaction
-POST   /tables/:name/export    — Export table to CityJSON format
+POST   /tables/:base_name              — Create LOD-suffixed table(s); body { source_path, lod?, base_name? }
+POST   /tables/:base_name/upload       — Multipart upload variant; ?lod=&base_name=
+POST   /tables/:base_name/objects      — Insert into existing LOD table(s); body { source_path, lod? }
+POST   /tables/:base_name/objects/upload — Multipart upload variant; ?lod=
+GET    /tables/:table_name/objects     — Query objects (optional ?filter=...)
+PUT    /tables/:table_name/objects/:id — Update object by ID (table must have _lod_X_Y suffix)
+DELETE /tables/:table_name/objects/:id — Delete object by ID
+POST   /tables/:table_name/compact     — Trigger compaction
+POST   /tables/:table_name/export      — Export single LOD table to CityJSON format
 ```

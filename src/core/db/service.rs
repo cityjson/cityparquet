@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::core::interface::repository::{CityLakeRepository, RepositoryResult};
 use crate::core::interface::types::{
-    CityJsonMetadata, CityLakeConfig, CompactionStats, ExportFormat, QueryParams,
+    CityJsonMetadata, CityLakeConfig, CompactionStats, ExportFormat, LodKey, QueryParams,
 };
 
 /// DuckLake-backed implementation of [CityLakeRepository].
@@ -104,15 +104,23 @@ impl DuckLakeService {
 
 #[async_trait]
 impl CityLakeRepository for DuckLakeService {
-    async fn create_table(&self, table_name: &str, source_path: &str) -> RepositoryResult<()> {
-        super::table::create_table(&self.connection, table_name, source_path).await
+    async fn create_table(
+        &self,
+        base_name: Option<&str>,
+        source_path: &str,
+        lod: Option<&LodKey>,
+    ) -> RepositoryResult<Vec<String>> {
+        super::table::create_table(&self.connection, base_name, source_path, lod).await
     }
 
-    async fn insert_objects(&self, table_name: &str, file_path: &str) -> RepositoryResult<usize> {
-        let count =
-            super::insert::insert_objects(&self.connection, table_name, file_path, &self.config)
-                .await?;
-        Ok(count)
+    async fn insert_objects(
+        &self,
+        base_name: &str,
+        file_path: &str,
+        lod: Option<&LodKey>,
+    ) -> RepositoryResult<usize> {
+        super::insert::insert_objects(&self.connection, base_name, file_path, lod, &self.config)
+            .await
     }
 
     async fn update_object(

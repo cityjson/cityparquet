@@ -1,20 +1,30 @@
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
 use crate::core::interface::repository::CityLakeRepository;
-use crate::core::interface::types::CreateTableRequest;
+use crate::core::interface::types::{CreateTableRequest, LodKey};
 
-/// POST /tables/:table_name
+/// Query parameters supported alongside multipart uploads (which can't carry a JSON body).
+#[derive(Debug, Deserialize, Default)]
+pub struct CreateTableUploadQuery {
+    pub lod: Option<String>,
+    pub base_name: Option<String>,
+}
+
+/// POST /tables/:base_name
 ///
-/// Create a new table from a CityJSON source. Accepts either:
-/// - JSON body with `source_path` (server-side file)
-/// - Multipart file upload
+/// Create LOD-suffixed tables from a CityJSON source. The path segment is used as
+/// the *base* name for derived tables (e.g. `buildings_lod_2_2`). Body fields:
+/// - `source_path` (required): server-side file path
+/// - `lod` (optional): single LOD to load; otherwise every LOD in the file is loaded
+/// - `base_name` (optional): override the path-derived base name
 pub async fn create_table(
     State(repo): State<Arc<dyn CityLakeRepository>>,
-    Path(table_name): Path<String>,
+    Path(path_base): Path<String>,
     Json(body): Json<CreateTableRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let source_path = body.source_path.ok_or_else(|| {
@@ -24,46 +34,48 @@ pub async fn create_table(
         )
     })?;
 
-    repo.create_table(&table_name, &source_path)
+    let lod = parse_lod(body.lod.as_deref())?;
+    let base = body.base_name.as_deref().unwrap_or(path_base.as_str());
+
+    let created = repo
+        .create_table(Some(base), &source_path, lod.as_ref())
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
-            )
-        })?;
+        .map_err(|e| internal(e.to_string()))?;
 
     Ok(Json(json!({
-        "message": format!("Table '{}' created successfully", table_name),
-        "table_name": table_name,
+        "message": format!("Created {} table(s) for base '{}'", created.len(), base),
+        "base_name": base,
+        "tables": created,
     })))
 }
 
-/// POST /tables/:table_name/upload
+/// POST /tables/:base_name/upload
 ///
-/// Create a new table from an uploaded CityJSON file (multipart).
+/// Multipart upload variant of `create_table`. `?lod=` and `?base_name=` query
+/// parameters carry the same data as the JSON body would.
 pub async fn create_table_upload(
     State(repo): State<Arc<dyn CityLakeRepository>>,
-    Path(table_name): Path<String>,
+    Path(path_base): Path<String>,
+    Query(qs): Query<CreateTableUploadQuery>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let temp_path = receive_upload(&mut multipart).await?;
 
-    repo.create_table(&table_name, &temp_path)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
-            )
-        })?;
+    let lod = parse_lod(qs.lod.as_deref())?;
+    let base = qs.base_name.as_deref().unwrap_or(path_base.as_str());
 
-    // Clean up temp file (best effort)
+    let result = repo
+        .create_table(Some(base), &temp_path, lod.as_ref())
+        .await;
+
     let _ = std::fs::remove_file(&temp_path);
 
+    let created = result.map_err(|e| internal(e.to_string()))?;
+
     Ok(Json(json!({
-        "message": format!("Table '{}' created successfully from upload", table_name),
-        "table_name": table_name,
+        "message": format!("Created {} table(s) for base '{}' from upload", created.len(), base),
+        "base_name": base,
+        "tables": created,
     })))
 }
 
@@ -72,7 +84,7 @@ pub async fn create_table_upload(
 pub(crate) async fn receive_upload(
     multipart: &mut Multipart,
 ) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
-    while let Some(field) = multipart.next_field().await.map_err(|e| {
+    if let Some(field) = multipart.next_field().await.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": format!("Failed to read multipart field: {e}")})),
@@ -90,7 +102,6 @@ pub(crate) async fn receive_upload(
             )
         })?;
 
-        // Determine extension from original filename
         let extension = if file_name.ends_with(".city.json") {
             ".city.json"
         } else if file_name.ends_with(".city.jsonl") || file_name.ends_with(".cityjsonl") {
@@ -98,7 +109,7 @@ pub(crate) async fn receive_upload(
         } else if file_name.ends_with(".fcb") {
             ".fcb"
         } else {
-            ".city.jsonl" // default
+            ".city.jsonl"
         };
 
         let temp_file = tempfile::Builder::new()
@@ -126,4 +137,22 @@ pub(crate) async fn receive_upload(
         StatusCode::BAD_REQUEST,
         Json(json!({"error": "No file found in multipart upload"})),
     ))
+}
+
+pub(crate) fn parse_lod(
+    raw: Option<&str>,
+) -> Result<Option<LodKey>, (StatusCode, Json<serde_json::Value>)> {
+    match raw {
+        None => Ok(None),
+        Some(s) => LodKey::parse(s)
+            .map(Some)
+            .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"error": e})))),
+    }
+}
+
+pub(crate) fn internal(msg: String) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error": msg})),
+    )
 }

@@ -14,7 +14,7 @@ pub async fn get_metadata(
 
     let metadata_fn = format
         .metadata_function()
-        .ok_or_else(|| format!("Metadata extraction not supported for this format"))?;
+        .ok_or_else(|| "Metadata extraction not supported for this format".to_string())?;
 
     let conn = connection
         .lock()

@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// Default base name used when the caller does not supply one.
+pub const DEFAULT_BASE_NAME: &str = "city_objects";
+
+/// Name of the shared metadata table that accumulates one row per ingested dataset.
+pub const METADATA_TABLE: &str = "cityjson_metadata";
+
 /// Configuration for CityLake service
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CityLakeConfig {
@@ -156,11 +162,65 @@ impl InputFormat {
     }
 }
 
+/// A validated CityJSON Level-of-Detail identifier (e.g. `"2.2"`, `"1"`).
+///
+/// LOD strings are accepted in two forms: integer (`"2"`) or `major.minor` decimal
+/// (`"2.2"`). Anything else is rejected at construction time. The newtype centralises
+/// formatting so call sites cannot accidentally inject an unsanitised value into a
+/// SQL string or table name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LodKey(String);
+
+impl LodKey {
+    /// Parse and validate a LOD string. Accepts `\d+(\.\d+)?` (e.g. `"2"`, `"2.2"`).
+    pub fn parse(s: &str) -> Result<Self, String> {
+        if s.is_empty() {
+            return Err("LOD cannot be empty".to_string());
+        }
+        let mut saw_dot = false;
+        for c in s.chars() {
+            match c {
+                '0'..='9' => {}
+                '.' if !saw_dot => saw_dot = true,
+                _ => return Err(format!("Invalid LOD '{s}': only digits and a single '.' allowed")),
+            }
+        }
+        if s.starts_with('.') || s.ends_with('.') {
+            return Err(format!("Invalid LOD '{s}': leading or trailing '.' not allowed"));
+        }
+        Ok(LodKey(s.to_string()))
+    }
+
+    /// Original LOD string, e.g. `"2.2"`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Suffix used for DuckDB table names, e.g. `"lod_2_2"`. Dots are replaced with
+    /// underscores so the result is a valid SQL identifier.
+    pub fn as_suffix(&self) -> String {
+        format!("lod_{}", self.0.replace('.', "_"))
+    }
+}
+
+impl fmt::Display for LodKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Request body for creating a table
 #[derive(Debug, Deserialize)]
 pub struct CreateTableRequest {
     /// Path to a CityJSON source file on the server
     pub source_path: Option<String>,
+    /// Optional LOD selector. When set, only that LOD is loaded and the suffix is
+    /// `_lod_X_Y`. When unset, every LOD found in the source is loaded into its own
+    /// table.
+    pub lod: Option<String>,
+    /// Optional base name for the created tables. Defaults to `city_objects`.
+    /// The final table name is `{base}_lod_X_Y` per LOD.
+    pub base_name: Option<String>,
 }
 
 /// Request body for inserting objects
@@ -168,6 +228,10 @@ pub struct CreateTableRequest {
 pub struct InsertRequest {
     /// Path to a CityJSON source file on the server
     pub source_path: Option<String>,
+    /// Optional LOD selector. When set, only that LOD is read from the source.
+    /// When unset, every LOD found in the source is inserted into its matching
+    /// `{base}_lod_X_Y` table (which must already exist).
+    pub lod: Option<String>,
 }
 
 /// Request body for updating an object
@@ -264,5 +328,31 @@ mod tests {
         assert_eq!(InputFormat::CityJson.metadata_function(), Some("cityjson_metadata"));
         assert_eq!(InputFormat::CityJsonSeq.metadata_function(), Some("cityjsonseq_metadata"));
         assert_eq!(InputFormat::FlatCityBuf.metadata_function(), None);
+    }
+
+    #[test]
+    fn test_lod_key_parse_valid() {
+        assert_eq!(LodKey::parse("2.2").unwrap().as_str(), "2.2");
+        assert_eq!(LodKey::parse("1").unwrap().as_str(), "1");
+        assert_eq!(LodKey::parse("0.0").unwrap().as_str(), "0.0");
+        assert_eq!(LodKey::parse("12.34").unwrap().as_str(), "12.34");
+    }
+
+    #[test]
+    fn test_lod_key_parse_invalid() {
+        assert!(LodKey::parse("").is_err());
+        assert!(LodKey::parse("2.2.2").is_err());
+        assert!(LodKey::parse(".2").is_err());
+        assert!(LodKey::parse("2.").is_err());
+        assert!(LodKey::parse("2,2").is_err());
+        assert!(LodKey::parse("2'; DROP TABLE x; --").is_err());
+        assert!(LodKey::parse("a").is_err());
+    }
+
+    #[test]
+    fn test_lod_key_as_suffix() {
+        assert_eq!(LodKey::parse("2.2").unwrap().as_suffix(), "lod_2_2");
+        assert_eq!(LodKey::parse("1").unwrap().as_suffix(), "lod_1");
+        assert_eq!(LodKey::parse("0.0").unwrap().as_suffix(), "lod_0_0");
     }
 }
