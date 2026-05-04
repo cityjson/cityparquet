@@ -130,9 +130,14 @@ INSERT INTO citylake.cityjson_metadata
 cargo build                       # Library + binary (default features include `server`)
 cargo build --no-default-features # Library only (no axum/tower deps)
 cargo run                         # Start the HTTP server (binds host:port from CityLakeConfig)
-cargo test                        # All tests; integration tests live in src/tests/e2e
-cargo test --lib                  # Unit tests only (faster; skips e2e)
+cargo test                        # All non-ignored tests (unit + e2e)
+cargo test --lib                  # Same, library-scope only
+cargo test --lib -- --ignored     # Network-backed integration tests in src/tests/integration
 ```
+
+The `duckdb` crate is pinned to `=1.10501.0` (DuckDB v1.5.1). The cityjson
+community extension is only published for v1.5.0/v1.5.1 — bumping past that
+breaks `LOAD cityjson`. Bump in lockstep with the extension release matrix.
 
 Tests use `DuckLakeService::new_for_testing()` (see `src/core/db/service.rs:69`), which skips
 extension auto-install to avoid network flakiness — production code path uses

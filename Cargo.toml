@@ -14,7 +14,10 @@ path = "src/main.rs"
 
 [dependencies]
 # Database
-duckdb = { version = "1", features = ["bundled", "json"] }
+# Pinned to v1.5.1 because the cityjson community extension is only published for
+# v1.5.0/v1.5.1 (no v1.5.2 build at the time of writing). Bump in lockstep with
+# the cityjson extension release matrix at community-extensions.duckdb.org.
+duckdb = { version = "=1.10501.0", features = ["bundled", "json"] }
 
 # Web framework (only needed for binary/server)
 axum = { version = "0.8", features = ["multipart"], optional = true }
