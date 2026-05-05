@@ -25,4 +25,14 @@ const SUPABASE_PLACEHOLDER_KEY = "placeholder-anon-key";
 export const supabase: SupabaseClient = createClient(
   url || SUPABASE_PLACEHOLDER_URL,
   anonKey || SUPABASE_PLACEHOLDER_KEY,
+  {
+    auth: {
+      flowType: "pkce",
+      // We handle the OAuth callback explicitly in /auth/callback so failures
+      // surface as a real error UI. Letting supabase-js auto-process the URL
+      // on import would race with our explicit exchange and consume the code
+      // before we can see what happened to it.
+      detectSessionInUrl: false,
+    },
+  },
 );

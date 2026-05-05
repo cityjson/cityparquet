@@ -54,10 +54,11 @@ export default function LoginPage() {
     setStatus("github");
     setError(null);
 
-    // After the OAuth round-trip Supabase will redirect back to the app; land
-    // on the destination the user was originally heading for, falling back to
-    // /datasets when the request came in directly to /login.
-    const redirectTo = `${window.location.origin}${from}`;
+    // Route the OAuth round-trip through /auth/callback so PKCE exchange
+    // errors (redirect-URL mismatch, anon-key wrong, etc.) surface in a
+    // friendly UI instead of being swallowed silently. The original
+    // destination rides through as `?next=`.
+    const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(from)}`;
     const { error: signInError } = await supabase.auth.signInWithOAuth({
       provider: "github",
       options: { redirectTo },
