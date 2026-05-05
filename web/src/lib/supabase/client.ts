@@ -1,4 +1,4 @@
-import { createBrowserClient } from "@supabase/ssr";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const url = import.meta.env.VITE_SUPABASE_URL;
@@ -16,10 +16,15 @@ const SUPABASE_PLACEHOLDER_KEY = "placeholder-anon-key";
 /**
  * Create a Supabase browser client.
  *
- * The shadcn registry intentionally ships a factory (rather than a singleton)
- * so the same module can be imported in SSR contexts. We don't have SSR here,
- * so [`@/lib/supabase`](../supabase.ts) calls this once and re-exports a
- * singleton that the rest of the app uses.
+ * The shadcn `@supabase/supabase-client-react-router` registry installs
+ * `@supabase/ssr`'s `createBrowserClient`, which stores the PKCE code
+ * verifier in cookies so it can be read by a server-side counterpart in SSR
+ * frameworks (Next.js, SvelteKit, React Router's framework mode). CityLake's
+ * web app is a pure SPA driven by Vite, so we use `@supabase/supabase-js`'s
+ * `createClient` directly — it persists the PKCE verifier in localStorage,
+ * which round-trips reliably across the OAuth redirect without requiring a
+ * server. `@supabase/ssr` stays installed (and the registry stays registered
+ * in `components.json`) so future Supabase shadcn blocks Just Work.
  *
  * Auth options:
  * - `flowType: 'pkce'` is the modern OAuth flow.
@@ -29,13 +34,15 @@ const SUPABASE_PLACEHOLDER_KEY = "placeholder-anon-key";
  *   any error.
  */
 export function createClient(): SupabaseClient {
-  return createBrowserClient(
+  return createSupabaseClient(
     url || SUPABASE_PLACEHOLDER_URL,
     publishableKey || SUPABASE_PLACEHOLDER_KEY,
     {
       auth: {
         flowType: "pkce",
         detectSessionInUrl: false,
+        persistSession: true,
+        autoRefreshToken: true,
       },
     },
   );
