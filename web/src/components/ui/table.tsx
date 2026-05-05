@@ -2,6 +2,13 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
+/**
+ * Table primitives matching the CityLake design:
+ * - mono headers, uppercase, tracked, ink-500 over a paper-50 strip
+ * - 1 px paper-200 row dividers, no zebra striping
+ * - rows can be marked `data-selected="true"` for the sun-100 + 2 px sun-500
+ *   left-border treatment used elsewhere in the app
+ */
 export const Table = React.forwardRef<
   HTMLTableElement,
   React.HTMLAttributes<HTMLTableElement>
@@ -22,7 +29,7 @@ export const TableHeader = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <thead
     ref={ref}
-    className={cn("[&_tr]:border-b border-border", className)}
+    className={cn("bg-paper-50 [&_tr]:border-b border-paper-200", className)}
     {...props}
   />
 ));
@@ -47,7 +54,7 @@ export const TableRow = React.forwardRef<
   <tr
     ref={ref}
     className={cn(
-      "border-b border-border transition-colors hover:bg-muted/50",
+      "border-b border-paper-200 border-l-2 border-l-transparent transition-colors data-[selected=true]:bg-sun-100 data-[selected=true]:border-l-sun-500",
       className,
     )}
     {...props}
@@ -62,7 +69,7 @@ export const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      "h-10 px-3 text-left align-middle font-medium text-muted-foreground",
+      "h-9 px-3 text-left align-middle font-mono text-[11px] uppercase tracking-caps text-ink-500 font-medium",
       className,
     )}
     {...props}
@@ -76,7 +83,10 @@ export const TableCell = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <td
     ref={ref}
-    className={cn("p-3 align-middle", className)}
+    className={cn(
+      "px-3 py-2 align-middle text-ink-900 [&:not(:has(button))]:font-mono [&:not(:has(button))]:text-[12px]",
+      className,
+    )}
     {...props}
   />
 ));

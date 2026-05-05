@@ -3,11 +3,11 @@ import { Upload as UploadIcon } from "lucide-react";
 import { useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 
+import { Eyebrow } from "@/components/Eyebrow";
 import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -56,23 +56,24 @@ export default function UploadPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Upload</h1>
-        <p className="text-sm text-muted-foreground">
-          Send a CityJSON, CityJSONSeq, or FlatCityBuf file to CityLake. One
-          table per LOD will be created (or just the LOD you pin below).
+    <div className="space-y-8">
+      <header className="space-y-1.5">
+        <Eyebrow>Upload</Eyebrow>
+        <h1 className="text-[40px] font-semibold leading-tight tracking-tight text-ink-900 font-sans">
+          Upload CityJSON
+        </h1>
+        <p className="text-[14px] text-ink-500 max-w-prose">
+          Send a <code className="cl-code">.city.json</code>,{" "}
+          <code className="cl-code">.city.jsonl</code>, or{" "}
+          <code className="cl-code">.fcb</code> file to CityLake. One table per
+          LOD will be created — or just the LOD you pin below.
         </p>
       </header>
 
-      <form onSubmit={onSubmit} className="space-y-6">
+      <form onSubmit={onSubmit} className="space-y-5">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">File</CardTitle>
-            <CardDescription>
-              Drop a <code>.city.json</code>, <code>.city.jsonl</code>, or{" "}
-              <code>.fcb</code> file here, or click to browse.
-            </CardDescription>
+            <Eyebrow>File</Eyebrow>
           </CardHeader>
           <CardContent>
             <div
@@ -97,15 +98,17 @@ export default function UploadPage() {
                 if (f) pickFile(f);
               }}
               className={cn(
-                "flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed border-border p-8 text-center transition-colors cursor-pointer",
-                dragActive && "border-primary bg-muted/40",
+                "flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-paper-300 bg-paper-50 p-8 text-center transition-colors duration-150 ease-cl cursor-pointer",
+                dragActive && "border-lake-500 bg-lake-50",
               )}
             >
-              <UploadIcon className="h-8 w-8 text-muted-foreground" />
+              <UploadIcon className="h-7 w-7 text-ink-500" />
               {file ? (
-                <p className="text-sm font-medium">{file.name}</p>
+                <p className="font-mono text-[13px] text-ink-900">
+                  {file.name}
+                </p>
               ) : (
-                <p className="text-sm text-muted-foreground">
+                <p className="text-[13px] text-ink-500">
                   Drop a file or click to browse
                 </p>
               )}
@@ -122,37 +125,38 @@ export default function UploadPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Options</CardTitle>
-            <CardDescription>
-              Defaults work for most uploads. The base name controls the table
-              prefix; pin a LOD if you want only one LOD ingested.
-            </CardDescription>
+            <Eyebrow>Options</Eyebrow>
+            <CardTitle className="text-[14px] mt-1 font-sans">
+              Defaults work for most uploads
+            </CardTitle>
           </CardHeader>
-          <CardContent className="grid gap-4 md:grid-cols-2">
+          <CardContent className="grid gap-5 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="base">Base name</Label>
               <Input
                 id="base"
+                mono
                 value={baseName}
                 onChange={(e) => setBaseName(e.target.value)}
                 placeholder="city_objects"
                 pattern="[A-Za-z0-9_]*"
               />
-              <p className="text-xs text-muted-foreground">
-                Tables will be named <code>{`${baseName || "city_objects"}_lod_X_Y`}</code>.
+              <p className="font-mono text-[11px] text-ink-500">
+                Tables: <code className="cl-code">{`${baseName || "city_objects"}_lod_X_Y`}</code>
               </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="lod">LOD (optional)</Label>
               <Input
                 id="lod"
+                mono
                 value={lod}
                 onChange={(e) => setLod(e.target.value)}
                 placeholder="2.2"
               />
-              <p className="text-xs text-muted-foreground">
-                Pin a single LOD (e.g. <code>2.2</code>) to load only that one;
-                leave blank to fan out across every LOD in the file.
+              <p className="font-mono text-[11px] text-ink-500">
+                Pin a single LOD to load only that one. Leave blank to fan out
+                across every LOD in the file.
               </p>
             </div>
           </CardContent>
@@ -168,25 +172,32 @@ export default function UploadPage() {
         </div>
 
         {mutation.error && (
-          <Card className="border-destructive/50">
-            <CardContent className="pt-6 text-sm text-destructive">
+          <Card accent="error">
+            <CardContent className="pt-5 font-mono text-[12px] text-roof-700">
               {mutation.error.message}
             </CardContent>
           </Card>
         )}
 
         {mutation.data && (
-          <Card>
+          <Card accent="info">
             <CardHeader>
-              <CardTitle className="text-base">Upload complete</CardTitle>
-              <CardDescription>{mutation.data.message}</CardDescription>
+              <Eyebrow>Upload complete</Eyebrow>
+              <CardTitle className="text-[14px] mt-1 font-sans">
+                {mutation.data.message}
+              </CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-sm">Created tables:</p>
-              <ul className="mt-2 list-disc pl-5 text-sm font-mono">
+              <p className="font-mono text-[11px] text-ink-500 mb-2">
+                Tables created
+              </p>
+              <ul className="space-y-1 font-mono text-[13px]">
                 {mutation.data.tables.map((t) => (
                   <li key={t}>
-                    <Link to={`/tables/${t}`} className="underline">
+                    <Link
+                      to={`/tables/${t}`}
+                      className="text-lake-700 hover:text-lake-900 underline"
+                    >
                       {t}
                     </Link>
                   </li>

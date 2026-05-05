@@ -1,57 +1,78 @@
+/* Design tokens (CSS variables, type scale, semantic styles).
+   The file is the canonical source of truth — see design/project/colors_and_type.css. */
+@import "@/styles/citylake.css";
+
+/* IBM Plex from Google Fonts. The design system mandates Plex; if the deployer
+   has a licensed family they prefer (Söhne, Inter, GT America, etc.) the
+   --font-* variables in citylake.css are the single override point. */
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Serif:wght@400;400i&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* The shadcn primitives reference --background / --foreground / --primary / etc.
+   We map those to the CityLake palette so the primitives just work without
+   touching every component. */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: 39 35% 97%;       /* paper-50  #FBFAF6 */
+    --foreground: 209 41% 11%;      /* ink-800   #1B2A38 */
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 209 45% 9%;  /* ink-900 */
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
-    --radius: 0.5rem;
+    --popover-foreground: 209 45% 9%;
+    --primary: 194 62% 33%;          /* lake-500 #1F6F86 */
+    --primary-foreground: 39 35% 97%;
+    --secondary: 39 32% 93%;         /* paper-100 */
+    --secondary-foreground: 209 45% 9%;
+    --muted: 39 32% 93%;
+    --muted-foreground: 213 18% 41%; /* ink-500 */
+    --accent: 39 32% 93%;
+    --accent-foreground: 209 45% 9%;
+    --destructive: 7 60% 45%;        /* error #B83A2E */
+    --destructive-foreground: 39 35% 97%;
+    --border: 41 30% 79%;            /* paper-300 #D6CFBE */
+    --input: 41 30% 79%;
+    --ring: 194 35% 48%;             /* lake-300 #4F94A6 */
+    --radius: 0.25rem;               /* 4px — sharp by default */
   }
 
+  /* Dark "blueprint" mode mirrors the design's --bg-terminal surface. */
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --background: 209 45% 9%;        /* ink-900 */
+    --foreground: 39 32% 93%;        /* paper-100 */
+    --card: 209 41% 11%;
+    --card-foreground: 39 32% 93%;
+    --popover: 209 41% 11%;
+    --popover-foreground: 39 32% 93%;
+    --primary: 191 50% 53%;          /* lake-300 */
+    --primary-foreground: 209 45% 9%;
+    --secondary: 209 32% 18%;
+    --secondary-foreground: 39 32% 93%;
+    --muted: 209 32% 18%;
+    --muted-foreground: 209 19% 67%; /* ink-300 */
+    --accent: 209 32% 18%;
+    --accent-foreground: 39 32% 93%;
+    --destructive: 7 50% 55%;
+    --destructive-foreground: 39 35% 97%;
+    --border: 209 28% 24%;
+    --input: 209 28% 24%;
+    --ring: 191 50% 53%;
   }
 
   * {
     @apply border-border;
   }
-  body {
-    @apply bg-background text-foreground;
+  html, body {
+    background: var(--bg);
+    color: var(--fg-2);
+    font-family: var(--font-body);
+    font-size: var(--fs-body);
+    line-height: var(--lh-relaxed);
+  }
+  ::selection {
+    background: var(--lake-100);
+    color: var(--lake-900);
   }
 }

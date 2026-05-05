@@ -2,14 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Layers3 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 
+import { Eyebrow } from "@/components/Eyebrow";
+import { StatusDot } from "@/components/StatusDot";
+import { Tag } from "@/components/Tag";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -61,18 +58,40 @@ export default function DatasetDetailPage() {
       .sort((a, b) => (a.lod ?? "").localeCompare(b.lod ?? "")) ?? [];
 
   const metadata = metadataQuery.data?.objects?.[0] as MetadataRow | undefined;
+  const crs =
+    metadata?.reference_system?.code &&
+    `${metadata.reference_system.authority ?? ""}:${metadata.reference_system.code}`;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <Button asChild variant="ghost" size="sm" className="-ml-2">
         <Link to="/datasets">
-          <ArrowLeft className="h-4 w-4" /> Back to datasets
+          <ArrowLeft className="h-3.5 w-3.5" /> Back to datasets
         </Link>
       </Button>
 
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">{base}</h1>
-        <p className="text-sm text-muted-foreground">
+      <header className="space-y-2">
+        <div className="flex items-center gap-3 flex-wrap">
+          <Eyebrow>Table</Eyebrow>
+          <Tag tone="ok">
+            <StatusDot tone="ok" />
+            READY
+          </Tag>
+          {crs && (
+            <Tag tone="info" square>
+              {crs}
+            </Tag>
+          )}
+          {typeof metadata?.city_objects_count === "number" && (
+            <span className="font-mono text-[12px] text-ink-500">
+              {metadata.city_objects_count.toLocaleString()} objects
+            </span>
+          )}
+        </div>
+        <h1 className="font-mono text-[40px] font-semibold leading-tight tracking-tight text-ink-900">
+          {base}
+        </h1>
+        <p className="text-[14px] text-ink-500">
           {lodTables.length} LOD table{lodTables.length === 1 ? "" : "s"}.
         </p>
       </header>
@@ -80,43 +99,35 @@ export default function DatasetDetailPage() {
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Metadata</CardTitle>
-            <CardDescription>
-              From the shared <code>cityjson_metadata</code> table.
-            </CardDescription>
+            <Eyebrow>CityJSON metadata</Eyebrow>
           </CardHeader>
           <CardContent>
             {metadataQuery.isLoading && <Skeleton className="h-24" />}
             {metadataQuery.error && (
-              <p className="text-sm text-destructive">
+              <p className="font-mono text-[12px] text-roof-700">
                 {(metadataQuery.error as Error).message}
               </p>
             )}
             {!metadataQuery.isLoading && !metadata && (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-[13px] text-ink-500">
                 No metadata row for this dataset.
               </p>
             )}
             {metadata && (
-              <dl className="grid grid-cols-[120px_1fr] gap-x-4 gap-y-2 text-sm">
+              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 font-mono text-[12px]">
                 {metadata.version && (
-                  <Field label="Version" value={metadata.version} />
+                  <Field label="version" value={metadata.version} />
                 )}
                 {metadata.identifier && (
-                  <Field label="Identifier" value={metadata.identifier} />
+                  <Field label="identifier" value={metadata.identifier} />
                 )}
                 {metadata.source_path && (
-                  <Field label="Source" value={metadata.source_path} />
+                  <Field label="source" value={metadata.source_path} />
                 )}
-                {metadata.reference_system?.code && (
-                  <Field
-                    label="CRS"
-                    value={`${metadata.reference_system.authority ?? ""}:${metadata.reference_system.code}`}
-                  />
-                )}
+                {crs && <Field label="crs" value={crs} />}
                 {typeof metadata.city_objects_count === "number" && (
                   <Field
-                    label="Object count"
+                    label="objects"
                     value={metadata.city_objects_count.toLocaleString()}
                   />
                 )}
@@ -127,20 +138,20 @@ export default function DatasetDetailPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">LOD tables</CardTitle>
-            <CardDescription>
-              Click an LOD to browse its CityObjects.
-            </CardDescription>
+            <Eyebrow>LOD tables</Eyebrow>
+            <CardTitle className="text-[14px] mt-2 font-sans">
+              Open an LOD to browse its CityObjects
+            </CardTitle>
           </CardHeader>
           <CardContent>
             {tablesQuery.isLoading && <Skeleton className="h-24" />}
             {tablesQuery.error && (
-              <p className="text-sm text-destructive">
+              <p className="font-mono text-[12px] text-roof-700">
                 {(tablesQuery.error as Error).message}
               </p>
             )}
             {!tablesQuery.isLoading && lodTables.length === 0 && (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-[13px] text-ink-500">
                 No LOD tables for this dataset.
               </p>
             )}
@@ -150,21 +161,23 @@ export default function DatasetDetailPage() {
                   <TableRow>
                     <TableHead>LOD</TableHead>
                     <TableHead>Table</TableHead>
-                    <TableHead className="text-right"></TableHead>
+                    <TableHead className="text-right" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {lodTables.map((t) => (
                     <TableRow key={t.name}>
-                      <TableCell className="flex items-center gap-2 font-medium">
-                        <Layers3 className="h-3.5 w-3.5 text-muted-foreground" />
-                        {t.lod}
+                      <TableCell>
+                        <span className="inline-flex items-center gap-1.5">
+                          <Layers3 className="h-3.5 w-3.5 text-ink-500" />
+                          {t.lod}
+                        </span>
                       </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
+                      <TableCell className="text-ink-500">
                         {t.name}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button asChild size="sm" variant="outline">
+                        <Button asChild size="sm" variant="secondary">
                           <Link to={`/tables/${t.name}`}>Open</Link>
                         </Button>
                       </TableCell>
@@ -183,8 +196,8 @@ export default function DatasetDetailPage() {
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <>
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="break-all font-mono text-xs">{value}</dd>
+      <dt className="text-ink-500">{label}</dt>
+      <dd className="break-all text-ink-900 font-medium">{value}</dd>
     </>
   );
 }

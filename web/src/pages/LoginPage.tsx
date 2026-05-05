@@ -1,7 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
+import logoMark from "@/assets/logo-mark.svg";
 import { useAuth } from "@/auth/AuthContext";
+import { Eyebrow } from "@/components/Eyebrow";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -27,7 +29,7 @@ export default function LoginPage() {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center text-muted-foreground">
+      <div className="flex min-h-screen items-center justify-center bg-paper-50 font-mono text-[12px] text-ink-500">
         Checking session…
       </div>
     );
@@ -63,11 +65,17 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
+    <div className="flex min-h-screen items-center justify-center bg-paper-50 p-4">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>Sign in to CityLake</CardTitle>
-          <CardDescription>
+          <div className="flex items-center gap-3">
+            <img src={logoMark} alt="" className="h-8 w-8" aria-hidden="true" />
+            <div>
+              <Eyebrow>Sign in</Eyebrow>
+              <CardTitle className="mt-0.5">CityLake</CardTitle>
+            </div>
+          </div>
+          <CardDescription className="mt-3">
             Enter your email and we&apos;ll send you a magic link.
           </CardDescription>
         </CardHeader>
@@ -94,17 +102,18 @@ export default function LoginPage() {
             </Button>
 
             {status === "sent" && (
-              <p className="text-sm text-muted-foreground">
+              <p className="font-mono text-[11px] text-ink-500">
                 Check your inbox for a sign-in link.
               </p>
             )}
             {status === "error" && error && (
-              <p className="text-sm text-destructive">{error}</p>
+              <p className="font-mono text-[12px] text-roof-700">{error}</p>
             )}
             {!supabaseConfigured && status === "idle" && (
-              <p className="text-xs text-muted-foreground">
+              <p className="font-mono text-[11px] text-ink-500">
                 Heads up: Supabase env is not configured yet — sign-in will
-                fail until <code>.env.local</code> is filled in.
+                fail until <code className="cl-code">.env.local</code> is filled
+                in.
               </p>
             )}
           </form>

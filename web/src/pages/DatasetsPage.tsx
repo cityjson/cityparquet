@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Database } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { Link } from "react-router-dom";
 
+import { Eyebrow } from "@/components/Eyebrow";
+import { StatusDot } from "@/components/StatusDot";
+import { Tag } from "@/components/Tag";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -23,8 +25,7 @@ interface Dataset {
 function groupByBase(tables: TableInfo[]): Dataset[] {
   const map = new Map<string, Dataset>();
   for (const t of tables) {
-    if (!t.base || !t.lod) continue;
-    if (t.name === METADATA_TABLE) continue;
+    if (!t.base || !t.lod || t.name === METADATA_TABLE) continue;
     const existing = map.get(t.base);
     if (existing) {
       existing.lods.push(t.lod);
@@ -33,9 +34,7 @@ function groupByBase(tables: TableInfo[]): Dataset[] {
       map.set(t.base, { base: t.base, lods: [t.lod], tables: [t] });
     }
   }
-  for (const ds of map.values()) {
-    ds.lods.sort();
-  }
+  for (const ds of map.values()) ds.lods.sort();
   return Array.from(map.values()).sort((a, b) => a.base.localeCompare(b.base));
 }
 
@@ -48,10 +47,13 @@ export default function DatasetsPage() {
   const datasets = data ? groupByBase(data.tables) : [];
 
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Datasets</h1>
-        <p className="text-sm text-muted-foreground">
+    <div className="space-y-8">
+      <header className="space-y-1.5">
+        <Eyebrow>Datasets · {datasets.length}</Eyebrow>
+        <h1 className="text-[40px] font-semibold leading-tight tracking-tight text-ink-900 font-sans">
+          Datasets
+        </h1>
+        <p className="text-[14px] text-ink-500 max-w-prose">
           CityJSON datasets ingested into CityLake. Each dataset is split into
           one table per Level of Detail.
         </p>
@@ -66,8 +68,8 @@ export default function DatasetsPage() {
       )}
 
       {error && (
-        <Card className="border-destructive/50">
-          <CardContent className="pt-6 text-sm text-destructive">
+        <Card accent="error">
+          <CardContent className="pt-5 font-mono text-[12px] text-roof-700">
             Failed to load tables: {(error as Error).message}
           </CardContent>
         </Card>
@@ -75,9 +77,9 @@ export default function DatasetsPage() {
 
       {!isLoading && !error && datasets.length === 0 && (
         <Card>
-          <CardContent className="pt-6 text-sm text-muted-foreground">
+          <CardContent className="pt-5 text-[14px] text-ink-500">
             No datasets yet.{" "}
-            <Link to="/upload" className="text-foreground underline">
+            <Link to="/upload" className="text-lake-500 hover:text-lake-700 underline">
               Upload your first CityJSON file
             </Link>
             .
@@ -88,21 +90,39 @@ export default function DatasetsPage() {
       {datasets.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {datasets.map((ds) => (
-            <Link key={ds.base} to={`/datasets/${ds.base}`}>
-              <Card className="transition-colors hover:bg-muted/40">
-                <CardHeader>
+            <Link key={ds.base} to={`/datasets/${ds.base}`} className="block">
+              <Card className="transition-colors duration-150 ease-cl hover:border-paper-300/0 hover:bg-white hover:shadow-cl-2">
+                <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Database className="h-4 w-4 text-muted-foreground" />
-                      <CardTitle className="text-base">{ds.base}</CardTitle>
-                    </div>
-                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                    <Eyebrow className="flex items-center gap-1.5">
+                      <span>Table</span>
+                      <span className="text-paper-300">·</span>
+                      <StatusDot tone="ok" />
+                      <span className="text-moss-700">READY</span>
+                    </Eyebrow>
+                    <ChevronRight className="h-4 w-4 text-ink-400" />
                   </div>
-                  <CardDescription>
-                    {ds.lods.length} LOD{ds.lods.length === 1 ? "" : "s"}:{" "}
-                    {ds.lods.join(", ")}
-                  </CardDescription>
+                  <CardTitle className="font-mono text-[18px] mt-2">
+                    {ds.base}
+                  </CardTitle>
                 </CardHeader>
+                <CardContent className="space-y-3">
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[12px] text-ink-500">
+                    <dt>lods</dt>
+                    <dd className="text-ink-900">
+                      {ds.lods.length} · {ds.lods.join(", ")}
+                    </dd>
+                    <dt>tables</dt>
+                    <dd className="text-ink-900">{ds.tables.length}</dd>
+                  </dl>
+                  <div className="flex flex-wrap gap-1.5">
+                    {ds.lods.map((lod) => (
+                      <Tag key={lod} tone="info" square>
+                        LOD {lod}
+                      </Tag>
+                    ))}
+                  </div>
+                </CardContent>
               </Card>
             </Link>
           ))}
