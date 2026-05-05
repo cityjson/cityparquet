@@ -11,6 +11,8 @@ use super::middleware;
 /// Build the axum router with all routes and middleware.
 pub fn build_router(repo: Arc<dyn CityLakeRepository>) -> Router {
     Router::new()
+        // Catalog
+        .route("/tables", get(handlers::list::list_tables))
         // Table operations
         .route("/tables/{table_name}", post(handlers::table::create_table))
         .route(

@@ -30,15 +30,34 @@ CityLake server). Override the prefix with `VITE_API_BASE_URL` for staging/prod.
 
 ```
 src/
-├── App.tsx              # Authenticated shell (placeholder)
-├── main.tsx             # Entry: providers + routes
-├── index.css            # Tailwind base + Shadcn CSS variables
+├── App.tsx                       # Protected shell + nested routes
+├── main.tsx                      # Entry: providers + auth provider
+├── index.css                     # Tailwind base + Shadcn CSS variables
+├── auth/
+│   ├── AuthContext.tsx           # Supabase session listener + useAuth
+│   └── ProtectedRoute.tsx        # Redirects unauth'd users to /login
+├── components/
+│   ├── AppShell.tsx              # Sidebar + outlet layout
+│   └── ui/                       # Shadcn primitives
+│       ├── alert-dialog.tsx
+│       ├── button.tsx
+│       ├── card.tsx
+│       ├── dialog.tsx
+│       ├── input.tsx
+│       ├── label.tsx
+│       ├── skeleton.tsx
+│       ├── table.tsx
+│       └── textarea.tsx
 ├── lib/
-│   ├── api.ts           # Typed CityLake client (uses Supabase JWT)
-│   ├── supabase.ts      # Supabase client (auth only)
-│   └── utils.ts         # `cn()` helper
+│   ├── api.ts                    # Typed CityLake client (Supabase JWT)
+│   ├── supabase.ts               # Supabase client (auth only)
+│   └── utils.ts                  # `cn()` helper
 ├── pages/
-│   └── LoginPage.tsx    # Magic-link login
+│   ├── DatasetsPage.tsx          # /datasets — list of base names
+│   ├── DatasetDetailPage.tsx     # /datasets/:base — LOD tables + metadata
+│   ├── LodTablePage.tsx          # /tables/:tableName — browse + edit + delete
+│   ├── LoginPage.tsx             # /login — magic-link auth
+│   └── UploadPage.tsx            # /upload — multipart create_table
 └── vite-env.d.ts
 ```
 
@@ -46,21 +65,15 @@ src/
 
 | Phase | Status |
 | --- | --- |
-| 0 — scaffold | done (this commit) |
-| 1 — auth flow | not started |
-| 2 — list / detail (read) | not started |
-| 3 — upload | not started |
-| 4 — CRUD | not started |
-| 5 — server-side gaps (`GET /tables`, JWT middleware) | not started |
+| 0 — scaffold | done |
+| 1 — auth flow | done (Supabase magic-link, AuthProvider, ProtectedRoute) |
+| 2 — list / detail (read) | done (DatasetsPage, DatasetDetailPage, LodTablePage browse) |
+| 3 — upload | done (UploadPage with drag-and-drop) |
+| 4 — CRUD | done (edit dialog, delete confirm) |
+| 5 — server-side JWT auth | not started |
 
-See `design/PLAN.md` for the per-phase scope.
+## Related changes still needed in the Rust crate
 
-## Related changes needed in the Rust crate
-
-The web app cannot fully ship without these CityLake server additions
-(intentionally out of scope for the scaffold commit):
-
-- `GET /tables` endpoint that returns the list of tables in the
-  `citylake` catalog — needed to render the dataset index.
+- `GET /tables` endpoint — **done** (this commit added it).
 - JWT validation middleware that accepts Supabase access tokens.
 - Tightened CORS rules (currently permissive in `src/app/middleware/`).

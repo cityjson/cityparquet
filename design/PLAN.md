@@ -90,13 +90,15 @@ These are not needed for the scaffold but the web app cannot ship without them:
 
 ## Implementation phases
 
-| Phase | Scope |
-| --- | --- |
-| **0 — scaffold (this session)** | Vite + Shadcn skeleton, README, env template, this PLAN |
-| 1 — auth | Supabase client wiring, login page, JWT propagation in fetch helper |
-| 2 — list / detail | `/datasets`, `/datasets/:base`, `/datasets/:base/lod/:lod` (read-only) |
-| 3 — upload | `/upload` page with multipart + progress |
-| 4 — CRUD | edit + delete UIs |
-| 5 — server-side | `GET /tables` endpoint + JWT middleware in CityLake |
+| Phase | Scope | Status |
+| --- | --- | --- |
+| 0 — scaffold | Vite + Shadcn skeleton, README, env template, this PLAN | done |
+| 1 — auth | Supabase client wiring, login page, JWT propagation in fetch helper | done |
+| 2 — list / detail | `/datasets`, `/datasets/:base`, `/tables/:tableName` (read-only) | done |
+| 3 — upload | `/upload` page with drag-and-drop multipart | done |
+| 4 — CRUD | edit dialog (CityJSON textarea) + delete confirm | done |
+| 5 — server-side | `GET /tables` endpoint **(done)** + JWT middleware in CityLake | partial |
 
-Each phase should land as its own PR.
+Phase 5's JWT middleware is the only remaining piece — the web app currently
+authenticates the user client-side and propagates the access token in a
+`Bearer` header, but the Rust server does not yet validate it.

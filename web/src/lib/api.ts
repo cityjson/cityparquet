@@ -51,6 +51,21 @@ function safeParse(text: string): unknown {
 
 // ---------- typed endpoints ----------
 
+export interface TableInfo {
+  name: string;
+  base: string | null;
+  lod: string | null;
+}
+
+export interface ListTablesResponse {
+  count: number;
+  tables: TableInfo[];
+}
+
+export function listTables(): Promise<ListTablesResponse> {
+  return request<ListTablesResponse>("/tables");
+}
+
 export interface CreateTableResponse {
   message: string;
   base_name: string;

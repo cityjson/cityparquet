@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::core::interface::repository::{CityLakeRepository, RepositoryResult};
 use crate::core::interface::types::{
     CityJsonMetadata, CityLakeConfig, CompactionStats, ExportFormat, LodKey, QueryParams,
+    TableInfo,
 };
 
 /// DuckLake-backed implementation of [CityLakeRepository].
@@ -138,6 +139,10 @@ impl CityLakeRepository for DuckLakeService {
 
     async fn table_exists(&self, table_name: &str) -> RepositoryResult<bool> {
         super::table::table_exists(&self.connection, table_name).await
+    }
+
+    async fn list_tables(&self) -> RepositoryResult<Vec<TableInfo>> {
+        super::list::list_tables(&self.connection).await
     }
 
     async fn compact_table(&self, table_name: &str) -> RepositoryResult<CompactionStats> {

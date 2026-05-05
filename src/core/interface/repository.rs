@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use super::types::{
-    CityJsonMetadata, CompactionStats, ExportFormat, LodKey, QueryParams,
+    CityJsonMetadata, CompactionStats, ExportFormat, LodKey, QueryParams, TableInfo,
 };
 
 /// Result type for repository operations
@@ -63,6 +63,11 @@ pub trait CityLakeRepository: Send + Sync {
 
     /// Check if a table exists in the DuckLake catalog.
     async fn table_exists(&self, table_name: &str) -> RepositoryResult<bool>;
+
+    /// List every table currently in the citylake catalog. The `base` and `lod`
+    /// fields on each [`TableInfo`] are populated for tables whose name ends
+    /// with a `_lod_X_Y` suffix; otherwise both are `None`.
+    async fn list_tables(&self) -> RepositoryResult<Vec<TableInfo>>;
 
     /// Compact a table to optimize storage (merge small Parquet files).
     async fn compact_table(&self, table_name: &str) -> RepositoryResult<CompactionStats>;

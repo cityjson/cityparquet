@@ -63,6 +63,16 @@ pub struct CompactionStats {
     pub rows_compacted: usize,
 }
 
+/// Information about a table in the citylake catalog. `base` and `lod` are
+/// derived from the `_lod_X_Y` suffix when present, so callers don't have to
+/// re-implement the parsing themselves.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableInfo {
+    pub name: String,
+    pub base: Option<String>,
+    pub lod: Option<String>,
+}
+
 /// Metadata extracted from a CityJSON source file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CityJsonMetadata {

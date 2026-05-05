@@ -1,20 +1,29 @@
-import { Link } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
+
+import { ProtectedRoute } from "@/auth/ProtectedRoute";
+import AppShell from "@/components/AppShell";
+import DatasetDetailPage from "@/pages/DatasetDetailPage";
+import DatasetsPage from "@/pages/DatasetsPage";
+import LodTablePage from "@/pages/LodTablePage";
+import UploadPage from "@/pages/UploadPage";
 
 export default function App() {
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center gap-6 p-8">
-      <h1 className="text-3xl font-semibold">CityLake</h1>
-      <p className="text-muted-foreground max-w-md text-center">
-        A web UI for managing 3D city models in the CityLake datalake. This is a
-        scaffold — pages and auth will be implemented in follow-up sessions per
-        <code className="px-1">design/PLAN.md</code>.
-      </p>
-      <Link
-        to="/login"
-        className="rounded-md bg-primary px-4 py-2 text-primary-foreground"
+    <Routes>
+      <Route
+        element={
+          <ProtectedRoute>
+            <AppShell />
+          </ProtectedRoute>
+        }
       >
-        Log in
-      </Link>
-    </div>
+        <Route index element={<Navigate to="/datasets" replace />} />
+        <Route path="datasets" element={<DatasetsPage />} />
+        <Route path="datasets/:base" element={<DatasetDetailPage />} />
+        <Route path="tables/:tableName" element={<LodTablePage />} />
+        <Route path="upload" element={<UploadPage />} />
+        <Route path="*" element={<Navigate to="/datasets" replace />} />
+      </Route>
+    </Routes>
   );
 }
