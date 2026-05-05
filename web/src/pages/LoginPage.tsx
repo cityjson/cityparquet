@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { isServiceRoleKey } from "@/lib/supabase/client";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type Status = "idle" | "github" | "email-sending" | "email-sent" | "error";
@@ -41,12 +42,21 @@ export default function LoginPage() {
   }
 
   const requireSupabase = (): boolean => {
-    if (isSupabaseConfigured) return true;
-    setStatus("error");
-    setError(
-      "Supabase env not set. Configure SUPABASE_URL and SUPABASE_KEY (or the VITE_-prefixed equivalents) in the workspace .env.",
-    );
-    return false;
+    if (!isSupabaseConfigured) {
+      setStatus("error");
+      setError(
+        "Supabase env not set. Configure SUPABASE_URL and the publishable (anon) key in the workspace .env.",
+      );
+      return false;
+    }
+    if (isServiceRoleKey) {
+      setStatus("error");
+      setError(
+        "The configured Supabase key is a service_role key. The browser must use the anon (publishable) key — copy that one from Supabase → Settings → API.",
+      );
+      return false;
+    }
+    return true;
   };
 
   async function onGithubSignIn() {

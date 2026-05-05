@@ -7,6 +7,46 @@ const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 /** True only when both the project URL and the publishable key are wired in. */
 export const isSupabaseConfigured: boolean = Boolean(url && publishableKey);
 
+/**
+ * Identify whether a Supabase API key is the public/anon key or the secret
+ * server-only key. Supports both formats Supabase has shipped:
+ *
+ *   * Legacy JWT keys — payload `role` claim is `anon` or `service_role`.
+ *   * 2025+ static keys — string prefix `sb_publishable_` or `sb_secret_`.
+ *
+ * Returns `null` when the value is unrecognised.
+ */
+export function detectKeyRole(
+  key: string | undefined,
+): "anon" | "service_role" | null {
+  if (!key) return null;
+
+  if (key.startsWith("sb_publishable_")) return "anon";
+  if (key.startsWith("sb_secret_")) return "service_role";
+
+  const parts = key.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(
+      atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")),
+    );
+    if (payload.role === "anon" || payload.role === "service_role") {
+      return payload.role;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `true` if the configured key is the secret server-only key — using this in
+ * the browser is a security incident *and* breaks auth (Supabase returns
+ * "Forbidden use of secret API key in browser" on every request).
+ */
+export const isServiceRoleKey: boolean =
+  detectKeyRole(publishableKey) === "service_role";
+
 // Falling back to placeholder values keeps the bundle importable when env is
 // missing — pages that need auth surface a friendly message via
 // `isSupabaseConfigured` instead of the whole app crashing on first import.

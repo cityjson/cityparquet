@@ -10,3 +10,8 @@ if (!isSupabaseConfigured) {
 /** Singleton browser client used across the app. */
 export const supabase = createClient();
 export { isSupabaseConfigured };
+
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  // Expose for browser-console debugging during dev. Stripped in production.
+  (window as unknown as { __supabase?: unknown }).__supabase = supabase;
+}
