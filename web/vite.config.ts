@@ -7,19 +7,28 @@ export default defineConfig(() => {
   // visible. Vite's own `loadEnv()` only scans .env files in the project dir
   // and would miss the workspace-root .env that dotenvx decrypts.
   //
-  // The Supabase project URL and anon key are public by design; aliasing both
-  // naming conventions here means developers can use either `SUPABASE_*` or
-  // `VITE_SUPABASE_*` in their .env without duplicating values. Anything else
-  // stays gated behind Vite's default VITE_ prefix.
+  // The Supabase project URL and anon (publishable) key are public by design;
+  // aliasing across naming conventions lets developers keep a single
+  // workspace-root .env without duplicating values:
+  //
+  //   * URL:  VITE_SUPABASE_URL  ←  SUPABASE_URL
+  //   * Key:  VITE_SUPABASE_PUBLISHABLE_KEY  ←  SUPABASE_PUBLISHABLE_KEY
+  //                                            SUPABASE_ANON_KEY
+  //                                            SUPABASE_KEY
+  //                                            VITE_SUPABASE_ANON_KEY
+  //
+  // Anything else in the .env stays gated behind Vite's default VITE_ prefix.
   const supabaseUrl =
     process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
-  const supabaseAnonKey =
+  const supabasePublishableKey =
+    process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
     process.env.VITE_SUPABASE_ANON_KEY ||
     process.env.SUPABASE_ANON_KEY ||
     process.env.SUPABASE_KEY ||
     "";
 
-  if (!supabaseUrl || !supabaseAnonKey) {
+  if (!supabaseUrl || !supabasePublishableKey) {
     // eslint-disable-next-line no-console
     console.warn(
       `[vite.config] Supabase env not picked up. process.env keys seen: ${Object.keys(
@@ -39,7 +48,8 @@ export default defineConfig(() => {
     },
     define: {
       "import.meta.env.VITE_SUPABASE_URL": JSON.stringify(supabaseUrl),
-      "import.meta.env.VITE_SUPABASE_ANON_KEY": JSON.stringify(supabaseAnonKey),
+      "import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY":
+        JSON.stringify(supabasePublishableKey),
     },
     server: {
       port: 5173,

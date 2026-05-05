@@ -12,7 +12,11 @@ individual CityObjects, all behind Supabase auth.
   IBM Plex type ramp, 4 px-grid spacing)
 - TanStack Query for server state
 - React Router for client-side routing
-- Supabase (auth only — data lives in CityLake)
+- Supabase (auth only — data lives in CityLake), wired through the official
+  [`@supabase/supabase-client-react-router`][supabase-client] shadcn registry
+  (drops `@supabase/ssr` + `src/lib/supabase/client.ts`)
+
+[supabase-client]: https://supabase.com/ui/r/supabase-client-react-router
 
 [Vite+]: https://viteplus.dev/
 
@@ -80,7 +84,8 @@ src/
 │   └── ui/                       # shadcn primitives, restyled to the design
 ├── lib/
 │   ├── api.ts                    # Typed CityLake client (Supabase JWT)
-│   ├── supabase.ts               # Supabase client (auth only)
+│   ├── supabase.ts               # Singleton browser client (auth only)
+│   ├── supabase/client.ts        # @supabase/ssr factory — shadcn-installed
 │   └── utils.ts                  # cn() helper
 ├── pages/
 │   ├── DatasetsPage.tsx          # /datasets — base-name card grid
