@@ -1,3 +1,4 @@
+import { Github } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
@@ -14,7 +15,9 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { supabase } from "@/lib/supabase";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+
+type Status = "idle" | "github" | "email-sending" | "email-sent" | "error";
 
 export default function LoginPage() {
   const { session, loading } = useAuth();
@@ -22,9 +25,7 @@ export default function LoginPage() {
   const from = (location.state as { from?: string } | null)?.from ?? "/datasets";
 
   const [email, setEmail] = useState("");
-  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">(
-    "idle",
-  );
+  const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
 
   if (loading) {
@@ -39,20 +40,40 @@ export default function LoginPage() {
     return <Navigate to={from} replace />;
   }
 
-  const supabaseConfigured =
-    !!import.meta.env.VITE_SUPABASE_URL &&
-    !!import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const requireSupabase = (): boolean => {
+    if (isSupabaseConfigured) return true;
+    setStatus("error");
+    setError(
+      "Supabase env not set. Configure SUPABASE_URL and SUPABASE_KEY (or the VITE_-prefixed equivalents) in the workspace .env.",
+    );
+    return false;
+  };
 
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!supabaseConfigured) {
+  async function onGithubSignIn() {
+    if (!requireSupabase()) return;
+    setStatus("github");
+    setError(null);
+
+    // After the OAuth round-trip Supabase will redirect back to the app; land
+    // on the destination the user was originally heading for, falling back to
+    // /datasets when the request came in directly to /login.
+    const redirectTo = `${window.location.origin}${from}`;
+    const { error: signInError } = await supabase.auth.signInWithOAuth({
+      provider: "github",
+      options: { redirectTo },
+    });
+
+    if (signInError) {
       setStatus("error");
-      setError(
-        "Supabase env not set. Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env.local.",
-      );
-      return;
+      setError(signInError.message);
     }
-    setStatus("sending");
+    // On success, the browser navigates to GitHub — no further work here.
+  }
+
+  async function onEmailSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!requireSupabase()) return;
+    setStatus("email-sending");
     setError(null);
 
     const { error: signInError } = await supabase.auth.signInWithOtp({ email });
@@ -61,8 +82,11 @@ export default function LoginPage() {
       setError(signInError.message);
       return;
     }
-    setStatus("sent");
+    setStatus("email-sent");
   }
+
+  const githubBusy = status === "github";
+  const emailBusy = status === "email-sending";
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-paper-50 p-4">
@@ -76,47 +100,68 @@ export default function LoginPage() {
             </div>
           </div>
           <CardDescription className="mt-3">
-            Enter your email and we&apos;ll send you a magic link.
+            Sign in with GitHub, or use a magic link to your email.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <form onSubmit={onSubmit} className="space-y-4">
+        <CardContent className="space-y-5">
+          <Button
+            type="button"
+            className="w-full"
+            onClick={onGithubSignIn}
+            disabled={githubBusy || emailBusy}
+          >
+            <Github className="h-4 w-4" />
+            {githubBusy ? "Redirecting…" : "Continue with GitHub"}
+          </Button>
+
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            className="relative"
+          >
+            <div className="border-t border-paper-200" />
+            <span className="absolute inset-0 -top-2 mx-auto w-fit bg-white px-2 font-mono text-[10px] uppercase tracking-caps text-ink-500">
+              or
+            </span>
+          </div>
+
+          <form onSubmit={onEmailSubmit} className="space-y-3">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
               <Input
                 id="email"
                 type="email"
                 required
-                autoFocus
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                disabled={githubBusy}
               />
             </div>
 
             <Button
               type="submit"
+              variant="secondary"
               className="w-full"
-              disabled={status === "sending"}
+              disabled={emailBusy || githubBusy}
             >
-              {status === "sending" ? "Sending…" : "Send magic link"}
+              {emailBusy ? "Sending…" : "Send magic link"}
             </Button>
-
-            {status === "sent" && (
-              <p className="font-mono text-[11px] text-ink-500">
-                Check your inbox for a sign-in link.
-              </p>
-            )}
-            {status === "error" && error && (
-              <p className="font-mono text-[12px] text-roof-700">{error}</p>
-            )}
-            {!supabaseConfigured && status === "idle" && (
-              <p className="font-mono text-[11px] text-ink-500">
-                Heads up: Supabase env is not configured yet — sign-in will
-                fail until <code className="cl-code">.env.local</code> is filled
-                in.
-              </p>
-            )}
           </form>
+
+          {status === "email-sent" && (
+            <p className="font-mono text-[11px] text-ink-500">
+              Check your inbox for a sign-in link.
+            </p>
+          )}
+          {status === "error" && error && (
+            <p className="font-mono text-[12px] text-roof-700">{error}</p>
+          )}
+          {!isSupabaseConfigured && status === "idle" && (
+            <p className="font-mono text-[11px] text-ink-500">
+              Heads up: Supabase env is not configured yet — sign-in will
+              fail until <code className="cl-code">.env</code> is filled in.
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>
