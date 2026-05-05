@@ -6,13 +6,7 @@ import logoMark from "@/assets/logo-mark.svg";
 import { useAuth } from "@/auth/AuthContext";
 import { Eyebrow } from "@/components/Eyebrow";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { isServiceRoleKey } from "@/lib/supabase/client";
@@ -125,11 +119,7 @@ export default function LoginPage() {
             {githubBusy ? "Redirecting…" : "Continue with GitHub"}
           </Button>
 
-          <div
-            role="separator"
-            aria-orientation="horizontal"
-            className="relative"
-          >
+          <div role="separator" aria-orientation="horizontal" className="relative">
             <div className="border-t border-paper-200" />
             <span className="absolute inset-0 -top-2 mx-auto w-fit bg-white px-2 font-mono text-[10px] uppercase tracking-caps text-ink-500">
               or
@@ -169,8 +159,8 @@ export default function LoginPage() {
           )}
           {!isSupabaseConfigured && status === "idle" && (
             <p className="font-mono text-[11px] text-ink-500">
-              Heads up: Supabase env is not configured yet — sign-in will
-              fail until <code className="cl-code">.env</code> is filled in.
+              Heads up: Supabase env is not configured yet — sign-in will fail until{" "}
+              <code className="cl-code">.env</code> is filled in.
             </p>
           )}
         </CardContent>

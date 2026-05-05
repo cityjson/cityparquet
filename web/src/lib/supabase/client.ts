@@ -16,9 +16,7 @@ export const isSupabaseConfigured: boolean = Boolean(url && publishableKey);
  *
  * Returns `null` when the value is unrecognised.
  */
-export function detectKeyRole(
-  key: string | undefined,
-): "anon" | "service_role" | null {
+export function detectKeyRole(key: string | undefined): "anon" | "service_role" | null {
   if (!key) return null;
 
   if (key.startsWith("sb_publishable_")) return "anon";
@@ -27,9 +25,7 @@ export function detectKeyRole(
   const parts = key.split(".");
   if (parts.length !== 3) return null;
   try {
-    const payload = JSON.parse(
-      atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")),
-    );
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
     if (payload.role === "anon" || payload.role === "service_role") {
       return payload.role;
     }
@@ -44,8 +40,7 @@ export function detectKeyRole(
  * the browser is a security incident *and* breaks auth (Supabase returns
  * "Forbidden use of secret API key in browser" on every request).
  */
-export const isServiceRoleKey: boolean =
-  detectKeyRole(publishableKey) === "service_role";
+export const isServiceRoleKey: boolean = detectKeyRole(publishableKey) === "service_role";
 
 // Falling back to placeholder values keeps the bundle importable when env is
 // missing — pages that need auth surface a friendly message via

@@ -16,37 +16,37 @@
    touching every component. */
 @layer base {
   :root {
-    --background: 39 35% 97%;       /* paper-50  #FBFAF6 */
-    --foreground: 209 41% 11%;      /* ink-800   #1B2A38 */
+    --background: 39 35% 97%; /* paper-50  #FBFAF6 */
+    --foreground: 209 41% 11%; /* ink-800   #1B2A38 */
     --card: 0 0% 100%;
-    --card-foreground: 209 45% 9%;  /* ink-900 */
+    --card-foreground: 209 45% 9%; /* ink-900 */
     --popover: 0 0% 100%;
     --popover-foreground: 209 45% 9%;
-    --primary: 194 62% 33%;          /* lake-500 #1F6F86 */
+    --primary: 194 62% 33%; /* lake-500 #1F6F86 */
     --primary-foreground: 39 35% 97%;
-    --secondary: 39 32% 93%;         /* paper-100 */
+    --secondary: 39 32% 93%; /* paper-100 */
     --secondary-foreground: 209 45% 9%;
     --muted: 39 32% 93%;
     --muted-foreground: 213 18% 41%; /* ink-500 */
     --accent: 39 32% 93%;
     --accent-foreground: 209 45% 9%;
-    --destructive: 7 60% 45%;        /* error #B83A2E */
+    --destructive: 7 60% 45%; /* error #B83A2E */
     --destructive-foreground: 39 35% 97%;
-    --border: 41 30% 79%;            /* paper-300 #D6CFBE */
+    --border: 41 30% 79%; /* paper-300 #D6CFBE */
     --input: 41 30% 79%;
-    --ring: 194 35% 48%;             /* lake-300 #4F94A6 */
-    --radius: 0.25rem;               /* 4px — sharp by default */
+    --ring: 194 35% 48%; /* lake-300 #4F94A6 */
+    --radius: 0.25rem; /* 4px — sharp by default */
   }
 
   /* Dark "blueprint" mode mirrors the design's --bg-terminal surface. */
   .dark {
-    --background: 209 45% 9%;        /* ink-900 */
-    --foreground: 39 32% 93%;        /* paper-100 */
+    --background: 209 45% 9%; /* ink-900 */
+    --foreground: 39 32% 93%; /* paper-100 */
     --card: 209 41% 11%;
     --card-foreground: 39 32% 93%;
     --popover: 209 41% 11%;
     --popover-foreground: 39 32% 93%;
-    --primary: 191 50% 53%;          /* lake-300 */
+    --primary: 191 50% 53%; /* lake-300 */
     --primary-foreground: 209 45% 9%;
     --secondary: 209 32% 18%;
     --secondary-foreground: 39 32% 93%;
@@ -64,7 +64,8 @@
   * {
     @apply border-border;
   }
-  html, body {
+  html,
+  body {
     background: var(--bg);
     color: var(--fg-2);
     font-family: var(--font-body);

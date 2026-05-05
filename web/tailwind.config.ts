@@ -115,12 +115,9 @@ export default {
         caps: "0.12em",
       },
       boxShadow: {
-        "cl-1":
-          "0 1px 0 rgba(14,26,36,0.04), 0 1px 2px rgba(14,26,36,0.06)",
-        "cl-2":
-          "0 2px 4px rgba(14,26,36,0.06), 0 4px 12px rgba(14,26,36,0.08)",
-        "cl-3":
-          "0 4px 8px rgba(14,26,36,0.08), 0 12px 32px rgba(14,26,36,0.12)",
+        "cl-1": "0 1px 0 rgba(14,26,36,0.04), 0 1px 2px rgba(14,26,36,0.06)",
+        "cl-2": "0 2px 4px rgba(14,26,36,0.06), 0 4px 12px rgba(14,26,36,0.08)",
+        "cl-3": "0 4px 8px rgba(14,26,36,0.08), 0 12px 32px rgba(14,26,36,0.12)",
       },
       transitionTimingFunction: {
         cl: "cubic-bezier(0.2, 0, 0, 1)",

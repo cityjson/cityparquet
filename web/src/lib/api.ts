@@ -23,7 +23,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers: HeadersInit = {
     Accept: "application/json",
     ...(await authHeader()),
-    ...(init.headers ?? {}),
+    ...init.headers,
   };
 
   const res = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });

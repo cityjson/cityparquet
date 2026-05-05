@@ -1,9 +1,9 @@
 {
   "name": "@citylake/web",
-  "private": true,
   "version": "0.0.0",
-  "type": "module",
+  "private": true,
   "description": "CityLake web UI — upload CityJSON, browse LOD tables, CRUD CityObjects",
+  "type": "module",
   "scripts": {
     "dev": "vp dev",
     "build": "vp build",

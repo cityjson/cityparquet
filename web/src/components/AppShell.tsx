@@ -86,15 +86,11 @@ export default function AppShell() {
             )}
 
             {!isLoading && datasets.length === 0 && (
-              <p className="font-mono text-[11px] text-ink-500 px-2 py-3">
-                No datasets yet.
-              </p>
+              <p className="font-mono text-[11px] text-ink-500 px-2 py-3">No datasets yet.</p>
             )}
 
             {datasets.map((ds) => {
-              const isActive = location.pathname.startsWith(
-                `/datasets/${ds.base}`,
-              );
+              const isActive = location.pathname.startsWith(`/datasets/${ds.base}`);
               return (
                 <NavLink
                   key={ds.base}
@@ -117,13 +113,10 @@ export default function AppShell() {
                         )}
                       />
                       <div className="min-w-0 flex-1">
-                        <div className="font-mono text-[12px] text-ink-900 truncate">
-                          {ds.base}
-                        </div>
+                        <div className="font-mono text-[12px] text-ink-900 truncate">{ds.base}</div>
                         <div className="font-mono text-[10px] text-ink-500">
                           {ds.lods.length} LOD
-                          {ds.lods.length === 1 ? "" : "s"} ·{" "}
-                          {ds.lods.join(", ")}
+                          {ds.lods.length === 1 ? "" : "s"} · {ds.lods.join(", ")}
                         </div>
                       </div>
                     </>
@@ -139,9 +132,7 @@ export default function AppShell() {
               className={({ isActive }) =>
                 cn(
                   "flex items-center gap-2 rounded-sm px-2.5 py-1.5 font-sans text-[13px] transition-colors duration-150 ease-cl",
-                  isActive
-                    ? "bg-lake-50 text-lake-700"
-                    : "text-ink-700 hover:bg-white/60",
+                  isActive ? "bg-lake-50 text-lake-700" : "text-ink-700 hover:bg-white/60",
                 )
               }
             >

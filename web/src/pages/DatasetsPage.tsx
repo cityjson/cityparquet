@@ -5,12 +5,7 @@ import { Link } from "react-router-dom";
 import { Eyebrow } from "@/components/Eyebrow";
 import { StatusDot } from "@/components/StatusDot";
 import { Tag } from "@/components/Tag";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { listTables, type TableInfo } from "@/lib/api";
 
@@ -54,8 +49,8 @@ export default function DatasetsPage() {
           Datasets
         </h1>
         <p className="text-[14px] text-ink-500 max-w-prose">
-          CityJSON datasets ingested into CityLake. Each dataset is split into
-          one table per Level of Detail.
+          CityJSON datasets ingested into CityLake. Each dataset is split into one table per Level
+          of Detail.
         </p>
       </header>
 
@@ -102,9 +97,7 @@ export default function DatasetsPage() {
                     </Eyebrow>
                     <ChevronRight className="h-4 w-4 text-ink-400" />
                   </div>
-                  <CardTitle className="font-mono text-[18px] mt-2">
-                    {ds.base}
-                  </CardTitle>
+                  <CardTitle className="font-mono text-[18px] mt-2">{ds.base}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[12px] text-ink-500">

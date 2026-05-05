@@ -10,64 +10,64 @@
 /* ---------- 1. PALETTE ------------------------------------- */
 :root {
   /* Neutral / paper — surveyor's drafting paper, off-white */
-  --paper-50:  #FBFAF6;   /* page background */
-  --paper-100: #F4F1EA;   /* card background */
-  --paper-200: #E8E3D6;   /* panel divider */
-  --paper-300: #D6CFBE;   /* subtle border */
+  --paper-50: #fbfaf6; /* page background */
+  --paper-100: #f4f1ea; /* card background */
+  --paper-200: #e8e3d6; /* panel divider */
+  --paper-300: #d6cfbe; /* subtle border */
 
   /* Ink — deep blueprint ink for type & UI structure */
-  --ink-900: #0E1A24;     /* primary text, headlines */
-  --ink-800: #1B2A38;     /* default text */
-  --ink-700: #2C3E50;     /* secondary text */
-  --ink-500: #56697C;     /* tertiary / muted */
-  --ink-400: #8295A6;     /* disabled, gridlines */
-  --ink-300: #B7C2CC;     /* faint rule */
+  --ink-900: #0e1a24; /* primary text, headlines */
+  --ink-800: #1b2a38; /* default text */
+  --ink-700: #2c3e50; /* secondary text */
+  --ink-500: #56697c; /* tertiary / muted */
+  --ink-400: #8295a6; /* disabled, gridlines */
+  --ink-300: #b7c2cc; /* faint rule */
 
   /* Lake — the signature accent: deep aquatic blue */
-  --lake-50:  #E8F1F4;
-  --lake-100: #C6DDE4;
-  --lake-200: #8FBCC9;
-  --lake-300: #4F94A6;
-  --lake-500: #1F6F86;    /* PRIMARY brand color */
-  --lake-700: #144E62;
-  --lake-900: #0B3340;
+  --lake-50: #e8f1f4;
+  --lake-100: #c6dde4;
+  --lake-200: #8fbcc9;
+  --lake-300: #4f94a6;
+  --lake-500: #1f6f86; /* PRIMARY brand color */
+  --lake-700: #144e62;
+  --lake-900: #0b3340;
 
   /* Terracotta — building-footprint accent (warm, cartographic) */
-  --roof-100: #F5DDC9;
-  --roof-300: #DD9F77;
-  --roof-500: #C26A3A;    /* secondary accent */
-  --roof-700: #8E4720;
+  --roof-100: #f5ddc9;
+  --roof-300: #dd9f77;
+  --roof-500: #c26a3a; /* secondary accent */
+  --roof-700: #8e4720;
 
   /* Moss — vegetation / parks layer */
-  --moss-100: #DDE6CF;
-  --moss-500: #6B8B4A;
-  --moss-700: #3F5B25;
+  --moss-100: #dde6cf;
+  --moss-500: #6b8b4a;
+  --moss-700: #3f5b25;
 
   /* Sun — highlight / "selected feature" yellow */
-  --sun-100: #FAEBB6;
-  --sun-500: #E5B33A;
-  --sun-700: #9B7416;
+  --sun-100: #faebb6;
+  --sun-500: #e5b33a;
+  --sun-700: #9b7416;
 
   /* Semantic */
-  --ok:    var(--moss-500);
-  --warn:  var(--sun-500);
-  --error: #B83A2E;
-  --info:  var(--lake-500);
+  --ok: var(--moss-500);
+  --warn: var(--sun-500);
+  --error: #b83a2e;
+  --info: var(--lake-500);
 
   /* Surfaces */
-  --bg:           var(--paper-50);
-  --bg-elevated:  #FFFFFF;
-  --bg-sunken:    var(--paper-100);
-  --bg-terminal:  #0E1A24;       /* dark for code/terminals */
-  --bg-terminal-2:#172533;
+  --bg: var(--paper-50);
+  --bg-elevated: #ffffff;
+  --bg-sunken: var(--paper-100);
+  --bg-terminal: #0e1a24; /* dark for code/terminals */
+  --bg-terminal-2: #172533;
 
   /* Foregrounds */
   --fg-1: var(--ink-900);
   --fg-2: var(--ink-700);
   --fg-3: var(--ink-500);
   --fg-4: var(--ink-400);
-  --fg-on-dark:    #F4F1EA;
-  --fg-on-dark-2:  #B7C2CC;
+  --fg-on-dark: #f4f1ea;
+  --fg-on-dark-2: #b7c2cc;
 
   /* Borders */
   --border-1: var(--paper-300);
@@ -93,9 +93,9 @@
   --radius-pill: 999px;
 
   /* Shadows — soft, paper-like */
-  --shadow-1: 0 1px 0 rgba(14,26,36,0.04), 0 1px 2px rgba(14,26,36,0.06);
-  --shadow-2: 0 2px 4px rgba(14,26,36,0.06), 0 4px 12px rgba(14,26,36,0.08);
-  --shadow-3: 0 4px 8px rgba(14,26,36,0.08), 0 12px 32px rgba(14,26,36,0.12);
+  --shadow-1: 0 1px 0 rgba(14, 26, 36, 0.04), 0 1px 2px rgba(14, 26, 36, 0.06);
+  --shadow-2: 0 2px 4px rgba(14, 26, 36, 0.06), 0 4px 12px rgba(14, 26, 36, 0.08);
+  --shadow-3: 0 4px 8px rgba(14, 26, 36, 0.08), 0 12px 32px rgba(14, 26, 36, 0.12);
   --shadow-inset: inset 0 0 0 1px var(--border-2);
 }
 
@@ -105,7 +105,7 @@
      technical character. IBM Plex Sans is the spec choice;
      it pairs naturally with Plex Mono for code. */
   --font-display: "IBM Plex Sans", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-body:    "IBM Plex Sans", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: "IBM Plex Sans", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
 
   /* Mono for SQL, paths, IDs — Plex Mono mirrors the display family */
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -134,11 +134,12 @@
   --tracking-tight: -0.02em;
   --tracking-normal: 0;
   --tracking-wide: 0.04em;
-  --tracking-caps: 0.12em;   /* labels, eyebrows */
+  --tracking-caps: 0.12em; /* labels, eyebrows */
 }
 
 /* ---------- 4. SEMANTIC TYPE STYLES ------------------------ */
-.cl-display, h1.cl-display {
+.cl-display,
+h1.cl-display {
   font-family: var(--font-display);
   font-size: var(--fs-display);
   line-height: var(--lh-tight);
@@ -147,7 +148,8 @@
   color: var(--fg-1);
 }
 
-.cl-h1, h1 {
+.cl-h1,
+h1 {
   font-family: var(--font-display);
   font-size: var(--fs-h1);
   line-height: var(--lh-tight);
@@ -156,7 +158,8 @@
   color: var(--fg-1);
 }
 
-.cl-h2, h2 {
+.cl-h2,
+h2 {
   font-family: var(--font-display);
   font-size: var(--fs-h2);
   line-height: var(--lh-snug);
@@ -165,7 +168,8 @@
   color: var(--fg-1);
 }
 
-.cl-h3, h3 {
+.cl-h3,
+h3 {
   font-family: var(--font-display);
   font-size: var(--fs-h3);
   line-height: var(--lh-snug);
@@ -173,7 +177,8 @@
   color: var(--fg-1);
 }
 
-.cl-h4, h4 {
+.cl-h4,
+h4 {
   font-family: var(--font-display);
   font-size: var(--fs-h4);
   line-height: var(--lh-snug);
@@ -181,7 +186,9 @@
   color: var(--fg-1);
 }
 
-.cl-body, p, body {
+.cl-body,
+p,
+body {
   font-family: var(--font-body);
   font-size: var(--fs-body);
   line-height: var(--lh-relaxed);
@@ -205,7 +212,9 @@
   font-weight: 500;
 }
 
-.cl-code, code, kbd {
+.cl-code,
+code,
+kbd {
   font-family: var(--font-mono);
   font-size: 0.92em;
   background: var(--paper-100);
@@ -215,7 +224,8 @@
   color: var(--lake-700);
 }
 
-.cl-pre, pre {
+.cl-pre,
+pre {
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.55;
@@ -226,7 +236,8 @@
   overflow-x: auto;
 }
 
-.cl-pre code, pre code {
+.cl-pre code,
+pre code {
   background: transparent;
   border: 0;
   padding: 0;
@@ -242,7 +253,8 @@
 }
 
 /* ---------- 5. GLOBAL RESET-ish ---------------------------- */
-html, body {
+html,
+body {
   background: var(--bg);
   color: var(--fg-2);
   font-family: var(--font-body);

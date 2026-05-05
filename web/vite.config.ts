@@ -18,8 +18,7 @@ export default defineConfig(() => {
   //                                            VITE_SUPABASE_ANON_KEY
   //
   // Anything else in the .env stays gated behind Vite's default VITE_ prefix.
-  const supabaseUrl =
-    process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
   const supabasePublishableKey =
     process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
     process.env.SUPABASE_PUBLISHABLE_KEY ||
@@ -31,11 +30,11 @@ export default defineConfig(() => {
   if (!supabaseUrl || !supabasePublishableKey) {
     // eslint-disable-next-line no-console
     console.warn(
-      `[vite.config] Supabase env not picked up. process.env keys seen: ${Object.keys(
-        process.env,
-      )
-        .filter((k) => k.startsWith("SUPABASE") || k.startsWith("VITE_"))
-        .join(", ") || "(none)"}`,
+      `[vite.config] Supabase env not picked up. process.env keys seen: ${
+        Object.keys(process.env)
+          .filter((k) => k.startsWith("SUPABASE") || k.startsWith("VITE_"))
+          .join(", ") || "(none)"
+      }`,
     );
   }
 
@@ -48,8 +47,7 @@ export default defineConfig(() => {
     },
     define: {
       "import.meta.env.VITE_SUPABASE_URL": JSON.stringify(supabaseUrl),
-      "import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY":
-        JSON.stringify(supabasePublishableKey),
+      "import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY": JSON.stringify(supabasePublishableKey),
     },
     server: {
       port: 5173,

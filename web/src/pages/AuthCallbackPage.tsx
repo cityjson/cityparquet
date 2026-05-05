@@ -2,13 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { Eyebrow } from "@/components/Eyebrow";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { isServiceRoleKey } from "@/lib/supabase/client";
 import { supabase } from "@/lib/supabase";
 
@@ -41,7 +35,10 @@ function snapshotStorage(): StorageReport {
     if (k) ssKeys.push(k);
   }
   const cookieKeys = document.cookie
-    ? document.cookie.split(";").map((c) => c.trim().split("=")[0]).filter(Boolean)
+    ? document.cookie
+        .split(";")
+        .map((c) => c.trim().split("=")[0])
+        .filter(Boolean)
     : [];
   return {
     origin: window.location.origin,
@@ -59,8 +56,7 @@ export default function AuthCallbackPage() {
   const [diagnostics, setDiagnostics] = useState<StorageReport | null>(null);
 
   useEffect(() => {
-    const errorParam =
-      searchParams.get("error_description") || searchParams.get("error");
+    const errorParam = searchParams.get("error_description") || searchParams.get("error");
     if (errorParam) {
       setError(decodeURIComponent(errorParam));
       setDiagnostics(snapshotStorage());
@@ -77,8 +73,7 @@ export default function AuthCallbackPage() {
       // attempt this implicitly, but we await it here so we can show the
       // error if it returns one.
       if (code) {
-        const { error: exchangeError } =
-          await supabase.auth.exchangeCodeForSession(code);
+        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
         if (cancelled) return;
 
         if (exchangeError) {
@@ -133,8 +128,8 @@ export default function AuthCallbackPage() {
           <Eyebrow>Sign-in failed</Eyebrow>
           <CardTitle className="mt-1">Auth callback returned an error</CardTitle>
           <CardDescription>
-            The OAuth round-trip came back with a problem. The full message is
-            below; common causes are listed beneath it.
+            The OAuth round-trip came back with a problem. The full message is below; common causes
+            are listed beneath it.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -155,17 +150,16 @@ export default function AuthCallbackPage() {
             <Card accent="error" className="bg-roof-100/40">
               <CardContent className="pt-5 space-y-2 text-[13px] text-roof-700">
                 <strong className="block">
-                  The configured Supabase key is a{" "}
-                  <code className="cl-code">service_role</code> key.
+                  The configured Supabase key is a <code className="cl-code">service_role</code>{" "}
+                  key.
                 </strong>
                 <p>
-                  The browser must use the <strong>anon (publishable)</strong>{" "}
-                  key. Open Supabase &rarr; Settings &rarr; API and copy the
-                  key labelled <em>anon · public</em> (or{" "}
+                  The browser must use the <strong>anon (publishable)</strong> key. Open Supabase
+                  &rarr; Settings &rarr; API and copy the key labelled <em>anon · public</em> (or{" "}
                   <em>publishable</em>) into your <code>.env</code>:
                 </p>
                 <pre className="bg-paper-100 border border-paper-200 rounded-sm p-2 font-mono text-[11px] text-ink-900">
-                  VITE_SUPABASE_PUBLISHABLE_KEY=eyJ…  # the anon key
+                  VITE_SUPABASE_PUBLISHABLE_KEY=eyJ… # the anon key
                 </pre>
               </CardContent>
             </Card>
@@ -177,13 +171,13 @@ export default function AuthCallbackPage() {
               must be in <em>Site URL</em> or <em>Additional Redirect URLs</em>.
             </li>
             <li>
-              Confirm the key in <code className="cl-code">.env</code> is the
-              project&apos;s <strong>anon (public/publishable)</strong> key,
-              not the <code className="cl-code">service_role</code> key.
+              Confirm the key in <code className="cl-code">.env</code> is the project&apos;s{" "}
+              <strong>anon (public/publishable)</strong> key, not the{" "}
+              <code className="cl-code">service_role</code> key.
             </li>
             <li>
-              In Supabase &rarr; Authentication &rarr; Providers &rarr; GitHub,
-              verify the Client ID and Client Secret match the GitHub OAuth app.
+              In Supabase &rarr; Authentication &rarr; Providers &rarr; GitHub, verify the Client ID
+              and Client Secret match the GitHub OAuth app.
             </li>
           </ul>
           <div className="flex gap-3 items-center">

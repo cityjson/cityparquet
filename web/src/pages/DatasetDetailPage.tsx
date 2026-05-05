@@ -28,8 +28,12 @@ interface MetadataRow {
   city_objects_count?: number;
   reference_system?: { code?: string; authority?: string };
   geographical_extent?: {
-    min_x?: number; min_y?: number; min_z?: number;
-    max_x?: number; max_y?: number; max_z?: number;
+    min_x?: number;
+    min_y?: number;
+    min_z?: number;
+    max_x?: number;
+    max_y?: number;
+    max_z?: number;
   };
   [k: string]: unknown;
 }
@@ -109,27 +113,16 @@ export default function DatasetDetailPage() {
               </p>
             )}
             {!metadataQuery.isLoading && !metadata && (
-              <p className="text-[13px] text-ink-500">
-                No metadata row for this dataset.
-              </p>
+              <p className="text-[13px] text-ink-500">No metadata row for this dataset.</p>
             )}
             {metadata && (
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 font-mono text-[12px]">
-                {metadata.version && (
-                  <Field label="version" value={metadata.version} />
-                )}
-                {metadata.identifier && (
-                  <Field label="identifier" value={metadata.identifier} />
-                )}
-                {metadata.source_path && (
-                  <Field label="source" value={metadata.source_path} />
-                )}
+                {metadata.version && <Field label="version" value={metadata.version} />}
+                {metadata.identifier && <Field label="identifier" value={metadata.identifier} />}
+                {metadata.source_path && <Field label="source" value={metadata.source_path} />}
                 {crs && <Field label="crs" value={crs} />}
                 {typeof metadata.city_objects_count === "number" && (
-                  <Field
-                    label="objects"
-                    value={metadata.city_objects_count.toLocaleString()}
-                  />
+                  <Field label="objects" value={metadata.city_objects_count.toLocaleString()} />
                 )}
               </dl>
             )}
@@ -151,9 +144,7 @@ export default function DatasetDetailPage() {
               </p>
             )}
             {!tablesQuery.isLoading && lodTables.length === 0 && (
-              <p className="text-[13px] text-ink-500">
-                No LOD tables for this dataset.
-              </p>
+              <p className="text-[13px] text-ink-500">No LOD tables for this dataset.</p>
             )}
             {lodTables.length > 0 && (
               <Table>
@@ -173,9 +164,7 @@ export default function DatasetDetailPage() {
                           {t.lod}
                         </span>
                       </TableCell>
-                      <TableCell className="text-ink-500">
-                        {t.name}
-                      </TableCell>
+                      <TableCell className="text-ink-500">{t.name}</TableCell>
                       <TableCell className="text-right">
                         <Button asChild size="sm" variant="secondary">
                           <Link to={`/tables/${t.name}`}>Open</Link>

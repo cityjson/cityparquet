@@ -1,12 +1,5 @@
 import type { Session } from "@supabase/supabase-js";
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { supabase } from "@/lib/supabase";
 
@@ -31,11 +24,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     });
 
-    const { data: subscription } = supabase.auth.onAuthStateChange(
-      (_event, next) => {
-        setSession(next);
-      },
-    );
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, next) => {
+      setSession(next);
+    });
 
     return () => {
       active = false;

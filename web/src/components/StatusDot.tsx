@@ -18,10 +18,7 @@ export function StatusDot({ tone = "neutral" }: { tone?: Tone }) {
   return (
     <span
       aria-hidden="true"
-      className={cn(
-        "inline-block h-1.5 w-1.5 rounded-full shrink-0",
-        toneClasses[tone],
-      )}
+      className={cn("inline-block h-1.5 w-1.5 rounded-full shrink-0", toneClasses[tone])}
     />
   );
 }

@@ -17,11 +17,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -42,13 +38,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  ApiError,
-  deleteObject,
-  queryObjects,
-  updateObject,
-  type QueryResponse,
-} from "@/lib/api";
+import { ApiError, deleteObject, queryObjects, updateObject, type QueryResponse } from "@/lib/api";
 
 const PAGE_SIZE = 25;
 
@@ -67,9 +57,7 @@ export default function LodTablePage() {
   const [filterDraft, setFilterDraft] = useState("");
   const [page, setPage] = useState(0);
 
-  const [editing, setEditing] = useState<{ id: string; json: string } | null>(
-    null,
-  );
+  const [editing, setEditing] = useState<{ id: string; json: string } | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
 
@@ -88,8 +76,7 @@ export default function LodTablePage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, json }: { id: string; json: string }) =>
-      updateObject(tableName, id, json),
+    mutationFn: ({ id, json }: { id: string; json: string }) => updateObject(tableName, id, json),
     onSuccess: () => {
       setEditing(null);
       setEditError(null);
@@ -182,8 +169,8 @@ export default function LodTablePage() {
             )}
           </form>
           <p className="mt-2 font-mono text-[11px] text-ink-500">
-            Optional SQL <code className="cl-code">WHERE</code> clause. Leave blank to show
-            every row.
+            Optional SQL <code className="cl-code">WHERE</code> clause. Leave blank to show every
+            row.
           </p>
         </CardContent>
       </Card>
@@ -205,9 +192,7 @@ export default function LodTablePage() {
             <StatusDot tone="ok" />
             {objects.length} rows
           </Tag>
-          <span className="font-mono text-[11px] text-ink-500">
-            page {page + 1}
-          </span>
+          <span className="font-mono text-[11px] text-ink-500">page {page + 1}</span>
         </div>
         <CardContent className="p-0">
           {query.isLoading && (
@@ -237,9 +222,7 @@ export default function LodTablePage() {
                 {objects.map((row, i) => (
                   <TableRow key={String(row.id ?? i)}>
                     {columns.map((c) => (
-                      <TableCell key={c}>
-                        {formatCell(row[c])}
-                      </TableCell>
+                      <TableCell key={c}>{formatCell(row[c])}</TableCell>
                     ))}
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
@@ -317,9 +300,8 @@ export default function LodTablePage() {
           <DialogHeader>
             <DialogTitle>Edit object</DialogTitle>
             <DialogDescription>
-              Replace the row identified by <code className="cl-code">{editing?.id}</code>{" "}
-              with this CityJSONFeature snippet. The new payload is parsed by
-              the cityjson DuckDB extension.
+              Replace the row identified by <code className="cl-code">{editing?.id}</code> with this
+              CityJSONFeature snippet. The new payload is parsed by the cityjson DuckDB extension.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -330,9 +312,7 @@ export default function LodTablePage() {
               onChange={(e) => setEditDraft(e.target.value)}
               className="h-72"
             />
-            {editError && (
-              <p className="font-mono text-[12px] text-roof-700">{editError}</p>
-            )}
+            {editError && <p className="font-mono text-[12px] text-roof-700">{editError}</p>}
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={() => setEditing(null)}>

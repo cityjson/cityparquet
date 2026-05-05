@@ -17,7 +17,6 @@ individual CityObjects, all behind Supabase auth.
   (drops `@supabase/ssr` + `src/lib/supabase/client.ts`)
 
 [supabase-client]: https://supabase.com/ui/r/supabase-client-react-router
-
 [Vite+]: https://viteplus.dev/
 
 ## Toolchain
@@ -98,14 +97,14 @@ src/
 
 ## Implementation status
 
-| Phase | Status |
-| --- | --- |
-| 0 — scaffold | done |
-| 1 — auth flow | done (Supabase magic-link, AuthProvider, ProtectedRoute) |
-| 2 — list / detail (read) | done |
-| 3 — upload | done |
-| 4 — CRUD | done |
-| 5 — server-side JWT auth | not started |
+| Phase                    | Status                                                   |
+| ------------------------ | -------------------------------------------------------- |
+| 0 — scaffold             | done                                                     |
+| 1 — auth flow            | done (Supabase magic-link, AuthProvider, ProtectedRoute) |
+| 2 — list / detail (read) | done                                                     |
+| 3 — upload               | done                                                     |
+| 4 — CRUD                 | done                                                     |
+| 5 — server-side JWT auth | not started                                              |
 
 ## Related changes in the Rust crate
 
