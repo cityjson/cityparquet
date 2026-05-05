@@ -80,7 +80,20 @@ export default function AuthCallbackPage() {
         const { error: exchangeError } =
           await supabase.auth.exchangeCodeForSession(code);
         if (cancelled) return;
+
         if (exchangeError) {
+          // Some "exchange failed" cases are recoverable: the user already
+          // has a valid session in storage from a prior successful flow, but
+          // a stale `?code=` got replayed (e.g. browser back-button or a
+          // duplicate tab). If so, treat the existing session as authoritative
+          // and continue silently rather than blocking on a redundant error.
+          const { data } = await supabase.auth.getSession();
+          if (cancelled) return;
+          if (data.session) {
+            navigate(next, { replace: true });
+            return;
+          }
+
           setError(`Code exchange failed: ${exchangeError.message}`);
           setDiagnostics(snapshotStorage());
           return;
@@ -173,13 +186,44 @@ export default function AuthCallbackPage() {
               verify the Client ID and Client Secret match the GitHub OAuth app.
             </li>
           </ul>
-          <button
-            type="button"
-            onClick={() => navigate("/login", { replace: true })}
-            className="font-mono text-[12px] text-lake-700 underline"
-          >
-            Back to sign in
-          </button>
+          <div className="flex gap-3 items-center">
+            <button
+              type="button"
+              onClick={() => navigate("/login", { replace: true })}
+              className="font-mono text-[12px] text-lake-700 underline"
+            >
+              Back to sign in
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                // Drop everything Supabase-related: storage, cookies, in-memory
+                // session. After this, the next sign-in starts from scratch.
+                try {
+                  await supabase.auth.signOut({ scope: "local" });
+                } catch {
+                  /* ignore — we're going to wipe anyway */
+                }
+                for (const k of Object.keys(localStorage)) {
+                  if (k.startsWith("sb-")) localStorage.removeItem(k);
+                }
+                for (const k of Object.keys(sessionStorage)) {
+                  if (k.startsWith("sb-")) sessionStorage.removeItem(k);
+                }
+                document.cookie.split(";").forEach((c) => {
+                  const eq = c.indexOf("=");
+                  const name = (eq > -1 ? c.substring(0, eq) : c).trim();
+                  if (name.startsWith("sb-")) {
+                    document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`;
+                  }
+                });
+                navigate("/login", { replace: true });
+              }}
+              className="font-mono text-[12px] text-roof-700 underline"
+            >
+              Reset auth state &amp; retry
+            </button>
+          </div>
         </CardContent>
       </Card>
     </div>
