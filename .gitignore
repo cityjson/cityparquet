@@ -38,3 +38,8 @@ Thumbs.db
 .env
 .env.keys
 design/
+
+# DuckLake runtime state — created on `just api` / `cargo run`.
+metadata.ducklake
+metadata.ducklake.wal
+data/
