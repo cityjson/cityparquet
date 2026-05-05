@@ -126,6 +126,23 @@ INSERT INTO citylake.cityjson_metadata
 
 ## Dev Commands
 
+A `justfile` at the workspace root wraps the common workflows. Run `just` (no
+args) to see the menu. The most useful entries:
+
+```bash
+just api                # cargo run, with dotenvx-loaded env
+just web                # vp dev (web/) with dotenvx-loaded env
+just dev                # both in parallel; Ctrl-C stops both
+just test               # cargo test --lib
+just test-integration   # network-backed tests in src/tests/integration (~80 s)
+just check              # cargo clippy --all-targets -- -D warnings
+just check-all          # cargo + web (vp check)
+just install            # npm install in web/
+just clean              # cargo clean + drop web/dist + tsbuildinfo
+```
+
+The raw cargo invocations still work for ad-hoc use:
+
 ```bash
 cargo build                       # Library + binary (default features include `server`)
 cargo build --no-default-features # Library only (no axum/tower deps)
@@ -134,6 +151,9 @@ cargo test                        # All non-ignored tests (unit + e2e)
 cargo test --lib                  # Same, library-scope only
 cargo test --lib -- --ignored     # Network-backed integration tests in src/tests/integration
 ```
+
+The web app uses Vite+ (`vp dev/build/check/test`) as its single toolchain;
+see `web/README.md`.
 
 The `duckdb` crate is pinned to `=1.10501.0` (DuckDB v1.5.1). The cityjson
 community extension is only published for v1.5.0/v1.5.1 — bumping past that
