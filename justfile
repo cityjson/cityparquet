@@ -18,6 +18,11 @@ set dotenv-load := false
 
 web_dir := "web"
 
+# Single shared .env at the workspace root (dotenvx-encrypted). All recipes
+# that need env vars point at this file explicitly so they work regardless of
+# the recipe's working directory.
+env_file := justfile_directory() / ".env"
+
 # Show available recipes (default).
 default:
     @just --list
@@ -26,7 +31,7 @@ default:
 
 # Start the CityLake HTTP server. Forwards extra args, e.g. `just api --release`.
 api *args:
-    dotenvx run --quiet -- cargo run {{args}}
+    dotenvx run --quiet -f {{env_file}} -- cargo run {{args}}
 
 # Build the library + binary.
 build:
@@ -56,15 +61,15 @@ build-lib:
 
 # Start the web dev server (HMR + /api proxy to 127.0.0.1:3000).
 web:
-    cd {{web_dir}} && dotenvx run --quiet -- vp dev
+    cd {{web_dir}} && dotenvx run --quiet -f {{env_file}} -- vp dev
 
 # Production build of the web app.
 web-build:
-    cd {{web_dir}} && dotenvx run --quiet -- vp build
+    cd {{web_dir}} && dotenvx run --quiet -f {{env_file}} -- vp build
 
 # Preview the production build locally.
 web-preview:
-    cd {{web_dir}} && dotenvx run --quiet -- vp preview
+    cd {{web_dir}} && dotenvx run --quiet -f {{env_file}} -- vp preview
 
 # Lint + format + typecheck the web app (oxlint + oxfmt + tsgo via vp check).
 web-check:
