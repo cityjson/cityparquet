@@ -5,12 +5,7 @@ import { Link } from "react-router-dom";
 
 import { Eyebrow } from "@/components/Eyebrow";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -42,10 +37,15 @@ export default function UploadPage() {
   function pickFile(f: File | null) {
     setFile(f);
     if (!baseName && f?.name) {
-      const stem = f.name
+      // SQL identifiers can't start with a digit. Filenames that begin with one
+      // (e.g. "9_508_648.city.jsonl") otherwise produce a base like "9_508_648"
+      // which the backend now rejects with 400 — but it's friendlier to fix the
+      // default up-front so the user can submit without manual editing.
+      const cleaned = f.name
         .replace(/\.city\.jsonl?$/i, "")
         .replace(/\.fcb$/i, "")
         .replace(/[^a-zA-Z0-9_]/g, "_");
+      const stem = /^[A-Za-z_]/.test(cleaned) ? cleaned : `t_${cleaned}`;
       setBaseName(stem);
     }
   }
@@ -64,9 +64,8 @@ export default function UploadPage() {
         </h1>
         <p className="text-[14px] text-ink-500 max-w-prose">
           Send a <code className="cl-code">.city.json</code>,{" "}
-          <code className="cl-code">.city.jsonl</code>, or{" "}
-          <code className="cl-code">.fcb</code> file to CityLake. One table per
-          LOD will be created — or just the LOD you pin below.
+          <code className="cl-code">.city.jsonl</code>, or <code className="cl-code">.fcb</code>{" "}
+          file to CityLake. One table per LOD will be created — or just the LOD you pin below.
         </p>
       </header>
 
@@ -104,13 +103,9 @@ export default function UploadPage() {
             >
               <UploadIcon className="h-7 w-7 text-ink-500" />
               {file ? (
-                <p className="font-mono text-[13px] text-ink-900">
-                  {file.name}
-                </p>
+                <p className="font-mono text-[13px] text-ink-900">{file.name}</p>
               ) : (
-                <p className="text-[13px] text-ink-500">
-                  Drop a file or click to browse
-                </p>
+                <p className="text-[13px] text-ink-500">Drop a file or click to browse</p>
               )}
               <input
                 ref={inputRef}
@@ -139,7 +134,8 @@ export default function UploadPage() {
                 value={baseName}
                 onChange={(e) => setBaseName(e.target.value)}
                 placeholder="city_objects"
-                pattern="[A-Za-z0-9_]*"
+                pattern="[A-Za-z_][A-Za-z0-9_]*"
+                title="Must start with a letter or underscore; remaining characters can be letters, digits, or underscore."
               />
               <p className="font-mono text-[11px] text-ink-500">
                 Tables: <code className="cl-code">{`${baseName || "city_objects"}_lod_X_Y`}</code>
@@ -155,8 +151,8 @@ export default function UploadPage() {
                 placeholder="2.2"
               />
               <p className="font-mono text-[11px] text-ink-500">
-                Pin a single LOD to load only that one. Leave blank to fan out
-                across every LOD in the file.
+                Pin a single LOD to load only that one. Leave blank to fan out across every LOD in
+                the file.
               </p>
             </div>
           </CardContent>
@@ -183,14 +179,10 @@ export default function UploadPage() {
           <Card accent="info">
             <CardHeader>
               <Eyebrow>Upload complete</Eyebrow>
-              <CardTitle className="text-[14px] mt-1 font-sans">
-                {mutation.data.message}
-              </CardTitle>
+              <CardTitle className="text-[14px] mt-1 font-sans">{mutation.data.message}</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="font-mono text-[11px] text-ink-500 mb-2">
-                Tables created
-              </p>
+              <p className="font-mono text-[11px] text-ink-500 mb-2">Tables created</p>
               <ul className="space-y-1 font-mono text-[13px]">
                 {mutation.data.tables.map((t) => (
                   <li key={t}>

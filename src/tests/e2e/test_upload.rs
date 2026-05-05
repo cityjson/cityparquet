@@ -200,6 +200,39 @@ async fn upload_create_table_overrides_base_via_querystring() {
 
 #[tokio::test]
 #[ignore = "loads cityjson + ducklake extensions; opt-in with --ignored"]
+async fn upload_rejects_base_name_starting_with_digit() {
+    // Regression: a filename like "9_508_648.city.jsonl" yielded a base name
+    // beginning with a digit, which DuckDB then rejected mid-CREATE TABLE with
+    // a SQL parse error. The validator now stops it at 400.
+    let (svc, _tmp) = fresh_service();
+    let repo: Arc<dyn CityLakeRepository> = Arc::new(svc);
+    let app = build_router(repo);
+
+    let bytes = std::fs::read(delft_jsonl_path()).unwrap();
+    let (ct, body) = multipart_body("delft.city.jsonl", &bytes);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tables/9_508_648/upload")
+                .header("content-type", ct)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let payload = body_json(response.into_body()).await;
+    let err = payload["error"].as_str().unwrap();
+    assert!(
+        err.contains("must start with a letter or underscore"),
+        "error should explain the SQL identifier rule: {err}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "loads cityjson + ducklake extensions; opt-in with --ignored"]
 async fn upload_rejects_invalid_base_name() {
     let (svc, _tmp) = fresh_service();
     let repo: Arc<dyn CityLakeRepository> = Arc::new(svc);

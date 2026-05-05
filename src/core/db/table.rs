@@ -7,12 +7,29 @@ use crate::core::interface::types::{InputFormat, LodKey, DEFAULT_BASE_NAME};
 use super::lod::{derive_table_name, discover_lods};
 use super::metadata_table::persist_metadata;
 
-/// Validate that a SQL identifier contains only safe characters.
+/// Validate that a SQL identifier is safe to interpolate unquoted.
+///
+/// We only allow `[A-Za-z_][A-Za-z0-9_]*`. Two parts to that:
+///   * Character set is restricted to alphanumeric + underscore so unquoted
+///     interpolation cannot smuggle in delimiters.
+///   * The first character must be a letter or underscore — DuckDB (like every
+///     SQL dialect) refuses unquoted identifiers that begin with a digit.
+///     A filename like `9_508_648.city.jsonl` was happily accepted under the
+///     old rule and then exploded at parse time. Enforcing the rule here makes
+///     the upload endpoint return a clean 400 instead of a 500.
 pub(super) fn validate_identifier(name: &str, kind: &str) -> RepositoryResult<()> {
     if name.is_empty() {
         return Err(format!("{kind} cannot be empty").into());
     }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(format!(
+            "{kind} '{name}' must start with a letter or underscore (SQL identifier rule)."
+        )
+        .into());
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(format!(
             "{kind} '{name}' contains invalid characters. Only alphanumeric and underscore allowed."
         )
@@ -127,6 +144,21 @@ mod tests {
         let result = super::validate_identifier("", "Table name");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_validate_identifier_rejects_leading_digit() {
+        // Regression: a filename like "9_508_648.city.jsonl" used to slip past
+        // the validator and crash with a SQL parse error mid-CREATE.
+        let result = super::validate_identifier("9_508_648", "Base name");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("must start with a letter or underscore"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_validate_identifier_accepts_leading_underscore() {
+        assert!(super::validate_identifier("_hidden", "x").is_ok());
     }
 
     #[tokio::test]

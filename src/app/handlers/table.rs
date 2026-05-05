@@ -168,6 +168,7 @@ pub(crate) fn repo_error(err: impl std::fmt::Display) -> (StatusCode, Json<serde
     let msg = err.to_string();
     let user_input_markers = [
         "invalid characters",
+        "must start with a letter or underscore",
         "cannot be empty",
         "Cannot detect",
         "missing a '_lod_X_Y' suffix",
