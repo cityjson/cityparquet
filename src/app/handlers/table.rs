@@ -130,7 +130,17 @@ pub(crate) async fn receive_upload(
             )
         })?;
 
-        return Ok(temp_path.to_string_lossy().to_string());
+        // Disarm the TempPath's drop-time cleanup. Otherwise the file is
+        // deleted the moment this function returns, and the cityjson
+        // extension's `read_*` opens a path that is gone. The caller is
+        // responsible for `std::fs::remove_file` once it's done with the path.
+        let kept = temp_path.keep().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to persist temp file: {e}")})),
+            )
+        })?;
+        return Ok(kept.to_string_lossy().to_string());
     }
 
     Err((
