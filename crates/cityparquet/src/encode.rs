@@ -641,6 +641,15 @@ impl RowWriter {
 /// cases tracked rather than surfaced as errors; call [`Self::stats`] to
 /// read the running totals (e.g. via `iter.by_ref().collect(); iter.stats()`
 /// so the iterator isn't consumed before you can read them).
+///
+/// # Error contract
+///
+/// The first `Err` is terminal: once `next()` has yielded an error, every
+/// subsequent call returns `None` (the iterator fuses). Any partially
+/// encoded row state is discarded with it — a mid-row failure leaves the
+/// internal builders desynced, so no partially-desynced batch is ever
+/// emitted, even to error-tolerant callers (e.g. `filter_map(Result::ok)`)
+/// that keep pulling past the error.
 pub struct BatchIter<'a> {
     features: FeatureIter<'a>,
     transform: Transform,
@@ -651,6 +660,9 @@ pub struct BatchIter<'a> {
     current_object_ids: Vec<String>,
     current_idx: usize,
     exhausted_input: bool,
+    /// Set when `next()` yields an `Err`; fuses the iterator (see the
+    /// error contract above).
+    errored: bool,
     stats: EncodeStats,
 }
 
@@ -665,12 +677,9 @@ impl BatchIter<'_> {
         let arrays = self.writer.finish_arrays();
         Ok(RecordBatch::try_new(self.schema.clone(), arrays)?)
     }
-}
 
-impl Iterator for BatchIter<'_> {
-    type Item = Result<RecordBatch>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// One `next()` step, without the fuse bookkeeping (see [`Self::next`]).
+    fn advance(&mut self) -> Option<Result<RecordBatch>> {
         loop {
             if self.current_idx >= self.current_object_ids.len() {
                 if self.exhausted_input {
@@ -722,6 +731,23 @@ impl Iterator for BatchIter<'_> {
     }
 }
 
+impl Iterator for BatchIter<'_> {
+    type Item = Result<RecordBatch>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.errored {
+            return None;
+        }
+        let item = self.advance();
+        if matches!(item, Some(Err(_))) {
+            // Fuse: a mid-row failure leaves the builders desynced, so the
+            // partial state must never surface as a later (corrupt) batch.
+            self.errored = true;
+        }
+        item
+    }
+}
+
 /// Encode `source` into `RecordBatch`es matching `scan.schema.to_arrow_schema()`
 /// exactly, `batch_size` rows per batch (the schema was already computed by
 /// `scan`; this pass never re-infers it).
@@ -744,6 +770,7 @@ pub fn encode<'a>(
         current_object_ids: Vec::new(),
         current_idx: 0,
         exhausted_input: false,
+        errored: false,
         stats: EncodeStats::default(),
     })
 }
