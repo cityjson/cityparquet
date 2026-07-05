@@ -1,5 +1,6 @@
 //! CityParquet reader/writer: the native Parquet path for CityJSON models.
 
+pub mod scan;
 pub mod source;
 pub mod wkb_write;
 
