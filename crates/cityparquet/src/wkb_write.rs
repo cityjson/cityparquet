@@ -130,6 +130,14 @@ struct Drops {
 /// WKB ring and is dropped (`None`). Zero-area rings with >= 3 effective
 /// vertices pass through unchanged — data quality is not the format's
 /// business.
+///
+/// Known limitation (deliberate): closure detection is INDEX-based. A ring
+/// whose last vertex is a DIFFERENT index carrying a bitwise-identical
+/// coordinate to the first is treated as unclosed — it gets a closing
+/// vertex appended and survives both this policy and the reader's checks
+/// as a structurally valid zero-area ring (a→b→a). The narrow policy only
+/// drops rings that cannot form a structural WKB ring at all;
+/// coordinate-level degeneracy is data quality, out of scope.
 fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
     let stripped = if ring.len() >= 2 && ring.first() == ring.last() {
         &ring[..ring.len() - 1]
@@ -141,26 +149,32 @@ fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
 
 /// Normalise one surface's rings. Returns the kept rings, or `None` when
 /// the surface must be dropped entirely because its EXTERIOR ring (index 0)
-/// is degenerate (interior rings cannot stand without it). `pos` is the
-/// surface's original flat position within the geometry, recorded so the
-/// encoder can realign per-surface semantics/material/texture arrays.
+/// is degenerate (interior rings cannot stand without it). Every degenerate
+/// ring is counted in `drops.rings` — including interior rings of a surface
+/// that is dropped anyway — so the reported ring total is exact. `pos` is
+/// the surface's original flat position within the geometry, recorded so
+/// the encoder can realign per-surface semantics/material/texture arrays.
 fn normalise_surface<'r>(
     rings: &'r [Vec<usize>],
     pos: usize,
     drops: &mut Drops,
 ) -> Option<Vec<&'r [usize]>> {
     let mut kept = Vec::with_capacity(rings.len());
+    let mut exterior_dropped = false;
     for (i, ring) in rings.iter().enumerate() {
         match normalise_ring(ring) {
             Some(r) => kept.push(r),
             None => {
                 drops.rings += 1;
                 if i == 0 {
-                    drops.surfaces.push(pos);
-                    return None;
+                    exterior_dropped = true;
                 }
             }
         }
+    }
+    if exterior_dropped {
+        drops.surfaces.push(pos);
+        return None;
     }
     Some(kept)
 }
@@ -554,6 +568,30 @@ mod tests {
             surfaces[0][0].len(),
             4,
             "surviving ring keeps its 4 vertices"
+        );
+
+        // Counter precision: a dropped surface's interior degenerate rings
+        // are still counted in dropped_rings (surface drop unchanged).
+        let geom = cjseq::Geometry {
+            thetype: cjseq::GeometryType::MultiSurface,
+            lod: Some("2".into()),
+            boundaries: serde_json::json!([[[0, 1, 0], [2, 3, 2]], [[0, 1, 2, 3]]]),
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        let outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
+        assert_eq!(
+            outcome.dropped_rings, 2,
+            "degenerate exterior AND degenerate interior must both be counted"
+        );
+        assert_eq!(outcome.dropped_surfaces, vec![0]);
+        assert_eq!(
+            u32::from_le_bytes(outcome.bytes[5..9].try_into().unwrap()),
+            1,
+            "the surviving surface is still the only polygon"
         );
     }
 

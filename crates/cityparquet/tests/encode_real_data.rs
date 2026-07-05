@@ -62,7 +62,7 @@ fn railway_realigns_material_values_for_dropped_surfaces() {
         .collect::<Result<_, _>>()
         .unwrap();
 
-    let mut found = false;
+    let mut found = 0usize;
     for batch in &batches {
         let ids = batch
             .column_by_name("id")
@@ -83,28 +83,43 @@ fn railway_realigns_material_values_for_dropped_surfaces() {
             .downcast_ref::<StringArray>()
             .unwrap();
         for row in 0..batch.num_rows() {
-            if ids.value(row) != "GMLID_855011_330784_753" {
-                continue;
-            }
-            found = true;
-            let material: serde_json::Value = serde_json::from_str(materials.value(row)).unwrap();
-            let values = material["3"]["visual"]["values"]
-                .as_array()
-                .expect("per-surface material values array");
-            assert_eq!(
-                values.len(),
-                100,
-                "material values must be realigned after dropping surface 67 (source had 101)"
-            );
+            let id = ids.value(row);
+            let expected_drops = match id {
+                "GMLID_855011_330784_753" | "GMLID_0373494_301709_129" => {
+                    serde_json::json!({"rings": 1, "surfaces": [67]})
+                }
+                "UUID_d96effed-08fe-4f74-b134-05b194aa3cff" => {
+                    // CompositeSurface, 22022 source surfaces; its material
+                    // theme uses a scalar `value` (applies to all surfaces),
+                    // so only the drop record itself is checked here.
+                    serde_json::json!({
+                        "rings": 4,
+                        "surfaces": [20460, 21154, 21157, 21894]
+                    })
+                }
+                _ => continue,
+            };
+            found += 1;
             let p: serde_json::Value = serde_json::from_str(props.value(row)).unwrap();
             assert_eq!(
-                p["dropped_degenerate"],
-                serde_json::json!({"rings": 1, "surfaces": [67]}),
-                "geometry_properties must record what was dropped"
+                p["dropped_degenerate"], expected_drops,
+                "geometry_properties must record what was dropped for {id}"
             );
+            if id != "UUID_d96effed-08fe-4f74-b134-05b194aa3cff" {
+                let material: serde_json::Value =
+                    serde_json::from_str(materials.value(row)).unwrap();
+                let values = material["3"]["visual"]["values"]
+                    .as_array()
+                    .expect("per-surface material values array");
+                assert_eq!(
+                    values.len(),
+                    100,
+                    "material values must be realigned after dropping surface 67 (source had 101) for {id}"
+                );
+            }
         }
     }
-    assert!(found, "GMLID_855011_330784_753 row not found");
+    assert_eq!(found, 3, "all three degenerate-drop rows must be found");
 }
 
 #[test]
