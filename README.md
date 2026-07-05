@@ -9,6 +9,6 @@ Workspace crates:
 
 | Crate | Purpose |
 |---|---|
-| `cityparquet-schema` | Type system, CityGML CM taxonomy, Arrow schema (spec-as-code) |
+| `cityparquet-schema` | Type system, CityGML CM taxonomy, Arrow schema (spec-as-code) — **M1 complete** |
 | `cityparquet` | Parquet writer/reader (WIP) |
 | `cityparquet-cli` | `cityparquet` CLI (WIP) |
