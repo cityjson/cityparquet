@@ -48,13 +48,21 @@ impl Default for WriterRecipe {
     }
 }
 
-/// A `geometry*` WKB column, excluding its `geometry_properties*` JSON
-/// sibling (which is handled by the arrow.json rule instead).
-fn is_geometry_column(name: &str) -> bool {
-    if name.starts_with("geometry_properties") {
-        return false;
-    }
-    name == "geometry" || name.starts_with("geometry_")
+/// Extension type name tagging every WKB geometry column — see
+/// [`cityparquet_schema::model`]'s `geometry_field` (via
+/// `geoarrow_schema::WkbType`).
+const GEOARROW_WKB_EXTENSION: &str = "geoarrow.wkb";
+
+/// A WKB geometry column, detected by its `geoarrow.wkb` extension metadata —
+/// never by name, so an attribute that merely happens to be called
+/// `geometry_extra` keeps attribute defaults. `geometry_properties*` JSON
+/// siblings carry `arrow.json` instead and are handled by the JSON rule.
+fn is_geometry_column(field: &Field) -> bool {
+    field
+        .metadata()
+        .get(EXTENSION_TYPE_NAME_KEY)
+        .map(String::as_str)
+        == Some(GEOARROW_WKB_EXTENSION)
 }
 
 /// A column tagged with the canonical `arrow.json` Arrow extension type.
@@ -122,7 +130,7 @@ impl WriterRecipe {
 
         for field in arrow_schema.fields() {
             let name = field.name().as_str();
-            if is_geometry_column(name) {
+            if is_geometry_column(field) {
                 let path = ColumnPath::from(name);
                 builder = builder
                     .set_column_dictionary_enabled(path.clone(), false)
@@ -241,6 +249,40 @@ mod tests {
         let kvs = props.key_value_metadata().expect("key-value metadata set");
         assert!(kvs.iter().any(|kv| kv.key == "cityparquet_version"));
         assert!(kvs.iter().any(|kv| kv.key == "geo"));
+    }
+
+    #[test]
+    fn attribute_named_like_geometry_keeps_attribute_defaults() {
+        // `geometry_extra` is a legitimate attribute name: schema validation
+        // only rejects exact reserved/geometry column names. It must get
+        // parquet attribute defaults, not the geometry (WKB) treatment —
+        // geometry columns are identified by their geoarrow.wkb extension
+        // metadata, never by name alone.
+        let schema = CityParquetSchema {
+            lods: vec![Lod::parse("2.2").unwrap()],
+            attributes: vec![
+                ("yoc".to_string(), AttributeType::Int64),
+                ("geometry_extra".to_string(), AttributeType::String),
+            ],
+            crs: None,
+        };
+        let props = WriterRecipe::default()
+            .writer_properties(&schema, &sample_metadata())
+            .unwrap();
+
+        // Attribute defaults: dictionary on, statistics not disabled.
+        assert!(props.dictionary_enabled(&ColumnPath::from("geometry_extra")));
+        assert_ne!(
+            props.statistics_enabled(&ColumnPath::from("geometry_extra")),
+            EnabledStatistics::None
+        );
+
+        // The real geometry column still gets the WKB treatment.
+        assert!(!props.dictionary_enabled(&ColumnPath::from("geometry_lod2_2")));
+        assert_eq!(
+            props.statistics_enabled(&ColumnPath::from("geometry_lod2_2")),
+            EnabledStatistics::None
+        );
     }
 
     #[test]
