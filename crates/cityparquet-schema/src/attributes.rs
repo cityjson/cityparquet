@@ -29,7 +29,9 @@ fn is_date(s: &str) -> bool {
 }
 
 fn is_timestamp(s: &str) -> bool {
-    s.len() >= 19 && is_date(&s[..10]) && s.as_bytes()[10] == b'T'
+    // `get` (not slicing) so a multi-byte char straddling byte 10 yields None
+    // instead of panicking on a non-char-boundary index.
+    s.len() >= 19 && s.get(..10).is_some_and(is_date) && s.as_bytes()[10] == b'T'
 }
 
 impl AttributeType {
@@ -196,6 +198,18 @@ mod tests {
                 ("height".to_string(), AttributeType::Float64),
                 ("name".to_string(), AttributeType::String),
             ]
+        );
+    }
+
+    #[test]
+    fn non_ascii_strings_do_not_panic() {
+        assert_eq!(
+            AttributeType::infer(&json!("日本語の文字列データです")),
+            Some(AttributeType::String)
+        );
+        assert_eq!(
+            AttributeType::infer(&json!("Ключевая строка данных")),
+            Some(AttributeType::String)
         );
     }
 
