@@ -292,7 +292,10 @@ dependencies = [
 name = "cityparquet-cli"
 version = "0.1.0"
 dependencies = [
+ "cityparquet",
  "cityparquet-schema",
+ "clap",
+ "tempfile",
 ]
 
 [[package]]
