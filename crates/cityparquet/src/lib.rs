@@ -1,5 +1,6 @@
 //! CityParquet reader/writer: the native Parquet path for CityJSON models.
 
+pub mod decode;
 pub mod encode;
 pub mod package;
 pub mod reader;
