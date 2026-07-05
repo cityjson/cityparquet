@@ -32,6 +32,9 @@ pub struct ScanResult {
     pub crs_url: Option<String>,
     /// The CityJSON header's `transform`, kept for the writer's requantisation.
     pub transform: serde_json::Value,
+    /// The CityJSON header's `extensions` declarations, verbatim (absent
+    /// stays `None`; an empty object stays an empty object).
+    pub extensions: Option<serde_json::Value>,
     /// Count of geometries with no `lod` string, on a dataset that also has
     /// LoD-bearing geometries. These are skipped from `lods` and
     /// `dataset_bbox` because there is no per-LoD column to place them in;
@@ -164,6 +167,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         dataset_bbox,
         crs_url,
         transform,
+        extensions: header.extensions.clone(),
         lodless_geometries,
         source_format: to_schema_source_format(source.format()),
         source_version: header.version.clone(),
@@ -191,7 +195,7 @@ impl ScanResult {
             source_version: Some(self.source_version.clone()),
             crs: self.crs_url.clone().map(serde_json::Value::String),
             transform: Some(self.transform.clone()),
-            extensions: None,
+            extensions: self.extensions.clone(),
             attribute_columns,
             reserved_columns,
             default_geometry,

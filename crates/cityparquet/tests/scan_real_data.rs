@@ -30,6 +30,42 @@ fn delft_scan_matches_known_content() {
 }
 
 #[test]
+fn extensions_declarations_reach_metadata() {
+    // Derived from the real railway fixture (same precedent as the Task 2
+    // sniff test): same content, plus a realistic extensions declaration —
+    // the shipped fixture's own `extensions` key is an empty object.
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["extensions"] = serde_json::json!({
+        "Noise": {
+            "url": "https://www.cityjson.org/extensions/download/noise.ext.json",
+            "version": "1.1.0"
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_noise.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let src = Source::open(&path).unwrap();
+    let s = scan(&src).unwrap();
+    let meta = s.metadata(&[]).unwrap();
+    let extensions = meta
+        .extensions
+        .expect("extensions declaration must survive the scan");
+    assert!(
+        extensions.get("Noise").is_some(),
+        "expected the Noise declaration in {extensions}"
+    );
+
+    // The delft header carries no extensions key at all; that absence must be
+    // preserved as None, not fabricated.
+    let delft = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let delft_meta = scan(&delft).unwrap().metadata(&[]).unwrap();
+    assert!(delft_meta.extensions.is_none());
+}
+
+#[test]
 fn railway_scan_is_representable() {
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
     let s = scan(&src).unwrap();
