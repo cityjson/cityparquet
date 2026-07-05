@@ -240,3 +240,123 @@ fn with_bbox_row_groups_prunes_a_tight_corner_query_but_keeps_the_whole_extent()
         "a bbox covering the whole dataset extent must keep every row"
     );
 }
+
+/// This row group's `bbox.<leaf>` Double statistic: `min` when `want_min`,
+/// else `max`. Panics if the chunk or statistic is missing — the recipe
+/// guarantees chunk statistics on every bbox leaf, so absence here is a
+/// writer regression the test should surface, not silently keep.
+fn bbox_stat(rg: &parquet::file::metadata::RowGroupMetaData, leaf: &str, want_min: bool) -> f64 {
+    use parquet::file::statistics::Statistics;
+    use parquet::schema::types::ColumnPath;
+    let path = ColumnPath::new(vec!["bbox".to_string(), leaf.to_string()]);
+    let stats = rg
+        .columns()
+        .iter()
+        .find(|c| c.column_path() == &path)
+        .unwrap_or_else(|| panic!("no column chunk for bbox.{leaf}"))
+        .statistics()
+        .unwrap_or_else(|| panic!("no statistics on bbox.{leaf}"));
+    let Statistics::Double(v) = stats else {
+        panic!("bbox.{leaf} statistics are not Double: {stats:?}");
+    };
+    let value = if want_min { v.min_opt() } else { v.max_opt() };
+    *value.unwrap_or_else(|| {
+        panic!(
+            "no {} value on bbox.{leaf}",
+            if want_min { "min" } else { "max" }
+        )
+    })
+}
+
+#[test]
+fn with_bbox_row_groups_selects_a_strict_subset_for_a_partial_band_query() {
+    // The corner/whole-extent test above only pins the extremes (0 kept /
+    // all kept); a contains-vs-intersects or axis-swap regression could slip
+    // through it. This test derives — from the file's own row-group
+    // statistics, never hardcoded coordinates — a y-band that the stats say
+    // intersects SOME but not ALL row groups, and asserts the reader keeps
+    // exactly the rows of that strict subset.
+    let out = convert_delft_small_row_groups();
+
+    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let scan_result = scan(&src).unwrap();
+    let dataset_bbox = scan_result.dataset_bbox.unwrap();
+
+    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let metadata = builder.metadata().clone();
+    let num_row_groups = metadata.num_row_groups();
+    assert!(
+        num_row_groups > 1,
+        "need multiple row groups to discriminate"
+    );
+
+    // Each row group's y interval per its own statistics.
+    let y_intervals: Vec<(f64, f64)> = (0..num_row_groups)
+        .map(|i| {
+            let rg = metadata.row_group(i);
+            (bbox_stat(rg, "ymin", true), bbox_stat(rg, "ymax", false))
+        })
+        .collect();
+
+    // Band = [global y-min, halfway to the second-lowest row-group ymin]:
+    // by construction it intersects the group(s) starting at the global
+    // minimum and, per the stats, excludes every group starting above the
+    // midpoint. Purely derived from the file, so it survives fixture and
+    // layout changes as long as the groups do not all share one ymin.
+    let mut starts: Vec<f64> = y_intervals.iter().map(|(lo, _)| *lo).collect();
+    starts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let global_lo = starts[0];
+    let next_lo = starts
+        .iter()
+        .copied()
+        .find(|&lo| lo > global_lo)
+        .expect("all row groups share the same bbox.ymin; no y-band can discriminate — fixture/layout no longer supports this test");
+    let band_hi = global_lo + (next_lo - global_lo) / 2.0;
+    let band: [f64; 6] = [
+        dataset_bbox[0],
+        global_lo,
+        dataset_bbox[2],
+        dataset_bbox[3],
+        band_hi,
+        dataset_bbox[5],
+    ];
+
+    // What the stats say the band should keep.
+    let expected_kept: Vec<usize> = (0..num_row_groups)
+        .filter(|&i| {
+            let (lo, hi) = y_intervals[i];
+            hi >= band[1] && lo <= band[4]
+        })
+        .collect();
+    let expected_rows: usize = expected_kept
+        .iter()
+        .map(|&i| metadata.row_group(i).num_rows() as usize)
+        .sum();
+    assert!(
+        !expected_kept.is_empty() && expected_kept.len() < num_row_groups,
+        "derived band must select a strict, non-empty subset per the stats; \
+         got {}/{num_row_groups} groups — fixture/layout no longer supports this test",
+        expected_kept.len()
+    );
+    eprintln!(
+        "partial y-band [{}, {}] keeps groups {expected_kept:?} of {num_row_groups} ({expected_rows} rows)",
+        band[1], band[4]
+    );
+
+    let band_builder = builder.with_bbox_row_groups(band).unwrap();
+    let band_rows: usize = band_builder
+        .build()
+        .unwrap()
+        .map(|b| b.unwrap().num_rows())
+        .sum();
+    assert!(
+        band_rows > 0 && band_rows < 2231,
+        "partial band should keep some but not all rows, got {band_rows}"
+    );
+    assert_eq!(
+        band_rows, expected_rows,
+        "reader kept different row groups than the statistics predict \
+         (expected groups {expected_kept:?} = {expected_rows} rows)"
+    );
+}

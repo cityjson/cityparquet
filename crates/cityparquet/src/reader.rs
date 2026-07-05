@@ -45,7 +45,12 @@ pub trait CityParquetReaderBuilder: Sized {
     /// field metadata re-attached) from this file's own KV metadata plus its
     /// actual column types — independent of whether the file happens to
     /// carry an embedded `ARROW:schema` entry, so it works for any
-    /// CityParquet-conformant writer, not just this crate's.
+    /// CityParquet-conformant writer, not just this crate's. One caveat: the
+    /// Json-vs-String disambiguation of Utf8 attribute columns relies on the
+    /// `arrow.json` field tag inside the embedded `ARROW:schema` metadata, so
+    /// files from writers that do not embed it degrade Json attributes to
+    /// String (the reserved JSON columns are unaffected — those are re-tagged
+    /// by name).
     fn cityparquet_arrow_schema(&self) -> Result<Arc<Schema>>;
 
     /// Restrict this builder to row groups whose `bbox.{x,y,z}{min,max}`
