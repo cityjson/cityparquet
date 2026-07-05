@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use arrow_array::{Array, BinaryArray, StringArray};
 use cityparquet::encode::encode;
 use cityparquet::scan::scan;
 use cityparquet::source::Source;
@@ -45,6 +46,85 @@ fn railway_encodes_with_semantics_and_templates() {
         .unwrap();
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 121);
+}
+
+#[test]
+fn delft_records_per_shell_face_partition_for_solids() {
+    // delft.city.jsonl carries plain `Solid` geometry (no MultiSolid /
+    // CompositeSolid), so its WKB is a single top-level PolyhedralSurfaceZ:
+    // the face count sits at bytes 5..9 of the geometry_lod* bytes for the
+    // SAME row, letting us check `solid_shell_faces` against ground truth
+    // without re-deriving it from the CityJSON boundaries.
+    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let s = scan(&src).unwrap();
+    let batches: Vec<_> = encode(&src, &s, 512)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    let mut checked = 0usize;
+    for batch in &batches {
+        let schema = batch.schema();
+        for field in schema.fields() {
+            let name = field.name().as_str();
+            let Some(suffix) = name.strip_prefix("geometry_properties") else {
+                continue;
+            };
+            let geom_col_name = format!("geometry{suffix}");
+            let Some(geom_col) = batch.column_by_name(&geom_col_name) else {
+                continue;
+            };
+            let props = batch
+                .column_by_name(name)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let geom = geom_col.as_any().downcast_ref::<BinaryArray>().unwrap();
+
+            for row in 0..batch.num_rows() {
+                if props.is_null(row) {
+                    continue;
+                }
+                let json: serde_json::Value = serde_json::from_str(props.value(row)).unwrap();
+                if json.get("type").and_then(|t| t.as_str()) != Some("Solid") {
+                    continue;
+                }
+
+                let faces = json
+                    .get("solid_shell_faces")
+                    .unwrap_or_else(|| {
+                        panic!("solid_shell_faces missing for Solid row {row} in {name}")
+                    })
+                    .as_array()
+                    .expect("solid_shell_faces must be a JSON array");
+                assert!(!faces.is_empty(), "solid_shell_faces must be non-empty");
+                let mut sum: u64 = 0;
+                for f in faces {
+                    let n = f
+                        .as_u64()
+                        .expect("solid_shell_faces entries must be positive integers");
+                    assert!(n > 0, "solid_shell_faces entries must be positive");
+                    sum += n;
+                }
+
+                assert!(!geom.is_null(row), "Solid row must carry geometry bytes");
+                let wkb = geom.value(row);
+                assert!(wkb.len() >= 9, "WKB too short to hold a header");
+                let face_count = u32::from_le_bytes(wkb[5..9].try_into().unwrap()) as u64;
+                assert_eq!(
+                    sum, face_count,
+                    "sum of solid_shell_faces must equal the WKB PolyhedralSurfaceZ face count"
+                );
+
+                checked += 1;
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "expected at least one Solid row across all geometry_properties* columns"
+    );
 }
 
 #[test]

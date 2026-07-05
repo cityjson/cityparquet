@@ -115,37 +115,61 @@ fn resolve_bbox(
     descendant_bbox(co, feature, pool, &mut visited)
 }
 
-/// `solid_shell_counts`: number of shells per solid, only meaningful for
+/// `solid_shell_counts` + `solid_shell_faces` payload, only meaningful for
 /// Solid/MultiSolid/CompositeSolid (what the WKB `PolyhedralSurfaceZ`
-/// flattening loses). `None` for every other geometry type.
-fn solid_shell_counts(geom: &Geometry) -> Result<Option<Vec<usize>>> {
+/// flattening loses): the former is the number of shells per solid, the
+/// latter the number of faces per shell — enough for a reader to
+/// re-partition a flattened `PolyhedralSurfaceZ` back into shells.
+struct SolidShellInfo {
+    /// `solid_shell_counts`: number of shells per solid.
+    counts: Vec<usize>,
+    /// `solid_shell_faces`: `[n_faces_shell0, ...]` for `Solid`, or one such
+    /// array per solid (nested) for `MultiSolid`/`CompositeSolid`.
+    faces: Value,
+}
+
+fn solid_shell_info(geom: &Geometry) -> Result<Option<SolidShellInfo>> {
     match geom.thetype {
         GeometryType::Solid => {
             let shells: Vec<Vec<Vec<Vec<usize>>>> =
                 serde_json::from_value(geom.boundaries.clone())?;
-            Ok(Some(vec![shells.len()]))
+            let faces: Vec<usize> = shells.iter().map(|shell| shell.len()).collect();
+            Ok(Some(SolidShellInfo {
+                counts: vec![shells.len()],
+                faces: serde_json::to_value(faces)?,
+            }))
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
             let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
                 serde_json::from_value(geom.boundaries.clone())?;
-            Ok(Some(solids.iter().map(|s| s.len()).collect()))
+            let counts = solids.iter().map(|s| s.len()).collect();
+            let faces: Vec<Vec<usize>> = solids
+                .iter()
+                .map(|solid| solid.iter().map(|shell| shell.len()).collect())
+                .collect();
+            Ok(Some(SolidShellInfo {
+                counts,
+                faces: serde_json::to_value(faces)?,
+            }))
         }
         _ => Ok(None),
     }
 }
 
-/// `geometry_properties_lod*` JSON: `{"type", "semantics"?, "solid_shell_counts"?}`.
+/// `geometry_properties_lod*` JSON: `{"type", "semantics"?,
+/// "solid_shell_counts"?, "solid_shell_faces"?}`.
 fn geometry_properties_json(geom: &Geometry) -> Result<String> {
     let mut map = serde_json::Map::new();
     map.insert("type".to_string(), serde_json::to_value(&geom.thetype)?);
     if let Some(semantics) = &geom.semantics {
         map.insert("semantics".to_string(), semantics.clone());
     }
-    if let Some(counts) = solid_shell_counts(geom)? {
+    if let Some(info) = solid_shell_info(geom)? {
         map.insert(
             "solid_shell_counts".to_string(),
-            serde_json::to_value(counts)?,
+            serde_json::to_value(info.counts)?,
         );
+        map.insert("solid_shell_faces".to_string(), info.faces);
     }
     Ok(serde_json::to_string(&Value::Object(map))?)
 }
