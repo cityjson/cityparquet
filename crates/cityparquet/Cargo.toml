@@ -8,3 +8,15 @@ repository.workspace = true
 
 [dependencies]
 cityparquet-schema = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-buffer = { workspace = true }
+parquet = { workspace = true }
+cjseq = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+wkb = { workspace = true }
+geo-traits = { workspace = true }
+tempfile = { workspace = true }
