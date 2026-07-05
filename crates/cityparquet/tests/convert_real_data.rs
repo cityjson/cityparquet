@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use cityparquet::package::{ConvertOptions, convert};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::basic::Encoding;
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,6 +35,19 @@ fn delft_full_convert_round_trips_through_parquet() {
         .find(|c| c.column_path().string() == "bbox.xmin")
         .expect("bbox.xmin column chunk");
     assert!(bbox_xmin_col.statistics().is_some());
+    // The recipe pins bbox leaves to BYTE_STREAM_SPLIT with dictionary
+    // encoding off; this only holds if the recipe's per-column
+    // `ColumnPath` for "bbox.xmin" actually matches the physical column's
+    // nested path (`["bbox", "xmin"]`), not a single dotted-string part.
+    let bbox_xmin_encodings: Vec<Encoding> = bbox_xmin_col.encodings().collect();
+    assert!(
+        bbox_xmin_encodings.contains(&Encoding::BYTE_STREAM_SPLIT),
+        "expected BYTE_STREAM_SPLIT on bbox.xmin, got {bbox_xmin_encodings:?}"
+    );
+    assert!(
+        !bbox_xmin_encodings.contains(&Encoding::RLE_DICTIONARY),
+        "bbox.xmin should have dictionary encoding disabled, got {bbox_xmin_encodings:?}"
+    );
     let rows: usize = builder
         .build()
         .unwrap()

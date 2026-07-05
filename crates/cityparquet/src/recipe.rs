@@ -121,7 +121,13 @@ impl WriterRecipe {
         }
 
         for leaf in BBOX_LEAVES {
-            let path = ColumnPath::from(format!("bbox.{leaf}"));
+            // `ColumnPath::from(String)` does NOT split on `.` — it produces
+            // a single-part path. The physical column's path is the nested
+            // struct path `["bbox", leaf]`, so the path must be built with
+            // `ColumnPath::new` over the two parts, or these properties are
+            // silently never applied (dead code, keyed to a path that never
+            // matches any real column).
+            let path = ColumnPath::new(vec!["bbox".to_string(), leaf.to_string()]);
             builder = builder
                 .set_column_encoding(path.clone(), Encoding::BYTE_STREAM_SPLIT)
                 .set_column_statistics_enabled(path.clone(), EnabledStatistics::Chunk)
@@ -205,17 +211,22 @@ mod tests {
         );
 
         // bbox leaves: BYTE_STREAM_SPLIT, chunk statistics, dictionary off.
+        // Queried with the same nested-struct `ColumnPath::new(["bbox", leaf])`
+        // the recipe now writes properties under — `ColumnPath::from` a
+        // dotted string does NOT split on `.` and would silently miss these.
+        let bbox_xmin = ColumnPath::new(vec!["bbox".to_string(), "xmin".to_string()]);
+        let bbox_zmax = ColumnPath::new(vec!["bbox".to_string(), "zmax".to_string()]);
         assert_eq!(
-            props.encoding(&ColumnPath::from("bbox.xmin")),
+            props.encoding(&bbox_xmin),
             Some(Encoding::BYTE_STREAM_SPLIT)
         );
         assert_eq!(
-            props.statistics_enabled(&ColumnPath::from("bbox.xmin")),
+            props.statistics_enabled(&bbox_xmin),
             EnabledStatistics::Chunk
         );
-        assert!(!props.dictionary_enabled(&ColumnPath::from("bbox.xmin")));
+        assert!(!props.dictionary_enabled(&bbox_xmin));
         assert_eq!(
-            props.encoding(&ColumnPath::from("bbox.zmax")),
+            props.encoding(&bbox_zmax),
             Some(Encoding::BYTE_STREAM_SPLIT)
         );
 

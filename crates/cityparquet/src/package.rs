@@ -105,6 +105,8 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
             opts.output_dir.display()
         )));
     }
+    // TODO(M4): purge stale files on overwrite once sidecars exist — a stale
+    // sidecar must not outlive a manifest that says sidecar_files: [].
 
     let source = Source::open(&opts.input)?;
     let scan_result = scan(&source)?;
