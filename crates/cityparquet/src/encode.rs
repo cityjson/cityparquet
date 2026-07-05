@@ -802,3 +802,37 @@ pub fn encode<'a>(
         stats: EncodeStats::default(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No fixture carries MultiSolid/CompositeSolid, so the nested
+    /// `solid_shell_faces` branch gets direct coverage here: 2 solids —
+    /// first with shells of (1, 2) faces, second with one 1-face shell.
+    /// Nesting is the real 5-level MultiSolid shape:
+    /// solids → shells → surfaces → rings → indices.
+    #[test]
+    fn multisolid_shell_faces_nest_per_solid() {
+        let geom = Geometry {
+            thetype: GeometryType::MultiSolid,
+            lod: Some("2".into()),
+            boundaries: serde_json::json!([
+                [[[[0, 1, 2]]], [[[0, 1, 2]], [[0, 1, 3]]]],
+                [[[[0, 2, 3]]]]
+            ]),
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        let info = solid_shell_info(&geom).unwrap().expect("MultiSolid info");
+        assert_eq!(info.counts, vec![2, 1]);
+        assert_eq!(info.faces, serde_json::json!([[1, 2], [1]]));
+
+        let props: Value = serde_json::from_str(&geometry_properties_json(&geom).unwrap()).unwrap();
+        assert_eq!(props["solid_shell_counts"], serde_json::json!([2, 1]));
+        assert_eq!(props["solid_shell_faces"], serde_json::json!([[1, 2], [1]]));
+    }
+}
