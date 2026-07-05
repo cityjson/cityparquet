@@ -68,6 +68,14 @@ fn err(msg: String) -> CityParquetError {
     CityParquetError::Schema(msg)
 }
 
+fn io_err(msg: String) -> CityParquetError {
+    CityParquetError::Io(msg)
+}
+
+fn parquet_err(msg: String) -> CityParquetError {
+    CityParquetError::Parquet(msg)
+}
+
 /// Convert `opts.input` (CityJSON or CityJSONSeq) into a CityParquet package
 /// directory at `opts.output_dir`: one scan pass to infer the schema and
 /// dataset metadata, one encode pass streamed straight into an `ArrowWriter`
@@ -85,14 +93,14 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
     }
 
     fs::create_dir_all(&opts.output_dir).map_err(|e| {
-        err(format!(
+        io_err(format!(
             "cannot create output directory {}: {e}",
             opts.output_dir.display()
         ))
     })?;
     let has_entries = fs::read_dir(&opts.output_dir)
         .map_err(|e| {
-            err(format!(
+            io_err(format!(
                 "cannot read output directory {}: {e}",
                 opts.output_dir.display()
             ))
@@ -128,16 +136,16 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
 
     let cityobjects_path = opts.output_dir.join(CITYOBJECTS_TABLE);
     let file = fs::File::create(&cityobjects_path)
-        .map_err(|e| err(format!("cannot create {}: {e}", cityobjects_path.display())))?;
+        .map_err(|e| io_err(format!("cannot create {}: {e}", cityobjects_path.display())))?;
     let mut writer = ArrowWriter::try_new(file, arrow_schema, Some(props))
-        .map_err(|e| err(format!("cannot open parquet writer: {e}")))?;
+        .map_err(|e| parquet_err(format!("cannot open parquet writer: {e}")))?;
 
     let mut batches = encode(&source, &scan_result, opts.batch_size)?;
     for batch in batches.by_ref() {
         let batch = batch?;
         writer
             .write(&batch)
-            .map_err(|e| err(format!("parquet write error: {e}")))?;
+            .map_err(|e| parquet_err(format!("parquet write error: {e}")))?;
     }
     // `by_ref()` above means `batches` is still ours to read stats from —
     // consuming it by value (e.g. plain `.collect()`) would have dropped it
@@ -145,7 +153,7 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
     let encode_stats = batches.stats();
     writer
         .close()
-        .map_err(|e| err(format!("cannot finalise parquet file: {e}")))?;
+        .map_err(|e| parquet_err(format!("cannot finalise parquet file: {e}")))?;
 
     let manifest = PackageManifest {
         cityparquet_version: CITYPARQUET_VERSION.to_string(),
@@ -156,7 +164,7 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
     };
     let metadata_path = opts.output_dir.join("metadata.json");
     fs::write(&metadata_path, serde_json::to_string_pretty(&manifest)?)
-        .map_err(|e| err(format!("cannot write {}: {e}", metadata_path.display())))?;
+        .map_err(|e| io_err(format!("cannot write {}: {e}", metadata_path.display())))?;
 
     Ok(ConvertReport {
         object_count: scan_result.object_count,

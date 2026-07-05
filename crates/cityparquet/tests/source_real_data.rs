@@ -45,6 +45,23 @@ fn minified_doc_with_trailing_newline_is_not_seq() {
 }
 
 #[test]
+fn header_line_sniff_does_not_need_the_rest_of_the_file() {
+    // Derived from the real delft fixture: only its first two lines (header +
+    // one feature). Proves `Source::open`'s format sniff classifies Seq from
+    // just the header line and the proof of a following non-empty line,
+    // without needing (or reading) the rest of the file.
+    let content = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let first_two_lines: String = content.lines().take(2).collect::<Vec<_>>().join("\n");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delft_head.city.jsonl");
+    std::fs::write(&path, first_two_lines).unwrap();
+    let src = Source::open(&path).unwrap();
+    assert_eq!(src.format(), SourceFormat::CityJsonSeq);
+    let n = src.features().unwrap().count();
+    assert_eq!(n, 1);
+}
+
+#[test]
 fn railway_doc_yields_features_with_local_vertices() {
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
     assert_eq!(src.format(), SourceFormat::CityJson);

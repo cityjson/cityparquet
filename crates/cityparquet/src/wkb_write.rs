@@ -37,13 +37,13 @@ impl<'a> VertexPool<'a> {
 
     pub fn coord(&self, idx: usize) -> Result<[f64; 3]> {
         let v = self.vertices.get(idx).ok_or_else(|| {
-            CityParquetError::Schema(format!(
+            CityParquetError::Geometry(format!(
                 "vertex index {idx} out of range ({} vertices)",
                 self.vertices.len()
             ))
         })?;
         if v.len() < 3 {
-            return Err(CityParquetError::Schema(format!(
+            return Err(CityParquetError::Geometry(format!(
                 "vertex {idx} has {} components",
                 v.len()
             )));
@@ -105,7 +105,7 @@ fn coord(buf: &mut Vec<u8>, c: [f64; 3], bbox: &mut Bbox) {
 
 fn boundaries<T: serde::de::DeserializeOwned>(geom: &Geometry) -> Result<T> {
     serde_json::from_value(geom.boundaries.clone()).map_err(|e| {
-        CityParquetError::Schema(format!(
+        CityParquetError::Geometry(format!(
             "boundaries do not match {:?} shape: {e}",
             geom.thetype
         ))
@@ -123,7 +123,7 @@ fn polygon(
     u32le(buf, rings.len());
     for ring in rings {
         if ring.len() < 3 {
-            return Err(CityParquetError::Schema(format!(
+            return Err(CityParquetError::Geometry(format!(
                 "ring has {} vertex indices, need at least 3 to form a polygon ring",
                 ring.len()
             )));
@@ -257,7 +257,11 @@ mod tests {
         let (v, t) = pool_and(0.001);
         let pool = VertexPool::new(&v, &t);
         assert_eq!(pool.coord(1).unwrap(), [11.0, 20.0, 30.0]);
-        assert!(pool.coord(99).is_err());
+        let err = pool.coord(99).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Geometry(_)),
+            "expected Geometry error for out-of-range vertex index, got {err:?}"
+        );
     }
 
     #[test]
@@ -303,6 +307,10 @@ mod tests {
             transformation_matrix: None,
         };
         let err = geometry_to_wkb(&geom, &pool).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Geometry(_)),
+            "expected Geometry error for a too-short ring, got {err:?}"
+        );
         let msg = err.to_string();
         assert!(
             msg.contains("3") || msg.to_lowercase().contains("ring"),

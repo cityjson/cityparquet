@@ -18,6 +18,12 @@ pub enum CityParquetError {
     Attribute(String),
     #[error("invalid LoD: {0}")]
     Lod(String),
+    #[error("io error: {0}")]
+    Io(String),
+    #[error("geometry error: {0}")]
+    Geometry(String),
+    #[error("parquet error: {0}")]
+    Parquet(String),
 }
 
 pub type Result<T> = std::result::Result<T, CityParquetError>;
@@ -48,5 +54,11 @@ mod tests {
     fn metadata_error_displays_context() {
         let e = CityParquetError::Metadata("missing key cityparquet_version".into());
         assert!(e.to_string().contains("cityparquet_version"));
+    }
+
+    #[test]
+    fn io_error_displays_context() {
+        let e = CityParquetError::Io("x".into());
+        assert!(e.to_string().contains("io error"));
     }
 }
