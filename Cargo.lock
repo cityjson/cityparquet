@@ -18,12 +18,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f633dbfdf39c039ada1bf9e34c694816eb71fbb7dc78f613993b7245e078a1ed"
 
 [[package]]
-name = "arrow-schema"
-version = "59.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80b3e786a0dd9103acd583a6fb486dbf2f3268466cc0bd571dcf34cef231c1f1"
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -47,7 +41,7 @@ dependencies = [
 name = "cityparquet-schema"
 version = "0.1.0"
 dependencies = [
- "arrow-schema 59.0.0",
+ "arrow-schema",
  "geoarrow-schema",
  "serde",
  "serde_json",
@@ -80,7 +74,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4d4a7edb2a1d87024a93805332a9c8184a0354836271d42c0d18cf628a5e3cd0"
 dependencies = [
- "arrow-schema 58.3.0",
+ "arrow-schema",
  "geo-traits",
  "serde",
  "serde_json",
