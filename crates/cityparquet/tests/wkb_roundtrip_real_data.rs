@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use cityparquet::CityParquetError;
 use cityparquet::source::Source;
 use cityparquet::wkb_read::{DecodedKind, wkb_to_geometry};
 use cityparquet::wkb_write::{VertexPool, geometry_to_wkb};
@@ -153,17 +154,64 @@ fn assert_kind_matches_source(
     }
 }
 
+/// True when any ring in a surface-bearing geometry has fewer than 3
+/// effective vertices (its index count, minus one when the source ring is
+/// already index-closed). The writer currently emits such rings verbatim as
+/// degenerate closed WKB rings (e.g. `[a, b, a]` becomes a 3-point closed
+/// ring with only 2 distinct vertices), which the hardened reader rejects —
+/// a known writer/reader gap; see the task 3 report.
+fn has_degenerate_source_ring(geom: &Geometry) -> bool {
+    fn ring_is_degenerate(ring: &[usize]) -> bool {
+        let effective = if ring.len() >= 2 && ring.first() == ring.last() {
+            ring.len() - 1
+        } else {
+            ring.len()
+        };
+        effective < 3
+    }
+    match geom.thetype {
+        GeometryType::MultiSurface | GeometryType::CompositeSurface => {
+            let surfaces: Vec<Vec<Vec<usize>>> =
+                serde_json::from_value(geom.boundaries.clone()).unwrap();
+            surfaces.iter().flatten().any(|r| ring_is_degenerate(r))
+        }
+        GeometryType::Solid => {
+            let shells: Vec<Vec<Vec<Vec<usize>>>> =
+                serde_json::from_value(geom.boundaries.clone()).unwrap();
+            shells
+                .iter()
+                .flatten()
+                .flatten()
+                .any(|r| ring_is_degenerate(r))
+        }
+        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
+            let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
+                serde_json::from_value(geom.boundaries.clone()).unwrap();
+            solids
+                .iter()
+                .flatten()
+                .flatten()
+                .flatten()
+                .any(|r| ring_is_degenerate(r))
+        }
+        _ => false,
+    }
+}
+
 /// Streams every geometry of every feature in `path` through
 /// `geometry_to_wkb` then `wkb_to_geometry`, checking the round trip is
 /// lossless: kind matches the source `GeometryType`, every ring/face/line
 /// count matches the source boundaries exactly, and every decoded
 /// coordinate equals the `VertexPool`-dequantised source coordinate
-/// bitwise. Returns the number of non-`GeometryInstance` geometries that
-/// actually produced WKB bytes.
-fn process_all(path: &Path) -> usize {
+/// bitwise. Geometries whose source contains a degenerate ring (< 3
+/// effective vertices) are instead asserted to be REJECTED by the reader —
+/// the writer currently emits them as degenerate WKB rings — and counted
+/// separately. Returns `(round_tripped, rejected_degenerate)`.
+fn process_all(path: &Path) -> (usize, usize) {
     let src = Source::open(path).unwrap();
     let header = src.header();
     let mut processed = 0usize;
+    let mut rejected_degenerate = 0usize;
 
     for feature in src.features().unwrap() {
         let feature = feature.unwrap();
@@ -186,6 +234,24 @@ fn process_all(path: &Path) -> usize {
                     // Empty boundaries: writer intentionally emits nothing.
                     continue;
                 };
+
+                if has_degenerate_source_ring(geom) {
+                    // Known writer/reader gap: the writer emits degenerate
+                    // rings verbatim; the hardened reader must refuse them
+                    // with the ring-size error rather than decode garbage.
+                    let err = wkb_to_geometry(&bytes).unwrap_err();
+                    assert!(
+                        matches!(err, CityParquetError::Geometry(_)),
+                        "degenerate ring must be a Geometry error, got {err:?}"
+                    );
+                    assert!(
+                        err.to_string().contains("at least 3"),
+                        "degenerate ring should fail the ring-size check, got: {err}"
+                    );
+                    rejected_degenerate += 1;
+                    continue;
+                }
+
                 let decoded = wkb_to_geometry(&bytes).unwrap();
                 assert_kind_matches_source(&decoded.kind, &decoded.coords, geom, &pool);
                 processed += 1;
@@ -193,23 +259,31 @@ fn process_all(path: &Path) -> usize {
         }
     }
 
-    processed
+    (processed, rejected_degenerate)
 }
 
 #[test]
 fn delft_geometries_round_trip_through_wkb_reader() {
-    let processed = process_all(&fixture("delft.city.jsonl"));
+    let (processed, rejected) = process_all(&fixture("delft.city.jsonl"));
     assert!(
         processed > 2000,
         "expected >2000 geometries checked, got {processed}"
     );
+    assert_eq!(rejected, 0, "delft has no degenerate source rings");
 }
 
 #[test]
 fn railway_geometries_round_trip_through_wkb_reader() {
-    let processed = process_all(&fixture("lod3_railway.city.json"));
+    let (processed, rejected) = process_all(&fixture("lod3_railway.city.json"));
     assert!(
         processed > 100,
         "expected >100 geometries checked, got {processed}"
+    );
+    // lod3_railway carries 6 degenerate `[a, b, a]`-style source rings
+    // across 3 MultiSurface geometries; the reader must reject exactly
+    // those (writer/reader gap tracked in the task 3 report).
+    assert_eq!(
+        rejected, 3,
+        "expected exactly 3 geometries rejected for degenerate rings"
     );
 }

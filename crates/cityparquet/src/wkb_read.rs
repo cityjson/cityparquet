@@ -16,6 +16,12 @@ const MULTIPOLYGON_Z: u32 = 1006;
 const GEOMETRYCOLLECTION_Z: u32 = 1007;
 const POLYHEDRALSURFACE_Z: u32 = 1015;
 
+/// Maximum GeometryCollection nesting depth. Our writer only ever emits one
+/// level (MultiSolid → collection of PolyhedralSurface), but this reader
+/// will also see files we did not write: cap recursion instead of letting a
+/// hostile buffer overflow the stack.
+const MAX_DEPTH: usize = 16;
+
 /// A decoded WKB geometry: a shared, deduplicated coordinate pool plus a
 /// `kind` whose indices point into it.
 #[derive(Debug, Clone, PartialEq)]
@@ -169,7 +175,11 @@ impl<'a> Cursor<'a> {
 
     /// PolygonZ body (no header — caller already consumed it): numRings +
     /// each ring's numPoints + points. The WKB ring-closing vertex (WKB
-    /// rings repeat their first coordinate as the last) is stripped.
+    /// rings repeat their first coordinate as the last) is validated —
+    /// bitwise, via the interner: a closing vertex only shares the first
+    /// point's pool index if their bits match — then stripped. A ring that
+    /// is not closed, or that has fewer than 3 points once stripped, is
+    /// malformed.
     fn parse_polygon_body(&mut self) -> Result<Vec<Vec<usize>>> {
         let n_rings = self.read_u32()? as usize;
         let mut rings = Vec::new();
@@ -182,7 +192,18 @@ impl<'a> Cursor<'a> {
             for _ in 0..n_points {
                 pts.push(self.read_coord_index()?);
             }
+            if pts.last() != pts.first() {
+                return Err(geometry_err(format!(
+                    "unclosed WKB ring: last of {n_points} points does not repeat the first"
+                )));
+            }
             pts.pop(); // strip the WKB ring-closing vertex
+            if pts.len() < 3 {
+                return Err(geometry_err(format!(
+                    "polygon ring has {} points after stripping the closing vertex, need at least 3",
+                    pts.len()
+                )));
+            }
             rings.push(pts);
         }
         Ok(rings)
@@ -207,9 +228,16 @@ impl<'a> Cursor<'a> {
     }
 
     /// Dispatches on a just-read type code to the matching body parser.
-    /// Used both for the top-level geometry and for GeometryCollection
-    /// members (which are themselves complete nested WKB geometries).
-    fn parse_body(&mut self, type_code: u32) -> Result<DecodedKind> {
+    /// Used both for the top-level geometry (depth 0) and for
+    /// GeometryCollection members (which are themselves complete nested WKB
+    /// geometries, one depth level down). Recursion is capped at
+    /// [`MAX_DEPTH`] so a hostile buffer cannot overflow the stack.
+    fn parse_body(&mut self, type_code: u32, depth: usize) -> Result<DecodedKind> {
+        if depth > MAX_DEPTH {
+            return Err(geometry_err(format!(
+                "WKB geometry nesting exceeds the maximum depth of {MAX_DEPTH}"
+            )));
+        }
         match type_code {
             MULTIPOINT_Z => {
                 let n = self.read_u32()? as usize;
@@ -236,7 +264,7 @@ impl<'a> Cursor<'a> {
                 let mut members = Vec::new();
                 for _ in 0..n {
                     let member_tc = self.read_header()?;
-                    members.push(self.parse_body(member_tc)?);
+                    members.push(self.parse_body(member_tc, depth + 1)?);
                 }
                 Ok(DecodedKind::GeometryCollection(members))
             }
@@ -254,7 +282,14 @@ impl<'a> Cursor<'a> {
 pub fn wkb_to_geometry(bytes: &[u8]) -> Result<DecodedGeometry> {
     let mut cursor = Cursor::new(bytes);
     let type_code = cursor.read_header()?;
-    let kind = cursor.parse_body(type_code)?;
+    let kind = cursor.parse_body(type_code, 0)?;
+    if cursor.pos != bytes.len() {
+        return Err(geometry_err(format!(
+            "trailing bytes: {} bytes remain after a complete WKB geometry of {} bytes",
+            bytes.len() - cursor.pos,
+            cursor.pos
+        )));
+    }
     Ok(DecodedGeometry {
         coords: cursor.interner.coords,
         kind,
@@ -483,5 +518,114 @@ mod tests {
     fn read_point_round_trips() {
         let bytes = point_to_wkb([1.0, 2.0, 3.0]);
         assert_eq!(read_point(&bytes).unwrap(), [1.0, 2.0, 3.0]);
+    }
+
+    /// A valid single-ring MultiSurface WKB buffer from the shared pool.
+    fn valid_multisurface_bytes() -> Vec<u8> {
+        let (v, t) = pool_and(1.0);
+        let pool = VertexPool::new(&v, &t);
+        let src = geom(
+            cjseq::GeometryType::MultiSurface,
+            serde_json::json!([[[0, 1, 2, 3]]]),
+        );
+        geometry_to_wkb(&src, &pool).unwrap().unwrap().0
+    }
+
+    /// A hand-built MultiPolygonZ buffer with one polygon, one ring made of
+    /// the given raw coordinates (written verbatim, no auto-closing).
+    fn multipolygon_with_ring(coords: &[[f64; 3]]) -> Vec<u8> {
+        let mut buf = vec![0x01];
+        buf.extend_from_slice(&1006u32.to_le_bytes()); // MultiPolygonZ
+        buf.extend_from_slice(&1u32.to_le_bytes()); // numPolygons
+        buf.push(0x01);
+        buf.extend_from_slice(&1003u32.to_le_bytes()); // PolygonZ
+        buf.extend_from_slice(&1u32.to_le_bytes()); // numRings
+        buf.extend_from_slice(&(coords.len() as u32).to_le_bytes()); // numPoints
+        for c in coords {
+            for v in c {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        buf
+    }
+
+    #[test]
+    fn unclosed_ring_errors_instead_of_silently_dropping_a_vertex() {
+        // A ring whose last point does NOT bitwise-equal its first is not a
+        // valid WKB ring: the reader must refuse it rather than strip a real
+        // vertex. Corrupt the closing vertex of an otherwise valid buffer.
+        let mut bytes = valid_multisurface_bytes();
+        let n = bytes.len();
+        bytes[n - 1] ^= 0x3F; // perturb the z of the closing vertex
+        let err = wkb_to_geometry(&bytes).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Geometry(_)),
+            "unclosed ring must be a Geometry error, got {err:?}"
+        );
+        assert!(
+            err.to_string().to_lowercase().contains("unclosed"),
+            "error should name the unclosed ring, got: {err}"
+        );
+    }
+
+    #[test]
+    fn ring_with_fewer_than_3_points_after_stripping_errors() {
+        // numPoints = 1: the lone point trivially "closes" onto itself and
+        // stripping leaves 0 points.
+        let a = [1.0, 2.0, 3.0];
+        let err = wkb_to_geometry(&multipolygon_with_ring(&[a])).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Geometry(_)),
+            "1-point ring must be a Geometry error, got {err:?}"
+        );
+
+        // numPoints = 3 with last == first: closed, but stripping leaves only
+        // 2 points — not a polygon ring.
+        let b = [4.0, 5.0, 6.0];
+        let err = wkb_to_geometry(&multipolygon_with_ring(&[a, b, a])).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Geometry(_)),
+            "2-point decoded ring must be a Geometry error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn trailing_bytes_after_a_complete_geometry_error() {
+        let mut bytes = valid_multisurface_bytes();
+        assert!(wkb_to_geometry(&bytes).is_ok(), "baseline must parse");
+        bytes.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        let err = wkb_to_geometry(&bytes).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Geometry(_)),
+            "trailing bytes must be a Geometry error, got {err:?}"
+        );
+        assert!(
+            err.to_string().to_lowercase().contains("trailing"),
+            "error should name the trailing bytes, got: {err}"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_geometry_collections_error_instead_of_overflowing() {
+        // 20 nested GeometryCollectionZ headers, each declaring one member:
+        // past the depth cap this must be a Geometry error naming the
+        // nesting depth — not unbounded recursion (and never a truncation
+        // error reached only after recursing all the way down).
+        let mut bytes = Vec::new();
+        for _ in 0..20 {
+            bytes.push(0x01);
+            bytes.extend_from_slice(&1007u32.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+        }
+        let err = wkb_to_geometry(&bytes).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Geometry(_)),
+            "over-deep nesting must be a Geometry error, got {err:?}"
+        );
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("depth") || msg.contains("nest"),
+            "error should name the nesting depth, got: {err}"
+        );
     }
 }
