@@ -2,5 +2,6 @@
 //! Pure schema/metadata layer — no buffers, no parquet.
 
 pub mod error;
+pub mod types;
 
 pub use error::{CityParquetError, Result};
