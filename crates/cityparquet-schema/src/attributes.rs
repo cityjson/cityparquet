@@ -70,7 +70,11 @@ impl AttributeType {
             Self::Int64 => DataType::Int64,
             Self::Float64 => DataType::Float64,
             Self::Date => DataType::Date32,
-            Self::Timestamp => DataType::Timestamp(TimeUnit::Millisecond, None),
+            // CityJSON date-times are ISO 8601 instants with an offset (e.g. `Z`);
+            // the M2 encoder normalises every value to UTC before writing, so the
+            // column's declared timezone must say "UTC" — leaving it `None` would
+            // misdeclare these as timezone-naive wall-clock values in Parquet.
+            Self::Timestamp => DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
             Self::String => DataType::Utf8,
             Self::StringList => DataType::List(Field::new("item", DataType::Utf8, true).into()),
             Self::Json => DataType::Utf8,
@@ -222,5 +226,9 @@ mod tests {
             DataType::List(_)
         ));
         assert_eq!(AttributeType::Json.to_arrow(), DataType::Utf8);
+        assert_eq!(
+            AttributeType::Timestamp.to_arrow(),
+            DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into()))
+        );
     }
 }

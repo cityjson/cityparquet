@@ -2,7 +2,7 @@
 //! and inferred attributes, rendered as an Arrow schema with self-describing
 //! field metadata.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
@@ -10,7 +10,7 @@ use arrow_schema::{DataType, Field, Fields, Schema};
 use geoarrow_schema::{Crs, Metadata as GeoMetadata, WkbType};
 
 use crate::attributes::AttributeType;
-use crate::error::Result;
+use crate::error::{CityParquetError, Result};
 use crate::types::Lod;
 
 pub const ROLE_KEY: &str = "cityparquet:role";
@@ -76,7 +76,65 @@ fn string_list(name: &str) -> Field {
     )
 }
 
+/// Fixed reserved column names, independent of `lods`/`attributes`.
+const RESERVED_COLUMN_NAMES: &[&str] = &[
+    "id",
+    "feature_id",
+    "object_type",
+    "parents",
+    "children",
+    "children_roles",
+    "bbox",
+    "material",
+    "texture",
+    "template",
+    "other",
+];
+
 impl CityParquetSchema {
+    /// The reserved + per-LoD geometry column names for this schema instance,
+    /// i.e. every name an attribute column must not collide with.
+    fn reserved_and_geometry_column_names(&self) -> HashSet<String> {
+        let mut names: HashSet<String> = RESERVED_COLUMN_NAMES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        if self.lods.is_empty() {
+            names.insert("geometry".to_string());
+            names.insert("geometry_properties".to_string());
+        } else {
+            for lod in &self.lods {
+                let suffix = lod.column_suffix();
+                names.insert(format!("geometry_{suffix}"));
+                names.insert(format!("geometry_properties_{suffix}"));
+            }
+        }
+        names
+    }
+
+    /// Reject schemas that can't be rendered unambiguously: duplicate LoDs, or
+    /// an attribute name colliding with a reserved or geometry column name.
+    fn validate(&self) -> Result<()> {
+        let mut seen_lods = HashSet::new();
+        for lod in &self.lods {
+            if !seen_lods.insert(*lod) {
+                return Err(CityParquetError::Schema(format!(
+                    "duplicate LoD in schema: {lod}"
+                )));
+            }
+        }
+
+        let reserved = self.reserved_and_geometry_column_names();
+        for (name, _) in &self.attributes {
+            if reserved.contains(name) {
+                return Err(CityParquetError::Schema(format!(
+                    "attribute column '{name}' collides with a reserved or geometry column name"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn geometry_field(&self, name: &str, lod: Option<&Lod>) -> Field {
         let crs = match &self.crs {
             Some(projjson) => Crs::from_projjson(projjson.clone()),
@@ -93,6 +151,8 @@ impl CityParquetSchema {
 
     /// Render the Arrow schema, columns in spec order.
     pub fn to_arrow_schema(&self) -> Result<Schema> {
+        self.validate()?;
+
         let mut fields: Vec<Field> = vec![
             reserved(Field::new("id", DataType::Utf8, false)),
             reserved(Field::new("feature_id", DataType::Utf8, true)),
@@ -293,5 +353,43 @@ mod tests {
         .unwrap();
         assert!(schema.field_with_name("geometry").is_ok());
         assert!(schema.field_with_name("geometry_properties").is_ok());
+    }
+
+    #[test]
+    fn attribute_colliding_with_reserved_column_is_an_error() {
+        for bad_name in ["id", "material"] {
+            let schema = CityParquetSchema {
+                lods: vec![],
+                attributes: vec![(bad_name.to_string(), AttributeType::String)],
+                crs: None,
+            };
+            let err = schema.to_arrow_schema().unwrap_err();
+            assert!(
+                matches!(err, crate::error::CityParquetError::Schema(_)),
+                "expected Schema error for attribute {bad_name}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_lods_are_an_error() {
+        let schema = CityParquetSchema {
+            lods: vec![Lod::parse("2").unwrap(), Lod::parse("2").unwrap()],
+            attributes: vec![],
+            crs: None,
+        };
+        let err = schema.to_arrow_schema().unwrap_err();
+        assert!(matches!(err, crate::error::CityParquetError::Schema(_)));
+    }
+
+    #[test]
+    fn attribute_colliding_with_geometry_column_is_an_error() {
+        let schema = CityParquetSchema {
+            lods: vec![Lod::parse("2.2").unwrap()],
+            attributes: vec![("geometry_lod2_2".to_string(), AttributeType::String)],
+            crs: None,
+        };
+        let err = schema.to_arrow_schema().unwrap_err();
+        assert!(matches!(err, crate::error::CityParquetError::Schema(_)));
     }
 }

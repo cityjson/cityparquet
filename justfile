@@ -7,8 +7,11 @@ lint:
 fmt:
     cargo fmt --all
 
-check: lint test
+check: lint test isolation
     cargo fmt --all --check
+
+isolation:
+    cargo tree -p cityparquet-schema --prefix none | grep -E '^(arrow-array|arrow |parquet) ' && exit 1 || echo "isolation ok"
 
 fixtures:
     mkdir -p tests/fixtures

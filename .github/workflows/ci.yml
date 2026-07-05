@@ -15,3 +15,4 @@ jobs:
       - uses: extractions/setup-just@v2
       - run: just fixtures
       - run: cargo test --workspace
+      - run: just isolation

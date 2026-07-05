@@ -44,6 +44,15 @@ pub struct CityParquetMetadata {
 impl CityParquetMetadata {
     /// Serialise to Parquet key-value pairs. Scalar strings are stored plain;
     /// structured values are stored as JSON text, matching the spec's key table.
+    ///
+    /// On-disk contract (binding for external implementers): a scalar string
+    /// value is written verbatim UNLESS its content also parses as a
+    /// standalone JSON value (a number, a boolean, `null`, an array, an
+    /// object, or a quoted string) — in that ambiguous case it is JSON-encoded
+    /// instead, so e.g. the string `"2.0"` is written as the JSON text `"\"2.0\""`
+    /// rather than the bare text `2.0`, which would otherwise read back as a
+    /// number. Every other (non-string) value is always JSON-encoded.
+    /// [`Self::from_key_values`] applies the symmetric probe on read.
     pub fn to_key_values(&self) -> Result<Vec<(String, String)>> {
         let object = match serde_json::to_value(self)? {
             Value::Object(map) => map,

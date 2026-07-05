@@ -9,6 +9,7 @@ repository.workspace = true
 [[bin]]
 name = "cityparquet"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 cityparquet-schema = { workspace = true }
