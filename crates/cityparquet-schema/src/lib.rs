@@ -3,6 +3,7 @@
 
 pub mod attributes;
 pub mod error;
+pub mod metadata;
 pub mod types;
 
 pub use error::{CityParquetError, Result};
