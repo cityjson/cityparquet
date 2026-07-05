@@ -105,6 +105,30 @@ impl AttributeType {
             Self::Json => DataType::Utf8,
         }
     }
+
+    /// Reverse of [`Self::to_arrow`]: the `AttributeType` a stored column's
+    /// arrow `DataType` was encoded from (the M3 reader's schema rebuild).
+    ///
+    /// `DataType::Utf8` is inherently ambiguous — both [`Self::String`] and
+    /// [`Self::Json`] serialise to it — so this always resolves that case to
+    /// `String`. A caller that can see the field's own metadata (the
+    /// `arrow.json` `ARROW:extension:name`, attached by
+    /// `cityparquet_schema::model`'s `json_field`) must upgrade the result to
+    /// `Json` itself; a bare `DataType` carries no such signal.
+    pub fn from_arrow(data_type: &DataType) -> Option<Self> {
+        match data_type {
+            DataType::Boolean => Some(Self::Boolean),
+            DataType::Int64 => Some(Self::Int64),
+            DataType::Float64 => Some(Self::Float64),
+            DataType::Date32 => Some(Self::Date),
+            DataType::Timestamp(TimeUnit::Millisecond, Some(tz)) if tz.as_ref() == "UTC" => {
+                Some(Self::Timestamp)
+            }
+            DataType::Utf8 => Some(Self::String),
+            DataType::List(field) if field.data_type() == &DataType::Utf8 => Some(Self::StringList),
+            _ => None,
+        }
+    }
 }
 
 /// Accumulates attribute observations across features (writer pass 1).
@@ -279,6 +303,52 @@ mod tests {
         assert_eq!(
             AttributeType::Timestamp.to_arrow(),
             DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into()))
+        );
+    }
+
+    #[test]
+    fn from_arrow_round_trips_every_variant_except_the_documented_json_ambiguity() {
+        // Json and String both serialise to Utf8 (see `maps_to_arrow_types`
+        // above); everything else round-trips through to_arrow -> from_arrow
+        // back to itself.
+        use AttributeType::*;
+        for variant in [Boolean, Int64, Float64, Date, Timestamp, String, StringList] {
+            assert_eq!(
+                AttributeType::from_arrow(&variant.to_arrow()),
+                Some(variant),
+                "{variant:?} should round-trip through to_arrow/from_arrow"
+            );
+        }
+    }
+
+    #[test]
+    fn from_arrow_resolves_the_json_utf8_ambiguity_to_string() {
+        // `from_arrow` alone cannot distinguish Json from String (both are
+        // bare Utf8) — it documents falling back to String. Callers that can
+        // see the field's `arrow.json` extension metadata (the M3 reader)
+        // upgrade to Json themselves.
+        assert_eq!(AttributeType::Json.to_arrow(), DataType::Utf8);
+        assert_eq!(
+            AttributeType::from_arrow(&DataType::Utf8),
+            Some(AttributeType::String)
+        );
+    }
+
+    #[test]
+    fn from_arrow_rejects_types_cityparquet_cannot_represent() {
+        assert_eq!(AttributeType::from_arrow(&DataType::Int32), None);
+        assert_eq!(AttributeType::from_arrow(&DataType::Float32), None);
+        // Right variant, wrong timezone: CityParquet timestamps are always
+        // normalised to UTC at encode time (see `to_arrow`'s doc comment).
+        assert_eq!(
+            AttributeType::from_arrow(&DataType::Timestamp(TimeUnit::Millisecond, None)),
+            None
+        );
+        assert_eq!(
+            AttributeType::from_arrow(&DataType::List(
+                Field::new("item", DataType::Int64, true).into()
+            )),
+            None
         );
     }
 }

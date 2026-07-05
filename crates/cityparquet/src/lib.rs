@@ -2,6 +2,7 @@
 
 pub mod encode;
 pub mod package;
+pub mod reader;
 pub mod recipe;
 pub mod scan;
 pub mod source;
