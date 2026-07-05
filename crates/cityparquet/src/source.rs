@@ -33,9 +33,14 @@ impl Source {
             .and_then(|mut f| f.read_to_string(&mut text))
             .map_err(|e| err(format!("cannot read {}: {e}", path.display())))?;
         // CityJSONSeq: first line is a CityJSON header, later lines are features.
-        let first_line = text.lines().next().unwrap_or_default();
+        // A document only counts as Seq when a feature stream actually follows
+        // the header — a minified CityJSON doc with a trailing newline must not
+        // be misclassified (its lone line would be skipped as the "header").
+        let mut lines = text.lines();
+        let first_line = lines.next().unwrap_or_default();
+        let has_feature_lines = lines.any(|l| !l.trim().is_empty());
         let is_seq = path.extension().is_some_and(|e| e == "jsonl")
-            || (text.contains('\n')
+            || (has_feature_lines
                 && serde_json::from_str::<serde_json::Value>(first_line)
                     .ok()
                     .and_then(|v| v.get("type").and_then(|t| t.as_str().map(String::from)))

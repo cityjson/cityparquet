@@ -28,6 +28,23 @@ fn delft_seq_streams_features() {
 }
 
 #[test]
+fn minified_doc_with_trailing_newline_is_not_seq() {
+    // Derived from the real railway fixture: same content, plus a trailing newline.
+    let content = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway.city.json");
+    std::fs::write(&path, format!("{}\n", content.trim_end())).unwrap();
+    let src = Source::open(&path).unwrap();
+    assert_eq!(src.format(), SourceFormat::CityJson);
+    let objects: usize = src
+        .features()
+        .unwrap()
+        .map(|f| f.unwrap().city_objects.len())
+        .sum();
+    assert_eq!(objects, 121);
+}
+
+#[test]
 fn railway_doc_yields_features_with_local_vertices() {
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
     assert_eq!(src.format(), SourceFormat::CityJson);
