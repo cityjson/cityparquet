@@ -303,6 +303,7 @@ name = "cityparquet-schema"
 version = "0.1.0"
 dependencies = [
  "arrow-schema",
+ "chrono",
  "geoarrow-schema",
  "serde",
  "serde_json",

@@ -57,24 +57,33 @@ impl<'a> VertexPool<'a> {
 }
 
 #[derive(Debug)]
-struct Bbox([f64; 6]);
+struct Bbox {
+    bounds: [f64; 6],
+    /// Coordinates written so far; zero means the bounds are still the
+    /// initial +inf/-inf placeholders, i.e. no real geometry was emitted.
+    count: usize,
+}
 
 impl Bbox {
     fn new() -> Self {
-        Self([
-            f64::INFINITY,
-            f64::INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-        ])
+        Self {
+            bounds: [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ],
+            count: 0,
+        }
     }
     fn add(&mut self, c: [f64; 3]) {
         for (i, v) in c.into_iter().enumerate() {
-            self.0[i] = self.0[i].min(v);
-            self.0[i + 3] = self.0[i + 3].max(v);
+            self.bounds[i] = self.bounds[i].min(v);
+            self.bounds[i + 3] = self.bounds[i + 3].max(v);
         }
+        self.count += 1;
     }
 }
 
@@ -113,19 +122,29 @@ fn polygon(
     header(buf, POLYGON_Z);
     u32le(buf, rings.len());
     for ring in rings {
-        u32le(buf, ring.len() + 1);
+        if ring.len() < 3 {
+            return Err(CityParquetError::Schema(format!(
+                "ring has {} vertex indices, need at least 3 to form a polygon ring",
+                ring.len()
+            )));
+        }
+        let first = ring[0];
+        // Source is already closed (non-conformant CityJSON, but seen in the
+        // wild) when its last INDEX equals its first: don't append a
+        // duplicate closing point on top of it.
+        let already_closed = ring.last() == Some(&first);
+        let written_len = if already_closed {
+            ring.len()
+        } else {
+            ring.len() + 1
+        };
+        u32le(buf, written_len);
         for &idx in ring {
             coord(buf, pool.coord(idx)?, bbox);
         }
-        coord(
-            buf,
-            pool.coord(
-                *ring
-                    .first()
-                    .ok_or_else(|| CityParquetError::Schema("empty ring".into()))?,
-            )?,
-            bbox,
-        );
+        if !already_closed {
+            coord(buf, pool.coord(first)?, bbox);
+        }
     }
     Ok(())
 }
@@ -203,12 +222,19 @@ pub fn geometry_to_wkb(geom: &Geometry, pool: &VertexPool) -> Result<Option<(Vec
             }
         }
     }
-    Ok(Some((buf, bbox.0)))
+    if bbox.count == 0 {
+        // No coordinates were actually written (e.g. empty boundaries): an
+        // infinite placeholder bbox is worse than no geometry at all, so
+        // report this the same way as GeometryInstance — no WKB emitted.
+        return Ok(None);
+    }
+    Ok(Some((buf, bbox.bounds)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use geo_traits::GeometryTrait;
 
     fn pool_and(transform_scale: f64) -> (Vec<Vec<i64>>, cjseq::Transform) {
         (
@@ -263,6 +289,59 @@ mod tests {
     }
 
     #[test]
+    fn ring_with_fewer_than_3_vertices_errors() {
+        let (v, t) = pool_and(1.0);
+        let pool = VertexPool::new(&v, &t);
+        let geom = cjseq::Geometry {
+            thetype: cjseq::GeometryType::MultiSurface,
+            lod: Some("2".into()),
+            boundaries: serde_json::json!([[[0, 1]]]),
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        let err = geometry_to_wkb(&geom, &pool).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("3") || msg.to_lowercase().contains("ring"),
+            "error message should name the problem, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn pre_closed_ring_is_not_re_closed() {
+        // Source ring [0, 1, 2, 0] is already closed (non-conformant CityJSON,
+        // but seen in the wild): the writer must not append a duplicate
+        // closing point on top of it.
+        let (v, t) = pool_and(1.0);
+        let pool = VertexPool::new(&v, &t);
+        let geom = cjseq::Geometry {
+            thetype: cjseq::GeometryType::MultiSurface,
+            lod: Some("2".into()),
+            boundaries: serde_json::json!([[[0, 1, 2, 0]]]),
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        let (bytes, _bbox) = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
+        let num_points = u32::from_le_bytes(bytes[18..22].try_into().unwrap());
+        assert_eq!(
+            num_points, 4,
+            "pre-closed 4-index ring must yield 4 WKB points, not 5"
+        );
+        let parsed = wkb::reader::read_wkb(&bytes)
+            .expect("wkb crate oracle must parse our own MultiPolygonZ output");
+        assert!(matches!(
+            parsed.as_type(),
+            geo_traits::GeometryType::MultiPolygon(_)
+        ));
+    }
+
+    #[test]
     fn solid_becomes_polyhedral_surface_z() {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t);
@@ -280,6 +359,46 @@ mod tests {
         assert_eq!(u32::from_le_bytes(bytes[1..5].try_into().unwrap()), 1015); // PolyhedralSurfaceZ
         assert_eq!(u32::from_le_bytes(bytes[5..9].try_into().unwrap()), 2); // faces across shells
         assert_eq!(u32::from_le_bytes(bytes[10..14].try_into().unwrap()), 1003); // nested PolygonZ
+    }
+
+    #[test]
+    fn empty_multipoint_boundaries_yield_no_wkb() {
+        let (v, t) = pool_and(1.0);
+        let pool = VertexPool::new(&v, &t);
+        let geom = cjseq::Geometry {
+            thetype: cjseq::GeometryType::MultiPoint,
+            lod: Some("2".into()),
+            boundaries: serde_json::json!([]),
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        assert!(
+            geometry_to_wkb(&geom, &pool).unwrap().is_none(),
+            "an empty MultiPoint must not emit an infinite-bbox WKB payload"
+        );
+    }
+
+    #[test]
+    fn empty_multisurface_boundaries_yield_no_wkb() {
+        let (v, t) = pool_and(1.0);
+        let pool = VertexPool::new(&v, &t);
+        let geom = cjseq::Geometry {
+            thetype: cjseq::GeometryType::MultiSurface,
+            lod: Some("2".into()),
+            boundaries: serde_json::json!([]),
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        assert!(
+            geometry_to_wkb(&geom, &pool).unwrap().is_none(),
+            "an empty MultiSurface must not emit an infinite-bbox WKB payload"
+        );
     }
 
     #[test]

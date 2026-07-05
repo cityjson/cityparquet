@@ -217,6 +217,10 @@ fn accumulate_geometry(
         let Some((bytes, bbox)) = geometry_to_wkb(geom, pool)? else {
             continue;
         };
+        // Row bbox deliberately covers ALL source geometry (including skipped
+        // duplicate-LoD and lod-less entries): the object occupies that
+        // extent, and a superset bbox can only cause false-positive reads,
+        // never false-negative pruning.
         union_bbox(&mut acc.own_bbox, bbox);
 
         let slot_key = if per_lod {

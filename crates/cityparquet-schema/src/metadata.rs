@@ -104,16 +104,28 @@ impl CityParquetMetadata {
     /// they remain recorded verbatim in CityParquet's own top-level `crs`
     /// key-value entry. Full PROJJSON support is future work.
     pub fn geoparquet_geo_value(&self) -> Result<Value> {
-        let mut column = serde_json::Map::new();
-        column.insert("encoding".to_string(), Value::String("WKB".to_string()));
-        column.insert("geometry_types".to_string(), Value::Array(vec![]));
-        if let Some(crs @ Value::Object(_)) = &self.crs {
-            column.insert("crs".to_string(), crs.clone());
+        let mut columns = serde_json::Map::new();
+        for name in &self.reserved_columns {
+            // A WKB geometry column is named "geometry" or "geometry_<suffix>",
+            // but NOT "geometry_properties"/"geometry_properties_<suffix>" —
+            // those hold JSON semantics, not WKB, and must not appear here.
+            let is_geometry_column = name == "geometry"
+                || (name.starts_with("geometry_") && !name.starts_with("geometry_properties"));
+            if !is_geometry_column {
+                continue;
+            }
+            let mut column = serde_json::Map::new();
+            column.insert("encoding".to_string(), Value::String("WKB".to_string()));
+            column.insert("geometry_types".to_string(), Value::Array(vec![]));
+            if let Some(crs @ Value::Object(_)) = &self.crs {
+                column.insert("crs".to_string(), crs.clone());
+            }
+            columns.insert(name.clone(), Value::Object(column));
         }
         Ok(serde_json::json!({
             "version": "1.1.0",
             "primary_column": self.default_geometry,
-            "columns": { self.default_geometry.clone(): Value::Object(column) },
+            "columns": Value::Object(columns),
         }))
     }
 }
@@ -136,6 +148,8 @@ mod tests {
                 "id".to_string(),
                 "object_type".to_string(),
                 "bbox".to_string(),
+                "geometry_lod2_2".to_string(),
+                "geometry_properties_lod2_2".to_string(),
             ],
             default_geometry: "geometry_lod2_2".to_string(),
             bbox_column: "bbox".to_string(),
@@ -180,6 +194,31 @@ mod tests {
             geo["columns"]["geometry_lod2_2"]["crs"]["id"]["code"],
             28992
         );
+    }
+
+    #[test]
+    fn geo_key_lists_every_geometry_column_not_just_the_default() {
+        let mut meta = sample();
+        meta.reserved_columns = vec![
+            "id".to_string(),
+            "object_type".to_string(),
+            "bbox".to_string(),
+            "geometry_lod1".to_string(),
+            "geometry_properties_lod1".to_string(),
+            "geometry_lod2_2".to_string(),
+            "geometry_properties_lod2_2".to_string(),
+        ];
+        meta.default_geometry = "geometry_lod2_2".to_string();
+        let geo = meta.geoparquet_geo_value().unwrap();
+        let columns = geo["columns"].as_object().unwrap();
+        assert_eq!(columns["geometry_lod1"]["encoding"], "WKB");
+        assert_eq!(columns["geometry_lod2_2"]["encoding"], "WKB");
+        assert!(
+            !columns.contains_key("geometry_properties_lod1"),
+            "geometry_properties columns are not geometry columns"
+        );
+        assert!(!columns.contains_key("geometry_properties_lod2_2"));
+        assert_eq!(geo["primary_column"], "geometry_lod2_2");
     }
 
     #[test]

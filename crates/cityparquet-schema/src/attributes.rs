@@ -2,6 +2,7 @@
 //! (`notes/spec.md` § Attribute encoding) as code.
 
 use arrow_schema::{DataType, Field, TimeUnit};
+use chrono::{DateTime, NaiveDate};
 use serde_json::Value;
 
 /// Inferred CityParquet attribute column type, ordered roughly by specificity.
@@ -18,7 +19,9 @@ pub enum AttributeType {
     Json,
 }
 
-fn is_date(s: &str) -> bool {
+/// Cheap shape pre-check (`YYYY-MM-DD`) before the real parse below, so
+/// obviously-non-date strings short-circuit without invoking chrono.
+fn looks_like_date(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 10
         && b[4] == b'-'
@@ -28,10 +31,25 @@ fn is_date(s: &str) -> bool {
             .all(|&i| b[i].is_ascii_digit())
 }
 
+/// Cheap shape pre-check before the real parse below.
+/// `get` (not slicing) so a multi-byte char straddling byte 10 yields None
+/// instead of panicking on a non-char-boundary index.
+fn looks_like_timestamp(s: &str) -> bool {
+    s.len() >= 19 && s.get(..10).is_some_and(looks_like_date) && s.as_bytes()[10] == b'T'
+}
+
+/// True only if `s` is both the right shape AND a real calendar date —
+/// the SAME parser `encode.rs` uses to write `Date` values, so inference and
+/// encoding can never disagree (a value that infers Date is guaranteed to
+/// encode, never silently null out).
+fn is_date(s: &str) -> bool {
+    looks_like_date(s) && NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+}
+
+/// True only if `s` is both the right shape AND a real instant — the SAME
+/// parser `encode.rs` uses to write `Timestamp` values.
 fn is_timestamp(s: &str) -> bool {
-    // `get` (not slicing) so a multi-byte char straddling byte 10 yields None
-    // instead of panicking on a non-char-boundary index.
-    s.len() >= 19 && s.get(..10).is_some_and(is_date) && s.as_bytes()[10] == b'T'
+    looks_like_timestamp(s) && DateTime::parse_from_rfc3339(s).is_ok()
 }
 
 impl AttributeType {
@@ -40,7 +58,14 @@ impl AttributeType {
         match value {
             Value::Null => None,
             Value::Bool(_) => Some(Self::Boolean),
-            Value::Number(n) if n.is_i64() || n.is_u64() => Some(Self::Int64),
+            // `is_u64()` alone would also match values above `i64::MAX`, which
+            // `encode.rs`'s Int64 path (`Value::as_i64`) cannot represent and
+            // would silently null out; only route through Int64 when the
+            // value actually fits in an i64. Everything else numeric —
+            // including u64 values beyond i64::MAX, lossy above 2^53 once
+            // stored as Float64 — goes through Float64's `as_f64`, which
+            // handles the full u64 range.
+            Value::Number(n) if n.is_i64() => Some(Self::Int64),
             Value::Number(_) => Some(Self::Float64),
             Value::String(s) if is_timestamp(s) => Some(Self::Timestamp),
             Value::String(s) if is_date(s) => Some(Self::Date),
@@ -137,6 +162,16 @@ mod tests {
     }
 
     #[test]
+    fn u64_beyond_i64_max_infers_float64() {
+        // 18446744073709551615 == u64::MAX, well beyond i64::MAX: encoding this
+        // as Int64 (via as_i64()) would silently yield null.
+        assert_eq!(
+            AttributeType::infer(&json!(18446744073709551615u64)),
+            Some(AttributeType::Float64)
+        );
+    }
+
+    #[test]
     fn detects_dates_and_timestamps() {
         assert_eq!(
             AttributeType::infer(&json!("2015-03-21")),
@@ -149,6 +184,21 @@ mod tests {
         // Not a date: wrong shape.
         assert_eq!(
             AttributeType::infer(&json!("2015-3-21")),
+            Some(AttributeType::String)
+        );
+    }
+
+    #[test]
+    fn rejects_dates_and_timestamps_that_have_the_right_shape_but_are_invalid() {
+        // Right shape (YYYY-MM-DD / YYYY-MM-DDThh:mm:ssZ) but not a real
+        // calendar date/time: encode.rs's chrono parse would fail and null
+        // the value out, so inference must not claim Date/Timestamp here.
+        assert_eq!(
+            AttributeType::infer(&json!("2026-99-99")),
+            Some(AttributeType::String)
+        );
+        assert_eq!(
+            AttributeType::infer(&json!("2015-03-21T99:99:99Z")),
             Some(AttributeType::String)
         );
     }
