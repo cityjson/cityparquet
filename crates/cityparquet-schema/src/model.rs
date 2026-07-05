@@ -76,6 +76,14 @@ fn string_list(name: &str) -> Field {
     )
 }
 
+/// CityJSON extension attributes `+name` become `ex_name` columns (spec).
+pub fn normalise_attribute_name(name: &str) -> String {
+    match name.strip_prefix('+') {
+        Some(rest) => format!("{EXTENSION_ATTR_PREFIX}{rest}"),
+        None => name.to_string(),
+    }
+}
+
 /// Fixed reserved column names, independent of `lods`/`attributes`.
 const RESERVED_COLUMN_NAMES: &[&str] = &[
     "id",
@@ -164,7 +172,7 @@ impl CityParquetSchema {
             reserved(string_list("parents")),
             reserved(string_list("children")),
             reserved(string_list("children_roles")),
-            reserved(Field::new("bbox", bbox_data_type(), false)),
+            reserved(Field::new("bbox", bbox_data_type(), true)),
         ];
 
         if self.lods.is_empty() {
@@ -215,6 +223,22 @@ impl CityParquetSchema {
         }
 
         Ok(Schema::new(fields))
+    }
+
+    /// (reserved incl. geometry columns, attribute columns), derived from the
+    /// rendered Arrow schema's `cityparquet:role` metadata so the metadata
+    /// column lists can never drift from the schema itself.
+    pub fn column_lists(&self) -> Result<(Vec<String>, Vec<String>)> {
+        let schema = self.to_arrow_schema()?;
+        let mut reserved = Vec::new();
+        let mut attributes = Vec::new();
+        for field in schema.fields() {
+            match field.metadata().get(ROLE_KEY).map(String::as_str) {
+                Some(ROLE_RESERVED) => reserved.push(field.name().clone()),
+                _ => attributes.push(field.name().clone()),
+            }
+        }
+        Ok((reserved, attributes))
     }
 }
 
@@ -391,5 +415,27 @@ mod tests {
         };
         let err = schema.to_arrow_schema().unwrap_err();
         assert!(matches!(err, crate::error::CityParquetError::Schema(_)));
+    }
+
+    #[test]
+    fn bbox_is_nullable() {
+        let schema = sample().to_arrow_schema().unwrap();
+        assert!(schema.field_with_name("bbox").unwrap().is_nullable());
+    }
+
+    #[test]
+    fn normalises_extension_attribute_names() {
+        assert_eq!(normalise_attribute_name("+height"), "ex_height");
+        assert_eq!(normalise_attribute_name("height"), "height");
+        assert_eq!(normalise_attribute_name("+"), "ex_");
+    }
+
+    #[test]
+    fn column_lists_partition_by_role() {
+        let (reserved, attrs) = sample().column_lists().unwrap();
+        assert!(reserved.contains(&"id".to_string()));
+        assert!(reserved.contains(&"geometry_lod2_2".to_string()));
+        assert!(!reserved.contains(&"yoc".to_string()));
+        assert_eq!(attrs, vec!["yoc".to_string(), "ex_height".to_string()]);
     }
 }
