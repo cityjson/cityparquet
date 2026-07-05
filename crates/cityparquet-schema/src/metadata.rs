@@ -96,11 +96,18 @@ impl CityParquetMetadata {
 
     /// GeoParquet `geo` key payload so GeoParquet-ecosystem readers can open
     /// the file natively (WKB encoding, PROJJSON CRS).
+    ///
+    /// GeoParquet requires the per-column `crs` entry to be either a PROJJSON
+    /// object or absent (absent means readers assume the GeoParquet default
+    /// CRS). Non-PROJJSON CRS values — e.g. the OGC CRS URL string the M2
+    /// scan currently fills in — are therefore left out of the `geo` key;
+    /// they remain recorded verbatim in CityParquet's own top-level `crs`
+    /// key-value entry. Full PROJJSON support is future work.
     pub fn geoparquet_geo_value(&self) -> Result<Value> {
         let mut column = serde_json::Map::new();
         column.insert("encoding".to_string(), Value::String("WKB".to_string()));
         column.insert("geometry_types".to_string(), Value::Array(vec![]));
-        if let Some(crs) = &self.crs {
+        if let Some(crs @ Value::Object(_)) = &self.crs {
             column.insert("crs".to_string(), crs.clone());
         }
         Ok(serde_json::json!({
@@ -172,6 +179,37 @@ mod tests {
         assert_eq!(
             geo["columns"]["geometry_lod2_2"]["crs"]["id"]["code"],
             28992
+        );
+    }
+
+    #[test]
+    fn geo_key_omits_crs_when_not_projjson_object() {
+        let mut meta = sample();
+        // M2 scope cut: the OGC CRS URL is stored as a bare JSON string, not
+        // PROJJSON. GeoParquet requires "crs" to be a PROJJSON object or
+        // absent, so a string value must not be copied into the geo key.
+        meta.crs = Some(Value::String(
+            "https://www.opengis.net/def/crs/EPSG/0/7415".to_string(),
+        ));
+        let geo = meta.geoparquet_geo_value().unwrap();
+        assert!(
+            !geo["columns"]["geometry_lod2_2"]
+                .as_object()
+                .unwrap()
+                .contains_key("crs"),
+            "non-PROJJSON crs must be omitted from the geo key, not copied verbatim"
+        );
+    }
+
+    #[test]
+    fn geo_key_propagates_crs_when_projjson_object() {
+        // Unchanged behaviour: a PROJJSON object is still copied verbatim.
+        let geo = sample().geoparquet_geo_value().unwrap();
+        assert!(
+            geo["columns"]["geometry_lod2_2"]
+                .as_object()
+                .unwrap()
+                .contains_key("crs")
         );
     }
 }
