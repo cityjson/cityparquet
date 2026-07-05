@@ -10,8 +10,18 @@ Workspace crates:
 | Crate | Purpose |
 |---|---|
 | `cityparquet-schema` | Type system, CityGML CM taxonomy, Arrow schema (spec-as-code) — **M1 complete** |
-| `cityparquet` | Parquet writer/reader (WIP) |
+| `cityparquet` | Parquet writer/reader — **M2 writer complete (core profile)** |
 | `cityparquet-cli` | `cityparquet` CLI (WIP) |
+
+## Usage
+
+Convert a CityJSON or CityJSONSeq file to CityParquet:
+
+```bash
+cargo run -p cityparquet-cli -- convert tests/fixtures/delft.city.jsonl /tmp/delft-cityparquet --overwrite
+```
+
+The output is a directory containing `cityobjects.parquet` (Arrow geometry and semantics) and `metadata.json` (schema and provenance), readable by DuckDB, GeoPandas, and other Arrow-aware tools.
 
 ## Development
 
