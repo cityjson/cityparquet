@@ -282,6 +282,7 @@ dependencies = [
  "cjseq",
  "geo-traits",
  "parquet",
+ "serde",
  "serde_json",
  "tempfile",
  "wkb",
