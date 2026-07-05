@@ -1,0 +1,212 @@
+//! Attribute type inference: the spec's primitive-mapping table
+//! (`notes/spec.md` § Attribute encoding) as code.
+
+use arrow_schema::{DataType, Field, TimeUnit};
+use serde_json::Value;
+
+/// Inferred CityParquet attribute column type, ordered roughly by specificity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AttributeType {
+    Boolean,
+    Int64,
+    Float64,
+    Date,
+    Timestamp,
+    String,
+    StringList,
+    /// Objects, heterogeneous arrays, or irreconcilable mixes; stored as JSON text.
+    Json,
+}
+
+fn is_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && [0, 1, 2, 3, 5, 6, 8, 9]
+            .iter()
+            .all(|&i| b[i].is_ascii_digit())
+}
+
+fn is_timestamp(s: &str) -> bool {
+    s.len() >= 19 && is_date(&s[..10]) && s.as_bytes()[10] == b'T'
+}
+
+impl AttributeType {
+    /// Infer the type of a single JSON value. `None` for JSON null (no signal).
+    pub fn infer(value: &Value) -> Option<Self> {
+        match value {
+            Value::Null => None,
+            Value::Bool(_) => Some(Self::Boolean),
+            Value::Number(n) if n.is_i64() || n.is_u64() => Some(Self::Int64),
+            Value::Number(_) => Some(Self::Float64),
+            Value::String(s) if is_timestamp(s) => Some(Self::Timestamp),
+            Value::String(s) if is_date(s) => Some(Self::Date),
+            Value::String(_) => Some(Self::String),
+            Value::Array(items) if items.iter().all(|v| v.is_string()) => Some(Self::StringList),
+            Value::Array(_) | Value::Object(_) => Some(Self::Json),
+        }
+    }
+
+    /// Combine two observed types: promote when safe, otherwise fall back to Json.
+    pub fn promote(self, other: Self) -> Self {
+        use AttributeType::*;
+        if self == other {
+            return self;
+        }
+        match (self, other) {
+            (Int64, Float64) | (Float64, Int64) => Float64,
+            (Date, Timestamp) | (Timestamp, Date) => Timestamp,
+            (Date | Timestamp, String) | (String, Date | Timestamp) => String,
+            _ => Json,
+        }
+    }
+
+    pub fn to_arrow(&self) -> DataType {
+        match self {
+            Self::Boolean => DataType::Boolean,
+            Self::Int64 => DataType::Int64,
+            Self::Float64 => DataType::Float64,
+            Self::Date => DataType::Date32,
+            Self::Timestamp => DataType::Timestamp(TimeUnit::Millisecond, None),
+            Self::String => DataType::Utf8,
+            Self::StringList => DataType::List(Field::new("item", DataType::Utf8, true).into()),
+            Self::Json => DataType::Utf8,
+        }
+    }
+}
+
+/// Accumulates attribute observations across features (writer pass 1).
+#[derive(Debug, Default)]
+pub struct AttributeInferer {
+    // Insertion-ordered: Vec of (name, Option<AttributeType>).
+    columns: Vec<(String, Option<AttributeType>)>,
+}
+
+impl AttributeInferer {
+    pub fn observe(&mut self, name: &str, value: &Value) {
+        let observed = AttributeType::infer(value);
+        match self.columns.iter_mut().find(|(n, _)| n == name) {
+            Some((_, slot)) => {
+                *slot = match (*slot, observed) {
+                    (Some(a), Some(b)) => Some(a.promote(b)),
+                    (existing, new) => existing.or(new),
+                };
+            }
+            None => self.columns.push((name.to_string(), observed)),
+        }
+    }
+
+    /// Final column list in first-seen order; all-null columns fall back to String.
+    pub fn finish(self) -> Vec<(String, AttributeType)> {
+        self.columns
+            .into_iter()
+            .map(|(n, t)| (n, t.unwrap_or(AttributeType::String)))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::DataType;
+    use serde_json::json;
+
+    #[test]
+    fn infers_primitives() {
+        assert_eq!(
+            AttributeType::infer(&json!(true)),
+            Some(AttributeType::Boolean)
+        );
+        assert_eq!(AttributeType::infer(&json!(42)), Some(AttributeType::Int64));
+        assert_eq!(
+            AttributeType::infer(&json!(4.2)),
+            Some(AttributeType::Float64)
+        );
+        assert_eq!(
+            AttributeType::infer(&json!("hi")),
+            Some(AttributeType::String)
+        );
+        assert_eq!(AttributeType::infer(&json!(null)), None);
+    }
+
+    #[test]
+    fn detects_dates_and_timestamps() {
+        assert_eq!(
+            AttributeType::infer(&json!("2015-03-21")),
+            Some(AttributeType::Date)
+        );
+        assert_eq!(
+            AttributeType::infer(&json!("2015-03-21T10:30:00Z")),
+            Some(AttributeType::Timestamp)
+        );
+        // Not a date: wrong shape.
+        assert_eq!(
+            AttributeType::infer(&json!("2015-3-21")),
+            Some(AttributeType::String)
+        );
+    }
+
+    #[test]
+    fn arrays_and_objects() {
+        assert_eq!(
+            AttributeType::infer(&json!(["a", "b"])),
+            Some(AttributeType::StringList)
+        );
+        assert_eq!(
+            AttributeType::infer(&json!([1, "b"])),
+            Some(AttributeType::Json)
+        );
+        assert_eq!(
+            AttributeType::infer(&json!({"k": 1})),
+            Some(AttributeType::Json)
+        );
+        assert_eq!(
+            AttributeType::infer(&json!([])),
+            Some(AttributeType::StringList)
+        );
+    }
+
+    #[test]
+    fn promotion_lattice() {
+        use AttributeType::*;
+        assert_eq!(Int64.promote(Float64), Float64);
+        assert_eq!(Float64.promote(Int64), Float64);
+        assert_eq!(Date.promote(Timestamp), Timestamp);
+        assert_eq!(Date.promote(String), String);
+        assert_eq!(Int64.promote(String), Json);
+        assert_eq!(Boolean.promote(Int64), Json);
+        assert_eq!(StringList.promote(String), Json);
+        assert_eq!(Json.promote(Boolean), Json);
+        assert_eq!(Int64.promote(Int64), Int64);
+    }
+
+    #[test]
+    fn inferer_accumulates_across_features() {
+        let mut inf = AttributeInferer::default();
+        inf.observe("yoc", &json!(1990));
+        inf.observe("height", &json!(12.5));
+        inf.observe("yoc", &json!(1985.5)); // int then float → Float64
+        inf.observe("name", &json!(null)); // null alone → String fallback
+        let cols = inf.finish();
+        assert_eq!(
+            cols,
+            vec![
+                ("yoc".to_string(), AttributeType::Float64),
+                ("height".to_string(), AttributeType::Float64),
+                ("name".to_string(), AttributeType::String),
+            ]
+        );
+    }
+
+    #[test]
+    fn maps_to_arrow_types() {
+        assert_eq!(AttributeType::Int64.to_arrow(), DataType::Int64);
+        assert_eq!(AttributeType::Date.to_arrow(), DataType::Date32);
+        assert!(matches!(
+            AttributeType::StringList.to_arrow(),
+            DataType::List(_)
+        ));
+        assert_eq!(AttributeType::Json.to_arrow(), DataType::Utf8);
+    }
+}
