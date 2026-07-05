@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use cityparquet::CityParquetError;
 use cityparquet::source::Source;
 use cityparquet::wkb_read::{DecodedKind, wkb_to_geometry};
 use cityparquet::wkb_write::{VertexPool, geometry_to_wkb};
@@ -14,18 +13,34 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
-/// WKB rings repeat their first coordinate as a closing vertex; the decoded
-/// ring must have that stripped back off. This computes how many indices a
-/// *source* ring boils down to once that round trip settles — almost always
-/// `ring.len()` (source rings aren't pre-closed), but `ring.len() - 1` for
-/// the rare non-conformant already-closed ring (see `wkb_write`'s
-/// `pre_closed_ring_is_not_re_closed` test).
-fn expected_ring_len(ring: &[usize]) -> usize {
-    if ring.len() >= 2 && ring.first() == ring.last() {
-        ring.len() - 1
-    } else {
-        ring.len()
+/// Test-side mirror of the writer's structural normalisation policy: strip
+/// one trailing duplicate of the first vertex index (the WKB closure the
+/// source pre-baked), drop the ring if fewer than 3 vertices remain, and
+/// drop the whole surface when its EXTERIOR ring (index 0) is dropped.
+/// Returns the surface's expected decoded rings, or `None` when the whole
+/// surface is expected to be dropped.
+fn normalise_expected_surface(surface: &[Vec<usize>]) -> Option<Vec<Vec<usize>>> {
+    let mut kept = Vec::with_capacity(surface.len());
+    for (i, ring) in surface.iter().enumerate() {
+        let stripped = if ring.len() >= 2 && ring.first() == ring.last() {
+            &ring[..ring.len() - 1]
+        } else {
+            &ring[..]
+        };
+        if stripped.len() >= 3 {
+            kept.push(stripped.to_vec());
+        } else if i == 0 {
+            return None;
+        }
     }
+    Some(kept)
+}
+
+fn normalise_expected_surfaces(surfaces: &[Vec<Vec<usize>>]) -> Vec<Vec<Vec<usize>>> {
+    surfaces
+        .iter()
+        .filter_map(|s| normalise_expected_surface(s))
+        .collect()
 }
 
 fn assert_ring_matches(
@@ -34,14 +49,13 @@ fn assert_ring_matches(
     coords: &[[f64; 3]],
     pool: &VertexPool,
 ) {
-    let expected_len = expected_ring_len(src_ring);
     assert_eq!(
         decoded_ring.len(),
-        expected_len,
-        "ring vertex count must match the source ring exactly (closing vertex stripped)"
+        src_ring.len(),
+        "ring vertex count must match the normalised source ring exactly"
     );
-    for i in 0..expected_len {
-        let expected = pool.coord(src_ring[i]).unwrap();
+    for (i, &src_idx) in src_ring.iter().enumerate() {
+        let expected = pool.coord(src_idx).unwrap();
         assert_eq!(
             coords[decoded_ring[i]], expected,
             "coordinate at ring position {i} must equal the VertexPool-dequantised source vertex bitwise"
@@ -58,13 +72,13 @@ fn assert_polygon_list_matches(
     assert_eq!(
         decoded.len(),
         src.len(),
-        "polygon/face count must match source exactly"
+        "polygon/face count must match the normalised source exactly"
     );
     for (d_poly, s_poly) in decoded.iter().zip(src.iter()) {
         assert_eq!(
             d_poly.len(),
             s_poly.len(),
-            "ring count within a polygon must match source exactly"
+            "ring count within a polygon must match the normalised source exactly"
         );
         for (d_ring, s_ring) in d_poly.iter().zip(s_poly.iter()) {
             assert_ring_matches(d_ring, s_ring, coords, pool);
@@ -74,7 +88,8 @@ fn assert_polygon_list_matches(
 
 /// Asserts the decoded kind corresponds to `geom`'s `GeometryType` per the
 /// writer's mapping, and that every ring/face/line count and coordinate
-/// (bitwise) matches the source boundaries exactly.
+/// (bitwise) matches the source boundaries exactly, after applying the
+/// writer's structural normalisation policy to the source.
 fn assert_kind_matches_source(
     kind: &DecodedKind,
     coords: &[[f64; 3]],
@@ -103,7 +118,7 @@ fn assert_kind_matches_source(
             };
             assert_eq!(decoded_lines.len(), lines.len());
             for (d_line, s_line) in decoded_lines.iter().zip(lines.iter()) {
-                // MultiLineString isn't ring-closed by the writer: exact match.
+                // MultiLineString isn't ring-normalised by the writer: exact match.
                 assert_eq!(d_line.len(), s_line.len());
                 for (i, &src_idx) in s_line.iter().enumerate() {
                     assert_eq!(coords[d_line[i]], pool.coord(src_idx).unwrap());
@@ -116,7 +131,8 @@ fn assert_kind_matches_source(
             let DecodedKind::MultiPolygon(decoded_surfaces) = kind else {
                 panic!("expected MultiPolygon for {:?}, got {kind:?}", geom.thetype);
             };
-            assert_polygon_list_matches(decoded_surfaces, &surfaces, coords, pool);
+            let expected = normalise_expected_surfaces(&surfaces);
+            assert_polygon_list_matches(decoded_surfaces, &expected, coords, pool);
         }
         GeometryType::Solid => {
             let shells: Vec<Vec<Vec<Vec<usize>>>> =
@@ -128,7 +144,8 @@ fn assert_kind_matches_source(
                 );
             };
             let flat_faces: Vec<Vec<Vec<usize>>> = shells.into_iter().flatten().collect();
-            assert_polygon_list_matches(decoded_faces, &flat_faces, coords, pool);
+            let expected = normalise_expected_surfaces(&flat_faces);
+            assert_polygon_list_matches(decoded_faces, &expected, coords, pool);
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
             let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
@@ -148,70 +165,35 @@ fn assert_kind_matches_source(
                 };
                 let flat_faces: Vec<Vec<Vec<usize>>> =
                     shells.clone().into_iter().flatten().collect();
-                assert_polygon_list_matches(decoded_faces, &flat_faces, coords, pool);
+                let expected = normalise_expected_surfaces(&flat_faces);
+                assert_polygon_list_matches(decoded_faces, &expected, coords, pool);
             }
         }
     }
 }
 
-/// True when any ring in a surface-bearing geometry has fewer than 3
-/// effective vertices (its index count, minus one when the source ring is
-/// already index-closed). The writer currently emits such rings verbatim as
-/// degenerate closed WKB rings (e.g. `[a, b, a]` becomes a 3-point closed
-/// ring with only 2 distinct vertices), which the hardened reader rejects —
-/// a known writer/reader gap; see the task 3 report.
-fn has_degenerate_source_ring(geom: &Geometry) -> bool {
-    fn ring_is_degenerate(ring: &[usize]) -> bool {
-        let effective = if ring.len() >= 2 && ring.first() == ring.last() {
-            ring.len() - 1
-        } else {
-            ring.len()
-        };
-        effective < 3
-    }
-    match geom.thetype {
-        GeometryType::MultiSurface | GeometryType::CompositeSurface => {
-            let surfaces: Vec<Vec<Vec<usize>>> =
-                serde_json::from_value(geom.boundaries.clone()).unwrap();
-            surfaces.iter().flatten().any(|r| ring_is_degenerate(r))
-        }
-        GeometryType::Solid => {
-            let shells: Vec<Vec<Vec<Vec<usize>>>> =
-                serde_json::from_value(geom.boundaries.clone()).unwrap();
-            shells
-                .iter()
-                .flatten()
-                .flatten()
-                .any(|r| ring_is_degenerate(r))
-        }
-        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
-            let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
-                serde_json::from_value(geom.boundaries.clone()).unwrap();
-            solids
-                .iter()
-                .flatten()
-                .flatten()
-                .flatten()
-                .any(|r| ring_is_degenerate(r))
-        }
-        _ => false,
-    }
+/// Round-trip tallies for one fixture.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Totals {
+    /// Non-instance geometries that produced WKB and round-tripped losslessly.
+    round_tripped: usize,
+    /// Writer-reported structurally degenerate rings dropped.
+    dropped_rings: usize,
+    /// Writer-reported surfaces dropped (exterior ring degenerate).
+    dropped_surfaces: usize,
+    /// Geometries with at least one drop.
+    geometries_with_drops: usize,
 }
 
 /// Streams every geometry of every feature in `path` through
-/// `geometry_to_wkb` then `wkb_to_geometry`, checking the round trip is
-/// lossless: kind matches the source `GeometryType`, every ring/face/line
-/// count matches the source boundaries exactly, and every decoded
-/// coordinate equals the `VertexPool`-dequantised source coordinate
-/// bitwise. Geometries whose source contains a degenerate ring (< 3
-/// effective vertices) are instead asserted to be REJECTED by the reader —
-/// the writer currently emits them as degenerate WKB rings — and counted
-/// separately. Returns `(round_tripped, rejected_degenerate)`.
-fn process_all(path: &Path) -> (usize, usize) {
+/// `geometry_to_wkb` then `wkb_to_geometry`. EVERY geometry that yields WKB
+/// must be accepted by the hardened reader (the writer's structural
+/// normalisation guarantees this by construction) and round-trip losslessly
+/// against the policy-normalised source boundaries.
+fn process_all(path: &Path) -> Totals {
     let src = Source::open(path).unwrap();
     let header = src.header();
-    let mut processed = 0usize;
-    let mut rejected_degenerate = 0usize;
+    let mut totals = Totals::default();
 
     for feature in src.features().unwrap() {
         let feature = feature.unwrap();
@@ -230,60 +212,54 @@ fn process_all(path: &Path) -> (usize, usize) {
                     continue;
                 }
 
-                let Some((bytes, _bbox)) = geometry_to_wkb(geom, &pool).unwrap() else {
+                let Some(outcome) = geometry_to_wkb(geom, &pool).unwrap() else {
                     // Empty boundaries: writer intentionally emits nothing.
                     continue;
                 };
 
-                if has_degenerate_source_ring(geom) {
-                    // Known writer/reader gap: the writer emits degenerate
-                    // rings verbatim; the hardened reader must refuse them
-                    // with the ring-size error rather than decode garbage.
-                    let err = wkb_to_geometry(&bytes).unwrap_err();
-                    assert!(
-                        matches!(err, CityParquetError::Geometry(_)),
-                        "degenerate ring must be a Geometry error, got {err:?}"
-                    );
-                    assert!(
-                        err.to_string().contains("at least 3"),
-                        "degenerate ring should fail the ring-size check, got: {err}"
-                    );
-                    rejected_degenerate += 1;
-                    continue;
-                }
-
-                let decoded = wkb_to_geometry(&bytes).unwrap();
+                let decoded = wkb_to_geometry(&outcome.bytes)
+                    .expect("hardened reader must accept every writer output");
                 assert_kind_matches_source(&decoded.kind, &decoded.coords, geom, &pool);
-                processed += 1;
+
+                totals.round_tripped += 1;
+                totals.dropped_rings += outcome.dropped_rings;
+                totals.dropped_surfaces += outcome.dropped_surfaces.len();
+                if outcome.dropped_rings > 0 || !outcome.dropped_surfaces.is_empty() {
+                    totals.geometries_with_drops += 1;
+                }
             }
         }
     }
 
-    (processed, rejected_degenerate)
+    totals
 }
 
 #[test]
 fn delft_geometries_round_trip_through_wkb_reader() {
-    let (processed, rejected) = process_all(&fixture("delft.city.jsonl"));
+    let totals = process_all(&fixture("delft.city.jsonl"));
     assert!(
-        processed > 2000,
-        "expected >2000 geometries checked, got {processed}"
+        totals.round_tripped > 2000,
+        "expected >2000 geometries checked, got {}",
+        totals.round_tripped
     );
-    assert_eq!(rejected, 0, "delft has no degenerate source rings");
+    assert_eq!(totals.dropped_rings, 0, "delft has no degenerate rings");
+    assert_eq!(totals.dropped_surfaces, 0);
+    assert_eq!(totals.geometries_with_drops, 0);
 }
 
 #[test]
 fn railway_geometries_round_trip_through_wkb_reader() {
-    let (processed, rejected) = process_all(&fixture("lod3_railway.city.json"));
-    assert!(
-        processed > 100,
-        "expected >100 geometries checked, got {processed}"
-    );
-    // lod3_railway carries 6 degenerate `[a, b, a]`-style source rings
-    // across 3 MultiSurface geometries; the reader must reject exactly
-    // those (writer/reader gap tracked in the task 3 report).
+    let totals = process_all(&fixture("lod3_railway.city.json"));
+    // With degenerate rings dropped at write time, every geometry that
+    // yields WKB round-trips: 105/105, zero reader rejections.
     assert_eq!(
-        rejected, 3,
-        "expected exactly 3 geometries rejected for degenerate rings"
+        totals.round_tripped, 105,
+        "all 105 railway geometries must round-trip"
     );
+    // lod3_railway carries exactly 6 structurally degenerate [a,b,a] rings,
+    // each the sole (exterior) ring of its surface, across 3 geometries
+    // (one CompositeSurface with 4, two MultiSurfaces with 1 each).
+    assert_eq!(totals.dropped_rings, 6);
+    assert_eq!(totals.dropped_surfaces, 6);
+    assert_eq!(totals.geometries_with_drops, 3);
 }

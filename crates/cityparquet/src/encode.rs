@@ -37,6 +37,12 @@ pub struct EncodeStats {
     /// Attribute values present (non-null) but not representable as the
     /// column's inferred type; encoded as null instead of panicking.
     pub attribute_coercion_nulls: usize,
+    /// Structurally degenerate rings the writer dropped ([a,b,a] closure
+    /// shape; see `wkb_write`), counted over STORED geometries.
+    pub degenerate_rings_dropped: usize,
+    /// Surfaces the writer dropped because their exterior ring was
+    /// degenerate, counted over STORED geometries.
+    pub degenerate_surfaces_dropped: usize,
 }
 
 /// Expand `acc` to also cover `bbox` (same union rule as [`crate::scan`]'s).
@@ -58,8 +64,8 @@ fn own_geometry_bbox(co: &CityObject, pool: &VertexPool) -> Result<Option<[f64; 
     let mut acc = None;
     if let Some(geoms) = &co.geometry {
         for geom in geoms {
-            if let Some((_, bbox)) = geometry_to_wkb(geom, pool)? {
-                union_bbox(&mut acc, bbox);
+            if let Some(outcome) = geometry_to_wkb(geom, pool)? {
+                union_bbox(&mut acc, outcome.bbox);
             }
         }
     }
@@ -128,12 +134,31 @@ struct SolidShellInfo {
     faces: Value,
 }
 
-fn solid_shell_info(geom: &Geometry) -> Result<Option<SolidShellInfo>> {
+/// Count how many writer-dropped flat face positions fall inside one
+/// shell's `[pos, pos + n)` range, advancing `pos` past the shell.
+fn dropped_in_shell(dropped: &[usize], pos: &mut usize, n: usize) -> usize {
+    let start = *pos;
+    *pos += n;
+    dropped
+        .iter()
+        .filter(|&&p| p >= start && p < start + n)
+        .count()
+}
+
+/// `dropped` are the writer-reported flat face positions removed from the
+/// WKB; the per-shell face counts must describe the STORED geometry, so
+/// each shell's count is reduced by the drops that fell inside it (the sum
+/// must equal the WKB `PolyhedralSurfaceZ` face count).
+fn solid_shell_info(geom: &Geometry, dropped: &[usize]) -> Result<Option<SolidShellInfo>> {
     match geom.thetype {
         GeometryType::Solid => {
             let shells: Vec<Vec<Vec<Vec<usize>>>> =
                 serde_json::from_value(geom.boundaries.clone())?;
-            let faces: Vec<usize> = shells.iter().map(|shell| shell.len()).collect();
+            let mut pos = 0;
+            let faces: Vec<usize> = shells
+                .iter()
+                .map(|shell| shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()))
+                .collect();
             Ok(Some(SolidShellInfo {
                 counts: vec![shells.len()],
                 faces: serde_json::to_value(faces)?,
@@ -143,9 +168,15 @@ fn solid_shell_info(geom: &Geometry) -> Result<Option<SolidShellInfo>> {
             let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
                 serde_json::from_value(geom.boundaries.clone())?;
             let counts = solids.iter().map(|s| s.len()).collect();
+            let mut pos = 0;
             let faces: Vec<Vec<usize>> = solids
                 .iter()
-                .map(|solid| solid.iter().map(|shell| shell.len()).collect())
+                .map(|solid| {
+                    solid
+                        .iter()
+                        .map(|shell| shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()))
+                        .collect()
+                })
                 .collect();
             Ok(Some(SolidShellInfo {
                 counts,
@@ -156,20 +187,78 @@ fn solid_shell_info(geom: &Geometry) -> Result<Option<SolidShellInfo>> {
     }
 }
 
+/// Remove the entries at `dropped` (original positions, ascending) from a
+/// per-surface JSON array, in place. Positions beyond the array are ignored
+/// (defensive: a malformed source array shorter than the boundaries).
+fn remove_dropped_entries(values: &mut Vec<Value>, dropped: &[usize]) {
+    for &pos in dropped.iter().rev() {
+        if pos < values.len() {
+            values.remove(pos);
+        }
+    }
+}
+
+/// True when the writer's per-surface drop positions index straight into
+/// this geometry type's per-surface appearance/semantics arrays. Only the
+/// surface-list types qualify; the solid types nest their semantics values
+/// per shell, which no fixture exercises with drops — left unrealigned (the
+/// `dropped_degenerate` key still records what happened).
+fn drops_align_with_surface_arrays(thetype: &GeometryType) -> bool {
+    matches!(
+        thetype,
+        GeometryType::MultiSurface | GeometryType::CompositeSurface
+    )
+}
+
+/// Realign every material/texture theme's per-surface `values` array after
+/// the writer dropped `dropped` surface positions. Theme-level scalar
+/// `value` entries apply to all surfaces and need no realignment.
+fn realign_appearance_themes(appearance: &mut Value, dropped: &[usize]) {
+    let Some(themes) = appearance.as_object_mut() else {
+        return;
+    };
+    for theme in themes.values_mut() {
+        if let Some(values) = theme.get_mut("values").and_then(Value::as_array_mut) {
+            remove_dropped_entries(values, dropped);
+        }
+    }
+}
+
 /// `geometry_properties_lod*` JSON: `{"type", "semantics"?,
-/// "solid_shell_counts"?, "solid_shell_faces"?}`.
-fn geometry_properties_json(geom: &Geometry) -> Result<String> {
+/// "solid_shell_counts"?, "solid_shell_faces"?, "dropped_degenerate"?}`.
+/// `dropped_surfaces` are the writer-reported original surface positions;
+/// for the surface-list types the semantics `values` array is realigned to
+/// match the stored WKB, and any drop is recorded under
+/// `dropped_degenerate` so downstream can trace it back to the source.
+fn geometry_properties_json(
+    geom: &Geometry,
+    dropped_rings: usize,
+    dropped_surfaces: &[usize],
+) -> Result<String> {
     let mut map = serde_json::Map::new();
     map.insert("type".to_string(), serde_json::to_value(&geom.thetype)?);
     if let Some(semantics) = &geom.semantics {
-        map.insert("semantics".to_string(), semantics.clone());
+        let mut semantics = semantics.clone();
+        if !dropped_surfaces.is_empty()
+            && drops_align_with_surface_arrays(&geom.thetype)
+            && let Some(values) = semantics.get_mut("values").and_then(Value::as_array_mut)
+        {
+            remove_dropped_entries(values, dropped_surfaces);
+        }
+        map.insert("semantics".to_string(), semantics);
     }
-    if let Some(info) = solid_shell_info(geom)? {
+    if let Some(info) = solid_shell_info(geom, dropped_surfaces)? {
         map.insert(
             "solid_shell_counts".to_string(),
             serde_json::to_value(info.counts)?,
         );
         map.insert("solid_shell_faces".to_string(), info.faces);
+    }
+    if dropped_rings > 0 || !dropped_surfaces.is_empty() {
+        map.insert(
+            "dropped_degenerate".to_string(),
+            serde_json::json!({"rings": dropped_rings, "surfaces": dropped_surfaces}),
+        );
     }
     Ok(serde_json::to_string(&Value::Object(map))?)
 }
@@ -238,14 +327,14 @@ fn accumulate_geometry(
             continue;
         }
 
-        let Some((bytes, bbox)) = geometry_to_wkb(geom, pool)? else {
+        let Some(outcome) = geometry_to_wkb(geom, pool)? else {
             continue;
         };
         // Row bbox deliberately covers ALL source geometry (including skipped
         // duplicate-LoD and lod-less entries): the object occupies that
         // extent, and a superset bbox can only cause false-positive reads,
         // never false-negative pruning.
-        union_bbox(&mut acc.own_bbox, bbox);
+        union_bbox(&mut acc.own_bbox, outcome.bbox);
 
         let slot_key = if per_lod {
             match geom.lod.as_deref().and_then(|s| Lod::parse(s).ok()) {
@@ -261,17 +350,36 @@ fn accumulate_geometry(
             continue;
         }
 
+        // Counted over STORED geometries only, so the totals describe the
+        // data downstream actually sees.
+        stats.degenerate_rings_dropped += outcome.dropped_rings;
+        stats.degenerate_surfaces_dropped += outcome.dropped_surfaces.len();
+
+        // Writer owns consistency: per-surface appearance arrays must index
+        // the STORED surfaces, so the writer-dropped positions are removed
+        // here, before anything is written.
+        let realign =
+            drops_align_with_surface_arrays(&geom.thetype) && !outcome.dropped_surfaces.is_empty();
         let lod_key = geom.lod.clone().unwrap_or_default();
         if let Some(material) = &geom.material {
-            acc.material
-                .insert(lod_key.clone(), serde_json::to_value(material)?);
+            let mut material = serde_json::to_value(material)?;
+            if realign {
+                realign_appearance_themes(&mut material, &outcome.dropped_surfaces);
+            }
+            acc.material.insert(lod_key.clone(), material);
         }
         if let Some(texture) = &geom.texture {
-            acc.texture.insert(lod_key, serde_json::to_value(texture)?);
+            let mut texture = serde_json::to_value(texture)?;
+            if realign {
+                realign_appearance_themes(&mut texture, &outcome.dropped_surfaces);
+            }
+            acc.texture.insert(lod_key, texture);
         }
 
-        let props = geometry_properties_json(geom)?;
-        acc.slots.insert(slot_key, (bytes, bbox, props));
+        let props =
+            geometry_properties_json(geom, outcome.dropped_rings, &outcome.dropped_surfaces)?;
+        acc.slots
+            .insert(slot_key, (outcome.bytes, outcome.bbox, props));
     }
     Ok(())
 }
@@ -827,12 +935,94 @@ mod tests {
             template: None,
             transformation_matrix: None,
         };
-        let info = solid_shell_info(&geom).unwrap().expect("MultiSolid info");
+        let info = solid_shell_info(&geom, &[])
+            .unwrap()
+            .expect("MultiSolid info");
         assert_eq!(info.counts, vec![2, 1]);
         assert_eq!(info.faces, serde_json::json!([[1, 2], [1]]));
 
-        let props: Value = serde_json::from_str(&geometry_properties_json(&geom).unwrap()).unwrap();
+        let props: Value =
+            serde_json::from_str(&geometry_properties_json(&geom, 0, &[]).unwrap()).unwrap();
         assert_eq!(props["solid_shell_counts"], serde_json::json!([2, 1]));
         assert_eq!(props["solid_shell_faces"], serde_json::json!([[1, 2], [1]]));
+
+        // With writer-dropped flat face positions, the per-shell face counts
+        // must describe the STORED geometry: positions 1 and 2 are the two
+        // faces of the first solid's second shell; position 3 is the second
+        // solid's only face.
+        let info = solid_shell_info(&geom, &[1, 3])
+            .unwrap()
+            .expect("MultiSolid info");
+        assert_eq!(info.faces, serde_json::json!([[1, 1], [0]]));
+    }
+
+    /// When the writer drops a degenerate surface, the encoder must remove
+    /// the SAME index from the semantics values and every material/texture
+    /// theme's per-surface array, record the drop in geometry_properties,
+    /// and count it in EncodeStats — downstream sees aligned data only.
+    #[test]
+    fn dropped_surface_realigns_semantics_material_and_texture() {
+        let co: CityObject = serde_json::from_value(serde_json::json!({
+            "type": "Building",
+            "geometry": [{
+                "type": "MultiSurface",
+                "lod": "2",
+                // surface 0 is the [a,b,a] structural-degenerate shape
+                "boundaries": [[[0, 1, 0]], [[0, 1, 2, 3]]],
+                "semantics": {
+                    "surfaces": [{"type": "WallSurface"}, {"type": "RoofSurface"}],
+                    "values": [0, 1]
+                },
+                "material": {"visual": {"values": [5, 7]}},
+                "texture": {"visual": {"values": [[[0, 0, 1, 2]], [[1, 0, 1, 2, 3]]]}}
+            }]
+        }))
+        .unwrap();
+        let vertices: Vec<Vec<i64>> = vec![
+            vec![0, 0, 0],
+            vec![1000, 0, 0],
+            vec![1000, 1000, 0],
+            vec![0, 1000, 0],
+        ];
+        let transform = Transform {
+            scale: vec![1.0; 3],
+            translate: vec![0.0; 3],
+        };
+        let pool = VertexPool::new(&vertices, &transform);
+
+        let mut acc = GeometryAccumulator::default();
+        let mut stats = EncodeStats::default();
+        accumulate_geometry(&mut acc, &co, &pool, true, &mut stats).unwrap();
+
+        assert_eq!(stats.degenerate_rings_dropped, 1);
+        assert_eq!(stats.degenerate_surfaces_dropped, 1);
+
+        let (_, _, props) = acc.slots.get("lod2").expect("lod2 slot populated");
+        let props: Value = serde_json::from_str(props).unwrap();
+        assert_eq!(
+            props["dropped_degenerate"],
+            serde_json::json!({"rings": 1, "surfaces": [0]})
+        );
+        assert_eq!(
+            props["semantics"]["values"],
+            serde_json::json!([1]),
+            "semantics values must lose the dropped surface's entry"
+        );
+        assert_eq!(
+            props["semantics"]["surfaces"],
+            serde_json::json!([{"type": "WallSurface"}, {"type": "RoofSurface"}]),
+            "the surfaces lookup table itself is untouched (values index into it)"
+        );
+
+        assert_eq!(
+            acc.material["2"],
+            serde_json::json!({"visual": {"values": [7]}}),
+            "material per-surface values must be realigned"
+        );
+        assert_eq!(
+            acc.texture["2"],
+            serde_json::json!({"visual": {"values": [[[1, 0, 1, 2, 3]]]}}),
+            "texture per-surface values must be realigned"
+        );
     }
 }

@@ -112,59 +112,113 @@ fn boundaries<T: serde::de::DeserializeOwned>(geom: &Geometry) -> Result<T> {
     })
 }
 
-/// Full nested PolygonZ WKB (header + rings), rings closed.
-fn polygon(
+/// Structural drops performed while normalising one geometry's rings.
+#[derive(Debug, Default)]
+struct Drops {
+    /// Rings dropped because they cannot form a valid WKB ring (< 3
+    /// effective vertices after stripping a pre-baked closure).
+    rings: usize,
+    /// Original flat surface/face positions (within the geometry) of
+    /// surfaces dropped because their EXTERIOR ring was degenerate.
+    surfaces: Vec<usize>,
+}
+
+/// Structural ring normalisation (narrow by design — this is NOT zero-area
+/// cleanup): strip one trailing duplicate of the first vertex index (the
+/// source pre-baked the WKB closure, non-conformant CityJSON but seen in
+/// the wild); if fewer than 3 vertices remain the ring cannot form a valid
+/// WKB ring and is dropped (`None`). Zero-area rings with >= 3 effective
+/// vertices pass through unchanged — data quality is not the format's
+/// business.
+fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
+    let stripped = if ring.len() >= 2 && ring.first() == ring.last() {
+        &ring[..ring.len() - 1]
+    } else {
+        ring
+    };
+    (stripped.len() >= 3).then_some(stripped)
+}
+
+/// Normalise one surface's rings. Returns the kept rings, or `None` when
+/// the surface must be dropped entirely because its EXTERIOR ring (index 0)
+/// is degenerate (interior rings cannot stand without it). `pos` is the
+/// surface's original flat position within the geometry, recorded so the
+/// encoder can realign per-surface semantics/material/texture arrays.
+fn normalise_surface<'r>(
+    rings: &'r [Vec<usize>],
+    pos: usize,
+    drops: &mut Drops,
+) -> Option<Vec<&'r [usize]>> {
+    let mut kept = Vec::with_capacity(rings.len());
+    for (i, ring) in rings.iter().enumerate() {
+        match normalise_ring(ring) {
+            Some(r) => kept.push(r),
+            None => {
+                drops.rings += 1;
+                if i == 0 {
+                    drops.surfaces.push(pos);
+                    return None;
+                }
+            }
+        }
+    }
+    Some(kept)
+}
+
+/// Full nested PolygonZ WKB (header + normalised rings, each explicitly
+/// closed by repeating its first coordinate).
+fn write_polygon(
     buf: &mut Vec<u8>,
-    rings: &[Vec<usize>],
+    rings: &[&[usize]],
     pool: &VertexPool,
     bbox: &mut Bbox,
 ) -> Result<()> {
     header(buf, POLYGON_Z);
     u32le(buf, rings.len());
     for ring in rings {
-        if ring.len() < 3 {
-            return Err(CityParquetError::Geometry(format!(
-                "ring has {} vertex indices, need at least 3 to form a polygon ring",
-                ring.len()
-            )));
-        }
-        let first = ring[0];
-        // Source is already closed (non-conformant CityJSON, but seen in the
-        // wild) when its last INDEX equals its first: don't append a
-        // duplicate closing point on top of it.
-        let already_closed = ring.last() == Some(&first);
-        let written_len = if already_closed {
-            ring.len()
-        } else {
-            ring.len() + 1
-        };
-        u32le(buf, written_len);
-        for &idx in ring {
+        u32le(buf, ring.len() + 1);
+        for &idx in *ring {
             coord(buf, pool.coord(idx)?, bbox);
         }
-        if !already_closed {
-            coord(buf, pool.coord(first)?, bbox);
-        }
+        coord(buf, pool.coord(ring[0])?, bbox);
     }
     Ok(())
 }
 
-/// PolyhedralSurfaceZ from a Solid's shells (flattened; shell structure is
+/// PolyhedralSurfaceZ from normalised faces (flattened; shell structure is
 /// preserved in geometry_properties, not in WKB).
-fn polyhedral(
+fn write_polyhedral(
     buf: &mut Vec<u8>,
-    shells: &[Vec<Vec<Vec<usize>>>],
+    faces: &[Vec<&[usize]>],
     pool: &VertexPool,
     bbox: &mut Bbox,
 ) -> Result<()> {
     header(buf, POLYHEDRALSURFACE_Z);
-    u32le(buf, shells.iter().map(|s| s.len()).sum());
-    for shell in shells {
-        for surface in shell {
-            polygon(buf, surface, pool, bbox)?;
-        }
+    u32le(buf, faces.len());
+    for face in faces {
+        write_polygon(buf, face, pool, bbox)?;
     }
     Ok(())
+}
+
+/// Normalise a Solid's shells into a flat kept-face list, advancing `pos`
+/// (the flat face position within the whole geometry) across every source
+/// face — dropped or kept — so recorded drop positions stay original.
+fn normalise_shells<'r>(
+    shells: &'r [Vec<Vec<Vec<usize>>>],
+    pos: &mut usize,
+    drops: &mut Drops,
+) -> Vec<Vec<&'r [usize]>> {
+    let mut kept = Vec::new();
+    for shell in shells {
+        for surface in shell {
+            if let Some(k) = normalise_surface(surface, *pos, drops) {
+                kept.push(k);
+            }
+            *pos += 1;
+        }
+    }
+    kept
 }
 
 pub fn point_to_wkb(c: [f64; 3]) -> Vec<u8> {
@@ -175,9 +229,28 @@ pub fn point_to_wkb(c: [f64; 3]) -> Vec<u8> {
     buf
 }
 
-pub fn geometry_to_wkb(geom: &Geometry, pool: &VertexPool) -> Result<Option<(Vec<u8>, [f64; 6])>> {
+/// One geometry's WKB encoding plus what structural normalisation dropped
+/// to produce it. The writer's output always satisfies the hardened
+/// `wkb_read` checks by construction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WkbOutcome {
+    pub bytes: Vec<u8>,
+    pub bbox: [f64; 6],
+    /// Structurally degenerate rings dropped (the [a,b,a] closure shape:
+    /// fewer than 3 effective vertices).
+    pub dropped_rings: usize,
+    /// Original flat surface positions (within this geometry) of surfaces
+    /// dropped because their exterior ring was degenerate. Flat means: the
+    /// boundaries index for MultiSurface/CompositeSurface; the face position
+    /// counted across shells (and across solids for MultiSolid/
+    /// CompositeSolid) for the solid types.
+    pub dropped_surfaces: Vec<usize>,
+}
+
+pub fn geometry_to_wkb(geom: &Geometry, pool: &VertexPool) -> Result<Option<WkbOutcome>> {
     let mut buf = Vec::new();
     let mut bbox = Bbox::new();
+    let mut drops = Drops::default();
     match geom.thetype {
         GeometryType::GeometryInstance => return Ok(None),
         GeometryType::MultiPoint => {
@@ -203,32 +276,48 @@ pub fn geometry_to_wkb(geom: &Geometry, pool: &VertexPool) -> Result<Option<(Vec
         }
         GeometryType::MultiSurface | GeometryType::CompositeSurface => {
             let surfaces: Vec<Vec<Vec<usize>>> = boundaries(geom)?;
+            let kept: Vec<Vec<&[usize]>> = surfaces
+                .iter()
+                .enumerate()
+                .filter_map(|(pos, surface)| normalise_surface(surface, pos, &mut drops))
+                .collect();
             header(&mut buf, MULTIPOLYGON_Z);
-            u32le(&mut buf, surfaces.len());
-            for surface in &surfaces {
-                polygon(&mut buf, surface, pool, &mut bbox)?;
+            u32le(&mut buf, kept.len());
+            for surface in &kept {
+                write_polygon(&mut buf, surface, pool, &mut bbox)?;
             }
         }
         GeometryType::Solid => {
             let shells: Vec<Vec<Vec<Vec<usize>>>> = boundaries(geom)?;
-            polyhedral(&mut buf, &shells, pool, &mut bbox)?;
+            let mut pos = 0;
+            let kept = normalise_shells(&shells, &mut pos, &mut drops);
+            write_polyhedral(&mut buf, &kept, pool, &mut bbox)?;
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
             let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> = boundaries(geom)?;
             header(&mut buf, GEOMETRYCOLLECTION_Z);
             u32le(&mut buf, solids.len());
+            let mut pos = 0;
             for solid in &solids {
-                polyhedral(&mut buf, solid, pool, &mut bbox)?;
+                let kept = normalise_shells(solid, &mut pos, &mut drops);
+                write_polyhedral(&mut buf, &kept, pool, &mut bbox)?;
             }
         }
     }
     if bbox.count == 0 {
-        // No coordinates were actually written (e.g. empty boundaries): an
-        // infinite placeholder bbox is worse than no geometry at all, so
-        // report this the same way as GeometryInstance — no WKB emitted.
+        // No coordinates were actually written (empty boundaries, or every
+        // surface dropped as degenerate): an infinite placeholder bbox is
+        // worse than no geometry at all, so report this the same way as
+        // GeometryInstance — no WKB emitted (drop info is not carried in
+        // this corner; there is no geometry value to attach it to).
         return Ok(None);
     }
-    Ok(Some((buf, bbox.bounds)))
+    Ok(Some(WkbOutcome {
+        bytes: buf,
+        bbox: bbox.bounds,
+        dropped_rings: drops.rings,
+        dropped_surfaces: drops.surfaces,
+    }))
 }
 
 #[cfg(test)]
@@ -278,7 +367,8 @@ mod tests {
             template: None,
             transformation_matrix: None,
         };
-        let (bytes, bbox) = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
+        let outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
+        let (bytes, bbox) = (outcome.bytes, outcome.bbox);
         assert_eq!(bytes[0], 0x01);
         assert_eq!(u32::from_le_bytes(bytes[1..5].try_into().unwrap()), 1006); // MultiPolygonZ
         // one nested full PolygonZ header
@@ -293,7 +383,10 @@ mod tests {
     }
 
     #[test]
-    fn ring_with_fewer_than_3_vertices_errors() {
+    fn ring_with_fewer_than_3_vertices_is_dropped_not_an_error() {
+        // Policy change (task 3b): a ring that cannot form a valid WKB ring
+        // is dropped rather than failing the whole geometry. Here it is the
+        // only surface's exterior ring, so nothing is left to write.
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t);
         let geom = cjseq::Geometry {
@@ -306,15 +399,9 @@ mod tests {
             template: None,
             transformation_matrix: None,
         };
-        let err = geometry_to_wkb(&geom, &pool).unwrap_err();
         assert!(
-            matches!(err, CityParquetError::Geometry(_)),
-            "expected Geometry error for a too-short ring, got {err:?}"
-        );
-        let msg = err.to_string();
-        assert!(
-            msg.contains("3") || msg.to_lowercase().contains("ring"),
-            "error message should name the problem, got: {msg}"
+            geometry_to_wkb(&geom, &pool).unwrap().is_none(),
+            "a geometry reduced to nothing must emit no WKB, not an error"
         );
     }
 
@@ -335,11 +422,16 @@ mod tests {
             template: None,
             transformation_matrix: None,
         };
-        let (bytes, _bbox) = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
+        let outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
+        let bytes = outcome.bytes;
         let num_points = u32::from_le_bytes(bytes[18..22].try_into().unwrap());
         assert_eq!(
             num_points, 4,
             "pre-closed 4-index ring must yield 4 WKB points, not 5"
+        );
+        assert_eq!(
+            outcome.dropped_rings, 0,
+            "a pre-closed ring with 3 effective vertices is normalised, not dropped"
         );
         let parsed = wkb::reader::read_wkb(&bytes)
             .expect("wkb crate oracle must parse our own MultiPolygonZ output");
@@ -363,7 +455,7 @@ mod tests {
             template: None,
             transformation_matrix: None,
         };
-        let (bytes, _) = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
+        let bytes = geometry_to_wkb(&geom, &pool).unwrap().unwrap().bytes;
         assert_eq!(u32::from_le_bytes(bytes[1..5].try_into().unwrap()), 1015); // PolyhedralSurfaceZ
         assert_eq!(u32::from_le_bytes(bytes[5..9].try_into().unwrap()), 2); // faces across shells
         assert_eq!(u32::from_le_bytes(bytes[10..14].try_into().unwrap()), 1003); // nested PolygonZ
@@ -421,6 +513,92 @@ mod tests {
             material: None,
             texture: None,
             template: Some(0),
+            transformation_matrix: None,
+        };
+        assert!(geometry_to_wkb(&geom, &pool).unwrap().is_none());
+    }
+
+    #[test]
+    fn degenerate_ring_drops_with_its_surface() {
+        // Surface 0's exterior ring is the structural [a,b,a] closure shape
+        // (2 effective vertices): the ring is dropped, and with it the whole
+        // surface. Surface 1 is fine and must survive as the ONLY polygon.
+        let (v, t) = pool_and(1.0);
+        let pool = VertexPool::new(&v, &t);
+        let geom = cjseq::Geometry {
+            thetype: cjseq::GeometryType::MultiSurface,
+            lod: Some("2".into()),
+            boundaries: serde_json::json!([[[0, 1, 0]], [[0, 1, 2, 3]]]),
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        let outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
+        assert_eq!(outcome.dropped_rings, 1);
+        assert_eq!(outcome.dropped_surfaces, vec![0]);
+        assert_eq!(
+            u32::from_le_bytes(outcome.bytes[5..9].try_into().unwrap()),
+            1,
+            "WKB must contain exactly ONE polygon (the surviving surface)"
+        );
+        // The writer's output must satisfy the hardened reader by construction.
+        let decoded = crate::wkb_read::wkb_to_geometry(&outcome.bytes)
+            .expect("hardened reader must accept the writer's output");
+        let crate::wkb_read::DecodedKind::MultiPolygon(surfaces) = &decoded.kind else {
+            panic!("expected MultiPolygon, got {:?}", decoded.kind);
+        };
+        assert_eq!(surfaces.len(), 1);
+        assert_eq!(
+            surfaces[0][0].len(),
+            4,
+            "surviving ring keeps its 4 vertices"
+        );
+    }
+
+    #[test]
+    fn zero_area_ring_with_3_effective_vertices_passes_through() {
+        // Policy is narrow and structural: only the [a,b,a] closure shape
+        // drops. A ring of 3 distinct indices passes through even if it is
+        // geometrically degenerate — data quality is not the format's
+        // business.
+        let (v, t) = pool_and(1.0);
+        let pool = VertexPool::new(&v, &t);
+        let geom = cjseq::Geometry {
+            thetype: cjseq::GeometryType::MultiSurface,
+            lod: Some("2".into()),
+            boundaries: serde_json::json!([[[0, 1, 2]]]),
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        let outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
+        assert_eq!(outcome.dropped_rings, 0);
+        assert!(outcome.dropped_surfaces.is_empty());
+        assert_eq!(
+            u32::from_le_bytes(outcome.bytes[5..9].try_into().unwrap()),
+            1
+        );
+    }
+
+    #[test]
+    fn all_surfaces_dropped_yields_no_wkb() {
+        // Every surface degenerate -> nothing to write; reported the same
+        // way as empty boundaries (None). Drop info is not carried in this
+        // corner (there is no WKB value to attach it to).
+        let (v, t) = pool_and(1.0);
+        let pool = VertexPool::new(&v, &t);
+        let geom = cjseq::Geometry {
+            thetype: cjseq::GeometryType::MultiSurface,
+            lod: Some("2".into()),
+            boundaries: serde_json::json!([[[0, 1, 0]]]),
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
             transformation_matrix: None,
         };
         assert!(geometry_to_wkb(&geom, &pool).unwrap().is_none());

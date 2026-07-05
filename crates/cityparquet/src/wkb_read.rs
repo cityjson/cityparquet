@@ -347,7 +347,7 @@ mod tests {
             cjseq::GeometryType::MultiSurface,
             serde_json::json!([[[0, 1, 2, 3]]]),
         );
-        let (bytes, _) = geometry_to_wkb(&src, &pool).unwrap().unwrap();
+        let bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
 
         let decoded = wkb_to_geometry(&bytes).unwrap();
         let DecodedKind::MultiPolygon(surfaces) = &decoded.kind else {
@@ -380,7 +380,7 @@ mod tests {
             cjseq::GeometryType::Solid,
             serde_json::json!([[[[0, 1, 2, 3]], [[0, 1, 4]]]]),
         );
-        let (bytes, _) = geometry_to_wkb(&src, &pool).unwrap().unwrap();
+        let bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
 
         let decoded = wkb_to_geometry(&bytes).unwrap();
         let DecodedKind::PolyhedralSurface(faces) = &decoded.kind else {
@@ -409,7 +409,7 @@ mod tests {
             cjseq::GeometryType::MultiPoint,
             serde_json::json!([0, 1, 4]),
         );
-        let (bytes, _) = geometry_to_wkb(&mp, &pool).unwrap().unwrap();
+        let bytes = geometry_to_wkb(&mp, &pool).unwrap().unwrap().bytes;
         let decoded = wkb_to_geometry(&bytes).unwrap();
         let DecodedKind::MultiPoint(idxs) = &decoded.kind else {
             panic!("expected MultiPoint, got {:?}", decoded.kind);
@@ -421,7 +421,7 @@ mod tests {
             cjseq::GeometryType::MultiLineString,
             serde_json::json!([[0, 1, 2], [2, 3]]),
         );
-        let (bytes, _) = geometry_to_wkb(&mls, &pool).unwrap().unwrap();
+        let bytes = geometry_to_wkb(&mls, &pool).unwrap().unwrap().bytes;
         let decoded = wkb_to_geometry(&bytes).unwrap();
         let DecodedKind::MultiLineString(lines) = &decoded.kind else {
             panic!("expected MultiLineString, got {:?}", decoded.kind);
@@ -443,7 +443,7 @@ mod tests {
             cjseq::GeometryType::MultiSolid,
             serde_json::json!([[[[[0, 1, 2, 3]]]], [[[[0, 1, 4]]]]]),
         );
-        let (bytes, _) = geometry_to_wkb(&src, &pool).unwrap().unwrap();
+        let bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
 
         let decoded = wkb_to_geometry(&bytes).unwrap();
         let DecodedKind::GeometryCollection(members) = &decoded.kind else {
@@ -475,7 +475,7 @@ mod tests {
             cjseq::GeometryType::MultiSurface,
             serde_json::json!([[[0, 1, 2, 3]]]),
         );
-        let (bytes, _) = geometry_to_wkb(&src, &pool).unwrap().unwrap();
+        let bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
 
         for cut in [0, 1, 5, bytes.len() - 1] {
             let err = wkb_to_geometry(&bytes[..cut]).unwrap_err();
@@ -494,7 +494,7 @@ mod tests {
             cjseq::GeometryType::MultiSurface,
             serde_json::json!([[[0, 1, 2, 3]]]),
         );
-        let (mut bytes, _) = geometry_to_wkb(&src, &pool).unwrap().unwrap();
+        let mut bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
         bytes[0] = 0x00;
         let err = wkb_to_geometry(&bytes).unwrap_err();
         assert!(matches!(err, CityParquetError::Geometry(_)));
@@ -508,7 +508,7 @@ mod tests {
             cjseq::GeometryType::MultiSurface,
             serde_json::json!([[[0, 1, 2, 3]]]),
         );
-        let (mut bytes, _) = geometry_to_wkb(&src, &pool).unwrap().unwrap();
+        let mut bytes = geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes;
         bytes[1..5].copy_from_slice(&9999u32.to_le_bytes());
         let err = wkb_to_geometry(&bytes).unwrap_err();
         assert!(matches!(err, CityParquetError::Geometry(_)));
@@ -528,7 +528,7 @@ mod tests {
             cjseq::GeometryType::MultiSurface,
             serde_json::json!([[[0, 1, 2, 3]]]),
         );
-        geometry_to_wkb(&src, &pool).unwrap().unwrap().0
+        geometry_to_wkb(&src, &pool).unwrap().unwrap().bytes
     }
 
     /// A hand-built MultiPolygonZ buffer with one polygon, one ring made of

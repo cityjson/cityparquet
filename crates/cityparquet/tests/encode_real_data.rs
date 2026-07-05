@@ -48,6 +48,65 @@ fn railway_encodes_with_semantics_and_templates() {
     assert_eq!(rows, 121);
 }
 
+/// The writer drops structurally degenerate surfaces ([a,b,a]-shaped
+/// exterior rings) at write time; the stored material per-surface arrays
+/// and geometry_properties must be realigned/annotated to match.
+/// GMLID_855011_330784_753 in lod3_railway has 101 source surfaces with a
+/// per-surface material values array; surface 67 is degenerate.
+#[test]
+fn railway_realigns_material_values_for_dropped_surfaces() {
+    let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let s = scan(&src).unwrap();
+    let batches: Vec<_> = encode(&src, &s, 1024)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    let mut found = false;
+    for batch in &batches {
+        let ids = batch
+            .column_by_name("id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let materials = batch
+            .column_by_name("material")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let props = batch
+            .column_by_name("geometry_properties_lod3")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            if ids.value(row) != "GMLID_855011_330784_753" {
+                continue;
+            }
+            found = true;
+            let material: serde_json::Value = serde_json::from_str(materials.value(row)).unwrap();
+            let values = material["3"]["visual"]["values"]
+                .as_array()
+                .expect("per-surface material values array");
+            assert_eq!(
+                values.len(),
+                100,
+                "material values must be realigned after dropping surface 67 (source had 101)"
+            );
+            let p: serde_json::Value = serde_json::from_str(props.value(row)).unwrap();
+            assert_eq!(
+                p["dropped_degenerate"],
+                serde_json::json!({"rings": 1, "surfaces": [67]}),
+                "geometry_properties must record what was dropped"
+            );
+        }
+    }
+    assert!(found, "GMLID_855011_330784_753 row not found");
+}
+
 #[test]
 fn delft_records_per_shell_face_partition_for_solids() {
     // delft.city.jsonl carries plain `Solid` geometry (no MultiSolid /

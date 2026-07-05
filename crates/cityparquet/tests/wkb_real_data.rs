@@ -41,8 +41,8 @@ fn process_all(path: &Path) -> usize {
                     continue;
                 }
 
-                let (bytes, bbox) =
-                    result.expect("every non-instance geometry must yield WKB bytes");
+                let outcome = result.expect("every non-instance geometry must yield WKB bytes");
+                let (bytes, bbox) = (outcome.bytes, outcome.bbox);
                 processed += 1;
 
                 assert_eq!(
@@ -70,8 +70,8 @@ fn process_all(path: &Path) -> usize {
                         GtGeometryType::MultiPolygon(mp) => {
                             assert_eq!(
                                 mp.num_polygons(),
-                                surfaces.len(),
-                                "oracle polygon count must match source boundary surface count"
+                                surfaces.len() - outcome.dropped_surfaces.len(),
+                                "oracle polygon count must match source surface count minus writer-dropped degenerate surfaces"
                             );
                         }
                         _ => panic!(

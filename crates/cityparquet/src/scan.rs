@@ -98,7 +98,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
                 continue;
             };
             for geom in geoms {
-                let bbox = geometry_to_wkb(geom, &pool)?.map(|(_, bbox)| bbox);
+                let bbox = geometry_to_wkb(geom, &pool)?.map(|outcome| outcome.bbox);
                 match &geom.lod {
                     Some(lod) => {
                         Lod::parse(lod).map_err(|_| {

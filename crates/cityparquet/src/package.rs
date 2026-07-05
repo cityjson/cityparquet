@@ -62,6 +62,11 @@ pub struct ConvertReport {
     pub files: Vec<PathBuf>,
     pub skipped_same_lod_geometries: usize,
     pub attribute_coercion_nulls: usize,
+    /// Structurally degenerate rings the writer dropped at encode time.
+    pub degenerate_rings_dropped: usize,
+    /// Surfaces the writer dropped (exterior ring degenerate), with their
+    /// semantics/material/texture entries realigned in the stored columns.
+    pub degenerate_surfaces_dropped: usize,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -171,5 +176,7 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
         files: vec![cityobjects_path, metadata_path],
         skipped_same_lod_geometries: encode_stats.skipped_same_lod_geometries,
         attribute_coercion_nulls: encode_stats.attribute_coercion_nulls,
+        degenerate_rings_dropped: encode_stats.degenerate_rings_dropped,
+        degenerate_surfaces_dropped: encode_stats.degenerate_surfaces_dropped,
     })
 }
