@@ -1,0 +1,14 @@
+[package]
+name = "cityparquet-cli"
+description = "CityParquet command-line tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "cityparquet"
+path = "src/main.rs"
+
+[dependencies]
+cityparquet-schema = { workspace = true }
