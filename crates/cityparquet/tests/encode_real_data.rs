@@ -260,6 +260,19 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
     }
     let mutated_line = mutated_line.expect("delft.city.jsonl must contain the target object");
 
+    // The UV coordinates the interner inlines are read back from whatever
+    // `Source::open` re-parses out of the written file's JSON text, not
+    // from the `i as f64 / 24.0` Rust expression that built them: JSON
+    // number parsing is not guaranteed bit-exact for every literal (some
+    // values round-trip 1 ULP off), so the expected values below are
+    // re-parsed from the SAME text via the same JSON parse path, rather
+    // than recomputed independently.
+    let mutated_value: serde_json::Value = serde_json::from_str(&mutated_line).unwrap();
+    let vertices_texture: Vec<serde_json::Value> = mutated_value["appearance"]["vertices-texture"]
+        .as_array()
+        .expect("mutated feature carries vertices-texture")
+        .clone();
+
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("delft_solid_derived.city.jsonl");
     std::fs::write(&path, format!("{header_line}\n{mutated_line}\n")).unwrap();
@@ -327,16 +340,21 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
             .downcast_ref::<StringArray>()
             .unwrap();
         let texture: serde_json::Value = serde_json::from_str(texture.value(row)).unwrap();
+        // Post-interner: the texture index (only one def in this isolated
+        // fixture, so its dataset-global id is 0) and every UV index are
+        // inlined as `[u, v]` pairs from the re-parsed vertices-texture
+        // pool (see the comment where `vertices_texture` is built above).
+        let uv = |i: usize| vertices_texture[i].clone();
         assert_eq!(
             texture["1.2"]["visual"]["values"][0],
             serde_json::json!([
-                [[0, 0, 1, 2, 3]],
-                [[0, 4, 5, 6, 7]],
-                [[0, 12, 13, 14, 15]],
-                [[0, 16, 17, 18, 19]],
-                [[0, 20, 21, 22, 23]]
+                [[0, uv(0), uv(1), uv(2), uv(3)]],
+                [[0, uv(4), uv(5), uv(6), uv(7)]],
+                [[0, uv(12), uv(13), uv(14), uv(15)]],
+                [[0, uv(16), uv(17), uv(18), uv(19)]],
+                [[0, uv(20), uv(21), uv(22), uv(23)]]
             ]),
-            "texture values must be realigned within the shell nesting"
+            "texture values must be realigned within the shell nesting, globally rewritten, and UV-inlined"
         );
     }
     assert!(

@@ -22,8 +22,9 @@ use arrow_schema::{DataType, Schema};
 use cjseq::{CityJSONFeature, CityObject, Geometry, GeometryType, Transform};
 use serde_json::Value;
 
-use cityparquet_schema::{AttributeType, Lod, Result, normalise_attribute_name};
+use cityparquet_schema::{AttributeType, CityParquetError, Lod, Result, normalise_attribute_name};
 
+use crate::appearance::AppearanceInterner;
 use crate::scan::ScanResult;
 use crate::source::{FeatureIter, Source};
 use crate::wkb_write::{VertexPool, geometry_to_wkb, point_to_wkb};
@@ -381,18 +382,61 @@ struct GeometryAccumulator {
     own_bbox: Option<[f64; 6]>,
 }
 
+/// This feature's local material definitions, from `feature.appearance`
+/// (empty when the feature carries no appearance block at all — a geometry
+/// that still has a non-empty `material` map in that case is a dangling
+/// reference, caught by [`accumulate_geometry`]'s interner rewrite).
+fn feature_local_materials(feature: &CityJSONFeature) -> &[Value] {
+    feature
+        .appearance
+        .as_ref()
+        .and_then(|a| a.materials.as_deref())
+        .unwrap_or(&[])
+}
+
+/// This feature's local texture definitions (see [`feature_local_materials`]).
+fn feature_local_textures(feature: &CityJSONFeature) -> &[Value] {
+    feature
+        .appearance
+        .as_ref()
+        .and_then(|a| a.textures.as_deref())
+        .unwrap_or(&[])
+}
+
+/// This feature's local UV vertex pool (see [`feature_local_materials`]).
+fn feature_local_uvs(feature: &CityJSONFeature) -> &[Vec<f64>] {
+    feature
+        .appearance
+        .as_ref()
+        .and_then(|a| a.vertices_texture.as_deref())
+        .unwrap_or(&[])
+}
+
 /// Walk one object's own geometries, bucketing them into `acc`. `per_lod`
 /// mirrors the dataset-wide binding rule from [`crate::scan`]: `true` means
 /// every kept geometry needs an `lod` to have a column to live in (lod-less
 /// geometries are silently unplaceable, already counted at the dataset
 /// level by `scan`'s `lodless_geometries`); `false` means every kept
 /// geometry shares the single un-suffixed `geometry` column.
+///
+/// `id` is `co`'s own CityObject id, used only to name the object in the
+/// error surfaced when a geometry's `material`/`texture` map has indices
+/// that cannot be resolved against `local_materials`/`local_textures`/
+/// `local_uvs` (most commonly: the feature carries no matching appearance
+/// block at all, so the local defs slice is empty) — dangling local indices
+/// must never silently survive into the dataset-global rewrite.
+#[allow(clippy::too_many_arguments)]
 fn accumulate_geometry(
     acc: &mut GeometryAccumulator,
     co: &CityObject,
     pool: &VertexPool,
     per_lod: bool,
     stats: &mut EncodeStats,
+    interner: &mut AppearanceInterner,
+    local_materials: &[Value],
+    local_textures: &[Value],
+    local_uvs: &[Vec<f64>],
+    id: &str,
 ) -> Result<()> {
     let Some(geoms) = &co.geometry else {
         return Ok(());
@@ -451,6 +495,19 @@ fn accumulate_geometry(
             } else if let Some(depth) = solid_depth {
                 realign_nested_appearance_themes(&mut material, depth, &outcome.dropped_surfaces);
             }
+            // Rewrite feature-local material indices to dataset-global ids
+            // AFTER realignment: realignment only removes whole face-level
+            // entries by position and never inspects their content, so it is
+            // indifferent to whether the entries are still feature-local
+            // indices or already-rewritten global ones — but doing the
+            // rewrite last keeps the two concerns cleanly separated.
+            let material = interner
+                .rewrite_material_map(&material, local_materials)
+                .map_err(|e| {
+                    CityParquetError::Schema(format!(
+                        "object {id}: cannot resolve material map to global ids: {e}"
+                    ))
+                })?;
             acc.material.insert(lod_key.clone(), material);
         }
         if let Some(texture) = &geom.texture {
@@ -460,6 +517,13 @@ fn accumulate_geometry(
             } else if let Some(depth) = solid_depth {
                 realign_nested_appearance_themes(&mut texture, depth, &outcome.dropped_surfaces);
             }
+            let texture = interner
+                .rewrite_texture_map(&texture, local_textures, local_uvs)
+                .map_err(|e| {
+                    CityParquetError::Schema(format!(
+                        "object {id}: cannot resolve texture map to global ids: {e}"
+                    ))
+                })?;
             acc.texture.insert(lod_key, texture);
         }
 
@@ -738,6 +802,7 @@ impl RowWriter {
         id: &str,
         transform: &Transform,
         stats: &mut EncodeStats,
+        interner: &mut AppearanceInterner,
     ) -> Result<()> {
         let co = feature
             .city_objects
@@ -754,7 +819,18 @@ impl RowWriter {
         self.other.append_null(); // M2 limitation: always null
 
         let mut acc = GeometryAccumulator::default();
-        accumulate_geometry(&mut acc, co, &pool, self.per_lod, stats)?;
+        accumulate_geometry(
+            &mut acc,
+            co,
+            &pool,
+            self.per_lod,
+            stats,
+            interner,
+            feature_local_materials(feature),
+            feature_local_textures(feature),
+            feature_local_uvs(feature),
+            id,
+        )?;
 
         for slot in &mut self.geometry_slots {
             match acc.slots.get(&slot.key) {
@@ -887,6 +963,9 @@ pub struct BatchIter<'a> {
     /// error contract above).
     errored: bool,
     stats: EncodeStats,
+    /// Dataset-global material/texture interner, fed one feature's worth of
+    /// local definitions at a time as rows are encoded; see [`Self::appearance`].
+    appearance: AppearanceInterner,
 }
 
 impl BatchIter<'_> {
@@ -894,6 +973,13 @@ impl BatchIter<'_> {
     /// (final once the iterator is exhausted).
     pub fn stats(&self) -> EncodeStats {
         self.stats
+    }
+
+    /// The dataset-global material/texture interner accumulated so far
+    /// (final once the iterator is exhausted) — read after the batch loop,
+    /// before dropping the iterator (mirrors [`Self::stats`]).
+    pub fn appearance(&self) -> &AppearanceInterner {
+        &self.appearance
     }
 
     fn finish_batch(&mut self) -> Result<RecordBatch> {
@@ -941,10 +1027,13 @@ impl BatchIter<'_> {
                 .current_feature
                 .as_ref()
                 .expect("feature set with its object ids");
-            if let Err(e) = self
-                .writer
-                .push_object(feature, &id, &self.transform, &mut self.stats)
-            {
+            if let Err(e) = self.writer.push_object(
+                feature,
+                &id,
+                &self.transform,
+                &mut self.stats,
+                &mut self.appearance,
+            ) {
                 return Some(Err(e));
             }
             if self.writer.len == self.batch_size {
@@ -995,6 +1084,7 @@ pub fn encode<'a>(
         exhausted_input: false,
         errored: false,
         stats: EncodeStats::default(),
+        appearance: AppearanceInterner::new(),
     })
 }
 
@@ -1077,9 +1167,39 @@ mod tests {
         };
         let pool = VertexPool::new(&vertices, &transform);
 
+        // Local defs sized to cover every raw index the fixture geometry
+        // above references (material indices up to 7, texture index up to
+        // 1, UV indices up to 3): the interner rewrite now resolves every
+        // index against a real local def, so these must exist.
+        let local_materials: Vec<Value> = (0..8)
+            .map(|i| serde_json::json!({"name": format!("m{i}")}))
+            .collect();
+        let local_textures: Vec<Value> = (0..2)
+            .map(|i| serde_json::json!({"type": "PNG", "image": format!("t{i}.png")}))
+            .collect();
+        let local_uvs: Vec<Vec<f64>> = vec![
+            vec![0.0, 0.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+            vec![0.0, 1.0],
+        ];
+
         let mut acc = GeometryAccumulator::default();
         let mut stats = EncodeStats::default();
-        accumulate_geometry(&mut acc, &co, &pool, true, &mut stats).unwrap();
+        let mut interner = AppearanceInterner::new();
+        accumulate_geometry(
+            &mut acc,
+            &co,
+            &pool,
+            true,
+            &mut stats,
+            &mut interner,
+            &local_materials,
+            &local_textures,
+            &local_uvs,
+            "obj1",
+        )
+        .unwrap();
 
         assert_eq!(stats.degenerate_rings_dropped, 1);
         assert_eq!(stats.degenerate_surfaces_dropped, 1);
@@ -1101,15 +1221,26 @@ mod tests {
             "the surfaces lookup table itself is untouched (values index into it)"
         );
 
+        // Surface 0 (material index 5, texture index 0) was dropped; only
+        // surface 1's material index 7 / texture index 1 survive, now
+        // rewritten to dataset-global ids with inlined UVs.
+        let gid_material_7 = interner.intern_material(&local_materials[7]);
+        let gid_texture_1 = interner.intern_texture(&local_textures[1]);
         assert_eq!(
             acc.material["2"],
-            serde_json::json!({"visual": {"values": [7]}}),
-            "material per-surface values must be realigned"
+            serde_json::json!({"visual": {"values": [gid_material_7]}}),
+            "material per-surface values must be realigned and globally rewritten"
         );
         assert_eq!(
             acc.texture["2"],
-            serde_json::json!({"visual": {"values": [[[1, 0, 1, 2, 3]]]}}),
-            "texture per-surface values must be realigned"
+            serde_json::json!({"visual": {"values": [[[
+                gid_texture_1,
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 1.0],
+                [0.0, 1.0]
+            ]]]}}),
+            "texture per-surface values must be realigned, globally rewritten, and UV-inlined"
         );
     }
 
@@ -1142,7 +1273,7 @@ mod tests {
                     "values": [[0, 1, 2]]
                 },
                 "material": {"visual": {"values": [[1, 2, 3]]}},
-                "texture": {"visual": {"values": [[[[100]], [[200]], [[300]]]]}}
+                "texture": {"visual": {"values": [[[[0]], [[1]], [[2]]]]}}
             }]
         }))
         .unwrap();
@@ -1158,9 +1289,33 @@ mod tests {
         };
         let pool = VertexPool::new(&vertices, &transform);
 
+        // Local defs sized to cover the raw indices above (material 1..3,
+        // texture 0..2); the texture rings here are all `[t]` (no UVs), so
+        // no UV pool is needed.
+        let local_materials: Vec<Value> = (0..4)
+            .map(|i| serde_json::json!({"name": format!("m{i}")}))
+            .collect();
+        let local_textures: Vec<Value> = (0..3)
+            .map(|i| serde_json::json!({"type": "PNG", "image": format!("t{i}.png")}))
+            .collect();
+        let local_uvs: Vec<Vec<f64>> = Vec::new();
+
         let mut acc = GeometryAccumulator::default();
         let mut stats = EncodeStats::default();
-        accumulate_geometry(&mut acc, &co, &pool, true, &mut stats).unwrap();
+        let mut interner = AppearanceInterner::new();
+        accumulate_geometry(
+            &mut acc,
+            &co,
+            &pool,
+            true,
+            &mut stats,
+            &mut interner,
+            &local_materials,
+            &local_textures,
+            &local_uvs,
+            "obj1",
+        )
+        .unwrap();
 
         assert_eq!(stats.degenerate_rings_dropped, 1);
         assert_eq!(stats.degenerate_surfaces_dropped, 1);
@@ -1187,15 +1342,21 @@ mod tests {
             "the surfaces lookup table itself is untouched (values index into it)"
         );
 
+        // Face 1 (material index 2, texture index 1) was dropped; faces 0
+        // and 2 survive, rewritten to dataset-global ids.
+        let gid_material_1 = interner.intern_material(&local_materials[1]);
+        let gid_material_3 = interner.intern_material(&local_materials[3]);
+        let gid_texture_0 = interner.intern_texture(&local_textures[0]);
+        let gid_texture_2 = interner.intern_texture(&local_textures[2]);
         assert_eq!(
             acc.material["2"],
-            serde_json::json!({"visual": {"values": [[1, 3]]}}),
-            "material values must be realigned within the shell nesting"
+            serde_json::json!({"visual": {"values": [[gid_material_1, gid_material_3]]}}),
+            "material values must be realigned within the shell nesting and globally rewritten"
         );
         assert_eq!(
             acc.texture["2"],
-            serde_json::json!({"visual": {"values": [[[[100]], [[300]]]]}}),
-            "texture values must be realigned within the shell nesting"
+            serde_json::json!({"visual": {"values": [[[[gid_texture_0]], [[gid_texture_2]]]]}}),
+            "texture values must be realigned within the shell nesting and globally rewritten"
         );
     }
 
@@ -1232,8 +1393,8 @@ mod tests {
                 "texture": {
                     "visual": {
                         "values": [
-                            [[[[100]], [[101]]], [[[102]]]],
-                            [[[[103]], [[104]]]]
+                            [[[[0]], [[1]]], [[[2]]]],
+                            [[[[3]], [[4]]]]
                         ]
                     }
                 }
@@ -1252,9 +1413,33 @@ mod tests {
         };
         let pool = VertexPool::new(&vertices, &transform);
 
+        // Local defs sized to cover the raw indices above (material 1..5,
+        // texture 0..4); all texture rings are `[t]` (no UVs), so no UV
+        // pool is needed.
+        let local_materials: Vec<Value> = (0..6)
+            .map(|i| serde_json::json!({"name": format!("m{i}")}))
+            .collect();
+        let local_textures: Vec<Value> = (0..5)
+            .map(|i| serde_json::json!({"type": "PNG", "image": format!("t{i}.png")}))
+            .collect();
+        let local_uvs: Vec<Vec<f64>> = Vec::new();
+
         let mut acc = GeometryAccumulator::default();
         let mut stats = EncodeStats::default();
-        accumulate_geometry(&mut acc, &co, &pool, true, &mut stats).unwrap();
+        let mut interner = AppearanceInterner::new();
+        accumulate_geometry(
+            &mut acc,
+            &co,
+            &pool,
+            true,
+            &mut stats,
+            &mut interner,
+            &local_materials,
+            &local_textures,
+            &local_uvs,
+            "obj1",
+        )
+        .unwrap();
 
         assert_eq!(stats.degenerate_rings_dropped, 2);
         assert_eq!(stats.degenerate_surfaces_dropped, 2);
@@ -1276,22 +1461,31 @@ mod tests {
             "semantics values must lose exactly positions 2 and 4, across the solid/shell nesting"
         );
 
+        // Flat positions 2 (material 3, texture 2) and 4 (material 5,
+        // texture 4) were dropped; the survivors are rewritten to
+        // dataset-global ids.
+        let gid_material_1 = interner.intern_material(&local_materials[1]);
+        let gid_material_2 = interner.intern_material(&local_materials[2]);
+        let gid_material_4 = interner.intern_material(&local_materials[4]);
         assert_eq!(
             acc.material["2"],
-            serde_json::json!({"visual": {"values": [[[1, 2], []], [[4]]]}}),
-            "material values must be realigned across solids and shells"
+            serde_json::json!({"visual": {"values": [[[gid_material_1, gid_material_2], []], [[gid_material_4]]]}}),
+            "material values must be realigned across solids and shells, and globally rewritten"
         );
+        let gid_texture_0 = interner.intern_texture(&local_textures[0]);
+        let gid_texture_1 = interner.intern_texture(&local_textures[1]);
+        let gid_texture_3 = interner.intern_texture(&local_textures[3]);
         assert_eq!(
             acc.texture["2"],
             serde_json::json!({
                 "visual": {
                     "values": [
-                        [[[[100]], [[101]]], []],
-                        [[[[103]]]]
+                        [[[[gid_texture_0]], [[gid_texture_1]]], []],
+                        [[[[gid_texture_3]]]]
                     ]
                 }
             }),
-            "texture values must be realigned across solids and shells"
+            "texture values must be realigned across solids and shells, and globally rewritten"
         );
     }
 }
