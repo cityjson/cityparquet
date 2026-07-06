@@ -29,10 +29,12 @@ fn json_col(name: &str) -> Field {
         .with_metadata([("ARROW:extension:name".to_string(), "arrow.json".to_string())].into())
 }
 
-/// `materials.parquet` schema (spec § Appearance encoding).
+/// `materials.parquet` schema (spec § Appearance encoding). `id` is the
+/// dataset-global row index assigned by the appearance interner (see
+/// `cityparquet::appearance::AppearanceInterner`).
 pub fn materials_schema() -> Schema {
     Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
+        Field::new("id", DataType::Int64, false),
         Field::new("name", DataType::Utf8, true),
         Field::new("ambientIntensity", DataType::Float64, true),
         json_col("diffuseColor"),
@@ -45,10 +47,14 @@ pub fn materials_schema() -> Schema {
     ])
 }
 
-/// `textures.parquet` schema (spec § Appearance encoding).
+/// `textures.parquet` schema (spec § Appearance encoding). `id` is the
+/// dataset-global row index assigned by the appearance interner. No
+/// `vertices_texture` column: UV coordinates are inlined directly into each
+/// geometry's `texture` map by the interner rewrite, so the per-feature UV
+/// vertex pool never needs a stable global identity of its own.
 pub fn textures_schema() -> Schema {
     Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
+        Field::new("id", DataType::Int64, false),
         Field::new("name", DataType::Utf8, true),
         Field::new("image_uri", DataType::Utf8, true),
         Field::new("image_data", DataType::Binary, true),
@@ -56,7 +62,6 @@ pub fn textures_schema() -> Schema {
         Field::new("wrapMode", DataType::Utf8, true),
         Field::new("textureType", DataType::Utf8, true),
         json_col("borderColor"),
-        json_col("vertices_texture"),
         json_col("other"),
     ])
 }
@@ -119,6 +124,12 @@ mod tests {
         ] {
             assert!(m.field_with_name(col).is_ok(), "materials missing {col}");
         }
+        assert_eq!(
+            m.field_with_name("id").unwrap().data_type(),
+            &DataType::Int64
+        );
+        assert!(!m.field_with_name("id").unwrap().is_nullable());
+
         let t = textures_schema();
         for col in [
             "id",
@@ -129,11 +140,20 @@ mod tests {
             "wrapMode",
             "textureType",
             "borderColor",
-            "vertices_texture",
             "other",
         ] {
             assert!(t.field_with_name(col).is_ok(), "textures missing {col}");
         }
+        assert!(
+            t.field_with_name("vertices_texture").is_err(),
+            "textures schema must not carry vertices_texture: UV coordinates are \
+             inlined into each geometry's texture map instead"
+        );
+        assert_eq!(
+            t.field_with_name("id").unwrap().data_type(),
+            &DataType::Int64
+        );
+        assert!(!t.field_with_name("id").unwrap().is_nullable());
         assert_eq!(
             t.field_with_name("image_data").unwrap().data_type(),
             &DataType::Binary
