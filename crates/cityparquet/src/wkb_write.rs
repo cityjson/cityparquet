@@ -36,6 +36,9 @@ impl<'a> VertexPool<'a> {
     }
 
     pub fn coord(&self, idx: usize) -> Result<[f64; 3]> {
+        const MAX_SAFE: f64 = 9_007_199_254_740_992.0; // 2^53
+        const MAX_QUANTISED: u64 = 1u64 << 53;
+
         let v = self.vertices.get(idx).ok_or_else(|| {
             CityParquetError::Geometry(format!(
                 "vertex index {idx} out of range ({} vertices)",
@@ -48,11 +51,34 @@ impl<'a> VertexPool<'a> {
                 v.len()
             )));
         }
-        Ok([
+
+        // Guard quantised components: no component can exceed 2^53 in magnitude
+        // or it loses precision when converted to f64.
+        for (i, &val) in [v[0], v[1], v[2]].iter().enumerate() {
+            if val.unsigned_abs() > MAX_QUANTISED {
+                return Err(CityParquetError::Geometry(format!(
+                    "vertex {idx} component {i}: quantised value {val} exceeds 2^53 magnitude (loses f64 precision)"
+                )));
+            }
+        }
+
+        // Compute world coordinates and check their magnitude
+        let coords = [
             v[0] as f64 * self.scale[0] + self.translate[0],
             v[1] as f64 * self.scale[1] + self.translate[1],
             v[2] as f64 * self.scale[2] + self.translate[2],
-        ])
+        ];
+
+        // Guard final world coordinates: no coordinate can exceed 2^53 in magnitude
+        for (i, &c) in coords.iter().enumerate() {
+            if c.abs() >= MAX_SAFE {
+                return Err(CityParquetError::Geometry(format!(
+                    "vertex {idx} coordinate {i}: computed value {c} exceeds 2^53 magnitude (loses f64 precision)"
+                )));
+            }
+        }
+
+        Ok(coords)
     }
 }
 
@@ -670,5 +696,33 @@ mod tests {
         assert_eq!(normalise_surface(&empty, 4, &mut drops), None);
         assert_eq!(drops.surfaces, vec![4]);
         assert_eq!(drops.rings, 0); // no ring existed to count
+    }
+
+    #[test]
+    fn vertex_beyond_2_53_is_rejected() {
+        // Quantised component 2^53 + 1 is not representable in f64: silent
+        // precision loss, so the writer must refuse it.
+        let vertices = vec![vec![9_007_199_254_740_993_i64, 0, 0]];
+        let transform: Transform = serde_json::from_value(serde_json::json!({
+            "scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]
+        }))
+        .unwrap();
+        let pool = VertexPool::new(&vertices, &transform);
+        assert!(matches!(pool.coord(0), Err(CityParquetError::Geometry(_))));
+    }
+
+    #[test]
+    fn large_translate_cancellation_is_rejected_not_silently_lossy() {
+        // v = -(2^53 + 8): converting v to f64 already loses bits BEFORE the
+        // translate cancels it back into small-magnitude territory — the final
+        // coordinate looks harmless but is wrong. The guard must fire on the
+        // quantised component, not only on the final value.
+        let vertices = vec![vec![-9_007_199_254_741_000_i64, 0, 0]];
+        let transform: Transform = serde_json::from_value(serde_json::json!({
+            "scale": [1.0, 1.0, 1.0], "translate": [9_007_199_254_741_000.0, 0.0, 0.0]
+        }))
+        .unwrap();
+        let pool = VertexPool::new(&vertices, &transform);
+        assert!(matches!(pool.coord(0), Err(CityParquetError::Geometry(_))));
     }
 }
