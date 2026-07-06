@@ -13,11 +13,27 @@ const MULTIPOLYGON_Z: u32 = 1006;
 const GEOMETRYCOLLECTION_Z: u32 = 1007;
 const POLYHEDRALSURFACE_Z: u32 = 1015;
 
-pub struct VertexPool<'a> {
-    vertices: &'a [Vec<i64>],
-    scale: [f64; 3],
-    translate: [f64; 3],
+/// 2^53: no `f64` can represent an integer beyond this magnitude exactly, so
+/// it is the shared ceiling for both quantised-component and final
+/// world-coordinate guards.
+const MAX_SAFE: f64 = 9_007_199_254_740_992.0;
+
+/// Vertex storage backing a [`VertexPool`]: either the dataset's quantised
+/// integer vertices (dequantised through the CityJSON `transform` on lookup)
+/// or a template's raw floats (CityJSON spec §3.4: `vertices-templates` are
+/// NOT subject to the dataset transform, so they are looked up verbatim).
+enum VertexStorage<'a> {
+    Quantised {
+        vertices: &'a [Vec<i64>],
+        scale: [f64; 3],
+        translate: [f64; 3],
+    },
+    Raw {
+        vertices: &'a [Vec<f64>],
+    },
 }
+
+pub struct VertexPool<'a>(VertexStorage<'a>);
 
 impl<'a> VertexPool<'a> {
     pub fn new(vertices: &'a [Vec<i64>], transform: &Transform) -> Self {
@@ -28,57 +44,104 @@ impl<'a> VertexPool<'a> {
                 *v.get(2).unwrap_or(&d),
             ]
         };
-        Self {
+        Self(VertexStorage::Quantised {
             vertices,
             scale: take3(&transform.scale, 1.0),
             translate: take3(&transform.translate, 0.0),
-        }
+        })
+    }
+
+    /// Template-local vertex pool: coordinates are looked up verbatim, no
+    /// scale/translate applied (CityJSON spec §3.4 — a geometry template's
+    /// `vertices-templates` are raw floats, unlike the dataset's quantised
+    /// `vertices`). The 2^53 world-coordinate guard still applies (a
+    /// too-large `f64` loses precision regardless of where it came from);
+    /// the quantised-*component* guard from [`Self::new`] does not apply
+    /// here, since there is no quantised integer component to check.
+    pub fn raw(vertices: &'a [Vec<f64>]) -> VertexPool<'a> {
+        VertexPool(VertexStorage::Raw { vertices })
     }
 
     pub fn coord(&self, idx: usize) -> Result<[f64; 3]> {
-        const MAX_SAFE: f64 = 9_007_199_254_740_992.0; // 2^53
-        const MAX_QUANTISED: u64 = 1u64 << 53;
+        match &self.0 {
+            VertexStorage::Quantised {
+                vertices,
+                scale,
+                translate,
+            } => {
+                const MAX_QUANTISED: u64 = 1u64 << 53;
 
-        let v = self.vertices.get(idx).ok_or_else(|| {
-            CityParquetError::Geometry(format!(
-                "vertex index {idx} out of range ({} vertices)",
-                self.vertices.len()
-            ))
-        })?;
-        if v.len() < 3 {
-            return Err(CityParquetError::Geometry(format!(
-                "vertex {idx} has {} components",
-                v.len()
-            )));
-        }
+                let v = vertices.get(idx).ok_or_else(|| {
+                    CityParquetError::Geometry(format!(
+                        "vertex index {idx} out of range ({} vertices)",
+                        vertices.len()
+                    ))
+                })?;
+                if v.len() < 3 {
+                    return Err(CityParquetError::Geometry(format!(
+                        "vertex {idx} has {} components",
+                        v.len()
+                    )));
+                }
 
-        // Guard quantised components: no component can exceed 2^53 in magnitude
-        // or it loses precision when converted to f64.
-        for (i, &val) in [v[0], v[1], v[2]].iter().enumerate() {
-            if val.unsigned_abs() > MAX_QUANTISED {
-                return Err(CityParquetError::Geometry(format!(
-                    "vertex {idx} component {i}: quantised value {val} exceeds 2^53 magnitude (loses f64 precision)"
-                )));
+                // Guard quantised components: no component can exceed 2^53 in
+                // magnitude or it loses precision when converted to f64.
+                for (i, &val) in [v[0], v[1], v[2]].iter().enumerate() {
+                    if val.unsigned_abs() > MAX_QUANTISED {
+                        return Err(CityParquetError::Geometry(format!(
+                            "vertex {idx} component {i}: quantised value {val} exceeds 2^53 magnitude (loses f64 precision)"
+                        )));
+                    }
+                }
+
+                // Compute world coordinates and check their magnitude
+                let coords = [
+                    v[0] as f64 * scale[0] + translate[0],
+                    v[1] as f64 * scale[1] + translate[1],
+                    v[2] as f64 * scale[2] + translate[2],
+                ];
+
+                // Guard final world coordinates: no coordinate can exceed
+                // 2^53 in magnitude.
+                for (i, &c) in coords.iter().enumerate() {
+                    if c.abs() >= MAX_SAFE {
+                        return Err(CityParquetError::Geometry(format!(
+                            "vertex {idx} coordinate {i}: computed value {c} exceeds 2^53 magnitude (loses f64 precision)"
+                        )));
+                    }
+                }
+
+                Ok(coords)
+            }
+            VertexStorage::Raw { vertices } => {
+                let v = vertices.get(idx).ok_or_else(|| {
+                    CityParquetError::Geometry(format!(
+                        "vertex index {idx} out of range ({} vertices)",
+                        vertices.len()
+                    ))
+                })?;
+                if v.len() < 3 {
+                    return Err(CityParquetError::Geometry(format!(
+                        "vertex {idx} has {} components",
+                        v.len()
+                    )));
+                }
+                let coords = [v[0], v[1], v[2]];
+
+                // Guard final coordinates: same 2^53 ceiling as the
+                // quantised path, applied directly since raw floats have no
+                // scale/translate step to compute through.
+                for (i, &c) in coords.iter().enumerate() {
+                    if c.abs() >= MAX_SAFE {
+                        return Err(CityParquetError::Geometry(format!(
+                            "vertex {idx} coordinate {i}: raw value {c} exceeds 2^53 magnitude (loses f64 precision)"
+                        )));
+                    }
+                }
+
+                Ok(coords)
             }
         }
-
-        // Compute world coordinates and check their magnitude
-        let coords = [
-            v[0] as f64 * self.scale[0] + self.translate[0],
-            v[1] as f64 * self.scale[1] + self.translate[1],
-            v[2] as f64 * self.scale[2] + self.translate[2],
-        ];
-
-        // Guard final world coordinates: no coordinate can exceed 2^53 in magnitude
-        for (i, &c) in coords.iter().enumerate() {
-            if c.abs() >= MAX_SAFE {
-                return Err(CityParquetError::Geometry(format!(
-                    "vertex {idx} coordinate {i}: computed value {c} exceeds 2^53 magnitude (loses f64 precision)"
-                )));
-            }
-        }
-
-        Ok(coords)
     }
 }
 
@@ -724,5 +787,60 @@ mod tests {
         .unwrap();
         let pool = VertexPool::new(&vertices, &transform);
         assert!(matches!(pool.coord(0), Err(CityParquetError::Geometry(_))));
+    }
+
+    /// `VertexPool::raw` over a geometry template's real `vertices-templates`
+    /// (railway fixture): coordinates must come back bitwise-exact (no
+    /// scale/translate applied), and a template geometry looked up through it
+    /// must encode/decode exactly like a regular geometry.
+    #[test]
+    fn raw_pool_over_template_vertices_round_trips() {
+        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures")
+            .join("lod3_railway.city.json");
+        assert!(
+            fixture_path.exists(),
+            "missing fixture lod3_railway.city.json; run `just fixtures`"
+        );
+        let raw_text = std::fs::read_to_string(&fixture_path).unwrap();
+        let doc = cjseq::CityJSON::from_str(&raw_text).unwrap();
+        let templates = doc
+            .geometry_templates
+            .as_ref()
+            .expect("railway has geometry-templates");
+        let verts: Vec<Vec<f64>> =
+            serde_json::from_value(templates.vertices_templates.clone()).unwrap();
+        assert_eq!(verts.len(), 338, "railway has 338 template vertices");
+        assert_eq!(
+            verts[0],
+            vec![0.112, 0.121, 0.502],
+            "first template vertex, straight from the fixture"
+        );
+
+        let pool = VertexPool::raw(&verts);
+        assert_eq!(
+            pool.coord(0).unwrap(),
+            [0.112, 0.121, 0.502],
+            "raw pool must return the float verbatim, bitwise-exact"
+        );
+
+        let tpl0 = &templates.templates[0];
+        let outcome = geometry_to_wkb(tpl0, &pool)
+            .unwrap()
+            .expect("template 0's geometry must encode to WKB");
+        let decoded = crate::wkb_read::wkb_to_geometry(&outcome.bytes)
+            .expect("hardened reader must accept the raw-pool writer's output");
+        let crate::wkb_read::DecodedKind::MultiPolygon(surfaces) = &decoded.kind else {
+            panic!("expected MultiPolygon, got {:?}", decoded.kind);
+        };
+        // Template 0's first surface has a 16-index exterior ring: the
+        // writer closes it (17 WKB points on the wire), and the hardened
+        // reader strips the closing vertex back off on decode, so 16 indices
+        // round-trip.
+        assert_eq!(
+            surfaces[0][0].len(),
+            16,
+            "first face's ring must round-trip its source coordinate count"
+        );
     }
 }
