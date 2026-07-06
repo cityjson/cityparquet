@@ -49,8 +49,10 @@ pub struct DecodedObject {
     pub feature_id: Option<String>,
     pub object: cjseq::CityObject,
     /// `(lod, decoded WKB geometry, geometry_properties)`, one entry per
-    /// non-null `geometry_lod*` cell on this row, ascending by LoD.
-    pub geometries: Vec<(Lod, DecodedGeometry, Option<Value>)>,
+    /// non-null geometry cell on this row, ascending by LoD. `None` LoD means
+    /// the dataset's single unsuffixed `geometry` column (the lodless binding
+    /// rule; see [`cityparquet_schema::model`]'s lods-empty branch).
+    pub geometries: Vec<(Option<Lod>, DecodedGeometry, Option<Value>)>,
     pub template: Option<TemplateInstance>,
 }
 
@@ -80,19 +82,34 @@ fn downcast<'a, T: 'static>(array: &'a dyn Array, name: &str) -> Result<&'a T> {
 /// `CityParquetReaderBuilder::cityparquet_arrow_schema`'s LoD derivation:
 /// only `geometry_lod*` names parse as a LoD suffix — `geometry_properties_lod*`
 /// also starts with `geometry_` but is excluded because `"properties_lod1"`
-/// does not parse as one.
-fn geometry_lod_columns(schema: &Schema) -> Vec<(Lod, String, String)> {
-    let mut cols: Vec<(Lod, String, String)> = schema
+/// does not parse as one. A lodless dataset instead has the single unsuffixed
+/// `geometry`/`geometry_properties` pair ([`cityparquet_schema::model`]'s
+/// lods-empty branch), returned as a `None`-LoD entry; the two shapes are
+/// mutually exclusive by construction, but both are checked unconditionally
+/// so a file carrying both would still decode every geometry column.
+fn geometry_columns(schema: &Schema) -> Vec<(Option<Lod>, String, String)> {
+    let mut cols: Vec<(Option<Lod>, String, String)> = schema
         .fields()
         .iter()
         .filter_map(|f| {
             let name = f.name();
             let suffix = name.strip_prefix("geometry_")?;
             let lod = Lod::from_column_suffix(suffix)?;
-            Some((lod, name.clone(), format!("geometry_properties_{suffix}")))
+            Some((
+                Some(lod),
+                name.clone(),
+                format!("geometry_properties_{suffix}"),
+            ))
         })
         .collect();
     cols.sort_by_key(|(lod, _, _)| *lod);
+    if schema.field_with_name("geometry").is_ok() {
+        cols.push((
+            None,
+            "geometry".to_string(),
+            "geometry_properties".to_string(),
+        ));
+    }
     cols
 }
 
@@ -222,8 +239,8 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
         "template.transformationMatrix",
     )?;
 
-    let geometry_lod_cols = geometry_lod_columns(&schema);
-    let geometry_arrays: Vec<(Lod, &BinaryArray, &StringArray)> = geometry_lod_cols
+    let geometry_cols = geometry_columns(&schema);
+    let geometry_arrays: Vec<(Option<Lod>, &BinaryArray, &StringArray)> = geometry_cols
         .iter()
         .map(|(lod, geom_name, props_name)| {
             let geom = downcast::<BinaryArray>(get_column(batch, geom_name)?.as_ref(), geom_name)?;

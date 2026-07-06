@@ -59,6 +59,12 @@ fn delft_decodes_every_object_with_correct_types_and_attributes() {
         *type_counts.entry(obj.object.thetype.clone()).or_default() += 1;
 
         for (lod, _decoded, _props) in &obj.geometries {
+            let lod = lod.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "delft has per-LoD columns, so no unsuffixed geometry expected on object {}",
+                    obj.id
+                )
+            });
             let s = lod.to_string();
             assert!(
                 ["0", "1.2", "1.3", "2.2"].contains(&s.as_str()),
@@ -166,17 +172,20 @@ fn delft_decodes_every_object_with_correct_types_and_attributes() {
 /// exactly 15 objects carry a `GeometryInstance` geometry
 /// (`sum(1 for co in data['CityObjects'].values() if any(g['type'] ==
 /// 'GeometryInstance' for g in co.get('geometry', [])))` == 15, all
-/// `SolitaryVegetationObject`s); 8 geometries (raw, any LoD) carry a
-/// `semantics` block.
+/// `SolitaryVegetationObject`s); exactly 8 STORED geometries carry a
+/// `semantics` block (replaying the writer's binding rule in python — first
+/// geometry per (object, LoD) slot kept, `GeometryInstance` and lod-less
+/// entries excluded — also yields 8, so the raw count and the stored count
+/// coincide for this fixture).
 #[test]
 fn railway_decodes_templates_and_semantics() {
     let objects = convert_and_decode("lod3_railway.city.json");
     assert_eq!(objects.len(), 121);
 
     let template_count = objects.iter().filter(|o| o.template.is_some()).count();
-    assert!(
-        template_count >= 15,
-        "expected at least 15 objects with a template, got {template_count}"
+    assert_eq!(
+        template_count, 15,
+        "expected exactly 15 objects with a template (the recount above)"
     );
 
     let mut semantics_found = 0usize;
@@ -189,8 +198,103 @@ fn railway_decodes_templates_and_semantics() {
             }
         }
     }
-    assert!(
-        semantics_found > 0,
-        "expected >0 geometry_properties entries carrying semantics"
+    assert_eq!(
+        semantics_found, 8,
+        "expected exactly 8 geometry_properties entries carrying semantics (the recount above)"
     );
+}
+
+/// Derived-from-real lodless dataset: `lod3_railway.city.json` with the
+/// `"lod"` key removed from EVERY geometry. Per the scan binding rule a
+/// dataset with zero LoD-bearing geometries stores every kept geometry in
+/// the single unsuffixed `geometry` column — which decode must read too,
+/// not just `geometry_lod*`.
+///
+/// Recounted with python3 over the fixture, replaying the writer's rules
+/// (GeometryInstance entries route to `template`; one `""` slot per object,
+/// first geometry kept): 105 objects have >= 1 kept geometry -> 105 non-null
+/// `geometry` cells (of 121 rows: 15 objects carry only a GeometryInstance
+/// and 1 has no geometry at all); no object carries more than one
+/// non-GeometryInstance geometry, so nothing is dedup-skipped.
+#[test]
+fn lodless_dataset_decodes_the_unsuffixed_geometry_column() {
+    // Build the lodless variant of the real fixture.
+    let text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+    let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let mut removed = 0usize;
+    for (_, co) in doc["CityObjects"].as_object_mut().unwrap() {
+        let Some(geoms) = co.get_mut("geometry").and_then(|g| g.as_array_mut()) else {
+            continue;
+        };
+        for geom in geoms {
+            if geom.as_object_mut().unwrap().remove("lod").is_some() {
+                removed += 1;
+            }
+        }
+    }
+    assert!(removed > 0, "fixture must have had lod keys to remove");
+    let src_dir = tempfile::tempdir().unwrap();
+    let lodless_path = src_dir.path().join("railway_lodless.city.json");
+    std::fs::write(&lodless_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let report = convert(&ConvertOptions::new(lodless_path, out.path().to_path_buf())).unwrap();
+    assert_eq!(report.object_count, 121);
+
+    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let meta = builder.cityparquet_metadata().unwrap();
+    let schema = builder.cityparquet_arrow_schema().unwrap();
+
+    // The lodless binding rule really kicked in: one unsuffixed geometry
+    // column pair, no per-LoD columns.
+    assert!(
+        schema.field_with_name("geometry").is_ok(),
+        "lodless dataset must have the unsuffixed geometry column"
+    );
+    assert!(
+        !schema
+            .fields()
+            .iter()
+            .any(|f| f.name().starts_with("geometry_lod")),
+        "lodless dataset must have no geometry_lod* columns"
+    );
+
+    let parquet_reader = builder.build().unwrap();
+    let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
+
+    let mut objects = Vec::new();
+    let mut non_null_cells = 0usize;
+    for batch in reader {
+        let batch = batch.unwrap();
+        let col = batch.column_by_name("geometry").unwrap();
+        non_null_cells += col.len() - col.null_count();
+        objects.extend(decode_batch(&batch, &meta).unwrap());
+    }
+    assert_eq!(objects.len(), 121);
+    assert_eq!(non_null_cells, 105, "the recount above");
+
+    let total_geometries: usize = objects.iter().map(|o| o.geometries.len()).sum();
+    assert!(
+        total_geometries > 0,
+        "decode must read the unsuffixed geometry column, not silently drop it"
+    );
+    assert_eq!(
+        total_geometries, non_null_cells,
+        "every non-null unsuffixed geometry cell must decode to exactly one geometry"
+    );
+    for obj in &objects {
+        for (lod, _decoded, _props) in &obj.geometries {
+            assert!(
+                lod.is_none(),
+                "unsuffixed-column geometries carry no LoD, got {lod:?} on object {}",
+                obj.id
+            );
+        }
+    }
+
+    // GeometryInstance entries still route to template, exactly as in the
+    // LoD-bearing conversion.
+    let template_count = objects.iter().filter(|o| o.template.is_some()).count();
+    assert_eq!(template_count, 15);
 }
