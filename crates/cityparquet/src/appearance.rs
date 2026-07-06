@@ -270,6 +270,9 @@ fn intern(def: &Value, defs: &mut Vec<Value>, ids: &mut HashMap<String, usize>) 
 /// `t` is a texture index (or `null`), and the rest are UV indices. It is
 /// recognised, before any rewriting, as an array whose first element is a
 /// number or null and whose elements are not themselves arrays.
+///
+/// An empty array is intentionally *not* a ring: it falls through to the
+/// non-ring branch and is preserved as an (empty) nesting level.
 fn is_texture_ring(items: &[Value]) -> bool {
     !items.is_empty()
         && matches!(items[0], Value::Number(_) | Value::Null)
@@ -504,6 +507,19 @@ mod tests {
                 }
             }
         }
+
+        // Pin the features-only intermediate: everything below about the
+        // template sweep rests on exactly this gap existing in the fixture.
+        assert_eq!(
+            interner.materials().len(),
+            83,
+            "features-only sweep: 2 materials are template-only"
+        );
+        assert_eq!(
+            interner.textures().len(),
+            33,
+            "features-only sweep: 1 texture is template-only"
+        );
 
         // The railway fixture is a whole CityJSON document (not a
         // CityJSONSeq stream): its `geometry-templates` carry their own
