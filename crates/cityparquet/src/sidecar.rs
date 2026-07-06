@@ -737,63 +737,41 @@ mod tests {
     }
 
     /// Real railway geometry-templates (3 templates): build one
-    /// [`TemplateRow`] per template (WKB via `VertexPool::raw` over the raw
-    /// `vertices-templates`; `material`/`texture` rewritten via a fresh
-    /// interner over the DOC's own appearance — see `Source::doc_appearance`'s
-    /// doc comment for why the doc's raw arrays, not the header's sliced
-    /// ones, are the correct local defs here), write/read round-trip.
+    /// [`TemplateRow`] per template built by the PRODUCTION builder
+    /// (`crate::package::build_template_rows`, exercised directly so this
+    /// test cannot drift from what convert actually writes — a hand-built
+    /// duplicate of its logic previously masked a missing `"lod"`),
+    /// write/read round-trip.
     #[test]
     fn railway_templates_round_trip() {
         use crate::appearance::AppearanceInterner;
+        use crate::package::build_template_rows;
+        use crate::source::Source;
         use crate::wkb_read::wkb_to_geometry;
-        use crate::wkb_write::{VertexPool, geometry_to_wkb};
 
-        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
-        let doc = CityJSON::from_str(&raw_text).unwrap();
-        let templates = doc
+        let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+        let templates = source
+            .header()
             .geometry_templates
-            .as_ref()
+            .clone()
             .expect("railway has geometry-templates");
         assert_eq!(templates.templates.len(), 3);
-        let verts: Vec<Vec<f64>> =
-            serde_json::from_value(templates.vertices_templates.clone()).unwrap();
-        let pool = VertexPool::raw(&verts);
 
-        let appearance = doc.appearance.as_ref().expect("railway has appearance");
-        let doc_materials = appearance.materials.clone().unwrap_or_default();
-        let doc_textures = appearance.textures.clone().unwrap_or_default();
-        let doc_uvs = appearance.vertices_texture.clone().unwrap_or_default();
         let mut interner = AppearanceInterner::new();
-
-        let mut rows = Vec::new();
-        for (i, tpl) in templates.templates.iter().enumerate() {
-            let outcome = geometry_to_wkb(tpl, &pool)
-                .unwrap()
-                .expect("every railway template must produce non-empty WKB");
-            let material = tpl.material.as_ref().map(|m| {
-                let map = serde_json::to_value(m).unwrap();
-                interner.rewrite_material_map(&map, &doc_materials).unwrap()
-            });
-            let texture = tpl.texture.as_ref().map(|t| {
-                let map = serde_json::to_value(t).unwrap();
-                interner
-                    .rewrite_texture_map(&map, &doc_textures, &doc_uvs)
-                    .unwrap()
-            });
-            let geometry_properties = serde_json::json!({
-                "type": tpl.thetype,
-                "lod": tpl.lod,
-            });
-            rows.push(TemplateRow {
-                id: i.to_string(),
-                wkb: outcome.bytes,
-                geometry_properties: Some(geometry_properties),
-                material,
-                texture,
-                other: None,
-            });
-        }
+        let rows = build_template_rows(&templates, &source, &mut interner).unwrap();
         assert_eq!(rows.len(), 3);
+        for (i, (row, tpl)) in rows.iter().zip(&templates.templates).enumerate() {
+            let props = row
+                .geometry_properties
+                .as_ref()
+                .expect("template rows carry geometry_properties");
+            assert!(props.get("type").is_some(), "template {i} missing type");
+            assert_eq!(
+                props.get("lod").and_then(|v| v.as_str()),
+                tpl.lod.as_deref(),
+                "template {i}: geometry_properties must carry the source lod"
+            );
+        }
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("geometry_templates.parquet");

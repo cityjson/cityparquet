@@ -141,7 +141,8 @@ fn railway_full_convert_succeeds() {
 /// interner), not the feature-local indices the source CityJSON uses.
 /// railway's feature-only appearance sweep resolves 83 materials / 33
 /// textures (2 materials + 1 texture are referenced only from
-/// geometry-templates, which this encode loop does not visit yet — Task 8).
+/// geometry-templates, which the Core-profile encode loop never visits BY
+/// DESIGN: templates are compatibility-profile sidecar data).
 #[test]
 fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
     let out = tempfile::tempdir().unwrap();
@@ -247,6 +248,24 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
         ],
         "the parquet footer's KV sidecar_files must agree with metadata.json"
     );
+
+    // The written template rows must carry their LoD: railway's 3 templates
+    // all declare lod "3", and the sidecar's single geometry_properties
+    // column is the only place it can live (regression: the shared
+    // main-table helper omits "lod" because there LoD is the column name).
+    let template_rows =
+        cityparquet::sidecar::read_templates(&out.path().join("geometry_templates.parquet"))
+            .unwrap();
+    assert_eq!(template_rows.len(), 3);
+    for (i, row) in template_rows.iter().enumerate() {
+        let props = row.geometry_properties.as_ref().unwrap();
+        assert!(props.get("type").is_some(), "template {i} missing type");
+        assert_eq!(
+            props.get("lod").and_then(|v| v.as_str()),
+            Some("3"),
+            "template {i}: geometry_properties must carry lod"
+        );
+    }
 }
 
 /// Compatibility profile on a dataset with no appearance at all (delft):

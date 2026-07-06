@@ -104,17 +104,24 @@ fn parquet_err(msg: String) -> CityParquetError {
 ///
 /// `id` is the template's position as a string, matching the main-table
 /// `template.id` column (see `crate::encode`'s `build_template`). The
-/// rewrite rules (drop-realignment, dataset-global rewrite,
-/// `geometry_properties` shape) are IDENTICAL to a regular feature
-/// geometry's — see [`rewrite_geometry_appearance`]'s doc comment — because
-/// a template's `material`/`texture`/`semantics` follow the exact same
-/// CityJSON shapes a feature geometry's do.
+/// rewrite rules (drop-realignment, dataset-global rewrite) are IDENTICAL
+/// to a regular feature geometry's — see [`rewrite_geometry_appearance`]'s
+/// doc comment — because a template's `material`/`texture`/`semantics`
+/// follow the exact same CityJSON shapes a feature geometry's do. The one
+/// deliberate divergence: template rows also carry `"lod"` inside
+/// `geometry_properties`. The main table encodes LoD in the geometry
+/// COLUMN NAME (`geometry_lod2` etc.) so its properties JSON never needs
+/// it; the templates sidecar has a single properties column, so the
+/// template's `lod` would otherwise be lost.
+///
+/// `pub(crate)` so the sidecar round-trip test exercises THIS production
+/// builder instead of a hand-built duplicate of its logic.
 ///
 /// A template's own coordinates are template-LOCAL (CityJSON spec §3.4:
 /// `vertices-templates` is not subject to the dataset transform), so they
 /// are looked up through [`VertexPool::raw`] over `templates.vertices_templates`,
 /// never the dataset's quantised [`VertexPool::new`].
-fn build_template_rows(
+pub(crate) fn build_template_rows(
     templates: &cjseq::GeometryTemplates,
     source: &Source,
     interner: &mut AppearanceInterner,
@@ -160,7 +167,13 @@ fn build_template_rows(
             &local_uvs,
             &format!("geometry template {i}"),
         )?;
-        let geometry_properties: serde_json::Value = serde_json::from_str(&props)?;
+        let mut geometry_properties: serde_json::Value = serde_json::from_str(&props)?;
+        // The shared helper omits "lod" by main-table design (LoD lives in
+        // the geometry column name there); the sidecar's single properties
+        // column must carry it or the template's LoD is lost.
+        if let (Some(obj), Some(lod)) = (geometry_properties.as_object_mut(), &tpl.lod) {
+            obj.insert("lod".to_string(), serde_json::Value::String(lod.clone()));
+        }
         rows.push(TemplateRow {
             id: i.to_string(),
             wkb: outcome.bytes,
