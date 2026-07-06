@@ -9,6 +9,7 @@ pub mod package;
 pub mod reader;
 pub mod recipe;
 pub mod scan;
+pub mod sidecar;
 pub mod source;
 pub mod wkb_read;
 pub mod wkb_write;

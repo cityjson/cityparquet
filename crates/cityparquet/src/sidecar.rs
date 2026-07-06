@@ -1,0 +1,558 @@
+//! Compatibility-profile sidecar tables: `materials.parquet` and
+//! `textures.parquet`. Each row is one dataset-global appearance definition
+//! (see [`crate::appearance::AppearanceInterner`]), `id` is its row index,
+//! and the well-known CityJSON members are split into typed columns per
+//! [`cityparquet_schema::profile::materials_schema`] /
+//! [`cityparquet_schema::profile::textures_schema`]; anything else on the
+//! definition is preserved verbatim under the `other` JSON column.
+//!
+//! `write_materials`/`write_textures` and `read_materials`/`read_textures`
+//! are exact inverses of each other (value-equality up to JSON member order):
+//! every field the writer peels off into its own column, the reader puts
+//! back under the same key; every leftover field the writer stashes in
+//! `other`, the reader merges back in.
+
+use std::fs::File;
+use std::path::Path;
+use std::sync::Arc;
+
+use arrow_array::builder::{BooleanBuilder, Float64Builder, Int64Builder, StringBuilder};
+use arrow_array::{Array, ArrayRef, BooleanArray, Float64Array, RecordBatch, StringArray};
+use arrow_schema::Schema;
+use parquet::arrow::ArrowWriter;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::basic::{Compression, ZstdLevel};
+use parquet::file::properties::WriterProperties;
+use serde_json::Value;
+
+use cityparquet_schema::{CityParquetError, Result, profile};
+
+fn schema_err(msg: impl Into<String>) -> CityParquetError {
+    CityParquetError::Schema(msg.into())
+}
+
+fn io_err(msg: impl Into<String>) -> CityParquetError {
+    CityParquetError::Io(msg.into())
+}
+
+fn parquet_err(msg: impl Into<String>) -> CityParquetError {
+    CityParquetError::Parquet(msg.into())
+}
+
+/// zstd level 3, no per-column tuning — sidecars are small, dictionary-poor
+/// tables (a few dozen to a few thousand appearance definitions), unlike the
+/// main table's [`crate::recipe::WriterRecipe`] which is the paper's actual
+/// benchmark variable.
+fn sidecar_writer_properties() -> Result<WriterProperties> {
+    let level = ZstdLevel::try_new(3)
+        .map_err(|e| schema_err(format!("invalid sidecar zstd level: {e}")))?;
+    Ok(WriterProperties::builder()
+        .set_compression(Compression::ZSTD(level))
+        .build())
+}
+
+fn write_batch(path: &Path, schema: Arc<Schema>, batch: RecordBatch) -> Result<()> {
+    let file =
+        File::create(path).map_err(|e| io_err(format!("cannot create {}: {e}", path.display())))?;
+    let props = sidecar_writer_properties()?;
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props))
+        .map_err(|e| parquet_err(format!("cannot open parquet writer: {e}")))?;
+    writer
+        .write(&batch)
+        .map_err(|e| parquet_err(format!("parquet write error: {e}")))?;
+    writer
+        .close()
+        .map_err(|e| parquet_err(format!("cannot finalise parquet file: {e}")))?;
+    Ok(())
+}
+
+fn push_opt_str(b: &mut StringBuilder, v: Option<&Value>, field: &str) -> Result<()> {
+    match v {
+        None | Some(Value::Null) => b.append_null(),
+        Some(Value::String(s)) => b.append_value(s),
+        Some(other) => {
+            return Err(schema_err(format!(
+                "'{field}' must be a string, got {other}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn push_opt_f64(b: &mut Float64Builder, v: Option<&Value>, field: &str) -> Result<()> {
+    match v {
+        None | Some(Value::Null) => b.append_null(),
+        Some(Value::Number(n)) => {
+            let x = n
+                .as_f64()
+                .ok_or_else(|| schema_err(format!("'{field}' number not representable as f64")))?;
+            b.append_value(x);
+        }
+        Some(other) => {
+            return Err(schema_err(format!(
+                "'{field}' must be a number, got {other}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn push_opt_bool(b: &mut BooleanBuilder, v: Option<&Value>, field: &str) -> Result<()> {
+    match v {
+        None | Some(Value::Null) => b.append_null(),
+        Some(Value::Bool(x)) => b.append_value(*x),
+        Some(other) => {
+            return Err(schema_err(format!(
+                "'{field}' must be a boolean, got {other}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn push_opt_json(b: &mut StringBuilder, v: Option<&Value>) -> Result<()> {
+    match v {
+        None | Some(Value::Null) => b.append_null(),
+        Some(val) => b.append_value(serde_json::to_string(val)?),
+    }
+    Ok(())
+}
+
+/// The remaining members of `obj` not in `known`, as a JSON object (`None`
+/// when nothing is left over).
+fn other_members(obj: &serde_json::Map<String, Value>, known: &[&str]) -> Option<String> {
+    let rest: serde_json::Map<String, Value> = obj
+        .iter()
+        .filter(|(k, _)| !known.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if rest.is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::to_string(&Value::Object(rest))
+                .expect("Map<String, Value> always serialises"),
+        )
+    }
+}
+
+const MATERIAL_KNOWN_FIELDS: [&str; 8] = [
+    "name",
+    "ambientIntensity",
+    "diffuseColor",
+    "specularColor",
+    "emissiveColor",
+    "transparency",
+    "shininess",
+    "isSmooth",
+];
+
+/// Write one row per `defs[i]` to `path` (`id` = `i` as `Int64`), per
+/// [`cityparquet_schema::profile::materials_schema`]'s column mapping.
+/// Writes nothing and returns `0` when `defs` is empty.
+pub fn write_materials(path: &Path, defs: &[Value]) -> Result<usize> {
+    if defs.is_empty() {
+        return Ok(0);
+    }
+    let schema = Arc::new(profile::materials_schema());
+
+    let mut id = Int64Builder::with_capacity(defs.len());
+    let mut name = StringBuilder::new();
+    let mut ambient_intensity = Float64Builder::new();
+    let mut diffuse_color = StringBuilder::new();
+    let mut specular_color = StringBuilder::new();
+    let mut emissive_color = StringBuilder::new();
+    let mut transparency = Float64Builder::new();
+    let mut shininess = Float64Builder::new();
+    let mut is_smooth = BooleanBuilder::new();
+    let mut other = StringBuilder::new();
+
+    for (idx, def) in defs.iter().enumerate() {
+        let obj = def
+            .as_object()
+            .ok_or_else(|| schema_err(format!("material def {idx} is not a JSON object")))?;
+        id.append_value(idx as i64);
+        push_opt_str(&mut name, obj.get("name"), "name")?;
+        push_opt_f64(
+            &mut ambient_intensity,
+            obj.get("ambientIntensity"),
+            "ambientIntensity",
+        )?;
+        push_opt_json(&mut diffuse_color, obj.get("diffuseColor"))?;
+        push_opt_json(&mut specular_color, obj.get("specularColor"))?;
+        push_opt_json(&mut emissive_color, obj.get("emissiveColor"))?;
+        push_opt_f64(&mut transparency, obj.get("transparency"), "transparency")?;
+        push_opt_f64(&mut shininess, obj.get("shininess"), "shininess")?;
+        push_opt_bool(&mut is_smooth, obj.get("isSmooth"), "isSmooth")?;
+        match other_members(obj, &MATERIAL_KNOWN_FIELDS) {
+            Some(json) => other.append_value(json),
+            None => other.append_null(),
+        }
+    }
+
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(id.finish()),
+        Arc::new(name.finish()),
+        Arc::new(ambient_intensity.finish()),
+        Arc::new(diffuse_color.finish()),
+        Arc::new(specular_color.finish()),
+        Arc::new(emissive_color.finish()),
+        Arc::new(transparency.finish()),
+        Arc::new(shininess.finish()),
+        Arc::new(is_smooth.finish()),
+        Arc::new(other.finish()),
+    ];
+    let batch = RecordBatch::try_new(schema.clone(), arrays)?;
+    write_batch(path, schema, batch)?;
+    Ok(defs.len())
+}
+
+/// `type`/`image`/`wrapMode`/`textureType`/`borderColor` are the only
+/// members the writer peels into their own column (see the brief's Design
+/// ruling 4); a texture object's `name` member, if present, is NOT a known
+/// field here — it lands in `other` like anything else, and the `name`
+/// column (kept for schema parity with materials) is always null.
+const TEXTURE_KNOWN_FIELDS: [&str; 5] = ["type", "image", "wrapMode", "textureType", "borderColor"];
+
+/// Write one row per `defs[i]` to `path` (`id` = `i` as `Int64`), per
+/// [`cityparquet_schema::profile::textures_schema`]'s column mapping.
+/// Writes nothing and returns `0` when `defs` is empty.
+pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
+    if defs.is_empty() {
+        return Ok(0);
+    }
+    let schema = Arc::new(profile::textures_schema());
+
+    let mut id = Int64Builder::with_capacity(defs.len());
+    let mut name = StringBuilder::new();
+    let mut image_uri = StringBuilder::new();
+    let mut mime_type = StringBuilder::new();
+    let mut wrap_mode = StringBuilder::new();
+    let mut texture_type = StringBuilder::new();
+    let mut border_color = StringBuilder::new();
+    let mut other = StringBuilder::new();
+
+    for (idx, def) in defs.iter().enumerate() {
+        let obj = def
+            .as_object()
+            .ok_or_else(|| schema_err(format!("texture def {idx} is not a JSON object")))?;
+        id.append_value(idx as i64);
+        name.append_null(); // see TEXTURE_KNOWN_FIELDS doc: never populated
+        push_opt_str(&mut image_uri, obj.get("image"), "image")?;
+        push_opt_str(&mut mime_type, obj.get("type"), "type")?;
+        push_opt_str(&mut wrap_mode, obj.get("wrapMode"), "wrapMode")?;
+        push_opt_str(&mut texture_type, obj.get("textureType"), "textureType")?;
+        push_opt_json(&mut border_color, obj.get("borderColor"))?;
+        match other_members(obj, &TEXTURE_KNOWN_FIELDS) {
+            Some(json) => other.append_value(json),
+            None => other.append_null(),
+        }
+    }
+
+    // image_data is never populated from a CityJSON texture definition (no
+    // source field maps to it); an all-null Binary column of the right
+    // length still round-trips cleanly through Arrow/Parquet.
+    let mut image_data = arrow_array::builder::BinaryBuilder::new();
+    for _ in 0..defs.len() {
+        image_data.append_null();
+    }
+
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(id.finish()),
+        Arc::new(name.finish()),
+        Arc::new(image_uri.finish()),
+        Arc::new(image_data.finish()),
+        Arc::new(mime_type.finish()),
+        Arc::new(wrap_mode.finish()),
+        Arc::new(texture_type.finish()),
+        Arc::new(border_color.finish()),
+        Arc::new(other.finish()),
+    ];
+    let batch = RecordBatch::try_new(schema.clone(), arrays)?;
+    write_batch(path, schema, batch)?;
+    Ok(defs.len())
+}
+
+fn get_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a ArrayRef> {
+    batch.column_by_name(name).ok_or_else(|| {
+        schema_err(format!(
+            "sidecar record batch missing expected column '{name}'"
+        ))
+    })
+}
+
+fn downcast<'a, T: 'static>(array: &'a dyn Array, name: &str) -> Result<&'a T> {
+    array.as_any().downcast_ref::<T>().ok_or_else(|| {
+        schema_err(format!(
+            "sidecar column '{name}' has an unexpected array type"
+        ))
+    })
+}
+
+fn opt_str(arr: &StringArray, row: usize) -> Option<String> {
+    (!arr.is_null(row)).then(|| arr.value(row).to_string())
+}
+
+fn opt_f64(arr: &Float64Array, row: usize) -> Option<f64> {
+    (!arr.is_null(row)).then(|| arr.value(row))
+}
+
+fn opt_bool(arr: &BooleanArray, row: usize) -> Option<bool> {
+    (!arr.is_null(row)).then(|| arr.value(row))
+}
+
+/// Parse `col`'s row `row` (a JSON-text column) into a `Value`, `None` if
+/// null.
+fn opt_json(col: &StringArray, row: usize) -> Result<Option<Value>> {
+    match opt_str(col, row) {
+        None => Ok(None),
+        Some(s) => Ok(Some(serde_json::from_str(&s)?)),
+    }
+}
+
+/// Merge `other`'s parsed JSON object members into `map` (a no-op if `other`
+/// is `None`; a `Schema` error if it parses to anything but a JSON object).
+fn merge_other(map: &mut serde_json::Map<String, Value>, other: Option<Value>) -> Result<()> {
+    let Some(other) = other else { return Ok(()) };
+    let Value::Object(obj) = other else {
+        return Err(schema_err(format!(
+            "sidecar 'other' column must decode to a JSON object, got {other}"
+        )));
+    };
+    for (k, v) in obj {
+        map.insert(k, v);
+    }
+    Ok(())
+}
+
+/// Read `materials.parquet` at `path` back into one CityJSON material
+/// definition per row, ordered by `id` (rows are written in `id` order and
+/// read back batch-by-batch in file order, so no explicit sort is needed
+/// unless a future writer reorders rows). Missing file reads as empty (a
+/// dataset with no materials never gets a sidecar written).
+pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file =
+        File::open(path).map_err(|e| io_err(format!("cannot open {}: {e}", path.display())))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| parquet_err(format!("cannot open parquet reader: {e}")))?;
+    let reader = builder
+        .build()
+        .map_err(|e| parquet_err(format!("cannot build parquet reader: {e}")))?;
+
+    let mut out = Vec::new();
+    for batch in reader {
+        let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
+        let name: &StringArray = downcast(get_column(&batch, "name")?.as_ref(), "name")?;
+        let ambient_intensity: &Float64Array = downcast(
+            get_column(&batch, "ambientIntensity")?.as_ref(),
+            "ambientIntensity",
+        )?;
+        let diffuse_color: &StringArray =
+            downcast(get_column(&batch, "diffuseColor")?.as_ref(), "diffuseColor")?;
+        let specular_color: &StringArray = downcast(
+            get_column(&batch, "specularColor")?.as_ref(),
+            "specularColor",
+        )?;
+        let emissive_color: &StringArray = downcast(
+            get_column(&batch, "emissiveColor")?.as_ref(),
+            "emissiveColor",
+        )?;
+        let transparency: &Float64Array =
+            downcast(get_column(&batch, "transparency")?.as_ref(), "transparency")?;
+        let shininess: &Float64Array =
+            downcast(get_column(&batch, "shininess")?.as_ref(), "shininess")?;
+        let is_smooth: &BooleanArray =
+            downcast(get_column(&batch, "isSmooth")?.as_ref(), "isSmooth")?;
+        let other: &StringArray = downcast(get_column(&batch, "other")?.as_ref(), "other")?;
+
+        for row in 0..batch.num_rows() {
+            let mut map = serde_json::Map::new();
+            if let Some(v) = opt_str(name, row) {
+                map.insert("name".to_string(), Value::String(v));
+            }
+            if let Some(v) = opt_f64(ambient_intensity, row) {
+                map.insert("ambientIntensity".to_string(), serde_json::json!(v));
+            }
+            if let Some(v) = opt_json(diffuse_color, row)? {
+                map.insert("diffuseColor".to_string(), v);
+            }
+            if let Some(v) = opt_json(specular_color, row)? {
+                map.insert("specularColor".to_string(), v);
+            }
+            if let Some(v) = opt_json(emissive_color, row)? {
+                map.insert("emissiveColor".to_string(), v);
+            }
+            if let Some(v) = opt_f64(transparency, row) {
+                map.insert("transparency".to_string(), serde_json::json!(v));
+            }
+            if let Some(v) = opt_f64(shininess, row) {
+                map.insert("shininess".to_string(), serde_json::json!(v));
+            }
+            if let Some(v) = opt_bool(is_smooth, row) {
+                map.insert("isSmooth".to_string(), Value::Bool(v));
+            }
+            merge_other(&mut map, opt_json(other, row)?)?;
+            out.push(Value::Object(map));
+        }
+    }
+    Ok(out)
+}
+
+/// Read `textures.parquet` at `path` back into one CityJSON texture
+/// definition per row (see [`read_materials`] for the ordering/missing-file
+/// contract). The `name` and `image_data` columns are never read back into
+/// the reassembled definition (see [`write_textures`]'s doc: `name` is
+/// unused, `image_data` is always null).
+pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file =
+        File::open(path).map_err(|e| io_err(format!("cannot open {}: {e}", path.display())))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| parquet_err(format!("cannot open parquet reader: {e}")))?;
+    let reader = builder
+        .build()
+        .map_err(|e| parquet_err(format!("cannot build parquet reader: {e}")))?;
+
+    let mut out = Vec::new();
+    for batch in reader {
+        let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
+        let image_uri: &StringArray =
+            downcast(get_column(&batch, "image_uri")?.as_ref(), "image_uri")?;
+        let mime_type: &StringArray =
+            downcast(get_column(&batch, "mime_type")?.as_ref(), "mime_type")?;
+        let wrap_mode: &StringArray =
+            downcast(get_column(&batch, "wrapMode")?.as_ref(), "wrapMode")?;
+        let texture_type: &StringArray =
+            downcast(get_column(&batch, "textureType")?.as_ref(), "textureType")?;
+        let border_color: &StringArray =
+            downcast(get_column(&batch, "borderColor")?.as_ref(), "borderColor")?;
+        let other: &StringArray = downcast(get_column(&batch, "other")?.as_ref(), "other")?;
+
+        for row in 0..batch.num_rows() {
+            let mut map = serde_json::Map::new();
+            if let Some(v) = opt_str(mime_type, row) {
+                map.insert("type".to_string(), Value::String(v));
+            }
+            if let Some(v) = opt_str(image_uri, row) {
+                map.insert("image".to_string(), Value::String(v));
+            }
+            if let Some(v) = opt_str(wrap_mode, row) {
+                map.insert("wrapMode".to_string(), Value::String(v));
+            }
+            if let Some(v) = opt_str(texture_type, row) {
+                map.insert("textureType".to_string(), Value::String(v));
+            }
+            if let Some(v) = opt_json(border_color, row)? {
+                map.insert("borderColor".to_string(), v);
+            }
+            merge_other(&mut map, opt_json(other, row)?)?;
+            out.push(Value::Object(map));
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    use cjseq::CityJSON;
+
+    fn fixture(name: &str) -> PathBuf {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures")
+            .join(name);
+        assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
+        p
+    }
+
+    fn canonical(v: &Value) -> String {
+        // serde_json's default Map is a BTreeMap, so `to_string` sorts
+        // object keys — a value-equality compare independent of member order.
+        v.to_string()
+    }
+
+    fn assert_defs_equal(actual: &[Value], expected: &[Value]) {
+        assert_eq!(actual.len(), expected.len());
+        for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(canonical(a), canonical(e), "def {i} mismatch");
+        }
+    }
+
+    #[test]
+    fn empty_defs_write_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materials.parquet");
+        assert_eq!(write_materials(&path, &[]).unwrap(), 0);
+        assert!(!path.exists());
+        assert_eq!(read_materials(&path).unwrap(), Vec::<Value>::new());
+
+        let path = dir.path().join("textures.parquet");
+        assert_eq!(write_textures(&path, &[]).unwrap(), 0);
+        assert!(!path.exists());
+        assert_eq!(read_textures(&path).unwrap(), Vec::<Value>::new());
+    }
+
+    /// Real CityJSON data: railway's own header `appearance.materials` /
+    /// `appearance.textures` (85 / 34 definitions), round-tripped through
+    /// write -> read with no interner involved (that wiring is Task 7's
+    /// encode-side test, this is the sidecar codec on its own).
+    #[test]
+    fn railway_materials_and_textures_round_trip() {
+        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+        let doc = CityJSON::from_str(&raw_text).unwrap();
+        let appearance = doc.appearance.as_ref().expect("railway has appearance");
+        let materials = appearance.materials.clone().unwrap_or_default();
+        let textures = appearance.textures.clone().unwrap_or_default();
+        assert_eq!(materials.len(), 85);
+        assert_eq!(textures.len(), 34);
+
+        let dir = tempfile::tempdir().unwrap();
+        let materials_path = dir.path().join("materials.parquet");
+        let textures_path = dir.path().join("textures.parquet");
+
+        let m_written = write_materials(&materials_path, &materials).unwrap();
+        let t_written = write_textures(&textures_path, &textures).unwrap();
+        assert_eq!(m_written, 85);
+        assert_eq!(t_written, 34);
+
+        let m_back = read_materials(&materials_path).unwrap();
+        let t_back = read_textures(&textures_path).unwrap();
+        assert_defs_equal(&m_back, &materials);
+        assert_defs_equal(&t_back, &textures);
+
+        // Concrete mapping assertion: row 0's texture columns.
+        let file = File::open(&textures_path).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let mut reader = builder.build().unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        let mime_type: &StringArray = batch
+            .column_by_name("mime_type")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        let image_uri: &StringArray = batch
+            .column_by_name("image_uri")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        assert_eq!(mime_type.value(0), "JPG");
+        assert_eq!(image_uri.value(0), "appearances/Vegetation_Juniper2.jpg");
+    }
+
+    #[test]
+    fn materials_write_rejects_non_object_defs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materials.parquet");
+        let err = write_materials(&path, &[Value::String("not an object".into())]).unwrap_err();
+        assert!(matches!(err, CityParquetError::Schema(_)));
+    }
+}
