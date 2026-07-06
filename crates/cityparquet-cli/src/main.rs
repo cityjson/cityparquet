@@ -1,3 +1,5 @@
+use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
+use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::recipe::WriterRecipe;
 use clap::{Parser, Subcommand};
@@ -42,6 +44,36 @@ enum Commands {
         /// Zstd compression level
         #[arg(long, default_value = "3")]
         zstd_level: i32,
+    },
+
+    /// Export CityParquet package back to CityJSON/CityJSONSeq
+    Export {
+        /// Input CityParquet package directory
+        #[arg(value_name = "PACKAGE_DIR")]
+        package_dir: PathBuf,
+
+        /// Output file (.city.jsonl for Seq, .city.json for doc)
+        #[arg(value_name = "OUTPUT")]
+        output: PathBuf,
+    },
+
+    /// Compare two CityJSON/CityJSONSeq datasets for semantic equality
+    Compare {
+        /// First dataset (CityJSON/CityJSONSeq or exported package)
+        #[arg(value_name = "A")]
+        a: PathBuf,
+
+        /// Second dataset (CityJSON/CityJSONSeq or exported package)
+        #[arg(value_name = "B")]
+        b: PathBuf,
+
+        /// Exclude material/texture blocks from comparison
+        #[arg(long)]
+        exclude_appearance: bool,
+
+        /// Exclude GeometryInstance geometries from comparison
+        #[arg(long)]
+        exclude_instances: bool,
     },
 }
 
@@ -98,6 +130,72 @@ fn main() -> std::process::ExitCode {
                         report.degenerate_surfaces_dropped
                     );
                     std::process::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+
+        Commands::Export {
+            package_dir,
+            output,
+        } => {
+            let opts = ExportOptions {
+                package_dir,
+                output,
+            };
+
+            match export(&opts) {
+                Ok(report) => {
+                    println!(
+                        "{} {} {} {}",
+                        report.feature_count,
+                        report.object_count,
+                        report.instance_geometries_dropped,
+                        report.appearance_refs_dropped
+                    );
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+
+        Commands::Compare {
+            a,
+            b,
+            exclude_appearance,
+            exclude_instances,
+        } => {
+            let opts = CompareOptions {
+                coord_tolerance: [0.0; 3],
+                exclusions: Exclusions {
+                    appearance: exclude_appearance,
+                    geometry_instances: exclude_instances,
+                },
+            };
+
+            match compare_datasets(&a, &b, &opts) {
+                Ok(report) => {
+                    if report.equal {
+                        // Print excluded count info if any
+                        let excluded_count = report.excluded.len();
+                        if excluded_count > 0 {
+                            println!("equal (excluded: {})", excluded_count);
+                        } else {
+                            println!("equal");
+                        }
+                        std::process::ExitCode::SUCCESS
+                    } else {
+                        for diff in &report.differences {
+                            println!("{}", diff);
+                        }
+                        std::process::ExitCode::from(2)
+                    }
                 }
                 Err(e) => {
                     eprintln!("error: {}", e);
