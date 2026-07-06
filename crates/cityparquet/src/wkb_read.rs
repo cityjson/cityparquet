@@ -174,14 +174,18 @@ impl<'a> Cursor<'a> {
     }
 
     /// PolygonZ body (no header — caller already consumed it): numRings +
-    /// each ring's numPoints + points. The WKB ring-closing vertex (WKB
-    /// rings repeat their first coordinate as the last) is validated —
-    /// bitwise, via the interner: a closing vertex only shares the first
-    /// point's pool index if their bits match — then stripped. A ring that
-    /// is not closed, or that has fewer than 3 points once stripped, is
-    /// malformed.
+    /// each ring's numPoints + points. A polygon with zero rings cannot
+    /// form a valid polygon at all and is rejected outright. The WKB
+    /// ring-closing vertex (WKB rings repeat their first coordinate as the
+    /// last) is validated — bitwise, via the interner: a closing vertex
+    /// only shares the first point's pool index if their bits match — then
+    /// stripped. A ring that is not closed, or that has fewer than 3
+    /// points once stripped, is malformed.
     fn parse_polygon_body(&mut self) -> Result<Vec<Vec<usize>>> {
         let n_rings = self.read_u32()? as usize;
+        if n_rings == 0 {
+            return Err(geometry_err("polygon has zero rings"));
+        }
         let mut rings = Vec::new();
         for _ in 0..n_rings {
             let n_points = self.read_u32()? as usize;
@@ -602,6 +606,30 @@ mod tests {
         assert!(
             err.to_string().to_lowercase().contains("trailing"),
             "error should name the trailing bytes, got: {err}"
+        );
+    }
+
+    #[test]
+    fn zero_ring_polygon_errors_instead_of_parsing_as_empty() {
+        // A PolyhedralSurfaceZ of one face whose PolygonZ body declares
+        // numRings == 0: no rings at all cannot form a valid polygon, so
+        // the reader must reject it rather than silently accepting an
+        // empty surface.
+        let mut buf = vec![0x01];
+        buf.extend_from_slice(&POLYHEDRALSURFACE_Z.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes()); // numFaces
+        buf.push(0x01);
+        buf.extend_from_slice(&POLYGON_Z.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // numRings == 0
+
+        let err = wkb_to_geometry(&buf).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Geometry(_)),
+            "zero-ring polygon must be a Geometry error, got {err:?}"
+        );
+        assert!(
+            err.to_string().to_lowercase().contains("ring"),
+            "error should mention rings, got: {err}"
         );
     }
 

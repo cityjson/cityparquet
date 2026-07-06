@@ -124,12 +124,13 @@ struct Drops {
 }
 
 /// Structural ring normalisation (narrow by design — this is NOT zero-area
-/// cleanup): strip one trailing duplicate of the first vertex index (the
-/// source pre-baked the WKB closure, non-conformant CityJSON but seen in
-/// the wild); if fewer than 3 vertices remain the ring cannot form a valid
-/// WKB ring and is dropped (`None`). Zero-area rings with >= 3 effective
-/// vertices pass through unchanged — data quality is not the format's
-/// business.
+/// cleanup): strip trailing duplicates of the first vertex index to a
+/// fixpoint (sources in the wild bake the WKB closure more than once, e.g.
+/// `[0, 1, 0, 0]`: a single strip would leave a still-closed `[0, 1, 0]`
+/// that the hardened reader rejects); if fewer than 3 vertices remain the
+/// ring cannot form a valid WKB ring and is dropped (`None`). Zero-area
+/// rings with >= 3 effective vertices pass through unchanged — data quality
+/// is not the format's business.
 ///
 /// Known limitation (deliberate): closure detection is INDEX-based. A ring
 /// whose last vertex is a DIFFERENT index carrying a bitwise-identical
@@ -139,26 +140,34 @@ struct Drops {
 /// drops rings that cannot form a structural WKB ring at all;
 /// coordinate-level degeneracy is data quality, out of scope.
 fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
-    let stripped = if ring.len() >= 2 && ring.first() == ring.last() {
-        &ring[..ring.len() - 1]
-    } else {
-        ring
-    };
+    let mut stripped = ring;
+    // Fixpoint, not single-strip: sources in the wild bake the closure more
+    // than once ([0,1,0,0]); a single strip left a still-closed [0,1,0] that
+    // the hardened reader rejects.
+    while stripped.len() >= 2 && stripped.first() == stripped.last() {
+        stripped = &stripped[..stripped.len() - 1];
+    }
     (stripped.len() >= 3).then_some(stripped)
 }
 
 /// Normalise one surface's rings. Returns the kept rings, or `None` when
-/// the surface must be dropped entirely because its EXTERIOR ring (index 0)
-/// is degenerate (interior rings cannot stand without it). Every degenerate
-/// ring is counted in `drops.rings` — including interior rings of a surface
-/// that is dropped anyway — so the reported ring total is exact. `pos` is
-/// the surface's original flat position within the geometry, recorded so
-/// the encoder can realign per-surface semantics/material/texture arrays.
+/// the surface must be dropped entirely: either it has no rings at all (no
+/// WKB polygon can be formed), or its EXTERIOR ring (index 0) is degenerate
+/// (interior rings cannot stand without it). Every degenerate ring is
+/// counted in `drops.rings` — including interior rings of a surface that is
+/// dropped anyway — so the reported ring total is exact. `pos` is the
+/// surface's original flat position within the geometry, recorded so the
+/// encoder can realign per-surface semantics/material/texture arrays.
 fn normalise_surface<'r>(
     rings: &'r [Vec<usize>],
     pos: usize,
     drops: &mut Drops,
 ) -> Option<Vec<&'r [usize]>> {
+    if rings.is_empty() {
+        // A surface with no rings at all cannot form a WKB polygon.
+        drops.surfaces.push(pos);
+        return None;
+    }
     let mut kept = Vec::with_capacity(rings.len());
     let mut exterior_dropped = false;
     for (i, ring) in rings.iter().enumerate() {
@@ -640,5 +649,26 @@ mod tests {
             transformation_matrix: None,
         };
         assert!(geometry_to_wkb(&geom, &pool).unwrap().is_none());
+    }
+
+    #[test]
+    fn normalise_ring_strips_trailing_duplicates_to_fixpoint() {
+        // The exact Codex ring: [0, 1, 0, 0]. One strip leaves [0, 1, 0], which
+        // still closes (first == last); the fixpoint strip must continue until
+        // [0, 1] and then drop the ring (< 3 effective vertices).
+        assert_eq!(normalise_ring(&[0, 1, 0, 0]), None);
+        // Still only trailing-closure strips: a healthy pre-closed ring keeps
+        // its body, and an unclosed ring is untouched.
+        assert_eq!(normalise_ring(&[0, 1, 2, 0]), Some(&[0usize, 1, 2][..]));
+        assert_eq!(normalise_ring(&[0, 1, 2]), Some(&[0usize, 1, 2][..]));
+    }
+
+    #[test]
+    fn zero_ring_surface_is_dropped_and_counted() {
+        let mut drops = Drops::default();
+        let empty: [Vec<usize>; 0] = [];
+        assert_eq!(normalise_surface(&empty, 4, &mut drops), None);
+        assert_eq!(drops.surfaces, vec![4]);
+        assert_eq!(drops.rings, 0); // no ring existed to count
     }
 }

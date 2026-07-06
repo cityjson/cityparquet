@@ -14,19 +14,19 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 /// Test-side mirror of the writer's structural normalisation policy: strip
-/// one trailing duplicate of the first vertex index (the WKB closure the
-/// source pre-baked), drop the ring if fewer than 3 vertices remain, and
-/// drop the whole surface when its EXTERIOR ring (index 0) is dropped.
-/// Returns the surface's expected decoded rings, or `None` when the whole
-/// surface is expected to be dropped.
+/// trailing duplicates of the first vertex index to a fixpoint (the WKB
+/// closure the source pre-baked, possibly more than once), drop the ring if
+/// fewer than 3 vertices remain, and drop the whole surface when its
+/// EXTERIOR ring (index 0) is dropped. Returns the surface's expected
+/// decoded rings, or `None` when the whole surface is expected to be
+/// dropped.
 fn normalise_expected_surface(surface: &[Vec<usize>]) -> Option<Vec<Vec<usize>>> {
     let mut kept = Vec::with_capacity(surface.len());
     for (i, ring) in surface.iter().enumerate() {
-        let stripped = if ring.len() >= 2 && ring.first() == ring.last() {
-            &ring[..ring.len() - 1]
-        } else {
-            &ring[..]
-        };
+        let mut stripped = &ring[..];
+        while stripped.len() >= 2 && stripped.first() == stripped.last() {
+            stripped = &stripped[..stripped.len() - 1];
+        }
         if stripped.len() >= 3 {
             kept.push(stripped.to_vec());
         } else if i == 0 {
@@ -245,6 +245,106 @@ fn delft_geometries_round_trip_through_wkb_reader() {
     assert_eq!(totals.dropped_rings, 0, "delft has no degenerate rings");
     assert_eq!(totals.dropped_surfaces, 0);
     assert_eq!(totals.geometries_with_drops, 0);
+}
+
+/// Derived-from-real-fixture (sanctioned pattern): take delft's header line
+/// plus ONE feature line carrying a real `Solid`, replace that Solid's
+/// first face's first ring with the `[a, b, a, a]` shape built from the
+/// ring's own first two real indices, write it to a tempdir, and confirm
+/// the writer/reader pipeline drops exactly that one ring and its surface
+/// while everything else round-trips.
+#[test]
+fn delft_derived_double_baked_closure_ring_is_dropped_and_still_round_trips() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = text.lines();
+    let header_line = lines.next().unwrap().to_string();
+
+    let mut mutated_line = None;
+    let mut mutated_ring: Option<(usize, usize)> = None;
+    // Identifies exactly which CityObject/geometry-index was mutated, so the
+    // checking loop below inspects THAT geometry rather than asserting on
+    // whichever Solid a HashMap happens to iterate first (delft's feature
+    // lines carry many CityObjects, most of them untouched).
+    let mut mutated_co_id: Option<String> = None;
+    let mut mutated_geom_index: Option<usize> = None;
+    for line in lines {
+        let mut feature: serde_json::Value = serde_json::from_str(line).unwrap();
+        let Some(cos) = feature["CityObjects"].as_object_mut() else {
+            continue;
+        };
+        let mut found = false;
+        for (co_id, co) in cos.iter_mut() {
+            let Some(geoms) = co.get_mut("geometry").and_then(|g| g.as_array_mut()) else {
+                continue;
+            };
+            for (geom_index, geom) in geoms.iter_mut().enumerate() {
+                if geom.get("type").and_then(|t| t.as_str()) != Some("Solid") {
+                    continue;
+                }
+                // shells -> faces -> rings -> indices
+                let ring = geom["boundaries"]
+                    .get_mut(0) // first shell
+                    .and_then(|shell| shell.get_mut(0)) // first face
+                    .and_then(|face| face.get_mut(0)) // first (exterior) ring
+                    .expect("real delft Solid must have a shell/face/ring to mutate");
+                let indices: Vec<usize> = serde_json::from_value(ring.clone()).unwrap();
+                let (a, b) = (indices[0], indices[1]);
+                *ring = serde_json::json!([a, b, a, a]);
+                mutated_ring = Some((a, b));
+                mutated_co_id = Some(co_id.clone());
+                mutated_geom_index = Some(geom_index);
+                found = true;
+                break;
+            }
+            if found {
+                break;
+            }
+        }
+        if found {
+            mutated_line = Some(serde_json::to_string(&feature).unwrap());
+            break;
+        }
+    }
+    let mutated_line = mutated_line.expect("delft.city.jsonl must contain a Solid geometry");
+    let (a, b) = mutated_ring.unwrap();
+    assert_ne!(a, b, "a real ring's first two indices must be distinct");
+    let mutated_co_id = mutated_co_id.unwrap();
+    let mutated_geom_index = mutated_geom_index.unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delft_double_baked_closure.city.jsonl");
+    std::fs::write(&path, format!("{header_line}\n{mutated_line}\n")).unwrap();
+
+    let src = Source::open(&path).unwrap();
+    let header = src.header();
+    let feature = src.features().unwrap().next().unwrap().unwrap();
+    let pool = VertexPool::new(&feature.vertices, &header.transform);
+
+    let co = feature
+        .city_objects
+        .get(&mutated_co_id)
+        .expect("mutated CityObject id must round-trip through the tempdir file");
+    let geom = co
+        .geometry
+        .as_ref()
+        .and_then(|geoms| geoms.get(mutated_geom_index))
+        .expect("mutated geometry index must still be present");
+    assert_eq!(geom.thetype, GeometryType::Solid);
+
+    let outcome = geometry_to_wkb(geom, &pool)
+        .unwrap()
+        .expect("the Solid still has surviving faces after dropping one degenerate ring");
+    assert_eq!(
+        outcome.dropped_rings, 1,
+        "exactly the mutated [a,b,a,a] ring must be dropped"
+    );
+    assert_eq!(
+        outcome.dropped_surfaces,
+        vec![0],
+        "its face (the first, position 0) must be dropped with it"
+    );
+    wkb_to_geometry(&outcome.bytes)
+        .expect("hardened reader must accept the writer's normalised output");
 }
 
 #[test]
