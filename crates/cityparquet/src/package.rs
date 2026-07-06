@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use parquet::arrow::ArrowWriter;
+use parquet::file::metadata::KeyValue;
 
 use cityparquet_schema::{CITYPARQUET_VERSION, CityParquetError, PackageManifest, Profile, Result};
 
@@ -137,24 +138,16 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
     let source = Source::open(&opts.input)?;
     let scan_result = scan(&source)?;
 
-    // This is the STATIC per-profile expectation (`Profile::sidecar_files`),
-    // not yet the files this run will actually produce: how many
-    // materials/textures a Compatibility dataset has (and therefore whether
-    // a sidecar file is written at all — an empty sidecar is skipped, see
-    // `crate::sidecar`) is only known after the encode pass below runs to
-    // completion, but the Parquet key-value metadata is embedded into the
-    // WriterProperties *before* the writer opens. There is no ordering that
-    // lets the KV `sidecar_files` entry reflect the true post-encode file
-    // list, so it stays the static profile expectation; `metadata.json`
-    // (built after encode, from the ACTUAL sidecar files written below) is
-    // the source of truth for what the package really contains.
-    let sidecars: Vec<String> = opts
-        .profile
-        .sidecar_files()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    let metadata = scan_result.metadata(&sidecars)?;
+    // `sidecar_files` is intentionally EXCLUDED from this pre-encode
+    // key-value set (an empty list serialises to no key at all — see
+    // `CityParquetMetadata::sidecar_files`): which sidecar files this run
+    // actually produces (an empty sidecar is skipped, see `crate::sidecar`)
+    // is only known after the encode pass below runs to completion. The
+    // real, actually-written list is appended to the footer via
+    // `ArrowWriter::append_key_value_metadata` after the sidecars are
+    // written and before `writer.close()`, so the parquet footer and
+    // `metadata.json` always agree.
+    let metadata = scan_result.metadata(&[])?;
     // The exact schema the writer is told to expect must be the exact schema
     // the encoded batches conform to (field metadata included) — both come
     // from this one `to_arrow_schema()` call, never hand-duplicated.
@@ -180,10 +173,10 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
     // from — consuming it by value (e.g. plain `.collect()`) would have
     // dropped it (and its running totals) before we could ask.
     let encode_stats = batches.stats();
-    writer
-        .close()
-        .map_err(|e| parquet_err(format!("cannot finalise parquet file: {e}")))?;
 
+    // Sidecars are written while the main-table writer is still open (they
+    // are separate files, so nothing conflicts), because the footer's
+    // `sidecar_files` entry below must record what was ACTUALLY written.
     let mut files = vec![cityobjects_path];
     let mut sidecar_files_written: Vec<String> = Vec::new();
     let mut materials_written = 0usize;
@@ -205,6 +198,21 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
             files.push(textures_path);
         }
     }
+
+    // Now that the actual sidecar list is known, record it in the parquet
+    // footer (the pre-encode `WriterProperties` KV set omitted the key
+    // entirely, so this cannot produce a duplicate; and even against a
+    // foreign file that DID carry one, appended entries come after the
+    // props entries in the footer and `CityParquetMetadata::from_key_values`
+    // is last-wins). Encoded exactly as `to_key_values` renders a non-empty
+    // list: JSON text.
+    writer.append_key_value_metadata(KeyValue::new(
+        "sidecar_files".to_string(),
+        serde_json::to_string(&sidecar_files_written)?,
+    ));
+    writer
+        .close()
+        .map_err(|e| parquet_err(format!("cannot finalise parquet file: {e}")))?;
 
     let manifest = PackageManifest {
         cityparquet_version: CITYPARQUET_VERSION.to_string(),

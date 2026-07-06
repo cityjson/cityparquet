@@ -7,10 +7,19 @@
 //! definition is preserved verbatim under the `other` JSON column.
 //!
 //! `write_materials`/`write_textures` and `read_materials`/`read_textures`
-//! are exact inverses of each other (value-equality up to JSON member order):
-//! every field the writer peels off into its own column, the reader puts
-//! back under the same key; every leftover field the writer stashes in
-//! `other`, the reader merges back in.
+//! are VALUE-exact inverses of each other (value-equality up to JSON member
+//! order): every field the writer peels off into its own column, the reader
+//! puts back under the same key; every leftover field the writer stashes in
+//! `other`, the reader merges back in. One deliberate normalisation: the
+//! numeric scalar columns (`ambientIntensity`/`transparency`/`shininess`)
+//! round-trip through Arrow `Float64`, so a definition written with an
+//! integer-literal JSON number (e.g. `"shininess": 1`) reads back in float
+//! form (`"shininess": 1.0`) — same value, different literal, and NOT `==`
+//! under `serde_json::Value`'s `PartialEq`. All other members (including
+//! anything routed through a JSON column or `other`) round-trip literally.
+//! The dataset comparator ([`crate::compare`]) already treats mixed
+//! int/float JSON numbers as equal within tolerance, so this normalisation
+//! can never break round-trip equality at the dataset level.
 
 use std::fs::File;
 use std::path::Path;
@@ -149,7 +158,9 @@ const MATERIAL_KNOWN_FIELDS: [&str; 8] = [
 
 /// Write one row per `defs[i]` to `path` (`id` = `i` as `Int64`), per
 /// [`cityparquet_schema::profile::materials_schema`]'s column mapping.
-/// Writes nothing and returns `0` when `defs` is empty.
+/// Writes nothing and returns `0` when `defs` is empty. [`read_materials`]
+/// is the value-exact inverse (numeric scalar columns normalise
+/// integer-literal JSON numbers to float form; see the module docs).
 pub fn write_materials(path: &Path, defs: &[Value]) -> Result<usize> {
     if defs.is_empty() {
         return Ok(0);
@@ -216,7 +227,10 @@ const TEXTURE_KNOWN_FIELDS: [&str; 5] = ["type", "image", "wrapMode", "textureTy
 
 /// Write one row per `defs[i]` to `path` (`id` = `i` as `Int64`), per
 /// [`cityparquet_schema::profile::textures_schema`]'s column mapping.
-/// Writes nothing and returns `0` when `defs` is empty.
+/// Writes nothing and returns `0` when `defs` is empty. [`read_textures`]
+/// is the value-exact inverse — literally exact for textures, in fact,
+/// since no texture column is numeric (the module docs' float
+/// normalisation only applies to the materials table).
 pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
     if defs.is_empty() {
         return Ok(0);
@@ -329,7 +343,10 @@ fn merge_other(map: &mut serde_json::Map<String, Value>, other: Option<Value>) -
 /// definition per row, ordered by `id` (rows are written in `id` order and
 /// read back batch-by-batch in file order, so no explicit sort is needed
 /// unless a future writer reorders rows). Missing file reads as empty (a
-/// dataset with no materials never gets a sidecar written).
+/// dataset with no materials never gets a sidecar written). Value-exact
+/// inverse of [`write_materials`]: `ambientIntensity`/`transparency`/
+/// `shininess` come back in float-literal form regardless of how the source
+/// wrote them (see the module docs).
 pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -554,5 +571,58 @@ mod tests {
         let path = dir.path().join("materials.parquet");
         let err = write_materials(&path, &[Value::String("not an object".into())]).unwrap_err();
         assert!(matches!(err, CityParquetError::Schema(_)));
+    }
+
+    /// Derived-from-real-fixture: railway's material numerics all happen to
+    /// be float literals (`0.0`), so the fixture never exercises the
+    /// documented normalisation — a numeric scalar column written from an
+    /// INTEGER-literal JSON number reads back in float form (same value,
+    /// different literal; see the module docs). Pin it: take a real railway
+    /// material def, set `"shininess": 1` as a bare integer, round-trip.
+    #[test]
+    fn material_numeric_columns_are_value_exact_not_literal_exact() {
+        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+        let doc = CityJSON::from_str(&raw_text).unwrap();
+        let materials = doc
+            .appearance
+            .as_ref()
+            .and_then(|a| a.materials.clone())
+            .expect("railway has materials");
+
+        let mut def = materials[0].clone();
+        def.as_object_mut()
+            .unwrap()
+            .insert("shininess".to_string(), serde_json::json!(1));
+        assert!(
+            def["shininess"].is_i64(),
+            "precondition: shininess starts as an integer-literal JSON number"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materials.parquet");
+        assert_eq!(
+            write_materials(&path, std::slice::from_ref(&def)).unwrap(),
+            1
+        );
+        let back = read_materials(&path).unwrap();
+        assert_eq!(back.len(), 1);
+
+        // Value-exact: same number...
+        assert_eq!(back[0]["shininess"].as_f64(), Some(1.0));
+        // ...but the documented normalisation to float-literal form: `1.0`
+        // comes back, NOT the original bare `1` (which serde_json's
+        // `PartialEq` treats as a different Value).
+        assert_eq!(back[0]["shininess"], serde_json::json!(1.0));
+        assert_ne!(back[0]["shininess"], serde_json::json!(1));
+        // The dataset comparator treats mixed int/float as equal within
+        // tolerance, so this normalisation cannot break dataset-level
+        // round-trip equality; here only `shininess` differs in literal
+        // form — every other member must still round-trip literally.
+        let mut expected = def.clone();
+        expected
+            .as_object_mut()
+            .unwrap()
+            .insert("shininess".to_string(), serde_json::json!(1.0));
+        assert_eq!(canonical(&back[0]), canonical(&expected));
     }
 }

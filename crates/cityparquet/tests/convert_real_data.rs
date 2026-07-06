@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use arrow_array::{Array, StringArray};
 use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Profile;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Encoding;
@@ -193,11 +194,21 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
     );
 }
 
+/// The `sidecar_files` list recorded in the parquet footer's own key-value
+/// metadata (appended post-encode via `ArrowWriter::append_key_value_metadata`,
+/// so it reflects the files ACTUALLY written, matching `metadata.json`).
+fn footer_sidecar_files(dir: &std::path::Path) -> Vec<String> {
+    let file = std::fs::File::open(dir.join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    builder.cityparquet_metadata().unwrap().sidecar_files
+}
+
 /// Compatibility profile: railway's feature-only appearance sweep (83
 /// materials / 33 textures — see the module doc on
 /// `railway_core_convert_rewrites_appearance_maps_to_global_ids`) must land
-/// in `materials.parquet`/`textures.parquet`, with `metadata.json`'s
-/// `sidecar_files` listing exactly the files actually written.
+/// in `materials.parquet`/`textures.parquet`, with BOTH `metadata.json`'s
+/// `sidecar_files` and the parquet footer's KV `sidecar_files` listing
+/// exactly the files actually written.
 #[test]
 fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     let out = tempfile::tempdir().unwrap();
@@ -219,10 +230,19 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
         manifest["sidecar_files"],
         serde_json::json!(["materials.parquet", "textures.parquet"])
     );
+    assert_eq!(
+        footer_sidecar_files(out.path()),
+        vec![
+            "materials.parquet".to_string(),
+            "textures.parquet".to_string()
+        ],
+        "the parquet footer's KV sidecar_files must agree with metadata.json"
+    );
 }
 
 /// Compatibility profile on a dataset with no appearance at all (delft):
-/// no sidecar files are written, and the manifest says so.
+/// no sidecar files are written, and both the manifest and the parquet
+/// footer's KV metadata say so.
 #[test]
 fn delft_compatibility_convert_writes_no_sidecars() {
     let out = tempfile::tempdir().unwrap();
@@ -241,4 +261,9 @@ fn delft_compatibility_convert_writes_no_sidecars() {
             .unwrap();
     assert_eq!(manifest["profile"], "compatibility");
     assert_eq!(manifest["sidecar_files"], serde_json::json!([]));
+    assert_eq!(
+        footer_sidecar_files(out.path()),
+        Vec::<String>::new(),
+        "the parquet footer's KV sidecar_files must be empty, matching metadata.json"
+    );
 }

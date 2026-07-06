@@ -37,7 +37,13 @@ pub struct CityParquetMetadata {
     pub reserved_columns: Vec<String>,
     pub default_geometry: String,
     pub bbox_column: String,
-    #[serde(default)]
+    /// Sidecar table files actually present alongside the main table.
+    /// Skipped from serialisation when empty (and read back as empty when
+    /// absent), so a writer that only knows the final list after encoding —
+    /// see `cityparquet::package::convert` — can omit it from the
+    /// `WriterProperties` key-value set and append the real entry to the
+    /// footer post-encode without creating a duplicate key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sidecar_files: Vec<String>,
     /// The source CityJSON header's `metadata` object, re-serialised
     /// verbatim (`title`, `geographicalExtent`, `pointOfContact`,
