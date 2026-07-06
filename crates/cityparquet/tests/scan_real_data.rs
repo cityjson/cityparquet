@@ -66,6 +66,44 @@ fn extensions_declarations_reach_metadata() {
 }
 
 #[test]
+fn source_metadata_and_appearance_defaults_reach_scan_metadata() {
+    // Derived fixture (same precedent as extensions_declarations_reach_metadata
+    // above): neither shipped fixture sets appearance default-theme members,
+    // so inject them into a mutated copy of the railway header (which already
+    // has an `appearance` object with materials/textures) to exercise the
+    // capture end to end.
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["appearance"]["default-theme-material"] = serde_json::json!("theme-a");
+    doc["appearance"]["default-theme-texture"] = serde_json::json!("theme-b");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_theme.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let src = Source::open(&path).unwrap();
+    let s = scan(&src).unwrap();
+    let meta = s.metadata(&[]).unwrap();
+
+    let appearance_defaults = meta
+        .appearance_defaults
+        .expect("default-theme members must reach appearance_defaults");
+    assert_eq!(appearance_defaults["default-theme-material"], "theme-a");
+    assert_eq!(appearance_defaults["default-theme-texture"], "theme-b");
+
+    let source_metadata = meta
+        .source_metadata
+        .expect("railway's header sets metadata; source_metadata must be populated");
+    assert!(source_metadata.get("geographicalExtent").is_some());
+
+    // delft's header carries no appearance key at all: that absence must be
+    // preserved as None, not fabricated.
+    let delft = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let delft_meta = scan(&delft).unwrap().metadata(&[]).unwrap();
+    assert!(delft_meta.appearance_defaults.is_none());
+}
+
+#[test]
 fn railway_scan_is_representable() {
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
     let s = scan(&src).unwrap();

@@ -35,6 +35,14 @@ pub struct ScanResult {
     /// The CityJSON header's `extensions` declarations, verbatim (absent
     /// stays `None`; an empty object stays an empty object).
     pub extensions: Option<serde_json::Value>,
+    /// The CityJSON header's `metadata` object, re-serialised verbatim. See
+    /// [`CityParquetMetadata::source_metadata`] for the passthrough
+    /// limitation (e.g. `fullMetadataUrl` is never preserved).
+    pub source_metadata: Option<serde_json::Value>,
+    /// `{"default-theme-material": ..., "default-theme-texture": ...}` from
+    /// the header's `appearance` default-theme members, `None` if neither is
+    /// set.
+    pub appearance_defaults: Option<serde_json::Value>,
     /// Count of geometries with no `lod` string, on a dataset that also has
     /// LoD-bearing geometries. These are skipped from `lods` and
     /// `dataset_bbox` because there is no per-LoD column to place them in;
@@ -154,6 +162,34 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
 
     let transform = serde_json::to_value(&header.transform)?;
 
+    let source_metadata = header
+        .metadata
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?;
+
+    let appearance_defaults = header.appearance.as_ref().and_then(|a| {
+        let material = a.default_theme_material.clone();
+        let texture = a.default_theme_texture.clone();
+        if material.is_none() && texture.is_none() {
+            return None;
+        }
+        let mut map = serde_json::Map::new();
+        if let Some(m) = material {
+            map.insert(
+                "default-theme-material".to_string(),
+                serde_json::Value::String(m),
+            );
+        }
+        if let Some(t) = texture {
+            map.insert(
+                "default-theme-texture".to_string(),
+                serde_json::Value::String(t),
+            );
+        }
+        Some(serde_json::Value::Object(map))
+    });
+
     let schema = CityParquetSchema {
         lods: lods.clone(),
         attributes: inferer.finish(),
@@ -168,6 +204,8 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         crs_url,
         transform,
         extensions: header.extensions.clone(),
+        source_metadata,
+        appearance_defaults,
         lodless_geometries,
         source_format: to_schema_source_format(source.format()),
         source_version: header.version.clone(),
@@ -201,6 +239,8 @@ impl ScanResult {
             default_geometry,
             bbox_column: "bbox".to_string(),
             sidecar_files: sidecars.to_vec(),
+            source_metadata: self.source_metadata.clone(),
+            appearance_defaults: self.appearance_defaults.clone(),
         })
     }
 }

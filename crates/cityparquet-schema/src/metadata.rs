@@ -39,6 +39,21 @@ pub struct CityParquetMetadata {
     pub bbox_column: String,
     #[serde(default)]
     pub sidecar_files: Vec<String>,
+    /// The source CityJSON header's `metadata` object, re-serialised
+    /// verbatim (`title`, `geographicalExtent`, `pointOfContact`,
+    /// `referenceDate`, `identifier`, `referenceSystem`). NOTE: cjseq's
+    /// `Metadata` struct has no passthrough for unknown members, so any
+    /// vendor extension the source header carries there (e.g. delft's
+    /// `fullMetadataUrl`) is NOT preserved — it never survives the initial
+    /// deserialisation of the source header into `cjseq::Metadata`, so this
+    /// field can only ever re-serialise what that struct kept.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_metadata: Option<Value>,
+    /// `{"default-theme-material": ..., "default-theme-texture": ...}` built
+    /// from the source header's `appearance` default-theme members; `None`
+    /// when the header set neither.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub appearance_defaults: Option<Value>,
 }
 
 impl CityParquetMetadata {
@@ -154,6 +169,8 @@ mod tests {
             default_geometry: "geometry_lod2_2".to_string(),
             bbox_column: "bbox".to_string(),
             sidecar_files: vec![],
+            source_metadata: Some(json!({"title": "x", "referenceDate": "2020-01-01"})),
+            appearance_defaults: Some(json!({"default-theme-material": "t"})),
         }
     }
 
@@ -171,10 +188,20 @@ mod tests {
                 .any(|(k, v)| k == "source_format" && v == "CityJSONSeq")
         );
         assert!(kvs.iter().any(|(k, _)| k == "crs"));
+        assert!(kvs.iter().any(|(k, _)| k == "source_metadata"));
+        assert!(kvs.iter().any(|(k, _)| k == "appearance_defaults"));
         let back =
             CityParquetMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
                 .unwrap();
         assert_eq!(back, meta);
+        assert_eq!(
+            back.source_metadata,
+            Some(json!({"title": "x", "referenceDate": "2020-01-01"}))
+        );
+        assert_eq!(
+            back.appearance_defaults,
+            Some(json!({"default-theme-material": "t"}))
+        );
     }
 
     #[test]

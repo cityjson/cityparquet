@@ -359,7 +359,12 @@ fn build_header(meta: &CityParquetMetadata) -> Result<CityJSON> {
         )
     })?;
     header.transform = serde_json::from_value(transform.clone())?;
-    if let Some(reference_system) = reference_system(meta)? {
+    if let Some(source_metadata) = &meta.source_metadata {
+        // The stored source metadata already carries referenceSystem (and
+        // everything else cjseq::Metadata can represent), so it supersedes
+        // the referenceSystem-only fallback below.
+        header.metadata = Some(serde_json::from_value(source_metadata.clone())?);
+    } else if let Some(reference_system) = reference_system(meta)? {
         header.metadata = Some(CjMetadata {
             geographical_extent: None,
             identifier: None,
@@ -703,6 +708,8 @@ mod tests {
             default_geometry: "geometry".to_string(),
             bbox_column: "bbox".to_string(),
             sidecar_files: vec![],
+            source_metadata: None,
+            appearance_defaults: None,
         };
         let err = build_header(&meta).unwrap_err();
         assert!(

@@ -180,6 +180,8 @@ mod tests {
             default_geometry: "geometry_lod2_2".to_string(),
             bbox_column: "bbox".to_string(),
             sidecar_files: vec![],
+            source_metadata: None,
+            appearance_defaults: None,
         }
     }
 

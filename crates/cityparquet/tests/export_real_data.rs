@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::source::{Source, SourceFormat};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -171,6 +173,72 @@ fn railway_exports_dropping_instance_geometries_but_keeping_their_objects() {
         object_count += feature.city_objects.len();
     }
     assert_eq!(object_count, 121);
+}
+
+/// M4 task 5: the source header's `metadata` object (title,
+/// geographicalExtent, etc.) is captured verbatim into the package's KV
+/// metadata (`source_metadata`) and restored into the exported header.
+/// `fullMetadataUrl` is a documented exception — cjseq's `Metadata` struct
+/// has no passthrough for unknown members, so it never survives even the
+/// initial parse of the source header, let alone the round trip.
+#[test]
+fn delft_source_metadata_reaches_kv_metadata_and_the_exported_header() {
+    let package_dir = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        fixture("delft.city.jsonl"),
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+
+    let file = std::fs::File::open(package_dir.path().join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let meta = builder.cityparquet_metadata().unwrap();
+    let source_metadata = meta
+        .source_metadata
+        .as_ref()
+        .expect("delft's header sets metadata; source_metadata must be populated");
+    assert_eq!(source_metadata["title"], serde_json::json!("3DBAG"));
+    assert!(
+        source_metadata.get("geographicalExtent").is_some(),
+        "expected geographicalExtent in {source_metadata}"
+    );
+    assert!(
+        source_metadata.get("fullMetadataUrl").is_none(),
+        "fullMetadataUrl is not part of cjseq::Metadata and cannot survive"
+    );
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+
+    let exported_header_line = std::fs::read_to_string(&output)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    let exported_header: serde_json::Value = serde_json::from_str(&exported_header_line).unwrap();
+    let source_header_line = std::fs::read_to_string(fixture("delft.city.jsonl"))
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    let source_header: serde_json::Value = serde_json::from_str(&source_header_line).unwrap();
+
+    assert_eq!(
+        exported_header["metadata"]["title"], source_header["metadata"]["title"],
+        "exported header title must match the source"
+    );
+    assert_eq!(
+        exported_header["metadata"]["geographicalExtent"],
+        source_header["metadata"]["geographicalExtent"],
+        "exported header geographicalExtent must match the source"
+    );
 }
 
 #[test]
