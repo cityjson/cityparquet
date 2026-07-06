@@ -9,15 +9,27 @@
 //! unique and preserved verbatim end-to-end), so feature grouping/ordering
 //! differences between the two sides are irrelevant to the comparison.
 //!
-//! Degenerate-ring normalisation (stripping a ring's trailing duplicate of
-//! its first vertex INDEX; dropping rings left with < 3 vertices; dropping a
-//! surface whose exterior ring was dropped) is reimplemented here
+//! Degenerate-ring normalisation (stripping a ring's trailing duplicates of
+//! its first vertex INDEX; dropping rings left with fewer than 3 ENTRIES;
+//! dropping a surface whose exterior ring was dropped) is reimplemented here
 //! independently of [`crate::wkb_write`]'s writer-side normalisation — on
 //! purpose: a comparator that reused the writer's own normalisation function
 //! could not catch a bug in that function, since both sides would share the
-//! same blind spot. It is applied to BOTH sides unconditionally; on the
-//! export side (whose degenerate rings were already dropped at write time)
-//! this is a no-op by construction.
+//! same blind spot. The "fewer than 3" threshold counts remaining ring
+//! ELEMENTS, not geometrically distinct coordinates: a 3-element zero-area
+//! ring passes through untouched — the CityJSON spec's stricter "at least 3
+//! distinct vertices" wording is deliberately not enforced beyond this
+//! structural element count (data quality is not the format's business,
+//! matching the writer's policy). It is applied to BOTH sides
+//! unconditionally; on the export side (whose degenerate rings were already
+//! dropped at write time) this is a no-op by construction.
+//!
+//! `material`/`texture` blocks ARE part of the comparison by default: they
+//! compare under the same JSON equality as `semantics`, after the same
+//! surface-index realignment the degenerate normalisation applies. Only
+//! `Exclusions::appearance` turns that off (skip + `excluded` log), because
+//! the Core-profile exporter deliberately drops the blocks it cannot safely
+//! re-attach.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -150,6 +162,14 @@ fn surface_list_node(pool: &VertexPool, surfaces: &[Vec<Vec<usize>>]) -> Result<
 /// regardless of how many redundant closures the source (or the writer)
 /// left in place, while remaining a no-op for the common single-closure
 /// case.
+///
+/// This fixpoint loop is therefore DELIBERATELY more lenient than the
+/// writer's single-strip contract: the writer only ever needs to undo one
+/// pre-baked closure (its output feeds the WKB reader, which re-checks
+/// closure itself), whereas the comparator's job is to decide whether two
+/// differently-normalised encodings of the same source ring denote the same
+/// ring — which requires an idempotent canonical form, not a faithful
+/// replay of the writer's one pass.
 fn normalise_ring(ring: &[usize]) -> Option<Vec<usize>> {
     let mut stripped = ring;
     while stripped.len() >= 2 && stripped.first() == stripped.last() {
@@ -191,13 +211,16 @@ fn remove_dropped_entries(values: &mut Vec<Value>, dropped: &[usize]) {
 }
 
 /// Result of normalising+dequantising one geometry: its coordinate tree, the
-/// realigned `semantics` (only realigned for the surface-list types — the
-/// solid types nest semantics per shell, which the writer itself leaves
-/// unrealigned; see `crate::encode`'s `drops_align_with_surface_arrays`),
-/// and how much was normalised away (for the `excluded` log).
+/// realigned `semantics` and `material`/`texture` (only realigned for the
+/// surface-list types — the solid types nest their per-surface arrays per
+/// shell, which the writer itself leaves unrealigned; see `crate::encode`'s
+/// `drops_align_with_surface_arrays`), and how much was normalised away
+/// (for the `excluded` log).
 struct NormalisedGeometry {
     tree: Node,
     semantics: Option<Value>,
+    material: Option<Value>,
+    texture: Option<Value>,
     dropped_rings: usize,
     dropped_surfaces: usize,
 }
@@ -221,6 +244,33 @@ fn realign_semantics(semantics: &Option<Value>, dropped_surfaces: &[usize]) -> O
     Some(semantics)
 }
 
+/// One geometry's `material` or `texture` map as a JSON value with each
+/// theme's per-surface `values` array realigned for the surfaces the
+/// degenerate normalisation dropped (mirrors `crate::encode`'s
+/// `realign_appearance_themes`). Theme-level scalar `value` entries apply
+/// to all surfaces and need no realignment. `dropped_surfaces` must be
+/// empty for the non-surface-list types (whose per-surface arrays nest per
+/// shell and are left unrealigned, matching the writer).
+fn realigned_appearance<T: serde::Serialize>(
+    map: &Option<T>,
+    dropped_surfaces: &[usize],
+) -> Result<Option<Value>> {
+    let Some(map) = map else {
+        return Ok(None);
+    };
+    let mut value = serde_json::to_value(map)?;
+    if !dropped_surfaces.is_empty()
+        && let Some(themes) = value.as_object_mut()
+    {
+        for theme in themes.values_mut() {
+            if let Some(values) = theme.get_mut("values").and_then(Value::as_array_mut) {
+                remove_dropped_entries(values, dropped_surfaces);
+            }
+        }
+    }
+    Ok(Some(value))
+}
+
 /// Normalises and dequantises one non-instance geometry against `pool`.
 fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGeometry> {
     match geom.thetype {
@@ -232,6 +282,8 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
             Ok(NormalisedGeometry {
                 tree: points_node(pool, &idxs)?,
                 semantics: geom.semantics.clone(),
+                material: realigned_appearance(&geom.material, &[])?,
+                texture: realigned_appearance(&geom.texture, &[])?,
                 dropped_rings: 0,
                 dropped_surfaces: 0,
             })
@@ -241,6 +293,8 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
             Ok(NormalisedGeometry {
                 tree: ring_list_node(pool, &lines)?,
                 semantics: geom.semantics.clone(),
+                material: realigned_appearance(&geom.material, &[])?,
+                texture: realigned_appearance(&geom.texture, &[])?,
                 dropped_rings: 0,
                 dropped_surfaces: 0,
             })
@@ -259,6 +313,8 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
             Ok(NormalisedGeometry {
                 tree: surface_list_node(pool, &kept)?,
                 semantics: realign_semantics(&geom.semantics, &dropped_positions),
+                material: realigned_appearance(&geom.material, &dropped_positions)?,
+                texture: realigned_appearance(&geom.texture, &dropped_positions)?,
                 dropped_rings,
                 dropped_surfaces: dropped_positions.len(),
             })
@@ -286,10 +342,13 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
             );
             Ok(NormalisedGeometry {
                 tree,
-                // Solid semantics nest per shell; not realigned here, same
-                // limitation as the writer (no real fixture exercises a
-                // Solid/MultiSolid degenerate ring, so this never bites).
+                // Solid semantics/appearance nest per shell; not realigned
+                // here, same limitation as the writer (no real fixture
+                // exercises a Solid/MultiSolid degenerate ring, so this
+                // never bites).
                 semantics: geom.semantics.clone(),
+                material: realigned_appearance(&geom.material, &[])?,
+                texture: realigned_appearance(&geom.texture, &[])?,
                 dropped_rings,
                 dropped_surfaces,
             })
@@ -329,6 +388,8 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
             Ok(NormalisedGeometry {
                 tree,
                 semantics: geom.semantics.clone(),
+                material: realigned_appearance(&geom.material, &[])?,
+                texture: realigned_appearance(&geom.texture, &[])?,
                 dropped_rings,
                 dropped_surfaces,
             })
@@ -345,6 +406,10 @@ struct NormGeometry {
     gtype: GeometryType,
     tree: Node,
     semantics: Option<Value>,
+    /// `None` when the geometry has no material, OR when
+    /// `exclusions.appearance` skipped it (logged in `excluded`).
+    material: Option<Value>,
+    texture: Option<Value>,
 }
 
 struct ObjectData {
@@ -486,6 +551,11 @@ fn build_geometries(
                     gtype: geom.thetype.clone(),
                     tree,
                     semantics: None,
+                    // Instance appearance rides the template definition
+                    // (M4 sidecar data); a kept instance compares by its
+                    // reference point only.
+                    material: None,
+                    texture: None,
                 },
                 excluded,
                 label,
@@ -494,7 +564,9 @@ fn build_geometries(
             continue;
         }
 
-        if opts.exclusions.appearance && (geom.material.is_some() || geom.texture.is_some()) {
+        let skip_appearance =
+            opts.exclusions.appearance && (geom.material.is_some() || geom.texture.is_some());
+        if skip_appearance {
             excluded.push(format!(
                 "{label}: object {id}: material/texture at lod {:?} excluded (exclusions.appearance)",
                 geom.lod
@@ -523,6 +595,16 @@ fn build_geometries(
                 gtype: geom.thetype.clone(),
                 tree: normalised.tree,
                 semantics: normalised.semantics,
+                material: if skip_appearance {
+                    None
+                } else {
+                    normalised.material
+                },
+                texture: if skip_appearance {
+                    None
+                } else {
+                    normalised.texture
+                },
             },
             excluded,
             label,
@@ -668,6 +750,22 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
             out.push(format!(
                 "object {id}: geometry at lod {lod:?}: semantics differ: {sa} vs {sb}"
             ));
+        }
+        // material/texture: compared unless `exclusions.appearance` already
+        // dropped them at load time (in which case both sides are None here
+        // and the skip was logged in `excluded`). One-side-present is a
+        // difference like any other mismatch.
+        for (what, va, vb) in [
+            ("material", &ga.material, &gb.material),
+            ("texture", &ga.texture, &gb.texture),
+        ] {
+            let na = va.clone().unwrap_or(Value::Null);
+            let nb = vb.clone().unwrap_or(Value::Null);
+            if !values_equal(&na, &nb) {
+                out.push(format!(
+                    "object {id}: geometry at lod {lod:?}: {what} differs: {na} vs {nb}"
+                ));
+            }
         }
     }
 }
@@ -817,6 +915,149 @@ mod tests {
             report.differences[0].contains(&changed_id),
             "the single difference must name the changed object {changed_id}, got: {}",
             report.differences[0]
+        );
+    }
+
+    /// The reviewer's probe: with `exclusions.appearance == false` (the
+    /// default), a material block present on one side only must be a
+    /// DIFFERENCE — not silently ignored. Derived from the real delft
+    /// fixture: one geometry of one object gains a `material` block; the
+    /// copy must compare `!equal` with exactly one difference naming that
+    /// object.
+    #[test]
+    fn compare_detects_an_added_material_block_when_appearance_not_excluded() {
+        let original = fixture("delft.city.jsonl");
+        let text = fs::read_to_string(&original).unwrap();
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+
+        // Add a material block to the first geometry of the first object
+        // that has one.
+        let mut changed_id: Option<String> = None;
+        for line in lines.iter_mut().skip(1) {
+            let mut feature: Value = serde_json::from_str(line).unwrap();
+            let Some(objects) = feature["CityObjects"].as_object_mut() else {
+                continue;
+            };
+            for (id, co) in objects.iter_mut() {
+                let Some(geoms) = co.get_mut("geometry").and_then(Value::as_array_mut) else {
+                    continue;
+                };
+                let Some(geom) = geoms.first_mut().and_then(Value::as_object_mut) else {
+                    continue;
+                };
+                geom.insert(
+                    "material".to_string(),
+                    serde_json::json!({"visual": {"value": 0}}),
+                );
+                changed_id = Some(id.clone());
+                break;
+            }
+            if changed_id.is_some() {
+                *line = serde_json::to_string(&feature).unwrap();
+                break;
+            }
+        }
+        let changed_id = changed_id.expect("delft must have at least one geometry");
+
+        let dir = tempfile::tempdir().unwrap();
+        let modified_path = dir.path().join("delft-with-material.city.jsonl");
+        fs::write(&modified_path, lines.join("\n") + "\n").unwrap();
+
+        let report =
+            compare_datasets(&original, &modified_path, &CompareOptions::default()).unwrap();
+        assert!(
+            !report.equal,
+            "an added material block must be a difference when appearance is not excluded"
+        );
+        assert_eq!(
+            report.differences.len(),
+            1,
+            "exactly one geometry gained a material block: expected exactly one difference, got {:?}",
+            report.differences
+        );
+        assert!(
+            report.differences[0].contains(&changed_id),
+            "the difference must name the changed object {changed_id}, got: {}",
+            report.differences[0]
+        );
+
+        // And with the exclusion ON, the same pair compares equal (the block
+        // is skipped and logged instead).
+        let opts = CompareOptions {
+            coord_tolerance: [0.0; 3],
+            exclusions: Exclusions {
+                appearance: true,
+                geometry_instances: false,
+            },
+        };
+        let report = compare_datasets(&original, &modified_path, &opts).unwrap();
+        assert!(
+            report.equal,
+            "with exclusions.appearance the added block must be skipped, got: {:?}",
+            report.differences
+        );
+        assert!(
+            report.excluded.iter().any(|e| e.contains(&changed_id)),
+            "the skipped block must be logged in excluded naming {changed_id}, got: {:?}",
+            report.excluded
+        );
+    }
+
+    /// More than [`MAX_DIFFERENCES`] real differences must truncate: the
+    /// list keeps the first 50 and appends one final "... N more" entry.
+    /// Synthesised from the real fixture by editing a string attribute on
+    /// every object that has one (delft has far more than 50).
+    #[test]
+    fn compare_truncates_beyond_max_differences() {
+        let original = fixture("delft.city.jsonl");
+        let text = fs::read_to_string(&original).unwrap();
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+
+        let mut changed = 0usize;
+        for line in lines.iter_mut().skip(1) {
+            let mut feature: Value = serde_json::from_str(line).unwrap();
+            let Some(objects) = feature["CityObjects"].as_object_mut() else {
+                continue;
+            };
+            let mut line_changed = false;
+            for (_, co) in objects.iter_mut() {
+                let Some(attrs) = co.get_mut("attributes").and_then(Value::as_object_mut) else {
+                    continue;
+                };
+                let Some((_, v)) = attrs.iter_mut().find(|(_, v)| v.is_string()) else {
+                    continue;
+                };
+                let s = v.as_str().unwrap().to_string();
+                *v = Value::String(format!("{s}-MODIFIED"));
+                changed += 1;
+                line_changed = true;
+            }
+            if line_changed {
+                *line = serde_json::to_string(&feature).unwrap();
+            }
+        }
+        assert!(
+            changed > MAX_DIFFERENCES,
+            "need more than {MAX_DIFFERENCES} edits to exercise truncation, only made {changed}"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let modified_path = dir.path().join("delft-many-edits.city.jsonl");
+        fs::write(&modified_path, lines.join("\n") + "\n").unwrap();
+
+        let report =
+            compare_datasets(&original, &modified_path, &CompareOptions::default()).unwrap();
+        assert!(!report.equal);
+        assert_eq!(
+            report.differences.len(),
+            MAX_DIFFERENCES + 1,
+            "the first {MAX_DIFFERENCES} differences plus one truncation notice"
+        );
+        let last = report.differences.last().unwrap();
+        assert!(
+            last.contains("truncated") && last.contains(&(changed - MAX_DIFFERENCES).to_string()),
+            "the final entry must name the truncated count ({}), got: {last}",
+            changed - MAX_DIFFERENCES
         );
     }
 

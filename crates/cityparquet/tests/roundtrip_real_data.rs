@@ -79,22 +79,36 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
         report.differences
     );
     assert!(report.differences.is_empty());
-    assert!(
-        !report.excluded.is_empty(),
-        "railway carries GeometryInstances, appearance, and degenerate rings — all must be logged"
+    // The exact exclusion breakdown, recounted by category. The totals are
+    // pinned against counts already proven elsewhere: 105 stored geometries
+    // carry material or texture (export_real_data.rs's
+    // appearance_refs_dropped), 15 objects carry a GeometryInstance
+    // (instance_geometries_dropped), and 3 source geometries carry
+    // degenerate rings (wkb_roundtrip_real_data.rs's geometries_with_drops).
+    let appearance = report
+        .excluded
+        .iter()
+        .filter(|e| e.contains("exclusions.appearance"))
+        .count();
+    let instances = report
+        .excluded
+        .iter()
+        .filter(|e| e.contains("exclusions.geometry_instances"))
+        .count();
+    let degenerate = report
+        .excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    assert_eq!(
+        (appearance, instances, degenerate),
+        (105, 15, 3),
+        "exclusion breakdown must match the pinned pipeline counts, got: {:#?}",
+        report.excluded
     );
-
-    let joined = report.excluded.join("\n");
-    assert!(
-        joined.contains("GeometryInstance"),
-        "expected at least one excluded GeometryInstance entry, got: {joined}"
-    );
-    assert!(
-        joined.contains("exclusions.appearance"),
-        "expected at least one excluded material/texture entry, got: {joined}"
-    );
-    assert!(
-        joined.contains("degenerate ring"),
-        "expected at least one excluded degenerate-ring normalisation entry, got: {joined}"
+    assert_eq!(
+        report.excluded.len(),
+        123,
+        "105 appearance + 15 instances + 3 degenerate = 123 total exclusions, nothing else"
     );
 }
