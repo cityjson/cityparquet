@@ -445,10 +445,13 @@ fn canonicalise_attrs(v: Option<&Value>) -> Value {
 
 /// JSON-value equality after normalisation: strings that both parse as
 /// RFC3339 instants compare as instants; strings that both parse as
-/// `%Y-%m-%d` dates compare as dates; numbers compare as f64 within 1e-9
-/// relative; objects compare by key (null-valued entries excluded from the
-/// key set on both sides — the null-vs-absent rule); arrays compare
-/// order-preserving, element-wise.
+/// `%Y-%m-%d` dates compare as dates; integer-vs-integer numbers compare
+/// EXACTLY (semantics/material/texture indices must never be equated by a
+/// tolerance), while the 1e-9 relative f64 tolerance applies only when at
+/// least one side is a genuine float (mixed int/float compares as float);
+/// objects compare by key (null-valued entries excluded from the key set on
+/// both sides — the null-vs-absent rule); arrays compare order-preserving,
+/// element-wise.
 fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Null, Value::Null) => true,
