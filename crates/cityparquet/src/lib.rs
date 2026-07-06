@@ -2,6 +2,7 @@
 
 pub mod decode;
 pub mod encode;
+pub mod export;
 pub mod package;
 pub mod reader;
 pub mod recipe;
