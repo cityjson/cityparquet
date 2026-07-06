@@ -25,8 +25,12 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::builder::{BooleanBuilder, Float64Builder, Int64Builder, StringBuilder};
-use arrow_array::{Array, ArrayRef, BooleanArray, Float64Array, RecordBatch, StringArray};
+use arrow_array::builder::{
+    BinaryBuilder, BooleanBuilder, Float64Builder, Int64Builder, StringBuilder,
+};
+use arrow_array::{
+    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, RecordBatch, StringArray,
+};
 use arrow_schema::Schema;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -285,6 +289,112 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
     let batch = RecordBatch::try_new(schema.clone(), arrays)?;
     write_batch(path, schema, batch)?;
     Ok(defs.len())
+}
+
+/// One row of `geometry_templates.parquet`: a geometry template's WKB (in
+/// its own template-local coordinate space, via [`crate::wkb_write::VertexPool::raw`]),
+/// its `geometry_properties` (mirrors the main-table column: `type`, `lod`,
+/// `semantics`, `dropped_degenerate` if the writer dropped anything), and
+/// its `material`/`texture` maps already rewritten to dataset-global ids by
+/// the same [`crate::appearance::AppearanceInterner`] the main table and the
+/// materials/textures sidecars use. `other` is reserved for any Geometry
+/// member the schema doesn't otherwise carry (cjseq's `Geometry` is a fully
+/// typed struct with no catch-all, so in practice this is always `None`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemplateRow {
+    pub id: String,
+    pub wkb: Vec<u8>,
+    pub geometry_properties: Option<Value>,
+    pub material: Option<Value>,
+    pub texture: Option<Value>,
+    pub other: Option<Value>,
+}
+
+/// Write one row per `rows[i]` to `path`, per
+/// [`cityparquet_schema::profile::geometry_templates_schema`]'s column
+/// mapping (`id`/`geometry` non-null, everything else an optional JSON
+/// column). Writes nothing and returns `0` when `rows` is empty. `id` is
+/// written verbatim (the caller assigns it — the main-table `template.id`
+/// column stores the template's position as a string, and this sidecar's
+/// `id` must match it so a reader can join the two). [`read_templates`] is
+/// the value-exact inverse.
+pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let schema = Arc::new(profile::geometry_templates_schema());
+
+    let mut id = StringBuilder::new();
+    let mut geometry = BinaryBuilder::new();
+    let mut geometry_properties = StringBuilder::new();
+    let mut material = StringBuilder::new();
+    let mut texture = StringBuilder::new();
+    let mut other = StringBuilder::new();
+
+    for row in rows {
+        id.append_value(&row.id);
+        geometry.append_value(&row.wkb);
+        push_opt_json(&mut geometry_properties, row.geometry_properties.as_ref())?;
+        push_opt_json(&mut material, row.material.as_ref())?;
+        push_opt_json(&mut texture, row.texture.as_ref())?;
+        push_opt_json(&mut other, row.other.as_ref())?;
+    }
+
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(id.finish()),
+        Arc::new(geometry.finish()),
+        Arc::new(geometry_properties.finish()),
+        Arc::new(material.finish()),
+        Arc::new(texture.finish()),
+        Arc::new(other.finish()),
+    ];
+    let batch = RecordBatch::try_new(schema.clone(), arrays)?;
+    write_batch(path, schema, batch)?;
+    Ok(rows.len())
+}
+
+/// Read `geometry_templates.parquet` at `path` back into one [`TemplateRow`]
+/// per row, in file order. Missing file reads as empty (a dataset with no
+/// geometry templates never gets a sidecar written).
+pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file =
+        File::open(path).map_err(|e| io_err(format!("cannot open {}: {e}", path.display())))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| parquet_err(format!("cannot open parquet reader: {e}")))?;
+    let reader = builder
+        .build()
+        .map_err(|e| parquet_err(format!("cannot build parquet reader: {e}")))?;
+
+    let mut out = Vec::new();
+    for batch in reader {
+        let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
+        let id: &StringArray = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
+        let geometry: &BinaryArray =
+            downcast(get_column(&batch, "geometry")?.as_ref(), "geometry")?;
+        let geometry_properties: &StringArray = downcast(
+            get_column(&batch, "geometry_properties")?.as_ref(),
+            "geometry_properties",
+        )?;
+        let material: &StringArray =
+            downcast(get_column(&batch, "material")?.as_ref(), "material")?;
+        let texture: &StringArray = downcast(get_column(&batch, "texture")?.as_ref(), "texture")?;
+        let other: &StringArray = downcast(get_column(&batch, "other")?.as_ref(), "other")?;
+
+        for row in 0..batch.num_rows() {
+            out.push(TemplateRow {
+                id: id.value(row).to_string(),
+                wkb: geometry.value(row).to_vec(),
+                geometry_properties: opt_json(geometry_properties, row)?,
+                material: opt_json(material, row)?,
+                texture: opt_json(texture, row)?,
+                other: opt_json(other, row)?,
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn get_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a ArrayRef> {
@@ -624,5 +734,80 @@ mod tests {
             .unwrap()
             .insert("shininess".to_string(), serde_json::json!(1.0));
         assert_eq!(canonical(&back[0]), canonical(&expected));
+    }
+
+    /// Real railway geometry-templates (3 templates): build one
+    /// [`TemplateRow`] per template (WKB via `VertexPool::raw` over the raw
+    /// `vertices-templates`; `material`/`texture` rewritten via a fresh
+    /// interner over the DOC's own appearance — see `Source::doc_appearance`'s
+    /// doc comment for why the doc's raw arrays, not the header's sliced
+    /// ones, are the correct local defs here), write/read round-trip.
+    #[test]
+    fn railway_templates_round_trip() {
+        use crate::appearance::AppearanceInterner;
+        use crate::wkb_read::wkb_to_geometry;
+        use crate::wkb_write::{VertexPool, geometry_to_wkb};
+
+        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+        let doc = CityJSON::from_str(&raw_text).unwrap();
+        let templates = doc
+            .geometry_templates
+            .as_ref()
+            .expect("railway has geometry-templates");
+        assert_eq!(templates.templates.len(), 3);
+        let verts: Vec<Vec<f64>> =
+            serde_json::from_value(templates.vertices_templates.clone()).unwrap();
+        let pool = VertexPool::raw(&verts);
+
+        let appearance = doc.appearance.as_ref().expect("railway has appearance");
+        let doc_materials = appearance.materials.clone().unwrap_or_default();
+        let doc_textures = appearance.textures.clone().unwrap_or_default();
+        let doc_uvs = appearance.vertices_texture.clone().unwrap_or_default();
+        let mut interner = AppearanceInterner::new();
+
+        let mut rows = Vec::new();
+        for (i, tpl) in templates.templates.iter().enumerate() {
+            let outcome = geometry_to_wkb(tpl, &pool)
+                .unwrap()
+                .expect("every railway template must produce non-empty WKB");
+            let material = tpl.material.as_ref().map(|m| {
+                let map = serde_json::to_value(m).unwrap();
+                interner.rewrite_material_map(&map, &doc_materials).unwrap()
+            });
+            let texture = tpl.texture.as_ref().map(|t| {
+                let map = serde_json::to_value(t).unwrap();
+                interner
+                    .rewrite_texture_map(&map, &doc_textures, &doc_uvs)
+                    .unwrap()
+            });
+            let geometry_properties = serde_json::json!({
+                "type": tpl.thetype,
+                "lod": tpl.lod,
+            });
+            rows.push(TemplateRow {
+                id: i.to_string(),
+                wkb: outcome.bytes,
+                geometry_properties: Some(geometry_properties),
+                material,
+                texture,
+                other: None,
+            });
+        }
+        assert_eq!(rows.len(), 3);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("geometry_templates.parquet");
+        let written = write_templates(&path, &rows).unwrap();
+        assert_eq!(written, 3);
+
+        let back = read_templates(&path).unwrap();
+        assert_eq!(back.len(), 3);
+        for (i, row) in back.iter().enumerate() {
+            assert_eq!(row.id, i.to_string());
+            wkb_to_geometry(&row.wkb).expect("sidecar WKB must be accepted by the hardened reader");
+        }
+        assert_eq!(back[0].material, rows[0].material);
+        assert_eq!(back[0].texture, rows[0].texture);
+        assert_eq!(back[0].geometry_properties, rows[0].geometry_properties);
     }
 }
