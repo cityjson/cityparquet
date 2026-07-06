@@ -18,12 +18,16 @@ use cityparquet_schema::{CITYPARQUET_VERSION, CityParquetError, PackageManifest,
 use crate::encode::encode;
 use crate::recipe::WriterRecipe;
 use crate::scan::scan;
+use crate::sidecar::{write_materials, write_textures};
 use crate::source::Source;
 
-/// The one Core-profile data table this pass writes; the compatibility
-/// profile's sidecar tables (`materials.parquet`, `textures.parquet`,
-/// `geometry_templates.parquet`) land in M4.
+/// The one data table every profile writes.
 const CITYOBJECTS_TABLE: &str = "cityobjects.parquet";
+/// Compatibility-profile sidecar tables. `geometry_templates.parquet` is not
+/// listed here: template appearance folding lands in Task 8, so this pass
+/// never writes it (`ConvertReport::templates_written` stays `0`).
+const MATERIALS_TABLE: &str = "materials.parquet";
+const TEXTURES_TABLE: &str = "textures.parquet";
 
 /// Options controlling one end-to-end CityJSON/CityJSONSeq -> CityParquet
 /// package conversion.
@@ -67,6 +71,14 @@ pub struct ConvertReport {
     /// Surfaces the writer dropped (exterior ring degenerate), with their
     /// semantics/material/texture entries realigned in the stored columns.
     pub degenerate_surfaces_dropped: usize,
+    /// Rows written to `materials.parquet` (`0` for the Core profile, or a
+    /// Compatibility dataset with no materials at all).
+    pub materials_written: usize,
+    /// Rows written to `textures.parquet` (see [`Self::materials_written`]).
+    pub textures_written: usize,
+    /// Rows written to `geometry_templates.parquet`. Always `0` until Task 8
+    /// folds geometry-template appearance into the interner sweep.
+    pub templates_written: usize,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -84,19 +96,20 @@ fn parquet_err(msg: String) -> CityParquetError {
 /// Convert `opts.input` (CityJSON or CityJSONSeq) into a CityParquet package
 /// directory at `opts.output_dir`: one scan pass to infer the schema and
 /// dataset metadata, one encode pass streamed straight into an `ArrowWriter`
-/// using `opts.recipe`'s per-column `WriterProperties`, then a `metadata.json`
-/// manifest alongside it.
+/// using `opts.recipe`'s per-column `WriterProperties`, then (Compatibility
+/// profile only) the `materials.parquet`/`textures.parquet` sidecars built
+/// from the encode pass's [`crate::appearance::AppearanceInterner`], then a
+/// `metadata.json` manifest alongside it all.
 ///
-/// Only the Core profile is implemented here — the compatibility profile
-/// (sidecar `materials`/`textures`/`geometry_templates` tables) lands in M4
-/// and is rejected up front. `opts.output_dir` is created if missing; if it
-/// already exists and is non-empty, conversion fails unless `opts.overwrite`
-/// is set.
+/// `geometry_templates.parquet` is not written by this pass yet (Task 8), so
+/// a Compatibility conversion of a dataset whose appearance is reachable only
+/// from geometry templates will under-count `materials_written`/
+/// `textures_written` relative to the dataset's true definitions — see
+/// [`ConvertReport::templates_written`].
+///
+/// `opts.output_dir` is created if missing; if it already exists and is
+/// non-empty, conversion fails unless `opts.overwrite` is set.
 pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
-    if opts.profile == Profile::Compatibility {
-        return Err(err("compatibility profile lands in M4".to_string()));
-    }
-
     fs::create_dir_all(&opts.output_dir).map_err(|e| {
         io_err(format!(
             "cannot create output directory {}: {e}",
@@ -124,6 +137,17 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
     let source = Source::open(&opts.input)?;
     let scan_result = scan(&source)?;
 
+    // This is the STATIC per-profile expectation (`Profile::sidecar_files`),
+    // not yet the files this run will actually produce: how many
+    // materials/textures a Compatibility dataset has (and therefore whether
+    // a sidecar file is written at all — an empty sidecar is skipped, see
+    // `crate::sidecar`) is only known after the encode pass below runs to
+    // completion, but the Parquet key-value metadata is embedded into the
+    // WriterProperties *before* the writer opens. There is no ordering that
+    // lets the KV `sidecar_files` entry reflect the true post-encode file
+    // list, so it stays the static profile expectation; `metadata.json`
+    // (built after encode, from the ACTUAL sidecar files written below) is
+    // the source of truth for what the package really contains.
     let sidecars: Vec<String> = opts
         .profile
         .sidecar_files()
@@ -152,31 +176,57 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
             .write(&batch)
             .map_err(|e| parquet_err(format!("parquet write error: {e}")))?;
     }
-    // `by_ref()` above means `batches` is still ours to read stats from —
-    // consuming it by value (e.g. plain `.collect()`) would have dropped it
-    // (and its running totals) before we could ask.
+    // `by_ref()` above means `batches` is still ours to read stats/appearance
+    // from — consuming it by value (e.g. plain `.collect()`) would have
+    // dropped it (and its running totals) before we could ask.
     let encode_stats = batches.stats();
     writer
         .close()
         .map_err(|e| parquet_err(format!("cannot finalise parquet file: {e}")))?;
+
+    let mut files = vec![cityobjects_path];
+    let mut sidecar_files_written: Vec<String> = Vec::new();
+    let mut materials_written = 0usize;
+    let mut textures_written = 0usize;
+    if opts.profile == Profile::Compatibility {
+        let appearance = batches.appearance();
+
+        let materials_path = opts.output_dir.join(MATERIALS_TABLE);
+        materials_written = write_materials(&materials_path, appearance.materials())?;
+        if materials_written > 0 {
+            sidecar_files_written.push(MATERIALS_TABLE.to_string());
+            files.push(materials_path);
+        }
+
+        let textures_path = opts.output_dir.join(TEXTURES_TABLE);
+        textures_written = write_textures(&textures_path, appearance.textures())?;
+        if textures_written > 0 {
+            sidecar_files_written.push(TEXTURES_TABLE.to_string());
+            files.push(textures_path);
+        }
+    }
 
     let manifest = PackageManifest {
         cityparquet_version: CITYPARQUET_VERSION.to_string(),
         profile: opts.profile,
         lods: scan_result.lods.iter().map(|lod| lod.to_string()).collect(),
         tables: vec![CITYOBJECTS_TABLE.to_string()],
-        sidecar_files: Vec::new(),
+        sidecar_files: sidecar_files_written,
     };
     let metadata_path = opts.output_dir.join("metadata.json");
     fs::write(&metadata_path, serde_json::to_string_pretty(&manifest)?)
         .map_err(|e| io_err(format!("cannot write {}: {e}", metadata_path.display())))?;
+    files.push(metadata_path);
 
     Ok(ConvertReport {
         object_count: scan_result.object_count,
-        files: vec![cityobjects_path, metadata_path],
+        files,
         skipped_same_lod_geometries: encode_stats.skipped_same_lod_geometries,
         attribute_coercion_nulls: encode_stats.attribute_coercion_nulls,
         degenerate_rings_dropped: encode_stats.degenerate_rings_dropped,
         degenerate_surfaces_dropped: encode_stats.degenerate_surfaces_dropped,
+        materials_written,
+        textures_written,
+        templates_written: 0,
     })
 }

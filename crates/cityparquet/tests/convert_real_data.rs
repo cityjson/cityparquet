@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use arrow_array::{Array, StringArray};
 use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::schema::Profile;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Encoding;
 use serde_json::Value;
@@ -190,4 +191,54 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
         checked_texture,
         "expected at least one row with a texture map"
     );
+}
+
+/// Compatibility profile: railway's feature-only appearance sweep (83
+/// materials / 33 textures — see the module doc on
+/// `railway_core_convert_rewrites_appearance_maps_to_global_ids`) must land
+/// in `materials.parquet`/`textures.parquet`, with `metadata.json`'s
+/// `sidecar_files` listing exactly the files actually written.
+#[test]
+fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    opts.profile = Profile::Compatibility;
+    let report = convert(&opts).unwrap();
+
+    assert_eq!(report.materials_written, 83);
+    assert_eq!(report.textures_written, 33);
+    assert_eq!(report.templates_written, 0);
+    assert!(out.path().join("materials.parquet").exists());
+    assert!(out.path().join("textures.parquet").exists());
+
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["profile"], "compatibility");
+    assert_eq!(
+        manifest["sidecar_files"],
+        serde_json::json!(["materials.parquet", "textures.parquet"])
+    );
+}
+
+/// Compatibility profile on a dataset with no appearance at all (delft):
+/// no sidecar files are written, and the manifest says so.
+#[test]
+fn delft_compatibility_convert_writes_no_sidecars() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.profile = Profile::Compatibility;
+    let report = convert(&opts).unwrap();
+
+    assert_eq!(report.materials_written, 0);
+    assert_eq!(report.textures_written, 0);
+    assert_eq!(report.templates_written, 0);
+    assert!(!out.path().join("materials.parquet").exists());
+    assert!(!out.path().join("textures.parquet").exists());
+
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["profile"], "compatibility");
+    assert_eq!(manifest["sidecar_files"], serde_json::json!([]));
 }
