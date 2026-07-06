@@ -191,8 +191,15 @@ fn main() -> std::process::ExitCode {
                         }
                         std::process::ExitCode::SUCCESS
                     } else {
-                        for diff in &report.differences {
-                            println!("{}", diff);
+                        const MAX_PRINTED_DIFFERENCES: usize = 20;
+                        for diff in report.differences.iter().take(MAX_PRINTED_DIFFERENCES) {
+                            println!("{diff}");
+                        }
+                        if report.differences.len() > MAX_PRINTED_DIFFERENCES {
+                            println!(
+                                "... ({} more)",
+                                report.differences.len() - MAX_PRINTED_DIFFERENCES
+                            );
                         }
                         std::process::ExitCode::from(2)
                     }

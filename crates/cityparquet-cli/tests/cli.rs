@@ -123,7 +123,7 @@ fn export_package_to_cityjsonl() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // stdout should contain: feature_count, object_count, instance_geometries_dropped, appearance_refs_dropped
-    let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+    let parts: Vec<&str> = stdout.split_whitespace().collect();
     assert_eq!(
         parts.len(),
         4,
@@ -194,6 +194,19 @@ fn compare_different_datasets_returns_exit_2_with_differences() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty(), "stdout should contain differences");
+    // The CLI caps output at the first 20 differences plus one final
+    // "... (N more)" line; delft vs railway has far more than 20.
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        lines.len() <= 21,
+        "compare must print at most 20 differences plus one truncation line, got {} lines",
+        lines.len()
+    );
+    assert!(
+        lines.last().unwrap().contains("more"),
+        "with more than 20 differences the final line must be the '... (N more)' notice, got: {}",
+        lines.last().unwrap()
+    );
 }
 
 #[test]
