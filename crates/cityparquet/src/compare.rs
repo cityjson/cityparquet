@@ -453,7 +453,17 @@ fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Null, Value::Null) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Number(_), Value::Number(_)) => {
+        (Value::Number(na), Value::Number(nb)) => {
+            // Integer-vs-integer compares exactly (semantics/material/texture
+            // indices); the 1e-9 relative tolerance exists only for genuine
+            // floats. Mixed int/float (e.g. `2` vs `2.0`) falls through to
+            // the float comparison below.
+            if let (Some(x), Some(y)) = (na.as_i64(), nb.as_i64()) {
+                return x == y;
+            }
+            if let (Some(x), Some(y)) = (na.as_u64(), nb.as_u64()) {
+                return x == y;
+            }
             let (x, y) = (a.as_f64().unwrap(), b.as_f64().unwrap());
             let scale = x.abs().max(y.abs()).max(1.0);
             (x - y).abs() <= 1e-9 * scale
@@ -689,6 +699,27 @@ fn reference_system_url(header: &CityJSON) -> Option<String> {
         .map(cjseq::ReferenceSystem::to_url)
 }
 
+/// The `metadata` members other than `referenceSystem` (compared above):
+/// `("label", present)` pairs, where `present` is true when EITHER side's
+/// `header.metadata` has that member set. These are documented exclusions
+/// (M4-codex-5) — logged in `excluded`, never compared, never silently
+/// dropped.
+fn header_metadata_members(a: &CityJSON, b: &CityJSON) -> [(&'static str, bool); 5] {
+    let ma = a.metadata.as_ref();
+    let mb = b.metadata.as_ref();
+    let has = |f: fn(&cjseq::Metadata) -> bool| ma.is_some_and(f) || mb.is_some_and(f);
+    [
+        ("title", has(|m| m.title.is_some())),
+        (
+            "geographicalExtent",
+            has(|m| m.geographical_extent.is_some()),
+        ),
+        ("identifier", has(|m| m.identifier.is_some())),
+        ("pointOfContact", has(|m| m.point_of_contact.is_some())),
+        ("referenceDate", has(|m| m.reference_date.is_some())),
+    ]
+}
+
 fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: &mut Vec<String>) {
     if a.thetype != b.thetype {
         out.push(format!(
@@ -771,14 +802,19 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
 }
 
 /// Compares `a` and `b` (each a CityJSON or CityJSONSeq path, opened via
-/// [`Source`]) for semantic equality: header `transform` (exact) and
-/// `referenceSystem`, the object-id set, and per common object its `type`,
-/// `parents`/`children` (as sets), `attributes` (JSON-value equality with
-/// timestamp/date/numeric-tolerance normalisation), and geometry per LoD
-/// (type, boundary-tree shape, coordinates within `opts.coord_tolerance`,
-/// and `semantics`). See the module docs for the degenerate-ring
-/// normalisation applied to both sides, and [`Exclusions`] for what
-/// `export`'s deliberate drops let this skip instead of flagging.
+/// [`Source`]) for semantic equality: header `transform` (exact),
+/// `referenceSystem`, `version`, and `extensions`, the object-id set, and per
+/// common object its `type`, `parents`/`children` (as sets), `attributes`
+/// (JSON-value equality with timestamp/date/numeric-tolerance
+/// normalisation), and geometry per LoD (type, boundary-tree shape,
+/// coordinates within `opts.coord_tolerance`, and `semantics`). Header
+/// `metadata` members other than `referenceSystem` (`title`,
+/// `geographicalExtent`, `identifier`, `pointOfContact`, `referenceDate`)
+/// are documented exclusions: logged in `excluded` when either side sets
+/// them, never compared, never silently dropped. See the module docs for
+/// the degenerate-ring normalisation applied to both sides, and
+/// [`Exclusions`] for what `export`'s deliberate drops let this skip
+/// instead of flagging.
 pub fn compare_datasets(a: &Path, b: &Path, opts: &CompareOptions) -> Result<CompareReport> {
     let side_a = load_side(a, opts)?;
     let side_b = load_side(b, opts)?;
@@ -799,6 +835,27 @@ pub fn compare_datasets(a: &Path, b: &Path, opts: &CompareOptions) -> Result<Com
         differences.push(format!(
             "header: referenceSystem differs: {rsa:?} vs {rsb:?}"
         ));
+    }
+
+    if side_a.header.version != side_b.header.version {
+        differences.push(format!(
+            "header: version differs: {} vs {}",
+            side_a.header.version, side_b.header.version
+        ));
+    }
+    let ea = side_a.header.extensions.clone().unwrap_or(Value::Null);
+    let eb = side_b.header.extensions.clone().unwrap_or(Value::Null);
+    if !values_equal(&ea, &eb) {
+        differences.push(format!("header: extensions differ: {ea} vs {eb}"));
+    }
+    // Metadata members other than referenceSystem are documented exclusions
+    // (M4-codex-5): logged, never silently ignored, never a difference.
+    for (label, present) in header_metadata_members(&side_a.header, &side_b.header) {
+        if present {
+            excluded.push(format!(
+                "header: metadata member '{label}' not compared (documented exclusion)"
+            ));
+        }
     }
 
     let scale_a = transform_axes(&side_a.header.transform);
@@ -1059,6 +1116,105 @@ mod tests {
             "the final entry must name the truncated count ({}), got: {last}",
             changed - MAX_DIFFERENCES
         );
+    }
+
+    #[test]
+    fn integer_json_numbers_compare_exactly() {
+        use serde_json::json;
+        // Indices in semantics/material/texture values arrays are integers;
+        // a 1e-9 relative tolerance on large ints would equate distinct
+        // indices.
+        let a = json!(9_007_199_254_740_993_i64);
+        let b = json!(9_007_199_254_740_992_i64);
+        assert!(!values_equal(&a, &b), "adjacent large integers must differ");
+        assert!(values_equal(&json!(7), &json!(7)));
+        // Genuine floats keep the tolerance; mixed int/float compares as
+        // float.
+        assert!(values_equal(&json!(2.0000000000001), &json!(2.0)));
+        assert!(values_equal(&json!(2), &json!(2.0)));
+    }
+
+    /// Derived-fixture pattern: copy delft, bump the header's `"version"` in
+    /// the copy — a real mismatch that today's comparator (checking only
+    /// `transform`/`referenceSystem`) silently ignores. Must be a
+    /// `difference`.
+    #[test]
+    fn header_version_mismatch_is_a_difference() {
+        let original = fixture("delft.city.jsonl");
+        let text = fs::read_to_string(&original).unwrap();
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+
+        let mut header: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(header["version"], Value::String("2.0".to_string()));
+        header["version"] = Value::String("1.1".to_string());
+        lines[0] = serde_json::to_string(&header).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let modified_path = dir.path().join("delft-version-bumped.city.jsonl");
+        fs::write(&modified_path, lines.join("\n") + "\n").unwrap();
+
+        let report =
+            compare_datasets(&original, &modified_path, &CompareOptions::default()).unwrap();
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|d| d.contains("header: version")),
+            "a header version mismatch must be reported as a difference, got: {:#?}",
+            report.differences
+        );
+    }
+
+    /// Same derived-fixture pattern for `extensions`: inject an extension
+    /// declaration into the copy's header. Must be a `difference`.
+    #[test]
+    fn header_extensions_mismatch_is_a_difference() {
+        let original = fixture("delft.city.jsonl");
+        let text = fs::read_to_string(&original).unwrap();
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+
+        let mut header: Value = serde_json::from_str(&lines[0]).unwrap();
+        header["extensions"] = serde_json::json!({
+            "Noise": {"url": "x", "version": "1.0"}
+        });
+        lines[0] = serde_json::to_string(&header).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let modified_path = dir.path().join("delft-extensions-added.city.jsonl");
+        fs::write(&modified_path, lines.join("\n") + "\n").unwrap();
+
+        let report =
+            compare_datasets(&original, &modified_path, &CompareOptions::default()).unwrap();
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|d| d.contains("header: extensions")),
+            "a header extensions mismatch must be reported as a difference, got: {:#?}",
+            report.differences
+        );
+    }
+
+    /// Metadata members other than `referenceSystem` (already compared) are
+    /// documented exclusions, not silent: comparing delft against itself
+    /// must log `excluded` entries for the members delft's header actually
+    /// sets (`title`, `geographicalExtent`), never a `difference`.
+    #[test]
+    fn header_metadata_members_are_logged_as_excluded_not_silently_ignored() {
+        let path = fixture("delft.city.jsonl");
+        let report = compare_datasets(&path, &path, &CompareOptions::default()).unwrap();
+        assert!(report.differences.is_empty());
+        for member in ["title", "geographicalExtent"] {
+            assert!(
+                report
+                    .excluded
+                    .iter()
+                    .any(|e| e.starts_with("header: ") && e.contains(&format!("'{member}'"))),
+                "delft's header sets '{member}'; it must be logged as an excluded header \
+                 metadata member, got: {:#?}",
+                report.excluded
+            );
+        }
     }
 
     #[test]
