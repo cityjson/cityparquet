@@ -201,6 +201,150 @@ fn delft_records_per_shell_face_partition_for_solids() {
     );
 }
 
+/// M4 task 4: Solid-family semantics/material/texture realignment when the
+/// writer drops a degenerate face. Derived-from-real-fixture: delft's
+/// `NL.IMBAG.Pand.0503100000012869-0` carries a real lod-1.2 Solid — a
+/// single shell of 6 faces with `semantics.values == [[0,2,2,2,2,1]]` (real
+/// delft carries no material/texture anywhere, so both are added here to
+/// exercise the fix; the values arrays are shaped exactly like the real
+/// semantics array). Face 2's exterior ring ([5,2,3,6] in the real fixture)
+/// is degenerated to `[a, b, a]` from its own first two indices, so the
+/// writer drops exactly that face; every per-face array must lose exactly
+/// that one entry, in order, while the shell nesting survives.
+#[test]
+fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = text.lines();
+    let header_line = lines.next().unwrap().to_string();
+
+    const OBJ_ID: &str = "NL.IMBAG.Pand.0503100000012869-0";
+    let mut mutated_line = None;
+    for line in lines {
+        if !line.contains(OBJ_ID) {
+            continue;
+        }
+        let mut feature: serde_json::Value = serde_json::from_str(line).unwrap();
+        let geom = feature["CityObjects"][OBJ_ID]["geometry"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|g| g["lod"] == "1.2" && g["type"] == "Solid")
+            .expect("delft's Pand-0 must carry a lod 1.2 Solid");
+
+        let sem_values: Vec<i64> =
+            serde_json::from_value(geom["semantics"]["values"][0].clone()).unwrap();
+        assert_eq!(sem_values.len(), 6, "fixture fact: shell 0 has 6 faces");
+
+        let ring = &mut geom["boundaries"][0][2][0];
+        let indices: Vec<i64> = serde_json::from_value(ring.clone()).unwrap();
+        let (a, b) = (indices[0], indices[1]);
+        *ring = serde_json::json!([a, b, a]);
+
+        geom["material"] = serde_json::json!({"visual": {"values": [[0, 1, 0, 1, 0, 1]]}});
+        geom["texture"] = serde_json::json!({"visual": {"values": [[
+            [[0, 0, 1, 2, 3]], [[0, 4, 5, 6, 7]], [[0, 8, 9, 10, 11]],
+            [[0, 12, 13, 14, 15]], [[0, 16, 17, 18, 19]], [[0, 20, 21, 22, 23]]
+        ]]}});
+        feature["appearance"] = serde_json::json!({
+            "materials": [
+                {"name": "mat0", "ambientIntensity": 0.5},
+                {"name": "mat1", "ambientIntensity": 0.8}
+            ],
+            "textures": [{"type": "PNG", "image": "tex0.png"}],
+            "vertices-texture":
+                (0..24).map(|i| serde_json::json!([i as f64 / 24.0, 0.0])).collect::<Vec<_>>()
+        });
+
+        mutated_line = Some(serde_json::to_string(&feature).unwrap());
+        break;
+    }
+    let mutated_line = mutated_line.expect("delft.city.jsonl must contain the target object");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delft_solid_derived.city.jsonl");
+    std::fs::write(&path, format!("{header_line}\n{mutated_line}\n")).unwrap();
+
+    let src = Source::open(&path).unwrap();
+    let s = scan(&src).unwrap();
+    let batches: Vec<_> = encode(&src, &s, 64)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    let mut found = false;
+    for batch in &batches {
+        let ids = batch
+            .column_by_name("id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let Some(row) = (0..batch.num_rows()).find(|&r| ids.value(r) == OBJ_ID) else {
+            continue;
+        };
+        found = true;
+
+        let props = batch
+            .column_by_name("geometry_properties_lod1_2")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let props: serde_json::Value = serde_json::from_str(props.value(row)).unwrap();
+        assert_eq!(
+            props["dropped_degenerate"],
+            serde_json::json!({"rings": 1, "surfaces": [2]}),
+            "exactly face 2's ring/surface must be recorded as dropped"
+        );
+        assert_eq!(
+            props["solid_shell_faces"],
+            serde_json::json!([5]),
+            "the single shell drops from 6 to 5 faces"
+        );
+        assert_eq!(
+            props["semantics"]["values"][0],
+            serde_json::json!([0, 2, 2, 2, 1]),
+            "semantics values must lose face 2's entry, in order, within the shell nesting"
+        );
+
+        let material = batch
+            .column_by_name("material")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let material: serde_json::Value = serde_json::from_str(material.value(row)).unwrap();
+        assert_eq!(
+            material["1.2"]["visual"]["values"][0],
+            serde_json::json!([0, 1, 1, 0, 1]),
+            "material values must be realigned within the shell nesting"
+        );
+
+        let texture = batch
+            .column_by_name("texture")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let texture: serde_json::Value = serde_json::from_str(texture.value(row)).unwrap();
+        assert_eq!(
+            texture["1.2"]["visual"]["values"][0],
+            serde_json::json!([
+                [[0, 0, 1, 2, 3]],
+                [[0, 4, 5, 6, 7]],
+                [[0, 12, 13, 14, 15]],
+                [[0, 16, 17, 18, 19]],
+                [[0, 20, 21, 22, 23]]
+            ]),
+            "texture values must be realigned within the shell nesting"
+        );
+    }
+    assert!(
+        found,
+        "the target object row must be present in the encoded batches"
+    );
+}
+
 #[test]
 fn batch_iter_fuses_after_first_error() {
     // Derived-from-real-fixture: corrupt ONE geometry's boundaries in the

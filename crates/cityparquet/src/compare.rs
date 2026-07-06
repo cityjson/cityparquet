@@ -211,11 +211,12 @@ fn remove_dropped_entries(values: &mut Vec<Value>, dropped: &[usize]) {
 }
 
 /// Result of normalising+dequantising one geometry: its coordinate tree, the
-/// realigned `semantics` and `material`/`texture` (only realigned for the
-/// surface-list types — the solid types nest their per-surface arrays per
-/// shell, which the writer itself leaves unrealigned; see `crate::encode`'s
-/// `drops_align_with_surface_arrays`), and how much was normalised away
-/// (for the `excluded` log).
+/// realigned `semantics` and `material`/`texture` (realigned flat for the
+/// surface-list types, or walked `depth` shell/solid levels deep for the
+/// solid types — see `solid_face_nesting_depth`/`realign_nested_values`,
+/// this module's independent counterpart of `crate::encode`'s functions of
+/// the same name), and how much was normalised away (for the `excluded`
+/// log).
 struct NormalisedGeometry {
     tree: Node,
     semantics: Option<Value>,
@@ -244,13 +245,88 @@ fn realign_semantics(semantics: &Option<Value>, dropped_surfaces: &[usize]) -> O
     Some(semantics)
 }
 
+/// Number of shell/solid nesting levels above the per-face entries in a
+/// Solid-family `semantics`/`material`/`texture` values array: `Solid`
+/// nests one level (shells -> faces), `MultiSolid`/`CompositeSolid` nest
+/// two (solids -> shells -> faces). `None` for the non-solid types, whose
+/// per-surface arrays sit directly at the top level (realigned flat by
+/// `realign_semantics`/`realigned_appearance` instead).
+///
+/// This is `crate::encode`'s function of the same name, duplicated here
+/// rather than shared — per this module's independent-reimplementation
+/// policy (see the module docs): a comparator that reused the writer's own
+/// structural helpers could not catch a bug in them, since both sides would
+/// share the same blind spot. Derived from the geometry type rather than
+/// inferred from the values' own shape for the same reason `crate::encode`
+/// gives: a shape-only heuristic cannot distinguish a single shell holding
+/// scalar semantics values from a single face holding one texture ring —
+/// they collide byte-for-byte whenever there is exactly one shell, the
+/// common case for a real-world `Solid`.
+fn solid_face_nesting_depth(thetype: &GeometryType) -> Option<usize> {
+    match thetype {
+        GeometryType::Solid => Some(1),
+        GeometryType::MultiSolid | GeometryType::CompositeSolid => Some(2),
+        _ => None,
+    }
+}
+
+/// Remove entries at flat positions `dropped` from a Solid-family nested
+/// values hierarchy, walking exactly `depth` levels of shell/solid nesting
+/// before treating an array as the face list to filter by position — this
+/// module's independent counterpart of `crate::encode::realign_nested_values`
+/// (see `solid_face_nesting_depth`'s docs for why it is duplicated, not
+/// shared). `dropped` are flat positions counted depth-first across shells
+/// (and solids), matching both `wkb_write`'s writer-side `pos` counter and
+/// this module's own `normalise_geometry` traversal order.
+fn realign_nested_values(values: &mut Value, depth: usize, dropped: &[usize]) {
+    fn walk(v: &mut Value, depth: usize, flat: &mut usize, dropped: &[usize]) {
+        let Some(arr) = v.as_array_mut() else {
+            return;
+        };
+        if depth == 0 {
+            let mut kept = Vec::with_capacity(arr.len());
+            for e in arr.drain(..) {
+                if !dropped.contains(flat) {
+                    kept.push(e);
+                }
+                *flat += 1;
+            }
+            *arr = kept;
+        } else {
+            for e in arr.iter_mut() {
+                walk(e, depth - 1, flat, dropped);
+            }
+        }
+    }
+    let mut flat = 0usize;
+    walk(values, depth, &mut flat, dropped);
+}
+
+/// Realign a Solid-family `semantics` value `depth` shell/solid levels deep
+/// — the nested counterpart of `realign_semantics`.
+fn realign_nested_semantics(
+    semantics: &Option<Value>,
+    depth: usize,
+    dropped: &[usize],
+) -> Option<Value> {
+    let mut semantics = semantics.clone()?;
+    if !dropped.is_empty()
+        && let Some(values) = semantics.get_mut("values")
+    {
+        realign_nested_values(values, depth, dropped);
+    }
+    Some(semantics)
+}
+
 /// One geometry's `material` or `texture` map as a JSON value with each
 /// theme's per-surface `values` array realigned for the surfaces the
 /// degenerate normalisation dropped (mirrors `crate::encode`'s
 /// `realign_appearance_themes`). Theme-level scalar `value` entries apply
-/// to all surfaces and need no realignment. `dropped_surfaces` must be
-/// empty for the non-surface-list types (whose per-surface arrays nest per
-/// shell and are left unrealigned, matching the writer).
+/// to all surfaces and need no realignment. Only for the flat surface-list
+/// types (`MultiSurface`/`CompositeSurface`) and the non-polygonal types
+/// (called with an always-empty `dropped_surfaces`); the solid types nest
+/// their per-surface arrays per shell and are realigned instead via
+/// `realigned_nested_appearance`.
 fn realigned_appearance<T: serde::Serialize>(
     map: &Option<T>,
     dropped_surfaces: &[usize],
@@ -265,6 +341,31 @@ fn realigned_appearance<T: serde::Serialize>(
         for theme in themes.values_mut() {
             if let Some(values) = theme.get_mut("values").and_then(Value::as_array_mut) {
                 remove_dropped_entries(values, dropped_surfaces);
+            }
+        }
+    }
+    Ok(Some(value))
+}
+
+/// One geometry's `material`/`texture` map with each theme's `values` array
+/// realigned `depth` shell/solid levels deep — the Solid-family counterpart
+/// of `realigned_appearance`, which only handles the flat surface-list
+/// shape.
+fn realigned_nested_appearance<T: serde::Serialize>(
+    map: &Option<T>,
+    depth: usize,
+    dropped: &[usize],
+) -> Result<Option<Value>> {
+    let Some(map) = map else {
+        return Ok(None);
+    };
+    let mut value = serde_json::to_value(map)?;
+    if !dropped.is_empty()
+        && let Some(themes) = value.as_object_mut()
+    {
+        for theme in themes.values_mut() {
+            if let Some(values) = theme.get_mut("values") {
+                realign_nested_values(values, depth, dropped);
             }
         }
     }
@@ -322,15 +423,21 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
         GeometryType::Solid => {
             let shells: Vec<Vec<Vec<Vec<usize>>>> = parse_boundaries(geom)?;
             let mut dropped_rings = 0usize;
-            let mut dropped_surfaces = 0usize;
+            // Flat face positions, counted depth-first across shells —
+            // matches `wkb_write::normalise_shells`'s `pos` counter, so
+            // these line up with the writer-dropped positions the encoder
+            // realigns against.
+            let mut dropped_positions = Vec::new();
+            let mut pos = 0usize;
             let mut kept_shells = Vec::with_capacity(shells.len());
             for shell in &shells {
                 let mut kept_faces = Vec::with_capacity(shell.len());
                 for face in shell {
                     match normalise_surface(face, &mut dropped_rings) {
                         Some(f) => kept_faces.push(f),
-                        None => dropped_surfaces += 1,
+                        None => dropped_positions.push(pos),
                     }
+                    pos += 1;
                 }
                 kept_shells.push(kept_faces);
             }
@@ -340,23 +447,24 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
                     .map(|faces| surface_list_node(pool, faces))
                     .collect::<Result<Vec<_>>>()?,
             );
+            let depth = solid_face_nesting_depth(&geom.thetype).expect("Solid has a depth");
             Ok(NormalisedGeometry {
                 tree,
-                // Solid semantics/appearance nest per shell; not realigned
-                // here, same limitation as the writer (no real fixture
-                // exercises a Solid/MultiSolid degenerate ring, so this
-                // never bites).
-                semantics: geom.semantics.clone(),
-                material: realigned_appearance(&geom.material, &[])?,
-                texture: realigned_appearance(&geom.texture, &[])?,
+                semantics: realign_nested_semantics(&geom.semantics, depth, &dropped_positions),
+                material: realigned_nested_appearance(&geom.material, depth, &dropped_positions)?,
+                texture: realigned_nested_appearance(&geom.texture, depth, &dropped_positions)?,
                 dropped_rings,
-                dropped_surfaces,
+                dropped_surfaces: dropped_positions.len(),
             })
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
             let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> = parse_boundaries(geom)?;
             let mut dropped_rings = 0usize;
-            let mut dropped_surfaces = 0usize;
+            // Flat face positions, counted depth-first across solids AND
+            // shells — matches `wkb_write::normalise_shells`'s `pos`
+            // counter, which is NOT reset between solids.
+            let mut dropped_positions = Vec::new();
+            let mut pos = 0usize;
             let mut kept_solids = Vec::with_capacity(solids.len());
             for shells in &solids {
                 let mut kept_shells = Vec::with_capacity(shells.len());
@@ -365,8 +473,9 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
                     for face in shell {
                         match normalise_surface(face, &mut dropped_rings) {
                             Some(f) => kept_faces.push(f),
-                            None => dropped_surfaces += 1,
+                            None => dropped_positions.push(pos),
                         }
+                        pos += 1;
                     }
                     kept_shells.push(kept_faces);
                 }
@@ -385,13 +494,14 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
                     })
                     .collect::<Result<Vec<_>>>()?,
             );
+            let depth = solid_face_nesting_depth(&geom.thetype).expect("MultiSolid has a depth");
             Ok(NormalisedGeometry {
                 tree,
-                semantics: geom.semantics.clone(),
-                material: realigned_appearance(&geom.material, &[])?,
-                texture: realigned_appearance(&geom.texture, &[])?,
+                semantics: realign_nested_semantics(&geom.semantics, depth, &dropped_positions),
+                material: realigned_nested_appearance(&geom.material, depth, &dropped_positions)?,
+                texture: realigned_nested_appearance(&geom.texture, depth, &dropped_positions)?,
                 dropped_rings,
-                dropped_surfaces,
+                dropped_surfaces: dropped_positions.len(),
             })
         }
     }
@@ -1230,5 +1340,157 @@ mod tests {
             report.differences
         );
         assert!(report.differences.is_empty());
+    }
+
+    /// M4 task 4: before this fix, a Solid's `semantics`/`material` were
+    /// cloned verbatim regardless of drops (the "not realigned" comment this
+    /// change removes) — comparing a side with a degenerate face still
+    /// embedded against an already-reduced counterpart would then report a
+    /// spurious `semantics differ`/`material differs` difference even
+    /// though both sides describe the same real geometry.
+    ///
+    /// Derived from delft's own `NL.IMBAG.Pand.0503100000012869-0` lod-1.2
+    /// Solid (single shell, 6 faces, `semantics.values == [[0,2,2,2,2,1]]`):
+    /// side A keeps face 2's exterior ring degenerate (`[a,b,a]`, built from
+    /// the ring's own first two indices) with the full, not-yet-realigned
+    /// 6-entry semantics/material arrays; side B has face 2 removed
+    /// entirely from the boundaries AND the semantics/material arrays — the
+    /// already-realigned shape a real writer round-trip produces. The two
+    /// must compare equal: `normalise_geometry`'s own degenerate-face
+    /// detection on side A must realign its semantics/material to match
+    /// side B's, not merely detect the same face count.
+    #[test]
+    fn compare_realigns_solid_semantics_and_material_for_a_degenerate_face() {
+        let original = fixture("delft.city.jsonl");
+        let text = fs::read_to_string(&original).unwrap();
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+
+        const OBJ_ID: &str = "NL.IMBAG.Pand.0503100000012869-0";
+        let mut side_a_line = None;
+        let mut side_b_line = None;
+        for line in lines.iter().skip(1) {
+            if !line.contains(OBJ_ID) {
+                continue;
+            }
+            let feature: Value = serde_json::from_str(line).unwrap();
+
+            fn find_solid(f: &mut Value) -> &mut Value {
+                const OBJ_ID: &str = "NL.IMBAG.Pand.0503100000012869-0";
+                f["CityObjects"][OBJ_ID]["geometry"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|g| g["lod"] == "1.2" && g["type"] == "Solid")
+                    .expect("delft's Pand-0 must carry a lod 1.2 Solid")
+            }
+
+            let sem_values: Vec<i64> = {
+                let mut probe = feature.clone();
+                serde_json::from_value(find_solid(&mut probe)["semantics"]["values"][0].clone())
+                    .unwrap()
+            };
+            assert_eq!(sem_values.len(), 6, "fixture fact: shell 0 has 6 faces");
+
+            // Side A: face 2's exterior ring degenerates to [a, b, a]; full
+            // 6-entry semantics/material arrays untouched (what a real,
+            // not-yet-normalised source looks like).
+            let mut feature_a = feature.clone();
+            {
+                let geom_a = find_solid(&mut feature_a);
+                let ring = &mut geom_a["boundaries"][0][2][0];
+                let indices: Vec<i64> = serde_json::from_value(ring.clone()).unwrap();
+                let (a, b) = (indices[0], indices[1]);
+                *ring = serde_json::json!([a, b, a]);
+                geom_a["material"] =
+                    serde_json::json!({"visual": {"values": [[0, 1, 0, 1, 0, 1]]}});
+            }
+            side_a_line = Some(serde_json::to_string(&feature_a).unwrap());
+
+            // Side B: face 2 removed entirely from boundaries AND from the
+            // semantics/material arrays.
+            let mut feature_b = feature.clone();
+            {
+                let geom_b = find_solid(&mut feature_b);
+                geom_b["boundaries"][0].as_array_mut().unwrap().remove(2);
+                geom_b["semantics"]["values"][0]
+                    .as_array_mut()
+                    .unwrap()
+                    .remove(2);
+                geom_b["material"] = serde_json::json!({"visual": {"values": [[0, 1, 1, 0, 1]]}});
+            }
+            side_b_line = Some(serde_json::to_string(&feature_b).unwrap());
+            break;
+        }
+        let side_a_line = side_a_line.expect("delft.city.jsonl must contain the target object");
+        let side_b_line = side_b_line.unwrap();
+
+        let header_line = lines[0].clone();
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("side_a.city.jsonl");
+        let path_b = dir.path().join("side_b.city.jsonl");
+        fs::write(&path_a, format!("{header_line}\n{side_a_line}\n")).unwrap();
+        fs::write(&path_b, format!("{header_line}\n{side_b_line}\n")).unwrap();
+
+        let report = compare_datasets(&path_a, &path_b, &CompareOptions::default()).unwrap();
+        assert!(
+            report.equal,
+            "side A's degenerate face must realign to match side B's already-reduced shape, \
+             got differences: {:#?}",
+            report.differences
+        );
+    }
+
+    /// No real fixture carries MultiSolid/CompositeSolid (the same gap
+    /// `crate::encode`'s `multisolid_shell_faces_nest_per_solid` documents),
+    /// so `normalise_geometry`'s MultiSolid arm — specifically its `depth ==
+    /// 2` realignment — is exercised directly here: 2 solids, drops
+    /// spanning both a shell-within-solid boundary (solid0 shell1's only
+    /// face) and the last face overall (solid1 shell0's second face).
+    #[test]
+    fn normalise_geometry_realigns_multisolid_semantics_and_material_across_solids_and_shells() {
+        let geom: Geometry = serde_json::from_value(serde_json::json!({
+            "type": "MultiSolid",
+            "lod": "2",
+            "boundaries": [
+                [
+                    [[[0, 1, 2]], [[1, 2, 3]]],
+                    [[[0, 1, 0]]]
+                ],
+                [
+                    [[[0, 2, 3]], [[2, 3, 2]]]
+                ]
+            ],
+            "semantics": {
+                "surfaces": [{"type": "A"}],
+                "values": [[[10, 11], [12]], [[13, 14]]]
+            },
+            "material": {"visual": {"values": [[[1, 2], [3]], [[4, 5]]]}}
+        }))
+        .unwrap();
+        let vertices: Vec<Vec<i64>> = vec![
+            vec![0, 0, 0],
+            vec![1000, 0, 0],
+            vec![1000, 1000, 0],
+            vec![0, 1000, 0],
+        ];
+        let transform = Transform {
+            scale: vec![1.0; 3],
+            translate: vec![0.0; 3],
+        };
+        let pool = VertexPool::new(&vertices, &transform);
+
+        let normalised = normalise_geometry(&geom, &pool).unwrap();
+        assert_eq!(normalised.dropped_rings, 2);
+        assert_eq!(normalised.dropped_surfaces, 2);
+        assert_eq!(
+            normalised.semantics.unwrap()["values"],
+            serde_json::json!([[[10, 11], []], [[13]]]),
+            "semantics must realign across the solid/shell nesting"
+        );
+        assert_eq!(
+            normalised.material.unwrap()["visual"]["values"],
+            serde_json::json!([[[1, 2], []], [[4]]]),
+            "material must realign across the solid/shell nesting"
+        );
     }
 }

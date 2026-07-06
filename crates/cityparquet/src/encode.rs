@@ -199,10 +199,11 @@ fn remove_dropped_entries(values: &mut Vec<Value>, dropped: &[usize]) {
 }
 
 /// True when the writer's per-surface drop positions index straight into
-/// this geometry type's per-surface appearance/semantics arrays. Only the
-/// surface-list types qualify; the solid types nest their semantics values
-/// per shell, which no fixture exercises with drops — left unrealigned (the
-/// `dropped_degenerate` key still records what happened).
+/// this geometry type's per-surface appearance/semantics arrays, with no
+/// shell/solid nesting to walk first. Only the surface-list types qualify;
+/// the solid types nest their per-surface arrays per shell (and per solid),
+/// realigned separately by [`realign_nested_values`] /
+/// [`solid_face_nesting_depth`].
 fn drops_align_with_surface_arrays(thetype: &GeometryType) -> bool {
     matches!(
         thetype,
@@ -224,6 +225,78 @@ fn realign_appearance_themes(appearance: &mut Value, dropped: &[usize]) {
     }
 }
 
+/// Number of shell/solid nesting levels above the per-face entries in a
+/// Solid-family `semantics`/`material`/`texture` values array: `Solid`'s
+/// values nest one level (shells -> faces), `MultiSolid`/`CompositeSolid`'s
+/// nest two (solids -> shells -> faces). `None` for the non-solid types
+/// (whose per-surface arrays sit directly at the top level; see
+/// `drops_align_with_surface_arrays`).
+///
+/// Derived from the geometry type rather than inferred from the values'
+/// own shape: a shape-only heuristic cannot tell "a shells array holding a
+/// single scalar-valued face list" apart from "a face holding a single
+/// texture ring" — they collide byte-for-byte whenever there is exactly one
+/// shell, which is the common case for a `Solid` (e.g. delft's Pand Solids
+/// each have a single shell). Getting that case wrong means the walker
+/// would stop one level too early and filter by SHELL position instead of
+/// FACE position, silently corrupting the realignment on the most common
+/// shape rather than merely skipping it.
+fn solid_face_nesting_depth(thetype: &GeometryType) -> Option<usize> {
+    match thetype {
+        GeometryType::Solid => Some(1),
+        GeometryType::MultiSolid | GeometryType::CompositeSolid => Some(2),
+        _ => None,
+    }
+}
+
+/// Remove the per-face entries at flat positions `dropped` from a
+/// Solid-family nested values hierarchy (`semantics`/`material` scalars, or
+/// `texture` ring-arrays), walking exactly `depth` levels of shell/solid
+/// nesting before treating an array as the face list to filter by position.
+/// A face-level entry is removed wholesale regardless of its own shape
+/// (scalar, null, or an array of texture rings) — texture's extra ring
+/// level below the face never needs walking into, only removing as a unit.
+/// `dropped` are flat positions counted depth-first across shells (and
+/// solids), matching `wkb_write::normalise_shells`'s `pos` counter exactly.
+fn realign_nested_values(values: &mut Value, depth: usize, dropped: &[usize]) {
+    fn walk(v: &mut Value, depth: usize, flat: &mut usize, dropped: &[usize]) {
+        let Some(arr) = v.as_array_mut() else {
+            return;
+        };
+        if depth == 0 {
+            let mut kept = Vec::with_capacity(arr.len());
+            for e in arr.drain(..) {
+                if !dropped.contains(flat) {
+                    kept.push(e);
+                }
+                *flat += 1;
+            }
+            *arr = kept;
+        } else {
+            for e in arr.iter_mut() {
+                walk(e, depth - 1, flat, dropped);
+            }
+        }
+    }
+    let mut flat = 0usize;
+    walk(values, depth, &mut flat, dropped);
+}
+
+/// Realign every material/texture theme's `values` array nested `depth`
+/// shell/solid levels deep — the Solid-family counterpart of
+/// [`realign_appearance_themes`], which only handles the flat surface-list
+/// shape.
+fn realign_nested_appearance_themes(appearance: &mut Value, depth: usize, dropped: &[usize]) {
+    let Some(themes) = appearance.as_object_mut() else {
+        return;
+    };
+    for theme in themes.values_mut() {
+        if let Some(values) = theme.get_mut("values") {
+            realign_nested_values(values, depth, dropped);
+        }
+    }
+}
+
 /// `geometry_properties_lod*` JSON: `{"type", "semantics"?,
 /// "solid_shell_counts"?, "solid_shell_faces"?, "dropped_degenerate"?}`.
 /// `dropped_surfaces` are the writer-reported original surface positions;
@@ -239,11 +312,16 @@ fn geometry_properties_json(
     map.insert("type".to_string(), serde_json::to_value(&geom.thetype)?);
     if let Some(semantics) = &geom.semantics {
         let mut semantics = semantics.clone();
-        if !dropped_surfaces.is_empty()
-            && drops_align_with_surface_arrays(&geom.thetype)
-            && let Some(values) = semantics.get_mut("values").and_then(Value::as_array_mut)
-        {
-            remove_dropped_entries(values, dropped_surfaces);
+        if !dropped_surfaces.is_empty() {
+            if drops_align_with_surface_arrays(&geom.thetype) {
+                if let Some(values) = semantics.get_mut("values").and_then(Value::as_array_mut) {
+                    remove_dropped_entries(values, dropped_surfaces);
+                }
+            } else if let Some(depth) = solid_face_nesting_depth(&geom.thetype)
+                && let Some(values) = semantics.get_mut("values")
+            {
+                realign_nested_values(values, depth, dropped_surfaces);
+            }
         }
         map.insert("semantics".to_string(), semantics);
     }
@@ -357,14 +435,21 @@ fn accumulate_geometry(
 
         // Writer owns consistency: per-surface appearance arrays must index
         // the STORED surfaces, so the writer-dropped positions are removed
-        // here, before anything is written.
-        let realign =
-            drops_align_with_surface_arrays(&geom.thetype) && !outcome.dropped_surfaces.is_empty();
+        // here, before anything is written. The surface-list types realign
+        // flat; the solid types nest per shell (and per solid), realigned
+        // separately via `solid_face_nesting_depth`.
+        let has_drops = !outcome.dropped_surfaces.is_empty();
+        let realign = drops_align_with_surface_arrays(&geom.thetype) && has_drops;
+        let solid_depth = has_drops
+            .then(|| solid_face_nesting_depth(&geom.thetype))
+            .flatten();
         let lod_key = geom.lod.clone().unwrap_or_default();
         if let Some(material) = &geom.material {
             let mut material = serde_json::to_value(material)?;
             if realign {
                 realign_appearance_themes(&mut material, &outcome.dropped_surfaces);
+            } else if let Some(depth) = solid_depth {
+                realign_nested_appearance_themes(&mut material, depth, &outcome.dropped_surfaces);
             }
             acc.material.insert(lod_key.clone(), material);
         }
@@ -372,6 +457,8 @@ fn accumulate_geometry(
             let mut texture = serde_json::to_value(texture)?;
             if realign {
                 realign_appearance_themes(&mut texture, &outcome.dropped_surfaces);
+            } else if let Some(depth) = solid_depth {
+                realign_nested_appearance_themes(&mut texture, depth, &outcome.dropped_surfaces);
             }
             acc.texture.insert(lod_key, texture);
         }
@@ -1023,6 +1110,188 @@ mod tests {
             acc.texture["2"],
             serde_json::json!({"visual": {"values": [[[1, 0, 1, 2, 3]]]}}),
             "texture per-surface values must be realigned"
+        );
+    }
+
+    /// The planner's sketch heuristic classified a values array as "the face
+    /// list to filter" purely from its own shape (any scalar/null element,
+    /// or every element being an array of non-arrays). That collides
+    /// exactly here: a Solid's single shell holding 3 scalar semantics
+    /// values (`[[0, 1, 2]]`) has the SAME shape as a single face holding a
+    /// texture ring of 3 indices — both are "one array whose one element is
+    /// an array of non-arrays". The shape-only heuristic would stop
+    /// recursing at the shells level (mistaking the shell for the face
+    /// list) and filter by SHELL position instead of FACE position, which
+    /// is a silent no-op here (only one shell, `dropped.contains(&0)` is
+    /// false) rather than an error — exactly delft's own Solids, which each
+    /// have a single shell. The depth-explicit fix sidesteps the ambiguity
+    /// entirely by walking exactly `solid_face_nesting_depth(Solid) == 1`
+    /// level before filtering, regardless of what the face entries look
+    /// like.
+    #[test]
+    fn solid_single_shell_realigns_semantics_material_and_texture_when_face_dropped() {
+        let co: CityObject = serde_json::from_value(serde_json::json!({
+            "type": "Building",
+            "geometry": [{
+                "type": "Solid",
+                "lod": "2",
+                // one shell, 3 faces; face 1 is the [a,b,a] structural-degenerate shape
+                "boundaries": [[[[0, 1, 2]], [[0, 1, 0]], [[1, 2, 3]]]],
+                "semantics": {
+                    "surfaces": [{"type": "A"}, {"type": "B"}, {"type": "C"}],
+                    "values": [[0, 1, 2]]
+                },
+                "material": {"visual": {"values": [[1, 2, 3]]}},
+                "texture": {"visual": {"values": [[[[100]], [[200]], [[300]]]]}}
+            }]
+        }))
+        .unwrap();
+        let vertices: Vec<Vec<i64>> = vec![
+            vec![0, 0, 0],
+            vec![1000, 0, 0],
+            vec![1000, 1000, 0],
+            vec![0, 1000, 0],
+        ];
+        let transform = Transform {
+            scale: vec![1.0; 3],
+            translate: vec![0.0; 3],
+        };
+        let pool = VertexPool::new(&vertices, &transform);
+
+        let mut acc = GeometryAccumulator::default();
+        let mut stats = EncodeStats::default();
+        accumulate_geometry(&mut acc, &co, &pool, true, &mut stats).unwrap();
+
+        assert_eq!(stats.degenerate_rings_dropped, 1);
+        assert_eq!(stats.degenerate_surfaces_dropped, 1);
+
+        let (_, _, props) = acc.slots.get("lod2").expect("lod2 slot populated");
+        let props: Value = serde_json::from_str(props).unwrap();
+        assert_eq!(
+            props["dropped_degenerate"],
+            serde_json::json!({"rings": 1, "surfaces": [1]})
+        );
+        assert_eq!(
+            props["solid_shell_faces"],
+            serde_json::json!([2]),
+            "the single shell drops from 3 to 2 faces"
+        );
+        assert_eq!(
+            props["semantics"]["values"],
+            serde_json::json!([[0, 2]]),
+            "semantics values must lose face 1's entry but keep the shell nesting"
+        );
+        assert_eq!(
+            props["semantics"]["surfaces"],
+            serde_json::json!([{"type": "A"}, {"type": "B"}, {"type": "C"}]),
+            "the surfaces lookup table itself is untouched (values index into it)"
+        );
+
+        assert_eq!(
+            acc.material["2"],
+            serde_json::json!({"visual": {"values": [[1, 3]]}}),
+            "material values must be realigned within the shell nesting"
+        );
+        assert_eq!(
+            acc.texture["2"],
+            serde_json::json!({"visual": {"values": [[[[100]], [[300]]]]}}),
+            "texture values must be realigned within the shell nesting"
+        );
+    }
+
+    /// MultiSolid variant: 2 solids (solid0 has 2 shells of 2+1 faces,
+    /// solid1 has 1 shell of 2 faces), with drops spanning BOTH a
+    /// shell-within-solid boundary (solid0 shell1's only face, flat
+    /// position 2) and the last face overall (solid1 shell0's second face,
+    /// flat position 4) — exercising `solid_face_nesting_depth(MultiSolid)
+    /// == 2` and proving flat positions are counted depth-first across
+    /// solids AND shells, matching `wkb_write::normalise_shells`'s `pos`
+    /// counter. Solid0's shell1 ends up with zero faces after its only face
+    /// is dropped — a legal (if degenerate) empty shell.
+    #[test]
+    fn multisolid_realigns_semantics_material_and_texture_across_solids_and_shells() {
+        let co: CityObject = serde_json::from_value(serde_json::json!({
+            "type": "Building",
+            "geometry": [{
+                "type": "MultiSolid",
+                "lod": "2",
+                "boundaries": [
+                    [
+                        [[[0, 1, 2]], [[1, 2, 3]]],
+                        [[[0, 1, 0]]]
+                    ],
+                    [
+                        [[[0, 2, 3]], [[2, 3, 2]]]
+                    ]
+                ],
+                "semantics": {
+                    "surfaces": [{"type": "A"}],
+                    "values": [[[10, 11], [12]], [[13, 14]]]
+                },
+                "material": {"visual": {"values": [[[1, 2], [3]], [[4, 5]]]}},
+                "texture": {
+                    "visual": {
+                        "values": [
+                            [[[[100]], [[101]]], [[[102]]]],
+                            [[[[103]], [[104]]]]
+                        ]
+                    }
+                }
+            }]
+        }))
+        .unwrap();
+        let vertices: Vec<Vec<i64>> = vec![
+            vec![0, 0, 0],
+            vec![1000, 0, 0],
+            vec![1000, 1000, 0],
+            vec![0, 1000, 0],
+        ];
+        let transform = Transform {
+            scale: vec![1.0; 3],
+            translate: vec![0.0; 3],
+        };
+        let pool = VertexPool::new(&vertices, &transform);
+
+        let mut acc = GeometryAccumulator::default();
+        let mut stats = EncodeStats::default();
+        accumulate_geometry(&mut acc, &co, &pool, true, &mut stats).unwrap();
+
+        assert_eq!(stats.degenerate_rings_dropped, 2);
+        assert_eq!(stats.degenerate_surfaces_dropped, 2);
+
+        let (_, _, props) = acc.slots.get("lod2").expect("lod2 slot populated");
+        let props: Value = serde_json::from_str(props).unwrap();
+        assert_eq!(
+            props["dropped_degenerate"],
+            serde_json::json!({"rings": 2, "surfaces": [2, 4]})
+        );
+        assert_eq!(
+            props["solid_shell_faces"],
+            serde_json::json!([[2, 0], [1]]),
+            "solid0's shells drop to (2, 0) faces, solid1's shell drops to 1"
+        );
+        assert_eq!(
+            props["semantics"]["values"],
+            serde_json::json!([[[10, 11], []], [[13]]]),
+            "semantics values must lose exactly positions 2 and 4, across the solid/shell nesting"
+        );
+
+        assert_eq!(
+            acc.material["2"],
+            serde_json::json!({"visual": {"values": [[[1, 2], []], [[4]]]}}),
+            "material values must be realigned across solids and shells"
+        );
+        assert_eq!(
+            acc.texture["2"],
+            serde_json::json!({
+                "visual": {
+                    "values": [
+                        [[[[100]], [[101]]], []],
+                        [[[[103]]]]
+                    ]
+                }
+            }),
+            "texture values must be realigned across solids and shells"
         );
     }
 }

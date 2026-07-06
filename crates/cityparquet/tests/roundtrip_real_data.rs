@@ -138,3 +138,100 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
         report.excluded
     );
 }
+
+/// M4 task 4 (Step 4): the comparator's own Solid-family degenerate
+/// normalisation must agree with the writer's real drop, end-to-end.
+/// Derived from delft's `NL.IMBAG.Pand.0503100000012869-0` lod-1.2 Solid
+/// (single shell, 6 faces, `semantics.values == [[0,2,2,2,2,1]]`): face 2's
+/// exterior ring degenerates to `[a, b, a]` (its own first two indices).
+/// Compared against the mutated SOURCE (not the whole original delft file —
+/// this tempdir file carries only the one mutated feature line, so it can't
+/// compare equal against delft's other 1114 features). With
+/// `CompareOptions::default()` the round trip must be `equal`, with the
+/// only exclusions being the single degenerate-drop log line and delft's
+/// own documented header metadata members (matching
+/// `delft_round_trips_losslessly` above) — proving `compare_datasets`'s own
+/// Solid realignment (fixed alongside the writer's in this same change)
+/// agrees with what the writer actually produced, not merely with its own
+/// unrealigned copy of the source.
+#[test]
+fn delft_derived_solid_face_drop_round_trips_and_comparator_agrees_with_the_writer() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = text.lines();
+    let header_line = lines.next().unwrap().to_string();
+
+    const OBJ_ID: &str = "NL.IMBAG.Pand.0503100000012869-0";
+    let mut mutated_line = None;
+    for line in lines {
+        if !line.contains(OBJ_ID) {
+            continue;
+        }
+        let mut feature: serde_json::Value = serde_json::from_str(line).unwrap();
+        let geom = feature["CityObjects"][OBJ_ID]["geometry"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|g| g["lod"] == "1.2" && g["type"] == "Solid")
+            .expect("delft's Pand-0 must carry a lod 1.2 Solid");
+
+        let sem_values: Vec<i64> =
+            serde_json::from_value(geom["semantics"]["values"][0].clone()).unwrap();
+        assert_eq!(sem_values.len(), 6, "fixture fact: shell 0 has 6 faces");
+
+        let ring = &mut geom["boundaries"][0][2][0];
+        let indices: Vec<i64> = serde_json::from_value(ring.clone()).unwrap();
+        let (a, b) = (indices[0], indices[1]);
+        *ring = serde_json::json!([a, b, a]);
+        mutated_line = Some(serde_json::to_string(&feature).unwrap());
+        break;
+    }
+    let mutated_line = mutated_line.expect("delft.city.jsonl must contain the target object");
+
+    let source_dir = tempfile::tempdir().unwrap();
+    let source_path = source_dir.path().join("delft_solid_derived.city.jsonl");
+    std::fs::write(&source_path, format!("{header_line}\n{mutated_line}\n")).unwrap();
+
+    let package_dir = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        source_path.clone(),
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+
+    let report = compare_datasets(&source_path, &output, &CompareOptions::default()).unwrap();
+    assert!(
+        report.equal,
+        "the derived source and its round-tripped export must compare equal; differences: {:#?}",
+        report.differences
+    );
+    assert!(report.differences.is_empty());
+
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    assert_eq!(
+        non_header_excluded.len(),
+        1,
+        "the only non-header exclusion must be the single degenerate-ring/surface drop, got: {:#?}",
+        non_header_excluded
+    );
+    assert!(
+        non_header_excluded[0].contains("normalised away 1 degenerate ring(s), 1 surface(s)"),
+        "got: {}",
+        non_header_excluded[0]
+    );
+    assert!(
+        !header_excluded.is_empty(),
+        "delft's header sets metadata members; expected at least one documented header exclusion, \
+         got: {:#?}",
+        report.excluded
+    );
+}
