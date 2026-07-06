@@ -16,19 +16,20 @@ use parquet::file::metadata::KeyValue;
 
 use cityparquet_schema::{CITYPARQUET_VERSION, CityParquetError, PackageManifest, Profile, Result};
 
-use crate::encode::encode;
+use crate::appearance::AppearanceInterner;
+use crate::encode::{encode, rewrite_geometry_appearance};
 use crate::recipe::WriterRecipe;
 use crate::scan::scan;
-use crate::sidecar::{write_materials, write_textures};
+use crate::sidecar::{TemplateRow, write_materials, write_templates, write_textures};
 use crate::source::Source;
+use crate::wkb_write::{VertexPool, geometry_to_wkb};
 
 /// The one data table every profile writes.
 const CITYOBJECTS_TABLE: &str = "cityobjects.parquet";
-/// Compatibility-profile sidecar tables. `geometry_templates.parquet` is not
-/// listed here: template appearance folding lands in Task 8, so this pass
-/// never writes it (`ConvertReport::templates_written` stays `0`).
+/// Compatibility-profile sidecar tables.
 const MATERIALS_TABLE: &str = "materials.parquet";
 const TEXTURES_TABLE: &str = "textures.parquet";
+const TEMPLATES_TABLE: &str = "geometry_templates.parquet";
 
 /// Options controlling one end-to-end CityJSON/CityJSONSeq -> CityParquet
 /// package conversion.
@@ -77,8 +78,9 @@ pub struct ConvertReport {
     pub materials_written: usize,
     /// Rows written to `textures.parquet` (see [`Self::materials_written`]).
     pub textures_written: usize,
-    /// Rows written to `geometry_templates.parquet`. Always `0` until Task 8
-    /// folds geometry-template appearance into the interner sweep.
+    /// Rows written to `geometry_templates.parquet` (`0` for the Core
+    /// profile, or a Compatibility dataset with no geometry templates at
+    /// all).
     pub templates_written: usize,
 }
 
@@ -94,19 +96,93 @@ fn parquet_err(msg: String) -> CityParquetError {
     CityParquetError::Parquet(msg)
 }
 
+/// Build one [`TemplateRow`] per entry in `templates.templates`, folding
+/// their `material`/`texture` definitions into `interner` — the SAME
+/// interner the main encode pass populated from `source`'s features — so
+/// the materials/textures sidecars end up describing every definition in
+/// the dataset, not just the ones a regular feature geometry reaches.
+///
+/// `id` is the template's position as a string, matching the main-table
+/// `template.id` column (see `crate::encode`'s `build_template`). The
+/// rewrite rules (drop-realignment, dataset-global rewrite,
+/// `geometry_properties` shape) are IDENTICAL to a regular feature
+/// geometry's — see [`rewrite_geometry_appearance`]'s doc comment — because
+/// a template's `material`/`texture`/`semantics` follow the exact same
+/// CityJSON shapes a feature geometry's do.
+///
+/// A template's own coordinates are template-LOCAL (CityJSON spec §3.4:
+/// `vertices-templates` is not subject to the dataset transform), so they
+/// are looked up through [`VertexPool::raw`] over `templates.vertices_templates`,
+/// never the dataset's quantised [`VertexPool::new`].
+fn build_template_rows(
+    templates: &cjseq::GeometryTemplates,
+    source: &Source,
+    interner: &mut AppearanceInterner,
+) -> Result<Vec<TemplateRow>> {
+    let verts: Vec<Vec<f64>> = serde_json::from_value(templates.vertices_templates.clone())
+        .map_err(|e| {
+            err(format!(
+                "invalid geometry-templates vertices-templates: {e}"
+            ))
+        })?;
+    let pool = VertexPool::raw(&verts);
+
+    // See `Source::doc_appearance`'s doc comment: the header's
+    // `geometry_templates` still carry the RAW DOCUMENT's global
+    // material/texture indices (cjseq's `get_metadata` slices/reindexes a
+    // separate clone to build the header's own `appearance`, never the
+    // templates it hands back) — so the raw document's own appearance, not
+    // `header().appearance`, is the correct local defs array here.
+    let doc_appearance = source.doc_appearance();
+    let local_materials = doc_appearance
+        .and_then(|a| a.materials.clone())
+        .unwrap_or_default();
+    let local_textures = doc_appearance
+        .and_then(|a| a.textures.clone())
+        .unwrap_or_default();
+    let local_uvs = doc_appearance
+        .and_then(|a| a.vertices_texture.clone())
+        .unwrap_or_default();
+
+    let mut rows = Vec::with_capacity(templates.templates.len());
+    for (i, tpl) in templates.templates.iter().enumerate() {
+        let outcome = geometry_to_wkb(tpl, &pool)?.ok_or_else(|| {
+            err(format!(
+                "geometry template {i}: produced no WKB (empty or fully degenerate boundaries)"
+            ))
+        })?;
+        let (material, texture, props) = rewrite_geometry_appearance(
+            tpl,
+            &outcome,
+            interner,
+            &local_materials,
+            &local_textures,
+            &local_uvs,
+            &format!("geometry template {i}"),
+        )?;
+        let geometry_properties: serde_json::Value = serde_json::from_str(&props)?;
+        rows.push(TemplateRow {
+            id: i.to_string(),
+            wkb: outcome.bytes,
+            geometry_properties: Some(geometry_properties),
+            material,
+            texture,
+            other: None,
+        });
+    }
+    Ok(rows)
+}
+
 /// Convert `opts.input` (CityJSON or CityJSONSeq) into a CityParquet package
 /// directory at `opts.output_dir`: one scan pass to infer the schema and
 /// dataset metadata, one encode pass streamed straight into an `ArrowWriter`
 /// using `opts.recipe`'s per-column `WriterProperties`, then (Compatibility
-/// profile only) the `materials.parquet`/`textures.parquet` sidecars built
-/// from the encode pass's [`crate::appearance::AppearanceInterner`], then a
-/// `metadata.json` manifest alongside it all.
-///
-/// `geometry_templates.parquet` is not written by this pass yet (Task 8), so
-/// a Compatibility conversion of a dataset whose appearance is reachable only
-/// from geometry templates will under-count `materials_written`/
-/// `textures_written` relative to the dataset's true definitions — see
-/// [`ConvertReport::templates_written`].
+/// profile only) folds `Source::header`'s `geometry_templates` into the SAME
+/// [`crate::appearance::AppearanceInterner`] the encode pass built (template
+/// definitions the encode pass never visits directly — see
+/// [`crate::source::Source::doc_appearance`]) and writes the
+/// `geometry_templates.parquet`/`materials.parquet`/`textures.parquet`
+/// sidecars from it, then a `metadata.json` manifest alongside it all.
 ///
 /// `opts.output_dir` is created if missing; if it already exists and is
 /// non-empty, conversion fails unless `opts.overwrite` is set.
@@ -181,7 +257,17 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
     let mut sidecar_files_written: Vec<String> = Vec::new();
     let mut materials_written = 0usize;
     let mut textures_written = 0usize;
+    let mut templates_written = 0usize;
     if opts.profile == Profile::Compatibility {
+        // Fold geometry-template appearance into the SAME interner the
+        // encode pass populated BEFORE materials.parquet/textures.parquet
+        // are written, so their totals include definitions reachable ONLY
+        // from a geometry template (see `build_template_rows`).
+        let template_rows = match source.header().geometry_templates.as_ref() {
+            Some(templates) => build_template_rows(templates, &source, batches.appearance_mut())?,
+            None => Vec::new(),
+        };
+
         let appearance = batches.appearance();
 
         let materials_path = opts.output_dir.join(MATERIALS_TABLE);
@@ -196,6 +282,15 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
         if textures_written > 0 {
             sidecar_files_written.push(TEXTURES_TABLE.to_string());
             files.push(textures_path);
+        }
+
+        if !template_rows.is_empty() {
+            let templates_path = opts.output_dir.join(TEMPLATES_TABLE);
+            templates_written = write_templates(&templates_path, &template_rows)?;
+            if templates_written > 0 {
+                sidecar_files_written.push(TEMPLATES_TABLE.to_string());
+                files.push(templates_path);
+            }
         }
     }
 
@@ -235,6 +330,6 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
         degenerate_surfaces_dropped: encode_stats.degenerate_surfaces_dropped,
         materials_written,
         textures_written,
-        templates_written: 0,
+        templates_written,
     })
 }

@@ -102,6 +102,36 @@ impl Source {
         &self.header
     }
 
+    /// The RAW (unsliced) appearance array that this source's
+    /// `header().geometry_templates`' template `material`/`texture` maps
+    /// actually index into.
+    ///
+    /// For a whole-document CityJSON source, `header()` is `doc.get_metadata()`:
+    /// it slices `appearance` down to only the entries referenced by
+    /// templates, renumbered to a local 0.. sequence — but it does so
+    /// against a SEPARATE clone of the templates it builds internally and
+    /// discards; `header().geometry_templates` itself is a bare clone of the
+    /// document's original templates, whose `material`/`texture` maps still
+    /// carry the document's GLOBAL indices (see `cjseq::CityJSON::get_metadata`:
+    /// it mutates `gts2` — a clone — to compute the renumbering, while the
+    /// header's own `geometry_templates` field is `self.geometry_templates.clone()`,
+    /// untouched). So the only appearance array the header's template maps
+    /// resolve against is the raw document's own `appearance`, never
+    /// `header().appearance`.
+    ///
+    /// For a CityJSONSeq source there is no separate "raw document" — the
+    /// header IS the stream's first line, and whatever produced the file is
+    /// responsible for keeping that line's `appearance` and
+    /// `geometry-templates` mutually consistent (sliced/remapped together,
+    /// if at all). `header().appearance` is therefore already the right defs
+    /// array in that case.
+    pub fn doc_appearance(&self) -> Option<&cjseq::Appearance> {
+        match &self.doc {
+            Some(doc) => doc.appearance.as_ref(),
+            None => self.header.appearance.as_ref(),
+        }
+    }
+
     pub fn features(&self) -> Result<FeatureIter<'_>> {
         match self.format {
             SourceFormat::CityJsonSeq => {

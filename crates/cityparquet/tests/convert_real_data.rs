@@ -205,10 +205,13 @@ fn footer_sidecar_files(dir: &std::path::Path) -> Vec<String> {
 
 /// Compatibility profile: railway's feature-only appearance sweep (83
 /// materials / 33 textures — see the module doc on
-/// `railway_core_convert_rewrites_appearance_maps_to_global_ids`) must land
-/// in `materials.parquet`/`textures.parquet`, with BOTH `metadata.json`'s
-/// `sidecar_files` and the parquet footer's KV `sidecar_files` listing
-/// exactly the files actually written.
+/// `railway_core_convert_rewrites_appearance_maps_to_global_ids`) plus its 3
+/// geometry templates (2 materials + 1 texture reachable ONLY from a
+/// template, per `crate::package::build_template_rows` folding them into the
+/// same interner) land at 85 materials / 34 textures, split across
+/// `materials.parquet`/`textures.parquet`/`geometry_templates.parquet`, with
+/// BOTH `metadata.json`'s `sidecar_files` and the parquet footer's KV
+/// `sidecar_files` listing exactly the files actually written.
 #[test]
 fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     let out = tempfile::tempdir().unwrap();
@@ -216,11 +219,12 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     opts.profile = Profile::Compatibility;
     let report = convert(&opts).unwrap();
 
-    assert_eq!(report.materials_written, 83);
-    assert_eq!(report.textures_written, 33);
-    assert_eq!(report.templates_written, 0);
+    assert_eq!(report.materials_written, 85);
+    assert_eq!(report.textures_written, 34);
+    assert_eq!(report.templates_written, 3);
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
+    assert!(out.path().join("geometry_templates.parquet").exists());
 
     let manifest: Value =
         serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
@@ -228,13 +232,18 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     assert_eq!(manifest["profile"], "compatibility");
     assert_eq!(
         manifest["sidecar_files"],
-        serde_json::json!(["materials.parquet", "textures.parquet"])
+        serde_json::json!([
+            "materials.parquet",
+            "textures.parquet",
+            "geometry_templates.parquet"
+        ])
     );
     assert_eq!(
         footer_sidecar_files(out.path()),
         vec![
             "materials.parquet".to_string(),
-            "textures.parquet".to_string()
+            "textures.parquet".to_string(),
+            "geometry_templates.parquet".to_string()
         ],
         "the parquet footer's KV sidecar_files must agree with metadata.json"
     );

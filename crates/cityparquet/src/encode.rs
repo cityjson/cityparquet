@@ -27,7 +27,7 @@ use cityparquet_schema::{AttributeType, CityParquetError, Lod, Result, normalise
 use crate::appearance::AppearanceInterner;
 use crate::scan::ScanResult;
 use crate::source::{FeatureIter, Source};
-use crate::wkb_write::{VertexPool, geometry_to_wkb, point_to_wkb};
+use crate::wkb_write::{VertexPool, WkbOutcome, geometry_to_wkb, point_to_wkb};
 
 /// Counters for the row-population edge cases the binding rules ask us to
 /// track rather than surface as errors.
@@ -304,7 +304,7 @@ fn realign_nested_appearance_themes(appearance: &mut Value, depth: usize, droppe
 /// for the surface-list types the semantics `values` array is realigned to
 /// match the stored WKB, and any drop is recorded under
 /// `dropped_degenerate` so downstream can trace it back to the source.
-fn geometry_properties_json(
+pub(crate) fn geometry_properties_json(
     geom: &Geometry,
     dropped_rings: usize,
     dropped_surfaces: &[usize],
@@ -412,6 +412,77 @@ fn feature_local_uvs(feature: &CityJSONFeature) -> &[Vec<f64>] {
         .unwrap_or(&[])
 }
 
+/// Realign (if the writer dropped surfaces) and rewrite one geometry's
+/// `material`/`texture` maps to dataset-global ids via `interner`, and build
+/// its `geometry_properties` JSON. This is the exact per-geometry appearance
+/// pipeline [`accumulate_geometry`] runs for a feature's own geometries,
+/// factored out so the geometry-templates sidecar (`crate::package`) can run
+/// the identical rules over `Source::header`'s `geometry_templates` after the
+/// main encode pass, through the SAME interner — a template's `material`/
+/// `texture`/`semantics` follow the same CityJSON shapes as a regular
+/// geometry's, so the same realignment and rewrite rules apply verbatim.
+///
+/// `context` names the geometry in any interner error surfaced (e.g.
+/// `"object abc123"` or `"geometry template 0"`).
+pub(crate) fn rewrite_geometry_appearance(
+    geom: &Geometry,
+    outcome: &WkbOutcome,
+    interner: &mut AppearanceInterner,
+    local_materials: &[Value],
+    local_textures: &[Value],
+    local_uvs: &[Vec<f64>],
+    context: &str,
+) -> Result<(Option<Value>, Option<Value>, String)> {
+    let has_drops = !outcome.dropped_surfaces.is_empty();
+    let realign = drops_align_with_surface_arrays(&geom.thetype) && has_drops;
+    let solid_depth = has_drops
+        .then(|| solid_face_nesting_depth(&geom.thetype))
+        .flatten();
+
+    let material = match &geom.material {
+        Some(material) => {
+            let mut material = serde_json::to_value(material)?;
+            if realign {
+                realign_appearance_themes(&mut material, &outcome.dropped_surfaces);
+            } else if let Some(depth) = solid_depth {
+                realign_nested_appearance_themes(&mut material, depth, &outcome.dropped_surfaces);
+            }
+            let material = interner
+                .rewrite_material_map(&material, local_materials)
+                .map_err(|e| {
+                    CityParquetError::Schema(format!(
+                        "{context}: cannot resolve material map to global ids: {e}"
+                    ))
+                })?;
+            Some(material)
+        }
+        None => None,
+    };
+
+    let texture = match &geom.texture {
+        Some(texture) => {
+            let mut texture = serde_json::to_value(texture)?;
+            if realign {
+                realign_appearance_themes(&mut texture, &outcome.dropped_surfaces);
+            } else if let Some(depth) = solid_depth {
+                realign_nested_appearance_themes(&mut texture, depth, &outcome.dropped_surfaces);
+            }
+            let texture = interner
+                .rewrite_texture_map(&texture, local_textures, local_uvs)
+                .map_err(|e| {
+                    CityParquetError::Schema(format!(
+                        "{context}: cannot resolve texture map to global ids: {e}"
+                    ))
+                })?;
+            Some(texture)
+        }
+        None => None,
+    };
+
+    let props = geometry_properties_json(geom, outcome.dropped_rings, &outcome.dropped_surfaces)?;
+    Ok((material, texture, props))
+}
+
 /// Walk one object's own geometries, bucketing them into `acc`. `per_lod`
 /// mirrors the dataset-wide binding rule from [`crate::scan`]: `true` means
 /// every kept geometry needs an `lod` to have a column to live in (lod-less
@@ -479,56 +550,27 @@ fn accumulate_geometry(
 
         // Writer owns consistency: per-surface appearance arrays must index
         // the STORED surfaces, so the writer-dropped positions are removed
-        // here, before anything is written. The surface-list types realign
-        // flat; the solid types nest per shell (and per solid), realigned
-        // separately via `solid_face_nesting_depth`.
-        let has_drops = !outcome.dropped_surfaces.is_empty();
-        let realign = drops_align_with_surface_arrays(&geom.thetype) && has_drops;
-        let solid_depth = has_drops
-            .then(|| solid_face_nesting_depth(&geom.thetype))
-            .flatten();
+        // before anything is written, and feature-local material/texture
+        // indices are rewritten to dataset-global ids — both handled by the
+        // shared pipeline in `rewrite_geometry_appearance` (also used by the
+        // geometry-templates sidecar, see its doc comment).
         let lod_key = geom.lod.clone().unwrap_or_default();
-        if let Some(material) = &geom.material {
-            let mut material = serde_json::to_value(material)?;
-            if realign {
-                realign_appearance_themes(&mut material, &outcome.dropped_surfaces);
-            } else if let Some(depth) = solid_depth {
-                realign_nested_appearance_themes(&mut material, depth, &outcome.dropped_surfaces);
-            }
-            // Rewrite feature-local material indices to dataset-global ids
-            // AFTER realignment: realignment only removes whole face-level
-            // entries by position and never inspects their content, so it is
-            // indifferent to whether the entries are still feature-local
-            // indices or already-rewritten global ones — but doing the
-            // rewrite last keeps the two concerns cleanly separated.
-            let material = interner
-                .rewrite_material_map(&material, local_materials)
-                .map_err(|e| {
-                    CityParquetError::Schema(format!(
-                        "object {id}: cannot resolve material map to global ids: {e}"
-                    ))
-                })?;
+        let (material, texture, props) = rewrite_geometry_appearance(
+            geom,
+            &outcome,
+            interner,
+            local_materials,
+            local_textures,
+            local_uvs,
+            &format!("object {id}"),
+        )?;
+        if let Some(material) = material {
             acc.material.insert(lod_key.clone(), material);
         }
-        if let Some(texture) = &geom.texture {
-            let mut texture = serde_json::to_value(texture)?;
-            if realign {
-                realign_appearance_themes(&mut texture, &outcome.dropped_surfaces);
-            } else if let Some(depth) = solid_depth {
-                realign_nested_appearance_themes(&mut texture, depth, &outcome.dropped_surfaces);
-            }
-            let texture = interner
-                .rewrite_texture_map(&texture, local_textures, local_uvs)
-                .map_err(|e| {
-                    CityParquetError::Schema(format!(
-                        "object {id}: cannot resolve texture map to global ids: {e}"
-                    ))
-                })?;
+        if let Some(texture) = texture {
             acc.texture.insert(lod_key, texture);
         }
 
-        let props =
-            geometry_properties_json(geom, outcome.dropped_rings, &outcome.dropped_surfaces)?;
         acc.slots
             .insert(slot_key, (outcome.bytes, outcome.bbox, props));
     }
@@ -980,6 +1022,18 @@ impl BatchIter<'_> {
     /// before dropping the iterator (mirrors [`Self::stats`]).
     pub fn appearance(&self) -> &AppearanceInterner {
         &self.appearance
+    }
+
+    /// Mutable access to the same interner, so a post-encode pass (the
+    /// geometry-templates sidecar in `crate::package`) can fold MORE
+    /// definitions into it — e.g. entries reachable only from
+    /// `Source::header`'s `geometry_templates`, which this encode loop never
+    /// visits — before [`Self::appearance`] is read to write the
+    /// materials/textures sidecars. Doing so keeps every appearance
+    /// definition in ONE dataset-global id space, however it was
+    /// discovered.
+    pub fn appearance_mut(&mut self) -> &mut AppearanceInterner {
+        &mut self.appearance
     }
 
     fn finish_batch(&mut self) -> Result<RecordBatch> {
