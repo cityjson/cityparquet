@@ -6,8 +6,10 @@ use std::path::PathBuf;
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet::schema::Profile;
 use cityparquet::source::{Source, SourceFormat};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use serde_json::Value;
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -238,6 +240,154 @@ fn delft_source_metadata_reaches_kv_metadata_and_the_exported_header() {
         exported_header["metadata"]["geographicalExtent"],
         source_header["metadata"]["geographicalExtent"],
         "exported header geographicalExtent must match the source"
+    );
+}
+
+/// Recursively asserts every integer in a *localised* material tree (the
+/// `values`/`value` payload attached to a restored `cjseq::Material`) is a
+/// feature-local index `< limit`; `null` (no material) is skipped.
+fn assert_material_indices_below(v: &Value, limit: usize) {
+    match v {
+        Value::Null => {}
+        Value::Number(n) => {
+            let idx = n
+                .as_u64()
+                .unwrap_or_else(|| panic!("expected a non-negative material index, got {n}"))
+                as usize;
+            assert!(
+                idx < limit,
+                "material index {idx} must be < feature-local materials len {limit}"
+            );
+        }
+        Value::Array(items) => {
+            for x in items {
+                assert_material_indices_below(x, limit);
+            }
+        }
+        other => panic!("unexpected node in a localised material tree: {other}"),
+    }
+}
+
+/// Recursively asserts every innermost ring in a *localised* texture tree is
+/// back to plain INDEX form `[t, uv_idx0, uv_idx1, ...]` (or `[null]`): `t` (a
+/// feature-local texture index) `< tex_limit`, and every following element is
+/// a bare integer `< uv_limit` — NOT an inlined `[u, v]` pair, which would
+/// mean the encoder's UV-inlining rewrite was never undone.
+fn assert_texture_rings_are_index_form(v: &Value, tex_limit: usize, uv_limit: usize) {
+    match v {
+        Value::Array(items) => {
+            let is_ring = !items.is_empty() && matches!(items[0], Value::Number(_) | Value::Null);
+            if is_ring {
+                if let Value::Number(n) = &items[0] {
+                    let t = n
+                        .as_u64()
+                        .unwrap_or_else(|| panic!("expected a non-negative texture index, got {n}"))
+                        as usize;
+                    assert!(t < tex_limit, "texture id {t} must be < {tex_limit}");
+                }
+                for uv in &items[1..] {
+                    assert!(
+                        !uv.is_array(),
+                        "texture ring must be back to index form, found an inlined [u, v] pair: {uv}"
+                    );
+                    let idx = uv
+                        .as_u64()
+                        .unwrap_or_else(|| panic!("expected a UV index, got {uv}"))
+                        as usize;
+                    assert!(idx < uv_limit, "UV index {idx} must be < {uv_limit}");
+                }
+            } else {
+                for x in items {
+                    assert_texture_rings_are_index_form(x, tex_limit, uv_limit);
+                }
+            }
+        }
+        other => panic!("unexpected node in a localised texture tree: {other}"),
+    }
+}
+
+/// M4 task 9: on a Compatibility-profile package (sidecars present), export
+/// restores `material`/`texture` from the sidecars instead of dropping them —
+/// each feature gets its own self-contained, feature-local `appearance`
+/// block (the inverse of the encoder's global interning + UV inlining).
+#[test]
+fn railway_compatibility_export_restores_appearance_feature_local() {
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(
+        fixture("lod3_railway.city.json"),
+        package_dir.path().to_path_buf(),
+    );
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    let report = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+
+    // (a)
+    assert_eq!(
+        report.appearance_refs_dropped, 0,
+        "compatibility-profile export must restore appearance, not drop it"
+    );
+
+    let exported = Source::open(&output).unwrap();
+    let mut found_material = false;
+    let mut found_texture = false;
+    for feature in exported.features().unwrap() {
+        let feature = feature.unwrap();
+        let Some(appearance) = &feature.appearance else {
+            continue;
+        };
+        let n_materials = appearance.materials.as_ref().map_or(0, Vec::len);
+        let n_textures = appearance.textures.as_ref().map_or(0, Vec::len);
+        let n_uvs = appearance.vertices_texture.as_ref().map_or(0, Vec::len);
+
+        for co in feature.city_objects.values() {
+            let Some(geoms) = &co.geometry else { continue };
+            for g in geoms {
+                // (b)
+                if let Some(material) = &g.material {
+                    assert!(
+                        !material.is_empty(),
+                        "a geometry carrying a material member must not be empty"
+                    );
+                    for m in material.values() {
+                        if let Some(idx) = m.value {
+                            assert!(
+                                idx < n_materials,
+                                "material index {idx} must be < feature-local materials len {n_materials}"
+                            );
+                            found_material = true;
+                        }
+                        if let Some(values) = &m.values {
+                            assert_material_indices_below(values, n_materials);
+                            found_material = true;
+                        }
+                    }
+                }
+                // (c)
+                if let Some(texture) = &g.texture {
+                    for t in texture.values() {
+                        if let Some(values) = &t.values {
+                            assert_texture_rings_are_index_form(values, n_textures, n_uvs);
+                            found_texture = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        found_material,
+        "expected at least one restored material reference across the exported features"
+    );
+    assert!(
+        found_texture,
+        "expected at least one restored texture reference across the exported features"
     );
 }
 

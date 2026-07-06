@@ -5,14 +5,26 @@
 //! reconstruction (WKB -> CityJSON boundary arrays, re-quantised against the
 //! dataset's own `transform`).
 //!
-//! `GeometryInstance` geometries are dropped: their template definitions live
-//! in the M4 compatibility-profile sidecars, which this (Core-profile-only)
-//! pass does not read, so a file referencing an absent template would be
-//! invalid CityJSON. The owning object (attributes, hierarchy) is still
-//! exported; only its instance geometry is missing. Material/texture index
-//! maps are dropped for the same reason: the appearance DEFINITIONS they
-//! index also live in the M4 sidecars, so exporting the maps alone would
-//! leave dangling references. Both drops are counted in [`ExportReport`].
+//! `GeometryInstance` geometries are always dropped (M4 task 10 scope): their
+//! template definitions live in the `geometry_templates.parquet` sidecar,
+//! which this pass does not read, so a file referencing an absent template
+//! would be invalid CityJSON. The owning object (attributes, hierarchy) is
+//! still exported; only its instance geometry is missing, counted in
+//! [`ExportReport::instance_geometries_dropped`].
+//!
+//! Material/texture index maps are handled differently depending on what the
+//! package actually carries: when `metadata.json`'s `sidecar_files` lists
+//! `materials.parquet`/`textures.parquet` (the Compatibility profile), this
+//! pass loads the dataset-global appearance definitions and, per feature,
+//! slices out the subset that feature's geometries reference — reassigning
+//! feature-local indices and re-interning inlined UV pairs into a
+//! feature-local vertices-texture pool (see [`LocalAppearance`], the inverse
+//! of [`crate::appearance::AppearanceInterner`]'s rewrite) — and attaches the
+//! result as the feature's `appearance` block. When no such sidecars are
+//! listed (the Core profile), the appearance DEFINITIONS the main-table maps
+//! index are simply not stored anywhere in the package, so the maps are
+//! dropped instead (counted in [`ExportReport::appearance_refs_dropped`]):
+//! exporting them would leave dangling references — invalid CityJSON.
 
 use std::collections::HashMap;
 use std::fs;
@@ -25,12 +37,13 @@ use serde_json::Value;
 
 use cityparquet_schema::{CityParquetError, CityParquetMetadata, PackageManifest, Result};
 use cjseq::{
-    CityJSON, CityJSONFeature, Geometry, GeometryType, Metadata as CjMetadata, ReferenceSystem,
-    Transform,
+    Appearance, CityJSON, CityJSONFeature, Geometry, GeometryType, Material,
+    Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
 };
 
 use crate::decode::{DecodedObject, decode_batch};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
+use crate::sidecar::{read_materials, read_textures};
 use crate::wkb_read::DecodedKind;
 
 /// Options controlling one package -> CityJSON/CityJSONSeq export.
@@ -398,13 +411,293 @@ fn row_json_object(batch: &RecordBatch, name: &str, row: usize) -> Result<Option
 
 /// Whether the object-level `{"<lod>": {...}}` appearance map (the encoder's
 /// per-LoD keying of `material`/`texture`) has an entry for the geometry at
-/// `lod_key`. Export only ever CHECKS for the entry — it never re-attaches
-/// it: the Core profile stores these index maps but not the appearance
-/// definitions they point into (M4 sidecar data), so re-attaching them would
-/// leave dangling references and invalid CityJSON. M4's compatibility
-/// profile, which reads the sidecars, owns the actual re-attachment.
+/// `lod_key`. Used only on the Core-profile path (no `materials.parquet`/
+/// `textures.parquet` sidecars listed in the manifest): the appearance
+/// DEFINITIONS these maps index are not stored anywhere in that kind of
+/// package, so export only ever CHECKS for the entry (to count the drop) and
+/// never re-attaches it — re-attaching would leave dangling references and
+/// invalid CityJSON. When the sidecars ARE listed, [`LocalAppearance`] owns
+/// the actual re-attachment instead and this function is not consulted.
 fn has_appearance_for_lod(map: &Option<Value>, lod_key: &str) -> bool {
     map.as_ref().is_some_and(|m| m.get(lod_key).is_some())
+}
+
+/// A *ring* is the innermost texture-map array. Pre-rewrite/pre-localisation
+/// it is `[t, uv0, uv1, ...]` (all integers); post-rewrite (the main-table
+/// form this module reads) it is `[t, [u, v], [u, v], ...]` — UV indices
+/// inlined as coordinate pairs by [`crate::appearance::AppearanceInterner`].
+/// Either way, a ring is recognised the same way: an array whose first
+/// element is a number (the texture index) or `null` (no texture) — the
+/// element shape of anything AFTER position 0 does not matter for
+/// recognition, only for how [`LocalAppearance`] subsequently reads it. This
+/// deliberately differs from `AppearanceInterner`'s own `is_texture_ring`,
+/// which additionally requires every element to be non-array — a check that
+/// would incorrectly reject the inlined `[u, v]` pairs this module's rings
+/// contain.
+fn is_localised_texture_ring(items: &[Value]) -> bool {
+    !items.is_empty() && matches!(items[0], Value::Number(_) | Value::Null)
+}
+
+/// Per-feature slicer: collects the global appearance definitions a feature's
+/// geometries reference, assigns feature-local indices (first-use order),
+/// and re-interns each inlined `[u, v]` pair into a feature-local
+/// vertices-texture pool (dedupe by `f64::to_bits` pair). The inverse of
+/// [`crate::appearance::AppearanceInterner`]'s rewrite: that struct turns
+/// feature-local indices into dataset-global ones (with UVs inlined) on the
+/// way in; this one turns dataset-global ids (with UVs still inlined) back
+/// into a fresh, self-contained feature-local slice on the way out.
+struct LocalAppearance<'a> {
+    global_materials: &'a [Value],
+    global_textures: &'a [Value],
+    local_materials: Vec<Value>,
+    material_ids: HashMap<usize, usize>,
+    local_textures: Vec<Value>,
+    texture_ids: HashMap<usize, usize>,
+    local_uvs: Vec<Vec<f64>>,
+    uv_ids: HashMap<(u64, u64), usize>,
+}
+
+impl<'a> LocalAppearance<'a> {
+    fn new(global_materials: &'a [Value], global_textures: &'a [Value]) -> Self {
+        Self {
+            global_materials,
+            global_textures,
+            local_materials: Vec::new(),
+            material_ids: HashMap::new(),
+            local_textures: Vec::new(),
+            texture_ids: HashMap::new(),
+            local_uvs: Vec::new(),
+            uv_ids: HashMap::new(),
+        }
+    }
+
+    /// The feature-local material index for dataset-global id `global_id`
+    /// (assigning one, first-use order, if this is the first reference).
+    /// `Schema` error naming the id and the loaded-definitions count when out
+    /// of range.
+    fn local_material_id(&mut self, global_id: usize) -> Result<usize> {
+        if let Some(&id) = self.material_ids.get(&global_id) {
+            return Ok(id);
+        }
+        let def = self.global_materials.get(global_id).ok_or_else(|| {
+            err(format!(
+                "material global id {global_id} out of range (loaded {} definitions)",
+                self.global_materials.len()
+            ))
+        })?;
+        let id = self.local_materials.len();
+        self.local_materials.push(def.clone());
+        self.material_ids.insert(global_id, id);
+        Ok(id)
+    }
+
+    /// The feature-local texture index for dataset-global id `global_id` (see
+    /// [`Self::local_material_id`]).
+    fn local_texture_id(&mut self, global_id: usize) -> Result<usize> {
+        if let Some(&id) = self.texture_ids.get(&global_id) {
+            return Ok(id);
+        }
+        let def = self.global_textures.get(global_id).ok_or_else(|| {
+            err(format!(
+                "texture global id {global_id} out of range (loaded {} definitions)",
+                self.global_textures.len()
+            ))
+        })?;
+        let id = self.local_textures.len();
+        self.local_textures.push(def.clone());
+        self.texture_ids.insert(global_id, id);
+        Ok(id)
+    }
+
+    /// The feature-local UV vertex-pool index for one inlined `[u, v]` pair,
+    /// deduped by the pair's `f64::to_bits` representation.
+    fn local_uv_id(&mut self, uv: [f64; 2]) -> usize {
+        let key = (uv[0].to_bits(), uv[1].to_bits());
+        if let Some(&id) = self.uv_ids.get(&key) {
+            return id;
+        }
+        let id = self.local_uvs.len();
+        self.local_uvs.push(vec![uv[0], uv[1]]);
+        self.uv_ids.insert(key, id);
+        id
+    }
+
+    /// Localise one geometry's `material` member (the per-LoD map entry —
+    /// `{"<theme>": {"values": <nested global-ids|null>} | {"value":
+    /// <global-id>}}`, dataset-global indices) into the same shape with
+    /// feature-local indices.
+    fn localise_material_map(&mut self, map: &Value) -> Result<Value> {
+        let obj = map.as_object().ok_or_else(|| {
+            err("material map must be a JSON object of theme -> {value|values}".to_string())
+        })?;
+        let mut out = serde_json::Map::with_capacity(obj.len());
+        for (theme, inner) in obj {
+            let inner_obj = inner
+                .as_object()
+                .ok_or_else(|| err(format!("material theme '{theme}' must be an object")))?;
+            let mut new_inner = serde_json::Map::with_capacity(inner_obj.len());
+            if let Some(v) = inner_obj.get("value") {
+                new_inner.insert("value".to_string(), self.localise_material_index(v, theme)?);
+            }
+            if let Some(v) = inner_obj.get("values") {
+                new_inner.insert("values".to_string(), self.localise_material_tree(v, theme)?);
+            }
+            out.insert(theme.clone(), Value::Object(new_inner));
+        }
+        Ok(Value::Object(out))
+    }
+
+    fn localise_material_tree(&mut self, v: &Value, theme: &str) -> Result<Value> {
+        match v {
+            Value::Array(items) => Ok(Value::Array(
+                items
+                    .iter()
+                    .map(|x| self.localise_material_tree(x, theme))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            _ => self.localise_material_index(v, theme),
+        }
+    }
+
+    fn localise_material_index(&mut self, v: &Value, theme: &str) -> Result<Value> {
+        match v {
+            Value::Null => Ok(Value::Null),
+            Value::Number(n) => {
+                let gid = n.as_u64().ok_or_else(|| {
+                    err(format!(
+                        "material index in theme '{theme}' is not a non-negative integer: {n}"
+                    ))
+                })? as usize;
+                Ok(Value::from(self.local_material_id(gid)?))
+            }
+            other => Err(err(format!(
+                "material index in theme '{theme}' must be an integer or null, got {other}"
+            ))),
+        }
+    }
+
+    /// Localise one geometry's `texture` member (the per-LoD map entry —
+    /// `{"<theme>": {"values": <nested rings>}}`, where each innermost ring is
+    /// `[global_t, [u, v], [u, v], ...]` with UVs already inlined by the
+    /// encoder) into `[local_t, uv_idx0, uv_idx1, ...]` index form: the
+    /// texture id becomes feature-local and every inlined pair is re-interned
+    /// into the feature-local UV pool.
+    fn localise_texture_map(&mut self, map: &Value) -> Result<Value> {
+        let obj = map.as_object().ok_or_else(|| {
+            err("texture map must be a JSON object of theme -> {values}".to_string())
+        })?;
+        let mut out = serde_json::Map::with_capacity(obj.len());
+        for (theme, inner) in obj {
+            let inner_obj = inner
+                .as_object()
+                .ok_or_else(|| err(format!("texture theme '{theme}' must be an object")))?;
+            let values = inner_obj
+                .get("values")
+                .ok_or_else(|| err(format!("texture theme '{theme}' is missing 'values'")))?;
+            let localised = self.localise_texture_tree(values, theme)?;
+            let mut new_inner = serde_json::Map::with_capacity(1);
+            new_inner.insert("values".to_string(), localised);
+            out.insert(theme.clone(), Value::Object(new_inner));
+        }
+        Ok(Value::Object(out))
+    }
+
+    fn localise_texture_tree(&mut self, v: &Value, theme: &str) -> Result<Value> {
+        match v {
+            Value::Array(items) => {
+                if is_localised_texture_ring(items) {
+                    self.localise_texture_ring(items, theme)
+                } else {
+                    Ok(Value::Array(
+                        items
+                            .iter()
+                            .map(|x| self.localise_texture_tree(x, theme))
+                            .collect::<Result<Vec<_>>>()?,
+                    ))
+                }
+            }
+            other => Err(err(format!(
+                "unexpected non-array node in texture theme '{theme}': {other}"
+            ))),
+        }
+    }
+
+    fn localise_texture_ring(&mut self, items: &[Value], theme: &str) -> Result<Value> {
+        if items.len() == 1 && items[0].is_null() {
+            return Ok(Value::Array(vec![Value::Null]));
+        }
+        let mut out = Vec::with_capacity(items.len());
+        out.push(match &items[0] {
+            Value::Null => Value::Null,
+            Value::Number(n) => {
+                let gid = n.as_u64().ok_or_else(|| {
+                    err(format!(
+                        "texture index in theme '{theme}' is not a non-negative integer: {n}"
+                    ))
+                })? as usize;
+                Value::from(self.local_texture_id(gid)?)
+            }
+            other => {
+                return Err(err(format!(
+                    "texture index in theme '{theme}' must be an integer or null, got {other}"
+                )));
+            }
+        });
+        for uv in &items[1..] {
+            let pair = uv.as_array().ok_or_else(|| {
+                err(format!(
+                    "inlined UV in theme '{theme}' must be a [u, v] pair, got {uv}"
+                ))
+            })?;
+            if pair.len() != 2 {
+                return Err(err(format!(
+                    "inlined UV in theme '{theme}' must have exactly 2 coordinates, got {}",
+                    pair.len()
+                )));
+            }
+            let u = pair[0].as_f64().ok_or_else(|| {
+                err(format!(
+                    "inlined UV u-coordinate in theme '{theme}' is not a number: {}",
+                    pair[0]
+                ))
+            })?;
+            let v = pair[1].as_f64().ok_or_else(|| {
+                err(format!(
+                    "inlined UV v-coordinate in theme '{theme}' is not a number: {}",
+                    pair[1]
+                ))
+            })?;
+            out.push(Value::from(self.local_uv_id([u, v])));
+        }
+        Ok(Value::Array(out))
+    }
+
+    /// Consumes `self` into a `cjseq::Appearance` carrying exactly the
+    /// materials/textures/UVs this feature's geometries referenced, plus
+    /// `defaults`' `default-theme-material`/`default-theme-texture` (dataset-
+    /// wide, so every feature gets the same ones when present). `None` when
+    /// the feature referenced nothing at all AND `defaults` is `None` — a
+    /// feature with no appearance of its own shouldn't grow an empty block.
+    fn into_appearance(self, defaults: Option<&Value>) -> Option<Appearance> {
+        if self.local_materials.is_empty() && self.local_textures.is_empty() && defaults.is_none() {
+            return None;
+        }
+        let default_theme_material = defaults
+            .and_then(|d| d.get("default-theme-material"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let default_theme_texture = defaults
+            .and_then(|d| d.get("default-theme-texture"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        Some(Appearance {
+            materials: (!self.local_materials.is_empty()).then_some(self.local_materials),
+            textures: (!self.local_textures.is_empty()).then_some(self.local_textures),
+            vertices_texture: (!self.local_uvs.is_empty()).then_some(self.local_uvs),
+            default_theme_texture,
+            default_theme_material,
+        })
+    }
 }
 
 /// Export the CityParquet package at `opts.package_dir` back into CityJSON
@@ -437,6 +730,28 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     let header = build_header(&meta)?;
     let (scale, translate) = transform_axes(&header.transform);
 
+    // Whether this package carries the appearance-DEFINITION sidecars: when
+    // it does (the Compatibility profile), the per-feature loop below
+    // restores `material`/`texture` via `LocalAppearance` instead of
+    // dropping the index maps (see the module doc). Loaded once, up front —
+    // `read_materials`/`read_textures` already read as empty when the
+    // corresponding file is absent, matching a package that only wrote one
+    // of the two sidecars.
+    let restore_appearance = manifest
+        .sidecar_files
+        .iter()
+        .any(|f| f == "materials.parquet" || f == "textures.parquet");
+    let global_materials = if restore_appearance {
+        read_materials(&opts.package_dir.join("materials.parquet"))?
+    } else {
+        Vec::new()
+    };
+    let global_textures = if restore_appearance {
+        read_textures(&opts.package_dir.join("textures.parquet"))?
+    } else {
+        Vec::new()
+    };
+
     // Group decoded objects by feature_id (own id fallback), preserving
     // first-appearance order for deterministic feature emission; carry each
     // object's row-local material/texture JSON alongside it since
@@ -463,6 +778,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         let mut feature = CityJSONFeature::new();
         feature.id = feature_id;
         let mut interner = VertexInterner::default();
+        let mut local_appearance =
+            restore_appearance.then(|| LocalAppearance::new(&global_materials, &global_textures));
 
         for (obj, material, texture) in &entries {
             let mut co = obj.object.clone();
@@ -494,10 +811,39 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 // limitation (it would only undercount the drops); both real
                 // fixtures use canonical strings only.
                 let lod_key = lod.map(|l| l.to_string()).unwrap_or_default();
-                if has_appearance_for_lod(material, &lod_key)
-                    || has_appearance_for_lod(texture, &lod_key)
-                {
-                    appearance_refs_dropped += 1;
+                let mut geom_material: Option<HashMap<String, Material>> = None;
+                let mut geom_texture: Option<HashMap<String, Texture>> = None;
+                match local_appearance.as_mut() {
+                    Some(local) => {
+                        if let Some(m) = material.as_ref().and_then(|m| m.get(lod_key.as_str())) {
+                            let localised = local.localise_material_map(m).map_err(|e| {
+                                err(format!(
+                                    "object {}: cannot restore material appearance: {e}",
+                                    obj.id
+                                ))
+                            })?;
+                            geom_material = Some(serde_json::from_value(localised)?);
+                        }
+                        if let Some(t) = texture.as_ref().and_then(|t| t.get(lod_key.as_str())) {
+                            let localised = local.localise_texture_map(t).map_err(|e| {
+                                err(format!(
+                                    "object {}: cannot restore texture appearance: {e}",
+                                    obj.id
+                                ))
+                            })?;
+                            geom_texture = Some(serde_json::from_value(localised)?);
+                        }
+                    }
+                    None => {
+                        // Core profile (no appearance-definition sidecars):
+                        // the index maps must be dropped, not re-attached —
+                        // see `has_appearance_for_lod`'s docs.
+                        if has_appearance_for_lod(material, &lod_key)
+                            || has_appearance_for_lod(texture, &lod_key)
+                        {
+                            appearance_refs_dropped += 1;
+                        }
+                    }
                 }
 
                 geoms.push(Geometry {
@@ -505,11 +851,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     lod: lod.map(|l| l.to_string()),
                     boundaries,
                     semantics,
-                    // Deliberately dropped (counted above): the definitions
-                    // these maps index live in M4 sidecars; see
-                    // `has_appearance_for_lod`'s docs.
-                    material: None,
-                    texture: None,
+                    material: geom_material,
+                    texture: geom_texture,
                     template: None,
                     transformation_matrix: None,
                 });
@@ -522,6 +865,9 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         }
 
         feature.vertices = interner.finish();
+        if let Some(local) = local_appearance {
+            feature.appearance = local.into_appearance(meta.appearance_defaults.as_ref());
+        }
         features.push(feature);
     }
 
