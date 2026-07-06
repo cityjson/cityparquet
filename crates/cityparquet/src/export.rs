@@ -9,7 +9,10 @@
 //! in the M4 compatibility-profile sidecars, which this (Core-profile-only)
 //! pass does not read, so a file referencing an absent template would be
 //! invalid CityJSON. The owning object (attributes, hierarchy) is still
-//! exported; only its instance geometry is missing.
+//! exported; only its instance geometry is missing. Material/texture index
+//! maps are dropped for the same reason: the appearance DEFINITIONS they
+//! index also live in the M4 sidecars, so exporting the maps alone would
+//! leave dangling references. Both drops are counted in [`ExportReport`].
 
 use std::collections::HashMap;
 use std::fs;
@@ -48,6 +51,11 @@ pub struct ExportReport {
     /// Objects whose `GeometryInstance` geometry was dropped (template
     /// definitions are M4 sidecar data this pass does not read).
     pub instance_geometries_dropped: usize,
+    /// Geometries whose material/texture index maps were dropped: the Core
+    /// profile stores the maps but not the appearance definitions they index
+    /// (M4 sidecar data), so exporting them would leave dangling references
+    /// — invalid CityJSON, same reasoning as the GeometryInstance drop.
+    pub appearance_refs_dropped: usize,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -148,21 +156,30 @@ fn remap_face_list(faces: &[Vec<Vec<usize>>], vmap: &[usize]) -> Vec<Vec<Vec<usi
 
 /// Partitions a flat, already-remapped face list into shells per
 /// `counts` (face count per shell); falls back to a single shell holding
-/// every face when `counts` is absent.
+/// every face when `counts` is absent. Counts that do not sum to exactly
+/// the face total are an error — silently mis-partitioning (or dropping
+/// trailing faces) would corrupt the geometry.
 fn partition_shells(
     faces: Vec<Vec<Vec<usize>>>,
     counts: Option<&[usize]>,
-) -> Vec<Vec<Vec<Vec<usize>>>> {
+) -> Result<Vec<Vec<Vec<Vec<usize>>>>> {
     match counts {
         Some(counts) => {
+            let total: usize = counts.iter().sum();
+            if total != faces.len() {
+                return Err(err(format!(
+                    "solid_shell_faces counts sum to {total} but the stored geometry has {} faces",
+                    faces.len()
+                )));
+            }
             let mut shells = Vec::with_capacity(counts.len());
             let mut iter = faces.into_iter();
             for &n in counts {
                 shells.push(iter.by_ref().take(n).collect());
             }
-            shells
+            Ok(shells)
         }
-        None => vec![faces],
+        None => Ok(vec![faces]),
     }
 }
 
@@ -226,7 +243,7 @@ fn reconstruct_boundaries(
             };
             let remapped = remap_face_list(faces, vmap);
             let counts = shell_faces_flat(props)?;
-            let shells = partition_shells(remapped, counts.as_deref());
+            let shells = partition_shells(remapped, counts.as_deref())?;
             Ok(serde_json::to_value(shells)?)
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
@@ -240,14 +257,30 @@ fn reconstruct_boundaries(
                     return Err(geom_shape_err(gtype, kind));
                 };
                 let remapped = remap_face_list(faces, vmap);
-                let counts = nested_counts.as_ref().map(|c| c[m].as_slice());
-                solids.push(partition_shells(remapped, counts));
+                let counts = match &nested_counts {
+                    Some(c) => Some(
+                        c.get(m)
+                            .ok_or_else(|| {
+                                err(format!(
+                                    "solid_shell_faces lists {} solids but the stored \
+                                     GeometryCollection has {} members",
+                                    c.len(),
+                                    members.len()
+                                ))
+                            })?
+                            .as_slice(),
+                    ),
+                    None => None,
+                };
+                solids.push(partition_shells(remapped, counts)?);
             }
             Ok(serde_json::to_value(solids)?)
         }
-        GeometryType::GeometryInstance => {
-            unreachable!("GeometryInstance geometries are filtered out before reconstruction")
-        }
+        // The encoder never stores WKB for a GeometryInstance (it routes to
+        // the `template` column), so a geometry_properties "type" claiming
+        // one against a real WKB cell is a corrupt/hand-rolled file — an
+        // error, not a crash.
+        GeometryType::GeometryInstance => Err(geom_shape_err(gtype, kind)),
     }
 }
 
@@ -316,9 +349,16 @@ fn reference_system(meta: &CityParquetMetadata) -> Result<Option<ReferenceSystem
 fn build_header(meta: &CityParquetMetadata) -> Result<CityJSON> {
     let mut header = CityJSON::new();
     header.version = "2.0".to_string();
-    if let Some(transform) = &meta.transform {
-        header.transform = serde_json::from_value(transform.clone())?;
-    }
+    // The transform is REQUIRED: export re-quantises every coordinate
+    // against it, so a package without one cannot be exported faithfully —
+    // silently substituting the identity transform would corrupt every
+    // vertex.
+    let transform = meta.transform.as_ref().ok_or_else(|| {
+        CityParquetError::Metadata(
+            "package metadata carries no 'transform'; cannot re-quantise for export".to_string(),
+        )
+    })?;
+    header.transform = serde_json::from_value(transform.clone())?;
     if let Some(reference_system) = reference_system(meta)? {
         header.metadata = Some(CjMetadata {
             geographical_extent: None,
@@ -351,19 +391,15 @@ fn row_json_object(batch: &RecordBatch, name: &str, row: usize) -> Result<Option
     Ok(Some(serde_json::from_str(arr.value(row))?))
 }
 
-/// The material/texture appearance attached to one geometry at `lod_key`
-/// (the encoder's raw, un-normalised lod string, `""` for lodless), from the
-/// object-level `{"<lod>": {...}}` map — the inverse of the encoder's
-/// per-LoD keying.
-fn appearance_for_lod<Theme: serde::de::DeserializeOwned>(
-    map: &Option<Value>,
-    lod_key: &str,
-) -> Result<Option<HashMap<String, Theme>>> {
-    let Some(map) = map else { return Ok(None) };
-    let Some(entry) = map.get(lod_key) else {
-        return Ok(None);
-    };
-    Ok(Some(serde_json::from_value(entry.clone())?))
+/// Whether the object-level `{"<lod>": {...}}` appearance map (the encoder's
+/// per-LoD keying of `material`/`texture`) has an entry for the geometry at
+/// `lod_key`. Export only ever CHECKS for the entry — it never re-attaches
+/// it: the Core profile stores these index maps but not the appearance
+/// definitions they point into (M4 sidecar data), so re-attaching them would
+/// leave dangling references and invalid CityJSON. M4's compatibility
+/// profile, which reads the sidecars, owns the actual re-attachment.
+fn has_appearance_for_lod(map: &Option<Value>, lod_key: &str) -> bool {
+    map.as_ref().is_some_and(|m| m.get(lod_key).is_some())
 }
 
 /// Export the CityParquet package at `opts.package_dir` back into CityJSON
@@ -416,6 +452,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     }
 
     let mut instance_geometries_dropped = 0usize;
+    let mut appearance_refs_dropped = 0usize;
     let mut features: Vec<CityJSONFeature> = Vec::with_capacity(groups.items.len());
     for (feature_id, entries) in groups.into_ordered() {
         let mut feature = CityJSONFeature::new();
@@ -444,19 +481,30 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     reconstruct_boundaries(&decoded.kind, &gtype, props.as_ref(), &vmap)?;
                 let semantics = props.as_ref().and_then(|p| p.get("semantics")).cloned();
 
+                // Keyed by the CANONICAL Lod string: the encoder keyed the
+                // per-object appearance map by the raw source lod string
+                // (`geom.lod.clone().unwrap_or_default()`), so a
+                // non-canonical source LoD (e.g. "02", which `Lod::parse`
+                // normalises to "2") would not match here — a documented
+                // limitation (it would only undercount the drops); both real
+                // fixtures use canonical strings only.
                 let lod_key = lod.map(|l| l.to_string()).unwrap_or_default();
-                let obj_material: Option<HashMap<String, cjseq::Material>> =
-                    appearance_for_lod(material, &lod_key)?;
-                let obj_texture: Option<HashMap<String, cjseq::Texture>> =
-                    appearance_for_lod(texture, &lod_key)?;
+                if has_appearance_for_lod(material, &lod_key)
+                    || has_appearance_for_lod(texture, &lod_key)
+                {
+                    appearance_refs_dropped += 1;
+                }
 
                 geoms.push(Geometry {
                     thetype: gtype,
                     lod: lod.map(|l| l.to_string()),
                     boundaries,
                     semantics,
-                    material: obj_material,
-                    texture: obj_texture,
+                    // Deliberately dropped (counted above): the definitions
+                    // these maps index live in M4 sidecars; see
+                    // `has_appearance_for_lod`'s docs.
+                    material: None,
+                    texture: None,
                     template: None,
                     transformation_matrix: None,
                 });
@@ -479,6 +527,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         feature_count,
         object_count,
         instance_geometries_dropped,
+        appearance_refs_dropped,
     })
 }
 
@@ -512,4 +561,153 @@ fn write_output(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wkb_read::wkb_to_geometry;
+    use crate::wkb_write::{VertexPool, geometry_to_wkb};
+
+    fn triangle_faces(n: usize) -> Vec<Vec<Vec<usize>>> {
+        (0..n).map(|i| vec![vec![i, i + 1, i + 2]]).collect()
+    }
+
+    #[test]
+    fn partition_shells_rejects_a_count_face_mismatch() {
+        // counts [2, 1] describe 3 faces; handing them 4 faces must be a
+        // Schema error naming both numbers, never a silent mis-partition
+        // that drops the 4th face.
+        let err = partition_shells(triangle_faces(4), Some(&[2, 1])).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected Schema error, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains('3') && msg.contains('4'),
+            "error must name the mismatched counts, got: {msg}"
+        );
+        // The matching case still partitions.
+        let shells = partition_shells(triangle_faces(3), Some(&[2, 1])).unwrap();
+        assert_eq!(shells.len(), 2);
+        assert_eq!((shells[0].len(), shells[1].len()), (2, 1));
+    }
+
+    /// A hand-built MultiSolid (no fixture carries one): 2 solids — the
+    /// first with 2 single-face shells, the second with 1 — written through
+    /// the real WKB writer, read back through the real WKB reader, and
+    /// reconstructed with the nested `solid_shell_faces`. Vertices are used
+    /// in ascending first-appearance order so both the WKB reader's interner
+    /// and export's `VertexInterner` assign identity indices, making the
+    /// reconstructed boundary tree comparable to the source verbatim.
+    #[test]
+    fn multisolid_reconstruction_round_trips_through_wkb() {
+        let vertices: Vec<Vec<i64>> = vec![
+            vec![0, 0, 0],
+            vec![1000, 0, 0],
+            vec![1000, 1000, 0],
+            vec![0, 1000, 0],
+            vec![0, 0, 1000],
+        ];
+        let transform = Transform {
+            scale: vec![1.0; 3],
+            translate: vec![0.0; 3],
+        };
+        let pool = VertexPool::new(&vertices, &transform);
+        let boundaries = serde_json::json!([[[[[0, 1, 2, 3]]], [[[0, 1, 4]]]], [[[[1, 2, 4]]]]]);
+        let geom = Geometry {
+            thetype: GeometryType::MultiSolid,
+            lod: Some("2".into()),
+            boundaries: boundaries.clone(),
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        let bytes = geometry_to_wkb(&geom, &pool).unwrap().unwrap().bytes;
+        let decoded = wkb_to_geometry(&bytes).unwrap();
+
+        let mut interner = VertexInterner::default();
+        let vmap = vertex_map(&decoded.coords, [1.0; 3], [0.0; 3], &mut interner);
+        let props = serde_json::json!({
+            "type": "MultiSolid",
+            "solid_shell_counts": [2, 1],
+            "solid_shell_faces": [[1, 1], [1]],
+        });
+        let rebuilt = reconstruct_boundaries(
+            &decoded.kind,
+            &GeometryType::MultiSolid,
+            Some(&props),
+            &vmap,
+        )
+        .unwrap();
+        assert_eq!(
+            rebuilt, boundaries,
+            "MultiSolid boundary tree must round-trip verbatim"
+        );
+        assert_eq!(
+            interner.finish(),
+            vertices,
+            "identity re-quantisation must reproduce the source vertex pool"
+        );
+    }
+
+    #[test]
+    fn multisolid_with_too_few_nested_counts_is_an_error_not_a_panic() {
+        // GeometryCollection of 2 members but solid_shell_faces lists only 1
+        // solid: must be a Schema error, not an index-out-of-bounds panic.
+        let member = DecodedKind::PolyhedralSurface(vec![vec![vec![0, 1, 2]]]);
+        let kind = DecodedKind::GeometryCollection(vec![member.clone(), member]);
+        let props = serde_json::json!({"type": "MultiSolid", "solid_shell_faces": [[1]]});
+        let err =
+            reconstruct_boundaries(&kind, &GeometryType::MultiSolid, Some(&props), &[0, 1, 2])
+                .unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected Schema error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn geometry_instance_type_in_properties_is_an_error_not_a_panic() {
+        // A hand-rolled/corrupt file could label any WKB cell
+        // "GeometryInstance" in geometry_properties; the encoder never
+        // stores WKB for instances, so this shape mismatch must surface as
+        // an error, not a crash.
+        let err = reconstruct_boundaries(
+            &DecodedKind::MultiPoint(vec![0]),
+            &GeometryType::GeometryInstance,
+            None,
+            &[0],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected Schema error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn build_header_requires_a_transform() {
+        let meta = CityParquetMetadata {
+            cityparquet_version: "0.1.0".to_string(),
+            source_format: cityparquet_schema::SourceFormat::CityJsonSeq,
+            source_version: None,
+            crs: None,
+            transform: None,
+            extensions: None,
+            attribute_columns: vec![],
+            reserved_columns: vec![],
+            default_geometry: "geometry".to_string(),
+            bbox_column: "bbox".to_string(),
+            sidecar_files: vec![],
+        };
+        let err = build_header(&meta).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Metadata(_)),
+            "a package without a transform cannot be re-quantised: expected Metadata error, got {err:?}"
+        );
+    }
 }

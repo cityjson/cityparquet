@@ -27,6 +27,7 @@ fn convert_and_export(
     cityparquet::export::ExportReport,
     Source,
     Source,
+    PathBuf,
     tempfile::TempDir,
     tempfile::TempDir,
 ) {
@@ -47,12 +48,36 @@ fn convert_and_export(
 
     let exported = Source::open(&output).unwrap();
     let original = Source::open(&fixture(input)).unwrap();
-    (report, exported, original, package_dir, export_dir)
+    (report, exported, original, output, package_dir, export_dir)
+}
+
+/// Counts `"material"`/`"texture"` keys across every geometry of every
+/// feature line of an exported Seq file, walked as raw JSON (not via
+/// cjseq's typed `Geometry`, so nothing a lenient deserialiser might drop
+/// can mask a present key).
+fn count_geometry_appearance_keys(output: &std::path::Path) -> (usize, usize) {
+    let text = std::fs::read_to_string(output).unwrap();
+    let mut mat = 0usize;
+    let mut tex = 0usize;
+    for line in text.lines().skip(1) {
+        let feature: serde_json::Value = serde_json::from_str(line).unwrap();
+        for co in feature["CityObjects"].as_object().unwrap().values() {
+            let Some(geoms) = co.get("geometry").and_then(|g| g.as_array()) else {
+                continue;
+            };
+            for geom in geoms {
+                let geom = geom.as_object().unwrap();
+                mat += usize::from(geom.contains_key("material"));
+                tex += usize::from(geom.contains_key("texture"));
+            }
+        }
+    }
+    (mat, tex)
 }
 
 #[test]
 fn delft_exports_back_to_a_seq_matching_the_source_header_and_counts() {
-    let (report, exported, original, _package_dir, _export_dir) =
+    let (report, exported, original, _output, _package_dir, _export_dir) =
         convert_and_export("delft.city.jsonl");
 
     assert_eq!(exported.format(), SourceFormat::CityJsonSeq);
@@ -91,6 +116,10 @@ fn delft_exports_back_to_a_seq_matching_the_source_header_and_counts() {
         report.instance_geometries_dropped, 0,
         "delft has no GeometryInstance geometries"
     );
+    assert_eq!(
+        report.appearance_refs_dropped, 0,
+        "recounted from the fixture: no delft geometry carries material or texture"
+    );
 
     // Every feature line parses via cjseq (Source::features() itself uses
     // CityJSONFeature::from_str, so a clean full iteration proves this) and
@@ -108,7 +137,7 @@ fn delft_exports_back_to_a_seq_matching_the_source_header_and_counts() {
 
 #[test]
 fn railway_exports_dropping_instance_geometries_but_keeping_their_objects() {
-    let (report, exported, _original, _package_dir, _export_dir) =
+    let (report, exported, _original, output, _package_dir, _export_dir) =
         convert_and_export("lod3_railway.city.json");
 
     assert_eq!(exported.format(), SourceFormat::CityJsonSeq);
@@ -116,6 +145,24 @@ fn railway_exports_dropping_instance_geometries_but_keeping_their_objects() {
     assert_eq!(
         report.instance_geometries_dropped, 15,
         "the recount in decode_real_data.rs: exactly 15 objects carry a template"
+    );
+
+    // Recounted with python3 over the fixture, replaying the writer's
+    // binding rules (per-(object, LoD) first geometry kept, GeometryInstance
+    // excluded — the dataset's only LoD is "3"): 105 stored geometries, of
+    // which 24 carry `material`, 95 carry `texture`, and 105 carry at least
+    // one of the two. Core-profile packages store the index maps but not the
+    // appearance definitions (M4 sidecars), so export must DROP them all —
+    // exporting a dangling index map would be invalid CityJSON.
+    assert_eq!(
+        report.appearance_refs_dropped, 105,
+        "every stored railway geometry carries material or texture (the recount above)"
+    );
+    let (mat_keys, tex_keys) = count_geometry_appearance_keys(&output);
+    assert_eq!(
+        (mat_keys, tex_keys),
+        (0, 0),
+        "exported geometries must not carry dangling material/texture index maps"
     );
 
     let mut object_count = 0usize;
