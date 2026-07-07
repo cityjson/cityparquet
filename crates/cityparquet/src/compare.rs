@@ -328,9 +328,16 @@ fn realign_nested_semantics(
 /// Dereferencing through this (rather than comparing the raw index numbers
 /// `geom.material`/`geom.texture` carry) is required because feature-local
 /// index NUMBERING is an implementation detail of whatever produced the
-/// file, not part of a CityJSON's semantics — exactly why boundary vertex
-/// INDICES are dereferenced through `VertexPool` into real coordinates
-/// instead of compared by index identity. Two independently-produced
+/// file, not part of a CityJSON's semantics — the same reason boundary
+/// vertex INDICES are dereferenced through `VertexPool` into real
+/// coordinates instead of compared by index identity. The analogy stops at
+/// the dereferencing step, though: dereferenced BOUNDARY coordinates
+/// compare under the per-axis `coord_tolerance`, while dereferenced UV
+/// coordinates (and every other value in a resolved definition) compare as
+/// plain JSON through `values_equal` — i.e. under its generic 1e-9
+/// RELATIVE float tolerance, not any quantisation-derived one (UVs are
+/// stored unquantised on both sides, so there is no scale to derive a
+/// tolerance from). Two independently-produced
 /// packages routinely disagree on numbering for two INDEPENDENT reasons that
 /// this module's own M4 task 11 round-trip gate against a real Compatibility
 /// package exposed: (1) `crate::encode`'s `BatchIter` sorts a feature's
@@ -507,7 +514,21 @@ fn resolve_texture_ring(items: &[Value], defs: &AppearanceDefs) -> Result<Value>
                 defs.vertices_texture.len()
             ))
         })?;
-        out.push(serde_json::json!([pair[0], pair[1]]));
+        // A malformed (hand-edited/third-party) file can carry a
+        // vertices-texture entry with fewer than 2 coordinates — an error
+        // naming the entry, never an index-out-of-bounds panic.
+        let u = pair.first().ok_or_else(|| {
+            err(format!(
+                "vertex-texture entry {idx} is malformed: expected [u, v], got an empty entry"
+            ))
+        })?;
+        let v = pair.get(1).ok_or_else(|| {
+            err(format!(
+                "vertex-texture entry {idx} is malformed: expected [u, v], got {} coordinate(s)",
+                pair.len()
+            ))
+        })?;
+        out.push(serde_json::json!([u, v]));
     }
     Ok(Value::Array(out))
 }
@@ -569,9 +590,12 @@ fn resolve_texture_map(map: &Value, defs: &AppearanceDefs) -> Result<Value> {
 fn realigned_material(
     map: &Option<HashMap<String, cjseq::Material>>,
     dropped_surfaces: &[usize],
-    defs: &AppearanceDefs,
+    defs: Option<&AppearanceDefs>,
 ) -> Result<Option<Value>> {
-    let Some(map) = map else {
+    // `defs == None` means `exclusions.appearance` already decided this
+    // geometry's appearance is skipped: don't resolve (or even validate)
+    // anything the caller is about to discard.
+    let (Some(map), Some(defs)) = (map, defs) else {
         return Ok(None);
     };
     let raw = serde_json::to_value(map)?;
@@ -593,9 +617,9 @@ fn realigned_material(
 fn realigned_texture(
     map: &Option<HashMap<String, cjseq::Texture>>,
     dropped_surfaces: &[usize],
-    defs: &AppearanceDefs,
+    defs: Option<&AppearanceDefs>,
 ) -> Result<Option<Value>> {
-    let Some(map) = map else {
+    let (Some(map), Some(defs)) = (map, defs) else {
         return Ok(None);
     };
     let raw = serde_json::to_value(map)?;
@@ -620,9 +644,9 @@ fn realigned_nested_material(
     map: &Option<HashMap<String, cjseq::Material>>,
     depth: usize,
     dropped: &[usize],
-    defs: &AppearanceDefs,
+    defs: Option<&AppearanceDefs>,
 ) -> Result<Option<Value>> {
-    let Some(map) = map else {
+    let (Some(map), Some(defs)) = (map, defs) else {
         return Ok(None);
     };
     let raw = serde_json::to_value(map)?;
@@ -645,9 +669,9 @@ fn realigned_nested_texture(
     map: &Option<HashMap<String, cjseq::Texture>>,
     depth: usize,
     dropped: &[usize],
-    defs: &AppearanceDefs,
+    defs: Option<&AppearanceDefs>,
 ) -> Result<Option<Value>> {
-    let Some(map) = map else {
+    let (Some(map), Some(defs)) = (map, defs) else {
         return Ok(None);
     };
     let raw = serde_json::to_value(map)?;
@@ -669,7 +693,7 @@ fn realigned_nested_texture(
 fn normalise_geometry(
     geom: &Geometry,
     pool: &VertexPool,
-    defs: &AppearanceDefs,
+    defs: Option<&AppearanceDefs>,
 ) -> Result<NormalisedGeometry> {
     match geom.thetype {
         GeometryType::GeometryInstance => Err(err(
@@ -1004,7 +1028,11 @@ fn build_geometries(
             ));
         }
 
-        let normalised = normalise_geometry(geom, pool, defs)?;
+        // `skip_appearance` already decided this geometry's material/texture
+        // are excluded from the comparison: hand `normalise_geometry` no
+        // defs at all, so it never resolves (or errors on) appearance data
+        // whose comparison is skipped anyway.
+        let normalised = normalise_geometry(geom, pool, (!skip_appearance).then_some(defs))?;
         if normalised.dropped_rings > 0 || normalised.dropped_surfaces > 0 {
             excluded.push(format!(
                 "{label}: object {id}: geometry at lod {:?}: normalised away {} degenerate ring(s), {} surface(s)",
@@ -1026,16 +1054,10 @@ fn build_geometries(
                 gtype: geom.thetype.clone(),
                 tree: normalised.tree,
                 semantics: normalised.semantics,
-                material: if skip_appearance {
-                    None
-                } else {
-                    normalised.material
-                },
-                texture: if skip_appearance {
-                    None
-                } else {
-                    normalised.texture
-                },
+                // Already `None` when `skip_appearance` (see the
+                // `then_some(defs)` above).
+                material: normalised.material,
+                texture: normalised.texture,
             },
             excluded,
             label,
@@ -1790,7 +1812,7 @@ mod tests {
         };
         let pool = VertexPool::new(&vertices, &transform);
 
-        let normalised = normalise_geometry(&geom, &pool, &AppearanceDefs::empty()).unwrap();
+        let normalised = normalise_geometry(&geom, &pool, Some(&AppearanceDefs::empty())).unwrap();
         assert_eq!(normalised.dropped_rings, 2);
         assert_eq!(normalised.dropped_surfaces, 2);
         assert_eq!(
@@ -1803,5 +1825,84 @@ mod tests {
             serde_json::json!([[[1, 2], []], [[4]]]),
             "material must realign across the solid/shell nesting"
         );
+    }
+
+    /// Reviewer follow-up (M4 task 11): a malformed `vertices-texture`
+    /// entry with fewer than 2 coordinates — something only a hand-edited
+    /// or third-party file can carry, never this crate's own writer — must
+    /// surface as a `Schema` error naming the entry, not an
+    /// index-out-of-bounds panic in `resolve_texture_ring`. Derived from a
+    /// real railway feature's appearance (sanctioned modification): the
+    /// entry referenced by the first UV index of the first texture ring is
+    /// truncated to a single element.
+    #[test]
+    fn malformed_vertices_texture_entry_is_an_error_not_a_panic() {
+        let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+        let header = source.header().clone();
+
+        // Innermost-ring walk: the first ring's first UV index, if any.
+        fn first_uv_index(v: &Value) -> Option<usize> {
+            let items = v.as_array()?;
+            if is_texture_ring(items) {
+                items.get(1)?.as_u64().map(|n| n as usize)
+            } else {
+                items.iter().find_map(first_uv_index)
+            }
+        }
+
+        for feature in source.features().unwrap() {
+            let feature = feature.unwrap();
+            let Some(appearance) = &feature.appearance else {
+                continue;
+            };
+            let Some(vertices_texture) = &appearance.vertices_texture else {
+                continue;
+            };
+            let pool = VertexPool::new(&feature.vertices, &header.transform);
+            for co in feature.city_objects.values() {
+                let Some(geoms) = &co.geometry else { continue };
+                for geom in geoms {
+                    let Some(texture) = &geom.texture else {
+                        continue;
+                    };
+                    let raw = serde_json::to_value(texture).unwrap();
+                    let Some(uv_idx) = raw
+                        .as_object()
+                        .and_then(|themes| themes.values().find_map(|t| t.get("values")))
+                        .and_then(first_uv_index)
+                    else {
+                        continue;
+                    };
+
+                    // Derived modification: the referenced entry loses its
+                    // second coordinate.
+                    let mut corrupted = vertices_texture.clone();
+                    corrupted[uv_idx].truncate(1);
+
+                    let defs = AppearanceDefs {
+                        materials: appearance.materials.as_deref().unwrap_or(&[]),
+                        textures: appearance.textures.as_deref().unwrap_or(&[]),
+                        vertices_texture: &corrupted,
+                    };
+                    let err = match normalise_geometry(geom, &pool, Some(&defs)) {
+                        Ok(_) => panic!(
+                            "expected an error for the malformed vertex-texture entry {uv_idx}"
+                        ),
+                        Err(e) => e,
+                    };
+                    assert!(
+                        matches!(err, CityParquetError::Schema(_)),
+                        "expected a Schema error, got {err:?}"
+                    );
+                    let msg = err.to_string();
+                    assert!(
+                        msg.contains(&format!("vertex-texture entry {uv_idx}")),
+                        "the error must name the malformed entry {uv_idx}, got: {msg}"
+                    );
+                    return;
+                }
+            }
+        }
+        panic!("railway must contain at least one textured geometry with vertices-texture");
     }
 }
