@@ -368,8 +368,8 @@ impl AppearanceDefs<'_> {
         }
     }
 
-    fn from_feature(feature: &cjseq::CityJSONFeature) -> AppearanceDefs<'_> {
-        match &feature.appearance {
+    fn from_appearance(appearance: Option<&cjseq::Appearance>) -> AppearanceDefs<'_> {
+        match appearance {
             Some(a) => AppearanceDefs {
                 materials: a.materials.as_deref().unwrap_or(&[]),
                 textures: a.textures.as_deref().unwrap_or(&[]),
@@ -377,6 +377,34 @@ impl AppearanceDefs<'_> {
             },
             None => AppearanceDefs::empty(),
         }
+    }
+
+    fn from_feature(feature: &cjseq::CityJSONFeature) -> AppearanceDefs<'_> {
+        Self::from_appearance(feature.appearance.as_ref())
+    }
+
+    /// The RAW DOCUMENT appearance arrays that a `GeometryInstance` TEMPLATE's
+    /// `material`/`texture` indices actually reference — used in
+    /// [`resolve_instance`], mirroring `crate::package::build_template_rows`'s
+    /// write-side counterpart (which dereferences template appearance against
+    /// the exact same array when building `geometry_templates.parquet`).
+    ///
+    /// Deliberately NOT `header.appearance`: see
+    /// [`crate::source::Source::doc_appearance`]'s doc comment — for a
+    /// whole-document CityJSON source, `Source::header()` is `cjseq`'s
+    /// `get_metadata()`, which SLICES `appearance` down to only the entries
+    /// referenced by templates and renumbers them, but does so against a
+    /// separate clone; the header's own `geometry_templates.material`/
+    /// `texture` maps it hands back still carry the ORIGINAL document's
+    /// global indices. Resolving those against the sliced-and-renumbered
+    /// `header.appearance` would therefore go out of range (or silently
+    /// dereference the wrong definition) for any `.city.json` source with
+    /// more appearance definitions than its templates alone reference — the
+    /// M4 Codex-review Finding 3 fix must use `Source::doc_appearance()`
+    /// instead, never a per-feature `AppearanceDefs` like
+    /// [`Self::from_feature`].
+    fn from_doc_appearance(source: &Source) -> AppearanceDefs<'_> {
+        Self::from_appearance(source.doc_appearance())
     }
 }
 
@@ -888,6 +916,21 @@ struct InstanceContent {
     /// relative float tolerance applies — again mirroring UV coordinates,
     /// not boundary coordinates).
     matrix: Vec<f64>,
+    /// The referenced template's own `semantics`, realigned exactly like a
+    /// non-instance geometry's (see [`normalise_geometry`]'s
+    /// `MultiSurface`/`Solid` arms). `None` when the template carries none.
+    semantics: Option<Value>,
+    /// The referenced template's own `material`, DEREFERENCED against THAT
+    /// side's RAW DOCUMENT appearance arrays (never `header.appearance` — a
+    /// template's indices reference the raw document's arrays directly; see
+    /// [`AppearanceDefs::from_doc_appearance`] and [`resolve_instance`]'s
+    /// `defs` parameter). M4 Codex-review Finding 3: before this field
+    /// existed, a corrupted template material/texture (or semantics) was
+    /// invisible to the comparator entirely.
+    material: Option<Value>,
+    /// The referenced template's own `texture`, dereferenced the same way as
+    /// [`Self::material`].
+    texture: Option<Value>,
 }
 
 /// Converts a [`Node`] into a plain JSON value tree (points become `[x, y,
@@ -903,18 +946,23 @@ fn node_to_value(n: &Node) -> Value {
 }
 
 /// Dereferences one `GeometryInstance`'s `template` index against `templates`
-/// (that side's own `header.geometry-templates.templates`) and
-/// `template_pool` (a [`VertexPool::raw`] over that side's own
-/// `vertices-templates`), producing its comparable [`InstanceContent`]. A
-/// missing `template` index or an index out of range of `templates` is a
-/// `Schema` error naming the object — matching this module's existing style
-/// for malformed-side handling (e.g. [`resolve_material_index`]'s
-/// out-of-range error), not a silently-skipped comparison: a wrong template
-/// join is exactly the bug class this fix exists to catch.
+/// (that side's own `header.geometry-templates.templates`), `template_pool`
+/// (a [`VertexPool::raw`] over that side's own `vertices-templates`), and
+/// `defs` (that side's own RAW DOCUMENT [`AppearanceDefs`] — see
+/// [`AppearanceDefs::from_doc_appearance`] — since a template's
+/// `material`/`texture` indices reference the raw document's arrays
+/// directly, never `header.appearance` nor a feature-local pool), producing
+/// its comparable [`InstanceContent`]. A missing `template`
+/// index or an index out of range of `templates` is a `Schema` error naming
+/// the object — matching this module's existing style for malformed-side
+/// handling (e.g. [`resolve_material_index`]'s out-of-range error), not a
+/// silently-skipped comparison: a wrong template join is exactly the bug
+/// class this fix exists to catch.
 fn resolve_instance(
     geom: &Geometry,
     templates: &[Geometry],
     template_pool: &VertexPool,
+    defs: &AppearanceDefs,
     label: &str,
     id: &str,
 ) -> Result<InstanceContent> {
@@ -930,13 +978,13 @@ fn resolve_instance(
             templates.len()
         ))
     })?;
-    // Templates never carry their own material/texture dereferenced through
-    // a feature-local `AppearanceDefs` (their appearance, when present,
-    // references the header-level arrays directly) — `None` here restricts
-    // the comparison to boundaries/type/lod, as the brief specifies; it also
-    // means `normalise_geometry` never tries to resolve indices it has
-    // nothing to resolve them against.
-    let normalised = normalise_geometry(template, template_pool, None)?;
+    // Templates' `material`/`texture` (when present) reference the HEADER's
+    // own appearance arrays directly (mirrors `crate::export::rebuild_templates`'s
+    // write-side counterpart) — `Some(defs)` here dereferences them exactly
+    // like a non-instance geometry's, instead of the earlier `None` that
+    // left the comparator blind to a corrupted template semantics/appearance
+    // (M4 Codex-review Finding 3).
+    let normalised = normalise_geometry(template, template_pool, Some(defs))?;
     let matrix: Vec<f64> = match &geom.transformation_matrix {
         Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
             err(format!(
@@ -954,6 +1002,9 @@ fn resolve_instance(
         template_lod: template.lod.clone(),
         template_tree: normalised.tree,
         matrix,
+        semantics: normalised.semantics,
+        material: normalised.material,
+        texture: normalised.texture,
     })
 }
 
@@ -1077,9 +1128,11 @@ fn claim_or_log(
 /// Builds one object's comparable geometry map, applying (in order):
 /// `exclusions.geometry_instances` / `exclusions.appearance`, degenerate-ring
 /// normalisation, and the writer's first-geometry-per-LoD rule. Logs
-/// everything it skips into `excluded`. `templates`/`template_pool` are that
-/// side's own header `geometry-templates` (see [`resolve_instance`]) — used
-/// only for `GeometryInstance` geometries.
+/// everything it skips into `excluded`. `templates`/`template_pool`/
+/// `template_defs` are that side's own header `geometry-templates` and
+/// header-scope [`AppearanceDefs`] (see [`resolve_instance`]) — used only for
+/// `GeometryInstance` geometries; `defs` (feature-scope) is unrelated and
+/// used for every other geometry type.
 #[allow(clippy::too_many_arguments)]
 fn build_geometries(
     geoms: &[Geometry],
@@ -1091,6 +1144,7 @@ fn build_geometries(
     id: &str,
     templates: &[Geometry],
     template_pool: &VertexPool,
+    template_defs: &AppearanceDefs,
 ) -> Result<HashMap<Option<String>, NormGeometry>> {
     let mut geometries = HashMap::new();
     for geom in geoms {
@@ -1113,7 +1167,14 @@ fn build_geometries(
             // `transformationMatrix`) — not just the reference point above —
             // is what actually proves the instanced geometry round-tripped.
             // See `InstanceContent`'s docs (M4 final-review Fix 1).
-            let instance = Some(resolve_instance(geom, templates, template_pool, label, id)?);
+            let instance = Some(resolve_instance(
+                geom,
+                templates,
+                template_pool,
+                template_defs,
+                label,
+                id,
+            )?);
             claim_or_log(
                 &mut geometries,
                 geom.lod.clone(),
@@ -1219,6 +1280,12 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
             None => (&[], Vec::new()),
         };
     let template_pool = VertexPool::raw(&template_vertices);
+    // This side's own RAW DOCUMENT appearance arrays: a template's
+    // `material`/`texture` indices reference these directly (never
+    // `header.appearance`, and never a feature-local pool — see
+    // [`AppearanceDefs::from_doc_appearance`] and [`resolve_instance`]).
+    // Built once per side, like `templates`/`template_pool` above.
+    let template_defs = AppearanceDefs::from_doc_appearance(&source);
 
     let mut objects = HashMap::new();
     let mut excluded = Vec::new();
@@ -1247,6 +1314,7 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
                     id,
                     templates,
                     &template_pool,
+                    &template_defs,
                 )?,
                 None => HashMap::new(),
             };
@@ -1399,6 +1467,30 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
                     out.push(format!(
                         "object {id}: geometry at lod {lod:?}: instance transformationMatrix differs: {ma} vs {mb}"
                     ));
+                }
+                // M4 Codex-review Finding 3: the referenced template's own
+                // semantics/material/texture, dereferenced through THAT
+                // side's raw document appearance (see `resolve_instance`) —
+                // before this, a corrupted template semantics or appearance
+                // was invisible to the comparator.
+                let sema = ia.semantics.clone().unwrap_or(Value::Null);
+                let semb = ib.semantics.clone().unwrap_or(Value::Null);
+                if !values_equal(&sema, &semb) {
+                    out.push(format!(
+                        "object {id}: geometry at lod {lod:?}: instance template semantics differ: {sema} vs {semb}"
+                    ));
+                }
+                for (what, va, vb) in [
+                    ("material", &ia.material, &ib.material),
+                    ("texture", &ia.texture, &ib.texture),
+                ] {
+                    let na = va.clone().unwrap_or(Value::Null);
+                    let nb = vb.clone().unwrap_or(Value::Null);
+                    if !values_equal(&na, &nb) {
+                        out.push(format!(
+                            "object {id}: geometry at lod {lod:?}: instance template {what} differs: {na} vs {nb}"
+                        ));
+                    }
                 }
             }
             (None, None) => {}
@@ -2205,6 +2297,148 @@ mod tests {
         assert!(
             report.differences.iter().any(|d| d.contains(&changed_id)),
             "the difference must name object {changed_id}, got: {:#?}",
+            report.differences
+        );
+    }
+
+    /// Converts the real railway fixture under the Compatibility profile and
+    /// exports it back to a single `.city.json` DOCUMENT (not Seq): templates'
+    /// `material`/`texture` are localised at HEADER scope by
+    /// `crate::export::rebuild_templates`, so this is the shape whose
+    /// corruption the M4 Codex-review Finding 3 tests below target. Returns
+    /// the exported file's path and the tempdirs backing it (kept alive for
+    /// the caller).
+    fn compat_railway_export_doc() -> (std::path::PathBuf, tempfile::TempDir, tempfile::TempDir) {
+        use crate::export::{ExportOptions, export};
+        use crate::package::{ConvertOptions, convert};
+        use cityparquet_schema::Profile;
+
+        let package_dir = tempfile::tempdir().unwrap();
+        let mut opts = ConvertOptions::new(
+            fixture("lod3_railway.city.json"),
+            package_dir.path().to_path_buf(),
+        );
+        opts.profile = Profile::Compatibility;
+        convert(&opts).unwrap();
+
+        let export_dir = tempfile::tempdir().unwrap();
+        let output = export_dir.path().join("export.city.json");
+        export(&ExportOptions {
+            package_dir: package_dir.path().to_path_buf(),
+            output: output.clone(),
+        })
+        .unwrap();
+        (output, package_dir, export_dir)
+    }
+
+    /// M4 Codex-review Finding 3: before the fix, `resolve_instance` passed
+    /// `None` appearance defs and never even read the template's own
+    /// `material`/`texture`, so a `GeometryInstance`'s round-trip proof
+    /// stopped at boundaries/type/lod — a corrupted template appearance was
+    /// completely invisible to the no-exclusions gate. Derived from the real
+    /// railway package (sanctioned): export to `.city.json` (templates'
+    /// material/texture become HEADER-scope indices — see
+    /// `crate::export::rebuild_templates`), then in a mutated copy repoint
+    /// template 1's `material.visual.value` from its real index (`1`) to a
+    /// DIFFERENT, still-valid header material index (`0`) — a corruption
+    /// that stays entirely within the header's own (85-entry) `appearance`
+    /// array, so it can never be a mere out-of-range Schema error.
+    #[test]
+    fn compare_detects_a_mutated_geometry_instance_template_material() {
+        let (original, _package_dir, _export_dir) = compat_railway_export_doc();
+
+        let text = fs::read_to_string(&original).unwrap();
+        let mut doc: Value = serde_json::from_str(&text).unwrap();
+
+        let templates = doc["geometry-templates"]["templates"]
+            .as_array_mut()
+            .expect("exported doc must carry geometry-templates");
+        assert_eq!(templates.len(), 3, "railway must carry exactly 3 templates");
+        let material_value = templates[1]["material"]["visual"]["value"].clone();
+        assert_eq!(
+            material_value,
+            serde_json::json!(1),
+            "precondition: template 1's material.visual.value starts at header index 1"
+        );
+        // Repoint to a DIFFERENT, still-valid header material index — the
+        // corruption must stay a real material-content mismatch, never an
+        // out-of-range Schema error.
+        templates[1]["material"]["visual"]["value"] = serde_json::json!(0);
+        let n_materials = doc["appearance"]["materials"]
+            .as_array()
+            .expect("exported header must carry appearance.materials")
+            .len();
+        assert!(
+            n_materials > 1,
+            "need at least 2 header materials to repoint to a genuinely different one, got {n_materials}"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let mutated_path = dir
+            .path()
+            .join("railway-template-material-mutated.city.json");
+        fs::write(&mutated_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+        let report =
+            compare_datasets(&original, &mutated_path, &CompareOptions::default()).unwrap();
+        assert!(
+            !report.equal,
+            "a mutated GeometryInstance template material must be detected, not silently accepted"
+        );
+        assert!(
+            report.differences.iter().any(|d| d.contains("instance")
+                && d.contains("template")
+                && d.contains("material")),
+            "expected a difference naming the instance template material, got: {:#?}",
+            report.differences
+        );
+    }
+
+    /// [`compare_detects_a_mutated_geometry_instance_template_material`]'s
+    /// counterpart for `semantics`. Railway's own 3 templates carry NO
+    /// `semantics` member at all (checked directly against the fixture), so
+    /// there is no existing value to mutate — instead, per the M4
+    /// Codex-review Finding 3 brief, this ADDS a `semantics` block to one
+    /// template on one side only: absence-vs-presence must be a difference,
+    /// not silence, proving the comparator actually reads
+    /// `InstanceContent::semantics` rather than defaulting both sides to
+    /// `None` unconditionally.
+    #[test]
+    fn compare_detects_an_added_geometry_instance_template_semantics_block() {
+        let (original, _package_dir, _export_dir) = compat_railway_export_doc();
+
+        let text = fs::read_to_string(&original).unwrap();
+        let mut doc: Value = serde_json::from_str(&text).unwrap();
+
+        let templates = doc["geometry-templates"]["templates"]
+            .as_array_mut()
+            .expect("exported doc must carry geometry-templates");
+        assert!(
+            templates[0].get("semantics").is_none(),
+            "precondition: railway's templates carry no semantics of their own"
+        );
+        templates[0]["semantics"] = serde_json::json!({
+            "surfaces": [{"type": "WallSurface"}],
+            "values": [0],
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let mutated_path = dir
+            .path()
+            .join("railway-template-semantics-added.city.json");
+        fs::write(&mutated_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+        let report =
+            compare_datasets(&original, &mutated_path, &CompareOptions::default()).unwrap();
+        assert!(
+            !report.equal,
+            "an added GeometryInstance template semantics block must be detected, not silently accepted"
+        );
+        assert!(
+            report.differences.iter().any(|d| d.contains("instance")
+                && d.contains("template")
+                && d.contains("semantics")),
+            "expected a difference naming the instance template semantics, got: {:#?}",
             report.differences
         );
     }
