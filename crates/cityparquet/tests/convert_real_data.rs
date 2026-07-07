@@ -295,3 +295,65 @@ fn delft_compatibility_convert_writes_no_sidecars() {
         "the parquet footer's KV sidecar_files must be empty, matching metadata.json"
     );
 }
+
+/// M4 task 11 (Step 1/2): the overwrite-purge hazard the `TODO(M4)` comment
+/// named. A Compatibility convert of railway into a fresh directory writes
+/// `materials.parquet`/`textures.parquet`/`geometry_templates.parquet`
+/// alongside `cityobjects.parquet`; overwriting that SAME directory with a
+/// Core convert of an unrelated dataset (delft, no appearance/templates of
+/// its own) must not leave any of the first run's sidecars behind — a
+/// consumer reading the directory afterwards must see exactly what the
+/// second run's own `metadata.json` describes (`sidecar_files == []`), never
+/// a stale sidecar from a prior run that manifest no longer mentions.
+#[test]
+fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
+    let out = tempfile::tempdir().unwrap();
+    let mut first = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    first.profile = Profile::Compatibility;
+    let first_report = convert(&first).unwrap();
+    assert_eq!(first_report.materials_written, 85);
+    assert!(out.path().join("materials.parquet").exists());
+    assert!(out.path().join("textures.parquet").exists());
+    assert!(out.path().join("geometry_templates.parquet").exists());
+
+    let mut second = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    second.overwrite = true;
+    let second_report = convert(&second).unwrap();
+    assert_eq!(second_report.object_count, 2231);
+    assert_eq!(second_report.materials_written, 0);
+    assert_eq!(second_report.textures_written, 0);
+    assert_eq!(second_report.templates_written, 0);
+
+    assert!(
+        !out.path().join("materials.parquet").exists(),
+        "stale materials.parquet from the first (Compatibility) convert must be purged"
+    );
+    assert!(
+        !out.path().join("textures.parquet").exists(),
+        "stale textures.parquet from the first (Compatibility) convert must be purged"
+    );
+    assert!(
+        !out.path().join("geometry_templates.parquet").exists(),
+        "stale geometry_templates.parquet from the first (Compatibility) convert must be purged"
+    );
+    assert!(out.path().join("cityobjects.parquet").exists());
+
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["profile"], "core");
+    assert_eq!(
+        manifest["sidecar_files"],
+        serde_json::json!([]),
+        "the second run's own manifest must say no sidecars, and none must be left on disk"
+    );
+
+    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let rows: usize = builder
+        .build()
+        .unwrap()
+        .map(|b| b.unwrap().num_rows())
+        .sum();
+    assert_eq!(rows, 2231, "the second run's own main table must be intact");
+}

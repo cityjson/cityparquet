@@ -96,6 +96,48 @@ fn parquet_err(msg: String) -> CityParquetError {
     CityParquetError::Parquet(msg)
 }
 
+/// Removes every trace of a PRIOR `convert` run from `output_dir` before this
+/// run writes its own files, so an overwrite can never leave a stale sidecar
+/// behind that the fresh `metadata.json` no longer lists (e.g. a
+/// Compatibility convert's `materials.parquet` surviving a subsequent Core
+/// convert into the same directory).
+///
+/// The safety property this must hold is "delete only what a CityParquet
+/// package writes": `metadata.json` by name, and every direct (non-recursive)
+/// `*.parquet` child of `output_dir` — nothing else, so an unrelated file a
+/// caller happens to keep alongside the package is left untouched. This runs
+/// BEFORE the main-table writer opens `cityobjects.parquet`, so that file is
+/// purged too; it is unconditionally rewritten immediately after.
+fn purge_stale_package_files(output_dir: &PathBuf) -> Result<()> {
+    let metadata_path = output_dir.join("metadata.json");
+    if metadata_path.exists() {
+        fs::remove_file(&metadata_path).map_err(|e| {
+            io_err(format!(
+                "cannot remove stale {}: {e}",
+                metadata_path.display()
+            ))
+        })?;
+    }
+    let entries = fs::read_dir(output_dir).map_err(|e| {
+        io_err(format!(
+            "cannot read output directory {}: {e}",
+            output_dir.display()
+        ))
+    })?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| io_err(format!("cannot read directory entry: {e}")))?;
+        let path = entry.path();
+        let is_parquet_file = path.is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("parquet");
+        if is_parquet_file {
+            fs::remove_file(&path)
+                .map_err(|e| io_err(format!("cannot remove stale {}: {e}", path.display())))?;
+        }
+    }
+    Ok(())
+}
+
 /// Build one [`TemplateRow`] per entry in `templates.templates`, folding
 /// their `material`/`texture` definitions into `interner` — the SAME
 /// interner the main encode pass populated from `source`'s features — so
@@ -221,8 +263,9 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
             opts.output_dir.display()
         )));
     }
-    // TODO(M4): purge stale files on overwrite once sidecars exist — a stale
-    // sidecar must not outlive a manifest that says sidecar_files: [].
+    if has_entries && opts.overwrite {
+        purge_stale_package_files(&opts.output_dir)?;
+    }
 
     let source = Source::open(&opts.input)?;
     let scan_result = scan(&source)?;
