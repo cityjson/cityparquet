@@ -53,7 +53,7 @@ use arrow_array::{Array, RecordBatch, StringArray};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
-use cityparquet_schema::{CityParquetError, CityParquetMetadata, PackageManifest, Result};
+use cityparquet_schema::{CityParquetError, CityParquetMetadata, Lod, PackageManifest, Result};
 use cjseq::{
     Appearance, CityJSON, CityJSONFeature, Geometry, GeometryTemplates, GeometryType, Material,
     Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
@@ -93,16 +93,19 @@ pub struct ExportReport {
     pub appearance_refs_dropped: usize,
     /// Geometries on the SIDECAR-PRESENT restore path (`LocalAppearance` is
     /// available, i.e. `materials.parquet`/`textures.parquet` were loaded)
-    /// whose object-level per-LoD `material`/`texture` map is non-empty but
-    /// has no entry for that geometry's own CANONICAL lod key. This is a
-    /// distinct failure mode from [`Self::appearance_refs_dropped`] (which
-    /// only ever applies to the NO-sidecar path, where the whole map is
-    /// deliberately dropped regardless of key): here the map is restorable
-    /// in principle, but a non-canonical source `lod` string (e.g. `"03"`,
-    /// which `Lod::parse` normalises to `"3"`) was used as the encoder's raw
-    /// map key while export looks the entry up by the canonical string,
-    /// silently missing it. `0` for both shipped fixtures, which use only
-    /// canonical lod strings.
+    /// whose object-level per-LoD `material`/`texture` map carries a RAW key
+    /// that `Lod::parse`s to this geometry's own canonical lod yet
+    /// string-mismatches it — the encoder keyed the entry by a non-canonical
+    /// source `lod` string (e.g. `"03"`, which `Lod::parse` normalises to
+    /// `"3"`) while export looks the entry up by the canonical string,
+    /// silently missing it. This is a distinct failure mode from
+    /// [`Self::appearance_refs_dropped`] (which only ever applies to the
+    /// NO-sidecar path, where the whole map is deliberately dropped
+    /// regardless of key). Deliberately does NOT fire merely because the map
+    /// has entries for OTHER lods and none for this one — an object with
+    /// several geometries at different lods, appearance defined on only
+    /// some of them, is legitimate CityJSON, not a restore failure. `0` for
+    /// both shipped fixtures, which use only canonical lod strings.
     pub appearance_lod_misses: usize,
 }
 
@@ -484,17 +487,33 @@ fn has_appearance_for_lod(map: &Option<Value>, lod_key: &str) -> bool {
     map.as_ref().is_some_and(|m| m.get(lod_key).is_some())
 }
 
-/// Whether the per-object `{"<lod>": {...}}` map carries at least one entry
-/// (for SOME lod, not necessarily this geometry's) but the lookup for THIS
-/// geometry's own canonical lod key missed (`hit == false`) — the
-/// `appearance_lod_misses` condition on the sidecar-present restore path
-/// (see [`ExportReport::appearance_lod_misses`]). An entirely absent/empty
-/// map is not a miss: there is nothing this geometry could have restored
-/// from in the first place.
-fn map_nonempty_and_key_missing(map: &Option<Value>, hit: bool) -> bool {
-    !hit && map
-        .as_ref()
-        .is_some_and(|m| m.as_object().is_some_and(|o| !o.is_empty()))
+/// The PRECISE `appearance_lod_misses` detector (see
+/// [`ExportReport::appearance_lod_misses`]): true only when the canonical
+/// lookup for this geometry's own lod missed (`hit == false`) AND the
+/// per-object `{"<raw-lod>": {...}}` map carries some RAW key that
+/// `Lod::parse`s to this geometry's own canonical `lod` yet differs from it
+/// as a string (`canonical_key`) — i.e. the non-canonical-key encoding bug
+/// this counter exists to catch. A map that simply has no entry for this
+/// geometry's lod (because appearance was only ever defined for a DIFFERENT
+/// lod of this object — legitimate CityJSON) does NOT count: no key in the
+/// map parses to THIS lod at all, canonical or otherwise. `lod: None`
+/// (no canonical lod to match against) never counts.
+fn map_has_noncanonical_lod_match(
+    map: &Option<Value>,
+    hit: bool,
+    lod: Option<Lod>,
+    canonical_key: &str,
+) -> bool {
+    if hit {
+        return false;
+    }
+    let Some(lod) = lod else {
+        return false;
+    };
+    map.as_ref().and_then(Value::as_object).is_some_and(|o| {
+        o.keys()
+            .any(|k| k != canonical_key && Lod::parse(k).is_ok_and(|parsed| parsed == lod))
+    })
 }
 
 /// A *ring* is the innermost texture-map array. Pre-rewrite/pre-localisation
@@ -1136,14 +1155,25 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                             geom_texture = Some(serde_json::from_value(localised)?);
                         }
                         // The sidecar IS present (defs are restorable in
-                        // principle): a non-empty object-level map with no
-                        // entry for this geometry's canonical lod key is a
-                        // real miss, distinct from `appearance_refs_dropped`
-                        // below (which only ever fires on the no-sidecar
-                        // path).
-                        if map_nonempty_and_key_missing(material, material_hit.is_some())
-                            || map_nonempty_and_key_missing(texture, texture_hit.is_some())
-                        {
+                        // principle): a raw map key that parses to this
+                        // geometry's own canonical lod but string-mismatches
+                        // it is a real miss, distinct from
+                        // `appearance_refs_dropped` below (which only ever
+                        // fires on the no-sidecar path). A map that simply
+                        // has no entry for THIS lod (appearance defined only
+                        // for a different lod of this object) is NOT a miss
+                        // — see `map_has_noncanonical_lod_match`'s docs.
+                        if map_has_noncanonical_lod_match(
+                            material,
+                            material_hit.is_some(),
+                            *lod,
+                            &lod_key,
+                        ) || map_has_noncanonical_lod_match(
+                            texture,
+                            texture_hit.is_some(),
+                            *lod,
+                            &lod_key,
+                        ) {
                             appearance_lod_misses += 1;
                         }
                     }

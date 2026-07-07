@@ -496,6 +496,79 @@ fn railway_compatibility_export_counts_a_non_canonical_lod_restore_miss() {
     );
 }
 
+/// M5 final-review fix: an object with geometries at SEVERAL lods, where
+/// appearance is defined for only SOME of them, is legitimate CityJSON — it
+/// must NOT be counted as an `appearance_lod_misses` restore failure. The
+/// old detector fired for ANY geometry whose canonical lod key was absent
+/// from a non-empty per-object map, which over-counts exactly this case.
+/// Derived from a copy of the railway fixture: object
+/// `UUID_bd865e62-18de-40ff-85da-883709a86f0f`'s only (non-instance)
+/// geometry (`lod: "3"`, carrying a `texture` block) gains a SECOND
+/// geometry at a DIFFERENT lod (`"2"`, same boundaries — content does not
+/// matter here) that carries no material/texture of its own. The object's
+/// per-object appearance map therefore has an entry only for `"3"`; the
+/// `"2"` geometry's canonical lookup at `"2"` correctly misses, but that is
+/// not a restore failure (there was never anything to restore for `"2"`).
+#[test]
+fn multi_lod_object_with_single_lod_appearance_is_not_counted_as_a_restore_miss() {
+    const TARGET_OBJECT_ID: &str = "UUID_bd865e62-18de-40ff-85da-883709a86f0f";
+
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    {
+        let co = doc["CityObjects"][TARGET_OBJECT_ID]
+            .as_object_mut()
+            .expect("precondition: target object must exist");
+        let geoms = co
+            .get_mut("geometry")
+            .and_then(Value::as_array_mut)
+            .expect("precondition: target object must carry geometry");
+        assert_eq!(
+            geoms.len(),
+            1,
+            "precondition: target object must carry exactly one geometry"
+        );
+        let original = geoms[0].as_object().unwrap();
+        assert_eq!(
+            original.get("lod").and_then(Value::as_str),
+            Some("3"),
+            "precondition: target geometry's source lod must be the canonical \"3\""
+        );
+        assert!(
+            original.contains_key("texture"),
+            "precondition: target geometry must carry a texture block"
+        );
+        let mut second_lod_geom = original.clone();
+        second_lod_geom.insert("lod".to_string(), serde_json::json!("2"));
+        second_lod_geom.remove("material");
+        second_lod_geom.remove("texture");
+        geoms.push(Value::Object(second_lod_geom));
+    }
+
+    let input_dir = tempfile::tempdir().unwrap();
+    let input_path = input_dir
+        .path()
+        .join("railway_multi_lod_single_appearance.city.json");
+    std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(input_path, package_dir.path().to_path_buf());
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let report = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: export_dir.path().join("export.city.jsonl"),
+    })
+    .unwrap();
+    assert_eq!(
+        report.appearance_lod_misses, 0,
+        "a legitimate single-lod appearance on a multi-lod object must not be counted as a restore miss"
+    );
+}
+
 /// M5 debt item 2, rule half (a): `LocalAppearance::into_appearance` must
 /// return `Some` only when the feature referenced a definition OR
 /// dataset-wide defaults exist — never unconditionally for every feature.
