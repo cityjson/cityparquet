@@ -104,6 +104,94 @@ gates were updated to pin these newly-detected drops rather than their
 former, incomplete zero count; see `crates/cityparquet/tests/roundtrip_real_data.rs`
 and `crates/cityparquet/tests/convert_real_data.rs`.
 
+## Baseline geometry coverage (duckdb-copy / duckdb-copy-zstd)
+
+**The `duckdb-cityjson` extension does not populate every geometry column it
+declares**, on every dataset benchmarked here, and on `lod3_railway.city.json`
+it populates NONE at all. This was verified empirically (2026-07-07,
+`duckdb` v1.5.3, `cityjson` community extension) with, for each geometry
+column `read_cityjson`/`read_cityjsonseq` reports in its schema:
+
+```sql
+LOAD cityjson;
+SELECT count(geom_lod0), count(geom_lod1_2), count(geom_lod1_3), count(geom_lod2_2), count(*)
+FROM read_cityjsonseq('tests/fixtures/delft.city.jsonl');
+-- 0 | 1116 | 1116 | 1116 | 2231
+
+SELECT count(geom_lod), count(geom_lod3), count(*)
+FROM read_cityjson('tests/fixtures/lod3_railway.city.json');
+-- 0 | 0 | 121
+
+SELECT count(geom_lod0), count(geom_lod1_2), count(geom_lod1_3), count(geom_lod2_2), count(*)
+FROM read_cityjson('bench/data/9-284-556.city.json');
+-- 0 | 1212 | 1212 | 1212 | 2423
+
+SELECT count(geom_lod0), count(geom_lod1_2), count(geom_lod1_3), count(geom_lod2_2), count(*)
+FROM read_cityjson('bench/data/9-304-532.city.json');
+-- 0 | 465 | 465 | 465 | 930
+
+SELECT count(geom_lod0), count(geom_lod1_2), count(geom_lod1_3), count(geom_lod2_2), count(*)
+FROM read_cityjson('bench/data/9-196-328.city.json');
+-- 0 | 30 | 30 | 30 | 60
+```
+
+| dataset | geometry column | non-null rows | total rows | coverage |
+|---|---|---:|---:|---:|
+| delft.city.jsonl | `geom_lod0` | 0 | 2231 | 0% |
+| delft.city.jsonl | `geom_lod1_2` | 1116 | 2231 | 50% |
+| delft.city.jsonl | `geom_lod1_3` | 1116 | 2231 | 50% |
+| delft.city.jsonl | `geom_lod2_2` | 1116 | 2231 | 50% |
+| **lod3_railway.city.json** | `geom_lod` | **0** | 121 | **0%** |
+| **lod3_railway.city.json** | `geom_lod3` | **0** | 121 | **0%** |
+| 9-284-556.city.json | `geom_lod0` | 0 | 2423 | 0% |
+| 9-284-556.city.json | `geom_lod1_2` | 1212 | 2423 | 50% |
+| 9-284-556.city.json | `geom_lod1_3` | 1212 | 2423 | 50% |
+| 9-284-556.city.json | `geom_lod2_2` | 1212 | 2423 | 50% |
+| 9-304-532.city.json | `geom_lod0` | 0 | 930 | 0% |
+| 9-304-532.city.json | `geom_lod1_2` | 465 | 930 | 50% |
+| 9-304-532.city.json | `geom_lod1_3` | 465 | 930 | 50% |
+| 9-304-532.city.json | `geom_lod2_2` | 465 | 930 | 50% |
+| 9-196-328.city.json | `geom_lod0` | 0 | 60 | 0% |
+| 9-196-328.city.json | `geom_lod1_2` | 30 | 60 | 50% |
+| 9-196-328.city.json | `geom_lod1_3` | 30 | 60 | 50% |
+| 9-196-328.city.json | `geom_lod2_2` | 30 | 60 | 50% |
+
+Two distinct patterns, both checked against the source CityJSON:
+
+- **All four real datasets (delft + all three 3DBAG tiles) have `geom_lod0`
+  fully NULL**, even though the source genuinely carries LoD0 geometries in
+  every case — verified against the raw source JSON directly (not just
+  DuckDB): 9-196-328's source carries exactly 30 LoD0 geometries (parsing
+  every `CityObject`'s `geometry[].lod`), matching the 30 non-null rows
+  `geom_lod1_2`/`geom_lod1_3`/`geom_lod2_2` each report for the SAME
+  objects, yet DuckDB's own `geom_lod0` column for that identical data is
+  0/60 non-null. This is a `duckdb-cityjson` extension limitation/bug
+  specific to LoD `"0"`, uniform across every dataset here, NOT a per-tile
+  data quirk. The `geom_lod1_2`/`geom_lod1_3`/
+  `geom_lod2_2` 50%-populated pattern, by contrast, is expected and legitimate:
+  each 3DBAG/delft Building's geometry lives on its `BuildingPart` children,
+  not the parent `Building` object itself, so exactly half of each dataset's
+  CityObjects (the parents) carry no geometry at all — this is a real,
+  correct CityJSON data-model split, not a coverage bug.
+- **`lod3_railway.city.json` is fully NULL on BOTH its geometry columns** —
+  `geom_lod` (the generic column for objects whose source `lod` is absent,
+  e.g. `SolitaryVegetationObject`) and `geom_lod3` (the column for the 105
+  objects with a real `lod: "3"` `MultiSurface`/`Solid` geometry, confirmed
+  against the raw source JSON). The extension writes **zero** geometry for
+  this file: every `duckdb-copy`/`duckdb-copy-zstd` row in
+  `bench/results/railway.csv` is a Parquet file containing attribute
+  columns only, no boundaries, no vertices.
+
+**Consequence: railway's `duckdb-copy`/`duckdb-copy-zstd` rows in
+`bench/results/railway.csv` are NOT COMPARABLE to any cityparquet-rs
+variant's bytes or write time** — they measure writing zero geometry for
+121 objects, not a real competing encoding of the same data. The rows are
+kept in the CSV (removing data from a committed measurement artefact would
+be worse than disclosing it), but no cross-format byte/time comparison is
+drawn from them anywhere in this document. The 3DBAG-tile `duckdb-copy`
+comparisons that DO appear below are against baselines missing LoD0
+entirely (see above) — a partial-geometry comparison, not a full one.
+
 ## Observations (numbers only)
 
 Smallest `total_bytes` per dataset, cityparquet-rs variants
@@ -116,6 +204,13 @@ Smallest `total_bytes` per dataset, cityparquet-rs variants
 | 9-284-556 | `no-dictionary` | 2,706,579 | 2,747,936 |
 | 9-304-532 | `no-dictionary` | 782,329 | 797,336 |
 | 9-196-328 | `no-dictionary` | 115,931 | 118,992 |
+
+The harness's own `write_s` (every cityparquet-rs row below) times one
+whole `convert()` call: input scan, `RowOrder::Hilbert`'s buffer-and-sort
+pass when that variant enables it, the Parquet/sidecar encode, and the
+crash-safe `commit_package` rename swap — uniformly, for every variant, so
+variant-to-variant deltas below isolate the codec/layout/ordering choice
+itself rather than a measurement artefact.
 
 - `snappy` is the largest on every dataset (delft 3,720,228; railway
   2,544,962; 9-284-556 4,424,207; 9-304-532 1,195,769; 9-196-328 159,096)
@@ -135,13 +230,25 @@ Smallest `total_bytes` per dataset, cityparquet-rs variants
   +35,590 B; 9-196-328 +34,730 B).
 - duckdb-copy baseline (schema differs: boundaries as JSON text, no bbox
   column, no window query — see `scripts/bench_duckdb.sh` header for what
-  is and is not comparable): `write_s` 0.381/0.316/0.662/0.270/0.097 s
-  (delft/railway/9-284-556/9-304-532/9-196-328), each sample carrying
-  ~0.07 s process + `LOAD cityjson` overhead (disclosed, undeducted; see
-  the `# calibration:` stderr line). ZSTD baseline bytes: delft 838,144;
-  railway 8,450; 9-284-556 1,663,803; 9-304-532 517,762; 9-196-328 69,628.
+  is and is not comparable, and the "Baseline geometry coverage" section
+  above for what geometry it does and does not actually contain): `write_s`
+  0.381/0.662/0.270/0.097 s (delft/9-284-556/9-304-532/9-196-328), each
+  sample carrying ~0.07 s process + `LOAD cityjson` overhead (disclosed,
+  undeducted; see the `# calibration:` stderr line). ZSTD baseline bytes:
+  delft 838,144; 9-284-556 1,663,803; 9-304-532 517,762; 9-196-328 69,628.
   SNAPPY baseline bytes on 9-284-556 (2,777,385) exceed every
-  cityparquet-rs variant except `snappy`.
+  cityparquet-rs variant except `snappy`. **All four of these numbers are
+  against a baseline missing LoD0 entirely** (every tile's `geom_lod0` is
+  0% covered — see above), so they compare cityparquet-rs's FULL geometry
+  (all LoDs) against a baseline carrying only 3 of 4 LoDs; a hypothetical
+  complete baseline would be larger still, so this is not an
+  overstatement in cityparquet-rs's favour, but it is not a like-for-like
+  byte comparison either. **Railway's `write_s` (0.316 s) and ZSTD bytes
+  (8,450 B) are excluded from this list and from all comparison above: the
+  baseline coverage table shows the extension writes zero geometry for
+  railway, so those numbers describe an attribute-only Parquet file, not a
+  competing encoding of the same data — see "Baseline geometry coverage"
+  above.**
 - Baseline `full_scan_s` (0.058–0.071 s) is dominated by the same
   per-process overhead; the harness's in-process `full_scan_s` is
   0.001–0.010 s across all variants and datasets.

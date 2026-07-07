@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 # DuckDB `COPY` baseline for the cityparquet bench CSV (M5 task 7).
 #
+# GEOMETRY COVERAGE DISCLOSURE (M5 final-review fix; verified 2026-07-07
+# against every dataset this script is run on — see bench/README.md's
+# "Baseline geometry coverage" section for the full per-column query
+# outputs): the `cityjson` extension does NOT populate every geometry
+# column it declares. All four real datasets (delft + all three 3DBAG
+# tiles) report `geom_lod0` fully NULL even though the source genuinely
+# carries LoD0 geometry (an extension limitation specific to LoD "0", not a
+# per-tile data quirk) — every `duckdb-copy`/`duckdb-copy-zstd` row this
+# script appends for a 3DBAG tile or delft is therefore a PARTIAL-geometry
+# encoding (3 of 4 LoDs), not a full one. Worse, on `lod3_railway.city.json`
+# BOTH declared geometry columns (`geom_lod`, `geom_lod3`) are fully NULL —
+# the extension writes ZERO geometry for that file — so railway's rows from
+# this script are NOT COMPARABLE to any cityparquet-rs bytes/write_s figure
+# at all: they measure writing zero geometry for 121 objects, not a
+# competing encoding of the same data. Do not cite railway's duckdb-copy
+# numbers in any cross-format comparison.
+#
 # This measures what an untunable, off-the-shelf writer gets you: the
 # `cityjson` community DuckDB extension's `read_cityjson`/`read_cityjsonseq`
 # table functions, piped straight through `COPY ... TO ... (FORMAT PARQUET)`.
