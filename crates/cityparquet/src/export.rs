@@ -6,19 +6,28 @@
 //! dataset's own `transform`).
 //!
 //! `GeometryInstance` geometries are rebuilt from the `geometry_templates.parquet`
-//! sidecar when present (M4 task 10): the header's `geometry-templates` is
-//! reconstructed from the sidecar's WKB + `geometry_properties` (template
-//! vertices are RAW floats — CityJSON spec §3.4 — so they are re-interned by
-//! `f64::to_bits` triple, never through the dataset's quantised transform),
-//! and each object's `template` reference becomes a `GeometryInstance`
-//! geometry pointing at it. When no sidecar is present (the Core profile, or
-//! a Compatibility dataset with no templates at all), a `template` reference
+//! sidecar when the package MANIFEST lists it (M4 task 10; gating fixed under
+//! the M4 Codex-review Finding 1 — the manifest, not the file's mere presence
+//! on disk, is authoritative, matching how materials/textures are already
+//! gated below): the header's `geometry-templates` is reconstructed from the
+//! sidecar's WKB + `geometry_properties` (template vertices are RAW floats —
+//! CityJSON spec §3.4 — so they are re-interned by `f64::to_bits` triple,
+//! never through the dataset's quantised transform), and each object's
+//! `template` reference becomes a `GeometryInstance` geometry pointing at it.
+//! When the manifest does not list the sidecar (the Core profile, or a
+//! Compatibility dataset with no templates at all), a `template` reference
 //! cannot be resolved to anything real, so the owning object (attributes,
 //! hierarchy) is still exported but its instance geometry is dropped, counted
 //! in [`ExportReport::instance_geometries_dropped`]. A `template` reference
 //! that names no row in a sidecar that IS present is a different situation —
 //! a corrupt/hand-rolled file — and surfaces as a `Schema` error rather than
-//! a silent drop.
+//! a silent drop. Two further corrupt-file cases the manifest gating itself
+//! guards against: the manifest lists `geometry_templates.parquet` but the
+//! file is missing/unreadable (an `Io` error — a truncated/tampered package,
+//! never a silent all-instances-dropped outcome), and a `geometry_templates.parquet`
+//! file left on disk but NOT listed in the manifest (ignored outright — the
+//! manifest is the sole source of truth, exactly like an unlisted
+//! `materials.parquet`/`textures.parquet` already is).
 //!
 //! Material/texture index maps are handled differently depending on what the
 //! package actually carries: when `metadata.json`'s `sidecar_files` lists
@@ -913,12 +922,33 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         Vec::new()
     };
 
-    // `read_templates` reads as empty when `geometry_templates.parquet` is
-    // absent (a Core-profile package, or a Compatibility one with no
-    // templates at all) — in that case a `template` reference cannot be
+    // Whether this package carries the geometry-templates sidecar: gated by
+    // the MANIFEST, not the file's mere presence on disk (M4 Codex-review
+    // Finding 1) — same reasoning as `restore_appearance` above. When the
+    // manifest doesn't list it (a Core-profile package, or a Compatibility
+    // one with no templates at all), a `template` reference cannot be
     // resolved to anything real, so the per-object loop below falls back to
-    // the counted-drop path instead (see the module doc).
-    let template_rows = read_templates(&opts.package_dir.join("geometry_templates.parquet"))?;
+    // the counted-drop path instead (see the module doc); `template_rows`
+    // stays empty and an unlisted-but-present file on disk is simply never
+    // read. When the manifest DOES list it, the file must actually be there —
+    // a manifest promise the package can't keep is a corrupt/truncated
+    // package, not a silent 0-templates fallback.
+    let templates_path = opts.package_dir.join("geometry_templates.parquet");
+    let templates_listed = manifest
+        .sidecar_files
+        .iter()
+        .any(|f| f == "geometry_templates.parquet");
+    let template_rows = if templates_listed {
+        if !templates_path.exists() {
+            return Err(io_err(format!(
+                "package manifest lists 'geometry_templates.parquet' but {} does not exist",
+                templates_path.display()
+            )));
+        }
+        read_templates(&templates_path)?
+    } else {
+        Vec::new()
+    };
     let template_id_to_pos: HashMap<String, usize> = if template_rows.is_empty() {
         HashMap::new()
     } else {

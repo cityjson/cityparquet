@@ -7,7 +7,7 @@ use cityparquet::CityParquetError;
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet::schema::Profile;
+use cityparquet::schema::{PackageManifest, Profile};
 use cityparquet::sidecar::{read_materials, read_templates, write_materials, write_templates};
 use cityparquet::source::{Source, SourceFormat};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -600,9 +600,16 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
 /// id — never a panic or a silently-dropped/fabricated geometry. Derived
 /// from a real converted railway package (sanctioned): the fixture's own
 /// python recount (`{0: 10, 1: 4, 2: 1}` GeometryInstance-per-template
-/// counts) confirms template id `"0"` is referenced by 10 real objects, so
-/// removing its sidecar row is guaranteed to hit the dangling-reference path
-/// on export, not silently succeed because nothing happened to reference it.
+/// counts) confirms template id `"2"` is referenced by 1 real object, so
+/// dropping ONLY its (trailing) sidecar row is guaranteed to hit the
+/// dangling-reference path on export, not silently succeed because nothing
+/// happened to reference it. The trailing row specifically (rather than the
+/// heavier-referenced `"0"`, used before the M4 Codex-review Finding 2
+/// hardening) — `read_templates` now additionally validates that every row's
+/// `id` equals its position (dense `"0".."n"`, no gaps/duplicates); dropping
+/// a middle row would trip THAT check first instead of reaching the
+/// dangling-reference path this test targets, so the corruption must leave
+/// the surviving rows densely numbered from `"0"`.
 #[test]
 fn export_errors_on_a_dangling_template_id_reference() {
     let package_dir = tempfile::tempdir().unwrap();
@@ -620,11 +627,11 @@ fn export_errors_on_a_dangling_template_id_reference() {
         3,
         "railway must carry exactly 3 geometry templates (pinned elsewhere)"
     );
-    let corrupted: Vec<_> = rows.into_iter().filter(|r| r.id != "0").collect();
+    let corrupted: Vec<_> = rows.into_iter().filter(|r| r.id != "2").collect();
     assert_eq!(
         corrupted.len(),
         2,
-        "removing template id \"0\" must leave exactly the other 2 rows"
+        "removing template id \"2\" must leave exactly the other 2 (still densely \"0\", \"1\") rows"
     );
     write_templates(&templates_path, &corrupted).unwrap();
 
@@ -646,8 +653,8 @@ fn export_errors_on_a_dangling_template_id_reference() {
         "the error must name the dangling object, got: {msg}"
     );
     assert!(
-        msg.contains("\"0\""),
-        "the error must name the missing template id \"0\", got: {msg}"
+        msg.contains("\"2\""),
+        "the error must name the missing template id \"2\", got: {msg}"
     );
 }
 
@@ -756,4 +763,118 @@ fn delft_also_exports_as_a_single_whole_city_json_document() {
     assert_eq!(doc.thetype, "CityJSON");
     assert_eq!(doc.version, "2.0");
     assert_eq!(doc.number_of_city_objects(), 1115, "top-level objects only");
+}
+
+fn read_manifest(package_dir: &std::path::Path) -> PackageManifest {
+    let text = std::fs::read_to_string(package_dir.join("metadata.json")).unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+fn write_manifest(package_dir: &std::path::Path, manifest: &PackageManifest) {
+    let text = serde_json::to_string_pretty(manifest).unwrap();
+    std::fs::write(package_dir.join("metadata.json"), text).unwrap();
+}
+
+/// M4 Codex-review Finding 1(a): the package manifest is authoritative for
+/// whether `geometry_templates.parquet` should be loaded — mirroring how
+/// `materials.parquet`/`textures.parquet` are already gated. When the
+/// manifest LISTS the sidecar but the file has been deleted (a
+/// truncated/tampered package), export must fail loudly, never silently fall
+/// back to dropping every instance geometry as if the profile carried no
+/// templates at all. Derived from a real converted railway Compatibility
+/// package (sanctioned): the manifest is left untouched, only the sidecar
+/// file itself is removed.
+#[test]
+fn export_errors_when_manifest_lists_templates_but_the_sidecar_file_is_missing() {
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(
+        fixture("lod3_railway.city.json"),
+        package_dir.path().to_path_buf(),
+    );
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let manifest = read_manifest(package_dir.path());
+    assert!(
+        manifest
+            .sidecar_files
+            .iter()
+            .any(|f| f == "geometry_templates.parquet"),
+        "precondition: the Compatibility manifest lists geometry_templates.parquet"
+    );
+
+    let templates_path = package_dir.path().join("geometry_templates.parquet");
+    assert!(templates_path.exists());
+    std::fs::remove_file(&templates_path).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    let err = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output,
+    })
+    .unwrap_err();
+
+    assert!(
+        matches!(err, CityParquetError::Io(_) | CityParquetError::Schema(_)),
+        "expected an Io or Schema error naming the missing manifest-listed sidecar, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("geometry_templates.parquet"),
+        "the error must name the missing sidecar file, got: {err}"
+    );
+}
+
+/// M4 Codex-review Finding 1(b): the inverse of the test above — when the
+/// manifest does NOT list `geometry_templates.parquet` (edited out of
+/// `sidecar_files`) but a `geometry_templates.parquet` file is still sitting
+/// on disk (e.g. left over from a prior write, or planted by a third party),
+/// export must ignore it outright and fall back to the counted-drop path,
+/// exactly as if the file were never there — the manifest is the sole source
+/// of truth, never the file's mere presence.
+#[test]
+fn export_ignores_an_unlisted_geometry_templates_file_left_on_disk() {
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(
+        fixture("lod3_railway.city.json"),
+        package_dir.path().to_path_buf(),
+    );
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let mut manifest = read_manifest(package_dir.path());
+    let before = manifest.sidecar_files.len();
+    manifest
+        .sidecar_files
+        .retain(|f| f != "geometry_templates.parquet");
+    assert_eq!(
+        manifest.sidecar_files.len(),
+        before - 1,
+        "precondition: geometry_templates.parquet must actually have been removed from the list"
+    );
+    write_manifest(package_dir.path(), &manifest);
+
+    // The sidecar file itself is left on disk, untouched.
+    assert!(
+        package_dir
+            .path()
+            .join("geometry_templates.parquet")
+            .exists()
+    );
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    let report = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output,
+    })
+    .unwrap();
+
+    assert_eq!(
+        report.instance_geometries_dropped, 15,
+        "an unlisted geometry_templates.parquet file on disk must be ignored: every \
+         GeometryInstance-bearing object must fall back to the counted-drop path, matching a \
+         package that never wrote the sidecar at all (pinned in \
+         railway_exports_dropping_instance_geometries_but_keeping_their_objects)"
+    );
 }
