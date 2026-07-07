@@ -1,6 +1,6 @@
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
-use cityparquet::package::{ConvertOptions, RowOrder, convert};
+use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
 use cityparquet::recipe::{RecipePreset, WriterRecipe};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -59,6 +59,13 @@ enum Commands {
         /// pruning at the cost of holding the whole dataset in memory).
         #[arg(long, default_value = "source")]
         ordering: String,
+
+        /// Table layout for the main CityObject data: "single" (one
+        /// cityobjects.parquet, every profile's default before M5) or
+        /// "by-type" (one cityobjects_<type>.parquet table per distinct
+        /// object_type value).
+        #[arg(long, default_value = "single")]
+        layout: String,
     },
 
     /// Export CityParquet package back to CityJSON/CityJSONSeq
@@ -106,6 +113,7 @@ fn main() -> std::process::ExitCode {
             zstd_level,
             recipe,
             ordering,
+            layout,
         } => {
             // Parse the profile string
             let profile = match profile.as_str() {
@@ -152,6 +160,18 @@ fn main() -> std::process::ExitCode {
                 }
             };
 
+            let layout = match layout.as_str() {
+                "single" => TableLayout::Single,
+                "by-type" => TableLayout::ByType,
+                _ => {
+                    eprintln!(
+                        "error: invalid layout '{}' (expected 'single' or 'by-type')",
+                        layout
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+
             let opts = ConvertOptions {
                 input,
                 output_dir: output,
@@ -160,6 +180,7 @@ fn main() -> std::process::ExitCode {
                 batch_size,
                 recipe,
                 ordering,
+                layout,
             };
 
             match convert(&opts) {

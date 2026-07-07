@@ -300,3 +300,57 @@ fn export_and_compare_railway_with_exclusions() {
         stdout
     );
 }
+
+/// M5 task 5 (Step 4): `--layout by-type` writes delft's two pinned
+/// per-type tables instead of the single `cityobjects.parquet`.
+#[test]
+fn convert_with_by_type_layout_writes_per_type_tables() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let output = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg(out.path())
+        .arg("--layout")
+        .arg("by-type")
+        .output()
+        .expect("failed to run convert");
+
+    assert!(
+        output.status.success(),
+        "convert --layout by-type failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!out.path().join("cityobjects.parquet").exists());
+    assert!(out.path().join("cityobjects_building.parquet").exists());
+    assert!(out.path().join("cityobjects_buildingpart.parquet").exists());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("2231"),
+        "stdout should contain object count"
+    );
+}
+
+/// An unrecognised `--layout` value must fail with a clear error, exactly
+/// like an unrecognised `--ordering`/`--profile` value already does.
+#[test]
+fn convert_with_an_invalid_layout_fails() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let output = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg(out.path())
+        .arg("--layout")
+        .arg("bogus")
+        .output()
+        .expect("failed to run convert");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid layout"),
+        "expected an invalid-layout error, got: {stderr}"
+    );
+}

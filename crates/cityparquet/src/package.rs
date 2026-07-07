@@ -7,11 +7,16 @@
 //! [`convert`] call that writes `cityobjects.parquet` plus the package-level
 //! `metadata.json` manifest.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use arrow_array::builder::BooleanBuilder;
+use arrow_array::types::Int32Type;
+use arrow_array::{Array, DictionaryArray, RecordBatch, StringArray};
 use arrow_schema::Schema;
+use arrow_select::filter::filter_record_batch;
 use parquet::arrow::ArrowWriter;
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
@@ -67,6 +72,30 @@ pub enum RowOrder {
     Hilbert,
 }
 
+/// Table layout for the main CityObject data (M5 task 5): [`Self::Single`]
+/// writes every object into the one [`CITYOBJECTS_TABLE`], exactly as every
+/// milestone before M5 did. [`Self::ByType`] instead writes one table PER
+/// DISTINCT `object_type` value the dataset contains — file name
+/// `cityobjects_<snake>.parquet`, `<snake>` being the type lower-cased with
+/// every non-alphanumeric character replaced by `_`, and a leading `+`
+/// (CityJSON extension object types) rewritten to the prefix `ext_` rather
+/// than folded into an ugly leading underscore (e.g. `+Foo` becomes
+/// `cityobjects_ext_foo.parquet`, never `cityobjects__foo.parquet`) — see
+/// [`table_name_for_type`]. Every table this produces shares the IDENTICAL
+/// Arrow schema (no per-type column pruning — a different, out-of-scope
+/// experiment): only which ROWS land in which file differs, decided purely
+/// by each row's own `object_type`. [`PackageManifest::tables`] lists every
+/// file [`TableWriters`] actually opened, in first-appearance order (the
+/// order distinct `object_type` values are first encountered in the encoded
+/// row stream) — this is unaffected by [`RowOrder`], which only reorders
+/// FEATURES before encoding; partitioning by type happens strictly after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TableLayout {
+    #[default]
+    Single,
+    ByType,
+}
+
 /// Options controlling one end-to-end CityJSON/CityJSONSeq -> CityParquet
 /// package conversion.
 #[derive(Debug, Clone)]
@@ -78,12 +107,14 @@ pub struct ConvertOptions {
     pub batch_size: usize,
     pub recipe: WriterRecipe,
     pub ordering: RowOrder,
+    pub layout: TableLayout,
 }
 
 impl ConvertOptions {
     /// Core profile, 4096-row batches, the default [`WriterRecipe`],
-    /// [`RowOrder::Source`] emission order, and no overwrite — the sensible
-    /// defaults for a first conversion of `input` into `output_dir`.
+    /// [`RowOrder::Source`] emission order, [`TableLayout::Single`], and no
+    /// overwrite — the sensible defaults for a first conversion of `input`
+    /// into `output_dir`.
     pub fn new(input: PathBuf, output_dir: PathBuf) -> Self {
         Self {
             input,
@@ -93,6 +124,7 @@ impl ConvertOptions {
             batch_size: 4096,
             recipe: WriterRecipe::default(),
             ordering: RowOrder::default(),
+            layout: TableLayout::default(),
         }
     }
 }
@@ -389,6 +421,199 @@ fn hilbert_ordered_features(
     Ok(keyed.into_iter().map(|(_, f)| f).collect())
 }
 
+/// The `cityobjects_<snake>.parquet` file name [`TableLayout::ByType`] writes
+/// for `object_type` — see [`TableLayout::ByType`]'s own doc comment for the
+/// exact rule (lower-case, non-alphanumeric -> `_`, a leading `+` becomes the
+/// prefix `ext_` rather than folding into the snake-cased body).
+fn table_name_for_type(object_type: &str) -> String {
+    let (prefix, body) = match object_type.strip_prefix('+') {
+        Some(rest) => ("ext_", rest),
+        None => ("", object_type),
+    };
+    let snake: String = body
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("cityobjects_{prefix}{snake}.parquet")
+}
+
+/// The boolean mask selecting exactly the rows of `batch` whose
+/// `object_type` column equals `target` (`batch`'s `object_type` column is
+/// always a dictionary-encoded Utf8 — see `crate::encode::BatchBuilder` and
+/// `crate::decode`'s identical downcast). A row with a null `object_type` is
+/// a schema violation (the column is non-nullable), so a null there is a
+/// `Schema` error rather than a silently-false mask entry.
+fn object_type_mask(batch: &RecordBatch, target: &str) -> Result<arrow_array::BooleanArray> {
+    let column = batch
+        .column_by_name("object_type")
+        .ok_or_else(|| err("encoded batch is missing its 'object_type' column".to_string()))?;
+    let dict = column
+        .as_any()
+        .downcast_ref::<DictionaryArray<Int32Type>>()
+        .ok_or_else(|| err("'object_type' column is not a dictionary array".to_string()))?;
+    let values = dict
+        .values()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| err("'object_type' dictionary values are not Utf8".to_string()))?;
+    let mut mask = BooleanBuilder::with_capacity(batch.num_rows());
+    for row in 0..batch.num_rows() {
+        if dict.is_null(row) {
+            return Err(err(format!("row {row}: 'object_type' must not be null")));
+        }
+        let key = dict.keys().value(row) as usize;
+        mask.append_value(values.value(key) == target);
+    }
+    Ok(mask.finish())
+}
+
+/// Every distinct `object_type` string appearing in `batch`, in
+/// first-appearance order WITHIN this batch (a plain linear scan — the
+/// number of distinct types is always small, at most a few dozen even for
+/// the richest real dataset, so an O(rows * types) scan costs nothing next
+/// to the WKB/attribute work the same batch already went through).
+fn distinct_types_in_batch(batch: &RecordBatch) -> Result<Vec<String>> {
+    let column = batch
+        .column_by_name("object_type")
+        .ok_or_else(|| err("encoded batch is missing its 'object_type' column".to_string()))?;
+    let dict = column
+        .as_any()
+        .downcast_ref::<DictionaryArray<Int32Type>>()
+        .ok_or_else(|| err("'object_type' column is not a dictionary array".to_string()))?;
+    let values = dict
+        .values()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| err("'object_type' dictionary values are not Utf8".to_string()))?;
+    let mut order: Vec<String> = Vec::new();
+    for row in 0..batch.num_rows() {
+        if dict.is_null(row) {
+            continue; // reported as a hard error by `object_type_mask` above
+        }
+        let key = dict.keys().value(row) as usize;
+        let type_str = values.value(key);
+        if !order.iter().any(|t| t == type_str) {
+            order.push(type_str.to_string());
+        }
+    }
+    Ok(order)
+}
+
+/// The main CityObject data table(s) a `convert` run writes: [`TableLayout::Single`]
+/// opens exactly one writer up front for [`CITYOBJECTS_TABLE`];
+/// [`TableLayout::ByType`] opens one writer per distinct `object_type`,
+/// LAZILY on that type's first row (see [`Self::write_batch`]). Every table
+/// shares the identical `schema`/`props` this was constructed with — only
+/// which rows land in which file differs. `order`/`index` together track
+/// FIRST-APPEARANCE order across the whole call (not just within one
+/// batch), which becomes [`PackageManifest::tables`] verbatim once
+/// [`Self::finish`] is called.
+struct TableWriters {
+    layout: TableLayout,
+    tmp_dir: PathBuf,
+    schema: Arc<Schema>,
+    props: WriterProperties,
+    order: Vec<String>,
+    index: HashMap<String, usize>,
+    writers: Vec<ArrowWriter<fs::File>>,
+}
+
+impl TableWriters {
+    /// For [`TableLayout::Single`], opens [`CITYOBJECTS_TABLE`] immediately
+    /// (matching every layout's writer being open-and-ready before the
+    /// first `write_batch` call, pre-M5 behaviour preserved exactly). For
+    /// [`TableLayout::ByType`], opens nothing yet — tables are created lazily
+    /// as new `object_type` values are encountered.
+    fn new(
+        layout: TableLayout,
+        tmp_dir: &Path,
+        schema: Arc<Schema>,
+        props: WriterProperties,
+    ) -> Result<Self> {
+        let mut this = Self {
+            layout,
+            tmp_dir: tmp_dir.to_path_buf(),
+            schema,
+            props,
+            order: Vec::new(),
+            index: HashMap::new(),
+            writers: Vec::new(),
+        };
+        if layout == TableLayout::Single {
+            this.open_table(CITYOBJECTS_TABLE)?;
+        }
+        Ok(this)
+    }
+
+    fn open_table(&mut self, name: &str) -> Result<usize> {
+        let path = self.tmp_dir.join(name);
+        let file = fs::File::create(&path)
+            .map_err(|e| io_err(format!("cannot create {}: {e}", path.display())))?;
+        let writer = ArrowWriter::try_new(file, Arc::clone(&self.schema), Some(self.props.clone()))
+            .map_err(|e| parquet_err(format!("cannot open parquet writer: {e}")))?;
+        let idx = self.writers.len();
+        self.writers.push(writer);
+        self.order.push(name.to_string());
+        self.index.insert(name.to_string(), idx);
+        Ok(idx)
+    }
+
+    /// Writes one encoded batch: handed straight to the (single, already
+    /// open) writer under [`TableLayout::Single`], or partitioned by
+    /// `object_type` — one `filter_record_batch` call per distinct type
+    /// present, each sub-batch going to that type's own (lazily opened)
+    /// writer — under [`TableLayout::ByType`].
+    fn write_batch(&mut self, batch: &RecordBatch) -> Result<()> {
+        match self.layout {
+            TableLayout::Single => self.writers[0]
+                .write(batch)
+                .map_err(|e| parquet_err(format!("parquet write error: {e}"))),
+            TableLayout::ByType => {
+                for object_type in distinct_types_in_batch(batch)? {
+                    let name = table_name_for_type(&object_type);
+                    let idx = match self.index.get(&name) {
+                        Some(&i) => i,
+                        None => self.open_table(&name)?,
+                    };
+                    let mask = object_type_mask(batch, &object_type)?;
+                    let filtered = filter_record_batch(batch, &mask)?;
+                    self.writers[idx]
+                        .write(&filtered)
+                        .map_err(|e| parquet_err(format!("parquet write error: {e}")))?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Appends the (now-known-final) `sidecar_files` key-value entry to
+    /// EVERY table's footer — not just one — so a reader opening any table
+    /// this run produced (see `crate::export`'s multi-table read loop) sees
+    /// the same `sidecar_files` list regardless of which one it opens first,
+    /// then closes every writer. Returns [`Self::order`]: the bare file
+    /// names in first-appearance order, ready to become
+    /// [`PackageManifest::tables`] verbatim.
+    fn finish(mut self, sidecar_files: &[String]) -> Result<Vec<String>> {
+        let kv = serde_json::to_string(sidecar_files)?;
+        for writer in &mut self.writers {
+            writer
+                .append_key_value_metadata(KeyValue::new("sidecar_files".to_string(), kv.clone()));
+        }
+        for writer in self.writers {
+            writer
+                .close()
+                .map_err(|e| parquet_err(format!("cannot finalise parquet file: {e}")))?;
+        }
+        Ok(self.order)
+    }
+}
+
 /// Writes one full package (main table, Compatibility-profile sidecars,
 /// `metadata.json` manifest) into `tmp_dir` — this is the entire body that
 /// used to run directly against `opts.output_dir` before the M5 crash-safe-
@@ -403,17 +628,15 @@ fn write_package(
     props: WriterProperties,
     tmp_dir: &Path,
 ) -> Result<WrittenPackage> {
-    let cityobjects_path = tmp_dir.join(CITYOBJECTS_TABLE);
-    let file = fs::File::create(&cityobjects_path)
-        .map_err(|e| io_err(format!("cannot create {}: {e}", cityobjects_path.display())))?;
-    let mut writer = ArrowWriter::try_new(file, arrow_schema, Some(props))
-        .map_err(|e| parquet_err(format!("cannot open parquet writer: {e}")))?;
+    let mut writers = TableWriters::new(opts.layout, tmp_dir, arrow_schema, props)?;
 
     // `RowOrder::Hilbert` buffers every feature and re-sorts it BEFORE
     // handing it to `encode_buffered` (which shares `BatchIter`'s whole
     // batching loop with the `RowOrder::Source` path below — see
     // `crate::encode::FeatureStream`'s doc comment); `RowOrder::Source`
-    // keeps the plain streaming `encode` entry point, unchanged.
+    // keeps the plain streaming `encode` entry point, unchanged. `TableWriters`
+    // partitions strictly AFTER encode (see `TableLayout`'s doc comment), so
+    // this composes with either ordering unchanged.
     let mut batches = match opts.ordering {
         RowOrder::Source => encode(source, scan_result, opts.batch_size)?,
         RowOrder::Hilbert => {
@@ -423,19 +646,16 @@ fn write_package(
     };
     for batch in batches.by_ref() {
         let batch = batch?;
-        writer
-            .write(&batch)
-            .map_err(|e| parquet_err(format!("parquet write error: {e}")))?;
+        writers.write_batch(&batch)?;
     }
     // `by_ref()` above means `batches` is still ours to read stats/appearance
     // from — consuming it by value (e.g. plain `.collect()`) would have
     // dropped it (and its running totals) before we could ask.
     let encode_stats = batches.stats();
 
-    // Sidecars are written while the main-table writer is still open (they
-    // are separate files, so nothing conflicts), because the footer's
+    // Sidecars are written while the main-table writer(s) are still open
+    // (they are separate files, so nothing conflicts), because the footer's
     // `sidecar_files` entry below must record what was ACTUALLY written.
-    let mut file_names = vec![CITYOBJECTS_TABLE.to_string()];
     let mut sidecar_files_written: Vec<String> = Vec::new();
     let mut materials_written = 0usize;
     let mut textures_written = 0usize;
@@ -456,14 +676,12 @@ fn write_package(
         materials_written = write_materials(&materials_path, appearance.materials())?;
         if materials_written > 0 {
             sidecar_files_written.push(MATERIALS_TABLE.to_string());
-            file_names.push(MATERIALS_TABLE.to_string());
         }
 
         let textures_path = tmp_dir.join(TEXTURES_TABLE);
         textures_written = write_textures(&textures_path, appearance.textures())?;
         if textures_written > 0 {
             sidecar_files_written.push(TEXTURES_TABLE.to_string());
-            file_names.push(TEXTURES_TABLE.to_string());
         }
 
         if !template_rows.is_empty() {
@@ -471,31 +689,30 @@ fn write_package(
             templates_written = write_templates(&templates_path, &template_rows)?;
             if templates_written > 0 {
                 sidecar_files_written.push(TEMPLATES_TABLE.to_string());
-                file_names.push(TEMPLATES_TABLE.to_string());
             }
         }
     }
 
-    // Now that the actual sidecar list is known, record it in the parquet
-    // footer (the pre-encode `WriterProperties` KV set omitted the key
-    // entirely, so this cannot produce a duplicate; and even against a
-    // foreign file that DID carry one, appended entries come after the
-    // props entries in the footer and `CityParquetMetadata::from_key_values`
-    // is last-wins). Encoded exactly as `to_key_values` renders a non-empty
-    // list: JSON text.
-    writer.append_key_value_metadata(KeyValue::new(
-        "sidecar_files".to_string(),
-        serde_json::to_string(&sidecar_files_written)?,
-    ));
-    writer
-        .close()
-        .map_err(|e| parquet_err(format!("cannot finalise parquet file: {e}")))?;
+    // Now that the actual sidecar list is known, record it in EVERY main
+    // table's parquet footer (the pre-encode `WriterProperties` KV set
+    // omitted the key entirely, so this cannot produce a duplicate; and even
+    // against a foreign file that DID carry one, appended entries come after
+    // the props entries in the footer and `CityParquetMetadata::from_key_values`
+    // is last-wins), then close every writer — see `TableWriters::finish`.
+    // `table_names` is every main-table file this run actually opened, in
+    // first-appearance order: `[CITYOBJECTS_TABLE]` under `TableLayout::Single`,
+    // one `cityobjects_<type>.parquet` per distinct `object_type` under
+    // `TableLayout::ByType`.
+    let table_names = writers.finish(&sidecar_files_written)?;
+
+    let mut file_names = table_names.clone();
+    file_names.extend(sidecar_files_written.iter().cloned());
 
     let manifest = PackageManifest {
         cityparquet_version: CITYPARQUET_VERSION.to_string(),
         profile: opts.profile,
         lods: scan_result.lods.iter().map(|lod| lod.to_string()).collect(),
-        tables: vec![CITYOBJECTS_TABLE.to_string()],
+        tables: table_names,
         sidecar_files: sidecar_files_written,
     };
     let metadata_path = tmp_dir.join("metadata.json");
@@ -647,6 +864,32 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M5 task 5: the `cityobjects_<snake>.parquet` naming rule, including
+    /// the leading-`+` (CityJSON extension type) case neither shipped
+    /// fixture exercises — pinned as a pure-function unit test since it
+    /// needs no real CityJSON at all.
+    #[test]
+    fn table_name_for_type_snake_cases_and_prefixes_extension_types() {
+        assert_eq!(
+            table_name_for_type("Building"),
+            "cityobjects_building.parquet"
+        );
+        assert_eq!(
+            table_name_for_type("BuildingPart"),
+            "cityobjects_buildingpart.parquet"
+        );
+        assert_eq!(
+            table_name_for_type("+Foo"),
+            "cityobjects_ext_foo.parquet",
+            "a leading '+' must become the prefix 'ext_', not fold into a leading underscore"
+        );
+        assert_eq!(
+            table_name_for_type("+My Extension-Type"),
+            "cityobjects_ext_my_extension_type.parquet",
+            "every non-alphanumeric character (after stripping the leading '+') becomes '_'"
+        );
+    }
 
     /// M5 review follow-up: a mid-swap `rename` failure inside
     /// [`commit_package`] happens AFTER the purge has already removed the

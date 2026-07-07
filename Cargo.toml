@@ -12,6 +12,7 @@ repository = "https://github.com/HideBa/cityparquet-rs"
 arrow-schema = "58"
 arrow-array = "58"
 arrow-buffer = "58"
+arrow-select = "58"
 parquet = { version = "58", features = ["zstd"] }
 geoarrow-schema = "0.8"
 serde = { version = "1", features = ["derive"] }

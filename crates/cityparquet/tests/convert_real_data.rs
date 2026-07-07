@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use arrow_array::{Array, Float64Array, StringArray, StructArray};
+use arrow_array::types::Int32Type;
+use arrow_array::{Array, DictionaryArray, Float64Array, StringArray, StructArray};
 use cityparquet::CityParquetError;
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::order::hilbert_index;
-use cityparquet::package::{ConvertOptions, RowOrder, convert};
+use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Profile;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -816,5 +817,156 @@ fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
         "railway's header sets metadata members; expected at least one documented \
          header-metadata exclusion, got none. Full excluded: {:#?}",
         report.excluded
+    );
+}
+
+/// Every distinct `object_type` string in the main table at `path` (raw
+/// dictionary decode, independent of `crate::decode`), and the file's total
+/// row count — used to assert `TableLayout::ByType`'s per-file uniformity
+/// and to recombine row counts across the split tables.
+fn table_object_types_and_count(path: &std::path::Path) -> (HashSet<String>, usize) {
+    let file = std::fs::File::open(path).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let reader = builder.build().unwrap();
+    let mut types = HashSet::new();
+    let mut count = 0usize;
+    for batch in reader {
+        let batch = batch.unwrap();
+        count += batch.num_rows();
+        let col = batch.column_by_name("object_type").unwrap();
+        let dict: &DictionaryArray<Int32Type> = col.as_any().downcast_ref().unwrap();
+        let values: &StringArray = dict.values().as_any().downcast_ref().unwrap();
+        for row in 0..batch.num_rows() {
+            let key = dict.keys().value(row) as usize;
+            types.insert(values.value(key).to_string());
+        }
+    }
+    (types, count)
+}
+
+/// M5 task 5 (Step 2, the pinned fixture facts): delft's only two
+/// `object_type` values are `Building`/`BuildingPart`, so `TableLayout::ByType`
+/// must write exactly `cityobjects_building.parquet` +
+/// `cityobjects_buildingpart.parquet`, nothing else. The FIRST-APPEARANCE
+/// order pins `Building` before `BuildingPart`: `crate::encode`'s
+/// `BatchIter::advance` sorts each feature's CityObject ids lexicographically
+/// before encoding them (`ids.sort()`), and delft's building-part parent id
+/// (`"...012869"`) is a strict string PREFIX of its child's id
+/// (`"...012869-0"`), so it sorts first — empirically verified against the
+/// real fixture (not the raw, HashMap-ordered `CityObjects` JSON object,
+/// whose iteration order is unspecified).
+#[test]
+fn by_type_convert_of_delft_writes_exactly_the_two_pinned_type_tables() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.layout = TableLayout::ByType;
+    let report = convert(&opts).unwrap();
+    assert_eq!(report.object_count, 2231);
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
+            .unwrap();
+    let tables: Vec<String> = serde_json::from_value(manifest["tables"].clone()).unwrap();
+    assert_eq!(
+        tables,
+        vec![
+            "cityobjects_building.parquet".to_string(),
+            "cityobjects_buildingpart.parquet".to_string(),
+        ],
+        "expected exactly the two pinned tables in first-appearance order, got: {tables:?}"
+    );
+    assert!(!out.path().join("cityobjects.parquet").exists());
+    for name in &tables {
+        assert!(out.path().join(name).exists(), "missing {name}");
+    }
+
+    let (building_types, building_count) =
+        table_object_types_and_count(&out.path().join("cityobjects_building.parquet"));
+    assert_eq!(building_types, HashSet::from(["Building".to_string()]));
+    let (part_types, part_count) =
+        table_object_types_and_count(&out.path().join("cityobjects_buildingpart.parquet"));
+    assert_eq!(part_types, HashSet::from(["BuildingPart".to_string()]));
+    assert_eq!(
+        building_count + part_count,
+        2231,
+        "row counts across the split tables must sum to delft's full object count"
+    );
+
+    // Every table's footer must carry `cityparquet_version` (required by
+    // `cityparquet_metadata()`, which errors without it), and it must agree
+    // across every table this run wrote.
+    let mut versions = HashSet::new();
+    for name in &tables {
+        let file = std::fs::File::open(out.path().join(name)).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let meta = builder.cityparquet_metadata().unwrap();
+        versions.insert(meta.cityparquet_version.clone());
+    }
+    assert_eq!(
+        versions.len(),
+        1,
+        "every table's footer must carry the identical cityparquet_version, got: {versions:?}"
+    );
+}
+
+/// M5 task 5 (Step 2/3): railway's 14-distinct-`object_type` fixture fact
+/// (pinned in the milestone brief) round-tripped through `TableLayout::ByType` —
+/// exactly 14 tables, one object type per file, row counts summing to
+/// railway's full object count.
+#[test]
+fn by_type_convert_of_railway_writes_fourteen_type_tables() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    opts.layout = TableLayout::ByType;
+    let report = convert(&opts).unwrap();
+    assert_eq!(report.object_count, 121);
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
+            .unwrap();
+    let tables: Vec<String> = serde_json::from_value(manifest["tables"].clone()).unwrap();
+    assert_eq!(
+        tables.len(),
+        14,
+        "railway's pinned type set has 14 distinct object types, got: {tables:?}"
+    );
+
+    let expected_names: HashSet<String> = [
+        "Bridge",
+        "BridgeConstructiveElement",
+        "BridgeInstallation",
+        "Building",
+        "BuildingInstallation",
+        "CityFurniture",
+        "CityObjectGroup",
+        "GenericCityObject",
+        "Railway",
+        "SolitaryVegetationObject",
+        "TINRelief",
+        "Tunnel",
+        "TunnelInstallation",
+        "WaterBody",
+    ]
+    .into_iter()
+    .map(|t| format!("cityobjects_{}.parquet", t.to_lowercase()))
+    .collect();
+    let actual_names: HashSet<String> = tables.iter().cloned().collect();
+    assert_eq!(actual_names, expected_names, "unexpected table name set");
+
+    let mut total = 0usize;
+    for name in &tables {
+        let path = out.path().join(name);
+        assert!(path.exists(), "missing {name}");
+        let (types, count) = table_object_types_and_count(&path);
+        assert_eq!(
+            types.len(),
+            1,
+            "table {name} must carry exactly one object_type, got {types:?}"
+        );
+        total += count;
+    }
+    assert_eq!(
+        total, 121,
+        "row counts across every split table must sum to railway's full object count"
     );
 }

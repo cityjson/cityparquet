@@ -11,6 +11,7 @@ cityparquet-schema = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }
+arrow-select = { workspace = true }
 parquet = { workspace = true }
 cjseq = { workspace = true }
 chrono = { workspace = true }

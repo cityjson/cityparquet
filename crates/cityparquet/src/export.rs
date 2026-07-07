@@ -43,10 +43,11 @@
 //! dropped instead (counted in [`ExportReport::appearance_refs_dropped`]):
 //! exporting them would leave dangling references — invalid CityJSON.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use arrow_array::{Array, RecordBatch, StringArray};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -906,22 +907,47 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     let manifest_text = fs::read_to_string(&manifest_path)
         .map_err(|e| io_err(format!("cannot read {}: {e}", manifest_path.display())))?;
     let manifest: PackageManifest = serde_json::from_str(&manifest_text)?;
-    let table_name = manifest
-        .tables
-        .first()
-        .ok_or_else(|| err("package manifest lists no tables".to_string()))?;
-    let table_path = opts.package_dir.join(table_name);
+    if manifest.tables.is_empty() {
+        return Err(err("package manifest lists no tables".to_string()));
+    }
+    // A `TableLayout::ByType` (or any hand-rolled multi-table) package lists
+    // one file per table; a manifest naming the same file twice is a corrupt
+    // package (every object in it would be decoded twice), never silently
+    // tolerated by reading only the first occurrence.
+    let mut seen_tables = HashSet::with_capacity(manifest.tables.len());
+    for name in &manifest.tables {
+        if !seen_tables.insert(name.as_str()) {
+            return Err(err(format!(
+                "package manifest lists duplicate table '{name}'"
+            )));
+        }
+    }
 
-    let file = fs::File::open(&table_path)
-        .map_err(|e| io_err(format!("cannot open {}: {e}", table_path.display())))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+    // The FIRST table is authoritative for the package's KV metadata and
+    // rendered Arrow schema (`crate::package`'s `TableLayout::ByType` writes
+    // the IDENTICAL schema to every table, so any one of them would do);
+    // every other table is read via the SAME `schema` below and only
+    // light-checked for a matching `cityparquet_version`, not fully
+    // re-derived.
+    let first_table_name = &manifest.tables[0];
+    let first_table_path = opts.package_dir.join(first_table_name);
+    let first_file = fs::File::open(&first_table_path)
+        .map_err(|e| io_err(format!("cannot open {}: {e}", first_table_path.display())))?;
+    let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file)
         .map_err(|e| CityParquetError::Parquet(format!("cannot open parquet reader: {e}")))?;
-    let meta = builder.cityparquet_metadata()?;
-    let schema = builder.cityparquet_arrow_schema()?;
-    let parquet_reader = builder
+    let meta = first_builder.cityparquet_metadata()?;
+    let schema = first_builder.cityparquet_arrow_schema()?;
+    let first_parquet_reader = first_builder
         .build()
         .map_err(|e| CityParquetError::Parquet(format!("cannot build parquet reader: {e}")))?;
-    let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
+    // Wrapped in `Option` so the objects-decode loop below can `.take()` it
+    // for the `idx == 0` table without re-opening the file it already holds
+    // open — the Single-layout path (still the overwhelming common case)
+    // therefore never pays for a second `File::open`/`ParquetRecordBatchReaderBuilder`.
+    let mut first_reader = Some(CityParquetRecordBatchReader::new(
+        first_parquet_reader,
+        Arc::clone(&schema),
+    ));
 
     let mut header = build_header(&meta)?;
     let (scale, translate) = transform_axes(&header.transform);
@@ -994,15 +1020,50 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     let mut groups: OrderedGroups<(DecodedObject, Option<Value>, Option<Value>)> =
         OrderedGroups::default();
     let mut object_count = 0usize;
-    for batch in reader {
-        let batch = batch?;
-        let objects = decode_batch(&batch, &meta)?;
-        for (row, obj) in objects.into_iter().enumerate() {
-            let material = row_json_object(&batch, "material", row)?;
-            let texture = row_json_object(&batch, "texture", row)?;
-            let key = obj.feature_id.clone().unwrap_or_else(|| obj.id.clone());
-            object_count += 1;
-            groups.push(key, (obj, material, texture));
+    // Iterate EVERY table the manifest lists (M5 task 5), not just the
+    // first: decode order follows manifest order, and the feature grouping
+    // above already tolerates one feature's objects arriving split across
+    // batches (or, here, across whole tables) — see `OrderedGroups`.
+    for (idx, name) in manifest.tables.iter().enumerate() {
+        let reader = if idx == 0 {
+            first_reader
+                .take()
+                .expect("the first table's reader is only ever consumed once")
+        } else {
+            let table_path = opts.package_dir.join(name);
+            let file = fs::File::open(&table_path)
+                .map_err(|e| io_err(format!("cannot open {}: {e}", table_path.display())))?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+                CityParquetError::Parquet(format!("cannot open parquet reader: {e}"))
+            })?;
+            // Light consistency check only (per the M5 plan): every table
+            // must at least agree with the first on `cityparquet_version`.
+            // A full per-table schema/KV comparison is out of scope here —
+            // `TableLayout::ByType` is trusted to have written the identical
+            // schema to every table it emits.
+            let table_meta = builder.cityparquet_metadata()?;
+            if table_meta.cityparquet_version != meta.cityparquet_version {
+                return Err(err(format!(
+                    "table '{name}' has cityparquet_version {:?}, expected {:?} \
+                     (matching table '{first_table_name}')",
+                    table_meta.cityparquet_version, meta.cityparquet_version
+                )));
+            }
+            let parquet_reader = builder.build().map_err(|e| {
+                CityParquetError::Parquet(format!("cannot build parquet reader: {e}"))
+            })?;
+            CityParquetRecordBatchReader::new(parquet_reader, Arc::clone(&schema))
+        };
+        for batch in reader {
+            let batch = batch?;
+            let objects = decode_batch(&batch, &meta)?;
+            for (row, obj) in objects.into_iter().enumerate() {
+                let material = row_json_object(&batch, "material", row)?;
+                let texture = row_json_object(&batch, "texture", row)?;
+                let key = obj.feature_id.clone().unwrap_or_else(|| obj.id.clone());
+                object_count += 1;
+                groups.push(key, (obj, material, texture));
+            }
         }
     }
 

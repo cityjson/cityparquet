@@ -2,15 +2,20 @@
 //! against real converted delft/railway packages.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use arrow_array::RecordBatch;
 use cityparquet::CityParquetError;
+use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::{PackageManifest, Profile};
 use cityparquet::sidecar::{read_materials, read_templates, write_materials, write_templates};
 use cityparquet::source::{Source, SourceFormat};
+use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::file::properties::WriterProperties;
 use serde_json::Value;
 
 fn fixture(name: &str) -> PathBuf {
@@ -1143,4 +1148,129 @@ fn export_ignores_an_unlisted_geometry_templates_file_left_on_disk() {
          package that never wrote the sidecar at all (pinned in \
          railway_exports_dropping_instance_geometries_but_keeping_their_objects)"
     );
+}
+
+/// M5 task 5 (Step 1, guard half): a manifest naming the same table twice is
+/// a corrupt package — reading it would decode every object in that table
+/// twice — so `export` must reject it outright rather than silently
+/// tolerating it (which the pre-M5 `tables.first()`-only read happened to do,
+/// since it never looked at the second entry at all).
+#[test]
+fn export_rejects_a_manifest_listing_the_same_table_twice() {
+    let package_dir = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        fixture("delft.city.jsonl"),
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+
+    let mut manifest = read_manifest(package_dir.path());
+    assert_eq!(manifest.tables, vec!["cityobjects.parquet".to_string()]);
+    manifest.tables.push(manifest.tables[0].clone());
+    write_manifest(package_dir.path(), &manifest);
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    let error = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output,
+    })
+    .unwrap_err();
+    let msg = error.to_string();
+    assert!(
+        msg.contains("duplicate") && msg.contains("cityobjects.parquet"),
+        "expected an error naming the duplicated table, got: {msg}"
+    );
+}
+
+/// Splits `package_dir`'s single `cityobjects.parquet` main table into two
+/// physically separate parquet files inside `package_dir` (`cityobjects_a.parquet`
+/// / `cityobjects_b.parquet`, first half of rows / second half), each
+/// carrying the identical Arrow schema and KV footer metadata as the
+/// original file, then removes the original. A hand-rolled stand-in for a
+/// `TableLayout::ByType` package, used to exercise export's multi-table read
+/// loop (M5 task 5, Step 1) independently of the `ByType` writer path
+/// itself. Returns the two bare file names, in the order the caller should
+/// list them in a rewritten manifest.
+fn split_main_table_into_two_files(package_dir: &std::path::Path) -> (String, String) {
+    let source_path = package_dir.join("cityobjects.parquet");
+    let file = std::fs::File::open(&source_path).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let kvs = builder
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .cloned()
+        .unwrap_or_default();
+    let schema = Arc::clone(builder.schema());
+    let reader = builder.build().unwrap();
+    let batches: Vec<RecordBatch> = reader.map(|b| b.unwrap()).collect();
+    let combined = if batches.len() == 1 {
+        batches.into_iter().next().unwrap()
+    } else {
+        arrow_select::concat::concat_batches(&schema, &batches).unwrap()
+    };
+    let total = combined.num_rows();
+    let mid = total / 2;
+    let first = combined.slice(0, mid);
+    let second = combined.slice(mid, total - mid);
+
+    let props = WriterProperties::builder()
+        .set_key_value_metadata(Some(kvs))
+        .build();
+    let name_a = "cityobjects_a.parquet".to_string();
+    let name_b = "cityobjects_b.parquet".to_string();
+    for (name, batch) in [(&name_a, &first), (&name_b, &second)] {
+        let out_file = std::fs::File::create(package_dir.join(name)).unwrap();
+        let mut writer =
+            ArrowWriter::try_new(out_file, Arc::clone(&schema), Some(props.clone())).unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+    }
+    std::fs::remove_file(&source_path).unwrap();
+    (name_a, name_b)
+}
+
+/// M5 task 5 (Step 1, the real case): a manifest listing MULTIPLE distinct
+/// tables must have every one of them read, not just the first — the bug
+/// the pre-M5 `tables.first()`-only read had (half of delft's objects, the
+/// ones in the second physical file, would simply vanish from the export).
+#[test]
+fn export_reads_every_table_a_manifest_lists_not_just_the_first() {
+    let package_dir = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        fixture("delft.city.jsonl"),
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+
+    let (name_a, name_b) = split_main_table_into_two_files(package_dir.path());
+    let mut manifest = read_manifest(package_dir.path());
+    manifest.tables = vec![name_a, name_b];
+    write_manifest(package_dir.path(), &manifest);
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    let report = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+    assert_eq!(
+        report.object_count, 2231,
+        "both split tables' objects must be read, not just the first table's"
+    );
+
+    let compare_report = compare_datasets(
+        &fixture("delft.city.jsonl"),
+        &output,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        compare_report.equal,
+        "a manifest-listed second table's rows must round-trip losslessly too; differences: {:#?}",
+        compare_report.differences
+    );
+    assert!(compare_report.differences.is_empty());
 }
