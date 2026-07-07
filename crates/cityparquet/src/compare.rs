@@ -1893,6 +1893,15 @@ mod tests {
         assert!(values_equal(&json!(2), &json!(2.0)));
     }
 
+    /// Pins the u64 comparator arm: values_equal handles unsigned 64-bit
+    /// integers that exceed i64::MAX correctly.
+    #[test]
+    fn u64_json_numbers_compare_exactly() {
+        use serde_json::json;
+        assert!(values_equal(&json!(u64::MAX), &json!(u64::MAX)));
+        assert!(!values_equal(&json!(u64::MAX), &json!(u64::MAX - 1)));
+    }
+
     /// Derived-fixture pattern: copy delft, bump the header's `"version"` in
     /// the copy — a real mismatch that today's comparator (checking only
     /// `transform`/`referenceSystem`) silently ignores. Must be a

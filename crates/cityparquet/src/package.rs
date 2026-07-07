@@ -19,7 +19,7 @@ use parquet::file::properties::WriterProperties;
 use cityparquet_schema::{CITYPARQUET_VERSION, CityParquetError, PackageManifest, Profile, Result};
 
 use crate::appearance::AppearanceInterner;
-use crate::encode::{encode, rewrite_geometry_appearance};
+use crate::encode::{LocalDefs, encode, rewrite_geometry_appearance};
 use crate::recipe::WriterRecipe;
 use crate::scan::{ScanResult, scan};
 use crate::sidecar::{TemplateRow, write_materials, write_templates, write_textures};
@@ -269,13 +269,16 @@ pub(crate) fn build_template_rows(
                 "geometry template {i}: produced no WKB (empty or fully degenerate boundaries)"
             ))
         })?;
+        let defs = LocalDefs {
+            materials: &local_materials,
+            textures: &local_textures,
+            uvs: &local_uvs,
+        };
         let (material, texture, props) = rewrite_geometry_appearance(
             tpl,
             &outcome,
             interner,
-            &local_materials,
-            &local_textures,
-            &local_uvs,
+            &defs,
             &format!("geometry template {i}"),
         )?;
         let mut geometry_properties: serde_json::Value = serde_json::from_str(&props)?;

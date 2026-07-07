@@ -20,6 +20,15 @@ fn fixture(name: &str) -> PathBuf {
 /// EXTERIOR ring (index 0) is dropped. Returns the surface's expected
 /// decoded rings, or `None` when the whole surface is expected to be
 /// dropped.
+///
+/// This is an independent reimplementation of the production policy in
+/// [`crate::wkb_write::normalise_ring`] and [`crate::wkb_write::normalise_surface`].
+/// Module policy: this test-side mirror is deliberately separate so that
+/// a bug in the production policy would not be hidden by both sides sharing
+/// the same implementation. During M4, this mirror drifted from the
+/// production code (single-strip vs fixpoint iteration) and had to be
+/// patched — future changes to the production normalisation rules must
+/// update both sites to keep them in sync.
 fn normalise_expected_surface(surface: &[Vec<usize>]) -> Option<Vec<Vec<usize>>> {
     let mut kept = Vec::with_capacity(surface.len());
     for (i, ring) in surface.iter().enumerate() {

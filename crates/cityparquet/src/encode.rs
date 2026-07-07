@@ -412,6 +412,15 @@ fn feature_local_uvs(feature: &CityJSONFeature) -> &[Vec<f64>] {
         .unwrap_or(&[])
 }
 
+/// One feature's local appearance definitions: the material, texture, and UV
+/// vertices arrays that a geometry's `material`/`texture` indices resolve
+/// against before being rewritten to dataset-global ids.
+pub(crate) struct LocalDefs<'a> {
+    pub materials: &'a [Value],
+    pub textures: &'a [Value],
+    pub uvs: &'a [Vec<f64>],
+}
+
 /// Realign (if the writer dropped surfaces) and rewrite one geometry's
 /// `material`/`texture` maps to dataset-global ids via `interner`, and build
 /// its `geometry_properties` JSON. This is the exact per-geometry appearance
@@ -428,9 +437,7 @@ pub(crate) fn rewrite_geometry_appearance(
     geom: &Geometry,
     outcome: &WkbOutcome,
     interner: &mut AppearanceInterner,
-    local_materials: &[Value],
-    local_textures: &[Value],
-    local_uvs: &[Vec<f64>],
+    defs: &LocalDefs,
     context: &str,
 ) -> Result<(Option<Value>, Option<Value>, String)> {
     let has_drops = !outcome.dropped_surfaces.is_empty();
@@ -448,7 +455,7 @@ pub(crate) fn rewrite_geometry_appearance(
                 realign_nested_appearance_themes(&mut material, depth, &outcome.dropped_surfaces);
             }
             let material = interner
-                .rewrite_material_map(&material, local_materials)
+                .rewrite_material_map(&material, defs.materials)
                 .map_err(|e| {
                     CityParquetError::Schema(format!(
                         "{context}: cannot resolve material map to global ids: {e}"
@@ -468,7 +475,7 @@ pub(crate) fn rewrite_geometry_appearance(
                 realign_nested_appearance_themes(&mut texture, depth, &outcome.dropped_surfaces);
             }
             let texture = interner
-                .rewrite_texture_map(&texture, local_textures, local_uvs)
+                .rewrite_texture_map(&texture, defs.textures, defs.uvs)
                 .map_err(|e| {
                     CityParquetError::Schema(format!(
                         "{context}: cannot resolve texture map to global ids: {e}"
@@ -492,10 +499,10 @@ pub(crate) fn rewrite_geometry_appearance(
 ///
 /// `id` is `co`'s own CityObject id, used only to name the object in the
 /// error surfaced when a geometry's `material`/`texture` map has indices
-/// that cannot be resolved against `local_materials`/`local_textures`/
-/// `local_uvs` (most commonly: the feature carries no matching appearance
-/// block at all, so the local defs slice is empty) — dangling local indices
-/// must never silently survive into the dataset-global rewrite.
+/// that cannot be resolved against `defs`'s appearance arrays (most commonly:
+/// the feature carries no matching appearance block at all, so the defs'
+/// slices are empty) — dangling local indices must never silently survive
+/// into the dataset-global rewrite.
 #[allow(clippy::too_many_arguments)]
 fn accumulate_geometry(
     acc: &mut GeometryAccumulator,
@@ -504,9 +511,7 @@ fn accumulate_geometry(
     per_lod: bool,
     stats: &mut EncodeStats,
     interner: &mut AppearanceInterner,
-    local_materials: &[Value],
-    local_textures: &[Value],
-    local_uvs: &[Vec<f64>],
+    defs: &LocalDefs,
     id: &str,
 ) -> Result<()> {
     let Some(geoms) = &co.geometry else {
@@ -555,15 +560,8 @@ fn accumulate_geometry(
         // shared pipeline in `rewrite_geometry_appearance` (also used by the
         // geometry-templates sidecar, see its doc comment).
         let lod_key = geom.lod.clone().unwrap_or_default();
-        let (material, texture, props) = rewrite_geometry_appearance(
-            geom,
-            &outcome,
-            interner,
-            local_materials,
-            local_textures,
-            local_uvs,
-            &format!("object {id}"),
-        )?;
+        let (material, texture, props) =
+            rewrite_geometry_appearance(geom, &outcome, interner, defs, &format!("object {id}"))?;
         if let Some(material) = material {
             acc.material.insert(lod_key.clone(), material);
         }
@@ -861,6 +859,11 @@ impl RowWriter {
         self.other.append_null(); // M2 limitation: always null
 
         let mut acc = GeometryAccumulator::default();
+        let defs = LocalDefs {
+            materials: feature_local_materials(feature),
+            textures: feature_local_textures(feature),
+            uvs: feature_local_uvs(feature),
+        };
         accumulate_geometry(
             &mut acc,
             co,
@@ -868,9 +871,7 @@ impl RowWriter {
             self.per_lod,
             stats,
             interner,
-            feature_local_materials(feature),
-            feature_local_textures(feature),
-            feature_local_uvs(feature),
+            &defs,
             id,
         )?;
 
@@ -1241,6 +1242,11 @@ mod tests {
         let mut acc = GeometryAccumulator::default();
         let mut stats = EncodeStats::default();
         let mut interner = AppearanceInterner::new();
+        let defs = LocalDefs {
+            materials: &local_materials,
+            textures: &local_textures,
+            uvs: &local_uvs,
+        };
         accumulate_geometry(
             &mut acc,
             &co,
@@ -1248,9 +1254,7 @@ mod tests {
             true,
             &mut stats,
             &mut interner,
-            &local_materials,
-            &local_textures,
-            &local_uvs,
+            &defs,
             "obj1",
         )
         .unwrap();
@@ -1357,6 +1361,11 @@ mod tests {
         let mut acc = GeometryAccumulator::default();
         let mut stats = EncodeStats::default();
         let mut interner = AppearanceInterner::new();
+        let defs = LocalDefs {
+            materials: &local_materials,
+            textures: &local_textures,
+            uvs: &local_uvs,
+        };
         accumulate_geometry(
             &mut acc,
             &co,
@@ -1364,9 +1373,7 @@ mod tests {
             true,
             &mut stats,
             &mut interner,
-            &local_materials,
-            &local_textures,
-            &local_uvs,
+            &defs,
             "obj1",
         )
         .unwrap();
@@ -1481,6 +1488,11 @@ mod tests {
         let mut acc = GeometryAccumulator::default();
         let mut stats = EncodeStats::default();
         let mut interner = AppearanceInterner::new();
+        let defs = LocalDefs {
+            materials: &local_materials,
+            textures: &local_textures,
+            uvs: &local_uvs,
+        };
         accumulate_geometry(
             &mut acc,
             &co,
@@ -1488,9 +1500,7 @@ mod tests {
             true,
             &mut stats,
             &mut interner,
-            &local_materials,
-            &local_textures,
-            &local_uvs,
+            &defs,
             "obj1",
         )
         .unwrap();

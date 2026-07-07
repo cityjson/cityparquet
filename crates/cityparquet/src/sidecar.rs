@@ -768,6 +768,14 @@ mod tests {
         assert!(matches!(err, CityParquetError::Schema(_)));
     }
 
+    #[test]
+    fn textures_write_rejects_non_object_defs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("textures.parquet");
+        let err = write_textures(&path, &[Value::String("not an object".into())]).unwrap_err();
+        assert!(matches!(err, CityParquetError::Schema(_)));
+    }
+
     /// Reads back `path`'s first (only, for these small test files) batch,
     /// rewrites it with the `id` column shifted by `+1` — a corrupted file
     /// whose `id` no longer matches row position, standing in for a
