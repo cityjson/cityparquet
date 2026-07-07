@@ -355,7 +355,22 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
 
 /// Read `geometry_templates.parquet` at `path` back into one [`TemplateRow`]
 /// per row, in file order. Missing file reads as empty (a dataset with no
-/// geometry templates never gets a sidecar written).
+/// geometry templates never gets a sidecar written; whether an ABSENT-BUT-
+/// MANIFEST-LISTED file is instead an error is `export`'s call to make, not
+/// this function's — see `crate::export`'s module doc for the M4 Codex-review
+/// Finding 1 gating).
+///
+/// The join from a main-table `template.id` string to a row here is
+/// POSITIONAL (row `i`'s id is `i.to_string()` — this crate's own
+/// [`write_templates`]/`crate::package::build_template_rows`'s dense
+/// contract), so `id` is read back and validated against row position
+/// exactly like [`read_materials`]/[`read_textures`]: a row whose `id` does
+/// not equal its position as a string (a corrupted/hand-rolled file, e.g. a
+/// duplicated or reordered id) is a `Schema` error. This single check rules
+/// out BOTH duplicate ids (two rows can't each equal both their own,
+/// different positions) and gaps (a missing position would make some later
+/// row's `id` disagree with its position) in one pass — matching the
+/// materials/textures readers' rationale (M4 Codex-review Finding 2).
 pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -369,6 +384,7 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
         .map_err(|e| parquet_err(format!("cannot build parquet reader: {e}")))?;
 
     let mut out = Vec::new();
+    let mut next_pos = 0usize;
     for batch in reader {
         let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
         let id: &StringArray = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
@@ -384,6 +400,17 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
         let other: &StringArray = downcast(get_column(&batch, "other")?.as_ref(), "other")?;
 
         for row in 0..batch.num_rows() {
+            let expected = next_pos.to_string();
+            if id.value(row) != expected {
+                return Err(schema_err(format!(
+                    "geometry_templates.parquet: row at position {next_pos} has id {:?}, expected {:?} \
+                     — ids must be dense '0'..'n' in row order",
+                    id.value(row),
+                    expected
+                )));
+            }
+            next_pos += 1;
+
             out.push(TemplateRow {
                 id: id.value(row).to_string(),
                 wkb: geometry.value(row).to_vec(),
@@ -551,10 +578,17 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
 /// Read `textures.parquet` at `path` back into one CityJSON texture
 /// definition per row (see [`read_materials`] for the ordering/missing-file
 /// contract, and its docs for why the `id` column is read back and
-/// validated against row position rather than trusted implicitly). The
-/// `name` and `image_data` columns are never read back into the reassembled
-/// definition (see [`write_textures`]'s doc: `name` is unused, `image_data`
-/// is always null).
+/// validated against row position rather than trusted implicitly).
+///
+/// This crate's own [`write_textures`] never populates `name` (it always
+/// routes a source texture's `name` member to `other` instead — see its
+/// doc) or `image_data` (always null), but a third-party/hand-rolled file
+/// might: a non-null `name` is restored as the definition's `"name"` member
+/// (an extra member CityJSON tolerates; a re-convert of the exported file
+/// would route it back to `other`, same as any writer-unknown member) and a
+/// non-null `image_data` (embedded image bytes, which have no JSON
+/// representation to restore them into) is a `Schema` error naming the row —
+/// honest rejection beats silently losing the bytes.
 pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -572,8 +606,11 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
     for batch in reader {
         let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
         let id: &Int64Array = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
+        let name: &StringArray = downcast(get_column(&batch, "name")?.as_ref(), "name")?;
         let image_uri: &StringArray =
             downcast(get_column(&batch, "image_uri")?.as_ref(), "image_uri")?;
+        let image_data: &BinaryArray =
+            downcast(get_column(&batch, "image_data")?.as_ref(), "image_data")?;
         let mime_type: &StringArray =
             downcast(get_column(&batch, "mime_type")?.as_ref(), "mime_type")?;
         let wrap_mode: &StringArray =
@@ -593,6 +630,16 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
             }
             next_id += 1;
 
+            // Embedded image bytes have no JSON representation to restore
+            // them into: honest rejection beats silently dropping them (see
+            // this function's doc).
+            if !image_data.is_null(row) {
+                return Err(schema_err(format!(
+                    "textures.parquet row {row}: embedded 'image_data' is not supported by this \
+                     reader (no JSON representation to restore it into)"
+                )));
+            }
+
             let mut map = serde_json::Map::new();
             if let Some(v) = opt_str(mime_type, row) {
                 map.insert("type".to_string(), Value::String(v));
@@ -608,6 +655,12 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
             }
             if let Some(v) = opt_json(border_color, row)? {
                 map.insert("borderColor".to_string(), v);
+            }
+            // Our own writer never populates this column (see
+            // `write_textures`'s doc), but a third-party file might: restore
+            // it as a plain extra member rather than discard it silently.
+            if let Some(v) = opt_str(name, row) {
+                map.insert("name".to_string(), Value::String(v));
             }
             merge_other(&mut map, opt_json(other, row)?)?;
             out.push(Value::Object(map));
@@ -922,5 +975,127 @@ mod tests {
         assert_eq!(back[0].material, rows[0].material);
         assert_eq!(back[0].texture, rows[0].texture);
         assert_eq!(back[0].geometry_properties, rows[0].geometry_properties);
+    }
+
+    /// M4 Codex-review Finding 2: `read_templates` must validate the dense
+    /// `id == position` contract, exactly like `read_materials`/
+    /// `read_textures` already do — this single check rules out both
+    /// duplicate ids and gaps. Derived from the real railway templates
+    /// sidecar (3 rows, ids `"0"`, `"1"`, `"2"`): row 1's id is corrupted to
+    /// `"0"` (a duplicate of row 0's), which is simultaneously a gap at
+    /// position 1 — either framing is valid, one check catches both.
+    #[test]
+    fn read_templates_rejects_a_duplicate_id() {
+        use crate::appearance::AppearanceInterner;
+        use crate::package::build_template_rows;
+        use crate::source::Source;
+
+        let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+        let templates = source
+            .header()
+            .geometry_templates
+            .clone()
+            .expect("railway has geometry-templates");
+        let mut interner = AppearanceInterner::new();
+        let mut rows = build_template_rows(&templates, &source, &mut interner).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[1].id, "1", "precondition: row 1 starts as id \"1\"");
+        rows[1].id = "0".to_string();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("geometry_templates.parquet");
+        write_templates(&path, &rows).unwrap();
+
+        let err = read_templates(&path).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected a Schema error, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("id"),
+            "the error must mention the id mismatch, got: {err}"
+        );
+    }
+
+    /// Builds a one-row `textures.parquet`-shaped batch directly via Arrow
+    /// (this crate's own [`write_textures`] never sets `name`/`image_data`,
+    /// so a hand-built batch is the only way to exercise a third-party file
+    /// that does — sanctioned per the M4 Codex-review brief for Finding 4).
+    fn write_one_texture_row(path: &Path, name: Option<&str>, image_data: Option<&[u8]>) {
+        let schema = Arc::new(profile::textures_schema());
+        let mut id = Int64Builder::new();
+        let mut name_b = StringBuilder::new();
+        let mut image_uri = StringBuilder::new();
+        let mut image_data_b = BinaryBuilder::new();
+        let mut mime_type = StringBuilder::new();
+        let mut wrap_mode = StringBuilder::new();
+        let mut texture_type = StringBuilder::new();
+        let mut border_color = StringBuilder::new();
+        let mut other = StringBuilder::new();
+
+        id.append_value(0);
+        match name {
+            Some(n) => name_b.append_value(n),
+            None => name_b.append_null(),
+        }
+        image_uri.append_value("appearances/foo.jpg");
+        match image_data {
+            Some(bytes) => image_data_b.append_value(bytes),
+            None => image_data_b.append_null(),
+        }
+        mime_type.append_value("JPG");
+        wrap_mode.append_null();
+        texture_type.append_null();
+        border_color.append_null();
+        other.append_null();
+
+        let arrays: Vec<ArrayRef> = vec![
+            Arc::new(id.finish()),
+            Arc::new(name_b.finish()),
+            Arc::new(image_uri.finish()),
+            Arc::new(image_data_b.finish()),
+            Arc::new(mime_type.finish()),
+            Arc::new(wrap_mode.finish()),
+            Arc::new(texture_type.finish()),
+            Arc::new(border_color.finish()),
+            Arc::new(other.finish()),
+        ];
+        let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
+        write_batch(path, schema, batch).unwrap();
+    }
+
+    /// M4 Codex-review Finding 4: a non-null `name` column (never written by
+    /// this crate's own [`write_textures`], but legal for a third-party file)
+    /// must be restored as the definition's `"name"` member, not silently
+    /// discarded.
+    #[test]
+    fn read_textures_restores_a_non_null_name_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("textures.parquet");
+        write_one_texture_row(&path, Some("my-texture"), None);
+
+        let defs = read_textures(&path).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0]["name"], serde_json::json!("my-texture"));
+    }
+
+    /// M4 Codex-review Finding 4: a non-null `image_data` column (embedded
+    /// image bytes, which have no JSON representation to restore them into)
+    /// must be a `Schema` error, not a silent drop of the bytes.
+    #[test]
+    fn read_textures_rejects_non_null_image_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("textures.parquet");
+        write_one_texture_row(&path, None, Some(&[0xDE, 0xAD, 0xBE, 0xEF]));
+
+        let err = read_textures(&path).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected a Schema error, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("image_data"),
+            "error must name image_data, got: {err}"
+        );
     }
 }
