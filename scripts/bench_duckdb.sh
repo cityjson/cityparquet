@@ -62,6 +62,32 @@
 # against. This asymmetry (a writer with no matching reader-back-out) is
 # exactly the gap cityparquet-rs's own round-trip guarantee is contrasted
 # against in the paper.
+#
+# write_s overhead DISCLOSURE: every timed sample launches a fresh `duckdb`
+# process and must `LOAD cityjson` inside it, so each write_s sample
+# carries a fixed process-bootstrap(+LOAD) cost the Rust harness (which
+# times an in-process function call) does not pay — measured at ~0.08s per
+# invocation on this machine (duckdb startup ~0.06s + LOAD ~0.02s), i.e.
+# roughly 15-25% of a delft-sized write_s sample.
+# `INSTALL cityjson FROM community` is hoisted OUT of the timed block and
+# run once, untimed, before the codec loop (INSTALL is idempotent; only
+# LOAD must recur per process). The residual per-invocation overhead is
+# calibrated at script start — median of 3 of
+# `"$DUCKDB" -c "LOAD cityjson; SELECT 1;"` — and reported on stderr as a
+# `# calibration:` line. It is deliberately NOT subtracted from the
+# reported write_s (disclosure over adjustment, consistent with the
+# full_scan_s caveat above): subtract the calibration value downstream if
+# a pure-COPY figure is needed. full_scan_s samples carry the same process
+# bootstrap minus the LOAD (read_parquet needs no extension).
+#
+# Timing methodology: each timed step is measured with python3
+# `time.time()` INSIDE a single interpreter that `subprocess.run`s the
+# duckdb invocation — NOT with two `$(python3 -c ...)` command
+# substitutions bracketing the command. The bracketing pattern (as in the
+# original skeleton) puts one full python3 interpreter startup inside
+# every timed window (the closing timestamp is only taken after python
+# boots — ~0.2s here through a pyenv shim), silently inflating every
+# sample; measured and rejected during implementation.
 set -euo pipefail
 
 DUCKDB=${DUCKDB:-/opt/homebrew/bin/duckdb}
@@ -85,7 +111,34 @@ print(f'{vals[mid]:.3f}' if n % 2 else f'{(vals[mid-1]+vals[mid])/2:.3f}')
 " "$@"
 }
 
-now() { python3 -c 'import time; print(time.time())'; }
+# Prints the wall-clock seconds `"$DUCKDB" -c "$1"` takes, measured with
+# time.time() inside ONE python3 interpreter wrapping the subprocess —
+# interpreter startup falls outside the timed window (see header:
+# "Timing methodology"). `check=True` + `set -e` keep failures fatal.
+timed_duckdb() {
+  python3 -c '
+import subprocess, sys, time
+t0 = time.time()
+subprocess.run([sys.argv[1], "-c", sys.argv[2]], check=True, stdout=subprocess.DEVNULL)
+print(time.time() - t0)
+' "$DUCKDB" "$1"
+}
+
+# Untimed one-off: make sure the extension is installed BEFORE any timed
+# block, so no write_s sample pays for the INSTALL (idempotent; may hit
+# the network the first time on a machine).
+"$DUCKDB" -c "INSTALL cityjson FROM community;" > /dev/null
+
+# Calibrate the fixed per-invocation overhead every timed write_s sample
+# still carries (process startup + LOAD): median of 3, disclosed on
+# stderr, deliberately NOT subtracted from the reported numbers (see
+# header).
+CAL_TIMES=()
+for _ in 1 2 3; do
+  CAL_TIMES+=("$(timed_duckdb "LOAD cityjson; SELECT 1;")")
+done
+CALIBRATION_S=$(median3 "${CAL_TIMES[@]}")
+echo "# calibration: duckdb process startup + LOAD cityjson = ${CALIBRATION_S}s per invocation (median of 3); included, undeducted, in every write_s sample below" >&2
 
 for CODEC in SNAPPY ZSTD; do
   WRITE_TIMES=()
@@ -98,19 +151,9 @@ for CODEC in SNAPPY ZSTD; do
     TMP=$(mktemp -d)
     PARQUET="$TMP/out.parquet"
 
-    T0=$(now)
-    "$DUCKDB" -c "
-      INSTALL cityjson FROM community;
-      LOAD cityjson;
-      COPY (SELECT * FROM ${READ_FN}('$INPUT')) TO '$PARQUET' (FORMAT PARQUET, COMPRESSION $CODEC);
-    "
-    T1=$(now)
-    WRITE_TIMES+=("$(python3 -c "print($T1 - $T0)")")
+    WRITE_TIMES+=("$(timed_duckdb "LOAD cityjson; COPY (SELECT * FROM ${READ_FN}('$INPUT')) TO '$PARQUET' (FORMAT PARQUET, COMPRESSION $CODEC);")")
 
-    S0=$(now)
-    "$DUCKDB" -c "SELECT sum(hash(COLUMNS(*))) FROM read_parquet('$PARQUET');" > /dev/null
-    S1=$(now)
-    SCAN_TIMES+=("$(python3 -c "print($S1 - $S0)")")
+    SCAN_TIMES+=("$(timed_duckdb "SELECT sum(hash(COLUMNS(*))) FROM read_parquet('$PARQUET');")")
   done
 
   WRITE_S=$(median3 "${WRITE_TIMES[@]}")
