@@ -18,5 +18,12 @@ fixtures:
     curl -sSfo tests/fixtures/delft.city.jsonl https://storage.googleapis.com/cityjson/delft.city.jsonl
     curl -sSfo tests/fixtures/lod3_railway.city.json https://storage.googleapis.com/cityjson/lod3_railway.city.json
 
+bench-fixtures:
+    mkdir -p bench/results
+    cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
+        --input tests/fixtures/delft.city.jsonl --out bench/results/delft.csv
+    cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
+        --input tests/fixtures/lod3_railway.city.json --out bench/results/railway.csv
+
 interop:
     ./scripts/interop.sh

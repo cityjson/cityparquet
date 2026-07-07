@@ -15,6 +15,7 @@ doc = false
 cityparquet = { path = "../cityparquet" }
 cityparquet-schema = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-
-[dev-dependencies]
+arrow-array = { workspace = true }
+parquet = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }

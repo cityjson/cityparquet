@@ -2,6 +2,7 @@ use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
 use cityparquet::recipe::{RecipePreset, WriterRecipe};
+use cityparquet_cli::bench::{self, BenchOptions};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -96,6 +97,39 @@ enum Commands {
         /// Exclude GeometryInstance geometries from comparison
         #[arg(long)]
         exclude_instances: bool,
+    },
+
+    /// Run the variant-matrix benchmark harness, appending one CSV row per
+    /// variant to --out
+    Bench {
+        /// Input CityJSON or CityJSONSeq file
+        #[arg(long, value_name = "INPUT")]
+        input: PathBuf,
+
+        /// Output CSV path (created with a header if absent, appended to
+        /// otherwise)
+        #[arg(long, value_name = "CSV")]
+        out: PathBuf,
+
+        /// Number of repeats per timed measurement (write/full-scan/window-
+        /// query); the reported value is the median across repeats
+        #[arg(long, default_value = "3")]
+        repeat: usize,
+
+        /// Comma-separated variant identifiers
+        /// (`<preset>[+hilbert][+by-type]`, e.g. `cityparquet+hilbert`);
+        /// omit for the default 8-variant set
+        #[arg(long)]
+        variants: Option<String>,
+
+        /// Fraction of the dataset bbox's x/y extent the window query
+        /// covers, anchored at the bbox's lower-left corner
+        #[arg(long, default_value = "0.05")]
+        window_frac: f64,
+
+        /// Skip the export+compare round-trip correctness check
+        #[arg(long)]
+        skip_roundtrip: bool,
     },
 }
 
@@ -273,6 +307,42 @@ fn main() -> std::process::ExitCode {
                         std::process::ExitCode::from(2)
                     }
                 }
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+
+        Commands::Bench {
+            input,
+            out,
+            repeat,
+            variants,
+            window_frac,
+            skip_roundtrip,
+        } => {
+            let variants = variants
+                .map(|s| {
+                    s.split(',')
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let opts = BenchOptions {
+                input,
+                out_csv: out,
+                repeat,
+                variants,
+                window_frac,
+                skip_roundtrip,
+            };
+
+            match bench::run(&opts) {
+                Ok(()) => std::process::ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("error: {}", e);
                     std::process::ExitCode::FAILURE

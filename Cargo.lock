@@ -293,9 +293,12 @@ dependencies = [
 name = "cityparquet-cli"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
  "cityparquet",
  "cityparquet-schema",
  "clap",
+ "parquet",
+ "serde_json",
  "tempfile",
 ]
 
