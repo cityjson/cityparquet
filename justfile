@@ -27,3 +27,6 @@ bench-fixtures:
 
 interop:
     ./scripts/interop.sh
+
+bench-baseline INPUT CSV:
+    ./scripts/bench_duckdb.sh {{INPUT}} {{CSV}}
