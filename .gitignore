@@ -23,4 +23,7 @@ target
 .superpowers/
 
 /tests/fixtures/
-/bench/
+# Benchmark input data is fetched (scripts/fetch_3dbag.sh) and stays out of
+# git; bench/results/*.csv and bench/README.md ARE committed — they are the
+# paper's measurement artefacts.
+/bench/data/

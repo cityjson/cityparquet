@@ -1,0 +1,11 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
+lod3_railway.city.json,cityparquet,121,0.146,1378783,1353854,24685,0.006,0.006,1,1,true
+lod3_railway.city.json,parquet-defaults,121,0.143,1379831,1354902,24685,0.007,0.007,1,1,true
+lod3_railway.city.json,no-dictionary,121,0.143,1379764,1354835,24685,0.006,0.006,1,1,true
+lod3_railway.city.json,no-bss,121,0.154,1377944,1353015,24685,0.007,0.007,1,1,true
+lod3_railway.city.json,no-delta,121,0.149,1378894,1353965,24685,0.006,0.007,1,1,true
+lod3_railway.city.json,snappy,121,0.139,2544962,2520033,24685,0.005,0.005,1,1,true
+lod3_railway.city.json,cityparquet+hilbert,121,0.147,1380222,1355318,24660,0.006,0.006,1,1,true
+lod3_railway.city.json,cityparquet+by-type,121,0.153,1498615,1473126,24685,0.009,0.005,14,4,true
+lod3_railway.city.json,duckdb-copy,121,0.316,11205,11205,0,0.058,,,,
+lod3_railway.city.json,duckdb-copy-zstd,121,0.316,8450,8450,0,0.060,,,,

@@ -1,0 +1,11 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
+9-196-328.city.json,cityparquet,60,0.008,118992,118800,0,0.002,0.001,1,1,true
+9-196-328.city.json,parquet-defaults,60,0.006,121752,121560,0,0.002,0.002,1,1,true
+9-196-328.city.json,no-dictionary,60,0.006,115931,115739,0,0.001,0.001,1,1,true
+9-196-328.city.json,no-bss,60,0.006,118345,118153,0,0.002,0.002,1,1,true
+9-196-328.city.json,no-delta,60,0.006,119039,118847,0,0.002,0.002,1,1,true
+9-196-328.city.json,snappy,60,0.006,159096,158904,0,0.001,0.001,1,1,true
+9-196-328.city.json,cityparquet+hilbert,60,0.006,119027,118835,0,0.001,0.001,1,1,true
+9-196-328.city.json,cityparquet+by-type,60,0.007,153722,153481,0,0.003,0.003,2,2,true
+9-196-328.city.json,duckdb-copy,60,0.097,98056,98056,0,0.064,,,,
+9-196-328.city.json,duckdb-copy-zstd,60,0.097,69628,69628,0,0.063,,,,
