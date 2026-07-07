@@ -19,4 +19,17 @@ cargo run -p cityparquet-cli -- convert tests/fixtures/delft.city.jsonl "$TMP/ou
 duckdb -c "SELECT count(*) FROM '$TMP/out/cityobjects.parquet'" | grep -q "2231"
 duckdb -c "SELECT min(bbox.xmin) FROM '$TMP/out/cityobjects.parquet'"
 
+# Convert the railway fixture under the Compatibility profile, which writes
+# the materials/textures/geometry_templates sidecars alongside the main
+# table. DuckDB IS the assertion for these too: it must read each sidecar
+# natively as plain Parquet (no CityParquet-specific extension required,
+# since a sidecar carries no geo metadata), with no fallback if it fails —
+# and the main table must still be readable, sidecars or not.
+cargo run -p cityparquet-cli -- convert tests/fixtures/lod3_railway.city.json "$TMP/railway" --profile compatibility --overwrite
+
+duckdb -c "SELECT count(*) FROM read_parquet('$TMP/railway/materials.parquet')" | grep -q "85"
+duckdb -c "SELECT count(*) FROM read_parquet('$TMP/railway/textures.parquet')" | grep -q "34"
+duckdb -c "SELECT count(*) FROM read_parquet('$TMP/railway/geometry_templates.parquet')" | grep -q "3"
+duckdb -c "SELECT count(*) FROM '$TMP/railway/cityobjects.parquet'" | grep -q "121"
+
 echo "interop ok"
