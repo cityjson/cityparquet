@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use arrow_array::{Array, StringArray};
+use cityparquet::CityParquetError;
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Profile;
@@ -357,4 +358,74 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
         .map(|b| b.unwrap().num_rows())
         .sum();
     assert_eq!(rows, 2231, "the second run's own main table must be intact");
+}
+
+/// M4 final-review Fix 6: `convert`'s stale-package purge used to run
+/// BEFORE `Source::open(&opts.input)`, so `convert /bad/path out
+/// --overwrite` against a directory already holding a valid package would
+/// destroy that package and only THEN fail on the bad input — leaving
+/// neither the old package nor a new one. The purge must instead run only
+/// after every fallible step that does not touch `opts.output_dir` (opening
+/// and scanning the source, deriving the schema/writer properties) has
+/// already succeeded, so a failing `convert --overwrite` leaves the
+/// existing package untouched.
+#[test]
+fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
+    let out = tempfile::tempdir().unwrap();
+    let mut first =
+        ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    first.profile = Profile::Compatibility;
+    let first_report = convert(&first).unwrap();
+    assert_eq!(first_report.materials_written, 85);
+    assert!(out.path().join("materials.parquet").exists());
+    assert!(out.path().join("textures.parquet").exists());
+    assert!(out.path().join("geometry_templates.parquet").exists());
+    assert!(out.path().join("cityobjects.parquet").exists());
+    assert!(out.path().join("metadata.json").exists());
+
+    let mut bad = ConvertOptions::new(
+        PathBuf::from("/no/such/path/does-not-exist.city.jsonl"),
+        out.path().to_path_buf(),
+    );
+    bad.overwrite = true;
+    let err = convert(&bad).unwrap_err();
+    assert!(
+        matches!(err, CityParquetError::Io(_)),
+        "expected an Io error opening the bad input path, got {err:?}"
+    );
+
+    // The first (valid) package must survive completely untouched: none of
+    // its files were purged, and the main table still has all its rows.
+    assert!(
+        out.path().join("materials.parquet").exists(),
+        "a failed overwrite must not purge the existing package's materials.parquet"
+    );
+    assert!(
+        out.path().join("textures.parquet").exists(),
+        "a failed overwrite must not purge the existing package's textures.parquet"
+    );
+    assert!(
+        out.path().join("geometry_templates.parquet").exists(),
+        "a failed overwrite must not purge the existing package's geometry_templates.parquet"
+    );
+    assert!(
+        out.path().join("cityobjects.parquet").exists(),
+        "a failed overwrite must not purge the existing package's cityobjects.parquet"
+    );
+    assert!(
+        out.path().join("metadata.json").exists(),
+        "a failed overwrite must not purge the existing package's metadata.json"
+    );
+
+    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let rows: usize = builder
+        .build()
+        .unwrap()
+        .map(|b| b.unwrap().num_rows())
+        .sum();
+    assert_eq!(
+        rows, 121,
+        "the surviving package's own main table must still be intact and readable"
+    );
 }

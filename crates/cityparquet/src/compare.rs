@@ -851,6 +851,110 @@ struct NormGeometry {
     /// `exclusions.appearance` skipped it (logged in `excluded`).
     material: Option<Value>,
     texture: Option<Value>,
+    /// `Some` only for a kept `GeometryInstance` (`tree` is then just its
+    /// reference point): the dereferenced content of the template it
+    /// points to, plus its own `transformationMatrix`. See
+    /// [`InstanceContent`] and [`resolve_instance`].
+    instance: Option<InstanceContent>,
+}
+
+/// One `GeometryInstance`'s resolved content, dereferenced through THAT
+/// side's own header `geometry-templates` — the `GeometryInstance`
+/// counterpart of [`AppearanceDefs`]-based material/texture dereferencing
+/// this module already does. Comparing this (see [`compare_object`])
+/// alongside the reference point is what actually proves a
+/// `GeometryInstance` round-trip preserved the INSTANCED geometry and its
+/// placement, not merely its anchor: two datasets could share every
+/// reference point while pointing at differently-shaped templates, or the
+/// same template with a corrupted `transformationMatrix`, and a
+/// reference-point-only comparison would call that "equal" (M4 final-review
+/// Fix 1 — the earlier code did exactly that).
+#[derive(Debug, Clone, PartialEq)]
+struct InstanceContent {
+    template_type: GeometryType,
+    template_lod: Option<String>,
+    /// The referenced template's own boundary tree, dequantised through a
+    /// [`VertexPool::raw`] over that side's `vertices-templates` (raw
+    /// floats, never the dataset's quantised `vertices` — CityJSON spec
+    /// §3.4). Compared via [`values_equal`] after conversion to a plain JSON
+    /// tree ([`node_to_value`]), NOT [`node_matches`]'s per-axis
+    /// `coord_tolerance`: that tolerance is derived from the dataset's own
+    /// quantisation scale, which has no bearing on a template's always-raw
+    /// floats — the same reasoning [`resolve_texture_ring`]'s UV coordinates
+    /// already follow.
+    template_tree: Node,
+    /// The instance's own `transformationMatrix`, compared under
+    /// [`values_equal`] (a plain JSON array comparison, so its generic 1e-9
+    /// relative float tolerance applies — again mirroring UV coordinates,
+    /// not boundary coordinates).
+    matrix: Vec<f64>,
+}
+
+/// Converts a [`Node`] into a plain JSON value tree (points become `[x, y,
+/// z]` arrays) so it can be compared via [`values_equal`] instead of
+/// [`node_matches`]'s per-axis `coord_tolerance` — see
+/// [`InstanceContent::template_tree`]'s docs for why that distinction
+/// matters for template coordinates specifically.
+fn node_to_value(n: &Node) -> Value {
+    match n {
+        Node::Point(p) => Value::from(vec![p[0], p[1], p[2]]),
+        Node::List(items) => Value::Array(items.iter().map(node_to_value).collect()),
+    }
+}
+
+/// Dereferences one `GeometryInstance`'s `template` index against `templates`
+/// (that side's own `header.geometry-templates.templates`) and
+/// `template_pool` (a [`VertexPool::raw`] over that side's own
+/// `vertices-templates`), producing its comparable [`InstanceContent`]. A
+/// missing `template` index or an index out of range of `templates` is a
+/// `Schema` error naming the object — matching this module's existing style
+/// for malformed-side handling (e.g. [`resolve_material_index`]'s
+/// out-of-range error), not a silently-skipped comparison: a wrong template
+/// join is exactly the bug class this fix exists to catch.
+fn resolve_instance(
+    geom: &Geometry,
+    templates: &[Geometry],
+    template_pool: &VertexPool,
+    label: &str,
+    id: &str,
+) -> Result<InstanceContent> {
+    let idx = geom.template.ok_or_else(|| {
+        err(format!(
+            "{label}: object {id}: GeometryInstance has no 'template' index"
+        ))
+    })?;
+    let template = templates.get(idx).ok_or_else(|| {
+        err(format!(
+            "{label}: object {id}: GeometryInstance template index {idx} out of range \
+             (have {} templates)",
+            templates.len()
+        ))
+    })?;
+    // Templates never carry their own material/texture dereferenced through
+    // a feature-local `AppearanceDefs` (their appearance, when present,
+    // references the header-level arrays directly) — `None` here restricts
+    // the comparison to boundaries/type/lod, as the brief specifies; it also
+    // means `normalise_geometry` never tries to resolve indices it has
+    // nothing to resolve them against.
+    let normalised = normalise_geometry(template, template_pool, None)?;
+    let matrix: Vec<f64> = match &geom.transformation_matrix {
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
+            err(format!(
+                "{label}: object {id}: GeometryInstance transformationMatrix malformed: {e}"
+            ))
+        })?,
+        None => {
+            return Err(err(format!(
+                "{label}: object {id}: GeometryInstance has no transformationMatrix"
+            )));
+        }
+    };
+    Ok(InstanceContent {
+        template_type: template.thetype.clone(),
+        template_lod: template.lod.clone(),
+        template_tree: normalised.tree,
+        matrix,
+    })
 }
 
 struct ObjectData {
@@ -973,7 +1077,10 @@ fn claim_or_log(
 /// Builds one object's comparable geometry map, applying (in order):
 /// `exclusions.geometry_instances` / `exclusions.appearance`, degenerate-ring
 /// normalisation, and the writer's first-geometry-per-LoD rule. Logs
-/// everything it skips into `excluded`.
+/// everything it skips into `excluded`. `templates`/`template_pool` are that
+/// side's own header `geometry-templates` (see [`resolve_instance`]) — used
+/// only for `GeometryInstance` geometries.
+#[allow(clippy::too_many_arguments)]
 fn build_geometries(
     geoms: &[Geometry],
     pool: &VertexPool,
@@ -982,6 +1089,8 @@ fn build_geometries(
     excluded: &mut Vec<String>,
     label: &str,
     id: &str,
+    templates: &[Geometry],
+    template_pool: &VertexPool,
 ) -> Result<HashMap<Option<String>, NormGeometry>> {
     let mut geometries = HashMap::new();
     for geom in geoms {
@@ -999,6 +1108,12 @@ fn build_geometries(
                 Some(&i) => Node::Point(pool.coord(i)?),
                 None => Node::List(vec![]),
             };
+            // The instance's CONTENT (its resolved template, dereferenced
+            // through this side's own `geometry-templates`, plus its
+            // `transformationMatrix`) — not just the reference point above —
+            // is what actually proves the instanced geometry round-tripped.
+            // See `InstanceContent`'s docs (M4 final-review Fix 1).
+            let instance = Some(resolve_instance(geom, templates, template_pool, label, id)?);
             claim_or_log(
                 &mut geometries,
                 geom.lod.clone(),
@@ -1006,11 +1121,9 @@ fn build_geometries(
                     gtype: geom.thetype.clone(),
                     tree,
                     semantics: None,
-                    // Instance appearance rides the template definition
-                    // (M4 sidecar data); a kept instance compares by its
-                    // reference point only.
                     material: None,
                     texture: None,
+                    instance,
                 },
                 excluded,
                 label,
@@ -1058,6 +1171,7 @@ fn build_geometries(
                 // `then_some(defs)` above).
                 material: normalised.material,
                 texture: normalised.texture,
+                instance: None,
             },
             excluded,
             label,
@@ -1085,6 +1199,27 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
 
+    // This side's own `geometry-templates`, dereferenced through by every
+    // `GeometryInstance` below (see `resolve_instance`) — `vertices-templates`
+    // are raw floats (CityJSON spec §3.4), so `VertexPool::raw` is used
+    // rather than the dataset's quantised `VertexPool::new`. Empty when the
+    // header carries no templates at all: any `GeometryInstance` encountered
+    // in that case is then, correctly, a `Schema` error from `resolve_instance`.
+    let (templates, template_vertices): (&[Geometry], Vec<Vec<f64>>) =
+        match &header.geometry_templates {
+            Some(gt) => {
+                let verts: Vec<Vec<f64>> = serde_json::from_value(gt.vertices_templates.clone())
+                    .map_err(|e| {
+                        err(format!(
+                            "{label}: header geometry-templates 'vertices-templates' malformed: {e}"
+                        ))
+                    })?;
+                (gt.templates.as_slice(), verts)
+            }
+            None => (&[], Vec::new()),
+        };
+    let template_pool = VertexPool::raw(&template_vertices);
+
     let mut objects = HashMap::new();
     let mut excluded = Vec::new();
     for feature in source.features()? {
@@ -1102,9 +1237,17 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
                 .into_iter()
                 .collect();
             let geometries = match &co.geometry {
-                Some(geoms) => {
-                    build_geometries(geoms, &pool, &defs, opts, &mut excluded, &label, id)?
-                }
+                Some(geoms) => build_geometries(
+                    geoms,
+                    &pool,
+                    &defs,
+                    opts,
+                    &mut excluded,
+                    &label,
+                    id,
+                    templates,
+                    &template_pool,
+                )?,
                 None => HashMap::new(),
             };
             objects.insert(
@@ -1220,6 +1363,48 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
             out.push(format!(
                 "object {id}: geometry at lod {lod:?}: boundary/coordinates differ"
             ));
+        }
+        // `GeometryInstance`: `tree` above is just the reference point — the
+        // instanced geometry ITSELF is `instance`'s resolved template
+        // content plus `transformationMatrix` (M4 final-review Fix 1). Both
+        // sides are `Some` here whenever `ga.gtype == gb.gtype ==
+        // GeometryInstance` (the only way `build_geometries` produces a
+        // `NormGeometry` of that type), so the `(None, None)` arm below only
+        // guards non-instance geometries.
+        match (&ga.instance, &gb.instance) {
+            (Some(ia), Some(ib)) => {
+                if ia.template_type != ib.template_type {
+                    out.push(format!(
+                        "object {id}: geometry at lod {lod:?}: instance template type differs: {:?} vs {:?}",
+                        ia.template_type, ib.template_type
+                    ));
+                }
+                if ia.template_lod != ib.template_lod {
+                    out.push(format!(
+                        "object {id}: geometry at lod {lod:?}: instance template lod differs: {:?} vs {:?}",
+                        ia.template_lod, ib.template_lod
+                    ));
+                }
+                if !values_equal(
+                    &node_to_value(&ia.template_tree),
+                    &node_to_value(&ib.template_tree),
+                ) {
+                    out.push(format!(
+                        "object {id}: geometry at lod {lod:?}: instance template geometry (boundaries/coordinates) differs"
+                    ));
+                }
+                let ma = serde_json::to_value(&ia.matrix).unwrap_or(Value::Null);
+                let mb = serde_json::to_value(&ib.matrix).unwrap_or(Value::Null);
+                if !values_equal(&ma, &mb) {
+                    out.push(format!(
+                        "object {id}: geometry at lod {lod:?}: instance transformationMatrix differs: {ma} vs {mb}"
+                    ));
+                }
+            }
+            (None, None) => {}
+            _ => out.push(format!(
+                "object {id}: geometry at lod {lod:?}: instance-ness differs between sides"
+            )),
         }
         let sa = ga.semantics.clone().unwrap_or(Value::Null);
         let sb = gb.semantics.clone().unwrap_or(Value::Null);
@@ -1904,5 +2089,123 @@ mod tests {
             }
         }
         panic!("railway must contain at least one textured geometry with vertices-texture");
+    }
+
+    /// M4 final-review Fix 1: before this fix, a kept `GeometryInstance`
+    /// compared ONLY by its reference point — the `template` index and
+    /// `transformationMatrix` were silently uncompared, so a wrong template
+    /// join or a corrupted matrix would pass every gate. Derived from the
+    /// real railway fixture (sanctioned modification): the first
+    /// `GeometryInstance` found gets its `transformationMatrix` changed in a
+    /// copy (the X-axis scale term, matrix index 0, `1.0 -> 3.0`);
+    /// `compare_datasets` must report exactly one difference naming that
+    /// object and mentioning the matrix.
+    #[test]
+    fn compare_detects_a_changed_geometry_instance_transformation_matrix() {
+        let original = fixture("lod3_railway.city.json");
+        let text = fs::read_to_string(&original).unwrap();
+        let mut doc: Value = serde_json::from_str(&text).unwrap();
+
+        let mut changed_id: Option<String> = None;
+        {
+            let objects = doc["CityObjects"].as_object_mut().unwrap();
+            'outer: for (id, co) in objects.iter_mut() {
+                let Some(geoms) = co.get_mut("geometry").and_then(Value::as_array_mut) else {
+                    continue;
+                };
+                for g in geoms.iter_mut() {
+                    if g.get("type").and_then(Value::as_str) != Some("GeometryInstance") {
+                        continue;
+                    }
+                    let matrix = g
+                        .get_mut("transformationMatrix")
+                        .and_then(Value::as_array_mut)
+                        .expect("a GeometryInstance must carry a transformationMatrix");
+                    matrix[0] = serde_json::json!(3.0);
+                    changed_id = Some(id.clone());
+                    break 'outer;
+                }
+            }
+        }
+        let changed_id = changed_id.expect("railway must have at least one GeometryInstance");
+
+        let dir = tempfile::tempdir().unwrap();
+        let modified_path = dir.path().join("railway-matrix-modified.city.json");
+        fs::write(&modified_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+        let report =
+            compare_datasets(&original, &modified_path, &CompareOptions::default()).unwrap();
+        assert!(
+            !report.equal,
+            "a changed GeometryInstance transformationMatrix must be detected, not silently accepted"
+        );
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|d| d.contains(&changed_id) && d.contains("transformationMatrix")),
+            "the difference must name object {changed_id} and mention transformationMatrix, got: {:#?}",
+            report.differences
+        );
+    }
+
+    /// [`compare_detects_a_changed_geometry_instance_transformation_matrix`]'s
+    /// counterpart for the `template` index itself: swapping which template a
+    /// `GeometryInstance` references (to a template with genuinely different
+    /// content — railway's 3 templates differ in vertex count) must be a
+    /// difference too, proving the comparator dereferences `template`
+    /// through each side's own `geometry-templates` rather than ignoring it.
+    #[test]
+    fn compare_detects_a_swapped_geometry_instance_template_index() {
+        let original = fixture("lod3_railway.city.json");
+        let text = fs::read_to_string(&original).unwrap();
+        let mut doc: Value = serde_json::from_str(&text).unwrap();
+
+        let template_count = doc["geometry-templates"]["templates"]
+            .as_array()
+            .expect("railway has geometry-templates")
+            .len();
+        assert!(template_count > 1, "need at least 2 templates to swap");
+
+        let mut changed_id: Option<String> = None;
+        {
+            let objects = doc["CityObjects"].as_object_mut().unwrap();
+            'outer: for (id, co) in objects.iter_mut() {
+                let Some(geoms) = co.get_mut("geometry").and_then(Value::as_array_mut) else {
+                    continue;
+                };
+                for g in geoms.iter_mut() {
+                    if g.get("type").and_then(Value::as_str) != Some("GeometryInstance") {
+                        continue;
+                    }
+                    let old = g
+                        .get("template")
+                        .and_then(Value::as_u64)
+                        .expect("a GeometryInstance must carry a template index")
+                        as usize;
+                    let new = (old + 1) % template_count;
+                    g["template"] = serde_json::json!(new);
+                    changed_id = Some(id.clone());
+                    break 'outer;
+                }
+            }
+        }
+        let changed_id = changed_id.expect("railway must have at least one GeometryInstance");
+
+        let dir = tempfile::tempdir().unwrap();
+        let modified_path = dir.path().join("railway-template-swapped.city.json");
+        fs::write(&modified_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+        let report =
+            compare_datasets(&original, &modified_path, &CompareOptions::default()).unwrap();
+        assert!(
+            !report.equal,
+            "a swapped GeometryInstance template index must be detected, not silently accepted"
+        );
+        assert!(
+            report.differences.iter().any(|d| d.contains(&changed_id)),
+            "the difference must name object {changed_id}, got: {:#?}",
+            report.differences
+        );
     }
 }

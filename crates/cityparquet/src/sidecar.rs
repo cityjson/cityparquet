@@ -29,7 +29,7 @@ use arrow_array::builder::{
     BinaryBuilder, BooleanBuilder, Float64Builder, Int64Builder, StringBuilder,
 };
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, RecordBatch, StringArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
 };
 use arrow_schema::Schema;
 use parquet::arrow::ArrowWriter;
@@ -457,6 +457,16 @@ fn merge_other(map: &mut serde_json::Map<String, Value>, other: Option<Value>) -
 /// inverse of [`write_materials`]: `ambientIntensity`/`transparency`/
 /// `shininess` come back in float-literal form regardless of how the source
 /// wrote them (see the module docs).
+///
+/// The join back to a geometry's material index is POSITIONAL (row `i` is
+/// material `i`), so the `id` column — this crate's own writer always sets
+/// it to the row's position — is read back and validated: a row whose `id`
+/// does not equal its position (a spec-conformant but row-reordered
+/// third-party file, or a `materials.parquet` hand-edited/regenerated out of
+/// order) is a `Schema` error rather than a silent mis-attribution of every
+/// definition after that point. Ids are therefore required to be dense
+/// `0..n` in row order; a future reader could instead sort by `id` and drop
+/// this restriction, but no writer this crate produces needs that.
 pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -470,8 +480,10 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
         .map_err(|e| parquet_err(format!("cannot build parquet reader: {e}")))?;
 
     let mut out = Vec::new();
+    let mut next_id = 0i64;
     for batch in reader {
         let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
+        let id: &Int64Array = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
         let name: &StringArray = downcast(get_column(&batch, "name")?.as_ref(), "name")?;
         let ambient_intensity: &Float64Array = downcast(
             get_column(&batch, "ambientIntensity")?.as_ref(),
@@ -496,6 +508,14 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
         let other: &StringArray = downcast(get_column(&batch, "other")?.as_ref(), "other")?;
 
         for row in 0..batch.num_rows() {
+            if id.value(row) != next_id {
+                return Err(schema_err(format!(
+                    "materials.parquet: row at position {next_id} has id {} — ids must be dense 0..n in row order",
+                    id.value(row)
+                )));
+            }
+            next_id += 1;
+
             let mut map = serde_json::Map::new();
             if let Some(v) = opt_str(name, row) {
                 map.insert("name".to_string(), Value::String(v));
@@ -530,9 +550,11 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
 
 /// Read `textures.parquet` at `path` back into one CityJSON texture
 /// definition per row (see [`read_materials`] for the ordering/missing-file
-/// contract). The `name` and `image_data` columns are never read back into
-/// the reassembled definition (see [`write_textures`]'s doc: `name` is
-/// unused, `image_data` is always null).
+/// contract, and its docs for why the `id` column is read back and
+/// validated against row position rather than trusted implicitly). The
+/// `name` and `image_data` columns are never read back into the reassembled
+/// definition (see [`write_textures`]'s doc: `name` is unused, `image_data`
+/// is always null).
 pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -546,8 +568,10 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
         .map_err(|e| parquet_err(format!("cannot build parquet reader: {e}")))?;
 
     let mut out = Vec::new();
+    let mut next_id = 0i64;
     for batch in reader {
         let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
+        let id: &Int64Array = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
         let image_uri: &StringArray =
             downcast(get_column(&batch, "image_uri")?.as_ref(), "image_uri")?;
         let mime_type: &StringArray =
@@ -561,6 +585,14 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
         let other: &StringArray = downcast(get_column(&batch, "other")?.as_ref(), "other")?;
 
         for row in 0..batch.num_rows() {
+            if id.value(row) != next_id {
+                return Err(schema_err(format!(
+                    "textures.parquet: row at position {next_id} has id {} — ids must be dense 0..n in row order",
+                    id.value(row)
+                )));
+            }
+            next_id += 1;
+
             let mut map = serde_json::Map::new();
             if let Some(v) = opt_str(mime_type, row) {
                 map.insert("type".to_string(), Value::String(v));
@@ -681,6 +713,109 @@ mod tests {
         let path = dir.path().join("materials.parquet");
         let err = write_materials(&path, &[Value::String("not an object".into())]).unwrap_err();
         assert!(matches!(err, CityParquetError::Schema(_)));
+    }
+
+    /// Reads back `path`'s first (only, for these small test files) batch,
+    /// rewrites it with the `id` column shifted by `+1` — a corrupted file
+    /// whose `id` no longer matches row position, standing in for a
+    /// spec-conformant but row-reordered third-party file (see
+    /// [`read_materials`]'s docs for why the acceptable alternative from the
+    /// M4 final-review brief is used here instead of physically reordering
+    /// rows: shifting `id` alone is enough to prove the reader actually
+    /// looks at the column instead of trusting position).
+    fn corrupt_id_column_by_shifting(path: &Path, schema: Arc<Schema>) {
+        let file = File::open(path).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let mut reader = builder.build().unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert!(
+            reader.next().is_none(),
+            "test assumes a single record batch"
+        );
+
+        let old_id: &Int64Array = batch
+            .column_by_name("id")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        let mut shifted = Int64Builder::with_capacity(old_id.len());
+        for i in 0..old_id.len() {
+            shifted.append_value(old_id.value(i) + 1);
+        }
+        let mut arrays: Vec<ArrayRef> = batch.columns().to_vec();
+        let id_pos = batch.schema().index_of("id").unwrap();
+        arrays[id_pos] = Arc::new(shifted.finish());
+
+        let corrupted = RecordBatch::try_new(schema.clone(), arrays).unwrap();
+        write_batch(path, schema, corrupted).unwrap();
+    }
+
+    /// Reviewer follow-up (M4 final-review Fix 2): the join from a
+    /// `materials.parquet` row to the geometry `material` index it backs is
+    /// positional, so a file whose `id` column disagrees with row position
+    /// (a spec-conformant but reordered/corrupted third-party file) must be
+    /// rejected rather than silently mis-attributing every definition from
+    /// that point on. Derived from real railway material definitions.
+    #[test]
+    fn read_materials_rejects_id_column_disagreeing_with_row_position() {
+        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+        let doc = CityJSON::from_str(&raw_text).unwrap();
+        let materials = doc
+            .appearance
+            .as_ref()
+            .and_then(|a| a.materials.clone())
+            .expect("railway has materials");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materials.parquet");
+        write_materials(&path, &materials).unwrap();
+
+        // Precondition: the honest file reads back fine.
+        assert_eq!(read_materials(&path).unwrap().len(), materials.len());
+
+        corrupt_id_column_by_shifting(&path, Arc::new(profile::materials_schema()));
+
+        let err = read_materials(&path).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected a Schema error, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("id"),
+            "the error must mention the id mismatch, got: {err}"
+        );
+    }
+
+    /// [`read_materials_rejects_id_column_disagreeing_with_row_position`]'s
+    /// counterpart for `read_textures`.
+    #[test]
+    fn read_textures_rejects_id_column_disagreeing_with_row_position() {
+        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+        let doc = CityJSON::from_str(&raw_text).unwrap();
+        let textures = doc
+            .appearance
+            .as_ref()
+            .and_then(|a| a.textures.clone())
+            .expect("railway has textures");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("textures.parquet");
+        write_textures(&path, &textures).unwrap();
+
+        assert_eq!(read_textures(&path).unwrap().len(), textures.len());
+
+        corrupt_id_column_by_shifting(&path, Arc::new(profile::textures_schema()));
+
+        let err = read_textures(&path).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected a Schema error, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("id"),
+            "the error must mention the id mismatch, got: {err}"
+        );
     }
 
     /// Derived-from-real-fixture: railway's material numerics all happen to

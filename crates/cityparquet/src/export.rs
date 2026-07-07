@@ -717,8 +717,22 @@ impl<'a> LocalAppearance<'a> {
     /// wide, so every feature gets the same ones when present). `None` when
     /// the feature referenced nothing at all AND `defaults` is `None` — a
     /// feature with no appearance of its own shouldn't grow an empty block.
+    ///
+    /// `local_uvs` MUST be part of this emptiness check, not just
+    /// `local_materials`/`local_textures`: a legal `[null, uv0, uv1, ...]`
+    /// texture ring (null texture index, real UV pairs — `localise_texture_ring`
+    /// still walks and interns those UVs even though it never touches
+    /// `local_textures` for a `null` index) can populate `local_uvs` while
+    /// leaving `local_materials`/`local_textures` both empty. Without this
+    /// check, such a feature would drop its whole `appearance` block here
+    /// while its geometry still emits `vertices-texture` indices into
+    /// that now-nonexistent block — dangling references, invalid CityJSON.
     fn into_appearance(self, defaults: Option<&Value>) -> Option<Appearance> {
-        if self.local_materials.is_empty() && self.local_textures.is_empty() && defaults.is_none() {
+        if self.local_materials.is_empty()
+            && self.local_textures.is_empty()
+            && self.local_uvs.is_empty()
+            && defaults.is_none()
+        {
             return None;
         }
         let default_theme_material = defaults
@@ -1249,5 +1263,45 @@ mod tests {
             matches!(err, CityParquetError::Metadata(_)),
             "a package without a transform cannot be re-quantised: expected Metadata error, got {err:?}"
         );
+    }
+
+    /// M4 final-review Fix 4: a legal `[null, [u, v], ...]` texture ring —
+    /// null texture index, real inlined UV pairs — must keep `into_appearance`
+    /// from dropping the whole `appearance` block, even though it never
+    /// touches `local_materials`/`local_textures` (only `local_uvs`, via
+    /// `localise_texture_ring`'s UV-interning loop, which runs regardless of
+    /// whether the ring's own texture index is `null`). Before this fix the
+    /// emptiness check ignored `local_uvs` entirely, so this exact case
+    /// returned `None` here while the geometry it came from still emitted
+    /// `vertices-texture` index references — dangling references into a
+    /// nonexistent `appearance` block, invalid CityJSON.
+    #[test]
+    fn into_appearance_is_not_none_when_only_local_uvs_are_populated() {
+        let mut local = LocalAppearance::new(&[], &[]);
+        let map = serde_json::json!({
+            "visual": {"values": [[null, [0.1, 0.2], [0.3, 0.4]]]}
+        });
+        let localised = local.localise_texture_map(&map).unwrap();
+        // Precondition: the localise pass really did populate local_uvs
+        // while leaving local_materials/local_textures empty.
+        assert!(local.local_materials.is_empty());
+        assert!(local.local_textures.is_empty());
+        assert_eq!(local.local_uvs.len(), 2, "both UV pairs must be interned");
+        // The localised ring itself keeps its null texture index and now
+        // references the interned UV pool by position.
+        assert_eq!(
+            localised["visual"]["values"][0],
+            serde_json::json!([null, 0, 1])
+        );
+
+        let appearance = local
+            .into_appearance(None)
+            .expect("local_uvs alone must be enough to keep the appearance block");
+        assert_eq!(
+            appearance.vertices_texture,
+            Some(vec![vec![0.1, 0.2], vec![0.3, 0.4]])
+        );
+        assert!(appearance.materials.is_none());
+        assert!(appearance.textures.is_none());
     }
 }

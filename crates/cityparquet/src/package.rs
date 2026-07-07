@@ -262,9 +262,6 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
             opts.output_dir.display()
         )));
     }
-    if has_entries && opts.overwrite {
-        purge_stale_package_files(&opts.output_dir)?;
-    }
 
     let source = Source::open(&opts.input)?;
     let scan_result = scan(&source)?;
@@ -286,6 +283,21 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
     let props = opts
         .recipe
         .writer_properties(&scan_result.schema, &metadata)?;
+
+    // Purge whatever stale package this directory already held only NOW —
+    // after every fallible step that does not touch `opts.output_dir` has
+    // already succeeded (opening/scanning the source, deriving the schema
+    // and writer properties) and immediately before the first byte of the
+    // new package is written. Running the purge any earlier (e.g. right
+    // after the `has_entries`/`overwrite` check, before `Source::open`)
+    // meant `convert /bad/path out --overwrite` destroyed an existing valid
+    // package and only THEN failed on the bad input — leaving neither the
+    // old package nor a new one. `has_entries` was already computed above,
+    // before any of this ran, so it still reflects the directory's state at
+    // the start of this call.
+    if has_entries && opts.overwrite {
+        purge_stale_package_files(&opts.output_dir)?;
+    }
 
     let cityobjects_path = opts.output_dir.join(CITYOBJECTS_TABLE);
     let file = fs::File::create(&cityobjects_path)

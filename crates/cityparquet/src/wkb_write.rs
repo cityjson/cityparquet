@@ -13,10 +13,17 @@ const MULTIPOLYGON_Z: u32 = 1006;
 const GEOMETRYCOLLECTION_Z: u32 = 1007;
 const POLYHEDRALSURFACE_Z: u32 = 1015;
 
-/// 2^53: no `f64` can represent an integer beyond this magnitude exactly, so
-/// it is the shared ceiling for both quantised-component and final
-/// world-coordinate guards.
-const MAX_SAFE: f64 = 9_007_199_254_740_992.0;
+/// 2^53: every integer up to and including this magnitude is exactly
+/// representable in `f64`; `MAX_QUANTISED + 1` is the first one that is not.
+/// The shared ceiling for both the quantised-component guard (integer
+/// domain) and the final world-coordinate guard (float domain) — derived
+/// from one constant, not independently duplicated, so the two guards can
+/// never silently drift apart on which side of 2^53 they accept. BOTH guards
+/// use `>` (reject only when STRICTLY greater than 2^53): 2^53 itself is
+/// exactly representable, so there is no precision loss to guard against at
+/// that exact value, only beyond it.
+const MAX_QUANTISED: u64 = 1u64 << 53;
+const MAX_SAFE: f64 = MAX_QUANTISED as f64;
 
 /// Vertex storage backing a [`VertexPool`]: either the dataset's quantised
 /// integer vertices (dequantised through the CityJSON `transform` on lookup)
@@ -69,8 +76,6 @@ impl<'a> VertexPool<'a> {
                 scale,
                 translate,
             } => {
-                const MAX_QUANTISED: u64 = 1u64 << 53;
-
                 let v = vertices.get(idx).ok_or_else(|| {
                     CityParquetError::Geometry(format!(
                         "vertex index {idx} out of range ({} vertices)",
@@ -102,9 +107,13 @@ impl<'a> VertexPool<'a> {
                 ];
 
                 // Guard final world coordinates: no coordinate can exceed
-                // 2^53 in magnitude.
+                // 2^53 in magnitude. `>` (not `>=`): 2^53 itself is exactly
+                // representable — see MAX_SAFE's docs — and this must accept
+                // the same boundary the quantised-component guard above
+                // does, or a value could pass one guard and fail the other
+                // for no principled reason.
                 for (i, &c) in coords.iter().enumerate() {
-                    if c.abs() >= MAX_SAFE {
+                    if c.abs() > MAX_SAFE {
                         return Err(CityParquetError::Geometry(format!(
                             "vertex {idx} coordinate {i}: computed value {c} exceeds 2^53 magnitude (loses f64 precision)"
                         )));
@@ -128,11 +137,12 @@ impl<'a> VertexPool<'a> {
                 }
                 let coords = [v[0], v[1], v[2]];
 
-                // Guard final coordinates: same 2^53 ceiling as the
-                // quantised path, applied directly since raw floats have no
-                // scale/translate step to compute through.
+                // Guard final coordinates: same 2^53 ceiling and `>` operator
+                // as the quantised path (see MAX_SAFE's docs), applied
+                // directly since raw floats have no scale/translate step to
+                // compute through.
                 for (i, &c) in coords.iter().enumerate() {
-                    if c.abs() >= MAX_SAFE {
+                    if c.abs() > MAX_SAFE {
                         return Err(CityParquetError::Geometry(format!(
                             "vertex {idx} coordinate {i}: raw value {c} exceeds 2^53 magnitude (loses f64 precision)"
                         )));
@@ -772,6 +782,36 @@ mod tests {
         .unwrap();
         let pool = VertexPool::new(&vertices, &transform);
         assert!(matches!(pool.coord(0), Err(CityParquetError::Geometry(_))));
+    }
+
+    /// M4 final-review Fix 3: the quantised-component guard and the final
+    /// world-coordinate guard now share one derived constant and the same
+    /// `>` operator (see `MAX_SAFE`'s docs) — exactly 2^53 must be ACCEPTED
+    /// by both, since it is exactly representable in `f64`. Before this fix
+    /// the quantised guard (`> MAX_QUANTISED`) already accepted 2^53 but the
+    /// world-coordinate guard (`>= MAX_SAFE`) rejected it: the same boundary
+    /// value passed one guard and failed the other for no principled reason.
+    #[test]
+    fn vertex_at_exactly_2_53_is_accepted_by_both_guards() {
+        const MAX: i64 = 1i64 << 53; // 2^53, exactly representable in f64
+        let vertices = vec![vec![MAX, 0, 0]];
+        let transform: Transform = serde_json::from_value(serde_json::json!({
+            "scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]
+        }))
+        .unwrap();
+        let pool = VertexPool::new(&vertices, &transform);
+        let coord = pool
+            .coord(0)
+            .expect("2^53 is exactly representable in f64 and must be accepted");
+        assert_eq!(coord[0], MAX as f64);
+
+        // Raw (template) path: same boundary, no scale/translate involved.
+        let raw_verts = vec![vec![MAX as f64, 0.0, 0.0]];
+        let raw_pool = VertexPool::raw(&raw_verts);
+        let raw_coord = raw_pool
+            .coord(0)
+            .expect("raw path must accept exactly 2^53 too");
+        assert_eq!(raw_coord[0], MAX as f64);
     }
 
     #[test]

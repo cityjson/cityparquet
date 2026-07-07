@@ -8,7 +8,7 @@ use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Profile;
-use cityparquet::sidecar::{read_templates, write_templates};
+use cityparquet::sidecar::{read_materials, read_templates, write_materials, write_templates};
 use cityparquet::source::{Source, SourceFormat};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
@@ -470,19 +470,54 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
         );
     }
 
+    // Source object id -> its GeometryInstance's transformationMatrix, read
+    // straight from the fixture. Used below to prove each EXPORTED
+    // instance's matrix is not just present/well-shaped but actually equal
+    // to the matrix its owning object carried in the source (M4 final-review
+    // Fix 1's comparator strengthening only matters if the exporter really
+    // does preserve this; this structural test pins that independently of
+    // `compare`).
+    let mut source_matrix_by_object: std::collections::HashMap<String, Vec<f64>> =
+        std::collections::HashMap::new();
+    for (id, co) in &source_doc.city_objects {
+        let Some(geoms) = &co.geometry else { continue };
+        for g in geoms {
+            if g.thetype != cjseq::GeometryType::GeometryInstance {
+                continue;
+            }
+            let matrix: Vec<f64> = serde_json::from_value(
+                g.transformation_matrix
+                    .clone()
+                    .expect("source GeometryInstance must carry a transformationMatrix"),
+            )
+            .expect("source transformationMatrix must be an array of numbers");
+            source_matrix_by_object.insert(id.clone(), matrix);
+        }
+    }
+
     // (c)
     let mut instance_count = 0usize;
-    for co in doc.city_objects.values() {
+    // Per-template instance counts, keyed by the EXPORTED doc's own
+    // `template` index numbering (pinned equal to the source's numbering by
+    // (b)/(d) above: templates are neither dropped nor reordered for this
+    // fixture). Reviewer follow-up (M4 final-review Fix 1): before this fix
+    // the comparator only ever checked the reference point, so a bug that
+    // silently rewired every instance to template 0 (say) would still pass
+    // the headline round-trip gate — pinning the real distribution here
+    // closes that gap independently of `compare`.
+    let mut instances_per_template: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    for (id, co) in &doc.city_objects {
         let Some(geoms) = &co.geometry else { continue };
         for g in geoms {
             if g.thetype != cjseq::GeometryType::GeometryInstance {
                 continue;
             }
             instance_count += 1;
-            assert!(
-                g.template.is_some(),
-                "a GeometryInstance geometry must carry a template index"
-            );
+            let template_idx = g
+                .template
+                .expect("a GeometryInstance geometry must carry a template index");
+            *instances_per_template.entry(template_idx).or_insert(0) += 1;
             let matrix = g
                 .transformation_matrix
                 .as_ref()
@@ -501,11 +536,27 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
                 1,
                 "GeometryInstance boundaries must reference exactly one vertex"
             );
+
+            let exported_matrix: Vec<f64> =
+                serde_json::from_value(serde_json::Value::Array(matrix.clone()))
+                    .expect("transformationMatrix must be an array of numbers");
+            let source_matrix = source_matrix_by_object.get(id).unwrap_or_else(|| {
+                panic!("exported object {id} has no matching source GeometryInstance object")
+            });
+            assert_eq!(
+                &exported_matrix, source_matrix,
+                "object {id}: exported transformationMatrix must equal the source object's"
+            );
         }
     }
     assert_eq!(
         instance_count, 15,
         "the recount in decode_real_data.rs: exactly 15 objects carry a template"
+    );
+    assert_eq!(
+        instances_per_template,
+        std::collections::HashMap::from([(0, 10), (1, 4), (2, 1)]),
+        "railway's known per-template instance distribution must survive export exactly"
     );
 
     // (d) walk EVERY template's first ring (all 3 of railway's templates are
@@ -597,6 +648,88 @@ fn export_errors_on_a_dangling_template_id_reference() {
     assert!(
         msg.contains("\"0\""),
         "the error must name the missing template id \"0\", got: {msg}"
+    );
+}
+
+/// M4 final-review Fix 5: a main-table `material` index that has gone out of
+/// range of `materials.parquet` (a corrupted/truncated Compatibility
+/// package — the sidecar the export-side `LocalAppearance` restore
+/// dereferences global ids against) must be a `Schema` error naming the
+/// offending object, never a panic or a silently-dropped/fabricated
+/// material. Derived from a real converted railway package (sanctioned):
+/// truncating `materials.parquet` alone is not enough to isolate the
+/// per-OBJECT path on this fixture — railway's own geometry templates
+/// happen to reference the two HIGHEST dataset-global material ids (83 and
+/// 84 of 85, confirmed by probing the converted package's own
+/// `geometry_templates.parquet`), so any truncation that stops short of
+/// keeping every definition also strands a template reference, and the
+/// header-level template rebuild (which runs before the per-object loop)
+/// would report that instead. The template rows' own `material`/`texture`
+/// are therefore additionally cleared (a template legitimately carries
+/// neither) so the truncation's effect is isolated to real objects, which
+/// is what this fix targets — the per-object appearance restore, not the
+/// template one (already covered by the dangling-template-id test above).
+#[test]
+fn export_errors_on_an_out_of_range_material_global_id() {
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(
+        fixture("lod3_railway.city.json"),
+        package_dir.path().to_path_buf(),
+    );
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let materials_path = package_dir.path().join("materials.parquet");
+    let defs = read_materials(&materials_path).unwrap();
+    assert_eq!(
+        defs.len(),
+        85,
+        "railway must carry exactly 85 material definitions (pinned elsewhere)"
+    );
+
+    // Clear every template row's material/texture reference so truncating
+    // materials.parquet cannot also strand the header-level template
+    // rebuild (see the doc comment above).
+    let templates_path = package_dir.path().join("geometry_templates.parquet");
+    let mut template_rows = read_templates(&templates_path).unwrap();
+    assert_eq!(template_rows.len(), 3, "railway has 3 geometry templates");
+    assert!(
+        template_rows.iter().any(|r| r.material.is_some()),
+        "precondition: at least one template must actually reference a material \
+         (or clearing it below would be a no-op)"
+    );
+    for row in &mut template_rows {
+        row.material = None;
+        row.texture = None;
+    }
+    write_templates(&templates_path, &template_rows).unwrap();
+
+    // Truncate to a single definition (id 0): any real object referencing a
+    // higher index is now dangling.
+    let truncated = &defs[..1];
+    write_materials(&materials_path, truncated).unwrap();
+    assert_eq!(read_materials(&materials_path).unwrap().len(), 1);
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    let err = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output,
+    })
+    .unwrap_err();
+
+    assert!(
+        matches!(err, CityParquetError::Schema(_)),
+        "expected a Schema error, got {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("object "),
+        "the error must name the offending object, got: {msg}"
+    );
+    assert!(
+        msg.contains("material global id"),
+        "the error must name the out-of-range material global id, got: {msg}"
     );
 }
 
