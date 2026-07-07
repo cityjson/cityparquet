@@ -162,22 +162,37 @@ fn purge_stale_package_files(output_dir: &Path) -> Result<()> {
 /// ever reached and `output_dir` is never touched at all; this function is
 /// the only place `output_dir`'s old contents are ever removed.
 ///
-/// Not fully atomic against a crash mid-swap itself (a failure between two
-/// `rename` calls, or between the purge and the first rename, could leave
-/// `output_dir` with a mix of old and new files) — `rename` within the same
-/// directory tree is normally an in-place metadata operation on the local
-/// filesystems this crate targets, so that window is extremely narrow
-/// compared to the whole encode pass it replaces; the property this fix
-/// actually buys is that an encode-time failure (the realistic, common
-/// failure mode this crash-safe overwrite exists for) never reaches this
-/// function at all.
+/// Not atomic against a failure mid-swap itself, and the residual risk is
+/// asymmetric: the purge runs BEFORE any rename, so a failure after this
+/// function starts (a purge error partway through the old files, or a
+/// `rename` error after some files already moved) leaves the OLD package
+/// removed and the NEW one split between `output_dir` (the renames that
+/// succeeded) and `tmp_dir` (everything not yet renamed) — at that point
+/// the files still in `tmp_dir` are the only recoverable copy of the new
+/// package. Every error this function returns therefore (a) names `tmp_dir`
+/// as holding the recoverable remainder, and (b) obliges the caller
+/// ([`convert`]) to PRESERVE `tmp_dir` — never delete it — so an operator
+/// can finish the swap by hand. (`rename` within the same directory tree is
+/// normally an in-place metadata operation on the local filesystems this
+/// crate targets, so the window is narrow compared to the whole encode pass
+/// it replaces; the main property the temp-then-swap design buys is that an
+/// encode-time failure — the realistic, common failure mode — never reaches
+/// this function at all and leaves the old package completely untouched.)
 fn commit_package(tmp_dir: &Path, output_dir: &Path, files: &[String]) -> Result<()> {
-    purge_stale_package_files(output_dir)?;
+    // From here on the old package is (partially) gone: every error must
+    // point the operator at the recoverable remainder in `tmp_dir`.
+    let recoverable = |detail: String| {
+        io_err(format!(
+            "{detail}; partial package recoverable at {}",
+            tmp_dir.display()
+        ))
+    };
+    purge_stale_package_files(output_dir).map_err(|e| recoverable(e.to_string()))?;
     for name in files {
         let from = tmp_dir.join(name);
         let to = output_dir.join(name);
         fs::rename(&from, &to).map_err(|e| {
-            io_err(format!(
+            recoverable(format!(
                 "cannot move {} into place at {}: {e}",
                 from.display(),
                 to.display()
@@ -516,10 +531,15 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
         }
     };
 
-    if let Err(e) = commit_package(&tmp_dir, &opts.output_dir, &written.file_names) {
-        let _ = fs::remove_dir_all(&tmp_dir);
-        return Err(e);
-    }
+    // Deliberately NO tmp_dir cleanup on a commit_package failure — the
+    // exact opposite of the write_package arm above. By the time
+    // commit_package can fail, its purge has already begun removing the OLD
+    // package, so the files still in tmp_dir are the only recoverable copy
+    // of the NEW one; deleting them would destroy the last usable state. The
+    // error itself names the recoverable tmp_dir path (see commit_package),
+    // and the next `convert` into this directory clears the leftover scratch
+    // dir before writing (the stale-tmp_dir removal above).
+    commit_package(&tmp_dir, &opts.output_dir, &written.file_names)?;
 
     Ok(ConvertReport {
         object_count: scan_result.object_count,
@@ -536,4 +556,67 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
         textures_written: written.textures_written,
         templates_written: written.templates_written,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M5 review follow-up: a mid-swap `rename` failure inside
+    /// [`commit_package`] happens AFTER the purge has already removed the
+    /// old package, so the files still sitting in `tmp_dir` are the ONLY
+    /// recoverable copy of the new package — the error path must preserve
+    /// `tmp_dir` (never delete it) and the error message must point an
+    /// operator at it. Filesystem-mechanics unit test (no CityJSON
+    /// involved): two real files in `tmp_dir`, a `files` list whose MIDDLE
+    /// entry names a file that does not exist there, so the first rename
+    /// succeeds and the second fails.
+    #[test]
+    fn commit_package_mid_swap_failure_preserves_the_tmp_dir_for_recovery() {
+        let out = tempfile::tempdir().unwrap();
+        // The old package the purge removes before the renames start.
+        fs::write(out.path().join("metadata.json"), "old-manifest").unwrap();
+        fs::write(out.path().join("stale.parquet"), "old-table").unwrap();
+
+        let tmp = out.path().join(TMP_DIR_NAME);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("a.parquet"), "new-a").unwrap();
+        fs::write(tmp.join("b.parquet"), "new-b").unwrap();
+
+        let files = [
+            "a.parquet".to_string(),
+            "missing.parquet".to_string(), // does not exist in tmp: rename fails here
+            "b.parquet".to_string(),
+        ];
+        let err = commit_package(&tmp, out.path(), &files).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Io(_)),
+            "expected an Io error from the failed rename, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("partial package recoverable at")
+                && msg.contains(&tmp.display().to_string()),
+            "the error must tell the operator the tmp dir holds the recoverable remainder, \
+             got: {msg}"
+        );
+
+        // The rename that already succeeded left its file in output_dir...
+        assert_eq!(
+            fs::read_to_string(out.path().join("a.parquet")).unwrap(),
+            "new-a",
+            "the successfully-renamed file must be in output_dir"
+        );
+        // ...and everything not yet renamed must still be in tmp_dir, which
+        // itself must survive: it is the only recoverable copy.
+        assert!(
+            tmp.exists(),
+            "tmp_dir must be preserved for manual recovery"
+        );
+        assert_eq!(
+            fs::read_to_string(tmp.join("b.parquet")).unwrap(),
+            "new-b",
+            "the not-yet-renamed remainder must still be in tmp_dir"
+        );
+    }
 }
