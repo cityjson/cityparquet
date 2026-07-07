@@ -318,23 +318,264 @@ fn realign_nested_semantics(
     Some(semantics)
 }
 
-/// One geometry's `material` or `texture` map as a JSON value with each
-/// theme's per-surface `values` array realigned for the surfaces the
-/// degenerate normalisation dropped (mirrors `crate::encode`'s
-/// `realign_appearance_themes`). Theme-level scalar `value` entries apply
-/// to all surfaces and need no realignment. Only for the flat surface-list
+/// Feature-scoped `material`/`texture`/`vertices-texture` DEFINITIONS a
+/// geometry's `material`/`texture` index references resolve against —
+/// `cjseq::CityJSONFeature::appearance`'s three arrays, borrowed for the
+/// lifetime of one `load_side` feature. Empty (never `None`, so callers never
+/// have to special-case "no appearance") when the feature carries no
+/// `appearance` block at all.
+///
+/// Dereferencing through this (rather than comparing the raw index numbers
+/// `geom.material`/`geom.texture` carry) is required because feature-local
+/// index NUMBERING is an implementation detail of whatever produced the
+/// file, not part of a CityJSON's semantics — exactly why boundary vertex
+/// INDICES are dereferenced through `VertexPool` into real coordinates
+/// instead of compared by index identity. Two independently-produced
+/// packages routinely disagree on numbering for two INDEPENDENT reasons that
+/// this module's own M4 task 11 round-trip gate against a real Compatibility
+/// package exposed: (1) `crate::encode`'s `BatchIter` sorts a feature's
+/// CityObject ids alphabetically before writing rows, while `cjseq`'s own
+/// `get_cjfeature` walks parent-then-children in the file's own `children`
+/// list order — different row/local-index assignment order for the exact
+/// same feature; (2) `crate::export::LocalAppearance::local_uv_id` dedupes
+/// inlined `[u, v]` pairs BY VALUE, while `cjseq::update_texture` maps by
+/// REFERENCED GLOBAL INDEX identity (no value-dedup) — so two different
+/// source UV entries that happen to hold the same coordinate pair get ONE
+/// local id after a round trip but TWO in the original file. Neither
+/// disagreement is a data-loss bug; a byte-exact-index comparator cannot
+/// tell that apart from one, which is exactly why it does not compare index
+/// numbers at all.
+struct AppearanceDefs<'a> {
+    materials: &'a [Value],
+    textures: &'a [Value],
+    vertices_texture: &'a [Vec<f64>],
+}
+
+impl AppearanceDefs<'_> {
+    /// No `appearance` block at all (or none of the three arrays present).
+    fn empty() -> Self {
+        AppearanceDefs {
+            materials: &[],
+            textures: &[],
+            vertices_texture: &[],
+        }
+    }
+
+    fn from_feature(feature: &cjseq::CityJSONFeature) -> AppearanceDefs<'_> {
+        match &feature.appearance {
+            Some(a) => AppearanceDefs {
+                materials: a.materials.as_deref().unwrap_or(&[]),
+                textures: a.textures.as_deref().unwrap_or(&[]),
+                vertices_texture: a.vertices_texture.as_deref().unwrap_or(&[]),
+            },
+            None => AppearanceDefs::empty(),
+        }
+    }
+}
+
+/// One material index -> its actual definition in `defs.materials`.
+/// `defs.materials.is_empty()` (no `appearance.materials` array to resolve
+/// against at all — e.g. a hand-built geometry in this module's own unit
+/// tests, or a real feature whose material index is a leftover reference
+/// with nothing behind it) passes the raw index number through UNCHANGED
+/// rather than erroring: comparing the bare number is still strictly better
+/// than refusing to compare at all, and every REAL round-tripped package
+/// this module compares carries the array whenever it carries any material
+/// index reference in the first place.
+fn resolve_material_index(v: &Value, defs: &AppearanceDefs) -> Result<Value> {
+    match v {
+        Value::Null => Ok(Value::Null),
+        Value::Number(n) => {
+            if defs.materials.is_empty() {
+                return Ok(Value::Number(n.clone()));
+            }
+            let idx = n
+                .as_u64()
+                .ok_or_else(|| err(format!("material index is not a non-negative integer: {n}")))?
+                as usize;
+            defs.materials.get(idx).cloned().ok_or_else(|| {
+                err(format!(
+                    "material index {idx} out of range (have {} definitions)",
+                    defs.materials.len()
+                ))
+            })
+        }
+        other => Err(err(format!(
+            "material index must be an integer or null, got {other}"
+        ))),
+    }
+}
+
+/// Walks a material theme's `values` tree (arbitrarily nested for the Solid
+/// family; flat for the surface-list types), resolving each leaf index.
+fn resolve_material_tree(v: &Value, defs: &AppearanceDefs) -> Result<Value> {
+    match v {
+        Value::Array(items) => Ok(Value::Array(
+            items
+                .iter()
+                .map(|x| resolve_material_tree(x, defs))
+                .collect::<Result<Vec<_>>>()?,
+        )),
+        _ => resolve_material_index(v, defs),
+    }
+}
+
+/// One geometry's whole `material` map (`{"<theme>": {"value": idx} |
+/// {"values": <tree>}}`) with every index resolved to its actual
+/// definition — the dereferencing counterpart of the old (index-comparing)
+/// `realigned_appearance`.
+fn resolve_material_map(map: &Value, defs: &AppearanceDefs) -> Result<Value> {
+    let obj = map.as_object().ok_or_else(|| {
+        err("material map must be a JSON object of theme -> {value|values}".to_string())
+    })?;
+    let mut out = Map::with_capacity(obj.len());
+    for (theme, inner) in obj {
+        let inner_obj = inner
+            .as_object()
+            .ok_or_else(|| err(format!("material theme '{theme}' must be an object")))?;
+        let mut new_inner = Map::with_capacity(inner_obj.len());
+        if let Some(v) = inner_obj.get("value") {
+            new_inner.insert("value".to_string(), resolve_material_index(v, defs)?);
+        }
+        if let Some(v) = inner_obj.get("values") {
+            new_inner.insert("values".to_string(), resolve_material_tree(v, defs)?);
+        }
+        out.insert(theme.clone(), Value::Object(new_inner));
+    }
+    Ok(Value::Object(out))
+}
+
+/// A *ring* is the innermost texture-map array: `[textureIdx|null, uvIdx0,
+/// uvIdx1, ...]` (standard CityJSON index form — never the CityParquet-
+/// internal inlined `[u, v]` form, which exists only inside a package's own
+/// stored columns and is always undone back to this index form by
+/// `crate::export` before a file reaches this comparator). Recognised the
+/// same way `crate::export::is_localised_texture_ring` recognises it: first
+/// element a number or `null`.
+fn is_texture_ring(items: &[Value]) -> bool {
+    !items.is_empty() && matches!(items[0], Value::Number(_) | Value::Null)
+}
+
+/// One texture ring with its texture-definition index and every
+/// vertices-texture index resolved to real values: `[textureIdx, uv0, uv1,
+/// ...]` becomes `[<texture definition>, [u0, v0], [u1, v1], ...]`. Mirrors
+/// [`resolve_material_index`]'s empty-`defs` passthrough for both the
+/// texture id and the UV indices independently (a feature could in
+/// principle carry `textures` but no `vertices-texture`, or vice versa,
+/// though never in practice for a real package).
+fn resolve_texture_ring(items: &[Value], defs: &AppearanceDefs) -> Result<Value> {
+    if items.len() == 1 && items[0].is_null() {
+        return Ok(Value::Array(vec![Value::Null]));
+    }
+    let mut out = Vec::with_capacity(items.len());
+    out.push(match &items[0] {
+        Value::Null => Value::Null,
+        Value::Number(n) => {
+            if defs.textures.is_empty() {
+                Value::Number(n.clone())
+            } else {
+                let idx = n.as_u64().ok_or_else(|| {
+                    err(format!("texture index is not a non-negative integer: {n}"))
+                })? as usize;
+                defs.textures.get(idx).cloned().ok_or_else(|| {
+                    err(format!(
+                        "texture index {idx} out of range (have {} definitions)",
+                        defs.textures.len()
+                    ))
+                })?
+            }
+        }
+        other => {
+            return Err(err(format!(
+                "texture index must be an integer or null, got {other}"
+            )));
+        }
+    });
+    for uv in &items[1..] {
+        if defs.vertices_texture.is_empty() {
+            out.push(uv.clone());
+            continue;
+        }
+        let idx = uv.as_u64().ok_or_else(|| {
+            err(format!(
+                "vertex-texture index is not a non-negative integer: {uv}"
+            ))
+        })? as usize;
+        let pair = defs.vertices_texture.get(idx).ok_or_else(|| {
+            err(format!(
+                "vertex-texture index {idx} out of range (have {} entries)",
+                defs.vertices_texture.len()
+            ))
+        })?;
+        out.push(serde_json::json!([pair[0], pair[1]]));
+    }
+    Ok(Value::Array(out))
+}
+
+/// Walks a texture theme's `values` tree down to the innermost rings,
+/// resolving each one.
+fn resolve_texture_tree(v: &Value, defs: &AppearanceDefs) -> Result<Value> {
+    match v {
+        Value::Array(items) => {
+            if is_texture_ring(items) {
+                resolve_texture_ring(items, defs)
+            } else {
+                Ok(Value::Array(
+                    items
+                        .iter()
+                        .map(|x| resolve_texture_tree(x, defs))
+                        .collect::<Result<Vec<_>>>()?,
+                ))
+            }
+        }
+        other => Err(err(format!(
+            "unexpected non-array node in texture tree: {other}"
+        ))),
+    }
+}
+
+/// One geometry's whole `texture` map (`{"<theme>": {"values": <tree>}}`)
+/// with every ring resolved — the dereferencing counterpart of the old
+/// (index-comparing) `realigned_appearance`.
+fn resolve_texture_map(map: &Value, defs: &AppearanceDefs) -> Result<Value> {
+    let obj = map
+        .as_object()
+        .ok_or_else(|| err("texture map must be a JSON object of theme -> {values}".to_string()))?;
+    let mut out = Map::with_capacity(obj.len());
+    for (theme, inner) in obj {
+        let inner_obj = inner
+            .as_object()
+            .ok_or_else(|| err(format!("texture theme '{theme}' must be an object")))?;
+        let values = inner_obj
+            .get("values")
+            .ok_or_else(|| err(format!("texture theme '{theme}' is missing 'values'")))?;
+        let resolved = resolve_texture_tree(values, defs)?;
+        let mut new_inner = Map::with_capacity(1);
+        new_inner.insert("values".to_string(), resolved);
+        out.insert(theme.clone(), Value::Object(new_inner));
+    }
+    Ok(Value::Object(out))
+}
+
+/// One geometry's `material` map, DEREFERENCED via `defs` (see
+/// [`AppearanceDefs`]) then realigned for the surfaces the degenerate
+/// normalisation dropped (mirrors `crate::encode`'s
+/// `realign_appearance_themes`). Theme-level scalar `value` entries apply to
+/// all surfaces and need no realignment. Only for the flat surface-list
 /// types (`MultiSurface`/`CompositeSurface`) and the non-polygonal types
 /// (called with an always-empty `dropped_surfaces`); the solid types nest
 /// their per-surface arrays per shell and are realigned instead via
-/// `realigned_nested_appearance`.
-fn realigned_appearance<T: serde::Serialize>(
-    map: &Option<T>,
+/// [`realigned_nested_material`].
+fn realigned_material(
+    map: &Option<HashMap<String, cjseq::Material>>,
     dropped_surfaces: &[usize],
+    defs: &AppearanceDefs,
 ) -> Result<Option<Value>> {
     let Some(map) = map else {
         return Ok(None);
     };
-    let mut value = serde_json::to_value(map)?;
+    let raw = serde_json::to_value(map)?;
+    let mut value = resolve_material_map(&raw, defs)?;
     if !dropped_surfaces.is_empty()
         && let Some(themes) = value.as_object_mut()
     {
@@ -347,19 +588,45 @@ fn realigned_appearance<T: serde::Serialize>(
     Ok(Some(value))
 }
 
-/// One geometry's `material`/`texture` map with each theme's `values` array
-/// realigned `depth` shell/solid levels deep — the Solid-family counterpart
-/// of `realigned_appearance`, which only handles the flat surface-list
-/// shape.
-fn realigned_nested_appearance<T: serde::Serialize>(
-    map: &Option<T>,
-    depth: usize,
-    dropped: &[usize],
+/// One geometry's `texture` map — the [`realigned_material`] counterpart for
+/// `texture`.
+fn realigned_texture(
+    map: &Option<HashMap<String, cjseq::Texture>>,
+    dropped_surfaces: &[usize],
+    defs: &AppearanceDefs,
 ) -> Result<Option<Value>> {
     let Some(map) = map else {
         return Ok(None);
     };
-    let mut value = serde_json::to_value(map)?;
+    let raw = serde_json::to_value(map)?;
+    let mut value = resolve_texture_map(&raw, defs)?;
+    if !dropped_surfaces.is_empty()
+        && let Some(themes) = value.as_object_mut()
+    {
+        for theme in themes.values_mut() {
+            if let Some(values) = theme.get_mut("values").and_then(Value::as_array_mut) {
+                remove_dropped_entries(values, dropped_surfaces);
+            }
+        }
+    }
+    Ok(Some(value))
+}
+
+/// One geometry's `material` map with each theme's `values` array
+/// DEREFERENCED via `defs` (see [`AppearanceDefs`]) then realigned `depth`
+/// shell/solid levels deep — the Solid-family counterpart of
+/// [`realigned_material`], which only handles the flat surface-list shape.
+fn realigned_nested_material(
+    map: &Option<HashMap<String, cjseq::Material>>,
+    depth: usize,
+    dropped: &[usize],
+    defs: &AppearanceDefs,
+) -> Result<Option<Value>> {
+    let Some(map) = map else {
+        return Ok(None);
+    };
+    let raw = serde_json::to_value(map)?;
+    let mut value = resolve_material_map(&raw, defs)?;
     if !dropped.is_empty()
         && let Some(themes) = value.as_object_mut()
     {
@@ -372,8 +639,38 @@ fn realigned_nested_appearance<T: serde::Serialize>(
     Ok(Some(value))
 }
 
-/// Normalises and dequantises one non-instance geometry against `pool`.
-fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGeometry> {
+/// One geometry's `texture` map — the [`realigned_nested_material`]
+/// counterpart for `texture`.
+fn realigned_nested_texture(
+    map: &Option<HashMap<String, cjseq::Texture>>,
+    depth: usize,
+    dropped: &[usize],
+    defs: &AppearanceDefs,
+) -> Result<Option<Value>> {
+    let Some(map) = map else {
+        return Ok(None);
+    };
+    let raw = serde_json::to_value(map)?;
+    let mut value = resolve_texture_map(&raw, defs)?;
+    if !dropped.is_empty()
+        && let Some(themes) = value.as_object_mut()
+    {
+        for theme in themes.values_mut() {
+            if let Some(values) = theme.get_mut("values") {
+                realign_nested_values(values, depth, dropped);
+            }
+        }
+    }
+    Ok(Some(value))
+}
+
+/// Normalises and dequantises one non-instance geometry against `pool`,
+/// dereferencing its `material`/`texture` indices against `defs`.
+fn normalise_geometry(
+    geom: &Geometry,
+    pool: &VertexPool,
+    defs: &AppearanceDefs,
+) -> Result<NormalisedGeometry> {
     match geom.thetype {
         GeometryType::GeometryInstance => Err(err(
             "normalise_geometry must not be called on a GeometryInstance",
@@ -383,8 +680,8 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
             Ok(NormalisedGeometry {
                 tree: points_node(pool, &idxs)?,
                 semantics: geom.semantics.clone(),
-                material: realigned_appearance(&geom.material, &[])?,
-                texture: realigned_appearance(&geom.texture, &[])?,
+                material: realigned_material(&geom.material, &[], defs)?,
+                texture: realigned_texture(&geom.texture, &[], defs)?,
                 dropped_rings: 0,
                 dropped_surfaces: 0,
             })
@@ -394,8 +691,8 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
             Ok(NormalisedGeometry {
                 tree: ring_list_node(pool, &lines)?,
                 semantics: geom.semantics.clone(),
-                material: realigned_appearance(&geom.material, &[])?,
-                texture: realigned_appearance(&geom.texture, &[])?,
+                material: realigned_material(&geom.material, &[], defs)?,
+                texture: realigned_texture(&geom.texture, &[], defs)?,
                 dropped_rings: 0,
                 dropped_surfaces: 0,
             })
@@ -414,8 +711,8 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
             Ok(NormalisedGeometry {
                 tree: surface_list_node(pool, &kept)?,
                 semantics: realign_semantics(&geom.semantics, &dropped_positions),
-                material: realigned_appearance(&geom.material, &dropped_positions)?,
-                texture: realigned_appearance(&geom.texture, &dropped_positions)?,
+                material: realigned_material(&geom.material, &dropped_positions, defs)?,
+                texture: realigned_texture(&geom.texture, &dropped_positions, defs)?,
                 dropped_rings,
                 dropped_surfaces: dropped_positions.len(),
             })
@@ -451,8 +748,13 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
             Ok(NormalisedGeometry {
                 tree,
                 semantics: realign_nested_semantics(&geom.semantics, depth, &dropped_positions),
-                material: realigned_nested_appearance(&geom.material, depth, &dropped_positions)?,
-                texture: realigned_nested_appearance(&geom.texture, depth, &dropped_positions)?,
+                material: realigned_nested_material(
+                    &geom.material,
+                    depth,
+                    &dropped_positions,
+                    defs,
+                )?,
+                texture: realigned_nested_texture(&geom.texture, depth, &dropped_positions, defs)?,
                 dropped_rings,
                 dropped_surfaces: dropped_positions.len(),
             })
@@ -498,8 +800,13 @@ fn normalise_geometry(geom: &Geometry, pool: &VertexPool) -> Result<NormalisedGe
             Ok(NormalisedGeometry {
                 tree,
                 semantics: realign_nested_semantics(&geom.semantics, depth, &dropped_positions),
-                material: realigned_nested_appearance(&geom.material, depth, &dropped_positions)?,
-                texture: realigned_nested_appearance(&geom.texture, depth, &dropped_positions)?,
+                material: realigned_nested_material(
+                    &geom.material,
+                    depth,
+                    &dropped_positions,
+                    defs,
+                )?,
+                texture: realigned_nested_texture(&geom.texture, depth, &dropped_positions, defs)?,
                 dropped_rings,
                 dropped_surfaces: dropped_positions.len(),
             })
@@ -646,6 +953,7 @@ fn claim_or_log(
 fn build_geometries(
     geoms: &[Geometry],
     pool: &VertexPool,
+    defs: &AppearanceDefs,
     opts: &CompareOptions,
     excluded: &mut Vec<String>,
     label: &str,
@@ -696,7 +1004,7 @@ fn build_geometries(
             ));
         }
 
-        let normalised = normalise_geometry(geom, pool)?;
+        let normalised = normalise_geometry(geom, pool, defs)?;
         if normalised.dropped_rings > 0 || normalised.dropped_surfaces > 0 {
             excluded.push(format!(
                 "{label}: object {id}: geometry at lod {:?}: normalised away {} degenerate ring(s), {} surface(s)",
@@ -760,6 +1068,7 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
     for feature in source.features()? {
         let feature = feature?;
         let pool = VertexPool::new(&feature.vertices, &header.transform);
+        let defs = AppearanceDefs::from_feature(&feature);
         for (id, co) in &feature.city_objects {
             let attributes = canonicalise_attrs(co.attributes.as_ref());
             let parents: HashSet<String> =
@@ -771,7 +1080,9 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
                 .into_iter()
                 .collect();
             let geometries = match &co.geometry {
-                Some(geoms) => build_geometries(geoms, &pool, opts, &mut excluded, &label, id)?,
+                Some(geoms) => {
+                    build_geometries(geoms, &pool, &defs, opts, &mut excluded, &label, id)?
+                }
                 None => HashMap::new(),
             };
             objects.insert(
@@ -1479,7 +1790,7 @@ mod tests {
         };
         let pool = VertexPool::new(&vertices, &transform);
 
-        let normalised = normalise_geometry(&geom, &pool).unwrap();
+        let normalised = normalise_geometry(&geom, &pool, &AppearanceDefs::empty()).unwrap();
         assert_eq!(normalised.dropped_rings, 2);
         assert_eq!(normalised.dropped_surfaces, 2);
         assert_eq!(

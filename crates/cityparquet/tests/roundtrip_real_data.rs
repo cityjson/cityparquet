@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::schema::Profile;
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -26,6 +27,29 @@ fn convert_and_export(input: &str) -> (PathBuf, tempfile::TempDir, tempfile::Tem
         package_dir.path().to_path_buf(),
     ))
     .unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+
+    (output, package_dir, export_dir)
+}
+
+/// Same as [`convert_and_export`] but lets the caller pick the profile —
+/// needed for the Compatibility-profile headline round-trip gate below,
+/// where appearance/instances must actually be restored, not dropped.
+fn convert_and_export_with_profile(
+    input: &str,
+    profile: Profile,
+) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture(input), package_dir.path().to_path_buf());
+    opts.profile = profile;
+    convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
@@ -135,6 +159,96 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
         !header_excluded.is_empty(),
         "railway's header sets metadata members; expected at least one documented \
          header-metadata exclusion, got none. Full excluded: {:#?}",
+        report.excluded
+    );
+}
+
+/// M4 task 11 (the milestone's headline gate): a Compatibility-profile
+/// round trip with NO exclusions at all — appearance and GeometryInstance
+/// geometries are now restored from the sidecars (M4 tasks 6-10), so unlike
+/// `railway_round_trips_losslessly_modulo_documented_drops` above (which
+/// still excludes both, because that test converts Core), the only
+/// remaining exclusions are the 3 source rings the writer's own degenerate
+/// normalisation drops (pinned in `wkb_roundtrip_real_data.rs`'s
+/// `geometries_with_drops` and in the Core round-trip test above) and
+/// whatever header metadata members railway's header sets (documented,
+/// unbounded). Any OTHER exclusion here would mean appearance or an
+/// instance silently failed to round-trip.
+#[test]
+fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
+    let (exported, _package_dir, _export_dir) =
+        convert_and_export_with_profile("lod3_railway.city.json", Profile::Compatibility);
+    let report = compare_datasets(
+        &fixture("lod3_railway.city.json"),
+        &exported,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "railway must round-trip losslessly with NO exclusions under the Compatibility profile; \
+         differences: {:#?}",
+        report.differences
+    );
+    assert!(report.differences.is_empty());
+
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    let degenerate = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    assert_eq!(
+        degenerate, 3,
+        "the 3 pinned source rings the writer normalises away must still be the only \
+         non-header exclusions, got: {:#?}",
+        non_header_excluded
+    );
+    assert_eq!(
+        non_header_excluded.len(),
+        3,
+        "with appearance and instances now round-tripping, every non-header exclusion must be \
+         one of the 3 pinned degenerate-ring notes, nothing else, got: {:#?}",
+        non_header_excluded
+    );
+    assert!(
+        !header_excluded.is_empty(),
+        "railway's header sets metadata members; expected at least one documented \
+         header-metadata exclusion, got none. Full excluded: {:#?}",
+        report.excluded
+    );
+}
+
+/// M4 task 11: delft carries no appearance, no GeometryInstances, and (in
+/// its unmutated form) no degenerate rings, so BOTH profiles must round-trip
+/// with no exclusions beyond delft's own documented header metadata members
+/// — the Compatibility profile writing (empty) sidecars must not introduce
+/// any new difference or exclusion relative to the Core round trip already
+/// proven by `delft_round_trips_losslessly`.
+#[test]
+fn delft_compatibility_round_trips_losslessly_with_only_header_exclusions() {
+    let (exported, _package_dir, _export_dir) =
+        convert_and_export_with_profile("delft.city.jsonl", Profile::Compatibility);
+    let report = compare_datasets(
+        &fixture("delft.city.jsonl"),
+        &exported,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "delft must round-trip losslessly under the Compatibility profile too; differences: {:#?}",
+        report.differences
+    );
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .excluded
+            .iter()
+            .all(|e| e.starts_with("header: metadata member")),
+        "delft's only exclusions must be documented header metadata members, got: {:#?}",
         report.excluded
     );
 }
