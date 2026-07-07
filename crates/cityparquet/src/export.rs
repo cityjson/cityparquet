@@ -5,12 +5,20 @@
 //! reconstruction (WKB -> CityJSON boundary arrays, re-quantised against the
 //! dataset's own `transform`).
 //!
-//! `GeometryInstance` geometries are always dropped (M4 task 10 scope): their
-//! template definitions live in the `geometry_templates.parquet` sidecar,
-//! which this pass does not read, so a file referencing an absent template
-//! would be invalid CityJSON. The owning object (attributes, hierarchy) is
-//! still exported; only its instance geometry is missing, counted in
-//! [`ExportReport::instance_geometries_dropped`].
+//! `GeometryInstance` geometries are rebuilt from the `geometry_templates.parquet`
+//! sidecar when present (M4 task 10): the header's `geometry-templates` is
+//! reconstructed from the sidecar's WKB + `geometry_properties` (template
+//! vertices are RAW floats — CityJSON spec §3.4 — so they are re-interned by
+//! `f64::to_bits` triple, never through the dataset's quantised transform),
+//! and each object's `template` reference becomes a `GeometryInstance`
+//! geometry pointing at it. When no sidecar is present (the Core profile, or
+//! a Compatibility dataset with no templates at all), a `template` reference
+//! cannot be resolved to anything real, so the owning object (attributes,
+//! hierarchy) is still exported but its instance geometry is dropped, counted
+//! in [`ExportReport::instance_geometries_dropped`]. A `template` reference
+//! that names no row in a sidecar that IS present is a different situation —
+//! a corrupt/hand-rolled file — and surfaces as a `Schema` error rather than
+//! a silent drop.
 //!
 //! Material/texture index maps are handled differently depending on what the
 //! package actually carries: when `metadata.json`'s `sidecar_files` lists
@@ -37,14 +45,14 @@ use serde_json::Value;
 
 use cityparquet_schema::{CityParquetError, CityParquetMetadata, PackageManifest, Result};
 use cjseq::{
-    Appearance, CityJSON, CityJSONFeature, Geometry, GeometryType, Material,
+    Appearance, CityJSON, CityJSONFeature, Geometry, GeometryTemplates, GeometryType, Material,
     Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
 };
 
 use crate::decode::{DecodedObject, decode_batch};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
-use crate::sidecar::{read_materials, read_textures};
-use crate::wkb_read::DecodedKind;
+use crate::sidecar::{TemplateRow, read_materials, read_templates, read_textures};
+use crate::wkb_read::{DecodedKind, wkb_to_geometry};
 
 /// Options controlling one package -> CityJSON/CityJSONSeq export.
 #[derive(Debug, Clone)]
@@ -61,8 +69,12 @@ pub struct ExportOptions {
 pub struct ExportReport {
     pub feature_count: usize,
     pub object_count: usize,
-    /// Objects whose `GeometryInstance` geometry was dropped (template
-    /// definitions are M4 sidecar data this pass does not read).
+    /// Objects whose `GeometryInstance` geometry was dropped because no
+    /// `geometry_templates.parquet` sidecar was available to resolve it
+    /// against (the Core profile, or a Compatibility dataset with no
+    /// templates at all). `0` whenever the sidecar is present: every
+    /// resolvable `template` reference is rebuilt into a real
+    /// `GeometryInstance` geometry instead — see the module doc.
     pub instance_geometries_dropped: usize,
     /// Geometries whose material/texture index maps were dropped: the Core
     /// profile stores the maps but not the appearance definitions they index
@@ -136,6 +148,33 @@ impl VertexInterner {
     }
 
     fn finish(self) -> Vec<Vec<i64>> {
+        self.vertices
+    }
+}
+
+/// Header-scope vertex pool for the rebuilt `vertices-templates`: interns raw
+/// `f64` XYZ triples bitwise (`f64::to_bits`) — geometry template vertices
+/// are NOT subject to the dataset's quantised `transform` (CityJSON spec
+/// §3.4; mirrors [`crate::wkb_write::VertexPool::raw`]'s write-side
+/// counterpart), so they must never go through [`VertexInterner`]'s
+/// quantise-then-intern path.
+#[derive(Default)]
+struct RawVertexInterner {
+    index: HashMap<[u64; 3], usize>,
+    vertices: Vec<Vec<f64>>,
+}
+
+impl RawVertexInterner {
+    fn intern(&mut self, c: [f64; 3]) -> usize {
+        let key = [c[0].to_bits(), c[1].to_bits(), c[2].to_bits()];
+        *self.index.entry(key).or_insert_with(|| {
+            let idx = self.vertices.len();
+            self.vertices.push(vec![c[0], c[1], c[2]]);
+            idx
+        })
+    }
+
+    fn finish(self) -> Vec<Vec<f64>> {
         self.vertices
     }
 }
@@ -700,6 +739,114 @@ impl<'a> LocalAppearance<'a> {
     }
 }
 
+/// The rebuilt header `geometry-templates` plus the header-scope appearance
+/// its templates' `material`/`texture` were localised into, and the join
+/// table from a sidecar row's `id` (the string the main-table `template`
+/// column's `id` references) to that template's position in
+/// `templates`/the exported `GeometryInstance.template` index.
+struct RebuiltTemplates {
+    templates: Vec<Geometry>,
+    vertices_templates: Value,
+    appearance: Option<Appearance>,
+    id_to_pos: HashMap<String, usize>,
+}
+
+/// Rebuilds the header's `geometry-templates` from `geometry_templates.parquet`
+/// rows: each row's WKB decodes into a boundary tree via the SAME
+/// [`reconstruct_boundaries`] the main geometry path uses, its vertices are
+/// re-interned into a template-scope, RAW-float pool (never quantised — see
+/// [`RawVertexInterner`]), and its `material`/`texture` (dataset-global ids,
+/// same convention as the main table) are localised into ONE header-scope
+/// [`LocalAppearance`] shared across every template — mirroring how a single
+/// feature's geometries share one [`LocalAppearance`]. `rows` is assumed
+/// non-empty (callers skip this entirely when no sidecar was loaded).
+fn rebuild_templates(
+    rows: &[TemplateRow],
+    global_materials: &[Value],
+    global_textures: &[Value],
+) -> Result<RebuiltTemplates> {
+    let mut interner = RawVertexInterner::default();
+    let mut local_appearance = LocalAppearance::new(global_materials, global_textures);
+    let mut templates = Vec::with_capacity(rows.len());
+    let mut id_to_pos = HashMap::with_capacity(rows.len());
+
+    for (pos, row) in rows.iter().enumerate() {
+        id_to_pos.insert(row.id.clone(), pos);
+
+        let decoded = wkb_to_geometry(&row.wkb)?;
+        let vmap: Vec<usize> = decoded.coords.iter().map(|&c| interner.intern(c)).collect();
+
+        let props = row.geometry_properties.as_ref();
+        let gtype: GeometryType = props
+            .and_then(|p| p.get("type"))
+            .ok_or_else(|| {
+                err(format!(
+                    "geometry template {pos}: geometry_properties missing 'type'"
+                ))
+            })
+            .and_then(|v| serde_json::from_value(v.clone()).map_err(CityParquetError::from))?;
+        // Templates fold "lod" into geometry_properties (the main table
+        // instead encodes it in the geometry COLUMN NAME) — see
+        // `crate::package::build_template_rows`'s doc comment.
+        let lod = props
+            .and_then(|p| p.get("lod"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let boundaries = reconstruct_boundaries(&decoded.kind, &gtype, props, &vmap)?;
+        let semantics = props.and_then(|p| p.get("semantics")).cloned();
+
+        let material = row
+            .material
+            .as_ref()
+            .map(|m| local_appearance.localise_material_map(m))
+            .transpose()
+            .map_err(|e| {
+                err(format!(
+                    "geometry template {pos}: cannot restore material appearance: {e}"
+                ))
+            })?
+            .map(serde_json::from_value)
+            .transpose()?;
+        let texture = row
+            .texture
+            .as_ref()
+            .map(|t| local_appearance.localise_texture_map(t))
+            .transpose()
+            .map_err(|e| {
+                err(format!(
+                    "geometry template {pos}: cannot restore texture appearance: {e}"
+                ))
+            })?
+            .map(serde_json::from_value)
+            .transpose()?;
+
+        templates.push(Geometry {
+            thetype: gtype,
+            lod,
+            boundaries,
+            semantics,
+            material,
+            texture,
+            template: None,
+            transformation_matrix: None,
+        });
+    }
+
+    let vertices_templates = serde_json::to_value(interner.finish())?;
+    // No dataset-wide default-theme-material/texture at header/template
+    // scope: those already get attached per-feature (see
+    // `LocalAppearance::into_appearance`'s call site below), and a geometry
+    // template itself never carries a default theme of its own.
+    let appearance = local_appearance.into_appearance(None);
+
+    Ok(RebuiltTemplates {
+        templates,
+        vertices_templates,
+        appearance,
+        id_to_pos,
+    })
+}
+
 /// Export the CityParquet package at `opts.package_dir` back into CityJSON
 /// or CityJSONSeq at `opts.output` (format chosen by extension: `.city.jsonl`
 /// -> Seq, `.city.json` -> a single whole document via `cjseq::cjseq_to_cj`).
@@ -727,7 +874,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         .map_err(|e| CityParquetError::Parquet(format!("cannot build parquet reader: {e}")))?;
     let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
 
-    let header = build_header(&meta)?;
+    let mut header = build_header(&meta)?;
     let (scale, translate) = transform_axes(&header.transform);
 
     // Whether this package carries the appearance-DEFINITION sidecars: when
@@ -750,6 +897,24 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         read_textures(&opts.package_dir.join("textures.parquet"))?
     } else {
         Vec::new()
+    };
+
+    // `read_templates` reads as empty when `geometry_templates.parquet` is
+    // absent (a Core-profile package, or a Compatibility one with no
+    // templates at all) — in that case a `template` reference cannot be
+    // resolved to anything real, so the per-object loop below falls back to
+    // the counted-drop path instead (see the module doc).
+    let template_rows = read_templates(&opts.package_dir.join("geometry_templates.parquet"))?;
+    let template_id_to_pos: HashMap<String, usize> = if template_rows.is_empty() {
+        HashMap::new()
+    } else {
+        let rebuilt = rebuild_templates(&template_rows, &global_materials, &global_textures)?;
+        header.geometry_templates = Some(GeometryTemplates {
+            templates: rebuilt.templates,
+            vertices_templates: rebuilt.vertices_templates,
+        });
+        header.appearance = rebuilt.appearance;
+        rebuilt.id_to_pos
     };
 
     // Group decoded objects by feature_id (own id fallback), preserving
@@ -857,8 +1022,31 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     transformation_matrix: None,
                 });
             }
-            if obj.template.is_some() {
-                instance_geometries_dropped += 1;
+            if let Some(tpl) = &obj.template {
+                if template_rows.is_empty() {
+                    // No templates sidecar: the reference cannot be resolved
+                    // to anything real (see the module doc) — count the drop,
+                    // don't fabricate a geometry.
+                    instance_geometries_dropped += 1;
+                } else {
+                    let pos = template_id_to_pos.get(&tpl.id).copied().ok_or_else(|| {
+                        err(format!(
+                            "object {}: template id {:?} does not name a row in geometry_templates.parquet",
+                            obj.id, tpl.id
+                        ))
+                    })?;
+                    let point_idx = interner.intern(quantise(tpl.point, scale, translate));
+                    geoms.push(Geometry {
+                        thetype: GeometryType::GeometryInstance,
+                        lod: None,
+                        boundaries: serde_json::to_value(vec![point_idx])?,
+                        semantics: None,
+                        material: None,
+                        texture: None,
+                        template: Some(pos),
+                        transformation_matrix: tpl.transformation_matrix.clone(),
+                    });
+                }
             }
             co.geometry = if geoms.is_empty() { None } else { Some(geoms) };
             feature.add_co(obj.id.clone(), co);
@@ -917,7 +1105,6 @@ fn write_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wkb_read::wkb_to_geometry;
     use crate::wkb_write::{VertexPool, geometry_to_wkb};
 
     fn triangle_faces(n: usize) -> Vec<Vec<Vec<usize>>> {

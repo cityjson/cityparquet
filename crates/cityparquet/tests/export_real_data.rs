@@ -391,6 +391,148 @@ fn railway_compatibility_export_restores_appearance_feature_local() {
     );
 }
 
+/// M4 task 10: on a Compatibility-profile package (`geometry_templates.parquet`
+/// present), export rebuilds the header's `geometry-templates` and each
+/// object's `GeometryInstance` geometry, instead of dropping them. Exercised
+/// via the DOC (`.city.json`) output path deliberately — `cjseq_to_cj`'s
+/// `add_cjfeature` merges each feature's own appearance into the document
+/// appearance, and template `material`/`texture` are localised at HEADER
+/// scope beforehand, so this path is the one that could show the header's
+/// template indices getting disturbed by that merge (they must not: the
+/// header's own materials/textures are installed before any feature is
+/// merged in, so their positions never move — see `cjseq::Appearance::
+/// add_material`'s dedup-by-value-equality, which only ever APPENDS new
+/// entries after existing ones).
+#[test]
+fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(
+        fixture("lod3_railway.city.json"),
+        package_dir.path().to_path_buf(),
+    );
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.json");
+    let report = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+
+    // (a)
+    assert_eq!(
+        report.instance_geometries_dropped, 0,
+        "templates sidecar is present: instances must be rebuilt, not dropped"
+    );
+
+    let text = std::fs::read_to_string(&output).unwrap();
+    let doc = cjseq::CityJSON::from_str(&text).expect("cjseq must parse the exported .city.json");
+
+    // Read the SOURCE's own geometry-templates straight from the fixture —
+    // types/lods are asserted against this, never hardcoded.
+    let source_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+    let source_doc = cjseq::CityJSON::from_str(&source_text).unwrap();
+    let source_templates = source_doc
+        .geometry_templates
+        .as_ref()
+        .expect("railway fixture has geometry-templates");
+    let source_verts: Vec<Vec<f64>> =
+        serde_json::from_value(source_templates.vertices_templates.clone()).unwrap();
+
+    let rebuilt_templates = doc
+        .geometry_templates
+        .as_ref()
+        .expect("exported doc must carry geometry-templates");
+
+    // (b)
+    assert_eq!(
+        rebuilt_templates.templates.len(),
+        source_templates.templates.len(),
+        "rebuilt template count must match the source"
+    );
+    for (i, (rebuilt, source)) in rebuilt_templates
+        .templates
+        .iter()
+        .zip(&source_templates.templates)
+        .enumerate()
+    {
+        assert_eq!(
+            rebuilt.thetype, source.thetype,
+            "template {i}: type must match the source"
+        );
+        assert_eq!(
+            rebuilt.lod, source.lod,
+            "template {i}: lod must match the source"
+        );
+    }
+
+    // (c)
+    let mut instance_count = 0usize;
+    for co in doc.city_objects.values() {
+        let Some(geoms) = &co.geometry else { continue };
+        for g in geoms {
+            if g.thetype != cjseq::GeometryType::GeometryInstance {
+                continue;
+            }
+            instance_count += 1;
+            assert!(
+                g.template.is_some(),
+                "a GeometryInstance geometry must carry a template index"
+            );
+            let matrix = g
+                .transformation_matrix
+                .as_ref()
+                .expect("GeometryInstance must carry a transformationMatrix")
+                .as_array()
+                .expect("transformationMatrix must be a JSON array");
+            assert_eq!(
+                matrix.len(),
+                16,
+                "transformationMatrix must have 16 elements"
+            );
+            let boundaries: Vec<usize> = serde_json::from_value(g.boundaries.clone())
+                .expect("GeometryInstance boundaries must be a flat array of vertex indices");
+            assert_eq!(
+                boundaries.len(),
+                1,
+                "GeometryInstance boundaries must reference exactly one vertex"
+            );
+        }
+    }
+    assert_eq!(
+        instance_count, 15,
+        "the recount in decode_real_data.rs: exactly 15 objects carry a template"
+    );
+
+    // (d) walk template 0's first ring through both the rebuilt and source
+    // boundary trees and compare coordinates bitwise; index identity is NOT
+    // required (the rebuilt vertices-templates pool may assign different
+    // positions), only coordinate identity.
+    let rebuilt_verts: Vec<Vec<f64>> =
+        serde_json::from_value(rebuilt_templates.vertices_templates.clone()).unwrap();
+    let rebuilt_boundaries: Vec<Vec<Vec<usize>>> =
+        serde_json::from_value(rebuilt_templates.templates[0].boundaries.clone())
+            .expect("template 0 must be a MultiSurface-shaped boundary tree");
+    let source_boundaries: Vec<Vec<Vec<usize>>> =
+        serde_json::from_value(source_templates.templates[0].boundaries.clone()).unwrap();
+    let rebuilt_ring0 = &rebuilt_boundaries[0][0];
+    let source_ring0 = &source_boundaries[0][0];
+    assert_eq!(
+        rebuilt_ring0.len(),
+        source_ring0.len(),
+        "template 0's first ring must keep its source vertex count"
+    );
+    for (i, &rebuilt_idx) in rebuilt_ring0.iter().enumerate() {
+        let source_idx = source_ring0[i];
+        assert_eq!(
+            rebuilt_verts[rebuilt_idx], source_verts[source_idx],
+            "template 0 ring vertex {i}: rebuilt coordinate must equal the source's bitwise"
+        );
+    }
+}
+
 #[test]
 fn delft_also_exports_as_a_single_whole_city_json_document() {
     let package_dir = tempfile::tempdir().unwrap();
