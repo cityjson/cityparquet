@@ -909,6 +909,46 @@ fn by_type_convert_of_delft_writes_exactly_the_two_pinned_type_tables() {
     );
 }
 
+/// M5 review follow-up (Minor a): the ByType writer's first-appearance
+/// order and per-type writer index must persist ACROSS batches, not just
+/// within one — a small `batch_size` (256 vs delft's 2231 objects, so ~9
+/// encoded batches, with both types recurring in every one of them) proves
+/// the same two pinned tables come out with the full row count, end-to-end.
+#[test]
+fn by_type_convert_of_delft_survives_many_small_batches() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.layout = TableLayout::ByType;
+    opts.batch_size = 256;
+    let report = convert(&opts).unwrap();
+    assert_eq!(report.object_count, 2231);
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
+            .unwrap();
+    let tables: Vec<String> = serde_json::from_value(manifest["tables"].clone()).unwrap();
+    assert_eq!(
+        tables,
+        vec![
+            "cityobjects_building.parquet".to_string(),
+            "cityobjects_buildingpart.parquet".to_string(),
+        ],
+        "the same two pinned tables, in the same first-appearance order, regardless of batching"
+    );
+
+    let (building_types, building_count) =
+        table_object_types_and_count(&out.path().join("cityobjects_building.parquet"));
+    assert_eq!(building_types, HashSet::from(["Building".to_string()]));
+    let (part_types, part_count) =
+        table_object_types_and_count(&out.path().join("cityobjects_buildingpart.parquet"));
+    assert_eq!(part_types, HashSet::from(["BuildingPart".to_string()]));
+    assert_eq!(
+        building_count + part_count,
+        2231,
+        "rows written across ~9 batches must still sum to delft's full object count"
+    );
+}
+
 /// M5 task 5 (Step 2/3): railway's 14-distinct-`object_type` fixture fact
 /// (pinned in the milestone brief) round-tripped through `TableLayout::ByType` —
 /// exactly 14 tables, one object type per file, row counts summing to

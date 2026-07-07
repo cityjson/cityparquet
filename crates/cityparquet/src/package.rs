@@ -494,7 +494,13 @@ fn distinct_types_in_batch(batch: &RecordBatch) -> Result<Vec<String>> {
     let mut order: Vec<String> = Vec::new();
     for row in 0..batch.num_rows() {
         if dict.is_null(row) {
-            continue; // reported as a hard error by `object_type_mask` above
+            // Defence-in-depth, aligned with `object_type_mask`'s identical
+            // guard: the schema declares `object_type` non-nullable (see
+            // `cityparquet_schema::model`), so a null can only mean a
+            // corrupt/foreign batch — error loudly rather than skip, or an
+            // all-null batch would be silently dropped under ByType (no
+            // distinct types found -> no writer ever sees its rows).
+            return Err(err(format!("row {row}: 'object_type' must not be null")));
         }
         let key = dict.keys().value(row) as usize;
         let type_str = values.value(key);
@@ -521,6 +527,15 @@ struct TableWriters {
     props: WriterProperties,
     order: Vec<String>,
     index: HashMap<String, usize>,
+    /// Which `object_type` first claimed each ByType table FILE NAME.
+    /// [`table_name_for_type`] is lossy (case-folding, `_`-folding, the
+    /// `ext_` prefix), so two DISTINCT object types can derive the same
+    /// file name (e.g. a literal type `"Ext_A"` and the extension type
+    /// `"+A"` both become `cityobjects_ext_a.parquet`) — silently sharing
+    /// the writer would merge them into one table, violating the
+    /// one-table-per-type invariant. [`Self::by_type_table_index`] consults
+    /// this to turn any such collision into a `Schema` error instead.
+    claimed_by: HashMap<String, String>,
     writers: Vec<ArrowWriter<fs::File>>,
 }
 
@@ -543,6 +558,7 @@ impl TableWriters {
             props,
             order: Vec::new(),
             index: HashMap::new(),
+            claimed_by: HashMap::new(),
             writers: Vec::new(),
         };
         if layout == TableLayout::Single {
@@ -564,6 +580,28 @@ impl TableWriters {
         Ok(idx)
     }
 
+    /// The writer index for `object_type`'s ByType table, opening it lazily
+    /// on the type's first row and recording the type's CLAIM on the derived
+    /// file name. Because [`table_name_for_type`] is lossy, a DIFFERENT
+    /// object type deriving an already-claimed name is a hard `Schema` error
+    /// naming both types and the colliding file — never a silent merge of
+    /// two distinct types into one table (see [`Self::claimed_by`]).
+    fn by_type_table_index(&mut self, object_type: &str) -> Result<usize> {
+        let name = table_name_for_type(object_type);
+        match self.claimed_by.get(&name) {
+            Some(claimant) if claimant == object_type => Ok(self.index[&name]),
+            Some(claimant) => Err(err(format!(
+                "object types '{claimant}' and '{object_type}' both derive the table file \
+                 '{name}': refusing to merge two distinct object types into one table"
+            ))),
+            None => {
+                let idx = self.open_table(&name)?;
+                self.claimed_by.insert(name, object_type.to_string());
+                Ok(idx)
+            }
+        }
+    }
+
     /// Writes one encoded batch: handed straight to the (single, already
     /// open) writer under [`TableLayout::Single`], or partitioned by
     /// `object_type` — one `filter_record_batch` call per distinct type
@@ -576,11 +614,7 @@ impl TableWriters {
                 .map_err(|e| parquet_err(format!("parquet write error: {e}"))),
             TableLayout::ByType => {
                 for object_type in distinct_types_in_batch(batch)? {
-                    let name = table_name_for_type(&object_type);
-                    let idx = match self.index.get(&name) {
-                        Some(&i) => i,
-                        None => self.open_table(&name)?,
-                    };
+                    let idx = self.by_type_table_index(&object_type)?;
                     let mask = object_type_mask(batch, &object_type)?;
                     let filtered = filter_record_batch(batch, &mask)?;
                     self.writers[idx]
@@ -864,6 +898,110 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use arrow_array::builder::StringDictionaryBuilder;
+    use arrow_schema::{DataType, Field};
+
+    /// A minimal one-column batch (`object_type` as dictionary-encoded
+    /// Utf8, matching `crate::encode::BatchBuilder`'s real encoding) — all
+    /// `TableWriters`' ByType bookkeeping needs, so these unit tests stay
+    /// free of any hand-built CityJSON document.
+    fn object_type_only_batch(types: &[&str]) -> RecordBatch {
+        let mut builder: StringDictionaryBuilder<Int32Type> = StringDictionaryBuilder::new();
+        for t in types {
+            builder.append_value(t);
+        }
+        let array = builder.finish();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "object_type",
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+    }
+
+    /// M5 review follow-up (Important): [`table_name_for_type`] is lossy, so
+    /// the literal type `"Ext_A"` and the extension type `"+A"` both derive
+    /// `cityobjects_ext_a.parquet` — the writer bookkeeping must reject that
+    /// collision as a `Schema` error naming both types and the colliding
+    /// file, never silently merge two distinct object types into one table.
+    #[test]
+    fn by_type_write_rejects_two_object_types_deriving_the_same_table_name() {
+        // Precondition the whole scenario rests on: the two types really do
+        // collide on the derived file name.
+        assert_eq!(
+            table_name_for_type("Ext_A"),
+            table_name_for_type("+A"),
+            "fixture fact: 'Ext_A' and '+A' must derive the same table file name"
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let batch = object_type_only_batch(&["Ext_A", "+A"]);
+        let mut writers = TableWriters::new(
+            TableLayout::ByType,
+            tmp.path(),
+            batch.schema(),
+            WriterProperties::default(),
+        )
+        .unwrap();
+
+        let e = writers.write_batch(&batch).unwrap_err();
+        assert!(
+            matches!(e, CityParquetError::Schema(_)),
+            "expected a Schema error, got {e:?}"
+        );
+        let msg = e.to_string();
+        assert!(
+            msg.contains("Ext_A")
+                && msg.contains("+A")
+                && msg.contains("cityobjects_ext_a.parquet"),
+            "the error must name both colliding types and the derived file, got: {msg}"
+        );
+
+        // The SAME type re-appearing (across batches) is not a collision:
+        // its claim matches, so writing proceeds.
+        let mut ok_writers = TableWriters::new(
+            TableLayout::ByType,
+            tmp.path(),
+            batch.schema(),
+            WriterProperties::default(),
+        )
+        .unwrap();
+        ok_writers
+            .write_batch(&object_type_only_batch(&["+A"]))
+            .unwrap();
+        ok_writers
+            .write_batch(&object_type_only_batch(&["+A"]))
+            .unwrap();
+        let tables = ok_writers.finish(&[]).unwrap();
+        assert_eq!(tables, vec!["cityobjects_ext_a.parquet".to_string()]);
+    }
+
+    /// M5 review follow-up (Minor b): an all-null `object_type` batch must
+    /// be a hard error under ByType, not a silent drop — aligned with
+    /// `object_type_mask`'s identical guard (the schema declares the column
+    /// non-nullable, so this is defence-in-depth against corrupt/foreign
+    /// batches).
+    #[test]
+    fn distinct_types_errors_on_a_null_object_type_instead_of_skipping_it() {
+        let mut builder: StringDictionaryBuilder<Int32Type> = StringDictionaryBuilder::new();
+        builder.append_null();
+        builder.append_null();
+        let array = builder.finish();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "object_type",
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            true, // nullable here so the corrupt batch can even be built
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
+
+        let e = distinct_types_in_batch(&batch).unwrap_err();
+        assert!(
+            matches!(e, CityParquetError::Schema(_)),
+            "expected a Schema error, got {e:?}"
+        );
+        assert!(e.to_string().contains("must not be null"), "got: {e}");
+    }
 
     /// M5 task 5: the `cityobjects_<snake>.parquet` naming rule, including
     /// the leading-`+` (CityJSON extension type) case neither shipped
