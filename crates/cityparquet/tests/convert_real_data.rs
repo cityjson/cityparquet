@@ -308,7 +308,8 @@ fn delft_compatibility_convert_writes_no_sidecars() {
 #[test]
 fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
     let out = tempfile::tempdir().unwrap();
-    let mut first = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let mut first =
+        ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
     first.profile = Profile::Compatibility;
     let first_report = convert(&first).unwrap();
     assert_eq!(first_report.materials_written, 85);

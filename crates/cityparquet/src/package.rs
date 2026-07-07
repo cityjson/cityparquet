@@ -125,11 +125,10 @@ fn purge_stale_package_files(output_dir: &PathBuf) -> Result<()> {
         ))
     })?;
     for entry in entries {
-        let entry =
-            entry.map_err(|e| io_err(format!("cannot read directory entry: {e}")))?;
+        let entry = entry.map_err(|e| io_err(format!("cannot read directory entry: {e}")))?;
         let path = entry.path();
-        let is_parquet_file = path.is_file()
-            && path.extension().and_then(|ext| ext.to_str()) == Some("parquet");
+        let is_parquet_file =
+            path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("parquet");
         if is_parquet_file {
             fs::remove_file(&path)
                 .map_err(|e| io_err(format!("cannot remove stale {}: {e}", path.display())))?;
