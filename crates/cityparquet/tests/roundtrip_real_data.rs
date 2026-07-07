@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::recipe::RecipePreset;
 use cityparquet::schema::Profile;
 
 fn fixture(name: &str) -> PathBuf {
@@ -60,6 +61,64 @@ fn convert_and_export_with_profile(
     .unwrap();
 
     (output, package_dir, export_dir)
+}
+
+/// M5 task 3 (the milestone claim): presets change bytes, never semantics.
+/// Every named [`RecipePreset`] must still round-trip delft losslessly —
+/// the per-column tuning a preset picks is purely a `WriterProperties`
+/// concern and must never affect what a reader gets back.
+#[test]
+fn every_recipe_preset_round_trips_delft_losslessly() {
+    assert_eq!(
+        RecipePreset::ALL.len(),
+        6,
+        "this gate must cover exactly the 6 binding presets"
+    );
+
+    for preset in RecipePreset::ALL {
+        let package_dir = tempfile::tempdir().unwrap();
+        let mut opts = ConvertOptions::new(
+            fixture("delft.city.jsonl"),
+            package_dir.path().to_path_buf(),
+        );
+        opts.recipe = preset.recipe();
+        convert(&opts).unwrap();
+
+        let export_dir = tempfile::tempdir().unwrap();
+        let output = export_dir.path().join("export.city.jsonl");
+        export(&ExportOptions {
+            package_dir: package_dir.path().to_path_buf(),
+            output: output.clone(),
+        })
+        .unwrap();
+
+        let report = compare_datasets(
+            &fixture("delft.city.jsonl"),
+            &output,
+            &CompareOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            report.equal,
+            "preset {} must round-trip delft losslessly; differences: {:#?}",
+            preset.name(),
+            report.differences
+        );
+        assert!(
+            report.differences.is_empty(),
+            "preset {} produced non-empty differences",
+            preset.name()
+        );
+        assert!(
+            report
+                .excluded
+                .iter()
+                .all(|e| e.starts_with("header: metadata member")),
+            "preset {}'s only exclusions must be documented header metadata members, got: {:#?}",
+            preset.name(),
+            report.excluded
+        );
+    }
 }
 
 #[test]

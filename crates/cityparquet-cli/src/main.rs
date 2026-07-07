@@ -1,7 +1,7 @@
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
-use cityparquet::recipe::WriterRecipe;
+use cityparquet::recipe::{RecipePreset, WriterRecipe};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -41,9 +41,17 @@ enum Commands {
         #[arg(long, default_value = "65536")]
         row_group_size: usize,
 
-        /// Zstd compression level
+        /// Zstd compression level (ignored by --recipe snappy, which always
+        /// compresses with Snappy)
         #[arg(long, default_value = "3")]
         zstd_level: i32,
+
+        /// Named writer-property preset: cityparquet, parquet-defaults,
+        /// no-dictionary, no-bss, no-delta, snappy. Selects the per-column
+        /// tuning rules; --row-group-size and --zstd-level still apply on
+        /// top where meaningful.
+        #[arg(long, default_value = "cityparquet")]
+        recipe: String,
     },
 
     /// Export CityParquet package back to CityJSON/CityJSONSeq
@@ -89,6 +97,7 @@ fn main() -> std::process::ExitCode {
             batch_size,
             row_group_size,
             zstd_level,
+            recipe,
         } => {
             // Parse the profile string
             let profile = match profile.as_str() {
@@ -103,10 +112,24 @@ fn main() -> std::process::ExitCode {
                 }
             };
 
+            let preset = match RecipePreset::parse(&recipe) {
+                Some(preset) => preset,
+                None => {
+                    let valid: Vec<&str> = RecipePreset::ALL.iter().map(|p| p.name()).collect();
+                    eprintln!(
+                        "error: invalid recipe '{}' (expected one of: {})",
+                        recipe,
+                        valid.join(", ")
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+
             let recipe = WriterRecipe {
                 row_group_size,
                 zstd_level,
                 statistics_for_json: false,
+                preset,
             };
 
             let opts = ConvertOptions {
