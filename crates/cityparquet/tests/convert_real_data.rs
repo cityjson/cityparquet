@@ -1,10 +1,12 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
-use arrow_array::{Array, StringArray};
+use arrow_array::{Array, Float64Array, StringArray, StructArray};
 use cityparquet::CityParquetError;
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
-use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::order::hilbert_index;
+use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Profile;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -565,5 +567,254 @@ fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
         report.equal,
         "the surviving package must still export losslessly; differences: {:#?}",
         report.differences
+    );
+}
+
+/// One `(xmin, ymin, zmin, xmax, ymax, zmax)` row, or `None` when the
+/// struct-level `bbox` value itself is null (a `CityObject` with no
+/// geometry anywhere in its own subtree — see `crate::encode::resolve_bbox`).
+fn read_bbox_row(bbox_col: &StructArray, row: usize) -> Option<[f64; 6]> {
+    if bbox_col.is_null(row) {
+        return None;
+    }
+    let leaf = |name: &str| -> f64 {
+        bbox_col
+            .column_by_name(name)
+            .unwrap_or_else(|| panic!("bbox struct has no {name} field"))
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap_or_else(|| panic!("bbox.{name} is not Float64"))
+            .value(row)
+    };
+    Some([
+        leaf("xmin"),
+        leaf("ymin"),
+        leaf("zmin"),
+        leaf("xmax"),
+        leaf("ymax"),
+        leaf("zmax"),
+    ])
+}
+
+fn union_row_bbox(acc: &mut Option<[f64; 6]>, row: [f64; 6]) {
+    *acc = Some(match acc.take() {
+        None => row,
+        Some(mut cur) => {
+            for i in 0..3 {
+                cur[i] = cur[i].min(row[i]);
+                cur[i + 3] = cur[i + 3].max(row[i + 3]);
+            }
+            cur
+        }
+    });
+}
+
+/// M5 task 4 (Hilbert row ordering): converting with `RowOrder::Hilbert`
+/// must (a) keep every feature's rows CONTIGUOUS — the ordering unit is the
+/// whole `CityJSONFeature`, never an individual `CityObject` — and (b)
+/// visit features in non-decreasing Hilbert-index order of their bbox
+/// centroid.
+///
+/// The implementation's per-feature sort key is the FEATURE's own
+/// vertex-pool min/max centroid (`crate::order::feature_hilbert_key`,
+/// `pub(crate)` and so not reachable from this integration-test crate);
+/// this test instead recomputes each feature run's key from the per-OBJECT
+/// `bbox` column's stored values, unioned over every row in the run. On
+/// delft these two bboxes coincide: delft has zero degenerate-geometry
+/// drops (`delft_round_trips_losslessly` in `roundtrip_real_data.rs` pins
+/// this — no excluded degenerate rings), so a feature's vertex pool and the
+/// union of its stored object bboxes describe exactly the same extent.
+#[test]
+fn hilbert_ordering_keeps_features_contiguous_and_visits_them_in_non_decreasing_index_order() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.ordering = RowOrder::Hilbert;
+    let report = convert(&opts).unwrap();
+    assert_eq!(report.object_count, 2231);
+
+    // Ground-truth normalisation range: the same `dataset_bbox` the writer
+    // itself computed (via `crate::scan::scan`) and used to key every
+    // feature's Hilbert index during the sort.
+    let src = cityparquet::source::Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let scan_result = cityparquet::scan::scan(&src).unwrap();
+    let dataset_bbox = scan_result
+        .dataset_bbox
+        .expect("delft has geometry, so a dataset bbox");
+
+    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let reader = builder.build().unwrap();
+
+    // Walk rows in on-disk order, folding consecutive equal `feature_id`s
+    // into runs and unioning each run's row bboxes as we go.
+    let mut runs: Vec<(String, Option<[f64; 6]>)> = Vec::new();
+    let mut seen_feature_ids: HashSet<String> = HashSet::new();
+
+    for batch in reader {
+        let batch = batch.unwrap();
+        let feature_id_col: &StringArray = batch
+            .column_by_name("feature_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        let bbox_col: &StructArray = batch
+            .column_by_name("bbox")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+
+        for row in 0..batch.num_rows() {
+            let fid = feature_id_col.value(row).to_string();
+            let row_bbox = read_bbox_row(bbox_col, row);
+
+            match runs.last_mut() {
+                Some((last_id, acc)) if *last_id == fid => {
+                    if let Some(b) = row_bbox {
+                        union_row_bbox(acc, b);
+                    }
+                }
+                _ => {
+                    assert!(
+                        seen_feature_ids.insert(fid.clone()),
+                        "feature_id {fid} appeared in two separated runs: row ordering must \
+                         keep one feature's rows contiguous"
+                    );
+                    let mut acc = None;
+                    if let Some(b) = row_bbox {
+                        union_row_bbox(&mut acc, b);
+                    }
+                    runs.push((fid, acc));
+                }
+            }
+        }
+    }
+    assert!(runs.len() > 1, "delft has many features, expected > 1 run");
+
+    // Per-run Hilbert index: a feature with NO geometry anywhere (union
+    // stayed `None`) gets key 0, mirroring `feature_hilbert_key`'s own rule
+    // for a feature with no vertices at all.
+    let indices: Vec<u32> = runs
+        .iter()
+        .map(|(_, bbox)| match bbox {
+            None => 0,
+            Some(b) => {
+                let cx = (b[0] + b[3]) / 2.0;
+                let cy = (b[1] + b[4]) / 2.0;
+                hilbert_index(cx, cy, &dataset_bbox)
+            }
+        })
+        .collect();
+    for w in indices.windows(2) {
+        assert!(
+            w[0] <= w[1],
+            "Hilbert-ordered feature runs must visit non-decreasing indices, got {:?} \
+             (full sequence: {:?})",
+            w,
+            indices
+        );
+    }
+}
+
+/// M5 task 4 (Hilbert row ordering): reordering rows must never change what
+/// the dataset MEANS — a Hilbert-ordered convert must still round-trip
+/// losslessly through export, exactly like the Source-ordered path
+/// (`roundtrip_real_data.rs`'s comparator is order-independent by
+/// construction: it groups rows back into `CityObject`s/features before
+/// comparing, so this test pins that property rather than re-deriving it).
+#[test]
+fn hilbert_ordering_never_changes_delft_semantics() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.ordering = RowOrder::Hilbert;
+    convert(&opts).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let exported = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: out.path().to_path_buf(),
+        output: exported.clone(),
+    })
+    .unwrap();
+
+    let report = compare_datasets(
+        &fixture("delft.city.jsonl"),
+        &exported,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "Hilbert-ordered delft must still round-trip losslessly; differences: {:#?}",
+        report.differences
+    );
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .excluded
+            .iter()
+            .all(|e| e.starts_with("header: metadata member")),
+        "Hilbert ordering must not introduce any new exclusion beyond delft's usual header \
+         metadata members, got: {:#?}",
+        report.excluded
+    );
+}
+
+/// Same headline gate as `hilbert_ordering_never_changes_delft_semantics`,
+/// for railway (Compatibility profile — the M4 headline round trip): the 3
+/// documented degenerate-ring drops and header-metadata exclusions are the
+/// ONLY exclusions, exactly as
+/// `roundtrip_real_data.rs::railway_compatibility_round_trips_losslessly_with_no_exclusions`
+/// pins for `RowOrder::Source`.
+#[test]
+fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    opts.profile = Profile::Compatibility;
+    opts.ordering = RowOrder::Hilbert;
+    convert(&opts).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let exported = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: out.path().to_path_buf(),
+        output: exported.clone(),
+    })
+    .unwrap();
+
+    let report = compare_datasets(
+        &fixture("lod3_railway.city.json"),
+        &exported,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "Hilbert-ordered railway (Compatibility) must round-trip losslessly with no exclusions \
+         beyond the documented degenerate-ring drops and header metadata; differences: {:#?}",
+        report.differences
+    );
+    assert!(report.differences.is_empty());
+
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    let degenerate = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    assert_eq!(
+        (degenerate, non_header_excluded.len()),
+        (3, 3),
+        "the only non-header exclusions must be the 3 pinned degenerate-ring drops, got: {:#?}",
+        non_header_excluded
+    );
+    assert!(
+        !header_excluded.is_empty(),
+        "railway's header sets metadata members; expected at least one documented \
+         header-metadata exclusion, got none. Full excluded: {:#?}",
+        report.excluded
     );
 }

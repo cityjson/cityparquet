@@ -17,9 +17,11 @@ use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
 use cityparquet_schema::{CITYPARQUET_VERSION, CityParquetError, PackageManifest, Profile, Result};
+use cjseq::CityJSONFeature;
 
 use crate::appearance::AppearanceInterner;
-use crate::encode::{LocalDefs, encode, rewrite_geometry_appearance};
+use crate::encode::{LocalDefs, encode, encode_buffered, rewrite_geometry_appearance};
+use crate::order::feature_hilbert_key;
 use crate::recipe::WriterRecipe;
 use crate::scan::{ScanResult, scan};
 use crate::sidecar::{TemplateRow, write_materials, write_templates, write_textures};
@@ -40,6 +42,31 @@ const TEMPLATES_TABLE: &str = "geometry_templates.parquet";
 /// never mistake it for package output.
 const TMP_DIR_NAME: &str = ".cityparquet-tmp";
 
+/// Row-emission order for the main `cityobjects.parquet` table.
+///
+/// `Source` streams features exactly as `Source::features()` yields them
+/// (lexicographic for a whole CityJSON document — see `Source::open` —
+/// or on-disk order for a CityJSONSeq stream), with no extra memory cost
+/// beyond one feature at a time.
+///
+/// `Hilbert` reorders FEATURES (never splitting one feature's objects
+/// across the reorder — see `crate::order`'s module doc and
+/// `hilbert_ordered_features` below) by the Hilbert-curve index of each
+/// feature's own bbox centroid, so spatially nearby features land in the
+/// same or adjacent row groups and bbox row-group pruning
+/// (`crate::reader::CityParquetReaderBuilder::with_bbox_row_groups`) skips
+/// more of the file on a spatially-selective query. This buffers every
+/// parsed feature in memory before encoding a single row — the same
+/// full-load trade-off `crate::compare`'s comparator already makes,
+/// documented rather than hidden; a national-scale external sort is out of
+/// scope for this milestone (M6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RowOrder {
+    #[default]
+    Source,
+    Hilbert,
+}
+
 /// Options controlling one end-to-end CityJSON/CityJSONSeq -> CityParquet
 /// package conversion.
 #[derive(Debug, Clone)]
@@ -50,12 +77,13 @@ pub struct ConvertOptions {
     pub overwrite: bool,
     pub batch_size: usize,
     pub recipe: WriterRecipe,
+    pub ordering: RowOrder,
 }
 
 impl ConvertOptions {
-    /// Core profile, 4096-row batches, the default [`WriterRecipe`], and no
-    /// overwrite — the sensible defaults for a first conversion of `input`
-    /// into `output_dir`.
+    /// Core profile, 4096-row batches, the default [`WriterRecipe`],
+    /// [`RowOrder::Source`] emission order, and no overwrite — the sensible
+    /// defaults for a first conversion of `input` into `output_dir`.
     pub fn new(input: PathBuf, output_dir: PathBuf) -> Self {
         Self {
             input,
@@ -64,6 +92,7 @@ impl ConvertOptions {
             overwrite: false,
             batch_size: 4096,
             recipe: WriterRecipe::default(),
+            ordering: RowOrder::default(),
         }
     }
 }
@@ -317,6 +346,49 @@ struct WrittenPackage {
     templates_written: usize,
 }
 
+/// Buffers every feature `source` yields (RowOrder::Hilbert's documented
+/// full-load trade-off — see [`RowOrder`]'s doc comment) and stably sorts
+/// them by [`feature_hilbert_key`] of each feature's own vertex-pool
+/// centroid against `scan_result.dataset_bbox`.
+///
+/// The ORDERING UNIT is the feature (never an individual `CityObject`): a
+/// CityJSONFeature groups a parent and its children, which must stay
+/// contiguous in the output exactly as the Source-order path already keeps
+/// them (`crate::encode::BatchIter::advance` only ever moves to the next
+/// feature once every object of the current one is pushed) — sorting whole
+/// `CityJSONFeature`s, rather than re-deriving per-object bboxes and
+/// somehow trying to interleave objects across features, is what preserves
+/// that invariant for free.
+///
+/// A missing `dataset_bbox` (an empty dataset, or one with no geometry at
+/// all) makes every feature's key `0` — the stable sort is then a no-op,
+/// so `RowOrder::Hilbert` silently degrades to `RowOrder::Source`'s
+/// output order rather than doing anything meaningless with an undefined
+/// normalisation range.
+fn hilbert_ordered_features(
+    source: &Source,
+    scan_result: &ScanResult,
+) -> Result<Vec<CityJSONFeature>> {
+    let dataset_bbox = scan_result.dataset_bbox.unwrap_or([0.0; 6]);
+    let transform = &source.header().transform;
+    let features: Vec<CityJSONFeature> = source.features()?.collect::<Result<Vec<_>>>()?;
+
+    // Decorate-sort-undecorate: pairs each feature with its key up front so
+    // the sort comparator itself never recomputes it, then `Vec::sort_by_key`
+    // (a STABLE sort) reorders — features with equal keys (including the
+    // shared key `0` for every feature with no vertices) keep their
+    // original relative order, per this function's own doc comment.
+    let mut keyed: Vec<(u32, CityJSONFeature)> = features
+        .into_iter()
+        .map(|f| {
+            let key = feature_hilbert_key(&f.vertices, transform, &dataset_bbox);
+            (key, f)
+        })
+        .collect();
+    keyed.sort_by_key(|(key, _)| *key);
+    Ok(keyed.into_iter().map(|(_, f)| f).collect())
+}
+
 /// Writes one full package (main table, Compatibility-profile sidecars,
 /// `metadata.json` manifest) into `tmp_dir` — this is the entire body that
 /// used to run directly against `opts.output_dir` before the M5 crash-safe-
@@ -337,7 +409,18 @@ fn write_package(
     let mut writer = ArrowWriter::try_new(file, arrow_schema, Some(props))
         .map_err(|e| parquet_err(format!("cannot open parquet writer: {e}")))?;
 
-    let mut batches = encode(source, scan_result, opts.batch_size)?;
+    // `RowOrder::Hilbert` buffers every feature and re-sorts it BEFORE
+    // handing it to `encode_buffered` (which shares `BatchIter`'s whole
+    // batching loop with the `RowOrder::Source` path below — see
+    // `crate::encode::FeatureStream`'s doc comment); `RowOrder::Source`
+    // keeps the plain streaming `encode` entry point, unchanged.
+    let mut batches = match opts.ordering {
+        RowOrder::Source => encode(source, scan_result, opts.batch_size)?,
+        RowOrder::Hilbert => {
+            let features = hilbert_ordered_features(source, scan_result)?;
+            encode_buffered(features, source.header(), scan_result, opts.batch_size)?
+        }
+    };
     for batch in batches.by_ref() {
         let batch = batch?;
         writer

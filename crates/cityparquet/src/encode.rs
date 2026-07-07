@@ -19,7 +19,7 @@ use arrow_array::types::Int32Type;
 use arrow_array::{ArrayRef, Float64Array, RecordBatch, StructArray};
 use arrow_buffer::NullBufferBuilder;
 use arrow_schema::{DataType, Schema};
-use cjseq::{CityJSONFeature, CityObject, Geometry, GeometryType, Transform};
+use cjseq::{CityJSON, CityJSONFeature, CityObject, Geometry, GeometryType, Transform};
 use serde_json::Value;
 
 use cityparquet_schema::{AttributeType, CityParquetError, Lod, Result, normalise_attribute_name};
@@ -992,8 +992,41 @@ impl RowWriter {
 /// internal builders desynced, so no partially-desynced batch is ever
 /// emitted, even to error-tolerant callers (e.g. `filter_map(Result::ok)`)
 /// that keep pulling past the error.
+/// The one-time source of `CityJSONFeature`s [`BatchIter`] pulls from: EITHER
+/// a plain re-iteration of the [`Source`] the ordinary streaming path
+/// (`encode`) opens, OR a `Vec` a caller has already collected and reordered
+/// (M5 task 4, `crate::package::convert`'s Hilbert row ordering — buffering
+/// every feature in memory, sorting by bbox-centroid Hilbert index, then
+/// handing the sorted `Vec` in here).
+///
+/// Introduced so [`encode_buffered`] can share [`BatchIter::advance`]
+/// (the whole batching/writer-push loop) with [`encode`] instead of
+/// duplicating it: `advance` only ever calls `self.features.next()`, so
+/// swapping WHICH stream backs `BatchIter` is the entire diff between the
+/// two entry points.
+enum FeatureStream<'a> {
+    Source(FeatureIter<'a>),
+    Buffered(std::vec::IntoIter<CityJSONFeature>),
+}
+
+impl Iterator for FeatureStream<'_> {
+    type Item = Result<CityJSONFeature>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            FeatureStream::Source(it) => it.next(),
+            // A buffered `Vec` was already parsed successfully (it came
+            // from a prior `Source::features()` pass whose `Result`s were
+            // all unwrapped before buffering — see `crate::package`), so
+            // yielding it back out wrapped in `Ok` never manufactures an
+            // error `advance` didn't already have a chance to see.
+            FeatureStream::Buffered(it) => it.next().map(Ok),
+        }
+    }
+}
+
 pub struct BatchIter<'a> {
-    features: FeatureIter<'a>,
+    features: FeatureStream<'a>,
     transform: Transform,
     schema: Arc<Schema>,
     batch_size: usize,
@@ -1128,7 +1161,48 @@ pub fn encode<'a>(
     let transform = source.header().transform.clone();
     let writer = RowWriter::new(scan);
     Ok(BatchIter {
-        features,
+        features: FeatureStream::Source(features),
+        transform,
+        schema,
+        batch_size: batch_size.max(1),
+        writer,
+        current_feature: None,
+        current_object_ids: Vec::new(),
+        current_idx: 0,
+        exhausted_input: false,
+        errored: false,
+        stats: EncodeStats::default(),
+        appearance: AppearanceInterner::new(),
+    })
+}
+
+/// Sibling entry point to [`encode`] for a caller that has already decided
+/// the exact feature order — M5 task 4's Hilbert row ordering
+/// (`crate::package::convert`): `features` replaces the [`Source`]-driven
+/// stream [`encode`] would otherwise open, entirely. Everything else
+/// (schema, transform, batch size, appearance interning, stats) is
+/// identical, because both entry points build the SAME [`BatchIter`] and
+/// share its [`BatchIter::advance`] loop — see [`FeatureStream`]'s doc
+/// comment for why that never duplicates the encode logic.
+///
+/// `header` supplies the `transform` a plain `encode` call would otherwise
+/// read from `source.header()` — the caller already has `header` in hand
+/// (it read it to compute each feature's Hilbert key in the first place),
+/// so this never needs `Source` itself, and the returned `BatchIter` never
+/// borrows from it: unlike `encode`'s stream, [`FeatureStream::Buffered`]
+/// owns its `Vec` outright, which is why this can hand back a `BatchIter`
+/// good for any lifetime the caller needs.
+pub fn encode_buffered<'a>(
+    features: Vec<CityJSONFeature>,
+    header: &CityJSON,
+    scan: &ScanResult,
+    batch_size: usize,
+) -> Result<BatchIter<'a>> {
+    let schema = Arc::new(scan.schema.to_arrow_schema()?);
+    let transform = header.transform.clone();
+    let writer = RowWriter::new(scan);
+    Ok(BatchIter {
+        features: FeatureStream::Buffered(features.into_iter()),
         transform,
         schema,
         batch_size: batch_size.max(1),

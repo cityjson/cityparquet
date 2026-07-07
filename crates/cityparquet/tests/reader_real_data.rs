@@ -4,8 +4,9 @@
 
 use std::path::PathBuf;
 
+use arrow_array::Array;
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
-use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use cityparquet::recipe::WriterRecipe;
 use cityparquet::scan::scan;
@@ -358,5 +359,180 @@ fn with_bbox_row_groups_selects_a_strict_subset_for_a_partial_band_query() {
         band_rows, expected_rows,
         "reader kept different row groups than the statistics predict \
          (expected groups {expected_kept:?} = {expected_rows} rows)"
+    );
+}
+
+/// Every row group in `dir`'s `cityobjects.parquet` whose `bbox` chunk
+/// statistics 3D-intersect `query` — a from-scratch recount straight off
+/// the file's own row-group stats (mirrors `crate::reader`'s private
+/// `row_group_intersects`, which this integration-test crate cannot reach),
+/// used only to COUNT groups touched rather than to build a reader.
+fn row_groups_touching(dir: &std::path::Path, query: [f64; 6]) -> usize {
+    let file = std::fs::File::open(dir.join("cityobjects.parquet")).unwrap();
+    let metadata = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .metadata()
+        .clone();
+    (0..metadata.num_row_groups())
+        .filter(|&i| {
+            let rg = metadata.row_group(i);
+            let lo = [
+                bbox_stat(rg, "xmin", true),
+                bbox_stat(rg, "ymin", true),
+                bbox_stat(rg, "zmin", true),
+            ];
+            let hi = [
+                bbox_stat(rg, "xmax", false),
+                bbox_stat(rg, "ymax", false),
+                bbox_stat(rg, "zmax", false),
+            ];
+            (0..3).all(|k| lo[k] <= query[k + 3] && hi[k] >= query[k])
+        })
+        .count()
+}
+
+/// The first row with a non-null `bbox` a plain (unfiltered) read of `dir`'s
+/// `cityobjects.parquet` yields, in on-disk order. Used to derive a query
+/// bbox anchored to a REAL, existing geometry — unlike the corner-bbox in
+/// `with_bbox_row_groups_prunes_a_tight_corner_query_but_keeps_the_whole_extent`
+/// above (which independently takes the dataset bbox's per-axis minima and
+/// combines them into one corner point), that combined point is not
+/// necessarily where any actual geometry sits: delft's x-minimum and
+/// y-minimum vertices belong to two different buildings, so the corner
+/// formed by combining them can fall in an empty gap with NO row group
+/// statistics box actually covering it, at all — which is exactly what
+/// makes it unsuitable for A PAYOFF comparison (both orderings would
+/// legitimately prune every group, a tie, not evidence of anything).
+fn first_real_bbox_row(dir: &std::path::Path) -> [f64; 6] {
+    use arrow_array::StructArray;
+    let file = std::fs::File::open(dir.join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    for batch in builder.build().unwrap() {
+        let batch = batch.unwrap();
+        let bbox_col: &StructArray = batch
+            .column_by_name("bbox")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            if bbox_col.is_null(row) {
+                continue;
+            }
+            let leaf = |name: &str| -> f64 {
+                bbox_col
+                    .column_by_name(name)
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .unwrap()
+                    .value(row)
+            };
+            return [
+                leaf("xmin"),
+                leaf("ymin"),
+                leaf("zmin"),
+                leaf("xmax"),
+                leaf("ymax"),
+                leaf("zmax"),
+            ];
+        }
+    }
+    panic!("no row in {} has a non-null bbox", dir.display());
+}
+
+/// M5 task 4's headline pruning payoff: converting delft with
+/// `RowOrder::Hilbert` instead of `RowOrder::Source` (same small
+/// `row_group_size` as `convert_delft_small_row_groups`, so both packages
+/// have the same number of row groups to discriminate between) must make a
+/// spatially-tight query around a REAL geometry (see
+/// [`first_real_bbox_row`]'s doc comment for why the independent-per-axis
+/// "corner" the earlier pruning tests use is unsuitable for a PAYOFF
+/// comparison specifically) touch STRICTLY FEWER row groups: Hilbert
+/// ordering clusters spatially nearby features together, so the query
+/// should hit a smaller, more contiguous run of row groups than the plain
+/// document-order (lexicographic feature id) package leaves scattered
+/// across the whole file.
+#[test]
+fn hilbert_ordering_prunes_more_row_groups_than_source_ordering_on_a_real_neighbourhood_query() {
+    let source_out = convert_delft_small_row_groups();
+
+    let hilbert_out = tempfile::tempdir().unwrap();
+    let mut hilbert_opts = ConvertOptions::new(
+        fixture("delft.city.jsonl"),
+        hilbert_out.path().to_path_buf(),
+    );
+    hilbert_opts.recipe = WriterRecipe {
+        row_group_size: 256,
+        ..WriterRecipe::default()
+    };
+    hilbert_opts.ordering = RowOrder::Hilbert;
+    let hilbert_report = convert(&hilbert_opts).unwrap();
+    assert_eq!(hilbert_report.object_count, 2231);
+
+    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let scan_result = scan(&src).unwrap();
+    let dataset_bbox = scan_result
+        .dataset_bbox
+        .expect("delft has geometry, so a dataset bbox");
+    let span = [
+        dataset_bbox[3] - dataset_bbox[0],
+        dataset_bbox[4] - dataset_bbox[1],
+        dataset_bbox[5] - dataset_bbox[2],
+    ];
+
+    // Anchor the query at a REAL geometry's own bbox centre (the first
+    // non-null `bbox` row of the Source-ordered package — both packages
+    // encode the exact same set of real-world geometries, just in a
+    // different row order, so this point exists in the Hilbert package
+    // too), padded by 2% of the dataset span per axis: wide enough to
+    // sweep in a handful of spatially NEARBY buildings (delft's building
+    // footprints are metres across against a ~1.2 km dataset span), narrow
+    // enough to stay a small fraction of the whole extent.
+    let anchor = first_real_bbox_row(source_out.path());
+    let centre = [
+        (anchor[0] + anchor[3]) / 2.0,
+        (anchor[1] + anchor[4]) / 2.0,
+        (anchor[2] + anchor[5]) / 2.0,
+    ];
+    let pad = [span[0] * 0.02, span[1] * 0.02, span[2] * 0.02];
+    let neighbourhood_bbox: [f64; 6] = [
+        centre[0] - pad[0],
+        centre[1] - pad[1],
+        centre[2] - pad[2],
+        centre[0] + pad[0],
+        centre[1] + pad[1],
+        centre[2] + pad[2],
+    ];
+
+    let source_file = std::fs::File::open(source_out.path().join("cityobjects.parquet")).unwrap();
+    let source_num_row_groups = ParquetRecordBatchReaderBuilder::try_new(source_file)
+        .unwrap()
+        .metadata()
+        .num_row_groups();
+    let hilbert_file = std::fs::File::open(hilbert_out.path().join("cityobjects.parquet")).unwrap();
+    let hilbert_num_row_groups = ParquetRecordBatchReaderBuilder::try_new(hilbert_file)
+        .unwrap()
+        .metadata()
+        .num_row_groups();
+    assert_eq!(
+        source_num_row_groups, hilbert_num_row_groups,
+        "both packages must have the same number of row groups (same row_group_size, same row \
+         count) for the touched-group counts below to be a fair comparison"
+    );
+
+    let source_groups_touched = row_groups_touching(source_out.path(), neighbourhood_bbox);
+    let hilbert_groups_touched = row_groups_touching(hilbert_out.path(), neighbourhood_bbox);
+    eprintln!(
+        "real-neighbourhood query row groups touched (of {source_num_row_groups}): \
+         source={source_groups_touched} hilbert={hilbert_groups_touched}"
+    );
+    assert!(
+        hilbert_groups_touched < source_groups_touched,
+        "Hilbert ordering must prune more aggressively than Source ordering on the same \
+         real-neighbourhood query: source touched \
+         {source_groups_touched}/{source_num_row_groups} row groups, Hilbert touched \
+         {hilbert_groups_touched}/{hilbert_num_row_groups} — expected \
+         hilbert_groups_touched < source_groups_touched"
     );
 }

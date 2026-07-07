@@ -1,6 +1,6 @@
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
-use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::recipe::{RecipePreset, WriterRecipe};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -52,6 +52,13 @@ enum Commands {
         /// top where meaningful.
         #[arg(long, default_value = "cityparquet")]
         recipe: String,
+
+        /// Row-emission order for the main table: "source" (as the input
+        /// stream yields features) or "hilbert" (buffer every feature and
+        /// sort by bbox-centroid Hilbert index, improving bbox row-group
+        /// pruning at the cost of holding the whole dataset in memory).
+        #[arg(long, default_value = "source")]
+        ordering: String,
     },
 
     /// Export CityParquet package back to CityJSON/CityJSONSeq
@@ -98,6 +105,7 @@ fn main() -> std::process::ExitCode {
             row_group_size,
             zstd_level,
             recipe,
+            ordering,
         } => {
             // Parse the profile string
             let profile = match profile.as_str() {
@@ -132,6 +140,18 @@ fn main() -> std::process::ExitCode {
                 preset,
             };
 
+            let ordering = match ordering.as_str() {
+                "source" => RowOrder::Source,
+                "hilbert" => RowOrder::Hilbert,
+                _ => {
+                    eprintln!(
+                        "error: invalid ordering '{}' (expected 'source' or 'hilbert')",
+                        ordering
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+
             let opts = ConvertOptions {
                 input,
                 output_dir: output,
@@ -139,6 +159,7 @@ fn main() -> std::process::ExitCode {
                 overwrite,
                 batch_size,
                 recipe,
+                ordering,
             };
 
             match convert(&opts) {
