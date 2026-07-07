@@ -621,10 +621,16 @@ fn union_row_bbox(acc: &mut Option<[f64; 6]>, row: [f64; 6]) {
 /// `pub(crate)` and so not reachable from this integration-test crate);
 /// this test instead recomputes each feature run's key from the per-OBJECT
 /// `bbox` column's stored values, unioned over every row in the run. On
-/// delft these two bboxes coincide: delft has zero degenerate-geometry
-/// drops (`delft_round_trips_losslessly` in `roundtrip_real_data.rs` pins
-/// this — no excluded degenerate rings), so a feature's vertex pool and the
-/// union of its stored object bboxes describe exactly the same extent.
+/// delft these two bboxes coincide because the WRITER's index-based ring
+/// normalisation (`crate::wkb_write::normalise_ring`) drops zero rings on
+/// delft — every vertex the source carries lands in the vertex pool and
+/// the stored bbox stats, unchanged by this fix. This does NOT contradict
+/// `delft_round_trips_losslessly` (`roundtrip_real_data.rs`) now pinning 16
+/// coordinate-degenerate-ring exclusions for delft: those are COMPARATOR-
+/// side exclusions applied when checking export-vs-source semantic
+/// equality (`crate::compare`), a separate concept from what the writer
+/// actually stores — they do not affect the vertex pool or bbox this test
+/// reads back.
 #[test]
 fn hilbert_ordering_keeps_features_contiguous_and_visits_them_in_non_decreasing_index_order() {
     let out = tempfile::tempdir().unwrap();

@@ -13,7 +13,10 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
-/// One parsed CSV data row, indexed by [`CSV_COLUMNS`] position.
+/// One parsed CSV data row, indexed by position in the header line's
+/// comma-split column names (see `columns` at each call site — there is no
+/// `CSV_COLUMNS` constant; the column order is read back from the CSV's own
+/// header row rather than hard-coded here).
 struct Row {
     fields: Vec<String>,
 }
@@ -128,5 +131,62 @@ fn bench_run_rejects_an_unknown_variant_with_the_grammar_in_the_message() {
     assert!(
         msg.contains("<preset>[+hilbert][+by-type]"),
         "error should show the variant grammar, got: {msg}"
+    );
+}
+
+/// M5 final-review fix: `repeat: 0` must error fast, before any conversion
+/// runs (the guard is the very first thing `bench::run` checks) — otherwise
+/// `run_variant`'s write/full-scan/window-query loops each collect zero
+/// samples and `median_secs` panics on an empty `Vec`.
+#[test]
+fn bench_run_rejects_repeat_zero_before_converting_anything() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let opts = BenchOptions {
+        // A path that does not exist: if the guard did not fire FIRST and
+        // conversion were attempted, this would fail for the WRONG reason
+        // (missing input) rather than proving the repeat check runs first.
+        input: PathBuf::from("/nonexistent/does-not-exist.city.json"),
+        out_csv: out_dir.path().join("bench.csv"),
+        repeat: 0,
+        variants: Vec::new(),
+        window_frac: 0.05,
+        skip_roundtrip: true,
+    };
+
+    let err = run(&opts).expect_err("repeat: 0 must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("repeat") && msg.contains(">= 1"),
+        "error should name the repeat >= 1 requirement, got: {msg}"
+    );
+}
+
+/// M5 final-review fix: appending to a CSV that already exists but carries a
+/// DIFFERENT header (e.g. left over from an older schema, or hand-edited)
+/// must error rather than silently mixing two column schemas into one file.
+#[test]
+fn bench_run_rejects_appending_to_a_csv_with_a_foreign_header() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let out_csv = out_dir.path().join("bench.csv");
+    std::fs::write(&out_csv, "dataset,variant,some,other,schema\n").unwrap();
+
+    let opts = BenchOptions {
+        input: fixture("delft.city.jsonl"),
+        out_csv: out_csv.clone(),
+        repeat: 1,
+        variants: vec!["cityparquet".to_string()],
+        window_frac: 0.05,
+        skip_roundtrip: true,
+    };
+
+    let err = run(&opts).expect_err("a foreign CSV header must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains(&out_csv.display().to_string()),
+        "error should name the offending file, got: {msg}"
+    );
+    assert!(
+        msg.contains("dataset,variant,some,other,schema"),
+        "error should quote the mismatched header found on disk, got: {msg}"
     );
 }

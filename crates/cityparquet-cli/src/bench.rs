@@ -489,7 +489,17 @@ fn run_variant(
 /// variant order) to `opts.out_csv` — creating it with the header row if it
 /// does not already exist, else appending (so e.g. a DuckDB-baseline script
 /// can accumulate rows into the same file across separate invocations).
+///
+/// `opts.repeat` must be >= 1 (checked FIRST, before any conversion runs):
+/// `run_variant`'s write/full-scan/window-query loops each execute
+/// `opts.repeat` times and then unconditionally take the median of the
+/// collected samples, so `repeat == 0` would otherwise panic deep inside
+/// `median_secs` (empty `Vec`) instead of failing fast with a clear error.
 pub fn run(opts: &BenchOptions) -> Result<()> {
+    if opts.repeat == 0 {
+        return Err(io_err("repeat must be >= 1"));
+    }
+
     let variant_ids = if opts.variants.is_empty() {
         default_variant_ids()
     } else {
@@ -519,6 +529,22 @@ pub fn run(opts: &BenchOptions) -> Result<()> {
             .map_err(|e| io_err(format!("cannot create {}: {e}", parent.display())))?;
     }
     let file_existed = opts.out_csv.exists();
+    if file_existed {
+        // Appending to a CSV some OTHER tool (or an earlier, differently
+        // shaped `run`) already created must not silently mix two column
+        // schemas into one file — check the first line matches exactly
+        // before appending any row.
+        let existing = fs::read_to_string(&opts.out_csv)
+            .map_err(|e| io_err(format!("cannot read {}: {e}", opts.out_csv.display())))?;
+        let first_line = existing.lines().next().unwrap_or("");
+        if first_line != CSV_HEADER {
+            return Err(io_err(format!(
+                "{} already exists with a different header; expected `{CSV_HEADER}`, found `{first_line}` \
+                 — refusing to append rows with a mismatched schema",
+                opts.out_csv.display()
+            )));
+        }
+    }
     let mut csv_file = OpenOptions::new()
         .create(true)
         .append(true)
