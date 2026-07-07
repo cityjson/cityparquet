@@ -393,6 +393,272 @@ fn railway_compatibility_export_restores_appearance_feature_local() {
     );
 }
 
+/// M5 debt item 3: the encoder keys a Compatibility-profile object's
+/// per-LoD `material`/`texture` map by the geometry's RAW source `lod`
+/// string (`geom.lod.clone().unwrap_or_default()` in
+/// `crate::encode::accumulate_geometry`), while export looks the entry up
+/// by the CANONICAL `Lod` string (`lod.map(|l| l.to_string())`, `Lod`
+/// having already normalised e.g. `"03"` to `"3"`). A non-canonical source
+/// LoD string therefore silently loses its appearance restoration: the
+/// per-object map IS non-empty (it has an entry keyed `"03"`) but the
+/// canonical lookup key `"3"` never matches it. Derived from a copy of the
+/// railway fixture: object `UUID_bd865e62-18de-40ff-85da-883709a86f0f`'s
+/// only (non-instance) geometry — a `lod: "3"` `MultiSurface` carrying a
+/// `texture` block — has its `lod` rewritten to `"03"` (parses to the same
+/// canonical LoD 3, so it still lands in the SAME `geometry_lod3` column,
+/// but the map key mismatches). `appearance_lod_misses` must count exactly
+/// this one miss; pristine railway (no rewrite) must count zero.
+#[test]
+fn railway_compatibility_export_counts_a_non_canonical_lod_restore_miss() {
+    const TARGET_OBJECT_ID: &str = "UUID_bd865e62-18de-40ff-85da-883709a86f0f";
+
+    // Pristine railway: no non-canonical LoD strings anywhere, so no misses.
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(
+        fixture("lod3_railway.city.json"),
+        package_dir.path().to_path_buf(),
+    );
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+    let export_dir = tempfile::tempdir().unwrap();
+    let report = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: export_dir.path().join("export.city.jsonl"),
+    })
+    .unwrap();
+    assert_eq!(
+        report.appearance_lod_misses, 0,
+        "pristine railway uses only canonical lod strings"
+    );
+
+    // Derived: rewrite the target object's only non-instance geometry's
+    // `lod` from the canonical "3" to the non-canonical "03" (same
+    // canonical LoD, different raw string).
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    let mut rewritten = false;
+    {
+        let co = doc["CityObjects"][TARGET_OBJECT_ID]
+            .as_object_mut()
+            .expect("precondition: target object must exist");
+        let geoms = co
+            .get_mut("geometry")
+            .and_then(Value::as_array_mut)
+            .expect("precondition: target object must carry geometry");
+        for g in geoms.iter_mut() {
+            let obj = g.as_object_mut().unwrap();
+            if obj.get("type").and_then(Value::as_str) == Some("GeometryInstance") {
+                continue;
+            }
+            assert_eq!(
+                obj.get("lod").and_then(Value::as_str),
+                Some("3"),
+                "precondition: target geometry's source lod must be the canonical \"3\""
+            );
+            assert!(
+                obj.contains_key("texture"),
+                "precondition: target geometry must carry a texture block"
+            );
+            obj.insert("lod".to_string(), serde_json::json!("03"));
+            rewritten = true;
+        }
+    }
+    assert!(
+        rewritten,
+        "must have rewritten exactly the target geometry's lod"
+    );
+
+    let input_dir = tempfile::tempdir().unwrap();
+    let input_path = input_dir.path().join("railway_noncanonical_lod.city.json");
+    std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let derived_package_dir = tempfile::tempdir().unwrap();
+    let mut derived_opts =
+        ConvertOptions::new(input_path, derived_package_dir.path().to_path_buf());
+    derived_opts.profile = Profile::Compatibility;
+    convert(&derived_opts).unwrap();
+
+    let derived_export_dir = tempfile::tempdir().unwrap();
+    let derived_report = export(&ExportOptions {
+        package_dir: derived_package_dir.path().to_path_buf(),
+        output: derived_export_dir.path().join("export.city.jsonl"),
+    })
+    .unwrap();
+    assert_eq!(
+        derived_report.appearance_lod_misses, 1,
+        "exactly the one rewritten geometry's per-LoD restore must miss"
+    );
+}
+
+/// M5 debt item 2, rule half (a): `LocalAppearance::into_appearance` must
+/// return `Some` only when the feature referenced a definition OR
+/// dataset-wide defaults exist — never unconditionally for every feature.
+/// Railway's header sets no default-theme members at all (recounted: neither
+/// shipped fixture does — see `scan_real_data.rs`'s
+/// `source_metadata_and_appearance_defaults_reach_scan_metadata`), so under
+/// the Compatibility profile a feature that references no material/texture
+/// definition of its own must export with NO `appearance` block at all, on
+/// EVERY geometry. `GMLID_SO092422_3593_9527` is a real, top-level (no
+/// `parents`), childless railway object whose only geometry is a
+/// `GeometryInstance` — GeometryInstance geometries never carry
+/// `material`/`texture` themselves — so it becomes its own single-object
+/// feature that references nothing.
+#[test]
+fn railway_compatibility_export_attaches_appearance_only_to_referencing_features() {
+    const NON_APPEARANCE_OBJECT_ID: &str = "GMLID_SO092422_3593_9527";
+
+    // Precondition, checked straight against the source fixture: the object
+    // is top-level, childless, and its only geometry carries neither
+    // material nor texture.
+    let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let mut confirmed_precondition = false;
+    for feature in source.features().unwrap() {
+        let feature = feature.unwrap();
+        let Some(co) = feature.city_objects.get(NON_APPEARANCE_OBJECT_ID) else {
+            continue;
+        };
+        assert!(
+            co.parents.is_none(),
+            "precondition: {NON_APPEARANCE_OBJECT_ID} must be a top-level object"
+        );
+        assert!(
+            co.children.is_none(),
+            "precondition: {NON_APPEARANCE_OBJECT_ID} must be childless"
+        );
+        let geoms = co
+            .geometry
+            .as_ref()
+            .expect("precondition: object must carry geometry");
+        assert!(
+            geoms
+                .iter()
+                .all(|g| g.material.is_none() && g.texture.is_none()),
+            "precondition: {NON_APPEARANCE_OBJECT_ID} must reference no material/texture"
+        );
+        confirmed_precondition = true;
+    }
+    assert!(
+        confirmed_precondition,
+        "the source fixture must contain {NON_APPEARANCE_OBJECT_ID}"
+    );
+
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(
+        fixture("lod3_railway.city.json"),
+        package_dir.path().to_path_buf(),
+    );
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+
+    let exported = Source::open(&output).unwrap();
+    let mut checked = false;
+    for feature in exported.features().unwrap() {
+        let feature = feature.unwrap();
+        let Some(co) = feature.city_objects.get(NON_APPEARANCE_OBJECT_ID) else {
+            continue;
+        };
+        assert!(
+            feature.appearance.is_none(),
+            "a feature referencing no material/texture definition must carry no appearance \
+             block at all (railway's header sets no dataset-wide defaults), got: {:?}",
+            feature.appearance
+        );
+        for g in co.geometry.as_ref().unwrap() {
+            assert!(g.material.is_none() && g.texture.is_none());
+        }
+        checked = true;
+    }
+    assert!(
+        checked,
+        "the exported dataset must still contain {NON_APPEARANCE_OBJECT_ID}"
+    );
+}
+
+/// M5 debt item 2, rule half (b): a dataset that declares dataset-wide
+/// `default-theme-material`/`default-theme-texture` members but writes NO
+/// `materials.parquet`/`textures.parquet` sidecars at all (any Core-profile
+/// convert, regardless of what the header sets — sidecars are a
+/// Compatibility-profile artefact) must still see those defaults attached to
+/// every exported feature; before this fix `export` only ever constructed a
+/// `LocalAppearance` (and therefore only ever attached defaults) when the
+/// sidecars were present, so the defaults were lost entirely. Derived from a
+/// mutated copy of the railway fixture (same precedent as
+/// `source_metadata_and_appearance_defaults_reach_scan_metadata` in
+/// `scan_real_data.rs`): inject `default-theme-material`/`-texture` into the
+/// header's `appearance` object, then convert under the DEFAULT (Core)
+/// profile.
+#[test]
+fn core_profile_export_attaches_dataset_wide_defaults_even_without_sidecars() {
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["appearance"]["default-theme-material"] = serde_json::json!("theme-a");
+    doc["appearance"]["default-theme-texture"] = serde_json::json!("theme-b");
+    let input_dir = tempfile::tempdir().unwrap();
+    let input_path = input_dir.path().join("railway_theme.city.json");
+    std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let package_dir = tempfile::tempdir().unwrap();
+    let report = convert(&ConvertOptions::new(
+        input_path,
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+    assert_eq!(
+        report.materials_written, 0,
+        "precondition: the Core profile never writes sidecars regardless of the header"
+    );
+    assert_eq!(report.textures_written, 0);
+    assert!(!package_dir.path().join("materials.parquet").exists());
+    assert!(!package_dir.path().join("textures.parquet").exists());
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    let export_report = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+    // The Core-profile appearance-refs-dropped behaviour must be completely
+    // unaffected by attaching defaults: real geometry material/texture index
+    // maps still have no defs sidecar to resolve against.
+    assert_eq!(export_report.appearance_refs_dropped, 105);
+
+    let exported = Source::open(&output).unwrap();
+    let mut checked = 0usize;
+    for feature in exported.features().unwrap() {
+        let feature = feature.unwrap();
+        let appearance = feature.appearance.as_ref().unwrap_or_else(|| {
+            panic!(
+                "feature {:?} must carry an appearance block for the dataset-wide defaults",
+                feature.id
+            )
+        });
+        assert!(
+            appearance.materials.is_none(),
+            "no materials sidecar exists to restore real definitions from"
+        );
+        assert!(appearance.textures.is_none());
+        assert!(appearance.vertices_texture.is_none());
+        assert_eq!(
+            appearance.default_theme_material.as_deref(),
+            Some("theme-a")
+        );
+        assert_eq!(appearance.default_theme_texture.as_deref(), Some("theme-b"));
+        checked += 1;
+    }
+    assert!(checked > 0, "expected at least one exported feature");
+}
+
 /// M4 task 10: on a Compatibility-profile package (`geometry_templates.parquet`
 /// present), export rebuilds the header's `geometry-templates` and each
 /// object's `GeometryInstance` geometry, instead of dropping them. Exercised

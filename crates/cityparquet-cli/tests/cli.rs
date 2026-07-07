@@ -163,12 +163,15 @@ fn export_package_to_cityjsonl() {
     assert!(output_path.exists(), "exported file does not exist");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // stdout should contain: feature_count, object_count, instance_geometries_dropped, appearance_refs_dropped
+    // stdout should contain: feature_count, object_count,
+    // instance_geometries_dropped, appearance_refs_dropped,
+    // appearance_lod_misses (M5 debt item 3: the export report line gains 1
+    // field, appended after the 4 it already printed).
     let parts: Vec<&str> = stdout.split_whitespace().collect();
     assert_eq!(
         parts.len(),
-        4,
-        "export should print 4 space-separated values, got: {}",
+        5,
+        "export should print 5 space-separated values, got: {}",
         stdout
     );
 }

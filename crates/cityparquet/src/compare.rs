@@ -626,10 +626,16 @@ fn realigned_material(
     let (Some(map), Some(defs)) = (map, defs) else {
         return Ok(None);
     };
-    let raw = serde_json::to_value(map)?;
-    let mut value = resolve_material_map(&raw, defs)?;
+    // Realign the RAW (unresolved) index tree BEFORE dereferencing through
+    // `defs` — mirroring `crate::encode`'s own pipeline order (drop
+    // realignment happens before the dataset-global appearance rewrite). A
+    // dangling/out-of-range index sitting only at a to-be-dropped position
+    // is real, valid writer output; resolving it first (the old order)
+    // would error on data a real round trip happily produces (M5 debt
+    // item 1).
+    let mut raw = serde_json::to_value(map)?;
     if !dropped_surfaces.is_empty()
-        && let Some(themes) = value.as_object_mut()
+        && let Some(themes) = raw.as_object_mut()
     {
         for theme in themes.values_mut() {
             if let Some(values) = theme.get_mut("values").and_then(Value::as_array_mut) {
@@ -637,6 +643,7 @@ fn realigned_material(
             }
         }
     }
+    let value = resolve_material_map(&raw, defs)?;
     Ok(Some(value))
 }
 
@@ -650,10 +657,10 @@ fn realigned_texture(
     let (Some(map), Some(defs)) = (map, defs) else {
         return Ok(None);
     };
-    let raw = serde_json::to_value(map)?;
-    let mut value = resolve_texture_map(&raw, defs)?;
+    // Realign before resolving — see [`realigned_material`]'s doc comment.
+    let mut raw = serde_json::to_value(map)?;
     if !dropped_surfaces.is_empty()
-        && let Some(themes) = value.as_object_mut()
+        && let Some(themes) = raw.as_object_mut()
     {
         for theme in themes.values_mut() {
             if let Some(values) = theme.get_mut("values").and_then(Value::as_array_mut) {
@@ -661,6 +668,7 @@ fn realigned_texture(
             }
         }
     }
+    let value = resolve_texture_map(&raw, defs)?;
     Ok(Some(value))
 }
 
@@ -677,10 +685,10 @@ fn realigned_nested_material(
     let (Some(map), Some(defs)) = (map, defs) else {
         return Ok(None);
     };
-    let raw = serde_json::to_value(map)?;
-    let mut value = resolve_material_map(&raw, defs)?;
+    // Realign before resolving — see [`realigned_material`]'s doc comment.
+    let mut raw = serde_json::to_value(map)?;
     if !dropped.is_empty()
-        && let Some(themes) = value.as_object_mut()
+        && let Some(themes) = raw.as_object_mut()
     {
         for theme in themes.values_mut() {
             if let Some(values) = theme.get_mut("values") {
@@ -688,6 +696,7 @@ fn realigned_nested_material(
             }
         }
     }
+    let value = resolve_material_map(&raw, defs)?;
     Ok(Some(value))
 }
 
@@ -702,10 +711,10 @@ fn realigned_nested_texture(
     let (Some(map), Some(defs)) = (map, defs) else {
         return Ok(None);
     };
-    let raw = serde_json::to_value(map)?;
-    let mut value = resolve_texture_map(&raw, defs)?;
+    // Realign before resolving — see [`realigned_material`]'s doc comment.
+    let mut raw = serde_json::to_value(map)?;
     if !dropped.is_empty()
-        && let Some(themes) = value.as_object_mut()
+        && let Some(themes) = raw.as_object_mut()
     {
         for theme in themes.values_mut() {
             if let Some(values) = theme.get_mut("values") {
@@ -713,6 +722,7 @@ fn realigned_nested_texture(
             }
         }
     }
+    let value = resolve_texture_map(&raw, defs)?;
     Ok(Some(value))
 }
 
@@ -1356,24 +1366,50 @@ fn reference_system_url(header: &CityJSON) -> Option<String> {
         .map(cjseq::ReferenceSystem::to_url)
 }
 
+/// Which of one side's `metadata` members other than `referenceSystem`
+/// (compared separately, in [`compare_datasets`]) are set, in the same
+/// fixed order [`header_metadata_members`] reports them in. An EXHAUSTIVE
+/// destructure of `cjseq::Metadata` (`reference_system` explicitly ignored,
+/// every other field bound) rather than a hand-picked field list: a cjseq
+/// upgrade that adds a `Metadata` member then fails to COMPILE here instead
+/// of silently never appearing in `excluded` (M5 debt item 4 — drift-proofing
+/// against exactly the kind of member the hand-picked 5-entry array used to
+/// hard-code).
+fn metadata_member_flags(m: Option<&cjseq::Metadata>) -> [bool; 5] {
+    let Some(m) = m else {
+        return [false; 5];
+    };
+    let cjseq::Metadata {
+        geographical_extent,
+        identifier,
+        point_of_contact,
+        reference_date,
+        reference_system: _,
+        title,
+    } = m;
+    [
+        title.is_some(),
+        geographical_extent.is_some(),
+        identifier.is_some(),
+        point_of_contact.is_some(),
+        reference_date.is_some(),
+    ]
+}
+
 /// The `metadata` members other than `referenceSystem` (compared above):
 /// `("label", present)` pairs, where `present` is true when EITHER side's
 /// `header.metadata` has that member set. These are documented exclusions
 /// (M4-codex-5) — logged in `excluded`, never compared, never silently
 /// dropped.
 fn header_metadata_members(a: &CityJSON, b: &CityJSON) -> [(&'static str, bool); 5] {
-    let ma = a.metadata.as_ref();
-    let mb = b.metadata.as_ref();
-    let has = |f: fn(&cjseq::Metadata) -> bool| ma.is_some_and(f) || mb.is_some_and(f);
+    let fa = metadata_member_flags(a.metadata.as_ref());
+    let fb = metadata_member_flags(b.metadata.as_ref());
     [
-        ("title", has(|m| m.title.is_some())),
-        (
-            "geographicalExtent",
-            has(|m| m.geographical_extent.is_some()),
-        ),
-        ("identifier", has(|m| m.identifier.is_some())),
-        ("pointOfContact", has(|m| m.point_of_contact.is_some())),
-        ("referenceDate", has(|m| m.reference_date.is_some())),
+        ("title", fa[0] || fb[0]),
+        ("geographicalExtent", fa[1] || fb[1]),
+        ("identifier", fa[2] || fb[2]),
+        ("pointOfContact", fa[3] || fb[3]),
+        ("referenceDate", fa[4] || fb[4]),
     ]
 }
 
@@ -2045,6 +2081,92 @@ mod tests {
         assert!(
             report.equal,
             "side A's degenerate face must realign to match side B's already-reduced shape, \
+             got differences: {:#?}",
+            report.differences
+        );
+    }
+
+    /// M5 debt item 1: the encoder realigns degenerate-drop positions BEFORE
+    /// rewriting appearance to dataset-global ids (`crate::encode`'s pipeline
+    /// order), so a dangling/out-of-range material index sitting ONLY at a
+    /// position the degenerate-ring normalisation is about to drop is
+    /// perfectly fine real output. The comparator must mirror that order —
+    /// realign first, resolve after — or it resolves the dangling index
+    /// before it is ever dropped and errors on data a real round trip would
+    /// happily accept. Derived from the same delft Solid as
+    /// [`compare_realigns_solid_semantics_and_material_for_a_degenerate_face`]
+    /// (degenerate face 2), but comparing the SAME file to itself: the
+    /// feature gains a 2-entry `appearance.materials` array (so
+    /// `resolve_material_index` actually bounds-checks instead of passing a
+    /// bare index through) and the full, not-yet-realigned 6-entry
+    /// `material.visual.values` carries an out-of-range index (99, no 3rd
+    /// materials definition exists) at EXACTLY the degenerate face's
+    /// position (2) — every other position references a valid index (0 or
+    /// 1). `compare_datasets(derived, derived, default opts)` must be `Ok`
+    /// and `equal`: resolve-before-realign order would instead surface a
+    /// `Schema` error ("material index 99 out of range") on both sides
+    /// before the drop ever gets a chance to remove it.
+    #[test]
+    fn compare_realigns_before_resolving_a_dangling_material_index_at_a_dropped_position() {
+        let original = fixture("delft.city.jsonl");
+        let text = fs::read_to_string(&original).unwrap();
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+
+        const OBJ_ID: &str = "NL.IMBAG.Pand.0503100000012869-0";
+        let mut derived_line = None;
+        for line in lines.iter().skip(1) {
+            if !line.contains(OBJ_ID) {
+                continue;
+            }
+            let mut feature: Value = serde_json::from_str(line).unwrap();
+
+            fn find_solid(f: &mut Value) -> &mut Value {
+                const OBJ_ID: &str = "NL.IMBAG.Pand.0503100000012869-0";
+                f["CityObjects"][OBJ_ID]["geometry"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|g| g["lod"] == "1.2" && g["type"] == "Solid")
+                    .expect("delft's Pand-0 must carry a lod 1.2 Solid")
+            }
+
+            let sem_values: Vec<i64> = {
+                let mut probe = feature.clone();
+                serde_json::from_value(find_solid(&mut probe)["semantics"]["values"][0].clone())
+                    .unwrap()
+            };
+            assert_eq!(sem_values.len(), 6, "fixture fact: shell 0 has 6 faces");
+
+            // Face 2's exterior ring degenerates to [a, b, a] (same
+            // derivation as the sibling test above); the full 6-entry
+            // material array carries a real, in-range index at every KEPT
+            // position and an out-of-range index ONLY at the dropped one.
+            {
+                let geom = find_solid(&mut feature);
+                let ring = &mut geom["boundaries"][0][2][0];
+                let indices: Vec<i64> = serde_json::from_value(ring.clone()).unwrap();
+                let (a, b) = (indices[0], indices[1]);
+                *ring = serde_json::json!([a, b, a]);
+                geom["material"] = serde_json::json!({"visual": {"values": [[0, 1, 99, 1, 0, 1]]}});
+            }
+            feature["appearance"] = serde_json::json!({
+                "materials": [{"name": "roof"}, {"name": "wall"}]
+            });
+            derived_line = Some(serde_json::to_string(&feature).unwrap());
+            break;
+        }
+        let derived_line = derived_line.expect("delft.city.jsonl must contain the target object");
+
+        let header_line = lines[0].clone();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("derived.city.jsonl");
+        fs::write(&path, format!("{header_line}\n{derived_line}\n")).unwrap();
+
+        let report = compare_datasets(&path, &path, &CompareOptions::default()).unwrap();
+        assert!(
+            report.equal,
+            "comparing the derived file to itself must succeed: the dangling material index \
+             sits only at the position the degenerate-ring drop removes before resolving, \
              got differences: {:#?}",
             report.differences
         );

@@ -90,6 +90,19 @@ pub struct ExportReport {
     /// (M4 sidecar data), so exporting them would leave dangling references
     /// — invalid CityJSON, same reasoning as the GeometryInstance drop.
     pub appearance_refs_dropped: usize,
+    /// Geometries on the SIDECAR-PRESENT restore path (`LocalAppearance` is
+    /// available, i.e. `materials.parquet`/`textures.parquet` were loaded)
+    /// whose object-level per-LoD `material`/`texture` map is non-empty but
+    /// has no entry for that geometry's own CANONICAL lod key. This is a
+    /// distinct failure mode from [`Self::appearance_refs_dropped`] (which
+    /// only ever applies to the NO-sidecar path, where the whole map is
+    /// deliberately dropped regardless of key): here the map is restorable
+    /// in principle, but a non-canonical source `lod` string (e.g. `"03"`,
+    /// which `Lod::parse` normalises to `"3"`) was used as the encoder's raw
+    /// map key while export looks the entry up by the canonical string,
+    /// silently missing it. `0` for both shipped fixtures, which use only
+    /// canonical lod strings.
+    pub appearance_lod_misses: usize,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -468,6 +481,19 @@ fn row_json_object(batch: &RecordBatch, name: &str, row: usize) -> Result<Option
 /// the actual re-attachment instead and this function is not consulted.
 fn has_appearance_for_lod(map: &Option<Value>, lod_key: &str) -> bool {
     map.as_ref().is_some_and(|m| m.get(lod_key).is_some())
+}
+
+/// Whether the per-object `{"<lod>": {...}}` map carries at least one entry
+/// (for SOME lod, not necessarily this geometry's) but the lookup for THIS
+/// geometry's own canonical lod key missed (`hit == false`) — the
+/// `appearance_lod_misses` condition on the sidecar-present restore path
+/// (see [`ExportReport::appearance_lod_misses`]). An entirely absent/empty
+/// map is not a miss: there is nothing this geometry could have restored
+/// from in the first place.
+fn map_nonempty_and_key_missing(map: &Option<Value>, hit: bool) -> bool {
+    !hit && map
+        .as_ref()
+        .is_some_and(|m| m.as_object().is_some_and(|o| !o.is_empty()))
 }
 
 /// A *ring* is the innermost texture-map array. Pre-rewrite/pre-localisation
@@ -982,6 +1008,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
 
     let mut instance_geometries_dropped = 0usize;
     let mut appearance_refs_dropped = 0usize;
+    let mut appearance_lod_misses = 0usize;
     let mut features: Vec<CityJSONFeature> = Vec::with_capacity(groups.items.len());
     for (feature_id, entries) in groups.into_ordered() {
         let mut feature = CityJSONFeature::new();
@@ -1012,19 +1039,24 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     reconstruct_boundaries(&decoded.kind, &gtype, props.as_ref(), &vmap)?;
                 let semantics = props.as_ref().and_then(|p| p.get("semantics")).cloned();
 
-                // Keyed by the CANONICAL Lod string: the encoder keyed the
-                // per-object appearance map by the raw source lod string
+                // Keyed by the CANONICAL Lod string. The encoder
+                // (`crate::encode::accumulate_geometry`) keys the per-object
+                // appearance map by the RAW source lod string
                 // (`geom.lod.clone().unwrap_or_default()`), so a
-                // non-canonical source LoD (e.g. "02", which `Lod::parse`
-                // normalises to "2") would not match here — a documented
-                // limitation (it would only undercount the drops); both real
-                // fixtures use canonical strings only.
+                // non-canonical source LoD (e.g. "03", which `Lod::parse`
+                // normalises to "3") does not match this canonical lookup
+                // key — a real restore miss, counted below in
+                // `appearance_lod_misses` on the sidecar-present path (both
+                // real fixtures use canonical strings only, so this stays 0
+                // for them).
                 let lod_key = lod.map(|l| l.to_string()).unwrap_or_default();
                 let mut geom_material: Option<HashMap<String, Material>> = None;
                 let mut geom_texture: Option<HashMap<String, Texture>> = None;
                 match local_appearance.as_mut() {
                     Some(local) => {
-                        if let Some(m) = material.as_ref().and_then(|m| m.get(lod_key.as_str())) {
+                        let material_hit = material.as_ref().and_then(|m| m.get(lod_key.as_str()));
+                        let texture_hit = texture.as_ref().and_then(|t| t.get(lod_key.as_str()));
+                        if let Some(m) = material_hit {
                             let localised = local.localise_material_map(m).map_err(|e| {
                                 err(format!(
                                     "object {}: cannot restore material appearance: {e}",
@@ -1033,7 +1065,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                             })?;
                             geom_material = Some(serde_json::from_value(localised)?);
                         }
-                        if let Some(t) = texture.as_ref().and_then(|t| t.get(lod_key.as_str())) {
+                        if let Some(t) = texture_hit {
                             let localised = local.localise_texture_map(t).map_err(|e| {
                                 err(format!(
                                     "object {}: cannot restore texture appearance: {e}",
@@ -1041,6 +1073,17 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                                 ))
                             })?;
                             geom_texture = Some(serde_json::from_value(localised)?);
+                        }
+                        // The sidecar IS present (defs are restorable in
+                        // principle): a non-empty object-level map with no
+                        // entry for this geometry's canonical lod key is a
+                        // real miss, distinct from `appearance_refs_dropped`
+                        // below (which only ever fires on the no-sidecar
+                        // path).
+                        if map_nonempty_and_key_missing(material, material_hit.is_some())
+                            || map_nonempty_and_key_missing(texture, texture_hit.is_some())
+                        {
+                            appearance_lod_misses += 1;
                         }
                     }
                     None => {
@@ -1097,9 +1140,22 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         }
 
         feature.vertices = interner.finish();
-        if let Some(local) = local_appearance {
-            feature.appearance = local.into_appearance(meta.appearance_defaults.as_ref());
-        }
+        feature.appearance = match local_appearance {
+            Some(local) => local.into_appearance(meta.appearance_defaults.as_ref()),
+            // No appearance-definition sidecars restored for this package
+            // (the Core profile, or a Compatibility one with no
+            // materials/textures at all): there is no per-feature slicer to
+            // consult, but dataset-wide defaults are still real KV metadata
+            // that must not be lost just because there is nothing else to
+            // attach alongside them (M5 debt item 2, rule half (b)). A throw-
+            // away, never-fed `LocalAppearance` reuses `into_appearance`'s
+            // own emptiness/defaults rule rather than duplicating it: with
+            // both global slices empty it can only ever produce a
+            // defaults-only block (or `None` when there are no defaults).
+            None => meta.appearance_defaults.as_ref().and_then(|defaults| {
+                LocalAppearance::new(&[], &[]).into_appearance(Some(defaults))
+            }),
+        };
         features.push(feature);
     }
 
@@ -1111,6 +1167,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         object_count,
         instance_geometries_dropped,
         appearance_refs_dropped,
+        appearance_lod_misses,
     })
 }
 
@@ -1333,5 +1390,39 @@ mod tests {
         );
         assert!(appearance.materials.is_none());
         assert!(appearance.textures.is_none());
+    }
+
+    /// M5 debt item 2, rule half (a): an EMPTY slicer (a feature/template
+    /// that referenced no material/texture/UV at all) with dataset-wide
+    /// `defaults` present must still return `Some`, carrying ONLY the
+    /// default-theme members — `into_appearance`'s `Some iff referenced OR
+    /// defaults exist` rule.
+    #[test]
+    fn into_appearance_with_an_empty_slicer_and_defaults_is_some_with_only_default_members() {
+        let local = LocalAppearance::new(&[], &[]);
+        let defaults = serde_json::json!({
+            "default-theme-material": "theme-a",
+            "default-theme-texture": "theme-b",
+        });
+        let appearance = local
+            .into_appearance(Some(&defaults))
+            .expect("defaults alone must be enough to keep the appearance block");
+        assert!(appearance.materials.is_none());
+        assert!(appearance.textures.is_none());
+        assert!(appearance.vertices_texture.is_none());
+        assert_eq!(
+            appearance.default_theme_material.as_deref(),
+            Some("theme-a")
+        );
+        assert_eq!(appearance.default_theme_texture.as_deref(), Some("theme-b"));
+    }
+
+    /// M5 debt item 2, rule half (b): an empty slicer with NO defaults must
+    /// return `None` — a feature/template that referenced nothing must not
+    /// grow an appearance block out of nowhere.
+    #[test]
+    fn into_appearance_with_an_empty_slicer_and_no_defaults_is_none() {
+        let local = LocalAppearance::new(&[], &[]);
+        assert!(local.into_appearance(None).is_none());
     }
 }

@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use arrow_array::{Array, StringArray};
 use cityparquet::CityParquetError;
+use cityparquet::compare::{CompareOptions, compare_datasets};
+use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Profile;
@@ -427,5 +429,141 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
     assert_eq!(
         rows, 121,
         "the surviving package's own main table must still be intact and readable"
+    );
+}
+
+/// M5 debt item 5: `convert` used to purge `output_dir`'s prior package
+/// AFTER `Source::open`/`scan` but BEFORE encoding the new one — so a
+/// failure DURING encode (as opposed to the bad-input-path case above, which
+/// fails before ever reaching the purge) still destroyed the old package and
+/// left nothing usable behind. The fix writes every new file into a hidden
+/// scratch directory first and only swaps it into place once the ENTIRE new
+/// package (including `metadata.json`) has been written successfully.
+///
+/// The corruption chosen is a dangling material index: derived from a copy
+/// of delft (which has no material/texture of its own — see
+/// `crate::compare`'s module docs), a LATE feature (index 1113 of 1116
+/// lines, i.e. near the very end) gains a 1-entry `appearance.materials`
+/// array and its first geometry references material index 99 — an index no
+/// `scan` pass ever inspects (scan only calls `geometry_to_wkb` for bbox
+/// purposes, never touching `material`/`texture` at all — see
+/// `crate::scan::scan`), but `encode`'s per-object appearance rewrite
+/// (`crate::encode::rewrite_geometry_appearance` /
+/// `crate::appearance::AppearanceInterner`) must resolve every local index
+/// against the feature's own `appearance.materials` and errors loudly on an
+/// out-of-range one — confirmed empirically below: `convert` must fail with
+/// a `Schema` error mentioning "material index", not merely tolerate it.
+/// A small `batch_size` (50, versus delft's 2231 objects) ensures several
+/// `RecordBatch`es — and therefore several `ArrowWriter::write` calls typing
+/// real bytes into the scratch `cityobjects.parquet` — succeed before the
+/// corrupted feature's batch is ever reached, so this is a genuine
+/// mid-encode failure, not merely a same-instant one.
+#[test]
+fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
+    // Pre-existing, valid Compatibility package at `out`.
+    let out = tempfile::tempdir().unwrap();
+    let mut first =
+        ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    first.profile = Profile::Compatibility;
+    let first_report = convert(&first).unwrap();
+    assert_eq!(first_report.materials_written, 85);
+    assert!(out.path().join("materials.parquet").exists());
+    assert!(out.path().join("textures.parquet").exists());
+    assert!(out.path().join("geometry_templates.parquet").exists());
+    assert!(out.path().join("cityobjects.parquet").exists());
+    assert!(out.path().join("metadata.json").exists());
+
+    // Derived delft copy: a late feature gains a dangling material
+    // reference that only `encode` (never `scan`) validates.
+    let original = fixture("delft.city.jsonl");
+    let text = std::fs::read_to_string(&original).unwrap();
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    assert_eq!(lines.len(), 1116, "fixture fact: 1 header + 1115 features");
+    const TARGET_LINE: usize = 1113;
+    let mut feature: Value = serde_json::from_str(&lines[TARGET_LINE]).unwrap();
+    let mut corrupted = false;
+    {
+        let objects = feature["CityObjects"].as_object_mut().unwrap();
+        for co in objects.values_mut() {
+            let Some(geoms) = co.get_mut("geometry").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            let Some(geom) = geoms.first_mut().and_then(Value::as_object_mut) else {
+                continue;
+            };
+            assert!(
+                !geom.contains_key("material"),
+                "precondition: delft geometries carry no material of their own"
+            );
+            geom.insert(
+                "material".to_string(),
+                serde_json::json!({"visual": {"value": 99}}),
+            );
+            corrupted = true;
+            break;
+        }
+    }
+    assert!(
+        corrupted,
+        "target feature line must contain an object with geometry"
+    );
+    feature["appearance"] = serde_json::json!({"materials": [{}]});
+    lines[TARGET_LINE] = serde_json::to_string(&feature).unwrap();
+
+    let derived_dir = tempfile::tempdir().unwrap();
+    let derived_input = derived_dir
+        .path()
+        .join("delft-dangling-material.city.jsonl");
+    std::fs::write(&derived_input, lines.join("\n") + "\n").unwrap();
+
+    // Overwrite the valid railway package with the derived, encode-time-
+    // corrupted delft: must fail with a Schema error, not succeed and not
+    // panic.
+    let mut second = ConvertOptions::new(derived_input, out.path().to_path_buf());
+    second.overwrite = true;
+    second.batch_size = 50;
+    let err = convert(&second).unwrap_err();
+    assert!(
+        matches!(err, CityParquetError::Schema(_)),
+        "expected a Schema error for the dangling material index, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("material index"),
+        "the error must name the out-of-range material index, got: {err}"
+    );
+
+    // No leftover scratch directory.
+    assert!(
+        !out.path().join(".cityparquet-tmp").exists(),
+        "the temp scratch directory must be cleaned up on a failed convert"
+    );
+
+    // The original railway package must be completely untouched: every file
+    // survives, and it still round-trips losslessly with no exclusions
+    // (the same headline gate as `roundtrip_real_data.rs`'s
+    // `railway_compatibility_round_trips_losslessly_with_no_exclusions`).
+    assert!(out.path().join("materials.parquet").exists());
+    assert!(out.path().join("textures.parquet").exists());
+    assert!(out.path().join("geometry_templates.parquet").exists());
+    assert!(out.path().join("cityobjects.parquet").exists());
+    assert!(out.path().join("metadata.json").exists());
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let exported = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: out.path().to_path_buf(),
+        output: exported.clone(),
+    })
+    .unwrap();
+    let report = compare_datasets(
+        &fixture("lod3_railway.city.json"),
+        &exported,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "the surviving package must still export losslessly; differences: {:#?}",
+        report.differences
     );
 }
