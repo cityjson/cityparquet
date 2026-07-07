@@ -57,33 +57,52 @@ one machine, one sitting. Per-dataset runs:
 `cityparquet bench --input <file> --out <csv>` and
 `./scripts/bench_duckdb.sh <file> <csv>`.
 
-## Known limitation: 9-284-556 round-trip
+## Resolved: 9-284-556 round-trip
 
-The dense-urban tile is benchmarked with `--skip-roundtrip`
-(`roundtrip_equal` is empty in its CSV). Conversion, export, and the scan
-measurements all succeed, but `cityparquet compare` on the exported
-CityJSONSeq reports, verbatim:
+The dense-urban tile used to be benchmarked with `--skip-roundtrip`
+(`roundtrip_equal` was left empty in its CSV): `cityparquet compare` on the
+exported CityJSONSeq reported, verbatim:
 
 ```
 object NL.IMBAG.Pand.0503100000025101-0: geometry at lod Some("2.2"): boundary/coordinates differ
 object NL.IMBAG.Pand.0503100000025101-0: geometry at lod Some("2.2"): semantics differ: ...
 ```
 
-(The `semantics differ` line carries both sides' full semantics JSON,
-~48 KB; the two sides' `surfaces` arrays are identical element-wise and the
-flattened `values` arrays differ in length by one — 736 vs 735 — with the
+(The `semantics differ` line carried both sides' full semantics JSON,
+~48 KB; the two sides' `surfaces` arrays were identical element-wise and the
+flattened `values` arrays differed in length by one — 736 vs 735 — with the
 kept entries shifted from that point on.)
 
 Diagnosis: face 497 of that Solid's LoD 2.2 shell has a 3-entry exterior
 ring whose three *distinct* vertex indices `[49590, 49127, 49595]` all
-quantise to the *same* vertex coordinate `(31653, 359040, -33533)`. The
-writer's coordinate-space normalisation drops this fully degenerate face
-(735 faces exported); the comparator's independent normalisation is
-index-based (see `crates/cityparquet/src/compare.rs` module docs) and keeps
-it (736 faces), so boundary and semantics realignment diverge by one
-position. Neither fixture exercises an index-distinct but
-coordinate-identical ring. All other 2422 objects on this tile, and every
-object on the other four datasets, round-trip `true`.
+quantise to the *same* vertex coordinate `(31653, 359040, -33533)`. Traced
+end-to-end: the writer's ring normalisation (`crate::wkb_write::normalise_ring`)
+is deliberately INDEX-based and does NOT drop this ring (3 distinct indices,
+no writer-side drop); it is written as a real, if degenerate, WKB ring. The
+WKB reader's coordinate interner then dedupes its 3 written points (bitwise
+`f64::to_bits`, since all 3 dequantise identically) down to a single,
+3-times-repeated pool index — and the comparator's OLD, also INDEX-based
+normalisation treated that repeated-index shape as closed-to-nothing and
+dropped it, but only on the round-tripped (exported) side, since the
+SOURCE side's 3 distinct indices are untouched by an index-only check. That
+one-sided drop (736 vs 735 faces) is what surfaced as the compare failure.
+
+Fixed by extending the comparator's normalisation (`crates/cityparquet/src/compare.rs`)
+to also drop a ring whose surviving indices dequantise to fewer than 3
+DISTINCT coordinates (bitwise, exact — both sides quantise identically),
+applied uniformly to BOTH sides and reusing the existing exterior-ring/
+surface-drop and semantics/material/texture realignment machinery. The
+writer is unchanged. All 2423 objects on this tile (including the
+previously-failing one), and every object on the other four datasets, now
+round-trip `true` — see `bench/results/9-284-556.csv`.
+
+This fix additionally surfaced (and correctly drops) 8 previously-invisible
+coordinate-degenerate rings in the `delft.city.jsonl` fixture and 20 more in
+`lod3_railway.city.json` (real production data quirks the writer's
+index-only check could never have caught either) — the M4/M5 round-trip
+gates were updated to pin these newly-detected drops rather than their
+former, incomplete zero count; see `crates/cityparquet/tests/roundtrip_real_data.rs`
+and `crates/cityparquet/tests/convert_real_data.rs`.
 
 ## Observations (numbers only)
 
@@ -101,10 +120,10 @@ Smallest `total_bytes` per dataset, cityparquet-rs variants
 - `snappy` is the largest on every dataset (delft 3,720,228; railway
   2,544,962; 9-284-556 4,424,207; 9-304-532 1,195,769; 9-196-328 159,096)
   and the fastest cityparquet-rs writer on 4 of 5 datasets (delft 0.112 s;
-  railway 0.139 s; 9-284-556 0.169 s; 9-304-532 0.052 s; 9-196-328 0.006 s,
+  railway 0.139 s; 9-284-556 0.174 s; 9-304-532 0.052 s; 9-196-328 0.006 s,
   where five other variants also record 0.006 s).
 - `write_s` spread across the seven ZSTD-based cityparquet-rs variants is
-  small on every dataset (delft 0.119–0.124 s; 9-284-556 0.179–0.188 s;
+  small on every dataset (delft 0.119–0.124 s; 9-284-556 0.182–0.194 s;
   9-304-532 0.055–0.060 s).
 - Hilbert row-group pruning: no effect at these sizes — every single-table
   variant writes `row_groups_total = 1` on every dataset (even the largest
@@ -116,13 +135,13 @@ Smallest `total_bytes` per dataset, cityparquet-rs variants
   +35,590 B; 9-196-328 +34,730 B).
 - duckdb-copy baseline (schema differs: boundaries as JSON text, no bbox
   column, no window query — see `scripts/bench_duckdb.sh` header for what
-  is and is not comparable): `write_s` 0.381/0.316/0.693/0.270/0.097 s
+  is and is not comparable): `write_s` 0.381/0.316/0.662/0.270/0.097 s
   (delft/railway/9-284-556/9-304-532/9-196-328), each sample carrying
   ~0.07 s process + `LOAD cityjson` overhead (disclosed, undeducted; see
   the `# calibration:` stderr line). ZSTD baseline bytes: delft 838,144;
   railway 8,450; 9-284-556 1,663,803; 9-304-532 517,762; 9-196-328 69,628.
   SNAPPY baseline bytes on 9-284-556 (2,777,385) exceed every
   cityparquet-rs variant except `snappy`.
-- Baseline `full_scan_s` (0.058–0.081 s) is dominated by the same
+- Baseline `full_scan_s` (0.058–0.071 s) is dominated by the same
   per-process overhead; the harness's in-process `full_scan_s` is
   0.001–0.010 s across all variants and datasets.

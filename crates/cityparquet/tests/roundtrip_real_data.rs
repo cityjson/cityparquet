@@ -109,12 +109,32 @@ fn every_recipe_preset_round_trips_delft_losslessly() {
             "preset {} produced non-empty differences",
             preset.name()
         );
+        // Pinned counts updated alongside the comparator's coordinate-degenerate
+        // ring fix (3DBAG tile `9-284-556.city.json` finding; see
+        // `crate::compare`'s module docs and `delft_round_trips_losslessly`
+        // below for the full explanation): delft's real, unmutated source
+        // carries 8 objects with an index-distinct/coordinate-identical ring,
+        // previously invisible to the INDEX-only degenerate check. Not a
+        // regression — `report.equal`/`differences.is_empty()` above still hold.
+        let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+            .excluded
+            .iter()
+            .partition(|e| e.starts_with("header: metadata member"));
+        let degenerate = non_header_excluded
+            .iter()
+            .filter(|e| e.contains("degenerate ring"))
+            .count();
+        assert_eq!(
+            (degenerate, non_header_excluded.len()),
+            (16, 16),
+            "preset {}'s only non-header exclusions must be the 16 pinned \
+             coordinate-degenerate-ring drops (8 objects, source + export side each), got: {:#?}",
+            preset.name(),
+            non_header_excluded
+        );
         assert!(
-            report
-                .excluded
-                .iter()
-                .all(|e| e.starts_with("header: metadata member")),
-            "preset {}'s only exclusions must be documented header metadata members, got: {:#?}",
+            !header_excluded.is_empty(),
+            "preset {} must still document delft's header metadata members, got: {:#?}",
             preset.name(),
             report.excluded
         );
@@ -136,18 +156,44 @@ fn delft_round_trips_losslessly() {
         report.differences
     );
     assert!(report.differences.is_empty());
-    // delft has no appearance, no GeometryInstances, and no degenerate rings,
-    // but its header DOES set metadata members (title, geographicalExtent,
-    // pointOfContact) that are documented exclusions, not comparisons: every
-    // excluded line must be one of those, and nothing else — a non-header
-    // exclusion here would mean something real (appearance, an instance, a
+    // delft has no appearance and no GeometryInstances, but its header DOES
+    // set metadata members (title, geographicalExtent, pointOfContact) that
+    // are documented exclusions, not comparisons.
+    //
+    // delft's boundaries ALSO turn out to carry 8 real, unmutated objects
+    // with a ring whose vertex INDICES are pairwise distinct (so the
+    // writer's index-only `normalise_ring` — deliberately, see its docs —
+    // does not drop it) but which dequantise to fewer than 3 distinct
+    // coordinates: the exact same class of defect as the 3DBAG tile
+    // `9-284-556.city.json` finding that motivated extending the
+    // comparator's normalisation (see `crate::compare`'s module docs). This
+    // was invisible before that fix (both sides silently kept the
+    // degenerate-but-structurally-valid ring, comparing equal despite it not
+    // describing a real face) and is now caught and logged as excluded on
+    // both the source and the exported side — 16 entries (8 objects x 2
+    // sides). Every excluded line must be one of those 16 or a documented
+    // header metadata member, and nothing else — any OTHER exclusion here
+    // would mean something real (appearance, an instance, an unrelated
     // degenerate ring) slipped through undetected.
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    let degenerate = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    assert_eq!(
+        (degenerate, non_header_excluded.len()),
+        (16, 16),
+        "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
+         drops (8 objects, source + export side each), got: {:#?}",
+        non_header_excluded
+    );
     assert!(
-        report
-            .excluded
-            .iter()
-            .all(|e| e.starts_with("header: metadata member")),
-        "delft's only exclusions must be documented header metadata members, got: {:#?}",
+        !header_excluded.is_empty(),
+        "delft's header sets metadata members; expected at least one documented header-metadata \
+         exclusion, got none. Full excluded: {:#?}",
         report.excluded
     );
 }
@@ -180,12 +226,20 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
         .iter()
         .partition(|e| e.starts_with("header: metadata member"));
 
-    // The exact exclusion breakdown, recounted by category. The totals are
-    // pinned against counts already proven elsewhere: 105 stored geometries
-    // carry material or texture (export_real_data.rs's
-    // appearance_refs_dropped), 15 objects carry a GeometryInstance
-    // (instance_geometries_dropped), and 3 source geometries carry
-    // degenerate rings (wkb_roundtrip_real_data.rs's geometries_with_drops).
+    // The exact exclusion breakdown, recounted by category. The
+    // appearance/instances totals are pinned against counts already proven
+    // elsewhere: 105 stored geometries carry material or texture
+    // (export_real_data.rs's appearance_refs_dropped), 15 objects carry a
+    // GeometryInstance (instance_geometries_dropped). The degenerate count
+    // was updated from the writer-only-index-drop figure of 3 to 23
+    // alongside the comparator's coordinate-degenerate ring fix (3DBAG tile
+    // `9-284-556.city.json` finding; see `crate::compare`'s module docs):
+    // railway's real, unmutated source carries 20 MORE objects whose
+    // boundaries include an index-distinct/coordinate-identical ring,
+    // previously invisible to the INDEX-only degenerate check (the writer's
+    // 3 pinned drops in `wkb_roundtrip_real_data.rs::geometries_with_drops`
+    // are unaffected — that pin is about the WRITER's own index-based
+    // normalisation, which this fix does not touch).
     let appearance = non_header_excluded
         .iter()
         .filter(|e| e.contains("exclusions.appearance"))
@@ -200,14 +254,14 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
         .count();
     assert_eq!(
         (appearance, instances, degenerate),
-        (105, 15, 3),
+        (105, 15, 23),
         "exclusion breakdown must match the pinned pipeline counts, got: {:#?}",
         non_header_excluded
     );
     assert_eq!(
         non_header_excluded.len(),
-        123,
-        "105 appearance + 15 instances + 3 degenerate = 123 total non-header exclusions, \
+        143,
+        "105 appearance + 15 instances + 23 degenerate = 143 total non-header exclusions, \
          nothing else, got: {:#?}",
         non_header_excluded
     );
@@ -227,9 +281,9 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
 /// geometries are now restored from the sidecars (M4 tasks 6-10), so unlike
 /// `railway_round_trips_losslessly_modulo_documented_drops` above (which
 /// still excludes both, because that test converts Core), the only
-/// remaining exclusions are the 3 source rings the writer's own degenerate
-/// normalisation drops (pinned in `wkb_roundtrip_real_data.rs`'s
-/// `geometries_with_drops` and in the Core round-trip test above) and
+/// remaining exclusions are the 23 pinned degenerate-ring drops (updated
+/// alongside the comparator's coordinate-degenerate fix — see the comment in
+/// `railway_round_trips_losslessly_modulo_documented_drops` above) and
 /// whatever header metadata members railway's header sets (documented,
 /// unbounded). Any OTHER exclusion here would mean appearance or an
 /// instance silently failed to round-trip.
@@ -260,16 +314,16 @@ fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
         .filter(|e| e.contains("degenerate ring"))
         .count();
     assert_eq!(
-        degenerate, 3,
-        "the 3 pinned source rings the writer normalises away must still be the only \
+        degenerate, 23,
+        "the 23 pinned coordinate-degenerate-ring drops must still be the only \
          non-header exclusions, got: {:#?}",
         non_header_excluded
     );
     assert_eq!(
         non_header_excluded.len(),
-        3,
+        23,
         "with appearance and instances now round-tripping, every non-header exclusion must be \
-         one of the 3 pinned degenerate-ring notes, nothing else, got: {:#?}",
+         one of the 23 pinned degenerate-ring notes, nothing else, got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -280,9 +334,10 @@ fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
     );
 }
 
-/// M4 task 11: delft carries no appearance, no GeometryInstances, and (in
-/// its unmutated form) no degenerate rings, so BOTH profiles must round-trip
-/// with no exclusions beyond delft's own documented header metadata members
+/// M4 task 11: delft carries no appearance and no GeometryInstances, so BOTH
+/// profiles must round-trip with no exclusions beyond delft's own documented
+/// header metadata members and the 16 pinned coordinate-degenerate-ring
+/// drops (see `delft_round_trips_losslessly` above for the full explanation)
 /// — the Compatibility profile writing (empty) sidecars must not introduce
 /// any new difference or exclusion relative to the Core round trip already
 /// proven by `delft_round_trips_losslessly`.
@@ -302,12 +357,26 @@ fn delft_compatibility_round_trips_losslessly_with_only_header_exclusions() {
         report.differences
     );
     assert!(report.differences.is_empty());
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    let degenerate = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    assert_eq!(
+        (degenerate, non_header_excluded.len()),
+        (16, 16),
+        "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
+         drops (8 objects, source + export side each; see `delft_round_trips_losslessly` for \
+         the full explanation), got: {:#?}",
+        non_header_excluded
+    );
     assert!(
-        report
-            .excluded
-            .iter()
-            .all(|e| e.starts_with("header: metadata member")),
-        "delft's only exclusions must be documented header metadata members, got: {:#?}",
+        !header_excluded.is_empty(),
+        "delft's header sets metadata members; expected at least one documented header-metadata \
+         exclusion, got none. Full excluded: {:#?}",
         report.excluded
     );
 }
@@ -467,12 +536,26 @@ fn delft_by_type_round_trips_losslessly() {
         report.differences
     );
     assert!(report.differences.is_empty());
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    let degenerate = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    assert_eq!(
+        (degenerate, non_header_excluded.len()),
+        (16, 16),
+        "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
+         drops (8 objects, source + export side each; see `delft_round_trips_losslessly` for \
+         the full explanation), got: {:#?}",
+        non_header_excluded
+    );
     assert!(
-        report
-            .excluded
-            .iter()
-            .all(|e| e.starts_with("header: metadata member")),
-        "delft's only exclusions must be documented header metadata members, got: {:#?}",
+        !header_excluded.is_empty(),
+        "delft's header sets metadata members; expected at least one documented header-metadata \
+         exclusion, got none. Full excluded: {:#?}",
         report.excluded
     );
 }
@@ -523,8 +606,8 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (3, 3),
-        "the 3 pinned source rings the writer normalises away must still be the only \
+        (23, 23),
+        "the 23 pinned coordinate-degenerate-ring drops must still be the only \
          non-header exclusions, got: {:#?}",
         non_header_excluded
     );
@@ -569,12 +652,26 @@ fn delft_hilbert_and_by_type_compose_and_round_trip_losslessly() {
         report.differences
     );
     assert!(report.differences.is_empty());
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    let degenerate = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    assert_eq!(
+        (degenerate, non_header_excluded.len()),
+        (16, 16),
+        "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
+         drops (8 objects, source + export side each; see `delft_round_trips_losslessly` for \
+         the full explanation), got: {:#?}",
+        non_header_excluded
+    );
     assert!(
-        report
-            .excluded
-            .iter()
-            .all(|e| e.starts_with("header: metadata member")),
-        "delft's only exclusions must be documented header metadata members, got: {:#?}",
+        !header_excluded.is_empty(),
+        "delft's header sets metadata members; expected at least one documented header-metadata \
+         exclusion, got none. Full excluded: {:#?}",
         report.excluded
     );
 }

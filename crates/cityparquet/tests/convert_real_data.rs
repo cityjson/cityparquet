@@ -751,21 +751,47 @@ fn hilbert_ordering_never_changes_delft_semantics() {
         report.differences
     );
     assert!(report.differences.is_empty());
-    assert!(
-        report
-            .excluded
-            .iter()
-            .all(|e| e.starts_with("header: metadata member")),
+
+    // Pinned counts updated alongside the comparator's coordinate-degenerate
+    // ring fix (3DBAG tile `9-284-556.city.json` finding, see
+    // `crate::compare`'s module docs): delft's real, UNMUTATED source data
+    // turns out to carry 8 objects whose LoD boundaries include a ring with
+    // index-distinct but coordinate-identical vertices — previously
+    // invisible to the INDEX-only degenerate check, now correctly dropped
+    // (and logged as excluded) on both the source and the exported side.
+    // This is not a regression: `report.equal`/`differences.is_empty()`
+    // above still hold, proving the round trip stays lossless; only the
+    // exclusion log grew to record real, previously-silent normalisation.
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    let degenerate = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    assert_eq!(
+        (degenerate, non_header_excluded.len()),
+        (16, 16),
         "Hilbert ordering must not introduce any new exclusion beyond delft's usual header \
-         metadata members, got: {:#?}",
+         metadata members and the 16 pinned coordinate-degenerate-ring drops (8 objects, \
+         source + export side each), got: {:#?}",
+        non_header_excluded
+    );
+    assert!(
+        !header_excluded.is_empty(),
+        "delft's header sets metadata members; expected at least one documented header-metadata \
+         exclusion, got none. Full excluded: {:#?}",
         report.excluded
     );
 }
 
 /// Same headline gate as `hilbert_ordering_never_changes_delft_semantics`,
-/// for railway (Compatibility profile — the M4 headline round trip): the 3
-/// documented degenerate-ring drops and header-metadata exclusions are the
-/// ONLY exclusions, exactly as
+/// for railway (Compatibility profile — the M4 headline round trip): the 23
+/// documented degenerate-ring drops (updated alongside the comparator's
+/// coordinate-degenerate fix — see the comment in
+/// `hilbert_ordering_never_changes_delft_semantics` above) and
+/// header-metadata exclusions are the ONLY exclusions, exactly as
 /// `roundtrip_real_data.rs::railway_compatibility_round_trips_losslessly_with_no_exclusions`
 /// pins for `RowOrder::Source`.
 #[test]
@@ -808,8 +834,8 @@ fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (3, 3),
-        "the only non-header exclusions must be the 3 pinned degenerate-ring drops, got: {:#?}",
+        (23, 23),
+        "the only non-header exclusions must be the 23 pinned degenerate-ring drops, got: {:#?}",
         non_header_excluded
     );
     assert!(

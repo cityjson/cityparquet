@@ -52,14 +52,15 @@ bench-all:
     cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
         --input tests/fixtures/lod3_railway.city.json --out bench/results/railway.csv
     ./scripts/bench_duckdb.sh tests/fixtures/lod3_railway.city.json bench/results/railway.csv
-    # --skip-roundtrip: object NL.IMBAG.Pand.0503100000025101-0 (lod 2.2)
-    # fails the export+compare round-trip check on this tile — a single
-    # degenerate-face realignment mismatch, documented as a known
-    # limitation in bench/README.md. Conversion itself succeeds; only the
-    # correctness re-check is skipped here (roundtrip_equal is left empty
-    # in the CSV, per the harness's own convention for --skip-roundtrip).
+    # object NL.IMBAG.Pand.0503100000025101-0 (lod 2.2) used to fail the
+    # export+compare round-trip check on this tile: a 3-index exterior ring
+    # whose distinct vertex indices all quantise to one coordinate, a blind
+    # spot in the comparator's (INDEX-only) degenerate-ring normalisation.
+    # Resolved by extending the comparator to also drop coordinate-degenerate
+    # rings (see crate::compare's module docs); the round trip is now checked
+    # like every other dataset, no --skip-roundtrip.
     cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
-        --input bench/data/9-284-556.city.json --out bench/results/9-284-556.csv --skip-roundtrip
+        --input bench/data/9-284-556.city.json --out bench/results/9-284-556.csv
     ./scripts/bench_duckdb.sh bench/data/9-284-556.city.json bench/results/9-284-556.csv
     cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
         --input bench/data/9-304-532.city.json --out bench/results/9-304-532.csv
