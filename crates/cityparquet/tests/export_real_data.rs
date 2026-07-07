@@ -506,30 +506,38 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
         "the recount in decode_real_data.rs: exactly 15 objects carry a template"
     );
 
-    // (d) walk template 0's first ring through both the rebuilt and source
-    // boundary trees and compare coordinates bitwise; index identity is NOT
-    // required (the rebuilt vertices-templates pool may assign different
-    // positions), only coordinate identity.
+    // (d) walk EVERY template's first ring (all 3 of railway's templates are
+    // MultiSurface-shaped, per the fixture) through both the rebuilt and
+    // source boundary trees and compare coordinates bitwise; index identity
+    // is NOT required (the rebuilt vertices-templates pool may assign
+    // different positions), only coordinate identity. Widened from
+    // template 0 only (the controller's M4 task 10 review) so a bug
+    // isolated to template 1 or 2's own coordinate rewrite can't hide behind
+    // template 0 happening to round-trip correctly.
     let rebuilt_verts: Vec<Vec<f64>> =
         serde_json::from_value(rebuilt_templates.vertices_templates.clone()).unwrap();
-    let rebuilt_boundaries: Vec<Vec<Vec<usize>>> =
-        serde_json::from_value(rebuilt_templates.templates[0].boundaries.clone())
-            .expect("template 0 must be a MultiSurface-shaped boundary tree");
-    let source_boundaries: Vec<Vec<Vec<usize>>> =
-        serde_json::from_value(source_templates.templates[0].boundaries.clone()).unwrap();
-    let rebuilt_ring0 = &rebuilt_boundaries[0][0];
-    let source_ring0 = &source_boundaries[0][0];
-    assert_eq!(
-        rebuilt_ring0.len(),
-        source_ring0.len(),
-        "template 0's first ring must keep its source vertex count"
-    );
-    for (i, &rebuilt_idx) in rebuilt_ring0.iter().enumerate() {
-        let source_idx = source_ring0[i];
+    for t in 0..source_templates.templates.len() {
+        let rebuilt_boundaries: Vec<Vec<Vec<usize>>> =
+            serde_json::from_value(rebuilt_templates.templates[t].boundaries.clone())
+                .unwrap_or_else(|e| {
+                    panic!("template {t} must be a MultiSurface-shaped boundary tree: {e}")
+                });
+        let source_boundaries: Vec<Vec<Vec<usize>>> =
+            serde_json::from_value(source_templates.templates[t].boundaries.clone()).unwrap();
+        let rebuilt_ring0 = &rebuilt_boundaries[0][0];
+        let source_ring0 = &source_boundaries[0][0];
         assert_eq!(
-            rebuilt_verts[rebuilt_idx], source_verts[source_idx],
-            "template 0 ring vertex {i}: rebuilt coordinate must equal the source's bitwise"
+            rebuilt_ring0.len(),
+            source_ring0.len(),
+            "template {t}'s first ring must keep its source vertex count"
         );
+        for (i, &rebuilt_idx) in rebuilt_ring0.iter().enumerate() {
+            let source_idx = source_ring0[i];
+            assert_eq!(
+                rebuilt_verts[rebuilt_idx], source_verts[source_idx],
+                "template {t} ring vertex {i}: rebuilt coordinate must equal the source's bitwise"
+            );
+        }
     }
 }
 
