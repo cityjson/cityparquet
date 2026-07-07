@@ -89,6 +89,47 @@ fn convert_with_overwrite_succeeds() {
     assert!(out.path().join("metadata.json").exists());
 }
 
+/// M4 task 11 (Step 3): the `convert` report line gains 3 fields
+/// (`materials_written textures_written templates_written`), appended after
+/// the 6 fields it already printed. Exercised against a Compatibility
+/// convert of railway, whose sidecar counts are pinned elsewhere (85/34/3 —
+/// `railway_compatibility_convert_writes_materials_and_textures_sidecars` in
+/// `crates/cityparquet/tests/convert_real_data.rs`).
+#[test]
+fn convert_compatibility_reports_sidecar_counts() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let output = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("lod3_railway.city.json"))
+        .arg(out.path())
+        .arg("--profile")
+        .arg("compatibility")
+        .output()
+        .expect("failed to run convert");
+
+    assert!(
+        output.status.success(),
+        "convert command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = stdout.split_whitespace().collect();
+    assert_eq!(
+        parts.len(),
+        9,
+        "convert should print 9 space-separated values (6 original + 3 sidecar counts), got: {}",
+        stdout
+    );
+    assert_eq!(
+        &parts[6..9],
+        &["85", "34", "3"],
+        "the 3 new trailing fields must be materials_written textures_written \
+         templates_written in that order, got: {}",
+        stdout
+    );
+}
+
 #[test]
 fn export_package_to_cityjsonl() {
     let package_dir = tempfile::tempdir().unwrap();

@@ -121,13 +121,16 @@ fn main() -> std::process::ExitCode {
             match convert(&opts) {
                 Ok(report) => {
                     println!(
-                        "{} {} {} {} {} {}",
+                        "{} {} {} {} {} {} {} {} {}",
                         report.object_count,
                         report.files.len(),
                         report.skipped_same_lod_geometries,
                         report.attribute_coercion_nulls,
                         report.degenerate_rings_dropped,
-                        report.degenerate_surfaces_dropped
+                        report.degenerate_surfaces_dropped,
+                        report.materials_written,
+                        report.textures_written,
+                        report.templates_written
                     );
                     std::process::ExitCode::SUCCESS
                 }
