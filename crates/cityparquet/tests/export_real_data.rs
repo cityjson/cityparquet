@@ -3,10 +3,12 @@
 
 use std::path::PathBuf;
 
+use cityparquet::CityParquetError;
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Profile;
+use cityparquet::sidecar::{read_templates, write_templates};
 use cityparquet::source::{Source, SourceFormat};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
@@ -539,6 +541,63 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
             );
         }
     }
+}
+
+/// Controller addition A (M4 task 10 review): a `template` reference that
+/// names a row `geometry_templates.parquet` no longer carries must be a
+/// `Schema` error naming both the dangling object and the missing template
+/// id — never a panic or a silently-dropped/fabricated geometry. Derived
+/// from a real converted railway package (sanctioned): the fixture's own
+/// python recount (`{0: 10, 1: 4, 2: 1}` GeometryInstance-per-template
+/// counts) confirms template id `"0"` is referenced by 10 real objects, so
+/// removing its sidecar row is guaranteed to hit the dangling-reference path
+/// on export, not silently succeed because nothing happened to reference it.
+#[test]
+fn export_errors_on_a_dangling_template_id_reference() {
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(
+        fixture("lod3_railway.city.json"),
+        package_dir.path().to_path_buf(),
+    );
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let templates_path = package_dir.path().join("geometry_templates.parquet");
+    let rows = read_templates(&templates_path).unwrap();
+    assert_eq!(
+        rows.len(),
+        3,
+        "railway must carry exactly 3 geometry templates (pinned elsewhere)"
+    );
+    let corrupted: Vec<_> = rows.into_iter().filter(|r| r.id != "0").collect();
+    assert_eq!(
+        corrupted.len(),
+        2,
+        "removing template id \"0\" must leave exactly the other 2 rows"
+    );
+    write_templates(&templates_path, &corrupted).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    let err = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output,
+    })
+    .unwrap_err();
+
+    assert!(
+        matches!(err, CityParquetError::Schema(_)),
+        "expected a Schema error, got {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("object "),
+        "the error must name the dangling object, got: {msg}"
+    );
+    assert!(
+        msg.contains("\"0\""),
+        "the error must name the missing template id \"0\", got: {msg}"
+    );
 }
 
 #[test]
