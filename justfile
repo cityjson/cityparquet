@@ -18,43 +18,23 @@ fixtures:
     curl -sSfo tests/fixtures/delft.city.jsonl https://storage.googleapis.com/cityjson/delft.city.jsonl
     curl -sSfo tests/fixtures/lod3_railway.city.json https://storage.googleapis.com/cityjson/lod3_railway.city.json
 
-# Benchmark every CityJSON/CityJSONSeq file found under FOLDER (recursive;
-# default tests/fixtures), writing one bench/results/<name>.csv per input
-# where <name> is the input's basename minus its .city.jsonl/.city.json/
-# .jsonl/.json extension. Each CSV is removed first so a re-run is clean
-# (the `bench` harness appends when the CSV already exists). This runs only
-# the cityparquet-rs variant matrix, not the DuckDB baseline (see bench-all).
-bench-fixtures FOLDER='tests/fixtures':
-    #!/usr/bin/env bash
-    set -euo pipefail
-    mkdir -p bench/results
-    found=0
-    while IFS= read -r -d '' f; do
-        base="$(basename "$f")"
-        name="${base%.city.jsonl}"; name="${name%.city.json}"
-        name="${name%.jsonl}"; name="${name%.json}"
-        out="bench/results/${name}.csv"
-        echo ">> ${f} -> ${out}"
-        rm -f "$out"
-        cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
-            --input "$f" --out "$out"
-        found=$((found + 1))
-    done < <(find "{{FOLDER}}" -type f \
-        \( -name '*.json' -o -name '*.jsonl' \) ! -name 'metadata.json' -print0 \
-        | sort -z)
-    if [[ "$found" -eq 0 ]]; then
-        echo "bench-fixtures: no CityJSON/CityJSONSeq files found under {{FOLDER}}" >&2
-        exit 1
-    fi
-    echo "bench-fixtures: ${found} file(s) processed"
+interop:
+    ./scripts/interop.sh
 
-# Convert every CityJSON/CityJSONSeq file found under FOLDER (recursive;
-# default tests/fixtures) into a CityParquet package under OUT (default
-# out/cityparquet), one OUT/<name>/ package directory per input where
-# <name> is the input's basename minus its .city.jsonl/.city.json/.jsonl/
-# .json extension. PROFILE is core (default) or compatibility. Existing
-# packages of the same name are overwritten.
-convert-all FOLDER='tests/fixtures' OUT='out/cityparquet' PROFILE='core':
+# Fetch the CityJSON benchmark corpus (11 CityJSONSeq datasets, ~1.7 GiB)
+# from gs://cityjson/benchmark_dataset/ into DEST (default
+# bench/data/benchmark/, gitignored). Needs gsutil; network-dependent; kept
+# OUT of `just check`/CI. Verifies each file's byte size after download (see
+# scripts/fetch_benchmark.sh).
+fetch-data DEST='bench/data/benchmark':
+    ./scripts/fetch_benchmark.sh {{DEST}}
+
+# Convert every CityJSON/CityJSONSeq file found under FOLDER (recursive)
+# into a CityParquet package under OUT (default out/cityparquet), one
+# OUT/<name>/ package directory per input where <name> is the input's
+# basename minus its .city.jsonl/.city.json/.jsonl/.json extension (core
+# profile; existing packages of the same name are overwritten).
+convert-all FOLDER OUT='out/cityparquet':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}"
@@ -64,9 +44,9 @@ convert-all FOLDER='tests/fixtures' OUT='out/cityparquet' PROFILE='core':
         name="${base%.city.jsonl}"; name="${name%.city.json}"
         name="${name%.jsonl}"; name="${name%.json}"
         dest="{{OUT}}/${name}"
-        echo ">> ${f} -> ${dest} (profile {{PROFILE}})"
+        echo ">> ${f} -> ${dest}"
         cargo run --release -p cityparquet-cli --bin cityparquet -- convert \
-            "$f" "$dest" --profile "{{PROFILE}}" --overwrite
+            "$f" "$dest" --overwrite
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
         \( -name '*.json' -o -name '*.jsonl' \) ! -name 'metadata.json' -print0 \
@@ -77,123 +57,108 @@ convert-all FOLDER='tests/fixtures' OUT='out/cityparquet' PROFILE='core':
     fi
     echo "convert-all: ${found} file(s) converted into {{OUT}}"
 
-interop:
-    ./scripts/interop.sh
+# Cross-format READ benchmark (see bench/READ_BENCHMARK.md): for every
+# CityJSON/CityJSONSeq file found under FOLDER (recursive), prepare every
+# compared format (parquet/hilbert/fcb/gz, `scripts/readbench_prepare.sh`),
+# run the `cityparquet-readbench` coordinator across the whole (format x
+# scenario) matrix into one OUT/<name>.csv, then append the `duckdb-parquet`
+# SQL-engine baseline to the SAME csv (`scripts/readbench_duckdb.sh`),
+# auto-detecting a numeric attribute column via a `DESCRIBE` query where
+# possible (omitted, skipping attr-stats, if none is found). Each
+# OUT/<name>.csv is removed first so a re-run is always clean. Once every
+# dataset is done, renders charts from the CSVs via the `plot` recipe
+# (best-effort: a missing `uv`/plotting setup doesn't fail the benchmark
+# run, only skips the charts). Needs `fcb`+`duckdb` on PATH; network-
+# independent given already-fetched inputs; kept OUT of `just check`/CI.
+bench FOLDER OUT='bench/read_results':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{OUT}}" bench/data/readbench
+    found=0
+    while IFS= read -r -d '' f; do
+        base="$(basename "$f")"
+        name="${base%.city.jsonl}"; name="${name%.city.json}"
+        name="${name%.jsonl}"; name="${name%.json}"
+        out="{{OUT}}/${name}.csv"
+        echo ">> ${f} -> ${out}"
+        rm -f "$out"
 
-bench-baseline INPUT CSV:
-    ./scripts/bench_duckdb.sh {{INPUT}} {{CSV}}
+        ./scripts/readbench_prepare.sh "$f" bench/data/readbench
 
-# Prepare the per-format read-benchmark inputs for INPUT: a core-profile and
-# a Hilbert-ordered CityParquet package, an FCB file (spatial + all-attribute
-# index), and a gzip of the original, all under OUTDIR (default
-# bench/data/readbench/, gitignored). Idempotent; needs `fcb` on PATH;
-# network-independent but local-CLI-dependent, so kept OUT of `just
-# check`/CI like the other bench-* recipes.
-readbench-prepare INPUT OUTDIR='bench/data/readbench':
-    ./scripts/readbench_prepare.sh {{INPUT}} {{OUTDIR}}
+        cargo run --release -p cityparquet-readbench -- run \
+            --input "$f" \
+            --prepared-dir bench/data/readbench \
+            --out "$out" \
+            --repeat 7
 
-# DuckDB-over-Parquet SQL-engine baseline (Task 12): appends `duckdb-parquet`
-# rows for the SQL-expressible scenarios (count/full-read/bbox-query/
-# attr-filter/attr-stats/project) to OUT_CSV, querying PARQUET_PKG's own
-# `cityobjects.parquet` main table directly (no CityJSON extension, no
-# LOAD needed). PARQUET_PKG is a package produced by `just readbench-prepare`
-# or `cityparquet convert`; OUT_CSV is the SAME CSV the
-# `cityparquet-readbench` coordinator writes (header must match exactly).
-# Pass `--numeric-column COL` (a real Int64/Float64 attribute column) to
-# also emit the attr-stats row; `--repeat N` overrides the default of 5.
-# Local-only: needs `duckdb` + `python3` on PATH; kept OUT of `just
-# check`/CI.
-readbench-baseline PARQUET_PKG OUT_CSV *ARGS:
-    ./scripts/readbench_duckdb.sh {{PARQUET_PKG}} {{OUT_CSV}} {{ARGS}}
+        pkg="bench/data/readbench/${name}.parquet"
+        numeric_col="$(duckdb -csv -noheader -c "
+            SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${pkg}/cityobjects.parquet'))
+            WHERE column_type IN ('BIGINT', 'DOUBLE')
+              AND column_name NOT IN ('id', 'feature_id', 'object_type', 'parents',
+                'children', 'children_roles', 'bbox', 'material', 'texture',
+                'template', 'other')
+              AND column_name NOT LIKE 'geometry_lod%'
+              AND column_name NOT LIKE 'geometry_properties_lod%'
+            ORDER BY column_name LIMIT 1;
+        " 2>/dev/null || true)"
 
-# Fetch the 3 pinned 3DBAG tiles (dense-urban/suburban/rural) into
-# bench/data/ (gitignored). Network-dependent; kept OUT of `just check`/CI.
-bench-data:
-    ./scripts/fetch_3dbag.sh
+        if [[ -n "$numeric_col" ]]; then
+            echo "-- numeric attribute column for attr-stats: ${numeric_col}"
+            ./scripts/readbench_duckdb.sh "$pkg" "$out" --numeric-column "$numeric_col" --repeat 7
+        else
+            echo "-- no numeric attribute column detected; skipping attr-stats for duckdb-parquet"
+            ./scripts/readbench_duckdb.sh "$pkg" "$out" --repeat 7
+        fi
 
-# Fetch the CityJSON benchmark corpus (11 CityJSONSeq datasets, ~1.7 GiB)
-# from gs://cityjson/benchmark_dataset/ into bench/data/benchmark/
-# (gitignored). Needs gsutil; network-dependent; kept OUT of `just check`/CI.
-bench-corpus:
-    ./scripts/fetch_benchmark.sh
+        found=$((found + 1))
+    done < <(find "{{FOLDER}}" -type f \
+        \( -name '*.json' -o -name '*.jsonl' \) ! -name 'metadata.json' -print0 \
+        | sort -z)
+    if [[ "$found" -eq 0 ]]; then
+        echo "bench: no CityJSON/CityJSONSeq files found under {{FOLDER}}" >&2
+        exit 1
+    fi
+    echo "bench: ${found} file(s) benchmarked into {{OUT}}"
 
-# Full M5 benchmark run: fixtures + the 3 pinned 3DBAG tiles, each through
-# `cityparquet bench` (default 10-variant set, repeat=5) and the DuckDB
-# `COPY` baseline, into one CSV per dataset under bench/results/. Requires
-# `just bench-data` to have populated bench/data/ first. Network-dependent
-# (duckdb baseline installs the `cityjson` community extension); kept OUT
-# of `just check`/CI.
-bench-all:
-    mkdir -p bench/results
-    rm -f bench/results/delft.csv bench/results/railway.csv \
-        bench/results/9-284-556.csv bench/results/9-304-532.csv bench/results/9-196-328.csv
-    cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
-        --input tests/fixtures/delft.city.jsonl --out bench/results/delft.csv
-    ./scripts/bench_duckdb.sh tests/fixtures/delft.city.jsonl bench/results/delft.csv
-    cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
-        --input tests/fixtures/lod3_railway.city.json --out bench/results/railway.csv
-    ./scripts/bench_duckdb.sh tests/fixtures/lod3_railway.city.json bench/results/railway.csv
-    # object NL.IMBAG.Pand.0503100000025101-0 (lod 2.2) used to fail the
-    # export+compare round-trip check on this tile: a 3-index exterior ring
-    # whose distinct vertex indices all quantise to one coordinate, a blind
-    # spot in the comparator's (INDEX-only) degenerate-ring normalisation.
-    # Resolved by extending the comparator to also drop coordinate-degenerate
-    # rings (see crate::compare's module docs); the round trip is now checked
-    # like every other dataset, no --skip-roundtrip.
-    cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
-        --input bench/data/9-284-556.city.json --out bench/results/9-284-556.csv
-    ./scripts/bench_duckdb.sh bench/data/9-284-556.city.json bench/results/9-284-556.csv
-    cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
-        --input bench/data/9-304-532.city.json --out bench/results/9-304-532.csv
-    ./scripts/bench_duckdb.sh bench/data/9-304-532.city.json bench/results/9-304-532.csv
-    cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
-        --input bench/data/9-196-328.city.json --out bench/results/9-196-328.csv
-    ./scripts/bench_duckdb.sh bench/data/9-196-328.city.json bench/results/9-196-328.csv
+    just plot "{{OUT}}" || echo "plot skipped (uv not available)"
 
-# Full READ-benchmark run (see bench/READ_BENCHMARK.md): for each of the two
-# committed CityJSON fixtures, `readbench-prepare` it (parquet/hilbert/fcb/
-# gz artefacts under bench/data/readbench/), run the `cityparquet-readbench`
-# coordinator across every format x scenario into one bench/read_results/
-# <name>.csv, then append the `duckdb-parquet` SQL-baseline rows to the SAME
-# CSV via `readbench_duckdb.sh`. Mirrors `bench-all`'s structure (its read-
-# side counterpart) — one hardcoded block per dataset, CSV removed first so
-# a re-run is always clean. REPEAT overrides the coordinator's own default
-# of 7 warm repeats (also forwarded to the DuckDB baseline's own median).
-#
-# `lod3_railway.city.json` has no numeric attribute column at all (every
-# attribute is a string), so its `readbench_duckdb.sh` call omits
-# `--numeric-column` — the attr-stats scenario is skipped for it everywhere,
-# consistent with the coordinator's own `pick_numeric_attribute` (logged on
-# stderr, never fabricated); delft's is `oorspronkelijkbouwjaar` (Int64,
-# confirmed in `crates/cityparquet/tests/query_real_data.rs`).
-#
-# Requires `just fixtures` first (network). Needs `fcb`+`duckdb` on PATH;
-# network-dependent (readbench-prepare's `fcb ser`, `cityparquet convert`
-# read the fixtures already on disk, but the DuckDB baseline autoloads its
-# spatial extension on first use); kept OUT of `just check`/CI like the
-# other bench-* recipes. `--cold` (one purged-cache FullRead per format) is
-# a separate, manual, one-at-a-time invocation of `cityparquet-readbench run
-# --cold` per the coordinator's own `sudo purge` prompt — deliberately not
-# automated in this bulk recipe (see bench/READ_BENCHMARK.md's warm/cold
-# protocol). Task 14 extends this recipe (or calls readbench-prepare/
-# readbench-baseline directly, as this recipe does per-dataset below) with
-# the wider corpus spread (Ingolstadt/Vienna/3DBAG) once fetched.
-readbench-all REPEAT='7':
-    mkdir -p bench/read_results bench/data/readbench
-    rm -f bench/read_results/delft.csv bench/read_results/railway.csv
-    ./scripts/readbench_prepare.sh tests/fixtures/delft.city.jsonl bench/data/readbench
-    cargo run --release -p cityparquet-readbench -- run \
-        --input tests/fixtures/delft.city.jsonl \
-        --prepared-dir bench/data/readbench \
-        --out bench/read_results/delft.csv \
-        --repeat {{REPEAT}}
-    ./scripts/readbench_duckdb.sh bench/data/readbench/delft.parquet bench/read_results/delft.csv \
-        --numeric-column oorspronkelijkbouwjaar --repeat {{REPEAT}}
-    ./scripts/readbench_prepare.sh tests/fixtures/lod3_railway.city.json bench/data/readbench
-    cargo run --release -p cityparquet-readbench -- run \
-        --input tests/fixtures/lod3_railway.city.json \
-        --prepared-dir bench/data/readbench \
-        --out bench/read_results/railway.csv \
-        --repeat {{REPEAT}}
-    ./scripts/readbench_duckdb.sh bench/data/readbench/lod3_railway.parquet bench/read_results/railway.csv \
-        --repeat {{REPEAT}}
+# Encoding-variant WRITE benchmark (M5): for every CityJSON/CityJSONSeq file
+# found under FOLDER (recursive), run the `cityparquet bench` variant matrix
+# and append the DuckDB `COPY` baseline into one OUT/<name>.csv. Each
+# OUT/<name>.csv is removed first so a re-run is always clean.
+# Network-dependent (the DuckDB baseline installs the `cityjson` community
+# extension); kept OUT of `just check`/CI.
+write-bench FOLDER OUT='bench/results':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{OUT}}"
+    found=0
+    while IFS= read -r -d '' f; do
+        base="$(basename "$f")"
+        name="${base%.city.jsonl}"; name="${name%.city.json}"
+        name="${name%.jsonl}"; name="${name%.json}"
+        out="{{OUT}}/${name}.csv"
+        echo ">> ${f} -> ${out}"
+        rm -f "$out"
+
+        cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
+            --input "$f" --out "$out"
+        ./scripts/bench_duckdb.sh "$f" "$out"
+
+        found=$((found + 1))
+    done < <(find "{{FOLDER}}" -type f \
+        \( -name '*.json' -o -name '*.jsonl' \) ! -name 'metadata.json' -print0 \
+        | sort -z)
+    if [[ "$found" -eq 0 ]]; then
+        echo "write-bench: no CityJSON/CityJSONSeq files found under {{FOLDER}}" >&2
+        exit 1
+    fi
+    echo "write-bench: ${found} file(s) benchmarked into {{OUT}}"
+
+# Render charts from the read-benchmark CSVs in RESULTS (default
+# bench/read_results) via the `bench/plot` uv project: a grouped bar chart
+# of median time_s and one of peak_heap_bytes per scenario x format, one PNG
+# pair per dataset CSV, under RESULTS/plots/. Needs `uv` on PATH.
+plot RESULTS='bench/read_results':
+    uv run --project bench/plot python -m readbench_plot {{RESULTS}}

@@ -1,0 +1,40 @@
+[project]
+name = "readbench-plot"
+version = "0.1.0"
+description = "Chart the cityparquet-rs cross-format read-benchmark result CSVs."
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.9",
+    "pandas>=2.3",
+]
+
+[project.scripts]
+readbench-plot = "readbench_plot.__main__:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "B",
+    "E",
+    "F",
+    "I",
+    "RUF",
+    "SIM",
+    "UP",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

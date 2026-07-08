@@ -5,9 +5,10 @@
 # Helsinki) used as the M5+ real-data benchmark inputs alongside the three
 # pinned 3DBAG tiles (scripts/fetch_3dbag.sh).
 #
-# Downloaded to bench/data/benchmark/ (the whole of bench/data/ is
-# gitignored — see .gitignore). Reproducibility beats freshness: the object
-# names and their byte sizes below are the snapshot taken 2026-07-08 from
+# Downloaded to DEST (default bench/data/benchmark/, an optional first
+# argument; the whole of bench/data/ is gitignored — see .gitignore).
+# Reproducibility beats freshness: the object names and their byte sizes
+# below are the snapshot taken 2026-07-08 from
 # `gsutil ls -l gs://cityjson/benchmark_dataset/`. Each file's size is
 # verified after download; a mismatch hard-fails rather than silently
 # benchmarking against different bytes.
@@ -17,7 +18,12 @@
 # (the bucket is public; no auth required).
 set -euo pipefail
 
-DATA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bench/data/benchmark"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEST=${1:-bench/data/benchmark}
+case "$DEST" in
+  /*) DATA_DIR="$DEST" ;;
+  *) DATA_DIR="$REPO_ROOT/$DEST" ;;
+esac
 BUCKET="gs://cityjson/benchmark_dataset"
 mkdir -p "$DATA_DIR"
 

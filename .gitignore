@@ -30,3 +30,13 @@ target
 
 # CityParquet packages produced by `just convert-all` (default OUT root)
 /out/
+
+# Generated read-benchmark charts (`just plot`/`just bench`) — the
+# committed inputs are the CSVs under bench/read_results/, not these PNGs.
+/bench/**/plots/
+
+# bench/plot/'s own uv-managed venv + Python bytecode cache — its source
+# (pyproject.toml, *.py, uv.lock) IS committed.
+/bench/plot/.venv/
+**/__pycache__/
+
