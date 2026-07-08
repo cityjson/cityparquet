@@ -234,6 +234,37 @@ each cold number stands alone, one per format, one `full-read` only.
    lower bound for the scanning formats and read the *mechanism* column, not
    the raw number, as the honest comparison.
 
+10. **`time_s` is end-to-end read latency, not isolated query compute.** The
+    timed window is the whole per-format `run()` call, which INCLUDES opening
+    the file, reading Parquet/FlatCityBuf metadata or the CityJSONSeq header,
+    and (for CityParquet full-read/id-lookup) a metadata open — not only the
+    query kernel. This is deliberate and consistent across every format (each
+    pays its own open+read), and it is what a caller issuing a one-shot query
+    against a file actually experiences; but it means a sub-millisecond
+    `time_s` for a metadata-only scenario (`count`) is dominated by file-open,
+    not query work. Interpret the numbers as end-to-end single-query latency,
+    not a pure in-memory kernel micro-benchmark.
+
+11. **FlatCityBuf index assumptions and gzip scope (known limitations).** The
+    FlatCityBuf runner uses FCB's native indexes (`select_query` for bbox,
+    `select_attr_query` for attribute/id), which requires the `.fcb` to carry
+    a spatial index (default) and an attribute index (`fcb ser -A`, which
+    `readbench-prepare` always passes). If an index query errors, the runner
+    falls back to a full scan and logs it to stderr — the committed runs used
+    fully-indexed `.fcb` files and did not fall back, but a future run should
+    surface any fallback in the CSV `notes` so an index-vs-scan measurement is
+    never silently mislabelled. The `cityjsonseq-gz` runner fully supports
+    CityJSONSeq and single-line whole-document `.city.json.gz` (the form the
+    committed fixtures use); a *pretty-printed* multi-line whole-document
+    `.city.json.gz` is not yet handled (it needs the fuller sniff
+    `cityparquet::source::Source::open` already implements). External review
+    (Codex, 2026-07-08) confirmed the query primitives, bbox prune + row-level
+    filter, and allocator placement correct; its two flagged "dictionary"
+    criticals were verified FALSE POSITIVES — `TypedDictionaryArray::value(i)`
+    resolves the row's key, and the committed `attr-filter(object_type)` run
+    over 2231 rows with ~4 distinct types would have panicked at row 4 had the
+    alleged raw-index reading been real.
+
 ## Environment
 
 Captured 2026-07-08 (the machine this milestone's committed
