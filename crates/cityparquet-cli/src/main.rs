@@ -63,8 +63,8 @@ enum Commands {
 
         /// Table layout for the main CityObject data: "single" (one
         /// cityobjects.parquet, every profile's default before M5) or
-        /// "by-type" (one cityobjects_<type>.parquet table per distinct
-        /// object_type value).
+        /// "by-type" (one <type>.parquet table per distinct object_type
+        /// value, e.g. building.parquet).
         #[arg(long, default_value = "single")]
         layout: String,
     },

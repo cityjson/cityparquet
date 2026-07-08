@@ -322,8 +322,8 @@ fn convert_with_by_type_layout_writes_per_type_tables() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!out.path().join("cityobjects.parquet").exists());
-    assert!(out.path().join("cityobjects_building.parquet").exists());
-    assert!(out.path().join("cityobjects_buildingpart.parquet").exists());
+    assert!(out.path().join("building.parquet").exists());
+    assert!(out.path().join("buildingpart.parquet").exists());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(

@@ -39,6 +39,19 @@ const CITYOBJECTS_TABLE: &str = "cityobjects.parquet";
 const MATERIALS_TABLE: &str = "materials.parquet";
 const TEXTURES_TABLE: &str = "textures.parquet";
 const TEMPLATES_TABLE: &str = "geometry_templates.parquet";
+/// Files a by-type object table's derived name must never collide with —
+/// the single-layout table plus every package sidecar/metadata file. Since
+/// `table_name_for_type` no longer namespaces object tables under a
+/// `cityobjects_` prefix (Task 4), this guard is the invariant that keeps a
+/// pathological object type from shadowing a reserved file — enforced at
+/// [`TableWriters::by_type_table_index`].
+const RESERVED_PACKAGE_FILES: &[&str] = &[
+    CITYOBJECTS_TABLE,
+    MATERIALS_TABLE,
+    TEXTURES_TABLE,
+    TEMPLATES_TABLE,
+    "metadata.json",
+];
 /// Scratch directory a `convert` run writes every new file into before the
 /// crash-safe commit swap (see [`commit_package`]) — hidden (dot-prefixed) so
 /// it never shows up as a stray "extra file" to a casual directory listing,
@@ -76,12 +89,15 @@ pub enum RowOrder {
 /// writes every object into the one [`CITYOBJECTS_TABLE`], exactly as every
 /// milestone before M5 did. [`Self::ByType`] instead writes one table PER
 /// DISTINCT `object_type` value the dataset contains — file name
-/// `cityobjects_<snake>.parquet`, `<snake>` being the type lower-cased with
-/// every non-alphanumeric character replaced by `_`, and a leading `+`
-/// (CityJSON extension object types) rewritten to the prefix `ext_` rather
-/// than folded into an ugly leading underscore (e.g. `+Foo` becomes
-/// `cityobjects_ext_foo.parquet`, never `cityobjects__foo.parquet`) — see
-/// [`table_name_for_type`]. Every table this produces shares the IDENTICAL
+/// `<snake>.parquet` (Task 4 dropped the `cityobjects_` prefix these used to
+/// carry), `<snake>` being the type lower-cased with every non-alphanumeric
+/// character replaced by `_`, and a leading `+` (CityJSON extension object
+/// types) rewritten to the prefix `ext_` rather than folded into an ugly
+/// leading underscore (e.g. `+Foo` becomes `ext_foo.parquet`, never
+/// `_foo.parquet`) — see [`table_name_for_type`]. A derived name that would
+/// collide with a package sidecar/metadata file (see
+/// [`RESERVED_PACKAGE_FILES`]) is rejected as an error rather than silently
+/// overwriting that file. Every table this produces shares the IDENTICAL
 /// Arrow schema (no per-type column pruning — a different, out-of-scope
 /// experiment): only which ROWS land in which file differs, decided purely
 /// by each row's own `object_type`. [`PackageManifest::tables`] lists every
@@ -428,10 +444,15 @@ fn hilbert_ordered_features(
     Ok(keyed.into_iter().map(|(_, f)| f).collect())
 }
 
-/// The `cityobjects_<snake>.parquet` file name [`TableLayout::ByType`] writes
-/// for `object_type` — see [`TableLayout::ByType`]'s own doc comment for the
+/// The `<snake>.parquet` file name [`TableLayout::ByType`] writes for
+/// `object_type` — see [`TableLayout::ByType`]'s own doc comment for the
 /// exact rule (lower-case, non-alphanumeric -> `_`, a leading `+` becomes the
-/// prefix `ext_` rather than folding into the snake-cased body).
+/// prefix `ext_` rather than folding into the snake-cased body). Task 4
+/// dropped the `cityobjects_` prefix this used to carry; callers that open a
+/// writer for the result MUST check it against [`RESERVED_PACKAGE_FILES`]
+/// first (see [`TableWriters::by_type_table_index`]), since the dropped
+/// prefix removed the namespace that previously made a collision with a
+/// sidecar/metadata file impossible.
 fn table_name_for_type(object_type: &str) -> String {
     let (prefix, body) = match object_type.strip_prefix('+') {
         Some(rest) => ("ext_", rest),
@@ -447,7 +468,7 @@ fn table_name_for_type(object_type: &str) -> String {
             }
         })
         .collect();
-    format!("cityobjects_{prefix}{snake}.parquet")
+    format!("{prefix}{snake}.parquet")
 }
 
 /// The boolean mask selecting exactly the rows of `batch` whose
@@ -538,7 +559,7 @@ struct TableWriters {
     /// [`table_name_for_type`] is lossy (case-folding, `_`-folding, the
     /// `ext_` prefix), so two DISTINCT object types can derive the same
     /// file name (e.g. a literal type `"Ext_A"` and the extension type
-    /// `"+A"` both become `cityobjects_ext_a.parquet`) — silently sharing
+    /// `"+A"` both become `ext_a.parquet`) — silently sharing
     /// the writer would merge them into one table, violating the
     /// one-table-per-type invariant. [`Self::by_type_table_index`] consults
     /// this to turn any such collision into a `Schema` error instead.
@@ -593,8 +614,19 @@ impl TableWriters {
     /// object type deriving an already-claimed name is a hard `Schema` error
     /// naming both types and the colliding file — never a silent merge of
     /// two distinct types into one table (see [`Self::claimed_by`]).
+    /// Task 4's reserved-name guard runs first: since by-type tables are no
+    /// longer namespaced under a `cityobjects_` prefix, a pathological
+    /// object type could otherwise derive a name that shadows a package
+    /// sidecar/metadata file (see [`RESERVED_PACKAGE_FILES`]) — reject that
+    /// as a clear error instead of silently overwriting the sidecar.
     fn by_type_table_index(&mut self, object_type: &str) -> Result<usize> {
         let name = table_name_for_type(object_type);
+        if RESERVED_PACKAGE_FILES.contains(&name.as_str()) {
+            return Err(err(format!(
+                "object type {object_type:?} maps to reserved package file {name:?}; \
+                 rename the type or use --layout single"
+            )));
+        }
         match self.claimed_by.get(&name) {
             Some(claimant) if claimant == object_type => Ok(self.index[&name]),
             Some(claimant) => Err(err(format!(
@@ -779,7 +811,7 @@ fn write_package(
     // is last-wins), then close every writer — see `TableWriters::finish`.
     // `table_names` is every main-table file this run actually opened, in
     // first-appearance order: `[CITYOBJECTS_TABLE]` under `TableLayout::Single`,
-    // one `cityobjects_<type>.parquet` per distinct `object_type` under
+    // one `<type>.parquet` per distinct `object_type` under
     // `TableLayout::ByType`.
     let table_names = writers.finish(&sidecar_files_written)?;
     // M5 Codex review (Important finding 1): `TableLayout::ByType` opens
@@ -992,9 +1024,9 @@ mod tests {
 
     /// M5 review follow-up (Important): [`table_name_for_type`] is lossy, so
     /// the literal type `"Ext_A"` and the extension type `"+A"` both derive
-    /// `cityobjects_ext_a.parquet` — the writer bookkeeping must reject that
-    /// collision as a `Schema` error naming both types and the colliding
-    /// file, never silently merge two distinct object types into one table.
+    /// `ext_a.parquet` — the writer bookkeeping must reject that collision as
+    /// a `Schema` error naming both types and the colliding file, never
+    /// silently merge two distinct object types into one table.
     #[test]
     fn by_type_write_rejects_two_object_types_deriving_the_same_table_name() {
         // Precondition the whole scenario rests on: the two types really do
@@ -1022,9 +1054,7 @@ mod tests {
         );
         let msg = e.to_string();
         assert!(
-            msg.contains("Ext_A")
-                && msg.contains("+A")
-                && msg.contains("cityobjects_ext_a.parquet"),
+            msg.contains("Ext_A") && msg.contains("+A") && msg.contains("ext_a.parquet"),
             "the error must name both colliding types and the derived file, got: {msg}"
         );
 
@@ -1044,7 +1074,7 @@ mod tests {
             .write_batch(&object_type_only_batch(&["+A"]))
             .unwrap();
         let tables = ok_writers.finish(&[]).unwrap();
-        assert_eq!(tables, vec!["cityobjects_ext_a.parquet".to_string()]);
+        assert_eq!(tables, vec!["ext_a.parquet".to_string()]);
     }
 
     /// M5 review follow-up (Minor b): an all-null `object_type` batch must
@@ -1073,30 +1103,36 @@ mod tests {
         assert!(e.to_string().contains("must not be null"), "got: {e}");
     }
 
-    /// M5 task 5: the `cityobjects_<snake>.parquet` naming rule, including
-    /// the leading-`+` (CityJSON extension type) case neither shipped
-    /// fixture exercises — pinned as a pure-function unit test since it
-    /// needs no real CityJSON at all.
+    /// Task 4: the `<snake>.parquet` naming rule (the `cityobjects_` prefix
+    /// dropped), including the leading-`+` (CityJSON extension type) case
+    /// neither shipped fixture exercises — pinned as a pure-function unit
+    /// test since it needs no real CityJSON at all.
     #[test]
-    fn table_name_for_type_snake_cases_and_prefixes_extension_types() {
+    fn by_type_table_name_drops_cityobjects_prefix() {
+        assert_eq!(table_name_for_type("Building"), "building.parquet");
+        assert_eq!(table_name_for_type("BuildingPart"), "buildingpart.parquet");
+        assert_eq!(table_name_for_type("+Foo"), "ext_foo.parquet");
         assert_eq!(
-            table_name_for_type("Building"),
-            "cityobjects_building.parquet"
+            table_name_for_type("+My Extension Type"),
+            "ext_my_extension_type.parquet"
         );
-        assert_eq!(
-            table_name_for_type("BuildingPart"),
-            "cityobjects_buildingpart.parquet"
-        );
-        assert_eq!(
-            table_name_for_type("+Foo"),
-            "cityobjects_ext_foo.parquet",
-            "a leading '+' must become the prefix 'ext_', not fold into a leading underscore"
-        );
-        assert_eq!(
-            table_name_for_type("+My Extension-Type"),
-            "cityobjects_ext_my_extension_type.parquet",
-            "every non-alphanumeric character (after stripping the leading '+') becomes '_'"
-        );
+    }
+
+    /// Task 4: dropping the `cityobjects_` prefix removes the namespace that
+    /// previously made a by-type file name colliding with a package
+    /// sidecar/metadata file (or the single-layout `cityobjects.parquet`)
+    /// impossible. No core object type actually snakes to a reserved name,
+    /// but this proves the invariant holds for the derived name so a future
+    /// reserved file can't silently regress it.
+    #[test]
+    fn by_type_table_name_never_collides_with_reserved_package_files() {
+        for reserved in RESERVED_PACKAGE_FILES {
+            assert_ne!(
+                table_name_for_type("Building"),
+                *reserved,
+                "a by-type object table must never shadow a package sidecar/metadata file"
+            );
+        }
     }
 
     /// M5 review follow-up: a mid-swap `rename` failure inside

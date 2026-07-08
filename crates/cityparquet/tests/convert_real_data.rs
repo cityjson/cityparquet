@@ -881,8 +881,8 @@ fn table_object_types_and_count(path: &std::path::Path) -> (HashSet<String>, usi
 
 /// M5 task 5 (Step 2, the pinned fixture facts): delft's only two
 /// `object_type` values are `Building`/`BuildingPart`, so `TableLayout::ByType`
-/// must write exactly `cityobjects_building.parquet` +
-/// `cityobjects_buildingpart.parquet`, nothing else. The FIRST-APPEARANCE
+/// must write exactly `building.parquet` +
+/// `buildingpart.parquet`, nothing else. The FIRST-APPEARANCE
 /// order pins `Building` before `BuildingPart`: `crate::encode`'s
 /// `BatchIter::advance` sorts each feature's CityObject ids lexicographically
 /// before encoding them (`ids.sort()`), and delft's building-part parent id
@@ -905,8 +905,8 @@ fn by_type_convert_of_delft_writes_exactly_the_two_pinned_type_tables() {
     assert_eq!(
         tables,
         vec![
-            "cityobjects_building.parquet".to_string(),
-            "cityobjects_buildingpart.parquet".to_string(),
+            "building.parquet".to_string(),
+            "buildingpart.parquet".to_string(),
         ],
         "expected exactly the two pinned tables in first-appearance order, got: {tables:?}"
     );
@@ -916,10 +916,10 @@ fn by_type_convert_of_delft_writes_exactly_the_two_pinned_type_tables() {
     }
 
     let (building_types, building_count) =
-        table_object_types_and_count(&out.path().join("cityobjects_building.parquet"));
+        table_object_types_and_count(&out.path().join("building.parquet"));
     assert_eq!(building_types, HashSet::from(["Building".to_string()]));
     let (part_types, part_count) =
-        table_object_types_and_count(&out.path().join("cityobjects_buildingpart.parquet"));
+        table_object_types_and_count(&out.path().join("buildingpart.parquet"));
     assert_eq!(part_types, HashSet::from(["BuildingPart".to_string()]));
     assert_eq!(
         building_count + part_count,
@@ -965,17 +965,17 @@ fn by_type_convert_of_delft_survives_many_small_batches() {
     assert_eq!(
         tables,
         vec![
-            "cityobjects_building.parquet".to_string(),
-            "cityobjects_buildingpart.parquet".to_string(),
+            "building.parquet".to_string(),
+            "buildingpart.parquet".to_string(),
         ],
         "the same two pinned tables, in the same first-appearance order, regardless of batching"
     );
 
     let (building_types, building_count) =
-        table_object_types_and_count(&out.path().join("cityobjects_building.parquet"));
+        table_object_types_and_count(&out.path().join("building.parquet"));
     assert_eq!(building_types, HashSet::from(["Building".to_string()]));
     let (part_types, part_count) =
-        table_object_types_and_count(&out.path().join("cityobjects_buildingpart.parquet"));
+        table_object_types_and_count(&out.path().join("buildingpart.parquet"));
     assert_eq!(part_types, HashSet::from(["BuildingPart".to_string()]));
     assert_eq!(
         building_count + part_count,
@@ -1093,7 +1093,7 @@ fn by_type_convert_of_railway_writes_fourteen_type_tables() {
         "WaterBody",
     ]
     .into_iter()
-    .map(|t| format!("cityobjects_{}.parquet", t.to_lowercase()))
+    .map(|t| format!("{}.parquet", t.to_lowercase()))
     .collect();
     let actual_names: HashSet<String> = tables.iter().cloned().collect();
     assert_eq!(actual_names, expected_names, "unexpected table name set");
