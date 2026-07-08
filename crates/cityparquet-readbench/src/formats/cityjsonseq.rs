@@ -38,7 +38,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use cityparquet::cjseq::{CityJSON, CityJSONFeature, CityObject, Transform};
+use cityparquet::cjseq::{CityJSON, CityJSONFeature, CityObject, SortingStrategy, Transform};
 use cityparquet::source::Source;
 use flate2::read::GzDecoder;
 
@@ -52,18 +52,46 @@ fn require<'a, T>(opt: &'a Option<T>, flag: &str, scenario: Scenario) -> Result<
         .ok_or_else(|| anyhow!("scenario '{scenario}' requires --{flag}"))
 }
 
-/// A gzip-compressed CityJSONSeq stream: `flate2::read::GzDecoder` has no
-/// seek support, so — like [`Source`]'s own plain-file handling — every
-/// [`GzSource::features`] call reopens and re-decompresses `path` from the
-/// start rather than trying to rewind a single decoder.
+/// A gzip-compressed CityJSONSeq stream — OR a gzip-compressed
+/// whole-document (single-object) CityJSON file, e.g.
+/// `readbench_prepare.sh`'s `gzip -9` of a `.city.json` input that was
+/// never CityJSONSeq to begin with (that script always names its gz
+/// artefact `<base>.jsonl.gz` regardless of the original's own extension,
+/// so the `.gz`-stripped name carries no reliable format signal). Mirrors
+/// [`Source::open`]'s own sniff: a document only counts as a real Seq
+/// stream when a further non-empty line actually follows the first one;
+/// a single-line whole CityJSON document (no trailing newline, as e.g.
+/// `lod3_railway.city.json` is) must NOT be misread as "header line, zero
+/// feature lines" — that misreading previously made every scenario
+/// silently return `0` for such an input (caught by the coordinator's own
+/// cross-format self-consistency check, never a crash), rather than the
+/// correct per-feature counts [`Source`]'s own whole-document fallback
+/// produces for the plain (non-gz) `cityjsonseq` runner.
+///
+/// `flate2::read::GzDecoder` has no seek support, so — like [`Source`]'s
+/// own plain-file handling — every [`GzSource::features`] call reopens and
+/// re-decompresses `path` from the start rather than trying to rewind a
+/// single decoder (except in the whole-document case, where the entire
+/// content is already held in `doc` from the one sniffing pass in
+/// [`GzSource::open`] — a second full decompression would be pure waste
+/// for a format that cannot stream line-by-line at all).
 struct GzSource {
     path: PathBuf,
     transform: Transform,
+    /// `Some` only for the whole-document (non-Seq) case: the fully parsed
+    /// document, pre-sorted for deterministic feature emission (matches
+    /// [`Source`]'s own `CityJson`-variant field).
+    doc: Option<CityJSON>,
 }
 
 impl GzSource {
-    /// Decompresses just far enough to read and parse the header (first)
-    /// line, never the whole stream.
+    /// For a genuine CityJSONSeq stream, decompresses just far enough to
+    /// read the header (first) line plus proof that a further non-empty
+    /// line follows it, never the whole stream. For a whole-document
+    /// CityJSON gz (no second line), the first `read_line` call already
+    /// reads to EOF (there is no newline to stop at), so no extra
+    /// decompression pass is needed to recover the full content — it is
+    /// already sitting in `first_line`.
     fn open(path: &Path) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
         let mut reader = BufReader::new(GzDecoder::new(file));
@@ -71,24 +99,57 @@ impl GzSource {
         reader
             .read_line(&mut first_line)
             .with_context(|| format!("reading gzip header line from {}", path.display()))?;
-        let first_line = first_line.trim_end_matches(['\n', '\r']);
-        let header = CityJSON::from_str(first_line)
-            .map_err(|e| anyhow!("invalid CityJSONSeq header in {}: {e}", path.display()))?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            transform: header.transform,
-        })
+        let first_line = first_line.trim_end_matches(['\n', '\r']).to_string();
+
+        let mut has_more = false;
+        for line in reader.lines() {
+            let line = line.with_context(|| format!("reading {}", path.display()))?;
+            if !line.trim().is_empty() {
+                has_more = true;
+                break;
+            }
+        }
+
+        if has_more {
+            let header = CityJSON::from_str(&first_line)
+                .map_err(|e| anyhow!("invalid CityJSONSeq header in {}: {e}", path.display()))?;
+            Ok(Self {
+                path: path.to_path_buf(),
+                transform: header.transform,
+                doc: None,
+            })
+        } else {
+            let mut doc = CityJSON::from_str(&first_line)
+                .map_err(|e| anyhow!("invalid CityJSON in {}: {e}", path.display()))?;
+            doc.sort_cjfeatures(SortingStrategy::Lexicographical);
+            let transform = doc.transform.clone();
+            Ok(Self {
+                path: path.to_path_buf(),
+                transform,
+                doc: Some(doc),
+            })
+        }
     }
 
-    /// Reopens and re-decompresses `path`, skipping the header line, and
-    /// streams the remaining lines as [`CityJSONFeature`]s — never
-    /// collecting the whole stream into memory at once.
-    fn features(&self) -> Result<impl Iterator<Item = Result<CityJSONFeature>> + '_> {
+    /// For a real Seq stream: reopens and re-decompresses `path`, skipping
+    /// the header line, and streams the remaining lines as
+    /// [`CityJSONFeature`]s — never collecting the whole stream into memory
+    /// at once. For a whole-document gz (`self.doc` is `Some`): iterates the
+    /// already-parsed, pre-sorted document's own features via
+    /// [`CityJSON::get_cjfeature`] — the gz analogue of [`Source`]'s own
+    /// `FeatureIter::Doc`.
+    fn features(&self) -> Result<Box<dyn Iterator<Item = Result<CityJSONFeature>> + '_>> {
+        if let Some(doc) = &self.doc {
+            return Ok(Box::new(
+                (0..).map_while(move |i| doc.get_cjfeature(i)).map(Ok),
+            ));
+        }
+
         let file =
             File::open(&self.path).with_context(|| format!("reopening {}", self.path.display()))?;
         let mut lines = BufReader::new(GzDecoder::new(file)).lines();
         lines.next(); // skip the already-parsed header line
-        Ok(lines.filter_map(move |line| match line {
+        Ok(Box::new(lines.filter_map(move |line| match line {
             Err(e) => Some(Err(anyhow!("read error in {}: {e}", self.path.display()))),
             Ok(line) if line.trim().is_empty() => None,
             Ok(line) => Some(CityJSONFeature::from_str(&line).map_err(|e| {
@@ -97,7 +158,7 @@ impl GzSource {
                     self.path.display()
                 )
             })),
-        }))
+        })))
     }
 }
 
@@ -106,18 +167,20 @@ impl GzSource {
 /// [`CityJsonSeqRunner::run`] never needs an `if self.gzip` branch of its
 /// own.
 enum Backend {
-    /// Boxed since `Source` (2 KiB+, dominated by its parsed `CityJSON`
-    /// header) is far larger than `GzSource` — without boxing, clippy's
-    /// `large_enum_variant` flags every `Backend` value paying `Source`'s
-    /// size even on the `Gz` path.
+    /// Both variants are boxed: `Source` and `GzSource` are each 1 KiB+,
+    /// dominated by their own parsed `CityJSON` header (or, for a
+    /// whole-document gz input, `GzSource`'s own `doc: Option<CityJSON>`) —
+    /// without boxing, clippy's `large_enum_variant` flags every `Backend`
+    /// value paying the larger variant's size regardless of which one is
+    /// actually held.
     Plain(Box<Source>),
-    Gz(GzSource),
+    Gz(Box<GzSource>),
 }
 
 impl Backend {
     fn open(input: &Path, gzip: bool) -> Result<Self> {
         if gzip {
-            Ok(Backend::Gz(GzSource::open(input)?))
+            Ok(Backend::Gz(Box::new(GzSource::open(input)?)))
         } else {
             Ok(Backend::Plain(Box::new(
                 Source::open(input).map_err(|e| anyhow!(e))?,
@@ -138,7 +201,7 @@ impl Backend {
                 let iter = source.features().map_err(|e| anyhow!(e))?;
                 Ok(Box::new(iter.map(|r| r.map_err(|e| anyhow!(e)))))
             }
-            Backend::Gz(gz) => Ok(Box::new(gz.features()?)),
+            Backend::Gz(gz) => gz.features(),
         }
     }
 }

@@ -32,12 +32,18 @@ pub trait FormatRunner {
 
 /// Resolves `--format <name>` to its [`FormatRunner`]. `cityparquet`,
 /// `cityjsonseq`, `cityjsonseq-gz`, and `flatcitybuf` are implemented.
-/// `duckdb-parquet` is a SQL-engine baseline driven entirely by
-/// `scripts/readbench_duckdb.sh`; it is not, and never will be, a
-/// `--child` format.
+/// `cityparquet-hilbert` is an ALIAS for the same [`cityparquet::CityParquetRunner`]:
+/// the Hilbert-ordered package is still a plain CityParquet package on
+/// disk (same reader, same query primitives) — the only difference from
+/// `cityparquet` is WHICH artefact path the coordinator resolves
+/// `--input` to (`coordinator::resolve_format_artefact` already points
+/// `cityparquet-hilbert` at the `<name>-hilbert.parquet` package), so no
+/// separate runner type is needed here. `duckdb-parquet` is a SQL-engine
+/// baseline driven entirely by `scripts/readbench_duckdb.sh`; it is not,
+/// and never will be, a `--child` format.
 pub fn resolve(format: &str) -> Result<Box<dyn FormatRunner>> {
     match format {
-        "cityparquet" => Ok(Box::new(cityparquet::CityParquetRunner)),
+        "cityparquet" | "cityparquet-hilbert" => Ok(Box::new(cityparquet::CityParquetRunner)),
         "cityjsonseq" => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::plain())),
         "cityjsonseq-gz" => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::gzip())),
         "flatcitybuf" => Ok(Box::new(flatcitybuf::FlatCityBufRunner)),
@@ -46,8 +52,8 @@ pub fn resolve(format: &str) -> Result<Box<dyn FormatRunner>> {
              scripts/readbench_duckdb.sh, not this binary's --child path"
         ),
         other => bail!(
-            "unknown format '{other}'; expected one of: cityparquet, cityjsonseq, \
-             cityjsonseq-gz, flatcitybuf, duckdb-parquet"
+            "unknown format '{other}'; expected one of: cityparquet, cityparquet-hilbert, \
+             cityjsonseq, cityjsonseq-gz, flatcitybuf, duckdb-parquet"
         ),
     }
 }
@@ -59,6 +65,7 @@ mod tests {
     #[test]
     fn resolve_implemented_formats_succeed_and_others_error_cleanly() {
         assert!(resolve("cityparquet").is_ok());
+        assert!(resolve("cityparquet-hilbert").is_ok());
         assert!(resolve("cityjsonseq").is_ok());
         assert!(resolve("cityjsonseq-gz").is_ok());
         assert!(resolve("flatcitybuf").is_ok());
