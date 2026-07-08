@@ -518,10 +518,7 @@ fn delft_by_type_round_trips_losslessly() {
         TableLayout::ByType,
     );
     assert!(
-        package_dir
-            .path()
-            .join("building.parquet")
-            .exists(),
+        package_dir.path().join("building.parquet").exists(),
         "sanity: this must actually be a split-by-type package"
     );
     let report = compare_datasets(
@@ -633,10 +630,7 @@ fn delft_hilbert_and_by_type_compose_and_round_trip_losslessly() {
         TableLayout::ByType,
     );
     assert!(
-        package_dir
-            .path()
-            .join("building.parquet")
-            .exists(),
+        package_dir.path().join("building.parquet").exists(),
         "sanity: this must actually be a split-by-type package"
     );
     let report = compare_datasets(

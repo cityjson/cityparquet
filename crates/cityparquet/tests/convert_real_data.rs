@@ -1132,7 +1132,11 @@ fn default_convert_writes_plain_blob_geometry_no_geoarrow_no_geo_key() {
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
 
     // (a) No file-level GeoParquet `geo` key.
-    let kvs = builder.metadata().file_metadata().key_value_metadata().unwrap();
+    let kvs = builder
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .unwrap();
     assert!(
         !kvs.iter().any(|kv| kv.key == "geo"),
         "default (no --geoarrow) output must not carry the GeoParquet `geo` key"
@@ -1166,7 +1170,11 @@ fn geoarrow_opt_in_restores_tag_and_geo_key() {
     let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
 
-    let kvs = builder.metadata().file_metadata().key_value_metadata().unwrap();
+    let kvs = builder
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .unwrap();
     assert!(
         kvs.iter().any(|kv| kv.key == "geo"),
         "--geoarrow must write the `geo` key"
@@ -1179,7 +1187,10 @@ fn geoarrow_opt_in_restores_tag_and_geo_key() {
         .find(|f| f.name().starts_with("geometry_"))
         .unwrap();
     assert_eq!(
-        field.metadata().get("ARROW:extension:name").map(String::as_str),
+        field
+            .metadata()
+            .get("ARROW:extension:name")
+            .map(String::as_str),
         Some("geoarrow.wkb"),
         "--geoarrow must advertise geoarrow.wkb"
     );

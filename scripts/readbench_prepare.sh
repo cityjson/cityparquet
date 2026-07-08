@@ -85,7 +85,11 @@ if dir_is_valid "$PARQUET_OUT"; then
   echo "skip $PARQUET_OUT (already present)"
 else
   echo "-- convert -> $PARQUET_OUT"
-  "$CITYPARQUET" convert "$INPUT" "$PARQUET_OUT" --overwrite
+  # --layout single: the read-benchmark's CityParquetRunner locates a single
+  # `cityobjects.parquet` main table and rejects by-type packages, so the
+  # prep must pin single-table layout (by-type became the convert default in
+  # the geoarrow-toggle change).
+  "$CITYPARQUET" convert "$INPUT" "$PARQUET_OUT" --layout single --overwrite
 fi
 
 # 2. Hilbert-ordered CityParquet package.
@@ -93,7 +97,7 @@ if dir_is_valid "$HILBERT_OUT"; then
   echo "skip $HILBERT_OUT (already present)"
 else
   echo "-- convert --ordering hilbert -> $HILBERT_OUT"
-  "$CITYPARQUET" convert "$INPUT" "$HILBERT_OUT" --ordering hilbert --overwrite
+  "$CITYPARQUET" convert "$INPUT" "$HILBERT_OUT" --ordering hilbert --layout single --overwrite
 fi
 
 # 3. FlatCityBuf, spatial index (default-on) + all-attribute B+Tree index.

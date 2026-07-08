@@ -54,9 +54,7 @@ Source (CityJSON doc or CityJSONSeq stream)
                 │
                 ├─ recipe ─────► per-column WriterProperties (the benchmark variable)
                 │
-                └─ write ──────► building.parquet, … (by-type default; or
-                                 cityobjects.parquet with --layout single)
-                                 + sidecars + metadata.json
+                └─ write ──────► cityobjects.parquet + sidecars + metadata.json
 ```
 
 - **`source`** — `Source` unifies whole-document CityJSON and streaming

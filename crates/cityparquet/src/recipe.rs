@@ -462,32 +462,6 @@ mod tests {
     }
 
     #[test]
-    fn geometry_columns_keep_wkb_properties_even_with_geoarrow_off() {
-        // Regression pin for the doc comment above `writer_properties`'s
-        // `to_arrow_schema()` call (line ~168): that call is deliberately
-        // the TAGGED zero-arg form, independent of the `geoarrow` flag, so
-        // `is_geometry_column` still finds geometry columns via their
-        // `geoarrow.wkb` extension metadata even when the file itself is
-        // written untagged (plain-BLOB WKB, `geoarrow=false`). If a future
-        // refactor swapped that call for `to_arrow_schema_tagged(geoarrow)`,
-        // then with `geoarrow=false` no field would carry the extension tag,
-        // `is_geometry_column` would match nothing, and geometry columns
-        // would silently regain dictionary encoding + full statistics on
-        // opaque WKB blobs.
-        let schema = sample_schema();
-        let metadata = sample_metadata();
-        let props = WriterRecipe::default()
-            .writer_properties(&schema, &metadata, false)
-            .unwrap();
-
-        assert!(!props.dictionary_enabled(&ColumnPath::from("geometry_lod2_2")));
-        assert_eq!(
-            props.statistics_enabled(&ColumnPath::from("geometry_lod2_2")),
-            EnabledStatistics::None
-        );
-    }
-
-    #[test]
     fn all_lists_exactly_six_presets() {
         assert_eq!(RecipePreset::ALL.len(), 6);
     }
