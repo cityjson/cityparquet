@@ -143,13 +143,16 @@ impl CityParquetSchema {
         Ok(())
     }
 
-    fn geometry_field(&self, name: &str, lod: Option<&Lod>) -> Field {
-        let crs = match &self.crs {
-            Some(projjson) => Crs::from_projjson(projjson.clone()),
-            None => Crs::default(),
-        };
-        let wkb = WkbType::new(Arc::new(GeoMetadata::new(crs, None)));
-        let field = Field::new(name, DataType::Binary, true).with_extension_type(wkb);
+    fn geometry_field(&self, name: &str, lod: Option<&Lod>, geoarrow: bool) -> Field {
+        let mut field = Field::new(name, DataType::Binary, true);
+        if geoarrow {
+            let crs = match &self.crs {
+                Some(projjson) => Crs::from_projjson(projjson.clone()),
+                None => Crs::default(),
+            };
+            let wkb = WkbType::new(Arc::new(GeoMetadata::new(crs, None)));
+            field = field.with_extension_type(wkb);
+        }
         let mut field = reserved(field);
         if let Some(lod) = lod {
             field = with_meta(field, &[(LOD_KEY, &lod.to_string())]);
@@ -157,8 +160,11 @@ impl CityParquetSchema {
         field
     }
 
-    /// Render the Arrow schema, columns in spec order.
-    pub fn to_arrow_schema(&self) -> Result<Schema> {
+    /// Render the Arrow schema, columns in spec order. Geometry columns carry
+    /// the `geoarrow.wkb` extension type (and CRS) iff `geoarrow` — the write
+    /// path passes the caller's `--geoarrow` choice; every other caller wants
+    /// the self-describing (tagged) form.
+    pub fn to_arrow_schema_tagged(&self, geoarrow: bool) -> Result<Schema> {
         self.validate()?;
 
         let mut fields: Vec<Field> = vec![
@@ -176,7 +182,7 @@ impl CityParquetSchema {
         ];
 
         if self.lods.is_empty() {
-            fields.push(self.geometry_field("geometry", None));
+            fields.push(self.geometry_field("geometry", None, geoarrow));
             fields.push(with_meta(
                 json_field("geometry_properties", true).as_ref().clone(),
                 &[(ROLE_KEY, ROLE_RESERVED)],
@@ -184,7 +190,11 @@ impl CityParquetSchema {
         } else {
             for lod in &self.lods {
                 let suffix = lod.column_suffix();
-                fields.push(self.geometry_field(&format!("geometry_{suffix}"), Some(lod)));
+                fields.push(self.geometry_field(
+                    &format!("geometry_{suffix}"),
+                    Some(lod),
+                    geoarrow,
+                ));
                 fields.push(with_meta(
                     json_field(&format!("geometry_properties_{suffix}"), true)
                         .as_ref()
@@ -223,6 +233,13 @@ impl CityParquetSchema {
         }
 
         Ok(Schema::new(fields))
+    }
+
+    /// Tagged rendering — the self-describing GeoParquet/GeoArrow form every
+    /// non-write caller (reader schema rebuild, `column_lists`, recipe
+    /// geometry-column detection) expects.
+    pub fn to_arrow_schema(&self) -> Result<Schema> {
+        self.to_arrow_schema_tagged(true)
     }
 
     /// (reserved incl. geometry columns, attribute columns), derived from the
@@ -326,6 +343,47 @@ mod tests {
         // CRS travels in the extension metadata.
         let ext_meta = field.metadata().get("ARROW:extension:metadata").unwrap();
         assert!(ext_meta.contains("28992"));
+    }
+
+    #[test]
+    fn geometry_field_tag_is_toggleable() {
+        let schema = sample();
+
+        // Tagged (default zero-arg and explicit true): geoarrow.wkb present.
+        for tagged in [
+            schema.to_arrow_schema().unwrap(),
+            schema.to_arrow_schema_tagged(true).unwrap(),
+        ] {
+            let field = tagged.field_with_name("geometry_lod2_2").unwrap();
+            assert_eq!(
+                field
+                    .metadata()
+                    .get("ARROW:extension:name")
+                    .map(String::as_str),
+                Some("geoarrow.wkb"),
+                "tagged schema must advertise geoarrow.wkb"
+            );
+        }
+
+        // Untagged: NO geoarrow extension, but the binary type and the
+        // cityparquet role/lod metadata that decode relies on must survive.
+        let untagged = schema.to_arrow_schema_tagged(false).unwrap();
+        let field = untagged.field_with_name("geometry_lod2_2").unwrap();
+        assert_eq!(field.data_type(), &arrow_schema::DataType::Binary);
+        assert!(
+            !field.metadata().contains_key("ARROW:extension:name"),
+            "untagged geometry field must not advertise any Arrow extension type"
+        );
+        assert_eq!(
+            field.metadata().get("cityparquet:role").map(String::as_str),
+            Some("reserved"),
+            "role metadata must survive so decode still classifies the column"
+        );
+        assert_eq!(
+            field.metadata().get("cityparquet:lod").map(String::as_str),
+            Some("2.2"),
+            "lod metadata must survive"
+        );
     }
 
     #[test]

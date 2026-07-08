@@ -84,11 +84,14 @@ fn assert_every_texture_ring_valid(v: &Value, limit: usize) {
 #[test]
 fn delft_full_convert_round_trips_through_parquet() {
     let out = tempfile::tempdir().unwrap();
-    let report = convert(&ConvertOptions::new(
-        fixture("delft.city.jsonl"),
-        out.path().to_path_buf(),
-    ))
-    .unwrap();
+    // `geoarrow: true` here (rather than the library default of `false`,
+    // added in the geoarrow-opt-in change) preserves this test's original
+    // intent of checking a full GeoParquet-tagged round trip, including the
+    // `geo` key below; the untagged default is covered separately by
+    // `default_convert_writes_plain_blob_geometry_no_geoarrow_no_geo_key`.
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.geoarrow = true;
+    let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 2231);
 
     let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
@@ -878,8 +881,8 @@ fn table_object_types_and_count(path: &std::path::Path) -> (HashSet<String>, usi
 
 /// M5 task 5 (Step 2, the pinned fixture facts): delft's only two
 /// `object_type` values are `Building`/`BuildingPart`, so `TableLayout::ByType`
-/// must write exactly `cityobjects_building.parquet` +
-/// `cityobjects_buildingpart.parquet`, nothing else. The FIRST-APPEARANCE
+/// must write exactly `building.parquet` +
+/// `buildingpart.parquet`, nothing else. The FIRST-APPEARANCE
 /// order pins `Building` before `BuildingPart`: `crate::encode`'s
 /// `BatchIter::advance` sorts each feature's CityObject ids lexicographically
 /// before encoding them (`ids.sort()`), and delft's building-part parent id
@@ -902,8 +905,8 @@ fn by_type_convert_of_delft_writes_exactly_the_two_pinned_type_tables() {
     assert_eq!(
         tables,
         vec![
-            "cityobjects_building.parquet".to_string(),
-            "cityobjects_buildingpart.parquet".to_string(),
+            "building.parquet".to_string(),
+            "buildingpart.parquet".to_string(),
         ],
         "expected exactly the two pinned tables in first-appearance order, got: {tables:?}"
     );
@@ -913,10 +916,10 @@ fn by_type_convert_of_delft_writes_exactly_the_two_pinned_type_tables() {
     }
 
     let (building_types, building_count) =
-        table_object_types_and_count(&out.path().join("cityobjects_building.parquet"));
+        table_object_types_and_count(&out.path().join("building.parquet"));
     assert_eq!(building_types, HashSet::from(["Building".to_string()]));
     let (part_types, part_count) =
-        table_object_types_and_count(&out.path().join("cityobjects_buildingpart.parquet"));
+        table_object_types_and_count(&out.path().join("buildingpart.parquet"));
     assert_eq!(part_types, HashSet::from(["BuildingPart".to_string()]));
     assert_eq!(
         building_count + part_count,
@@ -962,17 +965,17 @@ fn by_type_convert_of_delft_survives_many_small_batches() {
     assert_eq!(
         tables,
         vec![
-            "cityobjects_building.parquet".to_string(),
-            "cityobjects_buildingpart.parquet".to_string(),
+            "building.parquet".to_string(),
+            "buildingpart.parquet".to_string(),
         ],
         "the same two pinned tables, in the same first-appearance order, regardless of batching"
     );
 
     let (building_types, building_count) =
-        table_object_types_and_count(&out.path().join("cityobjects_building.parquet"));
+        table_object_types_and_count(&out.path().join("building.parquet"));
     assert_eq!(building_types, HashSet::from(["Building".to_string()]));
     let (part_types, part_count) =
-        table_object_types_and_count(&out.path().join("cityobjects_buildingpart.parquet"));
+        table_object_types_and_count(&out.path().join("buildingpart.parquet"));
     assert_eq!(part_types, HashSet::from(["BuildingPart".to_string()]));
     assert_eq!(
         building_count + part_count,
@@ -1090,7 +1093,7 @@ fn by_type_convert_of_railway_writes_fourteen_type_tables() {
         "WaterBody",
     ]
     .into_iter()
-    .map(|t| format!("cityobjects_{}.parquet", t.to_lowercase()))
+    .map(|t| format!("{}.parquet", t.to_lowercase()))
     .collect();
     let actual_names: HashSet<String> = tables.iter().cloned().collect();
     assert_eq!(actual_names, expected_names, "unexpected table name set");
@@ -1110,5 +1113,74 @@ fn by_type_convert_of_railway_writes_fourteen_type_tables() {
     assert_eq!(
         total, 121,
         "row counts across every split table must sum to railway's full object count"
+    );
+}
+
+/// `ConvertOptions::geoarrow` defaults to `false` (`ConvertOptions::new`):
+/// DuckDB reads geometry columns as plain BLOB with zero setup. Neither the
+/// file-level GeoParquet `geo` key nor the `geoarrow.wkb` field extension is
+/// written unless a caller opts in.
+#[test]
+fn default_convert_writes_plain_blob_geometry_no_geoarrow_no_geo_key() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.layout = TableLayout::Single; // isolate this test from the layout change
+    opts.overwrite = true;
+    convert(&opts).unwrap();
+
+    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+
+    // (a) No file-level GeoParquet `geo` key.
+    let kvs = builder.metadata().file_metadata().key_value_metadata().unwrap();
+    assert!(
+        !kvs.iter().any(|kv| kv.key == "geo"),
+        "default (no --geoarrow) output must not carry the GeoParquet `geo` key"
+    );
+
+    // (b) Geometry field is plain Binary with no geoarrow extension.
+    let field = builder
+        .schema()
+        .fields()
+        .iter()
+        .find(|f| f.name().starts_with("geometry_"))
+        .expect("a geometry_<lod> column exists");
+    assert!(
+        !field.metadata().contains_key("ARROW:extension:name"),
+        "default output geometry column must not advertise geoarrow.wkb"
+    );
+}
+
+/// `ConvertOptions::geoarrow = true` restores the GeoParquet/GeoArrow
+/// self-description: the `geoarrow.wkb` field extension plus the file-level
+/// `geo` key, for GeoPandas/QGIS/GDAL interop.
+#[test]
+fn geoarrow_opt_in_restores_tag_and_geo_key() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.layout = TableLayout::Single;
+    opts.geoarrow = true;
+    opts.overwrite = true;
+    convert(&opts).unwrap();
+
+    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+
+    let kvs = builder.metadata().file_metadata().key_value_metadata().unwrap();
+    assert!(
+        kvs.iter().any(|kv| kv.key == "geo"),
+        "--geoarrow must write the `geo` key"
+    );
+
+    let field = builder
+        .schema()
+        .fields()
+        .iter()
+        .find(|f| f.name().starts_with("geometry_"))
+        .unwrap();
+    assert_eq!(
+        field.metadata().get("ARROW:extension:name").map(String::as_str),
+        Some("geoarrow.wkb"),
+        "--geoarrow must advertise geoarrow.wkb"
     );
 }

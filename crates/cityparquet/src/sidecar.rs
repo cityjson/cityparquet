@@ -685,9 +685,10 @@ mod tests {
     }
 
     fn canonical(v: &Value) -> String {
-        // serde_json's default Map is a BTreeMap, so `to_string` sorts
-        // object keys — a value-equality compare independent of member order.
-        v.to_string()
+        // Key-sorted (recursively) serialization: a value-equality compare
+        // independent of member order, and independent of serde_json's
+        // object-map type (see `crate::appearance::canonical_json_string`).
+        crate::appearance::canonical_json_string(v)
     }
 
     fn assert_defs_equal(actual: &[Value], expected: &[Value]) {

@@ -27,3 +27,6 @@ target
 # git; bench/results/*.csv and bench/README.md ARE committed — they are the
 # paper's measurement artefacts.
 /bench/data/
+
+# CityParquet packages produced by `just convert-all` (default OUT root)
+/out/

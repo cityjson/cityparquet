@@ -61,12 +61,19 @@ enum Commands {
         #[arg(long, default_value = "source")]
         ordering: String,
 
-        /// Table layout for the main CityObject data: "single" (one
-        /// cityobjects.parquet, every profile's default before M5) or
-        /// "by-type" (one cityobjects_<type>.parquet table per distinct
-        /// object_type value).
-        #[arg(long, default_value = "single")]
+        /// Table layout for the main CityObject data: "by-type" (default —
+        /// one file per object type, e.g. building.parquet / bridge.parquet)
+        /// or "single" (one cityobjects.parquet holding every type).
+        #[arg(long, default_value = "by-type")]
         layout: String,
+
+        /// Emit GeoParquet/GeoArrow self-description (the geoarrow.wkb field
+        /// extension + the file-level `geo` key). Off by default: default
+        /// output is plain-BLOB geometry that DuckDB `SELECT *` and the
+        /// three_d extension read directly. Pass this for GeoPandas/QGIS/
+        /// GDAL interop.
+        #[arg(long, default_value_t = false)]
+        geoarrow: bool,
     },
 
     /// Export CityParquet package back to CityJSON/CityJSONSeq
@@ -149,6 +156,7 @@ fn main() -> std::process::ExitCode {
             recipe,
             ordering,
             layout,
+            geoarrow,
         } => {
             // Parse the profile string
             let profile = match profile.as_str() {
@@ -216,6 +224,7 @@ fn main() -> std::process::ExitCode {
                 recipe,
                 ordering,
                 layout,
+                geoarrow,
             };
 
             match convert(&opts) {

@@ -1,0 +1,410 @@
+//! RED (readbench Task 11, Commit B): the COORDINATOR — `cityparquet-readbench
+//! run ...` — exercised only through the BUILT binary (never calling into
+//! `coordinator`'s internals directly), against a real prepared package
+//! built from `lod3_railway.city.json` (never inline artificial CityJSON).
+//!
+//! Prepares its own tiny "prepared dir" by converting the real fixture with
+//! `cityparquet::package::convert` directly (rather than shelling to
+//! `scripts/readbench_prepare.sh`/`fcb`, keeping this test network- and
+//! external-tool-independent) — exactly the `<x>.parquet` naming convention
+//! the real prep script uses (`readbench_prepare.sh`'s own doc comment), so
+//! the coordinator's artefact-location logic is exercised unmodified.
+
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
+use cityparquet::package::{ConvertOptions, convert};
+
+fn fixture(name: &str) -> PathBuf {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(name);
+    assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
+    p
+}
+
+/// Runs the built `cityparquet-readbench run ...` coordinator with `args`
+/// appended, asserting it exits successfully.
+fn run_coordinator(args: &[&str]) -> Output {
+    let output = Command::new(env!("CARGO_BIN_EXE_cityparquet-readbench"))
+        .arg("run")
+        .args(args)
+        .output()
+        .expect("failed to run the built cityparquet-readbench binary");
+    assert!(
+        output.status.success(),
+        "coordinator exited non-zero; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+/// One parsed CSV data row (never the header), split on `,` — every field
+/// used by this test is a simple identifier/number with no embedded comma,
+/// so a naive split is sufficient.
+struct Row {
+    fields: Vec<String>,
+}
+
+impl Row {
+    fn parse(line: &str) -> Self {
+        Self {
+            fields: line.split(',').map(str::to_string).collect(),
+        }
+    }
+    fn field(&self, name: &str) -> &str {
+        let index = CSV_COLUMNS
+            .iter()
+            .position(|c| *c == name)
+            .unwrap_or_else(|| panic!("unknown column '{name}'"));
+        &self.fields[index]
+    }
+}
+
+const CSV_COLUMNS: [&str; 11] = [
+    "dataset",
+    "format",
+    "scenario",
+    "selectivity",
+    "result_count",
+    "time_s",
+    "time_mad_s",
+    "peak_heap_bytes",
+    "peak_rss_bytes",
+    "repeat",
+    "notes",
+];
+
+const EXPECTED_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,\
+time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes";
+
+#[test]
+fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from_real_data() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("lod3_railway.city.json");
+
+    // The "prepared" cityparquet package, at the exact path/name convention
+    // `scripts/readbench_prepare.sh` produces: `<prepared_dir>/<base>.parquet`
+    // where `<base>` strips `.city.json`.
+    let package_dir = prepared.path().join("lod3_railway.parquet");
+    let report = convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    assert_eq!(report.object_count, 121);
+
+    let out_csv = prepared.path().join("out.csv");
+
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "2",
+        "--scenarios",
+        "count,bbox",
+        "--formats",
+        "cityparquet,cityjsonseq",
+    ]);
+
+    let csv_text = std::fs::read_to_string(&out_csv).expect("coordinator must write the CSV");
+    let mut lines = csv_text.lines();
+
+    assert_eq!(
+        lines.next().unwrap(),
+        EXPECTED_HEADER,
+        "the coordinator must write the exact CSV column contract"
+    );
+
+    let rows: Vec<Row> = lines.map(Row::parse).collect();
+    // 2 formats x (1 count row + 3 bbox-selectivity rows) = 8 data rows.
+    assert_eq!(
+        rows.len(),
+        8,
+        "expected 8 data rows (2 formats x (count + 3 bbox windows)), got {}: {csv_text}",
+        rows.len()
+    );
+
+    for row in &rows {
+        assert_eq!(row.field("dataset"), "lod3_railway.city.json");
+        assert!(
+            ["cityparquet", "cityjsonseq"].contains(&row.field("format")),
+            "unexpected format in row: {row_fields:?}",
+            row_fields = row.fields
+        );
+        assert!(
+            ["count", "bbox-query"].contains(&row.field("scenario")),
+            "unexpected scenario in row: {row_fields:?}",
+            row_fields = row.fields
+        );
+
+        let time_s: f64 = row
+            .field("time_s")
+            .parse()
+            .unwrap_or_else(|e| panic!("time_s '{}' must parse as f64: {e}", row.field("time_s")));
+        assert!(time_s >= 0.0, "time_s must be non-negative, got {time_s}");
+        let _time_mad_s: f64 = row.field("time_mad_s").parse().unwrap_or_else(|e| {
+            panic!(
+                "time_mad_s '{}' must parse as f64: {e}",
+                row.field("time_mad_s")
+            )
+        });
+        let _peak_heap_bytes: u64 = row.field("peak_heap_bytes").parse().unwrap_or_else(|e| {
+            panic!(
+                "peak_heap_bytes '{}' must parse as u64: {e}",
+                row.field("peak_heap_bytes")
+            )
+        });
+        let _peak_rss_bytes: u64 = row.field("peak_rss_bytes").parse().unwrap_or_else(|e| {
+            panic!(
+                "peak_rss_bytes '{}' must parse as u64: {e}",
+                row.field("peak_rss_bytes")
+            )
+        });
+        assert_eq!(row.field("repeat"), "2");
+
+        if row.field("scenario") == "count" {
+            assert_eq!(
+                row.field("selectivity"),
+                "",
+                "count's selectivity must be empty (N/A), got '{}'",
+                row.field("selectivity")
+            );
+        } else {
+            let selectivity: f64 = row.field("selectivity").parse().unwrap_or_else(|e| {
+                panic!(
+                    "bbox-query selectivity '{}' must parse as f64: {e}",
+                    row.field("selectivity")
+                )
+            });
+            assert!(
+                selectivity > 0.0 && selectivity <= 1.0,
+                "bbox-query selectivity must be in (0, 1] for this fixture/window set, got \
+                 {selectivity} (row: {row_fields:?})",
+                row_fields = row.fields
+            );
+        }
+    }
+
+    // Exactly one `count` row per format, three `bbox-query` rows per format
+    // (1%/5%/25%), each tagged in `notes`.
+    for format in ["cityparquet", "cityjsonseq"] {
+        let count_rows: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.field("format") == format && r.field("scenario") == "count")
+            .collect();
+        assert_eq!(
+            count_rows.len(),
+            1,
+            "expected exactly 1 count row for {format}"
+        );
+
+        let bbox_rows: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.field("format") == format && r.field("scenario") == "bbox-query")
+            .collect();
+        assert_eq!(
+            bbox_rows.len(),
+            3,
+            "expected exactly 3 bbox-query rows (1pct/5pct/25pct) for {format}"
+        );
+        let tags: Vec<&str> = bbox_rows.iter().map(|r| r.field("notes")).collect();
+        assert!(
+            tags.contains(&"bbox-1pct"),
+            "missing bbox-1pct row: {tags:?}"
+        );
+        assert!(
+            tags.contains(&"bbox-5pct"),
+            "missing bbox-5pct row: {tags:?}"
+        );
+        assert!(
+            tags.contains(&"bbox-25pct"),
+            "missing bbox-25pct row: {tags:?}"
+        );
+    }
+}
+
+#[test]
+fn run_requires_repeat_at_least_one() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("lod3_railway.city.json");
+    let package_dir = prepared.path().join("lod3_railway.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    let out_csv = prepared.path().join("out.csv");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cityparquet-readbench"))
+        .arg("run")
+        .args([
+            "--input",
+            input.to_str().unwrap(),
+            "--prepared-dir",
+            prepared.path().to_str().unwrap(),
+            "--out",
+            out_csv.to_str().unwrap(),
+            "--repeat",
+            "0",
+            "--scenarios",
+            "count",
+            "--formats",
+            "cityparquet",
+        ])
+        .output()
+        .expect("failed to run the built cityparquet-readbench binary");
+
+    assert!(
+        !output.status.success(),
+        "--repeat 0 must be rejected, not silently accepted"
+    );
+}
+
+#[test]
+fn run_skips_a_format_with_no_prepared_artefact_and_still_produces_the_other() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("lod3_railway.city.json");
+    let package_dir = prepared.path().join("lod3_railway.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    let out_csv = prepared.path().join("out.csv");
+
+    // `flatcitybuf`'s .fcb artefact was never prepared in this tempdir.
+    let output = run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet,flatcitybuf",
+    ]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("flatcitybuf") && stderr.contains("readbench-prepare"),
+        "expected a clear skip note for the missing flatcitybuf artefact; stderr:\n{stderr}"
+    );
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "only cityparquet's count row should be present when flatcitybuf's artefact is missing"
+    );
+    assert_eq!(rows[0].field("format"), "cityparquet");
+}
+
+/// Object-level scenarios (`AttrFilter`/`AttrStats`/`Project`/`IdLookup`) are
+/// CityObject-level for EVERY format (see `coordinator`'s own module doc),
+/// so their selectivity denominator must be the dataset-global CityObject
+/// total — the `cityparquet` package's own `Count` — shared across every
+/// format, never a per-format total. On `delft.city.jsonl`,
+/// `cityjsonseq`'s own `Count` is 1115 (feature-level: one line per
+/// top-level `Building`), while `AttrFilter(object_type == "BuildingPart")`
+/// is 1116 (CityObject-level: `BuildingPart`s are children flattened out of
+/// their parent `Building` features) — dividing the object-level numerator
+/// by the feature-level `cityjsonseq` total therefore yields `1116/1115 ≈
+/// 1.0009`, a selectivity > 1.0, which is nonsensical and was the pre-fix
+/// bug this test pins down as GREEN (it would fail RED against the
+/// unfixed coordinator, which used `total_count_for(format, path)` — each
+/// format's OWN count — as the denominator for every non-BBoxQuery
+/// scenario).
+#[test]
+fn attr_filter_selectivity_uses_the_shared_cityparquet_object_total_as_denominator() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+
+    let package_dir = prepared.path().join("delft.parquet");
+    let report = convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    // The dataset-global CityObject total (parents AND children) —
+    // `crates/cityparquet/tests/query_real_data.rs` pins the same known
+    // split: `BuildingPart: 1116`, `Building: 1115`, `1116 + 1115 = 2231`.
+    assert_eq!(
+        report.object_count, 2231,
+        "delft.city.jsonl's known CityObject total"
+    );
+
+    let out_csv = prepared.path().join("out.csv");
+
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "attr-filter",
+        "--formats",
+        "cityparquet,cityjsonseq",
+    ]);
+
+    let csv_text = std::fs::read_to_string(&out_csv).expect("coordinator must write the CSV");
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(
+        rows.len(),
+        2,
+        "expected exactly one attr-filter row per format, got {}: {csv_text}",
+        rows.len()
+    );
+
+    let cityparquet_row = rows
+        .iter()
+        .find(|r| r.field("format") == "cityparquet")
+        .expect("missing cityparquet row");
+    let cityjsonseq_row = rows
+        .iter()
+        .find(|r| r.field("format") == "cityjsonseq")
+        .expect("missing cityjsonseq row");
+
+    // Both formats agree on the CityObject-level result_count — this
+    // scenario's grain is identical across formats (the coordinator's own
+    // self-consistency check covers this too, but pin it here as the
+    // premise the denominator assertion below depends on).
+    let cp_count: u64 = cityparquet_row.field("result_count").parse().unwrap();
+    let cjseq_count: u64 = cityjsonseq_row.field("result_count").parse().unwrap();
+    assert_eq!(
+        cp_count, cjseq_count,
+        "AttrFilter(object_type) result_count must match across formats (both CityObject-level)"
+    );
+    assert_eq!(
+        cp_count, 1116,
+        "delft.city.jsonl's known BuildingPart count"
+    );
+
+    let cp_selectivity: f64 = cityparquet_row.field("selectivity").parse().unwrap();
+    let cjseq_selectivity: f64 = cityjsonseq_row.field("selectivity").parse().unwrap();
+
+    for (label, selectivity) in [
+        ("cityparquet", cp_selectivity),
+        ("cityjsonseq", cjseq_selectivity),
+    ] {
+        assert!(
+            selectivity > 0.0 && selectivity <= 1.0,
+            "{label}'s AttrFilter selectivity must be in (0, 1], got {selectivity} \
+             (pre-fix cityjsonseq value would be 1116/1115 ≈ 1.0009)"
+        );
+    }
+
+    // Same numerator (1116) over the SAME shared denominator (2231, the
+    // cityparquet package's own object total) must produce identical
+    // selectivity for both formats — proving the denominator is no longer
+    // per-format.
+    assert!(
+        (cp_selectivity - cjseq_selectivity).abs() < 1e-6,
+        "expected identical selectivity for both formats (same numerator, same shared \
+         denominator), got cityparquet={cp_selectivity} cityjsonseq={cjseq_selectivity}"
+    );
+    let expected = cp_count as f64 / report.object_count as f64;
+    assert!(
+        (cp_selectivity - expected).abs() < 1e-6,
+        "expected selectivity == result_count / cityparquet object total \
+         ({cp_count}/{}) = {expected}, got {cp_selectivity}",
+        report.object_count
+    );
+}

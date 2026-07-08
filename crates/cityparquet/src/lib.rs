@@ -7,6 +7,7 @@ pub mod encode;
 pub mod export;
 pub mod order;
 pub mod package;
+pub mod query;
 pub mod reader;
 pub mod recipe;
 pub mod scan;

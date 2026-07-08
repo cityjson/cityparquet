@@ -1,0 +1,34 @@
+[package]
+name = "cityparquet-readbench"
+description = "Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParquet, etc.)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "cityparquet-readbench"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+cityparquet = { path = "../cityparquet" }
+cityparquet-schema = { workspace = true }
+fcb_core = { workspace = true }
+# fcb_core 0.7's own `CityJSONFeature`/`CityObject` types come from this
+# crate (published as `cjseq2`, distinct from the `cjseq` 0.4 crate
+# `cityparquet`/this crate's own `cityjsonseq` runner uses) — pinned to the
+# exact version `fcb_core` 0.7.6 itself depends on.
+cjseq2 = "0.1.0"
+peak_alloc = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+flate2 = "1"
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true }
+libc = "0.2"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }

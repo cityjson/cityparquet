@@ -17,6 +17,8 @@ fn convert_delft_to_tempdir_succeeds() {
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
         .arg(out.path())
+        .arg("--layout")
+        .arg("single")
         .output()
         .expect("failed to run convert");
 
@@ -71,6 +73,8 @@ fn convert_with_overwrite_succeeds() {
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
         .arg(out.path())
+        .arg("--layout")
+        .arg("single")
         .status()
         .expect("failed to run first convert");
     assert!(status.success());
@@ -81,6 +85,8 @@ fn convert_with_overwrite_succeeds() {
         .arg(fixture("delft.city.jsonl"))
         .arg(out.path())
         .arg("--overwrite")
+        .arg("--layout")
+        .arg("single")
         .status()
         .expect("failed to run second convert");
 
@@ -322,8 +328,8 @@ fn convert_with_by_type_layout_writes_per_type_tables() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!out.path().join("cityobjects.parquet").exists());
-    assert!(out.path().join("cityobjects_building.parquet").exists());
-    assert!(out.path().join("cityobjects_buildingpart.parquet").exists());
+    assert!(out.path().join("building.parquet").exists());
+    assert!(out.path().join("buildingpart.parquet").exists());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -353,4 +359,57 @@ fn convert_with_an_invalid_layout_fails() {
         stderr.contains("invalid layout"),
         "expected an invalid-layout error, got: {stderr}"
     );
+}
+
+/// M5 task 5: the CLI's `--layout` default flips to `by-type`, so a plain
+/// `convert` with no `--layout` flag now writes delft's per-type tables
+/// (delft contains Building objects → building.parquet) and must not emit
+/// the single `cityobjects.parquet`.
+#[test]
+fn convert_defaults_to_by_type_layout_named_without_prefix() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let output = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg(out.path())
+        .output()
+        .expect("failed to run convert");
+
+    assert!(
+        output.status.success(),
+        "convert command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        out.path().join("building.parquet").exists(),
+        "default layout is by-type"
+    );
+    assert!(
+        !out.path().join("cityobjects.parquet").exists(),
+        "by-type default must not emit the single cityobjects.parquet"
+    );
+}
+
+/// Passing `--layout single` explicitly still opts back into the single
+/// `cityobjects.parquet` table.
+#[test]
+fn convert_layout_single_still_emits_cityobjects_parquet() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let output = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg(out.path())
+        .arg("--layout")
+        .arg("single")
+        .output()
+        .expect("failed to run convert");
+
+    assert!(
+        output.status.success(),
+        "convert --layout single failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out.path().join("cityobjects.parquet").exists());
 }
