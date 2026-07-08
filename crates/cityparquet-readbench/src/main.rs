@@ -54,8 +54,10 @@ struct Cli {
     #[arg(long)]
     attr_column: Option<String>,
 
-    /// Equality predicate value for `attr-filter` (parsed as a number when
-    /// possible, else kept as a string).
+    /// Equality predicate value for `attr-filter`: ALWAYS a string
+    /// comparison (see `build_attr_pred`'s own doc comment) — numeric
+    /// equality is not supported via this flag; use `--attr-ge`/`--attr-le`
+    /// (together, a closed range) for numeric predicates.
     #[arg(long)]
     attr_eq: Option<String>,
 
@@ -137,18 +139,42 @@ fn run(cli: Cli) -> Result<()> {
 }
 
 /// Builds a single [`AttrPred`] from the `--attr-eq`/`--attr-ge`/`--attr-le`
-/// flags: `--attr-eq` alone (parsed as a JSON number when it looks like
-/// one, else kept as a string); `--attr-ge`+`--attr-le` together become a
-/// closed [`AttrPred::Range`]; either alone becomes [`AttrPred::Ge`]/
+/// flags: `--attr-eq` alone always becomes [`AttrPred::Eq`] of a JSON
+/// STRING — never coerced to a number, even when `raw` looks numeric (e.g.
+/// `--attr-eq 1070`) — because numeric equality is not what `--attr-eq`
+/// means; `--attr-ge`+`--attr-le` together become a closed
+/// [`AttrPred::Range`]; either alone becomes [`AttrPred::Ge`]/
 /// [`AttrPred::Le`]; none of the three yields `None` (scenarios that need a
 /// predicate report their own missing-flag error later, in the runner).
+///
+/// **Why string-only, never numeric, equality.** Before this fix, a
+/// numeric-looking `--attr-eq` value was eagerly parsed into a JSON number,
+/// which silently broke equality against STRING-typed numeric attribute
+/// codes — common in real CityJSON data (e.g. `lod3_railway.city.json`'s
+/// `function` attribute stores values like `"1070"` as strings, not
+/// numbers). The CityParquet runner's `query::attr_filter` (via
+/// `evaluate_attr_predicate`) requires `Eq(Value::String(_))` for its
+/// `Utf8`/`Dictionary<_, Utf8>` columns and rejects a numeric `Eq` outright;
+/// the CityJSONSeq runner's own `matches_predicate` silently returned zero
+/// matches instead of erroring (a JSON-number `want` compared via
+/// `value.as_f64()` against a JSON-string cell, which is always `None`); the
+/// FlatCityBuf runner's `eq_key` masked the bug entirely with its own local
+/// number-to-string recovery. Making `--attr-eq` always a string value
+/// removes the ambiguity at its one source: every format runner's `Eq`
+/// dispatch already picks string-vs-numeric comparison from the *column's*
+/// own type (see `query::evaluate_attr_predicate`'s `Utf8`/`Dictionary`
+/// arms, `formats::cityjsonseq::matches_predicate`'s `want.as_str()` arm,
+/// and `formats::flatcitybuf::eq_key`'s `ColumnType::String` arm), so a
+/// string `want` still compares correctly against a JSON-string cell
+/// whether that cell's own content looks numeric or not — the numeric
+/// comparisons this benchmark actually needs (`AttrStats`, `Ge`/`Le`/
+/// `Range` filters) go through `--attr-ge`/`--attr-le`/both instead, never
+/// `--attr-eq`.
 fn build_attr_pred(eq: Option<&str>, ge: Option<f64>, le: Option<f64>) -> Result<Option<AttrPred>> {
     if let Some(raw) = eq {
-        let value = match raw.parse::<f64>() {
-            Ok(n) => serde_json::json!(n),
-            Err(_) => serde_json::Value::String(raw.to_string()),
-        };
-        return Ok(Some(AttrPred::Eq(value)));
+        return Ok(Some(AttrPred::Eq(serde_json::Value::String(
+            raw.to_string(),
+        ))));
     }
     Ok(match (ge, le) {
         (Some(g), Some(l)) => Some(AttrPred::Range(g, l)),

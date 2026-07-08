@@ -137,14 +137,12 @@ fn matches_predicate(value: Option<&serde_json::Value>, pred: &AttrPred) -> bool
     match pred {
         AttrPred::Eq(want) => {
             if let Some(want_str) = want.as_str() {
-                // Same numeric-looking-string-code exception as `eq_key`'s
-                // own doc comment: the shared `--attr-eq` CLI only coerces
-                // the *predicate* value eagerly, never the attribute's own
-                // stored value, so a String-typed attribute value (e.g.
-                // `"1070"`) is compared against `want`'s string form here
-                // directly; the symmetric case (an actual JSON number
-                // stored value against a numeric-looking `want` string) is
-                // handled by the `as_f64` branch below.
+                // `--attr-eq` always produces a string `want` now (see
+                // `main.rs::build_attr_pred`), so a String-typed attribute
+                // value (e.g. `"1070"`) is compared against `want` here
+                // directly; the `as_f64` branch below only matters for a
+                // non-CLI caller passing a genuine JSON-number `want`
+                // against a numeric-looking string cell.
                 value.as_str() == Some(want_str)
             } else if let Some(want_num) = want.as_f64() {
                 value.as_f64() == Some(want_num)
@@ -206,19 +204,22 @@ fn numeric_key(column_type: ColumnType, value: f64) -> Result<KeyType> {
 /// through [`numeric_key`]; any other combination (e.g. a string value
 /// against a numeric column) has no meaningful cast.
 ///
-/// One deliberate exception: many real CityJSON attributes are
-/// String-typed numeric *codes* (e.g. this benchmark's own
+/// One historical exception, now DEAD via the CLI but kept as harmless
+/// defensive handling for any direct (non-CLI) caller: many real CityJSON
+/// attributes are String-typed numeric *codes* (e.g. this benchmark's own
 /// `lod3_railway.city.json` fixture has `"function": "1070"` — a string,
-/// not a number), yet this crate's shared `--attr-eq` CLI flag
-/// (`main.rs::build_attr_pred`) eagerly parses any numeric-looking value
-/// into a JSON number, losing the fact that it was meant to match a string
-/// column. Rather than depend on that shared parsing (used by every format
-/// runner) never doing this, a `ColumnType::String` column paired with a
-/// numeric `value` re-stringifies it back to its canonical form (integer
-/// formatting when the value has no fractional part) before building the
-/// `StringKey50` — recovering the original string code's exact bytes for
-/// any code that round-trips through `f64` (true for every string-encoded
-/// integer code these fixtures use).
+/// not a number). `main.rs::build_attr_pred` used to eagerly parse any
+/// numeric-looking `--attr-eq` value into a JSON number, losing the fact
+/// that it was meant to match a string column — that bug is now fixed at
+/// its one source (`--attr-eq` always produces `Eq(Value::String(_))`, see
+/// `build_attr_pred`'s own doc comment), so every CLI-driven call into this
+/// function now always hits the `value.as_str()` branch directly. The
+/// `value.as_f64()` branch below only still matters if some future non-CLI
+/// caller passes a `ColumnType::String` column paired with a genuine JSON
+/// number `value`: it re-stringifies that number back to its canonical
+/// form (integer formatting when the value has no fractional part) before
+/// building the `StringKey50` — recovering the original string code's exact
+/// bytes for any code that round-trips through `f64`.
 fn eq_key(column_type: ColumnType, value: &serde_json::Value) -> Result<KeyType> {
     match column_type {
         ColumnType::String => {
