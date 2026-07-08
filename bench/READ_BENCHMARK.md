@@ -219,6 +219,21 @@ each cold number stands alone, one per format, one `full-read` only.
    so timing differences reflect the format/mechanism, not thread-count
    parallelism a production deployment might or might not enable.
 
+9. **`id-lookup`'s sampled id is table-order-first — a known bias favouring
+   linear-scan formats.** The coordinator samples the lookup target as the
+   first non-null id in source/table order, so a format that answers
+   `id-lookup` by a full-scan-until-found (CityJSONSeq/gz, and FlatCityBuf's
+   walk when the id is not in its attribute index) hits its unrepresentative
+   **best case** — an early exit on the first record — rather than an
+   average or worst case. The committed `id-lookup` rows therefore
+   *under-represent* the true point-lookup cost of the scanning formats, and
+   FlatCityBuf does not consistently "win" `id-lookup` in the committed CSVs
+   for this reason, not because its index is slower. A representative
+   measurement (a mid/last-order id, or the median over several sampled ids)
+   is future work; until then, treat the absolute `id-lookup` times as a
+   lower bound for the scanning formats and read the *mechanism* column, not
+   the raw number, as the honest comparison.
+
 ## Environment
 
 Captured 2026-07-08 (the machine this milestone's committed
