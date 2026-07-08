@@ -97,6 +97,13 @@
 # a pure-COPY figure is needed. full_scan_s samples carry the same process
 # bootstrap minus the LOAD (read_parquet needs no extension).
 #
+# M5 Codex review, Important finding 5(d): 3-decimal (millisecond)
+# precision and a median of 3 samples matched the Rust harness's OLD
+# defaults; the harness now records 6-decimal (microsecond) precision and
+# defaults to `repeat = 5` (finding 5(a)/(b)) so the two sets of numbers
+# stay comparable apples-to-apples — this script's `median3`/precision are
+# updated to match below (renamed `median5`, `%.6f`, 5-sample loops).
+#
 # Timing methodology: each timed step is measured with python3
 # `time.time()` INSIDE a single interpreter that `subprocess.run`s the
 # duckdb invocation — NOT with two `$(python3 -c ...)` command
@@ -115,16 +122,18 @@ DATASET=$(basename "$INPUT")
 READ_FN=read_cityjson
 [[ "$INPUT" == *.jsonl ]] && READ_FN=read_cityjsonseq
 
-# Median of 3 float-second samples (`$@`), consistent with the Rust
-# harness's own `median_secs` (Task 6) so the two sets of numbers are
-# comparable apples-to-apples.
-median3() {
+# Median of 5 float-second samples (`$@`), at 6-decimal (microsecond)
+# precision, consistent with the Rust harness's own `median_secs` +
+# `repeat = 5` default and 6-decimal CSV formatting (Task 6 / M5 Codex
+# review finding 5) so the two sets of numbers are comparable
+# apples-to-apples.
+median5() {
   python3 -c "
 import sys
 vals = sorted(float(v) for v in sys.argv[1:])
 n = len(vals)
 mid = n // 2
-print(f'{vals[mid]:.3f}' if n % 2 else f'{(vals[mid-1]+vals[mid])/2:.3f}')
+print(f'{vals[mid]:.6f}' if n % 2 else f'{(vals[mid-1]+vals[mid])/2:.6f}')
 " "$@"
 }
 
@@ -147,15 +156,15 @@ print(time.time() - t0)
 "$DUCKDB" -c "INSTALL cityjson FROM community;" > /dev/null
 
 # Calibrate the fixed per-invocation overhead every timed write_s sample
-# still carries (process startup + LOAD): median of 3, disclosed on
+# still carries (process startup + LOAD): median of 5, disclosed on
 # stderr, deliberately NOT subtracted from the reported numbers (see
 # header).
 CAL_TIMES=()
-for _ in 1 2 3; do
+for _ in 1 2 3 4 5; do
   CAL_TIMES+=("$(timed_duckdb "LOAD cityjson; SELECT 1;")")
 done
-CALIBRATION_S=$(median3 "${CAL_TIMES[@]}")
-echo "# calibration: duckdb process startup + LOAD cityjson = ${CALIBRATION_S}s per invocation (median of 3); included, undeducted, in every write_s sample below" >&2
+CALIBRATION_S=$(median5 "${CAL_TIMES[@]}")
+echo "# calibration: duckdb process startup + LOAD cityjson = ${CALIBRATION_S}s per invocation (median of 5); included, undeducted, in every write_s sample below" >&2
 
 for CODEC in SNAPPY ZSTD; do
   WRITE_TIMES=()
@@ -163,7 +172,7 @@ for CODEC in SNAPPY ZSTD; do
   PARQUET=""
   TMP=""
 
-  for _ in 1 2 3; do
+  for _ in 1 2 3 4 5; do
     rm -rf "${TMP:-}"
     TMP=$(mktemp -d)
     PARQUET="$TMP/out.parquet"
@@ -173,8 +182,8 @@ for CODEC in SNAPPY ZSTD; do
     SCAN_TIMES+=("$(timed_duckdb "SELECT sum(hash(COLUMNS(*))) FROM read_parquet('$PARQUET');")")
   done
 
-  WRITE_S=$(median3 "${WRITE_TIMES[@]}")
-  FULL_SCAN_S=$(median3 "${SCAN_TIMES[@]}")
+  WRITE_S=$(median5 "${WRITE_TIMES[@]}")
+  FULL_SCAN_S=$(median5 "${SCAN_TIMES[@]}")
   BYTES=$(stat -f %z "$PARQUET" 2>/dev/null || stat -c %s "$PARQUET")
   OBJS=$("$DUCKDB" -csv -noheader -c "SELECT count(*) FROM read_parquet('$PARQUET');")
 

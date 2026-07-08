@@ -37,7 +37,7 @@ bench-data:
     ./scripts/fetch_3dbag.sh
 
 # Full M5 benchmark run: fixtures + the 3 pinned 3DBAG tiles, each through
-# `cityparquet bench` (default 8-variant set, repeat=3) and the DuckDB
+# `cityparquet bench` (default 10-variant set, repeat=5) and the DuckDB
 # `COPY` baseline, into one CSV per dataset under bench/results/. Requires
 # `just bench-data` to have populated bench/data/ first. Network-dependent
 # (duckdb baseline installs the `cityjson` community extension); kept OUT
