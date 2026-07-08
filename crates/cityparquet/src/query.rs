@@ -16,7 +16,12 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::{Array, Float64Array, StringArray, StructArray};
+use arrow_array::types::Int32Type;
+use arrow_array::{
+    Array, ArrayAccessor, BooleanArray, DictionaryArray, Float64Array, Int64Array, RecordBatch,
+    StringArray, StructArray,
+};
+use arrow_schema::DataType;
 use cityparquet_schema::{CityParquetError, CityParquetMetadata, Result};
 use parquet::arrow::ProjectionMask;
 
@@ -26,7 +31,7 @@ use crate::reader::{
     row_group_intersects,
 };
 use crate::wkb_read::DecodedKind;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::{ArrowPredicateFn, ParquetRecordBatchReaderBuilder, RowFilter};
 
 fn io_err(e: impl std::fmt::Display) -> CityParquetError {
     CityParquetError::Io(e.to_string())
@@ -204,4 +209,191 @@ pub fn bbox_query(table_path: &Path, query_bbox: [f64; 6]) -> Result<BBoxQueryRe
         row_groups_total,
         row_groups_touched,
     })
+}
+
+/// An attribute-column predicate for [`attr_filter`]. `Eq` compares against a
+/// string (for a `Utf8`/`Dictionary<_, Utf8>` column) or a number (for an
+/// `Int64`/`Float64` column) as appropriate to the target column's actual
+/// Arrow type; `Ge`/`Le`/`Range` always compare numerically as `f64` and only
+/// apply to `Int64`/`Float64` columns. A row whose value is null never
+/// matches any variant.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttrPredicate {
+    /// Equality against a string or number, dispatched on the column's Arrow
+    /// type.
+    Eq(serde_json::Value),
+    /// `value >= bound`.
+    Ge(f64),
+    /// `value <= bound`.
+    Le(f64),
+    /// `lo <= value <= hi`.
+    Range(f64, f64),
+}
+
+/// Build the `BooleanArray` deciding which rows of `array` (the single
+/// projected `column`) satisfy `pred`, dispatching on `array`'s Arrow
+/// `DataType`. Null cells always decide `false` (never match).
+fn evaluate_attr_predicate(
+    column: &str,
+    array: &dyn Array,
+    pred: &AttrPredicate,
+) -> Result<BooleanArray> {
+    let schema_err = |msg: String| CityParquetError::Schema(msg);
+
+    match array.data_type() {
+        DataType::Utf8 => {
+            let values = array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| schema_err(format!("column '{column}' is not Utf8")))?;
+            let AttrPredicate::Eq(serde_json::Value::String(want)) = pred else {
+                return Err(schema_err(format!(
+                    "column '{column}' is Utf8; only `Eq(<string>)` applies, got {pred:?}"
+                )));
+            };
+            Ok(BooleanArray::from_iter((0..values.len()).map(|i| {
+                Some(!values.is_null(i) && values.value(i) == want)
+            })))
+        }
+        DataType::Dictionary(key_type, value_type) => {
+            if key_type.as_ref() != &DataType::Int32 || value_type.as_ref() != &DataType::Utf8 {
+                return Err(schema_err(format!(
+                    "column '{column}' is Dictionary<{key_type:?}, {value_type:?}>; only \
+                     Dictionary<Int32, Utf8> is supported"
+                )));
+            }
+            let dict = array
+                .as_any()
+                .downcast_ref::<DictionaryArray<Int32Type>>()
+                .ok_or_else(|| {
+                    schema_err(format!(
+                        "column '{column}' is not a Dictionary<Int32, Utf8>"
+                    ))
+                })?;
+            let values = dict.downcast_dict::<StringArray>().ok_or_else(|| {
+                schema_err(format!("column '{column}' dictionary values are not Utf8"))
+            })?;
+            let AttrPredicate::Eq(serde_json::Value::String(want)) = pred else {
+                return Err(schema_err(format!(
+                    "column '{column}' is a dictionary column; only `Eq(<string>)` applies, got {pred:?}"
+                )));
+            };
+            // `TypedDictionaryArray::value` is unchecked w.r.t. nulls (a null
+            // key position may point at any dictionary entry, or none), so
+            // `dict.is_null(i)` must gate every lookup.
+            Ok(BooleanArray::from_iter((0..dict.len()).map(|i| {
+                Some(!dict.is_null(i) && values.value(i) == want.as_str())
+            })))
+        }
+        DataType::Int64 => {
+            let values = array
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| schema_err(format!("column '{column}' is not Int64")))?;
+            evaluate_numeric_predicate(column, values.len(), pred, |i| {
+                (!values.is_null(i)).then(|| values.value(i) as f64)
+            })
+        }
+        DataType::Float64 => {
+            let values = array
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .ok_or_else(|| schema_err(format!("column '{column}' is not Float64")))?;
+            evaluate_numeric_predicate(column, values.len(), pred, |i| {
+                (!values.is_null(i)).then(|| values.value(i))
+            })
+        }
+        other => Err(schema_err(format!(
+            "column '{column}' has an arrow type attr_filter cannot filter on: {other:?}"
+        ))),
+    }
+}
+
+/// Shared numeric-column evaluation for `Int64`/`Float64` arrays: `get(i)`
+/// returns `None` for a null cell (never matches), else the cell's `f64`
+/// value to compare against `pred`. Rejects `Eq` with a non-numeric
+/// [`serde_json::Value`] (a string `Eq` against a numeric column is a schema
+/// mismatch, not a "no match").
+fn evaluate_numeric_predicate(
+    column: &str,
+    len: usize,
+    pred: &AttrPredicate,
+    get: impl Fn(usize) -> Option<f64>,
+) -> Result<BooleanArray> {
+    let matches: Box<dyn Fn(f64) -> bool> = match pred {
+        AttrPredicate::Eq(v) => {
+            let want = v.as_f64().ok_or_else(|| {
+                CityParquetError::Schema(format!(
+                    "column '{column}' is numeric; `Eq` needs a JSON number, got {v:?}"
+                ))
+            })?;
+            Box::new(move |x| x == want)
+        }
+        AttrPredicate::Ge(bound) => {
+            let bound = *bound;
+            Box::new(move |x| x >= bound)
+        }
+        AttrPredicate::Le(bound) => {
+            let bound = *bound;
+            Box::new(move |x| x <= bound)
+        }
+        AttrPredicate::Range(lo, hi) => {
+            let (lo, hi) = (*lo, *hi);
+            Box::new(move |x| x >= lo && x <= hi)
+        }
+    };
+    Ok(BooleanArray::from_iter(
+        (0..len).map(|i| Some(get(i).is_some_and(&*matches))),
+    ))
+}
+
+/// Opens `table_path`, restricts the scan to `column` alone via a
+/// [`ProjectionMask`], and applies `pred` as a Parquet [`RowFilter`]
+/// (`ArrowPredicateFn`) so only `column` is ever decoded — nothing else in
+/// the table is read — and the reader's row-group statistics can prune
+/// entire row groups the predicate could not possibly match. Returns the
+/// COUNT of surviving rows (never the rows themselves): the `RowFilter`
+/// already drops every non-matching row before it reaches the returned
+/// batches, so counting rows across the batches yielded IS the matching
+/// count.
+pub fn attr_filter(table_path: &Path, column: &str, pred: &AttrPredicate) -> Result<u64> {
+    let file = File::open(table_path).map_err(io_err)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+
+    // `data_type` is fetched now (before `builder` is consumed by
+    // `with_projection`/`with_row_filter` below) purely to fail fast with a
+    // clear "column not found" error; `evaluate_attr_predicate` re-derives
+    // the type itself from the projected batch's own schema, so this lookup
+    // is not load-bearing for correctness, only for a better error message.
+    builder.schema().field_with_name(column).map_err(|_| {
+        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+    })?;
+
+    // Same single-column mask twice: once as the predicate's own required
+    // projection, once as the builder's overall output projection — `column`
+    // is the only thing either the predicate or the final count needs.
+    let predicate_mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
+    let output_mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
+
+    let owned_column = column.to_string();
+    let owned_pred = pred.clone();
+    let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
+        let array = batch.column(0);
+        evaluate_attr_predicate(&owned_column, array.as_ref(), &owned_pred)
+            .map_err(arrow_schema::ArrowError::from)
+    });
+    let row_filter = RowFilter::new(vec![Box::new(predicate_fn)]);
+
+    let reader = builder
+        .with_projection(output_mask)
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(parquet_err)?;
+
+    let mut count = 0u64;
+    for batch in reader {
+        let batch = batch.map_err(parquet_err)?;
+        count += batch.num_rows() as u64;
+    }
+    Ok(count)
 }

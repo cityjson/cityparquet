@@ -1,14 +1,15 @@
-//! RED (readbench task 2/3): `query::full_read` / `query::count` /
-//! `query::bbox_query`, read primitives of the cross-format read-benchmark
-//! milestone — exercised against a real converted delft package (never
-//! inline artificial CityJSON).
+//! RED (readbench task 2/3/4): `query::full_read` / `query::count` /
+//! `query::bbox_query` / `query::attr_filter`, read primitives of the
+//! cross-format read-benchmark milestone — exercised against a real
+//! converted delft package (never inline artificial CityJSON).
 
 use std::path::{Path, PathBuf};
 
 use arrow_array::{Array, Float64Array, StringArray, StructArray};
+use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert};
-use cityparquet::query::bbox_query;
-use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet::query::{AttrPredicate, attr_filter, bbox_query};
+use cityparquet::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 fn fixture(name: &str) -> PathBuf {
@@ -189,4 +190,159 @@ fn bbox_query_returns_the_exact_matching_ids_for_a_lower_left_window() {
         result.ids.len(),
         "every id bbox_query returned must be found exactly once in the table"
     );
+}
+
+/// Converts `fixture(name)` into a fresh tempdir and decodes every row of
+/// its main table — independently of [`attr_filter`], so these tests never
+/// validate the function against its own logic. Returns the tempdir (the
+/// caller must keep it bound so it is not deleted before `attr_filter` gets
+/// to re-open the table), the main table path, and the decoded objects.
+fn convert_and_decode(
+    name: &str,
+) -> (
+    tempfile::TempDir,
+    PathBuf,
+    Vec<cityparquet::decode::DecodedObject>,
+) {
+    let out = tempfile::tempdir().unwrap();
+    let report = convert(&ConvertOptions::new(
+        fixture(name),
+        out.path().to_path_buf(),
+    ))
+    .unwrap();
+    assert_eq!(report.object_count, 2231);
+
+    let main_table = out.path().join("cityobjects.parquet");
+    let file = std::fs::File::open(&main_table).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let meta = builder.cityparquet_metadata().unwrap();
+    let schema = builder.cityparquet_arrow_schema().unwrap();
+    let parquet_reader = builder.build().unwrap();
+    let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
+
+    let mut all = Vec::new();
+    for batch in reader {
+        let batch = batch.unwrap();
+        all.extend(decode_batch(&batch, &meta).unwrap());
+    }
+    (out, main_table, all)
+}
+
+/// `Eq` on `object_type` (the reserved `Dictionary<Int32, Utf8>` column):
+/// independently counts every decoded object whose `cjseq::CityObject::thetype`
+/// is `"BuildingPart"` (delft's real per-fixture split is
+/// `{'BuildingPart': 1116, 'Building': 1115}` — see `decode_real_data.rs`),
+/// then asserts `attr_filter` returns the identical count via a Parquet
+/// `RowFilter` over the dictionary column.
+#[test]
+fn attr_filter_eq_matches_object_type_dictionary_column() {
+    let (_out, main_table, objects) = convert_and_decode("delft.city.jsonl");
+
+    let expected = objects
+        .iter()
+        .filter(|o| o.object.thetype == "BuildingPart")
+        .count() as u64;
+    assert_eq!(expected, 1116, "sanity: delft's known BuildingPart count");
+
+    let pred = AttrPredicate::Eq(serde_json::Value::String("BuildingPart".to_string()));
+    let got = attr_filter(&main_table, "object_type", &pred).unwrap();
+    assert_eq!(got, expected);
+}
+
+/// `Eq` on `status` (a plain `Utf8` attribute column, non-reserved, present
+/// only on `Building` rows — `BuildingPart` rows have no `status` attribute
+/// at all, so those rows are NULL in the column and must never match):
+/// independently counts every decoded object whose `attributes.status` JSON
+/// string is `"Pand in gebruik"`.
+#[test]
+fn attr_filter_eq_matches_string_attribute_column_and_excludes_nulls() {
+    let (_out, main_table, objects) = convert_and_decode("delft.city.jsonl");
+
+    let expected = objects
+        .iter()
+        .filter(|o| {
+            o.object
+                .attributes
+                .as_ref()
+                .and_then(|v| v.as_object())
+                .and_then(|attrs| attrs.get("status"))
+                .and_then(|v| v.as_str())
+                == Some("Pand in gebruik")
+        })
+        .count() as u64;
+    // Sanity bound: strictly fewer than the 1115 Building rows (a handful
+    // carry a different `status` value) and strictly more than zero.
+    assert!(
+        expected > 0 && expected < 1115,
+        "expected a proper subset of delft's 1115 Building rows, got {expected}"
+    );
+
+    let pred = AttrPredicate::Eq(serde_json::Value::String("Pand in gebruik".to_string()));
+    let got = attr_filter(&main_table, "status", &pred).unwrap();
+    assert_eq!(got, expected);
+}
+
+/// `Ge`/`Le`/`Range` on `oorspronkelijkbouwjaar` (a plain `Int64` attribute
+/// column, non-reserved, present only on `Building` rows — `BuildingPart`
+/// rows are NULL and must never match any of the three predicates):
+/// independently counts every decoded object whose year-built integer
+/// satisfies each bound, scanning the SAME decoded objects fixture the
+/// dictionary/string tests above already validated `attr_filter` against.
+#[test]
+fn attr_filter_numeric_predicates_match_year_built_attribute_column() {
+    let (_out, main_table, objects) = convert_and_decode("delft.city.jsonl");
+
+    let years: Vec<i64> = objects
+        .iter()
+        .filter_map(|o| {
+            o.object
+                .attributes
+                .as_ref()
+                .and_then(|v| v.as_object())
+                .and_then(|attrs| attrs.get("oorspronkelijkbouwjaar"))
+                .and_then(|v| v.as_i64())
+        })
+        .collect();
+    assert_eq!(
+        years.len(),
+        1115,
+        "oorspronkelijkbouwjaar must be present on exactly delft's 1115 Building rows"
+    );
+
+    let expected_ge = years.iter().filter(|&&y| y >= 2000).count() as u64;
+    let expected_le = years.iter().filter(|&&y| y <= 1900).count() as u64;
+    let expected_range = years
+        .iter()
+        .filter(|&&y| (1950..=2000).contains(&y))
+        .count() as u64;
+    // Sanity: none of the three subsets are trivially empty or the whole set
+    // — otherwise the test would not distinguish a correct implementation
+    // from a broken always-true/always-false one.
+    assert!(expected_ge > 0 && expected_ge < years.len() as u64);
+    assert!(expected_le > 0 && expected_le < years.len() as u64);
+    assert!(expected_range > 0 && expected_range < years.len() as u64);
+
+    let got_ge = attr_filter(
+        &main_table,
+        "oorspronkelijkbouwjaar",
+        &AttrPredicate::Ge(2000.0),
+    )
+    .unwrap();
+    assert_eq!(got_ge, expected_ge);
+
+    let got_le = attr_filter(
+        &main_table,
+        "oorspronkelijkbouwjaar",
+        &AttrPredicate::Le(1900.0),
+    )
+    .unwrap();
+    assert_eq!(got_le, expected_le);
+
+    let got_range = attr_filter(
+        &main_table,
+        "oorspronkelijkbouwjaar",
+        &AttrPredicate::Range(1950.0, 2000.0),
+    )
+    .unwrap();
+    assert_eq!(got_range, expected_range);
 }
