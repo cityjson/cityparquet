@@ -216,6 +216,10 @@ fn main() -> std::process::ExitCode {
                 recipe,
                 ordering,
                 layout,
+                // No `--geoarrow` CLI flag yet (out of this task's scope,
+                // which only threads the option through the library); take
+                // the library's new default of `false` (plain BLOB output).
+                geoarrow: false,
             };
 
             match convert(&opts) {

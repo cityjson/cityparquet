@@ -108,13 +108,19 @@ pub struct ConvertOptions {
     pub recipe: WriterRecipe,
     pub ordering: RowOrder,
     pub layout: TableLayout,
+    /// Write GeoParquet/GeoArrow self-description (the `geoarrow.wkb` field
+    /// extension + the file-level `geo` key). OFF by default so DuckDB reads
+    /// geometry columns as plain BLOB (works with `SELECT *` and the
+    /// `three_d` extension's `ST_3DFromWKB(BLOB)` with zero setup); ON for
+    /// GeoPandas/QGIS/GDAL interop.
+    pub geoarrow: bool,
 }
 
 impl ConvertOptions {
     /// Core profile, 4096-row batches, the default [`WriterRecipe`],
-    /// [`RowOrder::Source`] emission order, [`TableLayout::Single`], and no
-    /// overwrite — the sensible defaults for a first conversion of `input`
-    /// into `output_dir`.
+    /// [`RowOrder::Source`] emission order, [`TableLayout::Single`], no
+    /// overwrite, and no GeoParquet/GeoArrow self-description — the sensible
+    /// defaults for a first conversion of `input` into `output_dir`.
     pub fn new(input: PathBuf, output_dir: PathBuf) -> Self {
         Self {
             input,
@@ -125,6 +131,7 @@ impl ConvertOptions {
             recipe: WriterRecipe::default(),
             ordering: RowOrder::default(),
             layout: TableLayout::default(),
+            geoarrow: false,
         }
     }
 }
@@ -703,10 +710,16 @@ fn write_package(
     // partitions strictly AFTER encode (see `TableLayout`'s doc comment), so
     // this composes with either ordering unchanged.
     let mut batches = match opts.ordering {
-        RowOrder::Source => encode(source, scan_result, opts.batch_size)?,
+        RowOrder::Source => encode(source, scan_result, opts.batch_size, opts.geoarrow)?,
         RowOrder::Hilbert => {
             let features = hilbert_ordered_features(source, scan_result)?;
-            encode_buffered(features, source.header(), scan_result, opts.batch_size)?
+            encode_buffered(
+                features,
+                source.header(),
+                scan_result,
+                opts.batch_size,
+                opts.geoarrow,
+            )?
         }
     };
     for batch in batches.by_ref() {
@@ -883,11 +896,13 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
     let metadata = scan_result.metadata(&[])?;
     // The exact schema the writer is told to expect must be the exact schema
     // the encoded batches conform to (field metadata included) — both come
-    // from this one `to_arrow_schema()` call, never hand-duplicated.
-    let arrow_schema = Arc::new(scan_result.schema.to_arrow_schema()?);
+    // from this one `to_arrow_schema_tagged` call, never hand-duplicated —
+    // and it must use the SAME `opts.geoarrow` flag `encode`/`encode_buffered`
+    // feed their batch schema, or Arrow rejects the batches at write time.
+    let arrow_schema = Arc::new(scan_result.schema.to_arrow_schema_tagged(opts.geoarrow)?);
     let props = opts
         .recipe
-        .writer_properties(&scan_result.schema, &metadata, true)?;
+        .writer_properties(&scan_result.schema, &metadata, opts.geoarrow)?;
 
     // Everything above is fallible but never touches `opts.output_dir` at
     // all, so none of it needs any cleanup. From here on, every new file

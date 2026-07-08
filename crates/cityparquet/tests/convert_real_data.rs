@@ -84,11 +84,14 @@ fn assert_every_texture_ring_valid(v: &Value, limit: usize) {
 #[test]
 fn delft_full_convert_round_trips_through_parquet() {
     let out = tempfile::tempdir().unwrap();
-    let report = convert(&ConvertOptions::new(
-        fixture("delft.city.jsonl"),
-        out.path().to_path_buf(),
-    ))
-    .unwrap();
+    // `geoarrow: true` here (rather than the library default of `false`,
+    // added in the geoarrow-opt-in change) preserves this test's original
+    // intent of checking a full GeoParquet-tagged round trip, including the
+    // `geo` key below; the untagged default is covered separately by
+    // `default_convert_writes_plain_blob_geometry_no_geoarrow_no_geo_key`.
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.geoarrow = true;
+    let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 2231);
 
     let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
@@ -1110,5 +1113,74 @@ fn by_type_convert_of_railway_writes_fourteen_type_tables() {
     assert_eq!(
         total, 121,
         "row counts across every split table must sum to railway's full object count"
+    );
+}
+
+/// `ConvertOptions::geoarrow` defaults to `false` (`ConvertOptions::new`):
+/// DuckDB reads geometry columns as plain BLOB with zero setup. Neither the
+/// file-level GeoParquet `geo` key nor the `geoarrow.wkb` field extension is
+/// written unless a caller opts in.
+#[test]
+fn default_convert_writes_plain_blob_geometry_no_geoarrow_no_geo_key() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.layout = TableLayout::Single; // isolate this test from the layout change
+    opts.overwrite = true;
+    convert(&opts).unwrap();
+
+    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+
+    // (a) No file-level GeoParquet `geo` key.
+    let kvs = builder.metadata().file_metadata().key_value_metadata().unwrap();
+    assert!(
+        !kvs.iter().any(|kv| kv.key == "geo"),
+        "default (no --geoarrow) output must not carry the GeoParquet `geo` key"
+    );
+
+    // (b) Geometry field is plain Binary with no geoarrow extension.
+    let field = builder
+        .schema()
+        .fields()
+        .iter()
+        .find(|f| f.name().starts_with("geometry_"))
+        .expect("a geometry_<lod> column exists");
+    assert!(
+        !field.metadata().contains_key("ARROW:extension:name"),
+        "default output geometry column must not advertise geoarrow.wkb"
+    );
+}
+
+/// `ConvertOptions::geoarrow = true` restores the GeoParquet/GeoArrow
+/// self-description: the `geoarrow.wkb` field extension plus the file-level
+/// `geo` key, for GeoPandas/QGIS/GDAL interop.
+#[test]
+fn geoarrow_opt_in_restores_tag_and_geo_key() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.layout = TableLayout::Single;
+    opts.geoarrow = true;
+    opts.overwrite = true;
+    convert(&opts).unwrap();
+
+    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+
+    let kvs = builder.metadata().file_metadata().key_value_metadata().unwrap();
+    assert!(
+        kvs.iter().any(|kv| kv.key == "geo"),
+        "--geoarrow must write the `geo` key"
+    );
+
+    let field = builder
+        .schema()
+        .fields()
+        .iter()
+        .find(|f| f.name().starts_with("geometry_"))
+        .unwrap();
+    assert_eq!(
+        field.metadata().get("ARROW:extension:name").map(String::as_str),
+        Some("geoarrow.wkb"),
+        "--geoarrow must advertise geoarrow.wkb"
     );
 }

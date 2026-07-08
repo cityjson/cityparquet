@@ -17,14 +17,14 @@ fn fixture(name: &str) -> PathBuf {
 fn delft_encodes_all_objects_in_batches() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let s = scan(&src).unwrap();
-    let batches: Vec<_> = encode(&src, &s, 512)
+    let batches: Vec<_> = encode(&src, &s, 512, false)
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 2231);
     assert!(batches.len() >= 2231 / 512);
-    let schema = s.schema.to_arrow_schema().unwrap();
+    let schema = s.schema.to_arrow_schema_tagged(false).unwrap();
     assert_eq!(batches[0].schema().fields(), schema.fields());
     // Spot checks on real content:
     let b = &batches[0];
@@ -40,7 +40,7 @@ fn delft_encodes_all_objects_in_batches() {
 fn railway_encodes_with_semantics_and_templates() {
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
     let s = scan(&src).unwrap();
-    let batches: Vec<_> = encode(&src, &s, 1024)
+    let batches: Vec<_> = encode(&src, &s, 1024, false)
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
@@ -57,7 +57,7 @@ fn railway_encodes_with_semantics_and_templates() {
 fn railway_realigns_material_values_for_dropped_surfaces() {
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
     let s = scan(&src).unwrap();
-    let batches: Vec<_> = encode(&src, &s, 1024)
+    let batches: Vec<_> = encode(&src, &s, 1024, false)
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
@@ -131,7 +131,7 @@ fn delft_records_per_shell_face_partition_for_solids() {
     // without re-deriving it from the CityJSON boundaries.
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let s = scan(&src).unwrap();
-    let batches: Vec<_> = encode(&src, &s, 512)
+    let batches: Vec<_> = encode(&src, &s, 512, false)
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
@@ -279,7 +279,7 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
 
     let src = Source::open(&path).unwrap();
     let s = scan(&src).unwrap();
-    let batches: Vec<_> = encode(&src, &s, 64)
+    let batches: Vec<_> = encode(&src, &s, 64, false)
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
@@ -398,7 +398,7 @@ fn batch_iter_fuses_after_first_error() {
 
     let s = scan(&Source::open(&clean).unwrap()).unwrap();
     let src = Source::open(&path).unwrap();
-    let mut it = encode(&src, &s, 64).unwrap();
+    let mut it = encode(&src, &s, 64, false).unwrap();
     // Error-tolerant consumption: keep pulling after the Err, like a caller
     // using filter_map(Result::ok) would.
     let mut errs = 0;
