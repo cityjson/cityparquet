@@ -4,17 +4,11 @@ use peak_alloc::PeakAlloc;
 pub static PEAK: PeakAlloc = PeakAlloc;
 
 /// Reset the heap high-water mark to the current live usage.
-///
-/// Unused outside tests until a later task wires per-format benchmark runs
-/// through this allocator; `#[allow(dead_code)]` avoids a `-D warnings`
-/// failure in the interim.
-#[allow(dead_code)]
 pub fn reset() {
     PEAK.reset_peak_usage();
 }
 
 /// Peak live heap bytes since the last `reset()`.
-#[allow(dead_code)]
 pub fn peak_heap_bytes() -> usize {
     PEAK.peak_usage()
 }

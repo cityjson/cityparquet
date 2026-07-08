@@ -402,6 +402,7 @@ dependencies = [
 name = "cityparquet-readbench"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arrow-array",
  "cityparquet",
  "cityparquet-schema",
@@ -412,6 +413,7 @@ dependencies = [
  "parquet",
  "peak_alloc",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

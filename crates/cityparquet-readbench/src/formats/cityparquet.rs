@@ -1,0 +1,156 @@
+//! The CityParquet [`FormatRunner`]: maps each [`Scenario`] onto the
+//! matching `cityparquet::query::*` primitive.
+//!
+//! **Cross-format counting caveat — deliberately NOT papered over here.**
+//! CityParquet's `Count`/`FullRead` count ONE ROW PER CITYOBJECT: both
+//! parents AND children get their own row (e.g. the delft fixture has 2231
+//! rows; the 60-object rural benchmark tile has 60). FlatCityBuf and
+//! CityJSONSeq instead count top-level FEATURES only (the same rural tile
+//! has 30 top-level features, excluding their children as separate counted
+//! units) — a genuine semantic difference in what "count" means per format,
+//! not a bug to reconcile inside this runner. This runner always reports
+//! CityParquet's own natural object-row count; the coordinator/methodology
+//! doc (later tasks) are responsible for disclosing the difference
+//! alongside the numbers, never silently normalising one format's count to
+//! match another's.
+
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+use cityparquet::query::{self, AttrPredicate};
+use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet_schema::{CityParquetMetadata, PackageManifest};
+
+use super::FormatRunner;
+use crate::scenario::{AttrPred, QueryParams, Scenario};
+
+/// Locates the main CityObject table inside a CityParquet package:
+///
+/// - If `input` is itself a file, it IS the table (callers may point
+///   straight at `cityobjects.parquet`).
+/// - If `input` is a directory without a `metadata.json` manifest, defaults
+///   to `<input>/cityobjects.parquet`.
+/// - If `input` is a directory WITH a manifest, prefers the table literally
+///   named `cityobjects.parquet`; if that name is absent but the manifest
+///   lists exactly one table, uses that one; a manifest listing more than
+///   one table with no `cityobjects.parquet` among them (a
+///   `TableLayout::ByType` package) is rejected — the read-benchmark's
+///   `readbench_prepare.sh` always converts with the default
+///   `TableLayout::Single` layout, so this case is out of scope rather than
+///   silently reading only the first table.
+fn locate_main_table(input: &Path) -> Result<PathBuf> {
+    if input.is_file() {
+        return Ok(input.to_path_buf());
+    }
+    if !input.is_dir() {
+        bail!(
+            "input path '{}' is neither a file nor a directory",
+            input.display()
+        );
+    }
+
+    let manifest_path = input.join("metadata.json");
+    if !manifest_path.exists() {
+        return Ok(input.join("cityobjects.parquet"));
+    }
+
+    let manifest_text = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let manifest: PackageManifest = serde_json::from_str(&manifest_text)
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+
+    if manifest.tables.iter().any(|t| t == "cityobjects.parquet") {
+        return Ok(input.join("cityobjects.parquet"));
+    }
+    match manifest.tables.as_slice() {
+        [] => bail!("{} lists no tables", manifest_path.display()),
+        [only] => Ok(input.join(only)),
+        many => bail!(
+            "package at {} has {} tables ({many:?}) and none is named \
+             'cityobjects.parquet'; the read-benchmark only supports \
+             TableLayout::Single packages",
+            input.display(),
+            many.len(),
+        ),
+    }
+}
+
+/// This runner's `--attr-column`/params error for a scenario missing a
+/// required field — every scenario branch in [`CityParquetRunner::run`]
+/// that reads an `Option` field routes its `None` case through here so the
+/// child process exits with a clear message instead of a panic.
+fn require<'a, T>(opt: &'a Option<T>, flag: &str, scenario: Scenario) -> Result<&'a T> {
+    opt.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("scenario '{scenario}' requires --{flag}"))
+}
+
+/// Maps a CLI-level [`AttrPred`] onto `cityparquet::query`'s own
+/// `AttrPredicate` — the one place that conversion happens, so
+/// `scenario.rs` never needs to depend on the `cityparquet` crate.
+fn to_query_predicate(pred: &AttrPred) -> AttrPredicate {
+    match pred {
+        AttrPred::Eq(v) => AttrPredicate::Eq(v.clone()),
+        AttrPred::Ge(bound) => AttrPredicate::Ge(*bound),
+        AttrPred::Le(bound) => AttrPredicate::Le(*bound),
+        AttrPred::Range(lo, hi) => AttrPredicate::Range(*lo, *hi),
+    }
+}
+
+/// Opens `table` once, just far enough to read its embedded CityParquet
+/// key-value metadata — the `meta` argument `query::full_read`/
+/// `query::id_lookup` need to decode geometry/attributes.
+fn open_metadata(table: &Path) -> Result<CityParquetMetadata> {
+    let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("reading Parquet metadata from {}", table.display()))?;
+    Ok(builder.cityparquet_metadata()?)
+}
+
+/// The CityParquet backend: every scenario locates `input`'s main table
+/// (see [`locate_main_table`]) and calls straight into
+/// `cityparquet::query`, so this file adds no query logic of its own — it
+/// is purely the [`Scenario`] -> primitive dispatch, plus package/CLI
+/// plumbing.
+pub struct CityParquetRunner;
+
+impl FormatRunner for CityParquetRunner {
+    fn run(&self, input: &Path, scenario: Scenario, params: &QueryParams) -> Result<u64> {
+        let table = locate_main_table(input)?;
+        match scenario {
+            Scenario::Count => Ok(query::count(&table)?),
+            Scenario::FullRead => {
+                let meta = open_metadata(&table)?;
+                Ok(query::full_read(&table, &meta)?.feature_count)
+            }
+            Scenario::BBoxQuery => {
+                let bbox = *require(&params.bbox, "bbox", scenario)?;
+                Ok(query::bbox_query(&table, bbox)?.ids.len() as u64)
+            }
+            Scenario::AttrFilter => {
+                let column = require(&params.attr_column, "attr-column", scenario)?;
+                let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
+                Ok(query::attr_filter(
+                    &table,
+                    column,
+                    &to_query_predicate(pred),
+                )?)
+            }
+            Scenario::AttrStats => {
+                let column = require(&params.attr_column, "attr-column", scenario)?;
+                Ok(query::attr_stats(&table, column)?.count)
+            }
+            Scenario::IdLookup => {
+                let id = require(&params.target_id, "target-id", scenario)?;
+                let meta = open_metadata(&table)?;
+                Ok(query::id_lookup(&table, &meta, id)?.is_some() as u64)
+            }
+            Scenario::Project => {
+                let column = require(&params.attr_column, "attr-column", scenario)?;
+                Ok(query::project_column(&table, column)?)
+            }
+        }
+    }
+}
