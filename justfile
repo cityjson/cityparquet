@@ -149,3 +149,51 @@ bench-all:
     cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
         --input bench/data/9-196-328.city.json --out bench/results/9-196-328.csv
     ./scripts/bench_duckdb.sh bench/data/9-196-328.city.json bench/results/9-196-328.csv
+
+# Full READ-benchmark run (see bench/READ_BENCHMARK.md): for each of the two
+# committed CityJSON fixtures, `readbench-prepare` it (parquet/hilbert/fcb/
+# gz artefacts under bench/data/readbench/), run the `cityparquet-readbench`
+# coordinator across every format x scenario into one bench/read_results/
+# <name>.csv, then append the `duckdb-parquet` SQL-baseline rows to the SAME
+# CSV via `readbench_duckdb.sh`. Mirrors `bench-all`'s structure (its read-
+# side counterpart) — one hardcoded block per dataset, CSV removed first so
+# a re-run is always clean. REPEAT overrides the coordinator's own default
+# of 7 warm repeats (also forwarded to the DuckDB baseline's own median).
+#
+# `lod3_railway.city.json` has no numeric attribute column at all (every
+# attribute is a string), so its `readbench_duckdb.sh` call omits
+# `--numeric-column` — the attr-stats scenario is skipped for it everywhere,
+# consistent with the coordinator's own `pick_numeric_attribute` (logged on
+# stderr, never fabricated); delft's is `oorspronkelijkbouwjaar` (Int64,
+# confirmed in `crates/cityparquet/tests/query_real_data.rs`).
+#
+# Requires `just fixtures` first (network). Needs `fcb`+`duckdb` on PATH;
+# network-dependent (readbench-prepare's `fcb ser`, `cityparquet convert`
+# read the fixtures already on disk, but the DuckDB baseline autoloads its
+# spatial extension on first use); kept OUT of `just check`/CI like the
+# other bench-* recipes. `--cold` (one purged-cache FullRead per format) is
+# a separate, manual, one-at-a-time invocation of `cityparquet-readbench run
+# --cold` per the coordinator's own `sudo purge` prompt — deliberately not
+# automated in this bulk recipe (see bench/READ_BENCHMARK.md's warm/cold
+# protocol). Task 14 extends this recipe (or calls readbench-prepare/
+# readbench-baseline directly, as this recipe does per-dataset below) with
+# the wider corpus spread (Ingolstadt/Vienna/3DBAG) once fetched.
+readbench-all REPEAT='7':
+    mkdir -p bench/read_results bench/data/readbench
+    rm -f bench/read_results/delft.csv bench/read_results/railway.csv
+    ./scripts/readbench_prepare.sh tests/fixtures/delft.city.jsonl bench/data/readbench
+    cargo run --release -p cityparquet-readbench -- run \
+        --input tests/fixtures/delft.city.jsonl \
+        --prepared-dir bench/data/readbench \
+        --out bench/read_results/delft.csv \
+        --repeat {{REPEAT}}
+    ./scripts/readbench_duckdb.sh bench/data/readbench/delft.parquet bench/read_results/delft.csv \
+        --numeric-column oorspronkelijkbouwjaar --repeat {{REPEAT}}
+    ./scripts/readbench_prepare.sh tests/fixtures/lod3_railway.city.json bench/data/readbench
+    cargo run --release -p cityparquet-readbench -- run \
+        --input tests/fixtures/lod3_railway.city.json \
+        --prepared-dir bench/data/readbench \
+        --out bench/read_results/railway.csv \
+        --repeat {{REPEAT}}
+    ./scripts/readbench_duckdb.sh bench/data/readbench/lod3_railway.parquet bench/read_results/railway.csv \
+        --repeat {{REPEAT}}
