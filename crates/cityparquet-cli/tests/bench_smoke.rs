@@ -68,7 +68,7 @@ fn bench_run_produces_the_default_ten_variant_matrix_for_delft() {
         rows.len(),
         10,
         "the default variant set must produce exactly 10 rows (M5 Codex-review fix 4 added \
-         `cityparquet+rg4096` / `cityparquet+hilbert+rg4096` to the prior 8), got: {csv_text}"
+         `cityparquet+rg512` / `cityparquet+hilbert+rg512` to the prior 8), got: {csv_text}"
     );
 
     let mut by_variant = std::collections::HashMap::new();
@@ -95,13 +95,13 @@ fn bench_run_produces_the_default_ten_variant_matrix_for_delft() {
              row_groups_total ({row_groups_total})"
         );
 
-        by_variant.insert(variant, row_groups_touched);
+        by_variant.insert(variant, (row_groups_total, row_groups_touched));
     }
 
-    let cityparquet_touched = *by_variant
+    let (_, cityparquet_touched) = *by_variant
         .get("cityparquet")
         .expect("the default set must include the plain 'cityparquet' variant");
-    let hilbert_touched = *by_variant
+    let (_, hilbert_touched) = *by_variant
         .get("cityparquet+hilbert")
         .expect("the default set must include 'cityparquet+hilbert'");
     assert!(
@@ -110,25 +110,34 @@ fn bench_run_produces_the_default_ten_variant_matrix_for_delft() {
          window query: hilbert={hilbert_touched} cityparquet={cityparquet_touched}"
     );
 
-    // M5 Codex review (Important finding 4): delft (2231 objects) is still
-    // smaller than the 4096-row row-group size, so both `+rg4096` rows land
-    // in a single row group here too (`row_groups_touched` == 1 either
-    // way) — this only proves the two rows exist and preserve the same
-    // ordering invariant as the un-sized pair above; the row-group COUNT
-    // actually growing past 1, and Hilbert's pruning effect on top of that,
-    // is only observable on the larger pinned 3DBAG tiles (see
-    // `bench/README.md`'s pruning numbers).
-    let rg4096_touched = *by_variant
-        .get("cityparquet+rg4096")
-        .expect("the default set must include 'cityparquet+rg4096'");
-    let hilbert_rg4096_touched = *by_variant
-        .get("cityparquet+hilbert+rg4096")
-        .expect("the default set must include 'cityparquet+hilbert+rg4096'");
+    // M5 Codex review (Important finding 4, revised ruling): the default
+    // rg-size rows are `+rg512`, small enough that delft's 2231 objects
+    // genuinely split into multiple row groups (ceil(2231/512) = 5) — the
+    // original `+rg4096` choice left even the largest committed dataset
+    // (2423 objects) in a single group, demonstrating nothing. With real
+    // groups to prune, Hilbert ordering must do no worse than source order
+    // on the window query (measured: source order touches 2 of 5, Hilbert
+    // 1 of 5 — see `bench/README.md`'s pruning numbers).
+    let (rg512_total, rg512_touched) = *by_variant
+        .get("cityparquet+rg512")
+        .expect("the default set must include 'cityparquet+rg512'");
+    let (hilbert_rg512_total, hilbert_rg512_touched) = *by_variant
+        .get("cityparquet+hilbert+rg512")
+        .expect("the default set must include 'cityparquet+hilbert+rg512'");
+    assert_eq!(
+        rg512_total, 5,
+        "cityparquet+rg512 on delft (2231 objects) must write ceil(2231/512) = 5 row groups"
+    );
+    assert_eq!(
+        hilbert_rg512_total, 5,
+        "cityparquet+hilbert+rg512 on delft (2231 objects) must write ceil(2231/512) = 5 row \
+         groups"
+    );
     assert!(
-        hilbert_rg4096_touched <= rg4096_touched,
-        "cityparquet+hilbert+rg4096 should touch no more row groups than plain \
-         cityparquet+rg4096 on delft's window query: \
-         hilbert_rg4096={hilbert_rg4096_touched} rg4096={rg4096_touched}"
+        hilbert_rg512_touched <= rg512_touched,
+        "cityparquet+hilbert+rg512 should touch no more row groups than plain \
+         cityparquet+rg512 on delft's window query: \
+         hilbert_rg512={hilbert_rg512_touched} rg512={rg512_touched}"
     );
 }
 

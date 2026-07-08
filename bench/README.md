@@ -13,9 +13,12 @@ directory is created (and later deleted) OUTSIDE the timed window for every
 repeat, matching the baseline script's `mktemp -d`-per-sample discipline —
 where the original run's repeats 2..n also timed the purge/unlink of the
 previous repeat's files. The default variant set gained
-`cityparquet+rg4096` and `cityparquet+hilbert+rg4096` (the new `+rg<N>`
-row-group-size override); see "Row-group pruning" under Observations for
-what these do and do not show at the committed dataset sizes.
+`cityparquet+rg512` and `cityparquet+hilbert+rg512` (the new `+rg<N>`
+row-group-size override; initially ruled as `+rg4096`, but every committed
+dataset has fewer than 4,096 rows, so rg4096 wrote a single row group
+everywhere and demonstrated nothing — re-ruled to rg512 after the first
+re-run exposed that). See "Row-group pruning" under Observations for what
+the committed rg512 rows show.
 
 `bench/results/*.csv` and this README are committed (they are the paper's
 measurement artefacts); `bench/data/` (the downloaded 3DBAG tiles) is
@@ -214,7 +217,7 @@ Smallest `total_bytes` per dataset, cityparquet-rs variants
 
 | dataset | winner | bytes | `cityparquet` bytes |
 |---|---|---:|---:|
-| delft | `cityparquet+hilbert` (tied with `cityparquet+hilbert+rg4096`) | 2,295,504 | 2,337,653 |
+| delft | `cityparquet+hilbert` | 2,295,504 | 2,337,653 |
 | railway | `no-bss` | 1,377,944 | 1,378,783 |
 | 9-284-556 | `no-dictionary` | 2,706,579 | 2,747,936 |
 | 9-304-532 | `no-dictionary` | 782,329 | 797,336 |
@@ -230,40 +233,44 @@ itself rather than a measurement artefact.
 
 - `snappy` is the largest on every dataset (delft 3,720,228; railway
   2,544,962; 9-284-556 4,424,207; 9-304-532 1,195,769; 9-196-328 159,096)
-  and records the lowest cityparquet-rs `write_s` on all 5 datasets — but
+  and records the lowest cityparquet-rs `write_s` on 4 of 5 datasets — but
   its margin over the ZSTD variants is under 10 ms everywhere (largest:
-  delft, 0.113239 s vs the ZSTD variants' 0.121478–0.126352 s), so no
+  delft, 0.118409 s vs the ZSTD variants' 0.124565–0.132224 s), so no
   speed ranking is cited from it.
 - `write_s` spread across the nine ZSTD-based cityparquet-rs variants is
-  under 10 ms on four of five datasets (delft 0.121478–0.126352 s;
-  9-284-556 0.178493–0.183181 s; 9-304-532 0.053066–0.058542 s; 9-196-328
-  0.005661–0.008437 s) and 10.0 ms on railway (0.143509–0.153508 s) —
-  i.e. within noise; the honest summary is that the recipe/ordering/layout
-  choice does not measurably change write time at these dataset sizes.
-- Row-group pruning (`+rg4096` rows, added post-review to make pruning
-  measurable): **at the committed dataset sizes they do NOT achieve that**
-  — even the largest dataset (9-284-556, 2423 objects) has fewer rows than
-  the 4096-row row-group size, so `cityparquet+rg4096` and
-  `cityparquet+hilbert+rg4096` still write `row_groups_total = 1` on every
-  dataset, `row_groups_touched` is 1 with or without Hilbert, and
-  Hilbert+rg4096 does not beat rg4096 anywhere (they tie at 1/1, and their
-  `total_bytes` are byte-identical to their unsuffixed counterparts, as a
-  single-group file must be). The paper cannot claim a pruning effect from
-  the committed rg4096 rows. The only multi-row-group rows in the
-  committed CSVs remain `cityparquet+by-type` (delft 2/2, railway
-  14 total / 4 touched, tiles 2/2).
-- Row-group pruning IS real and measurable once a dataset actually spans
-  multiple groups — demonstrated with a diagnostic run at `+rg512`
-  (2026-07-08, same machine, `--repeat 3 --skip-roundtrip`; NOT part of
-  the committed default set or CSVs, reproduce with
-  `cityparquet bench --input <file> --out <csv> --variants cityparquet+rg512,cityparquet+hilbert+rg512`):
-  - delft: 5 row groups; the 5% window touches 2 of 5 in source order but
-    1 of 5 under Hilbert (`window_query_s` 0.005052 s vs 0.002505 s) —
+  under 12 ms on every dataset (delft 0.124565–0.132224 s; railway
+  0.145628–0.157061 s; 9-284-556 0.179308–0.186732 s; 9-304-532
+  0.053040–0.057616 s; 9-196-328 0.006265–0.008268 s) — i.e. within or
+  barely above noise; the honest summary is that the
+  recipe/ordering/layout choice does not measurably change write time at
+  these dataset sizes.
+- Row-group pruning (`+rg512` rows; the review's original `+rg4096`
+  ruling wrote a single group everywhere — every committed dataset has
+  fewer than 4,096 rows — and was re-ruled to rg512, at which the two
+  larger datasets genuinely split into 5 groups):
+  - delft (5 groups): the 5% window touches **2 of 5 in source order but
+    1 of 5 under Hilbert** (`window_query_s` 0.005681 s vs 0.002508 s) —
     Hilbert ordering genuinely improves pruning here.
-  - 9-284-556: 5 row groups; the window touches 1 of 5 BOTH with and
-    without Hilbert — a 5x pruning win over the single-group layout's
-    full-file read, but Hilbert adds nothing on this tile because 3DBAG's
-    source feature order is already spatially coherent.
+  - 9-284-556 (5 groups): the window touches **1 of 5 both with and
+    without Hilbert** (0.002808 s vs 0.002572 s) — a 5x pruning win over
+    the single-group layout's full-file read, but Hilbert adds nothing on
+    this tile: 3DBAG's source feature order is already spatially
+    coherent, itself a citable observation.
+  - 9-304-532 (930 rows, 2 groups): source order touches **2 of 2** (no
+    pruning) but Hilbert touches **0 of 2** — the tighter per-group bbox
+    statistics Hilbert produces exclude the lower-left 5% window
+    entirely (`window_query_s` 0.004424 s vs 0.000168 s).
+  - railway (121 rows) and 9-196-328 (60 rows) are below the 512-row
+    group size, so their `+rg512` rows stay single-group and
+    byte-identical to their unsuffixed counterparts — grammar/parity
+    only.
+  - Cost disclosure: smaller row groups cost bytes and full-scan time —
+    delft `cityparquet+rg512` is 2,456,530 B vs `cityparquet`'s
+    2,337,653 B (+5.1%) with `full_scan_s` 0.012029 s vs 0.008864 s;
+    9-284-556 is 2,876,525 B vs 2,747,936 B (+4.7%) with 0.013451 s vs
+    0.008660 s. Pruning gains are bought with compression/scan overhead.
+  - The other multi-row-group rows remain `cityparquet+by-type` (delft
+    2/2, railway 14 total / 4 touched, tiles 2/2).
 - `cityparquet+by-type` is larger than `cityparquet` on every dataset
   (delft +28,755 B; railway +119,832 B; 9-284-556 +28,501 B; 9-304-532
   +35,590 B; 9-196-328 +34,730 B).
@@ -271,12 +278,12 @@ itself rather than a measurement artefact.
   column, no window query — see `scripts/bench_duckdb.sh` header for what
   is and is not comparable, and the "Baseline geometry coverage" section
   above for what geometry it does and does not actually contain): `write_s`
-  0.389569/0.659357/0.276098/0.097165 s
-  (delft/9-284-556/9-304-532/9-196-328), each sample carrying ~0.075 s
+  0.390594/0.666161/0.271854/0.097547 s
+  (delft/9-284-556/9-304-532/9-196-328), each sample carrying ~0.076 s
   process + `LOAD cityjson` overhead (disclosed, undeducted; see the
   `# calibration:` stderr line). Baseline-vs-harness write deltas are well
-  above the 10 ms noise floor on every dataset (e.g. delft 0.389569 s vs
-  0.123560 s). ZSTD baseline bytes: delft 838,144; 9-284-556 1,663,803;
+  above the 10 ms noise floor on every dataset (e.g. delft 0.390594 s vs
+  0.132224 s). ZSTD baseline bytes: delft 838,144; 9-284-556 1,663,803;
   9-304-532 517,762; 9-196-328 69,628. SNAPPY baseline bytes on 9-284-556
   (2,777,385) exceed every cityparquet-rs variant except `snappy`. **All
   four of these numbers are against a baseline missing LoD0 entirely**
@@ -285,11 +292,11 @@ itself rather than a measurement artefact.
   only 3 of 4 LoDs; a hypothetical complete baseline would be larger
   still, so this is not an overstatement in cityparquet-rs's favour, but
   it is not a like-for-like byte comparison either. **Railway's `write_s`
-  (0.316058 s) and ZSTD bytes (8,450 B) are excluded from this list and
+  (0.314682 s) and ZSTD bytes (8,450 B) are excluded from this list and
   from all comparison above: the baseline coverage table shows the
   extension writes zero geometry for railway, so those numbers describe an
   attribute-only Parquet file, not a competing encoding of the same data —
   see "Baseline geometry coverage" above.**
-- Baseline `full_scan_s` (0.057865–0.073200 s) is dominated by the same
+- Baseline `full_scan_s` (0.058130–0.073517 s) is dominated by the same
   per-process overhead; the harness's in-process `full_scan_s` is
-  0.000958–0.010458 s across all variants and datasets.
+  0.001229–0.013451 s across all variants and datasets.

@@ -118,7 +118,7 @@ enum Commands {
 
         /// Comma-separated variant identifiers
         /// (`<preset>[+hilbert][+by-type][+rg<N>]`, e.g.
-        /// `cityparquet+hilbert`, `cityparquet+rg4096`); omit for the
+        /// `cityparquet+hilbert`, `cityparquet+rg512`); omit for the
         /// default 10-variant set
         #[arg(long)]
         variants: Option<String>,

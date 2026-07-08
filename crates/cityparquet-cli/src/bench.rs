@@ -79,11 +79,15 @@ impl Default for BenchOptions {
 
 /// The default 10-variant set: every [`RecipePreset::ALL`] plain, plus
 /// `cityparquet+hilbert`, `cityparquet+by-type`, and — M5 Codex review
-/// (Important finding 4) — `cityparquet+rg4096` /
-/// `cityparquet+hilbert+rg4096`, a small enough row-group size that even
-/// the committed fixtures/tiles (60–2,423 objects) split into multiple row
-/// groups, so `row_groups_touched` can actually demonstrate pruning instead
-/// of every dataset landing in the single default-sized (65,536-row) group.
+/// (Important finding 4) — `cityparquet+rg512` /
+/// `cityparquet+hilbert+rg512`, a row-group size small enough that the
+/// larger committed datasets (delft 2,231 objects, the dense-urban tile
+/// 2,423) genuinely split into multiple (5) row groups, so
+/// `row_groups_touched` can actually demonstrate pruning instead of every
+/// dataset landing in a single group. 512 rather than the originally-ruled
+/// 4096: even the LARGEST committed dataset has fewer than 4,096 rows, so
+/// rg4096 still produced one group everywhere and demonstrated nothing —
+/// confirmed empirically on the 2026-07-08 re-run and re-ruled to rg512.
 fn default_variant_ids() -> Vec<String> {
     let mut ids: Vec<String> = RecipePreset::ALL
         .iter()
@@ -91,8 +95,8 @@ fn default_variant_ids() -> Vec<String> {
         .collect();
     ids.push("cityparquet+hilbert".to_string());
     ids.push("cityparquet+by-type".to_string());
-    ids.push("cityparquet+rg4096".to_string());
-    ids.push("cityparquet+hilbert+rg4096".to_string());
+    ids.push("cityparquet+rg512".to_string());
+    ids.push("cityparquet+hilbert+rg512".to_string());
     ids
 }
 
@@ -123,8 +127,8 @@ impl ParsedVariant {
 
 /// Parses `<preset>[+hilbert][+by-type][+rg<N>]` (suffixes in any order,
 /// each at most once) — e.g. `cityparquet`, `cityparquet+hilbert`,
-/// `no-bss+by-type+hilbert`, `cityparquet+rg4096`,
-/// `cityparquet+hilbert+rg4096`. `<N>` in `+rg<N>` must be a positive
+/// `no-bss+by-type+hilbert`, `cityparquet+rg512`,
+/// `cityparquet+hilbert+rg512`. `<N>` in `+rg<N>` must be a positive
 /// (non-zero) integer; a duplicated suffix (e.g.
 /// `cityparquet+hilbert+hilbert`, or two `+rg<N>`s) is rejected rather than
 /// silently accepted as a distinct-looking label for the same or an
