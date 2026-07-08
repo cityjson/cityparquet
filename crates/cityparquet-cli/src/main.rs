@@ -113,12 +113,13 @@ enum Commands {
 
         /// Number of repeats per timed measurement (write/full-scan/window-
         /// query); the reported value is the median across repeats
-        #[arg(long, default_value = "3")]
+        #[arg(long, default_value = "5")]
         repeat: usize,
 
         /// Comma-separated variant identifiers
-        /// (`<preset>[+hilbert][+by-type]`, e.g. `cityparquet+hilbert`);
-        /// omit for the default 8-variant set
+        /// (`<preset>[+hilbert][+by-type][+rg<N>]`, e.g.
+        /// `cityparquet+hilbert`, `cityparquet+rg4096`); omit for the
+        /// default 10-variant set
         #[arg(long)]
         variants: Option<String>,
 

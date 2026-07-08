@@ -33,7 +33,7 @@ use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet::recipe::RecipePreset;
+use cityparquet::recipe::{RecipePreset, WriterRecipe};
 use cityparquet::schema::{PackageManifest, Profile};
 use cityparquet::{CityParquetError, Result};
 
@@ -49,11 +49,12 @@ pub struct BenchOptions {
     /// Number of repeats per timed measurement (write/full-scan/window-query);
     /// the reported value is the MEDIAN across repeats. Must be >= 1.
     pub repeat: usize,
-    /// Variant identifiers (`<preset>[+hilbert][+by-type]`); empty selects
-    /// the default 8-variant set (see [`default_variant_ids`]).
+    /// Variant identifiers (`<preset>[+hilbert][+by-type][+rg<N>]`); empty
+    /// selects the default 10-variant set (see [`default_variant_ids`]).
     pub variants: Vec<String>,
     /// Fraction of the dataset bbox's x/y extent the window query covers,
-    /// anchored at the bbox's lower-left corner (z is always the full range).
+    /// anchored at the bbox's lower-left corner (z is always the full
+    /// range). Must satisfy `0 < window_frac <= 1` and be finite.
     pub window_frac: f64,
     /// Skip the export+compare round-trip check; `roundtrip_equal` is then
     /// left empty in the CSV rather than `true`/`false`.
@@ -65,7 +66,10 @@ impl Default for BenchOptions {
         Self {
             input: PathBuf::new(),
             out_csv: PathBuf::new(),
-            repeat: 3,
+            // M5 Codex review, Important finding 5(b): 3 repeats is too few
+            // to trust the small (sub-10ms) deltas the paper draws on; 5
+            // gives a sturdier median at a modest extra cost.
+            repeat: 5,
             variants: Vec::new(),
             window_frac: 0.05,
             skip_roundtrip: false,
@@ -73,8 +77,13 @@ impl Default for BenchOptions {
     }
 }
 
-/// The default 8-variant set: every [`RecipePreset::ALL`] plain, plus
-/// `cityparquet+hilbert` and `cityparquet+by-type`.
+/// The default 10-variant set: every [`RecipePreset::ALL`] plain, plus
+/// `cityparquet+hilbert`, `cityparquet+by-type`, and — M5 Codex review
+/// (Important finding 4) — `cityparquet+rg4096` /
+/// `cityparquet+hilbert+rg4096`, a small enough row-group size that even
+/// the committed fixtures/tiles (60–2,423 objects) split into multiple row
+/// groups, so `row_groups_touched` can actually demonstrate pruning instead
+/// of every dataset landing in the single default-sized (65,536-row) group.
 fn default_variant_ids() -> Vec<String> {
     let mut ids: Vec<String> = RecipePreset::ALL
         .iter()
@@ -82,20 +91,44 @@ fn default_variant_ids() -> Vec<String> {
         .collect();
     ids.push("cityparquet+hilbert".to_string());
     ids.push("cityparquet+by-type".to_string());
+    ids.push("cityparquet+rg4096".to_string());
+    ids.push("cityparquet+hilbert+rg4096".to_string());
     ids
 }
 
-/// One parsed variant identifier: a [`RecipePreset`] plus the row ordering
-/// and table layout its `+hilbert`/`+by-type` suffixes (if any) select.
+/// One parsed variant identifier: a [`RecipePreset`] plus the row ordering,
+/// table layout, and (optional) row-group-size override its
+/// `+hilbert`/`+by-type`/`+rg<N>` suffixes (if any) select.
 #[derive(Debug, Clone, Copy)]
 struct ParsedVariant {
     preset: RecipePreset,
     ordering: RowOrder,
     layout: TableLayout,
+    /// `Some(n)` overrides [`RecipePreset::recipe`]'s default row-group size
+    /// (parsed from a `+rg<N>` suffix); `None` keeps the preset's default.
+    row_group_size: Option<usize>,
 }
 
-/// Parses `<preset>[+hilbert][+by-type]` (suffixes in either order) — e.g.
-/// `cityparquet`, `cityparquet+hilbert`, `no-bss+by-type+hilbert`.
+impl ParsedVariant {
+    /// This variant's [`WriterRecipe`], with [`Self::row_group_size`]
+    /// applied on top of the preset's default when present.
+    fn recipe(&self) -> WriterRecipe {
+        let mut recipe = self.preset.recipe();
+        if let Some(row_group_size) = self.row_group_size {
+            recipe.row_group_size = row_group_size;
+        }
+        recipe
+    }
+}
+
+/// Parses `<preset>[+hilbert][+by-type][+rg<N>]` (suffixes in any order,
+/// each at most once) — e.g. `cityparquet`, `cityparquet+hilbert`,
+/// `no-bss+by-type+hilbert`, `cityparquet+rg4096`,
+/// `cityparquet+hilbert+rg4096`. `<N>` in `+rg<N>` must be a positive
+/// (non-zero) integer; a duplicated suffix (e.g.
+/// `cityparquet+hilbert+hilbert`, or two `+rg<N>`s) is rejected rather than
+/// silently accepted as a distinct-looking label for the same or an
+/// ambiguous configuration (M5 Codex review, Minor finding).
 fn parse_variant(id: &str) -> Result<ParsedVariant> {
     let mut parts = id.split('+');
     let preset_name = parts.next().unwrap_or("");
@@ -103,10 +136,30 @@ fn parse_variant(id: &str) -> Result<ParsedVariant> {
 
     let mut ordering = RowOrder::Source;
     let mut layout = TableLayout::Single;
+    let mut row_group_size: Option<usize> = None;
+    let mut seen_hilbert = false;
+    let mut seen_by_type = false;
     for part in parts {
+        if let Some(digits) = part.strip_prefix("rg") {
+            if row_group_size.is_some() {
+                return Err(variant_grammar_err(id));
+            }
+            let n: usize = digits.parse().map_err(|_| variant_grammar_err(id))?;
+            if n == 0 {
+                return Err(variant_grammar_err(id));
+            }
+            row_group_size = Some(n);
+            continue;
+        }
         match part {
-            "hilbert" => ordering = RowOrder::Hilbert,
-            "by-type" => layout = TableLayout::ByType,
+            "hilbert" if !seen_hilbert => {
+                seen_hilbert = true;
+                ordering = RowOrder::Hilbert;
+            }
+            "by-type" if !seen_by_type => {
+                seen_by_type = true;
+                layout = TableLayout::ByType;
+            }
             _ => return Err(variant_grammar_err(id)),
         }
     }
@@ -115,14 +168,15 @@ fn parse_variant(id: &str) -> Result<ParsedVariant> {
         preset,
         ordering,
         layout,
+        row_group_size,
     })
 }
 
 fn variant_grammar_err(id: &str) -> CityParquetError {
     let presets: Vec<&str> = RecipePreset::ALL.iter().map(|p| p.name()).collect();
     CityParquetError::Schema(format!(
-        "invalid variant '{id}': expected `<preset>[+hilbert][+by-type]` where preset is one \
-         of: {}",
+        "invalid variant '{id}': expected `<preset>[+hilbert][+by-type][+rg<N>]` (each suffix \
+         at most once, <N> a positive integer) where preset is one of: {}",
         presets.join(", ")
     ))
 }
@@ -170,8 +224,12 @@ impl BenchRow {
             Some(false) => "false",
             None => "",
         };
+        // M5 Codex review, Important finding 5(a): microsecond precision
+        // (6 decimals), not millisecond (3) — several observations compare
+        // deltas well under a millisecond, which 3-decimal rounding erases
+        // outright.
         format!(
-            "{},{},{},{:.3},{},{},{},{:.3},{:.3},{},{},{}",
+            "{},{},{},{:.6},{},{},{},{:.6},{:.6},{},{},{}",
             self.dataset,
             self.variant,
             self.object_count,
@@ -307,30 +365,52 @@ fn run_variant(
     variant_id: &str,
     variant: ParsedVariant,
 ) -> Result<BenchRow> {
-    let out_dir = tempfile::tempdir().map_err(|e| io_err(e.to_string()))?;
-
-    // --- write_s: `opts.repeat` conversions into the SAME tempdir
-    // (`overwrite: true`, harmless on the first, empty-directory run too),
-    // keeping the last run's `ConvertReport` — every repeat writes bit-for-
-    // bit identical output, so which one is kept does not matter.
+    // --- write_s: `opts.repeat` CLEAN conversions. Each repeat gets its
+    // OWN fresh, empty tempdir, created — and, once the sample is captured,
+    // dropped (deleting everything `convert` just wrote) — OUTSIDE the
+    // timed window, and converts with `overwrite: false` (nothing to purge:
+    // the directory is brand new), so every timed sample pays for exactly
+    // one clean encode+write and nothing else. This matches the DuckDB
+    // baseline script (`scripts/bench_duckdb.sh`'s `mktemp -d` per sample).
+    // Before this fix, every repeat converted into the SAME tempdir with
+    // `overwrite: true`, so repeats after the first ALSO timed the
+    // purge/unlink of the PREVIOUS repeat's files inside the timed window —
+    // a cost the baseline never paid, biasing variants that write more
+    // files (e.g. `by-type`, or any Compatibility-profile sidecar) to look
+    // slower than their actual encode cost (M5 Codex review, Important
+    // finding 3).
     let mut write_times = Vec::with_capacity(opts.repeat);
-    let mut report = None;
     for _ in 0..opts.repeat {
+        let repeat_dir = tempfile::tempdir().map_err(|e| io_err(e.to_string()))?;
         let mut convert_opts =
-            ConvertOptions::new(opts.input.clone(), out_dir.path().to_path_buf());
+            ConvertOptions::new(opts.input.clone(), repeat_dir.path().to_path_buf());
         convert_opts.profile = Profile::Compatibility;
-        convert_opts.recipe = variant.preset.recipe();
+        convert_opts.recipe = variant.recipe();
         convert_opts.ordering = variant.ordering;
         convert_opts.layout = variant.layout;
-        convert_opts.overwrite = true;
+        convert_opts.overwrite = false;
 
         let start = Instant::now();
-        let this_report = convert(&convert_opts)?;
+        convert(&convert_opts)?;
         write_times.push(start.elapsed());
-        report = Some(this_report);
+        // `repeat_dir` drops here — deleting everything `convert` just
+        // wrote — AFTER `start.elapsed()` was already captured, so cleanup
+        // never lands inside a timed window.
     }
-    let report = report.expect("opts.repeat >= 1, so the loop above ran at least once");
     let write_s = median_secs(write_times);
+
+    // --- The package used for every measurement BELOW (size, full scan,
+    // window query, round trip) is written once more, untimed, into its own
+    // fresh `out_dir` — kept separate from the timing loop above so those
+    // measurements never contend with, or get billed into, `write_s`.
+    let out_dir = tempfile::tempdir().map_err(|e| io_err(e.to_string()))?;
+    let mut convert_opts = ConvertOptions::new(opts.input.clone(), out_dir.path().to_path_buf());
+    convert_opts.profile = Profile::Compatibility;
+    convert_opts.recipe = variant.recipe();
+    convert_opts.ordering = variant.ordering;
+    convert_opts.layout = variant.layout;
+    convert_opts.overwrite = false;
+    let report = convert(&convert_opts)?;
 
     // --- Package sizes, from the manifest `convert` just wrote.
     let manifest_text = fs::read_to_string(out_dir.path().join("metadata.json")).map_err(|e| {
@@ -495,9 +575,23 @@ fn run_variant(
 /// `opts.repeat` times and then unconditionally take the median of the
 /// collected samples, so `repeat == 0` would otherwise panic deep inside
 /// `median_secs` (empty `Vec`) instead of failing fast with a clear error.
+///
+/// `opts.window_frac` must satisfy `0 < window_frac <= 1` and be finite
+/// (M5 Codex review, Minor finding): the window query is built by scaling
+/// the dataset bbox's x/y extent by this fraction (see [`run_variant`]), so
+/// `0`, negative, `NaN`/`inf`, or `> 1` values would silently produce a
+/// degenerate, inverted, or larger-than-the-dataset "window" — e.g.
+/// `--window-frac 5` intended as 5% instead benchmarking a 500% extent that
+/// touches every row group.
 pub fn run(opts: &BenchOptions) -> Result<()> {
     if opts.repeat == 0 {
         return Err(io_err("repeat must be >= 1"));
+    }
+    if !(opts.window_frac.is_finite() && opts.window_frac > 0.0 && opts.window_frac <= 1.0) {
+        return Err(io_err(format!(
+            "window_frac must be finite and satisfy 0 < window_frac <= 1, got {}",
+            opts.window_frac
+        )));
     }
 
     let variant_ids = if opts.variants.is_empty() {

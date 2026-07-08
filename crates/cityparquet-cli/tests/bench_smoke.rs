@@ -32,7 +32,7 @@ impl Row {
 }
 
 #[test]
-fn bench_run_produces_the_default_eight_variant_matrix_for_delft() {
+fn bench_run_produces_the_default_ten_variant_matrix_for_delft() {
     let out_dir = tempfile::tempdir().unwrap();
     let out_csv = out_dir.path().join("bench.csv");
 
@@ -66,8 +66,9 @@ fn bench_run_produces_the_default_eight_variant_matrix_for_delft() {
         .collect();
     assert_eq!(
         rows.len(),
-        8,
-        "the default variant set must produce exactly 8 rows, got: {csv_text}"
+        10,
+        "the default variant set must produce exactly 10 rows (M5 Codex-review fix 4 added \
+         `cityparquet+rg4096` / `cityparquet+hilbert+rg4096` to the prior 8), got: {csv_text}"
     );
 
     let mut by_variant = std::collections::HashMap::new();
@@ -107,6 +108,27 @@ fn bench_run_produces_the_default_eight_variant_matrix_for_delft() {
         hilbert_touched <= cityparquet_touched,
         "cityparquet+hilbert should touch no more row groups than plain cityparquet on delft's \
          window query: hilbert={hilbert_touched} cityparquet={cityparquet_touched}"
+    );
+
+    // M5 Codex review (Important finding 4): delft (2231 objects) is still
+    // smaller than the 4096-row row-group size, so both `+rg4096` rows land
+    // in a single row group here too (`row_groups_touched` == 1 either
+    // way) — this only proves the two rows exist and preserve the same
+    // ordering invariant as the un-sized pair above; the row-group COUNT
+    // actually growing past 1, and Hilbert's pruning effect on top of that,
+    // is only observable on the larger pinned 3DBAG tiles (see
+    // `bench/README.md`'s pruning numbers).
+    let rg4096_touched = *by_variant
+        .get("cityparquet+rg4096")
+        .expect("the default set must include 'cityparquet+rg4096'");
+    let hilbert_rg4096_touched = *by_variant
+        .get("cityparquet+hilbert+rg4096")
+        .expect("the default set must include 'cityparquet+hilbert+rg4096'");
+    assert!(
+        hilbert_rg4096_touched <= rg4096_touched,
+        "cityparquet+hilbert+rg4096 should touch no more row groups than plain \
+         cityparquet+rg4096 on delft's window query: \
+         hilbert_rg4096={hilbert_rg4096_touched} rg4096={rg4096_touched}"
     );
 }
 
@@ -189,4 +211,95 @@ fn bench_run_rejects_appending_to_a_csv_with_a_foreign_header() {
         msg.contains("dataset,variant,some,other,schema"),
         "error should quote the mismatched header found on disk, got: {msg}"
     );
+}
+
+/// M5 Codex review (Minor finding): `--window-frac` must satisfy
+/// `0 < window_frac <= 1` and be finite — checked fast, before any
+/// conversion runs, mirroring the `repeat >= 1` guard above. Table-driven
+/// over the invalid shapes the window-scaling arithmetic in `run_variant`
+/// would otherwise mishandle silently: zero/negative (an inverted or
+/// empty window), `> 1` (a window larger than the dataset, e.g. an
+/// intended "5%" typed as `5`), and non-finite (`NaN`/`inf`).
+#[test]
+fn bench_run_rejects_an_invalid_window_frac() {
+    for bad in [0.0, -0.1, 1.5, 5.0, f64::NAN, f64::INFINITY] {
+        let out_dir = tempfile::tempdir().unwrap();
+        let opts = BenchOptions {
+            input: PathBuf::from("/nonexistent/does-not-exist.city.json"),
+            out_csv: out_dir.path().join("bench.csv"),
+            repeat: 1,
+            variants: Vec::new(),
+            window_frac: bad,
+            skip_roundtrip: true,
+        };
+
+        let err = run(&opts).expect_err(&format!("window_frac {bad} must error"));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("window_frac") && msg.contains("0 < window_frac <= 1"),
+            "window_frac {bad}: error should name the 0 < window_frac <= 1 requirement, got: {msg}"
+        );
+    }
+}
+
+/// M5 Codex review (Minor finding): the variant parser must reject a
+/// duplicated suffix (e.g. `+hilbert` or `+by-type` or `+rg<N>` appearing
+/// twice) rather than silently accepting it as a distinct-looking label for
+/// the same — or, for two conflicting `+rg<N>`s, an ambiguous — writer
+/// configuration.
+#[test]
+fn bench_run_rejects_duplicate_variant_suffixes() {
+    for variant in [
+        "cityparquet+hilbert+hilbert",
+        "cityparquet+by-type+by-type",
+        "cityparquet+rg4096+rg8192",
+    ] {
+        let out_dir = tempfile::tempdir().unwrap();
+        let opts = BenchOptions {
+            input: fixture("delft.city.jsonl"),
+            out_csv: out_dir.path().join("bench.csv"),
+            repeat: 1,
+            variants: vec![variant.to_string()],
+            window_frac: 0.05,
+            skip_roundtrip: true,
+        };
+
+        let err = run(&opts).expect_err(&format!("duplicate suffix '{variant}' must error"));
+        let msg = err.to_string();
+        assert!(
+            msg.contains(variant),
+            "variant '{variant}': error should name the offending variant, got: {msg}"
+        );
+    }
+}
+
+/// M5 Codex review (Important finding 4): the `+rg<N>` suffix's `<N>` must
+/// be a positive integer — zero, negative, non-numeric, and empty are all
+/// rejected rather than silently accepted as some default/garbage
+/// row-group size.
+#[test]
+fn bench_run_rejects_a_malformed_rg_suffix() {
+    for variant in [
+        "cityparquet+rg0",
+        "cityparquet+rg-1",
+        "cityparquet+rgabc",
+        "cityparquet+rg",
+    ] {
+        let out_dir = tempfile::tempdir().unwrap();
+        let opts = BenchOptions {
+            input: fixture("delft.city.jsonl"),
+            out_csv: out_dir.path().join("bench.csv"),
+            repeat: 1,
+            variants: vec![variant.to_string()],
+            window_frac: 0.05,
+            skip_roundtrip: true,
+        };
+
+        let err = run(&opts).expect_err(&format!("malformed rg suffix '{variant}' must error"));
+        let msg = err.to_string();
+        assert!(
+            msg.contains(variant),
+            "variant '{variant}': error should name the offending variant, got: {msg}"
+        );
+    }
 }
