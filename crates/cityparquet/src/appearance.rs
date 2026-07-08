@@ -49,8 +49,12 @@ impl AppearanceInterner {
         Self::default()
     }
 
-    /// Dedupe by canonical JSON (serde_json's default `BTreeMap` key
-    /// ordering makes `to_string` canonical); returns the global row id.
+    /// Dedupe by canonical JSON: the key is `def` serialized with object
+    /// members sorted by key (recursively; array order is semantic and left
+    /// alone), so dedupe identity does not depend on serde_json's map type
+    /// (`BTreeMap` by default, `IndexMap` under the `preserve_order`
+    /// feature, which other workspace members may enable). Returns the
+    /// global row id.
     pub fn intern_material(&mut self, def: &Value) -> usize {
         intern(def, &mut self.materials, &mut self.material_ids)
     }
@@ -256,7 +260,7 @@ impl AppearanceInterner {
 }
 
 fn intern(def: &Value, defs: &mut Vec<Value>, ids: &mut HashMap<String, usize>) -> usize {
-    let key = def.to_string();
+    let key = canonical_json_string(def);
     if let Some(&id) = ids.get(&key) {
         return id;
     }
@@ -264,6 +268,49 @@ fn intern(def: &Value, defs: &mut Vec<Value>, ids: &mut HashMap<String, usize>) 
     defs.push(def.clone());
     ids.insert(key, id);
     id
+}
+
+/// Serializes `v` to a JSON string with object members sorted by key at
+/// every level (arrays keep their original order — array order is
+/// semantic). Unlike `Value::to_string()`, this is independent of
+/// serde_json's internal object-map type: correct whether the crate is
+/// built with the default sorted `BTreeMap` or, because some other
+/// workspace member enables serde_json's `preserve_order` feature and
+/// Cargo unifies features workspace-wide, an insertion-order `IndexMap`.
+pub(crate) fn canonical_json_string(v: &Value) -> String {
+    let mut out = String::new();
+    write_canonical(v, &mut out);
+    out
+}
+
+fn write_canonical(v: &Value, out: &mut String) {
+    match v {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (i, k) in keys.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(k).unwrap());
+                out.push(':');
+                write_canonical(&map[*k], out);
+            }
+            out.push('}');
+        }
+        Value::Array(arr) => {
+            out.push('[');
+            for (i, e) in arr.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical(e, out);
+            }
+            out.push(']');
+        }
+        other => out.push_str(&other.to_string()),
+    }
 }
 
 /// A *ring* is the innermost texture-map array: `[t, uv0, uv1, ...]` where
@@ -309,6 +356,43 @@ mod tests {
         assert_eq!(id_a, id_b, "same content (different key order) must dedupe");
         assert_eq!(interner.materials().len(), 1);
         assert_eq!(interner.materials()[id_a], a);
+    }
+
+    /// Builds two `Value::Object`s with the same members but inserted in
+    /// different order (not just written in a different literal order via
+    /// `json!`, but actually constructed via distinct `insert` sequences),
+    /// then asserts `canonical_json_string` and `intern_material` agree they
+    /// are the same definition. Under serde_json's default `BTreeMap`
+    /// object-map the two maps' internal representations already coincide
+    /// regardless of insertion order, so this passes trivially in that
+    /// configuration; under `preserve_order` (an `IndexMap`, which some
+    /// other workspace member may pull in and Cargo unifies workspace-wide)
+    /// the two maps' internal iteration orders would *differ*, which is
+    /// exactly the case `canonical_json_string`'s explicit key-sort exists
+    /// to normalise away. Valid — and meaningful — under either build.
+    #[test]
+    fn canonical_json_string_is_independent_of_insertion_order() {
+        let mut map_a = serde_json::Map::new();
+        map_a.insert("name".to_string(), json!("roof"));
+        map_a.insert("diffuseColor".to_string(), json!([1.0, 0.0, 0.0]));
+        let a = Value::Object(map_a);
+
+        let mut map_b = serde_json::Map::new();
+        map_b.insert("diffuseColor".to_string(), json!([1.0, 0.0, 0.0]));
+        map_b.insert("name".to_string(), json!("roof"));
+        let b = Value::Object(map_b);
+
+        assert_eq!(
+            canonical_json_string(&a),
+            canonical_json_string(&b),
+            "canonical form must not depend on member insertion order"
+        );
+
+        let mut interner = AppearanceInterner::new();
+        let id_a = interner.intern_material(&a);
+        let id_b = interner.intern_material(&b);
+        assert_eq!(id_a, id_b, "must intern to the same global id");
+        assert_eq!(interner.materials().len(), 1);
     }
 
     #[test]
