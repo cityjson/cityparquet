@@ -83,6 +83,15 @@ interop:
 bench-baseline INPUT CSV:
     ./scripts/bench_duckdb.sh {{INPUT}} {{CSV}}
 
+# Prepare the per-format read-benchmark inputs for INPUT: a core-profile and
+# a Hilbert-ordered CityParquet package, an FCB file (spatial + all-attribute
+# index), and a gzip of the original, all under OUTDIR (default
+# bench/data/readbench/, gitignored). Idempotent; needs `fcb` on PATH;
+# network-independent but local-CLI-dependent, so kept OUT of `just
+# check`/CI like the other bench-* recipes.
+readbench-prepare INPUT OUTDIR='bench/data/readbench':
+    ./scripts/readbench_prepare.sh {{INPUT}} {{OUTDIR}}
+
 # Fetch the 3 pinned 3DBAG tiles (dense-urban/suburban/rural) into
 # bench/data/ (gitignored). Network-dependent; kept OUT of `just check`/CI.
 bench-data:
