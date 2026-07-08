@@ -648,6 +648,31 @@ impl TableWriters {
     }
 }
 
+/// Writes a single, empty [`CITYOBJECTS_TABLE`] (zero rows, `schema`'s
+/// columns, `props`'s writer properties, `sidecar_files`'s KV entry) into
+/// `tmp_dir` — the [`TableLayout::ByType`] zero-row fallback (see the
+/// `table_names.is_empty()` check in [`write_package`]). Returns
+/// `vec![CITYOBJECTS_TABLE]`, ready to become [`PackageManifest::tables`]
+/// exactly as [`TableWriters::finish`] would for a non-empty run.
+fn write_empty_fallback_table(
+    tmp_dir: &Path,
+    schema: &Arc<Schema>,
+    props: &WriterProperties,
+    sidecar_files: &[String],
+) -> Result<Vec<String>> {
+    let path = tmp_dir.join(CITYOBJECTS_TABLE);
+    let file = fs::File::create(&path)
+        .map_err(|e| io_err(format!("cannot create {}: {e}", path.display())))?;
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(schema), Some(props.clone()))
+        .map_err(|e| parquet_err(format!("cannot open parquet writer: {e}")))?;
+    let kv = serde_json::to_string(sidecar_files)?;
+    writer.append_key_value_metadata(KeyValue::new("sidecar_files".to_string(), kv));
+    writer
+        .close()
+        .map_err(|e| parquet_err(format!("cannot finalise parquet file: {e}")))?;
+    Ok(vec![CITYOBJECTS_TABLE.to_string()])
+}
+
 /// Writes one full package (main table, Compatibility-profile sidecars,
 /// `metadata.json` manifest) into `tmp_dir` — this is the entire body that
 /// used to run directly against `opts.output_dir` before the M5 crash-safe-
@@ -662,6 +687,12 @@ fn write_package(
     props: WriterProperties,
     tmp_dir: &Path,
 ) -> Result<WrittenPackage> {
+    // Cloned BEFORE `TableWriters::new` takes ownership below: the zero-row
+    // ByType fallback (see the `table_names.is_empty()` check past the
+    // encode loop) needs its own schema/props to open a fallback writer
+    // with, once `writers` itself has already been consumed by `finish`.
+    let fallback_schema = Arc::clone(&arrow_schema);
+    let fallback_props = props.clone();
     let mut writers = TableWriters::new(opts.layout, tmp_dir, arrow_schema, props)?;
 
     // `RowOrder::Hilbert` buffers every feature and re-sorts it BEFORE
@@ -738,6 +769,30 @@ fn write_package(
     // one `cityobjects_<type>.parquet` per distinct `object_type` under
     // `TableLayout::ByType`.
     let table_names = writers.finish(&sidecar_files_written)?;
+    // M5 Codex review (Important finding 1): `TableLayout::ByType` opens
+    // writers LAZILY, on a type's first row (see `TableWriters::new`/
+    // `by_type_table_index`) — an input that encodes to zero rows therefore
+    // never opens ANY writer, and `finish` returns an empty `Vec`. Writing
+    // that straight into `metadata.json` would produce a package with
+    // `tables: []`, which `export` rejects outright
+    // (`manifest.tables.is_empty()`). `TableLayout::Single` never hits this:
+    // it always opens `CITYOBJECTS_TABLE` up front, empty input or not.
+    // Ruling: fall back to writing the SAME single, standard, empty
+    // `CITYOBJECTS_TABLE` Single always produces, so an empty ByType
+    // conversion is byte-for-byte parity with an empty Single conversion —
+    // a valid, round-trippable zero-object package either way — rather than
+    // a layout-specific special case `export` would otherwise have to know
+    // about.
+    let table_names = if table_names.is_empty() {
+        write_empty_fallback_table(
+            tmp_dir,
+            &fallback_schema,
+            &fallback_props,
+            &sidecar_files_written,
+        )?
+    } else {
+        table_names
+    };
 
     let mut file_names = table_names.clone();
     file_names.extend(sidecar_files_written.iter().cloned());
