@@ -1,4 +1,5 @@
 mod alloc;
+mod coordinator;
 mod formats;
 mod scenario;
 
@@ -6,22 +7,29 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 
 use scenario::{AttrPred, QueryParams, Scenario};
 
 /// Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParquet, etc.).
 ///
-/// This binary has two entry points sharing one CLI surface: the
-/// coordinator (default; drives a whole benchmark matrix, Task 11 — not
-/// yet implemented) and `--child` (this task) — a single-scenario worker
-/// the coordinator spawns once per (format, scenario, dataset, repeat)
-/// measurement. `--child` resets the heap allocator, times exactly one
-/// `FormatRunner::run` call, and prints one line to stdout:
+/// This binary has two entry points sharing one CLI surface: the `run`
+/// subcommand (the coordinator — drives a whole (format x scenario) matrix,
+/// medians the repeats, and writes the results CSV; see [`coordinator`]) and
+/// `--child` (a plain top-level flag, no subcommand keyword) — a
+/// single-scenario worker the coordinator spawns once per (format, scenario,
+/// dataset, repeat) measurement. `--child` resets the heap allocator, times
+/// exactly one `FormatRunner::run` call, and prints one line to stdout:
 /// `time_s peak_heap_bytes ru_maxrss_bytes result_count`.
 #[derive(Parser, Debug)]
 #[command(name = "cityparquet-readbench", version, about)]
 struct Cli {
+    /// The coordinator's own subcommand (`run`). Left unset when invoking
+    /// `--child` directly (no positional subcommand keyword appears in that
+    /// case, so clap never attempts to match one).
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Run as the single-scenario child process (see the module doc
     /// comment). All of `--format`/`--scenario`/`--input` are required in
     /// this mode.
@@ -75,11 +83,61 @@ struct Cli {
     #[arg(long)]
     target_id: Option<String>,
 
-    /// Free-text selectivity label the (Task 11) coordinator threads
-    /// through to the results CSV's `notes` column; no scenario reads this
-    /// itself.
+    /// Free-text selectivity label the coordinator threads through to the
+    /// results CSV's `notes` column; no scenario reads this itself.
     #[arg(long)]
     selectivity_tag: Option<String>,
+}
+
+/// The coordinator's own subcommand.
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Drive a whole (format x scenario) benchmark matrix and write the
+    /// results CSV (see [`coordinator::run`]).
+    Run(RunArgs),
+}
+
+/// `cityparquet-readbench run`'s own flags — the CLI-facing mirror of
+/// [`coordinator::RunOptions`].
+#[derive(Args, Debug)]
+struct RunArgs {
+    /// The original CityJSON/CityJSONSeq input (also the `cityjsonseq`
+    /// format's own artefact, read directly — never converted or copied).
+    #[arg(long)]
+    input: PathBuf,
+
+    /// Directory `just readbench-prepare` wrote the per-format artefacts
+    /// into.
+    #[arg(long, default_value = "bench/data/readbench")]
+    prepared_dir: PathBuf,
+
+    /// Result CSV path. This run OWNS the file: a fresh truncate + write, so
+    /// a re-run is always clean (never an append).
+    #[arg(long)]
+    out: PathBuf,
+
+    /// Warm repeats per measurement; a further, discarded warmup precedes
+    /// every one. Must be >= 1.
+    #[arg(long, default_value_t = 7)]
+    repeat: usize,
+
+    /// Comma-separated format names (`cityparquet`, `cityparquet-hilbert`,
+    /// `flatcitybuf`, `cityjsonseq`, `cityjsonseq-gz`); omit for the default
+    /// set (every format except the separate `duckdb-parquet` SQL baseline).
+    #[arg(long, value_delimiter = ',')]
+    formats: Option<Vec<String>>,
+
+    /// Comma-separated scenario names (`full-read`, `count`, `bbox-query`,
+    /// `attr-filter`, `attr-stats`, `id-lookup`, `project`, or their
+    /// [`Scenario::from_str`] aliases); omit for every scenario.
+    #[arg(long, value_delimiter = ',')]
+    scenarios: Option<Vec<String>>,
+
+    /// After the warm matrix, run one additional `FullRead` per format,
+    /// tagged `cold` in `notes` (see [`coordinator::run`]'s own doc comment
+    /// on the `sudo purge` protocol this does NOT automate).
+    #[arg(long)]
+    cold: bool,
 }
 
 fn main() {
@@ -91,11 +149,23 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    if let Some(Command::Run(run_args)) = cli.command {
+        return coordinator::run(&coordinator::RunOptions {
+            input: run_args.input,
+            prepared_dir: run_args.prepared_dir,
+            out: run_args.out,
+            repeat: run_args.repeat,
+            formats: run_args.formats,
+            scenarios: run_args.scenarios,
+            cold: run_args.cold,
+        });
+    }
+
     if !cli.child {
         bail!(
-            "the coordinator entry point is not implemented yet (Task 11); run with \
-             --child --format <f> --scenario <s> --input <path> to execute a single \
-             scenario directly"
+            "run either `run --input <path> --prepared-dir <dir> --out <csv>` (the \
+             coordinator) or `--child --format <f> --scenario <s> --input <path>` (a single \
+             measurement)"
         );
     }
 

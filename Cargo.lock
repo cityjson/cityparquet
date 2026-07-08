@@ -404,6 +404,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow-array",
+ "arrow-schema",
  "cityparquet",
  "cityparquet-schema",
  "cjseq2",
