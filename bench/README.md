@@ -24,6 +24,13 @@ the committed rg512 rows show.
 measurement artefacts); `bench/data/` (the downloaded 3DBAG tiles) is
 gitignored and reproducible via `just bench-data`.
 
+**Note:** the geometry-encoding default changed after this M5 run — these
+numbers were produced with GeoArrow tagging on (the then-default), whereas
+the CLI's current default is plain-BLOB WKB (`--geoarrow` opt-in); the
+difference is footer-level metadata only (the `geoarrow.wkb` extension tag
+and the GeoParquet `geo` key) and is negligible per file, so it does not
+affect the byte/time comparisons drawn here.
+
 ## Datasets
 
 | dataset | source | objects | source bytes | gzipped download bytes |

@@ -520,7 +520,7 @@ fn delft_by_type_round_trips_losslessly() {
     assert!(
         package_dir
             .path()
-            .join("cityobjects_building.parquet")
+            .join("building.parquet")
             .exists(),
         "sanity: this must actually be a split-by-type package"
     );
@@ -635,7 +635,7 @@ fn delft_hilbert_and_by_type_compose_and_round_trip_losslessly() {
     assert!(
         package_dir
             .path()
-            .join("cityobjects_building.parquet")
+            .join("building.parquet")
             .exists(),
         "sanity: this must actually be a split-by-type package"
     );

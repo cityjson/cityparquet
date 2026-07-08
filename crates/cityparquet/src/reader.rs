@@ -130,6 +130,12 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             attributes,
             crs: None,
         };
+        // Tagged (zero-arg `to_arrow_schema`): this rendered schema is the
+        // CANONICAL, self-describing view, not a reflection of the physical
+        // file's on-disk self-description — a plain-BLOB file (written with
+        // `--geoarrow` off) still reports its geometry columns here as
+        // `geoarrow.wkb`-tagged. Harmless: the underlying Arrow data type is
+        // `Binary` either way, so callers reading values see no difference.
         Ok(Arc::new(schema.to_arrow_schema()?))
     }
 

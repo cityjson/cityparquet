@@ -154,13 +154,17 @@ fn is_json_column(field: &Field) -> bool {
 
 impl WriterRecipe {
     /// Render this recipe into concrete `WriterProperties` for `schema`,
-    /// embedding `metadata` (plus the derived GeoParquet `geo` key) as
-    /// Parquet file-level key-value metadata.
+    /// embedding `metadata` (plus the derived GeoParquet `geo` key, iff
+    /// `geoarrow`) as Parquet file-level key-value metadata.
     pub fn writer_properties(
         &self,
         schema: &CityParquetSchema,
         metadata: &CityParquetMetadata,
+        geoarrow: bool,
     ) -> Result<WriterProperties> {
+        // Stays TAGGED (zero-arg `to_arrow_schema`): used only to detect
+        // geometry columns for the per-column properties below, independent
+        // of whether the `geo` key itself is emitted.
         let arrow_schema = schema.to_arrow_schema()?;
 
         let mut kvs: Vec<KeyValue> = metadata
@@ -168,10 +172,12 @@ impl WriterRecipe {
             .into_iter()
             .map(|(key, value)| KeyValue::new(key, value))
             .collect();
-        kvs.push(KeyValue::new(
-            "geo".to_string(),
-            metadata.geoparquet_geo_value()?.to_string(),
-        ));
+        if geoarrow {
+            kvs.push(KeyValue::new(
+                "geo".to_string(),
+                metadata.geoparquet_geo_value()?.to_string(),
+            ));
+        }
 
         // `Snappy` compresses with Snappy and ignores `zstd_level`; every
         // other preset compresses with zstd at `zstd_level`.
@@ -307,7 +313,7 @@ mod tests {
         let schema = sample_schema();
         let metadata = sample_metadata();
         let props = WriterRecipe::default()
-            .writer_properties(&schema, &metadata)
+            .writer_properties(&schema, &metadata, true)
             .unwrap();
 
         // id / feature_id: DELTA_BYTE_ARRAY, dictionary off.
@@ -397,7 +403,7 @@ mod tests {
             crs: None,
         };
         let props = WriterRecipe::default()
-            .writer_properties(&schema, &sample_metadata())
+            .writer_properties(&schema, &sample_metadata(), true)
             .unwrap();
 
         // Attribute defaults: dictionary on, statistics not disabled.
@@ -423,9 +429,60 @@ mod tests {
             statistics_for_json: true,
             ..WriterRecipe::default()
         };
-        let props = recipe.writer_properties(&schema, &metadata).unwrap();
+        let props = recipe.writer_properties(&schema, &metadata, true).unwrap();
         assert_ne!(
             props.statistics_enabled(&ColumnPath::from("other")),
+            EnabledStatistics::None
+        );
+    }
+
+    #[test]
+    fn geo_key_present_only_when_geoarrow_enabled() {
+        let schema = sample_schema();
+        let metadata = sample_metadata();
+        let recipe = WriterRecipe::default();
+
+        let has_geo = |geoarrow: bool| {
+            recipe
+                .writer_properties(&schema, &metadata, geoarrow)
+                .unwrap()
+                .key_value_metadata()
+                .map(|kvs| kvs.iter().any(|kv| kv.key == "geo"))
+                .unwrap_or(false)
+        };
+
+        assert!(
+            has_geo(true),
+            "geoarrow=true must emit the GeoParquet `geo` key"
+        );
+        assert!(
+            !has_geo(false),
+            "geoarrow=false must omit the `geo` key entirely"
+        );
+    }
+
+    #[test]
+    fn geometry_columns_keep_wkb_properties_even_with_geoarrow_off() {
+        // Regression pin for the doc comment above `writer_properties`'s
+        // `to_arrow_schema()` call (line ~168): that call is deliberately
+        // the TAGGED zero-arg form, independent of the `geoarrow` flag, so
+        // `is_geometry_column` still finds geometry columns via their
+        // `geoarrow.wkb` extension metadata even when the file itself is
+        // written untagged (plain-BLOB WKB, `geoarrow=false`). If a future
+        // refactor swapped that call for `to_arrow_schema_tagged(geoarrow)`,
+        // then with `geoarrow=false` no field would carry the extension tag,
+        // `is_geometry_column` would match nothing, and geometry columns
+        // would silently regain dictionary encoding + full statistics on
+        // opaque WKB blobs.
+        let schema = sample_schema();
+        let metadata = sample_metadata();
+        let props = WriterRecipe::default()
+            .writer_properties(&schema, &metadata, false)
+            .unwrap();
+
+        assert!(!props.dictionary_enabled(&ColumnPath::from("geometry_lod2_2")));
+        assert_eq!(
+            props.statistics_enabled(&ColumnPath::from("geometry_lod2_2")),
             EnabledStatistics::None
         );
     }
@@ -453,7 +510,7 @@ mod tests {
         let metadata = sample_metadata();
         let props = RecipePreset::ParquetDefaults
             .recipe()
-            .writer_properties(&schema, &metadata)
+            .writer_properties(&schema, &metadata, true)
             .unwrap();
 
         let bbox_xmin = ColumnPath::new(vec!["bbox".to_string(), "xmin".to_string()]);
@@ -472,7 +529,7 @@ mod tests {
         let metadata = sample_metadata();
         let props = RecipePreset::NoDictionary
             .recipe()
-            .writer_properties(&schema, &metadata)
+            .writer_properties(&schema, &metadata, true)
             .unwrap();
 
         assert!(!props.dictionary_enabled(&ColumnPath::from("object_type")));
@@ -489,7 +546,7 @@ mod tests {
         let metadata = sample_metadata();
         let props = RecipePreset::NoByteStreamSplit
             .recipe()
-            .writer_properties(&schema, &metadata)
+            .writer_properties(&schema, &metadata, true)
             .unwrap();
 
         assert_eq!(
@@ -519,7 +576,7 @@ mod tests {
         let metadata = sample_metadata();
         let props = RecipePreset::NoDelta
             .recipe()
-            .writer_properties(&schema, &metadata)
+            .writer_properties(&schema, &metadata, true)
             .unwrap();
 
         let bbox_xmin = ColumnPath::new(vec!["bbox".to_string(), "xmin".to_string()]);
@@ -540,7 +597,7 @@ mod tests {
         let metadata = sample_metadata();
         let props = RecipePreset::Snappy
             .recipe()
-            .writer_properties(&schema, &metadata)
+            .writer_properties(&schema, &metadata, true)
             .unwrap();
 
         assert_eq!(

@@ -57,17 +57,20 @@ A CityParquet dataset is a **directory**, not a single file:
 ```text
 mydataset/
   metadata.json              # package manifest (profile, LoDs, tables, sidecars)
-  cityobjects.parquet        # the main object table (Single layout)
+  building.parquet           # one object table per type (by-type layout, default)
+  bridge.parquet             # …
   materials.parquet          # Compatibility only, when present
   textures.parquet           # Compatibility only, when present
   geometry_templates.parquet # Compatibility only, when present
 ```
 
-Under the **by-type** table layout the single `cityobjects.parquet` is split
-into one table per object type — `cityobjects_building.parquet`,
-`cityobjects_transportation.parquet`, and so on — for schema clarity and
-type-selective queries. `metadata.json` lists whichever tables were written;
-readers consult the manifest, never the directory listing.
+The **default** table layout is **by-type**: one table per object type, named
+`building.parquet`, `bridge.parquet`, and so on (CityJSON extension types get
+an `ext_` prefix, e.g. `ext_foo.parquet`), for schema clarity and
+type-selective queries. Passing `--layout single` instead writes one
+`cityobjects.parquet` holding every type. Either way, `metadata.json` lists
+whichever tables were written; readers consult the manifest, never the
+directory listing.
 
 ## Main object table
 
@@ -99,9 +102,16 @@ Every field carries self-describing metadata: a `cityparquet:role` key
 `cityparquet:lod` key. The metadata column lists in `metadata.json` are
 derived from this field metadata, so they can never drift from the schema.
 
-Geometry columns are tagged with the **geoarrow.wkb** Arrow extension type
-and carry the dataset CRS in their extension metadata, so GeoParquet-aware
-readers pick them up automatically.
+Geometry columns hold **ISO WKB** (little-endian, Z types). By default they
+are plain Parquet `BINARY` with **no** GeoArrow/GeoParquet self-description —
+no `geoarrow.wkb` field extension and no file-level `geo` key — so a reader
+sees raw WKB bytes and DuckDB `SELECT *` and the `three_d` extension
+(`ST_3DFromWKB(BLOB)`) work with zero configuration. Passing `--geoarrow`
+additionally tags geometry columns with the **geoarrow.wkb** Arrow extension
+type (carrying the dataset CRS) and writes the file-level GeoParquet `geo`
+key, so GeoParquet-aware readers (GeoPandas, QGIS, GDAL) pick them up
+automatically. The CRS is recorded either way in CityParquet's own `crs`
+metadata key.
 
 JSON columns are `Utf8` tagged with the **arrow.json** extension type.
 
@@ -260,9 +270,15 @@ Implemented and tested against real CityJSON fixtures and 3DBAG tiles through
 milestones M1–M5 (schema, writer, reader/round-trip, Compatibility profile,
 benchmark suite). Current limitations:
 
-- `Solid` geometry is WKB `PolyhedralSurfaceZ` (type 1015), which some
-  geometry-auto-decoding GeoParquet readers (GeoPandas, DuckDB `spatial`) do
-  not yet support; `MultiSurface`-derived columns decode fine there.
+- `Solid` geometry is WKB `PolyhedralSurfaceZ` (type 1015). DuckDB's native
+  `GEOMETRY` type and GeoPandas do not support that WKB type, so in
+  `--geoarrow` output a solid column fails to auto-decode ("Unsupported
+  geometry type in WKB"). Two ways to read solids: (a) the **default** output
+  is plain BLOB, so `ST_3DFromWKB(geometry_lod2_2)` (the `three_d` extension)
+  just works; or (b) for `--geoarrow` files, run
+  `SET enable_geoparquet_conversion = false;` first, which makes DuckDB read
+  every geometry column as raw BLOB. `MultiSurface`-derived columns
+  (`MultiPolygonZ`) auto-decode fine either way.
 - The `geo` metadata omits `crs` PROJJSON until PROJJSON support lands, so
   readers that consult it assume `OGC:CRS84` while coordinates are actually in
   the source CRS (which *is* recorded, as an OGC CRS URL, in the `crs` KV
