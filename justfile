@@ -92,6 +92,20 @@ bench-baseline INPUT CSV:
 readbench-prepare INPUT OUTDIR='bench/data/readbench':
     ./scripts/readbench_prepare.sh {{INPUT}} {{OUTDIR}}
 
+# DuckDB-over-Parquet SQL-engine baseline (Task 12): appends `duckdb-parquet`
+# rows for the SQL-expressible scenarios (count/full-read/bbox-query/
+# attr-filter/attr-stats/project) to OUT_CSV, querying PARQUET_PKG's own
+# `cityobjects.parquet` main table directly (no CityJSON extension, no
+# LOAD needed). PARQUET_PKG is a package produced by `just readbench-prepare`
+# or `cityparquet convert`; OUT_CSV is the SAME CSV the
+# `cityparquet-readbench` coordinator writes (header must match exactly).
+# Pass `--numeric-column COL` (a real Int64/Float64 attribute column) to
+# also emit the attr-stats row; `--repeat N` overrides the default of 5.
+# Local-only: needs `duckdb` + `python3` on PATH; kept OUT of `just
+# check`/CI.
+readbench-baseline PARQUET_PKG OUT_CSV *ARGS:
+    ./scripts/readbench_duckdb.sh {{PARQUET_PKG}} {{OUT_CSV}} {{ARGS}}
+
 # Fetch the 3 pinned 3DBAG tiles (dense-urban/suburban/rural) into
 # bench/data/ (gitignored). Network-dependent; kept OUT of `just check`/CI.
 bench-data:
