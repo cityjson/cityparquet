@@ -2,6 +2,7 @@
 //! implements, plus [`resolve`] — the `--format <name>` dispatch the
 //! `--child` process (`main.rs`) uses.
 
+pub mod cityjsonseq;
 pub mod cityparquet;
 
 use std::path::Path;
@@ -28,20 +29,18 @@ pub trait FormatRunner {
     fn run(&self, input: &Path, scenario: Scenario, params: &QueryParams) -> Result<u64>;
 }
 
-/// Resolves `--format <name>` to its [`FormatRunner`]. Only `cityparquet`
-/// is implemented in this task; the other format names the milestone
-/// defines (`cityjsonseq`, `cityjsonseq-gz`, `flatcitybuf`) parse cleanly
-/// but fail with a clear "not yet implemented" error — Tasks 9/10 replace
-/// these arms with real runners without reshaping this function's
+/// Resolves `--format <name>` to its [`FormatRunner`]. `cityparquet`,
+/// `cityjsonseq`, and `cityjsonseq-gz` are implemented; `flatcitybuf` parses
+/// cleanly but fails with a clear "not yet implemented" error — Task 10
+/// replaces that arm with a real runner without reshaping this function's
 /// signature. `duckdb-parquet` is a SQL-engine baseline driven entirely by
 /// `scripts/readbench_duckdb.sh`; it is not, and never will be, a
 /// `--child` format.
 pub fn resolve(format: &str) -> Result<Box<dyn FormatRunner>> {
     match format {
         "cityparquet" => Ok(Box::new(cityparquet::CityParquetRunner)),
-        "cityjsonseq" | "cityjsonseq-gz" => {
-            bail!("format '{format}' is not yet implemented (Task 9)")
-        }
+        "cityjsonseq" => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::plain())),
+        "cityjsonseq-gz" => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::gzip())),
         "flatcitybuf" => bail!("format 'flatcitybuf' is not yet implemented (Task 10)"),
         "duckdb-parquet" => bail!(
             "format 'duckdb-parquet' is a SQL-engine baseline driven by \
@@ -59,10 +58,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_cityparquet_succeeds_and_others_error_cleanly() {
+    fn resolve_implemented_formats_succeed_and_others_error_cleanly() {
         assert!(resolve("cityparquet").is_ok());
-        assert!(resolve("cityjsonseq").is_err());
-        assert!(resolve("cityjsonseq-gz").is_err());
+        assert!(resolve("cityjsonseq").is_ok());
+        assert!(resolve("cityjsonseq-gz").is_ok());
         assert!(resolve("flatcitybuf").is_err());
         assert!(resolve("duckdb-parquet").is_err());
         assert!(resolve("not-a-format").is_err());
