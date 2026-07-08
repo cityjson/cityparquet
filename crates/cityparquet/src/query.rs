@@ -24,6 +24,9 @@ use arrow_array::{
 use arrow_schema::DataType;
 use cityparquet_schema::{CityParquetError, CityParquetMetadata, Result};
 use parquet::arrow::ProjectionMask;
+use parquet::file::metadata::RowGroupMetaData;
+use parquet::file::statistics::Statistics;
+use parquet::schema::types::ColumnPath;
 
 use crate::decode::decode_batch;
 use crate::reader::{
@@ -396,4 +399,156 @@ pub fn attr_filter(table_path: &Path, column: &str, pred: &AttrPredicate) -> Res
         count += batch.num_rows() as u64;
     }
     Ok(count)
+}
+
+/// The result of an [`attr_stats`] columnar aggregation over a numeric
+/// attribute column: `min`/`max`/`sum`/`count` (`count` of non-null values;
+/// nulls are excluded from every field). `min <= max` whenever `count > 0`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AttrStats {
+    pub min: f64,
+    pub max: f64,
+    pub sum: f64,
+    pub count: u64,
+}
+
+/// The `Statistics` for the top-level `column` chunk in `rg`, if the chunk
+/// exists and carries statistics. Mirrors
+/// [`crate::reader`]'s `bbox_leaf_statistics`, but over a single-part
+/// [`ColumnPath`] (a plain attribute column, not a nested `bbox.<leaf>`
+/// struct field).
+fn column_statistics<'a>(rg: &'a RowGroupMetaData, column: &str) -> Option<&'a Statistics> {
+    let path = ColumnPath::new(vec![column.to_string()]);
+    rg.columns()
+        .iter()
+        .find(|c| c.column_path() == &path)?
+        .statistics()
+}
+
+/// `stats`'s min/max as `f64`, for the two numeric Parquet physical types
+/// CityParquet attribute columns use (`Int64`/`Double`). `None` if `stats`
+/// is some other physical type, or if the chunk has no defined min/max (e.g.
+/// every value in the chunk is null).
+fn statistics_min_max(stats: &Statistics) -> Option<(f64, f64)> {
+    match stats {
+        Statistics::Int64(v) => Some((*v.min_opt()? as f64, *v.max_opt()? as f64)),
+        Statistics::Double(v) => Some((*v.min_opt()?, *v.max_opt()?)),
+        _ => None,
+    }
+}
+
+/// Opens `table_path` and computes [`AttrStats`] for the numeric (`Int64` or
+/// `Float64`) attribute column named `column`:
+///
+/// - **`min`/`max`**: taken from each touched row group's Parquet
+///   column-chunk [`Statistics`] (near-free — no row scan) when *every* row
+///   group carries a usable min/max for the column. If even one row group
+///   lacks statistics (or has none defined, e.g. every value in that chunk
+///   is null), the stats fast-path is abandoned entirely and min/max are
+///   instead derived honestly from the same single-column scan `sum`/`count`
+///   already require — never a silently wrong statistics-only answer mixed
+///   with a scan-only answer.
+/// - **`sum`/`count`**: always from a single-column [`ProjectionMask`] scan
+///   (Parquet has no chunk-level sum statistic to short-circuit this).
+///   `count` is the number of non-null cells; `sum` is over those same
+///   non-null cells; nulls never contribute to either.
+pub fn attr_stats(table_path: &Path, column: &str) -> Result<AttrStats> {
+    let file = File::open(table_path).map_err(io_err)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+
+    // Fail fast with a clear "column not found" error before `builder` is
+    // consumed by `with_projection` below.
+    builder.schema().field_with_name(column).map_err(|_| {
+        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+    })?;
+
+    // Stats fast-path attempt: union every row group's min/max for `column`.
+    // `stats_available` flips to `false` (and the accumulated min/max are
+    // abandoned) the moment any row group fails to supply one.
+    let metadata = Arc::clone(builder.metadata());
+    let mut stats_available = true;
+    let mut stats_min = f64::INFINITY;
+    let mut stats_max = f64::NEG_INFINITY;
+    for i in 0..metadata.num_row_groups() {
+        match column_statistics(metadata.row_group(i), column).and_then(statistics_min_max) {
+            Some((min, max)) => {
+                stats_min = stats_min.min(min);
+                stats_max = stats_max.max(max);
+            }
+            None => {
+                stats_available = false;
+                break;
+            }
+        }
+    }
+
+    // Single-column scan: always needed for sum/count, and — only on the
+    // fast-path's failure — for min/max too (folded into the same pass
+    // rather than a second scan).
+    let projection = ProjectionMask::columns(builder.parquet_schema(), [column]);
+    let reader = builder
+        .with_projection(projection)
+        .build()
+        .map_err(parquet_err)?;
+
+    let mut sum = 0f64;
+    let mut count = 0u64;
+    let mut scan_min = f64::INFINITY;
+    let mut scan_max = f64::NEG_INFINITY;
+
+    for batch in reader {
+        let batch = batch.map_err(parquet_err)?;
+        let array = batch.column(0);
+        let mut visit = |v: f64| {
+            sum += v;
+            count += 1;
+            if !stats_available {
+                scan_min = scan_min.min(v);
+                scan_max = scan_max.max(v);
+            }
+        };
+        match array.data_type() {
+            DataType::Int64 => {
+                let values = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
+                    CityParquetError::Schema(format!("column '{column}' is not Int64"))
+                })?;
+                for i in 0..values.len() {
+                    if !values.is_null(i) {
+                        visit(values.value(i) as f64);
+                    }
+                }
+            }
+            DataType::Float64 => {
+                let values = array
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .ok_or_else(|| {
+                        CityParquetError::Schema(format!("column '{column}' is not Float64"))
+                    })?;
+                for i in 0..values.len() {
+                    if !values.is_null(i) {
+                        visit(values.value(i));
+                    }
+                }
+            }
+            other => {
+                return Err(CityParquetError::Schema(format!(
+                    "column '{column}' has an arrow type attr_stats cannot aggregate: {other:?}"
+                )));
+            }
+        }
+    }
+
+    let (min, max) = if stats_available {
+        (stats_min, stats_max)
+    } else {
+        (scan_min, scan_max)
+    };
+
+    Ok(AttrStats {
+        min,
+        max,
+        sum,
+        count,
+    })
 }

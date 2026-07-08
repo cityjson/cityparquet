@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use arrow_array::{Array, Float64Array, StringArray, StructArray};
 use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert};
-use cityparquet::query::{AttrPredicate, attr_filter, bbox_query};
+use cityparquet::query::{AttrPredicate, attr_filter, attr_stats, bbox_query};
 use cityparquet::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -345,4 +345,59 @@ fn attr_filter_numeric_predicates_match_year_built_attribute_column() {
     )
     .unwrap();
     assert_eq!(got_range, expected_range);
+}
+
+/// `attr_stats` on `oorspronkelijkbouwjaar` (the same `Int64` attribute
+/// column as the test above): independently derive min/max/sum/count from
+/// the decoded objects — scanning only the 1115 non-null year values, the
+/// same set the numeric-predicate test above already sanity-checked — then
+/// assert `attr_stats` matches exactly (min/max/count) and within a tiny
+/// float tolerance (sum). Delft's 2231 rows all fit in a single row group
+/// (the default `row_group_size` is 65536), and that row group carries both
+/// null (`BuildingPart`) and non-null (`Building`) values for this column,
+/// so Parquet's own column-chunk statistics are expected to be present and
+/// exercised via the stats fast-path — not the no-statistics fallback.
+#[test]
+fn attr_stats_matches_independently_computed_year_built_stats() {
+    let (_out, main_table, objects) = convert_and_decode("delft.city.jsonl");
+
+    let years: Vec<i64> = objects
+        .iter()
+        .filter_map(|o| {
+            o.object
+                .attributes
+                .as_ref()
+                .and_then(|v| v.as_object())
+                .and_then(|attrs| attrs.get("oorspronkelijkbouwjaar"))
+                .and_then(|v| v.as_i64())
+        })
+        .collect();
+    assert_eq!(
+        years.len(),
+        1115,
+        "oorspronkelijkbouwjaar must be present on exactly delft's 1115 Building rows"
+    );
+
+    let expected_min = *years.iter().min().unwrap() as f64;
+    let expected_max = *years.iter().max().unwrap() as f64;
+    let expected_sum: f64 = years.iter().map(|&y| y as f64).sum();
+    let expected_count = years.len() as u64;
+
+    let got = attr_stats(&main_table, "oorspronkelijkbouwjaar").unwrap();
+
+    assert_eq!(got.min, expected_min);
+    assert_eq!(got.max, expected_max);
+    assert!(
+        (got.sum - expected_sum).abs() < 1.0,
+        "sum {} not within tolerance of expected {}",
+        got.sum,
+        expected_sum
+    );
+    assert_eq!(got.count, expected_count);
+    assert!(
+        got.min <= got.max,
+        "min {} must be <= max {}",
+        got.min,
+        got.max
+    );
 }
