@@ -56,8 +56,10 @@ realistic timing). Four subcommands:
 cargo run -p cityparquet-cli -- convert INPUT OUTPUT_DIR --overwrite
 ```
 
-Writes `OUTPUT_DIR/` containing `cityobjects.parquet` + `metadata.json`,
-readable by any Parquet reader (DuckDB, pyarrow, …).
+Writes `OUTPUT_DIR/` containing one object table per type
+(`building.parquet`, `bridge.parquet`, …) + `metadata.json`, readable by any
+Parquet reader (DuckDB, pyarrow, …). Use `--layout single` for a single
+`cityobjects.parquet` instead.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -65,10 +67,26 @@ readable by any Parquet reader (DuckDB, pyarrow, …).
 | `--overwrite` | off | purge an existing package in the target dir first |
 | `--recipe` | `cityparquet` | writer preset: `cityparquet`, `parquet-defaults`, `no-dictionary`, `no-bss`, `no-delta`, `snappy` |
 | `--ordering` | `source` | `source` or `hilbert` (spatial row ordering for better bbox pruning) |
-| `--layout` | `single` | `single` (one table) or `by-type` (one table per object type) |
+| `--layout` | `by-type` | `by-type` (one table per object type, e.g. `building.parquet`) or `single` (one `cityobjects.parquet`) |
+| `--geoarrow` | off | tag geometry with the `geoarrow.wkb` extension + write the GeoParquet `geo` key (GeoPandas/QGIS/GDAL interop). Off = plain-BLOB WKB that DuckDB/`three_d` read directly |
 | `--row-group-size` | `65536` | Parquet row-group size |
 | `--zstd-level` | `3` | zstd level (ignored by `--recipe snappy`) |
 | `--batch-size` | `4096` | encode batch size |
+
+#### Querying in DuckDB / three_d
+
+Default output is plain-BLOB WKB, so it works with no setup:
+
+```sql
+LOAD three_d;
+SELECT id, ST_3DVolume(ST_3DFromWKB(geometry_lod2_2)) AS volume
+FROM 'building.parquet'
+WHERE geometry_lod2_2 IS NOT NULL;
+```
+
+If a package was written with `--geoarrow`, first tell DuckDB not to
+auto-decode geometry (it cannot parse the `PolyhedralSurfaceZ` WKB that
+`Solid` geometry uses): `SET enable_geoparquet_conversion = false;`.
 
 Compatibility adds the sidecars (each skipped when the dataset has none of
 that data):
