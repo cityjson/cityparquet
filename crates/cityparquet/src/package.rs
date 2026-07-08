@@ -887,7 +887,7 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
     let arrow_schema = Arc::new(scan_result.schema.to_arrow_schema()?);
     let props = opts
         .recipe
-        .writer_properties(&scan_result.schema, &metadata)?;
+        .writer_properties(&scan_result.schema, &metadata, true)?;
 
     // Everything above is fallible but never touches `opts.output_dir` at
     // all, so none of it needs any cleanup. From here on, every new file
