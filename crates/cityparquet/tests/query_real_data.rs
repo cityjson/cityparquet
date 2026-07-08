@@ -1,14 +1,17 @@
-//! RED (readbench task 2/3/4): `query::full_read` / `query::count` /
-//! `query::bbox_query` / `query::attr_filter`, read primitives of the
-//! cross-format read-benchmark milestone — exercised against a real
-//! converted delft package (never inline artificial CityJSON).
+//! RED (readbench task 2/3/4/6): `query::full_read` / `query::count` /
+//! `query::bbox_query` / `query::attr_filter` / `query::id_lookup` /
+//! `query::project_column`, read primitives of the cross-format
+//! read-benchmark milestone — exercised against a real converted delft
+//! package (never inline artificial CityJSON).
 
 use std::path::{Path, PathBuf};
 
 use arrow_array::{Array, Float64Array, StringArray, StructArray};
 use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert};
-use cityparquet::query::{AttrPredicate, attr_filter, attr_stats, bbox_query};
+use cityparquet::query::{
+    AttrPredicate, attr_filter, attr_stats, bbox_query, id_lookup, project_column,
+};
 use cityparquet::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -399,5 +402,74 @@ fn attr_stats_matches_independently_computed_year_built_stats() {
         "min {} must be <= max {}",
         got.min,
         got.max
+    );
+}
+
+/// `id_lookup` on a real delft object id: independently pick an id from the
+/// decoded objects (one that actually carries geometry, so the "fully
+/// materialised" claim is exercised, not just an empty-geometry corner case),
+/// then assert `id_lookup` finds that exact object with the same id and
+/// non-empty geometry. A bogus id must return `None`, never an error.
+#[test]
+fn id_lookup_finds_a_real_object_and_none_for_a_bogus_id() {
+    let (_out, main_table, objects) = convert_and_decode("delft.city.jsonl");
+
+    let target = objects
+        .iter()
+        .find(|o| !o.geometries.is_empty())
+        .expect("at least one delft object must carry geometry");
+    let target_id = target.id.clone();
+
+    let file = std::fs::File::open(&main_table).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let meta = builder.cityparquet_metadata().unwrap();
+
+    let found = id_lookup(&main_table, &meta, &target_id)
+        .unwrap()
+        .unwrap_or_else(|| panic!("id_lookup must find real id {target_id}"));
+    assert_eq!(found.id, target_id);
+    assert!(
+        !found.geometries.is_empty(),
+        "id_lookup must fully materialise the object's geometry"
+    );
+
+    let missing = id_lookup(&main_table, &meta, "no-such-id").unwrap();
+    assert!(
+        missing.is_none(),
+        "a bogus id must return None, got {missing:?}"
+    );
+}
+
+/// `project_column` over a non-nullable reserved column (`object_type`) and a
+/// sparse attribute column (`oorspronkelijkbouwjaar`, present only on delft's
+/// 1115 `Building` rows): both counts are derived independently from the
+/// decoded objects, never hardcoded blind.
+#[test]
+fn project_column_counts_non_null_values_for_dense_and_sparse_columns() {
+    let (_out, main_table, objects) = convert_and_decode("delft.city.jsonl");
+
+    let expected_object_type = objects.len() as u64;
+    assert_eq!(expected_object_type, 2231);
+
+    let expected_year_built = objects
+        .iter()
+        .filter(|o| {
+            o.object
+                .attributes
+                .as_ref()
+                .and_then(|v| v.as_object())
+                .and_then(|attrs| attrs.get("oorspronkelijkbouwjaar"))
+                .is_some()
+        })
+        .count() as u64;
+    assert_eq!(expected_year_built, 1115);
+
+    assert_eq!(
+        project_column(&main_table, "object_type").unwrap(),
+        expected_object_type
+    );
+    assert_eq!(
+        project_column(&main_table, "oorspronkelijkbouwjaar").unwrap(),
+        expected_year_built
     );
 }

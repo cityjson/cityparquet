@@ -552,3 +552,86 @@ pub fn attr_stats(table_path: &Path, column: &str) -> Result<AttrStats> {
         count,
     })
 }
+
+/// Finds and fully materialises the one object whose `id` column equals
+/// `id`. Parquet carries no id index, so this applies `id` as an `Eq`
+/// [`RowFilter`] (via [`ArrowPredicateFn`], projected to just the `id`
+/// column for the predicate's own evaluation) and then, on every surviving
+/// row — expected to be exactly one, since ids are unique — decodes the
+/// FULL row (every column, not just `id`) via [`decode_batch`], returning
+/// the first decoded object. `None` if no row matches.
+pub fn id_lookup(
+    table_path: &Path,
+    meta: &CityParquetMetadata,
+    id: &str,
+) -> Result<Option<crate::decode::DecodedObject>> {
+    let file = File::open(table_path).map_err(io_err)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+    let schema = builder.cityparquet_arrow_schema()?;
+
+    // The predicate's own required projection is `id` alone; the builder's
+    // overall output projection is left untouched (every column) since
+    // `decode_batch` needs the full row to materialise the object.
+    let predicate_mask = ProjectionMask::columns(builder.parquet_schema(), ["id"]);
+    let owned_id = id.to_string();
+    let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                arrow_schema::ArrowError::SchemaError("'id' column is not Utf8".to_string())
+            })?;
+        Ok(BooleanArray::from_iter((0..ids.len()).map(|i| {
+            Some(!ids.is_null(i) && ids.value(i) == owned_id)
+        })))
+    });
+    let row_filter = RowFilter::new(vec![Box::new(predicate_fn)]);
+
+    let parquet_reader = builder
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(parquet_err)?;
+    let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
+
+    for batch in reader {
+        let batch = batch?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let decoded = decode_batch(&batch, meta)?;
+        if let Some(object) = decoded.into_iter().next() {
+            return Ok(Some(object));
+        }
+    }
+    Ok(None)
+}
+
+/// Projected single-column read of `column` across every row, via a
+/// [`ProjectionMask`] restricting the scan to that column alone (nothing
+/// else in the table is ever decoded — the columnar-projection primitive).
+/// Returns the count of NON-NULL values in `column`.
+pub fn project_column(table_path: &Path, column: &str) -> Result<u64> {
+    let file = File::open(table_path).map_err(io_err)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+
+    // Fail fast with a clear "column not found" error before `builder` is
+    // consumed by `with_projection` below.
+    builder.schema().field_with_name(column).map_err(|_| {
+        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+    })?;
+
+    let projection = ProjectionMask::columns(builder.parquet_schema(), [column]);
+    let reader = builder
+        .with_projection(projection)
+        .build()
+        .map_err(parquet_err)?;
+
+    let mut count = 0u64;
+    for batch in reader {
+        let batch = batch.map_err(parquet_err)?;
+        let array = batch.column(0);
+        count += (array.len() - array.null_count()) as u64;
+    }
+    Ok(count)
+}
