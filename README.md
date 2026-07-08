@@ -84,6 +84,13 @@ FROM 'building.parquet'
 WHERE geometry_lod2_2 IS NOT NULL;
 ```
 
+Under the by-type layout, geometry lives in the table for the object type
+that actually carries it — for 3DBAG, `Building` objects have no geometry
+of their own (it lives on their `BuildingPart` children), so the query
+above returns zero rows on `building.parquet`; query `buildingpart.parquet`
+instead, or convert with `--layout single` for one `cityobjects.parquet`
+where every object's geometry lives alongside it.
+
 If a package was written with `--geoarrow`, first tell DuckDB not to
 auto-decode geometry (it cannot parse the `PolyhedralSurfaceZ` WKB that
 `Solid` geometry uses): `SET enable_geoparquet_conversion = false;`.
