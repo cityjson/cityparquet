@@ -63,11 +63,23 @@ mydataset/
   geometry_templates.parquet # Compatibility only, when present
 ```
 
-Under the **by-type** table layout the single `cityobjects.parquet` is split
-into one table per object type — `cityobjects_building.parquet`,
-`cityobjects_transportation.parquet`, and so on — for schema clarity and
-type-selective queries. `metadata.json` lists whichever tables were written;
-readers consult the manifest, never the directory listing.
+Under the **by-type** table layout (the CLI default) the single
+`cityobjects.parquet` is split into one table per **1st-level** (top-level)
+CityObject type — `building.parquet`, `bridge.parquet`, `tunnel.parquet`,
+`cityfurniture.parquet`, and so on — for schema clarity and type-selective
+queries. Per the CityJSON 2.0.1 spec's 1st-level vs 2nd-level city object
+distinction, a 2nd-level object type (`BuildingPart`,
+`BuildingInstallation`, `BuildingConstructiveElement`, `BuildingFurniture`,
+`BuildingStorey`, `BuildingRoom`, `BuildingUnit`; the equivalent `Bridge*`
+and `Tunnel*` types) is never given its own file — it is written into its
+1st-level parent's table instead (all of the above into `building.parquet`;
+the `Bridge*` family into `bridge.parquet`; the `Tunnel*` family into
+`tunnel.parquet`). Every other type is already 1st-level and keeps its own
+file. The `object_type` column (dictionary-encoded — see below) is
+unaffected by this grouping and still carries each row's actual type, so a
+query against `building.parquet` can still distinguish `Building` rows from
+`BuildingPart` rows within it. `metadata.json` lists whichever tables were
+written; readers consult the manifest, never the directory listing.
 
 ## Main object table
 

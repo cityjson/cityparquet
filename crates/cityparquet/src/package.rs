@@ -88,23 +88,34 @@ pub enum RowOrder {
 /// Table layout for the main CityObject data (M5 task 5): [`Self::Single`]
 /// writes every object into the one [`CITYOBJECTS_TABLE`], exactly as every
 /// milestone before M5 did. [`Self::ByType`] instead writes one table PER
-/// DISTINCT `object_type` value the dataset contains — file name
-/// `<snake>.parquet` (Task 4 dropped the `cityobjects_` prefix these used to
-/// carry), `<snake>` being the type lower-cased with every non-alphanumeric
-/// character replaced by `_`, and a leading `+` (CityJSON extension object
-/// types) rewritten to the prefix `ext_` rather than folded into an ugly
-/// leading underscore (e.g. `+Foo` becomes `ext_foo.parquet`, never
-/// `_foo.parquet`) — see [`table_name_for_type`]. A derived name that would
-/// collide with a package sidecar/metadata file (see
-/// [`RESERVED_PACKAGE_FILES`]) is rejected as an error rather than silently
-/// overwriting that file. Every table this produces shares the IDENTICAL
-/// Arrow schema (no per-type column pruning — a different, out-of-scope
-/// experiment): only which ROWS land in which file differs, decided purely
-/// by each row's own `object_type`. [`PackageManifest::tables`] lists every
-/// file [`TableWriters`] actually opened, in first-appearance order (the
-/// order distinct `object_type` values are first encountered in the encoded
-/// row stream) — this is unaffected by [`RowOrder`], which only reorders
-/// FEATURES before encoding; partitioning by type happens strictly after.
+/// DISTINCT 1st-level (top-level) CityObject FAMILY the dataset contains —
+/// per the CityJSON 2.0.1 spec's 1st-level vs 2nd-level city object
+/// distinction, a 2nd-level `object_type` (e.g. `BuildingPart`,
+/// `BuildingInstallation`, `BridgeConstructiveElement`, `TunnelHollowSpace`)
+/// is NOT given its own table: it is routed into its 1st-level parent
+/// family's table (`Building`, `Bridge`, `Tunnel` respectively — see
+/// [`cityparquet_schema::first_level_type`]), while every other, already
+/// top-level type keeps its own file. File name `<snake>.parquet` (Task 4
+/// dropped the `cityobjects_` prefix these used to carry), `<snake>` being
+/// the family lower-cased with every non-alphanumeric character replaced by
+/// `_`, and a leading `+` (CityJSON extension object types) rewritten to the
+/// prefix `ext_` rather than folded into an ugly leading underscore (e.g.
+/// `+Foo` becomes `ext_foo.parquet`, never `_foo.parquet`) — see
+/// [`table_name_for_type`]. A derived name that would collide with a package
+/// sidecar/metadata file (see [`RESERVED_PACKAGE_FILES`]) is rejected as an
+/// error rather than silently overwriting that file. Every table this
+/// produces shares the IDENTICAL Arrow schema (no per-type column pruning —
+/// a different, out-of-scope experiment): only which ROWS land in which file
+/// differs, decided by each row's own `object_type` mapped through
+/// [`cityparquet_schema::first_level_type`] — the `object_type` column
+/// itself (dictionary-encoded, unchanged by this routing) is preserved on
+/// every row, so a family's table can still distinguish e.g. `Building` rows
+/// from `BuildingPart` rows within `building.parquet`.
+/// [`PackageManifest::tables`] lists every file [`TableWriters`] actually
+/// opened, in first-appearance order (the order distinct FAMILY values are
+/// first encountered in the encoded row stream) — this is unaffected by
+/// [`RowOrder`], which only reorders FEATURES before encoding; partitioning
+/// by family happens strictly after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TableLayout {
     #[default]
@@ -444,15 +455,19 @@ fn hilbert_ordered_features(
     Ok(keyed.into_iter().map(|(_, f)| f).collect())
 }
 
-/// The `<snake>.parquet` file name [`TableLayout::ByType`] writes for
-/// `object_type` — see [`TableLayout::ByType`]'s own doc comment for the
-/// exact rule (lower-case, non-alphanumeric -> `_`, a leading `+` becomes the
-/// prefix `ext_` rather than folding into the snake-cased body). Task 4
-/// dropped the `cityobjects_` prefix this used to carry; callers that open a
-/// writer for the result MUST check it against [`RESERVED_PACKAGE_FILES`]
-/// first (see [`TableWriters::by_type_table_index`]), since the dropped
-/// prefix removed the namespace that previously made a collision with a
-/// sidecar/metadata file impossible.
+/// The `<snake>.parquet` file name [`TableLayout::ByType`] writes for a
+/// FAMILY value (`object_type` mapped through
+/// [`cityparquet_schema::first_level_type`] — always a 1st-level type) — see
+/// [`TableLayout::ByType`]'s own doc comment for the exact rule (lower-case,
+/// non-alphanumeric -> `_`, a leading `+` becomes the prefix `ext_` rather
+/// than folding into the snake-cased body). Task 4 dropped the
+/// `cityobjects_` prefix this used to carry; callers that open a writer for
+/// the result MUST check it against [`RESERVED_PACKAGE_FILES`] first (see
+/// [`TableWriters::by_type_table_index`]), since the dropped prefix removed
+/// the namespace that previously made a collision with a sidecar/metadata
+/// file impossible. Named `..._for_type` rather than `..._for_family` since
+/// it is a pure string transform with no family-specific logic of its own —
+/// callers are what turn a raw `object_type` into a family first.
 fn table_name_for_type(object_type: &str) -> String {
     let (prefix, body) = match object_type.strip_prefix('+') {
         Some(rest) => ("ext_", rest),
@@ -471,12 +486,17 @@ fn table_name_for_type(object_type: &str) -> String {
     format!("{prefix}{snake}.parquet")
 }
 
-/// The boolean mask selecting exactly the rows of `batch` whose
-/// `object_type` column equals `target` (`batch`'s `object_type` column is
-/// always a dictionary-encoded Utf8 — see `crate::encode::BatchBuilder` and
-/// `crate::decode`'s identical downcast). A row with a null `object_type` is
-/// a schema violation (the column is non-nullable), so a null there is a
-/// `Schema` error rather than a silently-false mask entry.
+/// The boolean mask selecting exactly the rows of `batch` whose FAMILY —
+/// `object_type` mapped through [`cityparquet_schema::first_level_type`] —
+/// equals `target` (`batch`'s `object_type` column is always a
+/// dictionary-encoded Utf8 — see `crate::encode::BatchBuilder` and
+/// `crate::decode`'s identical downcast). A 2nd-level row (e.g.
+/// `object_type == "BuildingPart"`) is selected by its 1st-level family
+/// (`target == "Building"`), never by its own literal `object_type` value —
+/// this is what puts `BuildingPart` rows into `building.parquet` alongside
+/// `Building` rows. A row with a null `object_type` is a schema violation
+/// (the column is non-nullable), so a null there is a `Schema` error rather
+/// than a silently-false mask entry.
 fn object_type_mask(batch: &RecordBatch, target: &str) -> Result<arrow_array::BooleanArray> {
     let column = batch
         .column_by_name("object_type")
@@ -496,16 +516,21 @@ fn object_type_mask(batch: &RecordBatch, target: &str) -> Result<arrow_array::Bo
             return Err(err(format!("row {row}: 'object_type' must not be null")));
         }
         let key = dict.keys().value(row) as usize;
-        mask.append_value(values.value(key) == target);
+        let family = cityparquet_schema::first_level_type(values.value(key));
+        mask.append_value(family == target);
     }
     Ok(mask.finish())
 }
 
-/// Every distinct `object_type` string appearing in `batch`, in
-/// first-appearance order WITHIN this batch (a plain linear scan — the
-/// number of distinct types is always small, at most a few dozen even for
-/// the richest real dataset, so an O(rows * types) scan costs nothing next
-/// to the WKB/attribute work the same batch already went through).
+/// Every distinct FAMILY value appearing in `batch` — `object_type` mapped
+/// through [`cityparquet_schema::first_level_type`] — in first-appearance
+/// order WITHIN this batch (a plain linear scan — the number of distinct
+/// families is always small, at most a few dozen even for the richest real
+/// dataset, so an O(rows * families) scan costs nothing next to the
+/// WKB/attribute work the same batch already went through). 2nd-level
+/// object types (e.g. `BuildingPart`) collapse into their 1st-level family
+/// here (`"Building"`), so this never returns more distinct values than
+/// there are 1st-level families actually present in `batch`.
 fn distinct_types_in_batch(batch: &RecordBatch) -> Result<Vec<String>> {
     let column = batch
         .column_by_name("object_type")
@@ -527,13 +552,13 @@ fn distinct_types_in_batch(batch: &RecordBatch) -> Result<Vec<String>> {
             // `cityparquet_schema::model`), so a null can only mean a
             // corrupt/foreign batch — error loudly rather than skip, or an
             // all-null batch would be silently dropped under ByType (no
-            // distinct types found -> no writer ever sees its rows).
+            // distinct families found -> no writer ever sees its rows).
             return Err(err(format!("row {row}: 'object_type' must not be null")));
         }
         let key = dict.keys().value(row) as usize;
-        let type_str = values.value(key);
-        if !order.iter().any(|t| t == type_str) {
-            order.push(type_str.to_string());
+        let family = cityparquet_schema::first_level_type(values.value(key));
+        if !order.iter().any(|t| t == family) {
+            order.push(family.to_string());
         }
     }
     Ok(order)
@@ -541,13 +566,14 @@ fn distinct_types_in_batch(batch: &RecordBatch) -> Result<Vec<String>> {
 
 /// The main CityObject data table(s) a `convert` run writes: [`TableLayout::Single`]
 /// opens exactly one writer up front for [`CITYOBJECTS_TABLE`];
-/// [`TableLayout::ByType`] opens one writer per distinct `object_type`,
-/// LAZILY on that type's first row (see [`Self::write_batch`]). Every table
-/// shares the identical `schema`/`props` this was constructed with — only
-/// which rows land in which file differs. `order`/`index` together track
-/// FIRST-APPEARANCE order across the whole call (not just within one
-/// batch), which becomes [`PackageManifest::tables`] verbatim once
-/// [`Self::finish`] is called.
+/// [`TableLayout::ByType`] opens one writer per distinct FAMILY (`object_type`
+/// mapped through [`cityparquet_schema::first_level_type`] — 2nd-level types
+/// share their 1st-level parent's writer), LAZILY on that family's first row
+/// (see [`Self::write_batch`]). Every table shares the identical
+/// `schema`/`props` this was constructed with — only which rows land in
+/// which file differs. `order`/`index` together track FIRST-APPEARANCE
+/// order across the whole call (not just within one batch), which becomes
+/// [`PackageManifest::tables`] verbatim once [`Self::finish`] is called.
 struct TableWriters {
     layout: TableLayout,
     tmp_dir: PathBuf,
@@ -555,13 +581,13 @@ struct TableWriters {
     props: WriterProperties,
     order: Vec<String>,
     index: HashMap<String, usize>,
-    /// Which `object_type` first claimed each ByType table FILE NAME.
+    /// Which FAMILY first claimed each ByType table FILE NAME.
     /// [`table_name_for_type`] is lossy (case-folding, `_`-folding, the
-    /// `ext_` prefix), so two DISTINCT object types can derive the same
+    /// `ext_` prefix), so two DISTINCT families can derive the same
     /// file name (e.g. a literal type `"Ext_A"` and the extension type
     /// `"+A"` both become `ext_a.parquet`) — silently sharing
     /// the writer would merge them into one table, violating the
-    /// one-table-per-type invariant. [`Self::by_type_table_index`] consults
+    /// one-table-per-family invariant. [`Self::by_type_table_index`] consults
     /// this to turn any such collision into a `Schema` error instead.
     claimed_by: HashMap<String, String>,
     writers: Vec<ArrowWriter<fs::File>>,
@@ -572,7 +598,7 @@ impl TableWriters {
     /// (matching every layout's writer being open-and-ready before the
     /// first `write_batch` call, pre-M5 behaviour preserved exactly). For
     /// [`TableLayout::ByType`], opens nothing yet — tables are created lazily
-    /// as new `object_type` values are encountered.
+    /// as new FAMILY values are encountered.
     fn new(
         layout: TableLayout,
         tmp_dir: &Path,
@@ -608,53 +634,60 @@ impl TableWriters {
         Ok(idx)
     }
 
-    /// The writer index for `object_type`'s ByType table, opening it lazily
-    /// on the type's first row and recording the type's CLAIM on the derived
-    /// file name. Because [`table_name_for_type`] is lossy, a DIFFERENT
-    /// object type deriving an already-claimed name is a hard `Schema` error
-    /// naming both types and the colliding file — never a silent merge of
-    /// two distinct types into one table (see [`Self::claimed_by`]).
-    /// Task 4's reserved-name guard runs first: since by-type tables are no
-    /// longer namespaced under a `cityobjects_` prefix, a pathological
-    /// object type could otherwise derive a name that shadows a package
-    /// sidecar/metadata file (see [`RESERVED_PACKAGE_FILES`]) — reject that
-    /// as a clear error instead of silently overwriting the sidecar.
-    fn by_type_table_index(&mut self, object_type: &str) -> Result<usize> {
-        let name = table_name_for_type(object_type);
+    /// The writer index for `family`'s ByType table, opening it lazily on
+    /// the family's first row and recording the family's CLAIM on the
+    /// derived file name. Because [`table_name_for_type`] is lossy, a
+    /// DIFFERENT family deriving an already-claimed name is a hard `Schema`
+    /// error naming both families and the colliding file — never a silent
+    /// merge of two distinct families into one table (see
+    /// [`Self::claimed_by`]). Task 4's reserved-name guard runs first: since
+    /// by-type tables are no longer namespaced under a `cityobjects_`
+    /// prefix, a pathological family could otherwise derive a name that
+    /// shadows a package sidecar/metadata file (see
+    /// [`RESERVED_PACKAGE_FILES`]) — reject that as a clear error instead of
+    /// silently overwriting the sidecar. Callers always pass a FAMILY value
+    /// (already `cityparquet_schema::first_level_type`-mapped — see
+    /// [`Self::write_batch`]), never a raw, possibly-2nd-level `object_type`.
+    fn by_type_table_index(&mut self, family: &str) -> Result<usize> {
+        let name = table_name_for_type(family);
         if RESERVED_PACKAGE_FILES.contains(&name.as_str()) {
             return Err(err(format!(
-                "object type {object_type:?} maps to reserved package file {name:?}; \
+                "object type {family:?} maps to reserved package file {name:?}; \
                  rename the type or use --layout single"
             )));
         }
         match self.claimed_by.get(&name) {
-            Some(claimant) if claimant == object_type => Ok(self.index[&name]),
+            Some(claimant) if claimant == family => Ok(self.index[&name]),
             Some(claimant) => Err(err(format!(
-                "object types '{claimant}' and '{object_type}' both derive the table file \
+                "object types '{claimant}' and '{family}' both derive the table file \
                  '{name}': refusing to merge two distinct object types into one table"
             ))),
             None => {
                 let idx = self.open_table(&name)?;
-                self.claimed_by.insert(name, object_type.to_string());
+                self.claimed_by.insert(name, family.to_string());
                 Ok(idx)
             }
         }
     }
 
     /// Writes one encoded batch: handed straight to the (single, already
-    /// open) writer under [`TableLayout::Single`], or partitioned by
-    /// `object_type` — one `filter_record_batch` call per distinct type
-    /// present, each sub-batch going to that type's own (lazily opened)
-    /// writer — under [`TableLayout::ByType`].
+    /// open) writer under [`TableLayout::Single`], or partitioned by FAMILY
+    /// (`object_type` mapped through
+    /// [`cityparquet_schema::first_level_type`]) — one `filter_record_batch`
+    /// call per distinct family present, each sub-batch going to that
+    /// family's own (lazily opened) writer — under [`TableLayout::ByType`].
+    /// A 2nd-level row's own `object_type` value is untouched by this: only
+    /// which FILE it lands in is decided by its family, the `object_type`
+    /// column itself still carries the row's real, literal type.
     fn write_batch(&mut self, batch: &RecordBatch) -> Result<()> {
         match self.layout {
             TableLayout::Single => self.writers[0]
                 .write(batch)
                 .map_err(|e| parquet_err(format!("parquet write error: {e}"))),
             TableLayout::ByType => {
-                for object_type in distinct_types_in_batch(batch)? {
-                    let idx = self.by_type_table_index(&object_type)?;
-                    let mask = object_type_mask(batch, &object_type)?;
+                for family in distinct_types_in_batch(batch)? {
+                    let idx = self.by_type_table_index(&family)?;
+                    let mask = object_type_mask(batch, &family)?;
                     let filtered = filter_record_batch(batch, &mask)?;
                     self.writers[idx]
                         .write(&filtered)

@@ -857,8 +857,10 @@ fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
 
 /// Every distinct `object_type` string in the main table at `path` (raw
 /// dictionary decode, independent of `crate::decode`), and the file's total
-/// row count — used to assert `TableLayout::ByType`'s per-file uniformity
-/// and to recombine row counts across the split tables.
+/// row count — used to assert `TableLayout::ByType`'s per-family grouping
+/// (a family table may legitimately carry MULTIPLE `object_type` values —
+/// its 1st-level type plus any 2nd-level children) and to recombine row
+/// counts across the split tables.
 fn table_object_types_and_count(path: &std::path::Path) -> (HashSet<String>, usize) {
     let file = std::fs::File::open(path).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
@@ -879,19 +881,15 @@ fn table_object_types_and_count(path: &std::path::Path) -> (HashSet<String>, usi
     (types, count)
 }
 
-/// M5 task 5 (Step 2, the pinned fixture facts): delft's only two
-/// `object_type` values are `Building`/`BuildingPart`, so `TableLayout::ByType`
-/// must write exactly `building.parquet` +
-/// `buildingpart.parquet`, nothing else. The FIRST-APPEARANCE
-/// order pins `Building` before `BuildingPart`: `crate::encode`'s
-/// `BatchIter::advance` sorts each feature's CityObject ids lexicographically
-/// before encoding them (`ids.sort()`), and delft's building-part parent id
-/// (`"...012869"`) is a strict string PREFIX of its child's id
-/// (`"...012869-0"`), so it sorts first — empirically verified against the
-/// real fixture (not the raw, HashMap-ordered `CityObjects` JSON object,
-/// whose iteration order is unspecified).
+/// Per the CityJSON 2.0.1 spec's 1st-level vs 2nd-level city object
+/// distinction, delft's only two `object_type` values are
+/// `Building`/`BuildingPart` — a 1st-level type and its 2nd-level child —
+/// which both belong to the SAME family (`Building`, per
+/// `cityparquet_schema::first_level_type`). `TableLayout::ByType` must
+/// therefore write exactly ONE table, `building.parquet`, containing every
+/// row of BOTH types; `buildingpart.parquet` must never be created.
 #[test]
-fn by_type_convert_of_delft_writes_exactly_the_two_pinned_type_tables() {
+fn by_type_convert_of_delft_writes_exactly_one_family_table() {
     let out = tempfile::tempdir().unwrap();
     let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
     opts.layout = TableLayout::ByType;
@@ -904,27 +902,30 @@ fn by_type_convert_of_delft_writes_exactly_the_two_pinned_type_tables() {
     let tables: Vec<String> = serde_json::from_value(manifest["tables"].clone()).unwrap();
     assert_eq!(
         tables,
-        vec![
-            "building.parquet".to_string(),
-            "buildingpart.parquet".to_string(),
-        ],
-        "expected exactly the two pinned tables in first-appearance order, got: {tables:?}"
+        vec!["building.parquet".to_string()],
+        "expected exactly one family table (Building + BuildingPart share it), got: {tables:?}"
     );
     assert!(!out.path().join("cityobjects.parquet").exists());
+    assert!(
+        !out.path().join("buildingpart.parquet").exists(),
+        "BuildingPart is a 2nd-level type and must not get its own table"
+    );
     for name in &tables {
         assert!(out.path().join(name).exists(), "missing {name}");
     }
 
     let (building_types, building_count) =
         table_object_types_and_count(&out.path().join("building.parquet"));
-    assert_eq!(building_types, HashSet::from(["Building".to_string()]));
-    let (part_types, part_count) =
-        table_object_types_and_count(&out.path().join("buildingpart.parquet"));
-    assert_eq!(part_types, HashSet::from(["BuildingPart".to_string()]));
     assert_eq!(
-        building_count + part_count,
-        2231,
-        "row counts across the split tables must sum to delft's full object count"
+        building_types,
+        HashSet::from(["Building".to_string(), "BuildingPart".to_string()]),
+        "building.parquet must carry BOTH object_type values; the object_type column is what \
+         still distinguishes them within the shared file"
+    );
+    assert_eq!(
+        building_count, 2231,
+        "the single family table must carry delft's full object count \
+         (1115 Building + 1116 BuildingPart)"
     );
 
     // Every table's footer must carry `cityparquet_version` (required by
@@ -945,10 +946,10 @@ fn by_type_convert_of_delft_writes_exactly_the_two_pinned_type_tables() {
 }
 
 /// M5 review follow-up (Minor a): the ByType writer's first-appearance
-/// order and per-type writer index must persist ACROSS batches, not just
+/// order and per-family writer index must persist ACROSS batches, not just
 /// within one — a small `batch_size` (256 vs delft's 2231 objects, so ~9
 /// encoded batches, with both types recurring in every one of them) proves
-/// the same two pinned tables come out with the full row count, end-to-end.
+/// the single family table comes out with the full row count, end-to-end.
 #[test]
 fn by_type_convert_of_delft_survives_many_small_batches() {
     let out = tempfile::tempdir().unwrap();
@@ -964,22 +965,18 @@ fn by_type_convert_of_delft_survives_many_small_batches() {
     let tables: Vec<String> = serde_json::from_value(manifest["tables"].clone()).unwrap();
     assert_eq!(
         tables,
-        vec![
-            "building.parquet".to_string(),
-            "buildingpart.parquet".to_string(),
-        ],
-        "the same two pinned tables, in the same first-appearance order, regardless of batching"
+        vec!["building.parquet".to_string()],
+        "the same single family table, regardless of batching"
     );
 
     let (building_types, building_count) =
         table_object_types_and_count(&out.path().join("building.parquet"));
-    assert_eq!(building_types, HashSet::from(["Building".to_string()]));
-    let (part_types, part_count) =
-        table_object_types_and_count(&out.path().join("buildingpart.parquet"));
-    assert_eq!(part_types, HashSet::from(["BuildingPart".to_string()]));
     assert_eq!(
-        building_count + part_count,
-        2231,
+        building_types,
+        HashSet::from(["Building".to_string(), "BuildingPart".to_string()])
+    );
+    assert_eq!(
+        building_count, 2231,
         "rows written across ~9 batches must still sum to delft's full object count"
     );
 }
@@ -1055,11 +1052,18 @@ fn empty_input_writes_the_standard_empty_single_table_under_both_layouts() {
 }
 
 /// M5 task 5 (Step 2/3): railway's 14-distinct-`object_type` fixture fact
-/// (pinned in the milestone brief) round-tripped through `TableLayout::ByType` —
-/// exactly 14 tables, one object type per file, row counts summing to
-/// railway's full object count.
+/// (pinned in the milestone brief) round-tripped through `TableLayout::ByType`
+/// under the family-grouping rule: railway's 14 distinct `object_type`
+/// values collapse to 10 distinct 1st-level FAMILIES — `Bridge`,
+/// `BridgeConstructiveElement`, and `BridgeInstallation` all land in
+/// `bridge.parquet`; `Building` and `BuildingInstallation` in
+/// `building.parquet`; `Tunnel` and `TunnelInstallation` in `tunnel.parquet`;
+/// the other 7 types (`CityFurniture`, `CityObjectGroup`,
+/// `GenericCityObject`, `Railway`, `SolitaryVegetationObject`, `TINRelief`,
+/// `WaterBody`) were already 1st-level and each keep their own single-type
+/// file — row counts summing to railway's full object count.
 #[test]
-fn by_type_convert_of_railway_writes_fourteen_type_tables() {
+fn by_type_convert_of_railway_writes_ten_family_tables() {
     let out = tempfile::tempdir().unwrap();
     let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
     opts.layout = TableLayout::ByType;
@@ -1072,16 +1076,13 @@ fn by_type_convert_of_railway_writes_fourteen_type_tables() {
     let tables: Vec<String> = serde_json::from_value(manifest["tables"].clone()).unwrap();
     assert_eq!(
         tables.len(),
-        14,
-        "railway's pinned type set has 14 distinct object types, got: {tables:?}"
+        10,
+        "railway's pinned type set collapses to 10 distinct 1st-level families, got: {tables:?}"
     );
 
     let expected_names: HashSet<String> = [
         "Bridge",
-        "BridgeConstructiveElement",
-        "BridgeInstallation",
         "Building",
-        "BuildingInstallation",
         "CityFurniture",
         "CityObjectGroup",
         "GenericCityObject",
@@ -1089,30 +1090,72 @@ fn by_type_convert_of_railway_writes_fourteen_type_tables() {
         "SolitaryVegetationObject",
         "TINRelief",
         "Tunnel",
-        "TunnelInstallation",
         "WaterBody",
     ]
     .into_iter()
     .map(|t| format!("{}.parquet", t.to_lowercase()))
     .collect();
     let actual_names: HashSet<String> = tables.iter().cloned().collect();
-    assert_eq!(actual_names, expected_names, "unexpected table name set");
+    assert_eq!(
+        actual_names, expected_names,
+        "unexpected family table name set"
+    );
+    assert!(
+        !out.path()
+            .join("bridgeconstructiveelement.parquet")
+            .exists(),
+        "BridgeConstructiveElement is 2nd-level and must not get its own table"
+    );
+    assert!(
+        !out.path().join("bridgeinstallation.parquet").exists(),
+        "BridgeInstallation is 2nd-level and must not get its own table"
+    );
+    assert!(
+        !out.path().join("buildinginstallation.parquet").exists(),
+        "BuildingInstallation is 2nd-level and must not get its own table"
+    );
+    assert!(
+        !out.path().join("tunnelinstallation.parquet").exists(),
+        "TunnelInstallation is 2nd-level and must not get its own table"
+    );
+
+    // Each family table's expected member `object_type` set — the 2nd-level
+    // families (Bridge/Building/Tunnel) carry more than one, everything else
+    // (already 1st-level) carries exactly its own type.
+    let expected_types: &[(&str, &[&str])] = &[
+        (
+            "bridge.parquet",
+            &["Bridge", "BridgeConstructiveElement", "BridgeInstallation"],
+        ),
+        ("building.parquet", &["Building", "BuildingInstallation"]),
+        ("cityfurniture.parquet", &["CityFurniture"]),
+        ("cityobjectgroup.parquet", &["CityObjectGroup"]),
+        ("genericcityobject.parquet", &["GenericCityObject"]),
+        ("railway.parquet", &["Railway"]),
+        (
+            "solitaryvegetationobject.parquet",
+            &["SolitaryVegetationObject"],
+        ),
+        ("tinrelief.parquet", &["TINRelief"]),
+        ("tunnel.parquet", &["Tunnel", "TunnelInstallation"]),
+        ("waterbody.parquet", &["WaterBody"]),
+    ];
 
     let mut total = 0usize;
-    for name in &tables {
+    for (name, member_types) in expected_types {
         let path = out.path().join(name);
         assert!(path.exists(), "missing {name}");
         let (types, count) = table_object_types_and_count(&path);
+        let expected: HashSet<String> = member_types.iter().map(|t| t.to_string()).collect();
         assert_eq!(
-            types.len(),
-            1,
-            "table {name} must carry exactly one object_type, got {types:?}"
+            types, expected,
+            "table {name} must carry exactly its family's object_type values"
         );
         total += count;
     }
     assert_eq!(
         total, 121,
-        "row counts across every split table must sum to railway's full object count"
+        "row counts across every family table must sum to railway's full object count"
     );
 }
 

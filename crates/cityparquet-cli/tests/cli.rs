@@ -307,10 +307,13 @@ fn export_and_compare_railway_with_exclusions() {
     );
 }
 
-/// M5 task 5 (Step 4): `--layout by-type` writes delft's two pinned
-/// per-type tables instead of the single `cityobjects.parquet`.
+/// M5 task 5 (Step 4): `--layout by-type` writes delft's single pinned
+/// family table instead of the single `cityobjects.parquet`. Per the
+/// CityJSON 2.0.1 1st-level/2nd-level distinction, delft's `BuildingPart`
+/// rows (2nd-level) share `building.parquet` with the `Building` rows
+/// (1st-level) rather than getting their own `buildingpart.parquet`.
 #[test]
-fn convert_with_by_type_layout_writes_per_type_tables() {
+fn convert_with_by_type_layout_writes_family_tables() {
     let out = tempfile::tempdir().unwrap();
     let binary = env!("CARGO_BIN_EXE_cityparquet");
     let output = Command::new(binary)
@@ -329,7 +332,10 @@ fn convert_with_by_type_layout_writes_per_type_tables() {
     );
     assert!(!out.path().join("cityobjects.parquet").exists());
     assert!(out.path().join("building.parquet").exists());
-    assert!(out.path().join("buildingpart.parquet").exists());
+    assert!(
+        !out.path().join("buildingpart.parquet").exists(),
+        "BuildingPart is 2nd-level and must share building.parquet, not get its own file"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(

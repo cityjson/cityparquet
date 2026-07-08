@@ -508,7 +508,11 @@ fn convert_and_export_with(
 /// M5 task 5 (Step 3): delft under `TableLayout::ByType` (Core profile) must
 /// round-trip exactly as losslessly as `TableLayout::Single` does in
 /// `delft_round_trips_losslessly` above — the table layout is purely a
-/// physical-file concern, never a semantic one.
+/// physical-file concern, never a semantic one. Per the family-grouping rule,
+/// delft's Building + BuildingPart share the single `building.parquet` file
+/// (see `by_type_convert_of_delft_writes_exactly_one_family_table` in
+/// `convert_real_data.rs`), so `export` must still read the whole dataset
+/// back from that one table.
 #[test]
 fn delft_by_type_round_trips_losslessly() {
     let (exported, package_dir, _export_dir) = convert_and_export_with(
@@ -520,6 +524,10 @@ fn delft_by_type_round_trips_losslessly() {
     assert!(
         package_dir.path().join("building.parquet").exists(),
         "sanity: this must actually be a split-by-type package"
+    );
+    assert!(
+        !package_dir.path().join("buildingpart.parquet").exists(),
+        "BuildingPart is 2nd-level and must share building.parquet, not get its own file"
     );
     let report = compare_datasets(
         &fixture("delft.city.jsonl"),
@@ -561,7 +569,10 @@ fn delft_by_type_round_trips_losslessly() {
 /// profile) — the M4 headline round-trip gate
 /// (`railway_compatibility_round_trips_losslessly_with_no_exclusions` above)
 /// held with `TableLayout::Single`; it must hold identically under
-/// `TableLayout::ByType`, across all 14 pinned per-type tables.
+/// `TableLayout::ByType`, across all 10 pinned family tables (railway's 14
+/// distinct `object_type` values collapse to 10 distinct 1st-level families —
+/// see `by_type_convert_of_railway_writes_ten_family_tables` in
+/// `convert_real_data.rs` for the exact family membership).
 #[test]
 fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
     let (exported, package_dir, _export_dir) = convert_and_export_with(
@@ -575,8 +586,8 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
     let tables = manifest["tables"].as_array().unwrap();
     assert_eq!(
         tables.len(),
-        14,
-        "railway's pinned type set has 14 distinct object types, got: {tables:?}"
+        10,
+        "railway's pinned type set collapses to 10 distinct 1st-level families, got: {tables:?}"
     );
 
     let report = compare_datasets(

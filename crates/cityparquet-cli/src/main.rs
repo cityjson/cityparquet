@@ -62,8 +62,10 @@ enum Commands {
         ordering: String,
 
         /// Table layout for the main CityObject data: "by-type" (default —
-        /// one file per object type, e.g. building.parquet / bridge.parquet)
-        /// or "single" (one cityobjects.parquet holding every type).
+        /// one file per 1st-level CityObject family, e.g. building.parquet /
+        /// bridge.parquet; 2nd-level types such as BuildingPart share their
+        /// family's file) or "single" (one cityobjects.parquet holding every
+        /// type).
         #[arg(long, default_value = "by-type")]
         layout: String,
 
