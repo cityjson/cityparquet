@@ -1077,6 +1077,56 @@ mod tests {
         assert_eq!(tables, vec!["ext_a.parquet".to_string()]);
     }
 
+    /// Task 4 review follow-up (Important): the reserved-name guard inside
+    /// [`TableWriters::by_type_table_index`] must actually fire when a
+    /// by-type object type derives a [`RESERVED_PACKAGE_FILES`] name — the
+    /// pre-existing `by_type_table_name_never_collides_with_reserved_package_files`
+    /// test only checks `table_name_for_type("Building")` never collides, so
+    /// it never drives the guard's error branch. This test does: `"Materials"`
+    /// snakes to `materials.parquet`, which IS reserved (it names the
+    /// materials sidecar table), so writing it under `ByType` must be
+    /// rejected before any writer for it is ever opened.
+    #[test]
+    fn by_type_write_rejects_an_object_type_deriving_a_reserved_package_file() {
+        // Precondition the whole scenario rests on: the type really does
+        // derive a reserved file name.
+        assert_eq!(
+            table_name_for_type("Materials"),
+            MATERIALS_TABLE,
+            "fixture fact: 'Materials' must derive the reserved materials table file name"
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let batch = object_type_only_batch(&["Materials"]);
+        let mut writers = TableWriters::new(
+            TableLayout::ByType,
+            tmp.path(),
+            batch.schema(),
+            WriterProperties::default(),
+        )
+        .unwrap();
+
+        let e = writers.write_batch(&batch).unwrap_err();
+        assert!(
+            matches!(e, CityParquetError::Schema(_)),
+            "expected a Schema error, got {e:?}"
+        );
+        let msg = e.to_string();
+        assert!(
+            msg.contains("Materials") && msg.contains("materials.parquet"),
+            "the error must name the object type and the reserved file it collides with, got: {msg}"
+        );
+        assert!(
+            !msg.contains("both derive the table file"),
+            "must be the reserved-file collision error, not the two-types-same-name error, got: {msg}"
+        );
+
+        // No file was ever created for the rejected type — the guard runs
+        // before `open_table`, so the reserved sidecar's name is never
+        // claimed by a by-type writer.
+        assert!(!tmp.path().join(MATERIALS_TABLE).exists());
+    }
+
     /// M5 review follow-up (Minor b): an all-null `object_type` batch must
     /// be a hard error under ByType, not a silent drop — aligned with
     /// `object_type_mask`'s identical guard (the schema declares the column
