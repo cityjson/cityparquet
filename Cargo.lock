@@ -406,6 +406,7 @@ dependencies = [
  "arrow-array",
  "cityparquet",
  "cityparquet-schema",
+ "cjseq2",
  "clap",
  "fcb_core",
  "flate2",

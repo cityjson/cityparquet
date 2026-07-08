@@ -4,6 +4,7 @@
 
 pub mod cityjsonseq;
 pub mod cityparquet;
+pub mod flatcitybuf;
 
 use std::path::Path;
 
@@ -30,10 +31,8 @@ pub trait FormatRunner {
 }
 
 /// Resolves `--format <name>` to its [`FormatRunner`]. `cityparquet`,
-/// `cityjsonseq`, and `cityjsonseq-gz` are implemented; `flatcitybuf` parses
-/// cleanly but fails with a clear "not yet implemented" error — Task 10
-/// replaces that arm with a real runner without reshaping this function's
-/// signature. `duckdb-parquet` is a SQL-engine baseline driven entirely by
+/// `cityjsonseq`, `cityjsonseq-gz`, and `flatcitybuf` are implemented.
+/// `duckdb-parquet` is a SQL-engine baseline driven entirely by
 /// `scripts/readbench_duckdb.sh`; it is not, and never will be, a
 /// `--child` format.
 pub fn resolve(format: &str) -> Result<Box<dyn FormatRunner>> {
@@ -41,7 +40,7 @@ pub fn resolve(format: &str) -> Result<Box<dyn FormatRunner>> {
         "cityparquet" => Ok(Box::new(cityparquet::CityParquetRunner)),
         "cityjsonseq" => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::plain())),
         "cityjsonseq-gz" => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::gzip())),
-        "flatcitybuf" => bail!("format 'flatcitybuf' is not yet implemented (Task 10)"),
+        "flatcitybuf" => Ok(Box::new(flatcitybuf::FlatCityBufRunner)),
         "duckdb-parquet" => bail!(
             "format 'duckdb-parquet' is a SQL-engine baseline driven by \
              scripts/readbench_duckdb.sh, not this binary's --child path"
@@ -62,7 +61,7 @@ mod tests {
         assert!(resolve("cityparquet").is_ok());
         assert!(resolve("cityjsonseq").is_ok());
         assert!(resolve("cityjsonseq-gz").is_ok());
-        assert!(resolve("flatcitybuf").is_err());
+        assert!(resolve("flatcitybuf").is_ok());
         assert!(resolve("duckdb-parquet").is_err());
         assert!(resolve("not-a-format").is_err());
     }
