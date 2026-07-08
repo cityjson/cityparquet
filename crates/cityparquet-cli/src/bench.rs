@@ -25,14 +25,11 @@ use std::time::{Duration, Instant};
 
 use arrow_array::{Array, Float64Array, RecordBatch, StructArray};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::file::metadata::RowGroupMetaData;
-use parquet::file::statistics::Statistics;
-use parquet::schema::types::ColumnPath;
 
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
-use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet::reader::{CityParquetReaderBuilder, row_group_intersects};
 use cityparquet::recipe::{RecipePreset, WriterRecipe};
 use cityparquet::schema::{PackageManifest, Profile};
 use cityparquet::{CityParquetError, Result};
@@ -304,54 +301,6 @@ fn union_batch_bbox(batch: &RecordBatch, acc: &mut Option<[f64; 6]>) {
             ],
         });
     }
-}
-
-/// Whether row group `rg`'s `bbox` chunk statistics 3D-intersect `query`.
-/// Deliberately mirrors `cityparquet::reader`'s private `row_group_intersects`
-/// (this crate cannot reach it — it is not part of the public API), so that
-/// [`BenchRow::row_groups_touched`] counts exactly what
-/// [`CityParquetReaderBuilder::with_bbox_row_groups`] actually keeps for the
-/// timed window query above it. Missing any of the six leaf statistics keeps
-/// the row group (counts as touched), same non-silent-pruning stance as the
-/// real reader.
-fn row_group_intersects(rg: &RowGroupMetaData, query: &[f64; 6]) -> bool {
-    let leaf_stat = |leaf: &str| -> Option<&Statistics> {
-        let path = ColumnPath::new(vec!["bbox".to_string(), leaf.to_string()]);
-        rg.columns()
-            .iter()
-            .find(|c| c.column_path() == &path)?
-            .statistics()
-    };
-    let leaf_min = |leaf: &str| -> Option<f64> {
-        match leaf_stat(leaf)? {
-            Statistics::Double(v) => v.min_opt().copied(),
-            _ => None,
-        }
-    };
-    let leaf_max = |leaf: &str| -> Option<f64> {
-        match leaf_stat(leaf)? {
-            Statistics::Double(v) => v.max_opt().copied(),
-            _ => None,
-        }
-    };
-
-    let mins = [leaf_min("xmin"), leaf_min("ymin"), leaf_min("zmin")];
-    let maxs = [leaf_max("xmax"), leaf_max("ymax"), leaf_max("zmax")];
-    let (Some(min0), Some(min1), Some(min2)) = (mins[0], mins[1], mins[2]) else {
-        return true;
-    };
-    let (Some(max0), Some(max1), Some(max2)) = (maxs[0], maxs[1], maxs[2]) else {
-        return true;
-    };
-    let rg_min = [min0, min1, min2];
-    let rg_max = [max0, max1, max2];
-
-    for axis in 0..3 {
-        if rg_max[axis] < query[axis] || rg_min[axis] > query[axis + 3] {
-            return false;
-        }
-    }
-    true
 }
 
 /// The on-disk byte size of `dir/name`.

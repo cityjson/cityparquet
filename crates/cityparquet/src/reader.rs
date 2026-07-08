@@ -173,7 +173,14 @@ fn bbox_leaf_max(rg: &RowGroupMetaData, leaf: &str) -> Option<f64> {
 /// `[xmin, ymin, zmin, xmax, ymax, zmax]` bbox). Missing any of the six leaf
 /// statistics keeps the row group (returns `true`) — pruning must never
 /// silently drop rows it cannot prove are out of range.
-fn row_group_intersects(rg: &RowGroupMetaData, query: &[f64; 6]) -> bool {
+///
+/// `pub` (not `pub(crate)`): this is the exact row-group-intersection
+/// predicate [`CityParquetReaderBuilder::with_bbox_row_groups`] uses to
+/// prune, and `cityparquet-cli`'s bench harness needs to recompute the same
+/// `row_groups_touched` count it reports — as a separate downstream crate it
+/// cannot reach a `pub(crate)` item, and re-deriving its own copy of this
+/// logic is exactly the duplication this signature closes.
+pub fn row_group_intersects(rg: &RowGroupMetaData, query: &[f64; 6]) -> bool {
     let mins = [
         bbox_leaf_min(rg, BBOX_LEAVES[0]),
         bbox_leaf_min(rg, BBOX_LEAVES[1]),
@@ -190,11 +197,19 @@ fn row_group_intersects(rg: &RowGroupMetaData, query: &[f64; 6]) -> bool {
     let (Some(max0), Some(max1), Some(max2)) = (maxs[0], maxs[1], maxs[2]) else {
         return true;
     };
-    let rg_min = [min0, min1, min2];
-    let rg_max = [max0, max1, max2];
+    box_intersects_query([min0, min1, min2], [max0, max1, max2], query)
+}
 
+/// Axis-aligned 3D interval-overlap test: whether the box `[box_min, box_max]`
+/// intersects `query` (`[xmin, ymin, zmin, xmax, ymax, zmax]`). The single
+/// numeric predicate shared by [`row_group_intersects`] (bounds read from
+/// Parquet column statistics) and [`crate::query::bbox_query`]'s row-level
+/// exactness filter (bounds decoded from each row's own `bbox` struct
+/// column) — one implementation of "do these two boxes overlap", reused by
+/// both the coarse (row-group) and exact (row) tests.
+pub(crate) fn box_intersects_query(box_min: [f64; 3], box_max: [f64; 3], query: &[f64; 6]) -> bool {
     for axis in 0..3 {
-        if rg_max[axis] < query[axis] || rg_min[axis] > query[axis + 3] {
+        if box_max[axis] < query[axis] || box_min[axis] > query[axis + 3] {
             return false;
         }
     }
