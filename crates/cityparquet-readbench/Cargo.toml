@@ -1,0 +1,24 @@
+[package]
+name = "cityparquet-readbench"
+description = "Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParquet, etc.)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "cityparquet-readbench"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+cityparquet = { path = "../cityparquet" }
+cityparquet-schema = { workspace = true }
+fcb_core = { workspace = true }
+peak_alloc = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+flate2 = "1"
+arrow-array = { workspace = true }
+parquet = { workspace = true }
+libc = "0.2"

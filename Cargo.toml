@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/cityparquet-schema", "crates/cityparquet", "crates/cityparquet-cli"]
+members = ["crates/cityparquet-schema", "crates/cityparquet", "crates/cityparquet-cli", "crates/cityparquet-readbench"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,4 +24,6 @@ clap = { version = "4", features = ["derive"] }
 wkb = "0.9"
 geo-traits = "0.3"
 tempfile = "3"
+fcb_core = "0.7"
+peak_alloc = "0.3.0"
 cityparquet-schema = { path = "crates/cityparquet-schema" }
