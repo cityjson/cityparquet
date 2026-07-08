@@ -50,6 +50,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow_array::{Array, RecordBatch, StringArray};
+use arrow_schema::Schema;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
@@ -115,6 +116,40 @@ fn err(msg: String) -> CityParquetError {
 
 fn io_err(msg: String) -> CityParquetError {
     CityParquetError::Io(msg)
+}
+
+/// Compares `other`'s CityParquet-rendered Arrow schema against `first`'s,
+/// field by field, in order — name and data type both must match. Returns a
+/// description of the FIRST mismatch found (field count, a renamed column,
+/// or a retyped one), or `None` if every field matches exactly. See the
+/// M5 Codex review multi-table schema-check finding at this function's call
+/// site in [`export`].
+fn first_schema_mismatch(first: &Schema, other: &Schema) -> Option<String> {
+    if first.fields().len() != other.fields().len() {
+        return Some(format!(
+            "has {} column(s), expected {}",
+            other.fields().len(),
+            first.fields().len()
+        ));
+    }
+    for (idx, (a, b)) in first.fields().iter().zip(other.fields().iter()).enumerate() {
+        if a.name() != b.name() {
+            return Some(format!(
+                "column {idx} is named '{}', expected '{}'",
+                b.name(),
+                a.name()
+            ));
+        }
+        if a.data_type() != b.data_type() {
+            return Some(format!(
+                "column '{}' has type {:?}, expected {:?}",
+                b.name(),
+                b.data_type(),
+                a.data_type()
+            ));
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1055,17 +1090,34 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
                 CityParquetError::Parquet(format!("cannot open parquet reader: {e}"))
             })?;
-            // Light consistency check only (per the M5 plan): every table
-            // must at least agree with the first on `cityparquet_version`.
-            // A full per-table schema/KV comparison is out of scope here —
-            // `TableLayout::ByType` is trusted to have written the identical
-            // schema to every table it emits.
+            // Every later table must agree with the first on
+            // `cityparquet_version`...
             let table_meta = builder.cityparquet_metadata()?;
             if table_meta.cityparquet_version != meta.cityparquet_version {
                 return Err(err(format!(
                     "table '{name}' has cityparquet_version {:?}, expected {:?} \
                      (matching table '{first_table_name}')",
                     table_meta.cityparquet_version, meta.cityparquet_version
+                )));
+            }
+            // ...and (M5 Codex review, Important finding 2) its own
+            // CityParquet-rendered Arrow schema — field names, types, AND
+            // order — must match the first table's exactly, checked
+            // field-by-field so the error names the first mismatching
+            // column. A `cityparquet_version` match alone does not rule out
+            // a tampered/foreign/hand-edited table that happens to carry the
+            // same version but different columns: reading it against the
+            // FIRST table's schema (as every batch below does, via
+            // `CityParquetRecordBatchReader::new(_, Arc::clone(&schema))`)
+            // would silently relabel or misdecode its data rather than
+            // reject the package. This is a real risk for any package NOT
+            // produced by this crate's own `TableLayout::ByType` writer
+            // (which is trusted to emit identical schemas), and for a
+            // corrupted one that was.
+            let table_schema = builder.cityparquet_arrow_schema()?;
+            if let Some(mismatch) = first_schema_mismatch(&schema, &table_schema) {
+                return Err(err(format!(
+                    "table '{name}' {mismatch} (matching table '{first_table_name}')"
                 )));
             }
             let parquet_reader = builder.build().map_err(|e| {

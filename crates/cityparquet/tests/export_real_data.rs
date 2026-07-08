@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
+use arrow_schema::{Field, Schema};
 use cityparquet::CityParquetError;
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
@@ -15,6 +16,7 @@ use cityparquet::sidecar::{read_materials, read_templates, write_materials, writ
 use cityparquet::source::{Source, SourceFormat};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 use serde_json::Value;
 
@@ -1346,4 +1348,130 @@ fn export_reads_every_table_a_manifest_lists_not_just_the_first() {
         compare_report.differences
     );
     assert!(compare_report.differences.is_empty());
+}
+
+/// M5 Codex review (Important finding 2): before this fix, a later table in
+/// a multi-table manifest was only checked against the first table's
+/// `cityparquet_version` — its Arrow schema was never compared, and every
+/// batch was decoded then stamped with the FIRST table's schema regardless
+/// (`CityParquetRecordBatchReader::new` rebuilds each `RecordBatch` against
+/// `Arc::clone(&schema)`, which only checks column COUNT/TYPE, never
+/// names). A second table with a renamed-but-same-typed attribute column
+/// would therefore be silently relabelled under the first table's column
+/// name instead of rejected.
+///
+/// Reuses `split_main_table_into_two_files` (the same hand-rolled
+/// multi-table stand-in `export_reads_every_table_a_manifest_lists_not_just_the_first`
+/// uses), then rewrites the SECOND physical file with its first attribute
+/// column renamed — both in the Arrow schema AND in the rewritten KV
+/// metadata's `attribute_columns` list, so the table stays internally
+/// self-consistent (`cityparquet_arrow_schema()` still resolves it
+/// cleanly) and this is a genuine SCHEMA divergence from the first table,
+/// not a metadata-consistency error.
+#[test]
+fn export_rejects_a_second_table_with_a_renamed_attribute_column() {
+    let package_dir = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        fixture("delft.city.jsonl"),
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+
+    let (name_a, name_b) = split_main_table_into_two_files(package_dir.path());
+
+    let table_b_path = package_dir.path().join(&name_b);
+    let file = std::fs::File::open(&table_b_path).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let kvs = builder
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .cloned()
+        .unwrap_or_default();
+    let schema = Arc::clone(builder.schema());
+    let reader = builder.build().unwrap();
+    let batches: Vec<RecordBatch> = reader.map(|b| b.unwrap()).collect();
+    let combined = if batches.len() == 1 {
+        batches.into_iter().next().unwrap()
+    } else {
+        arrow_select::concat::concat_batches(&schema, &batches).unwrap()
+    };
+
+    let attr_kv = kvs
+        .iter()
+        .find(|kv| kv.key == "attribute_columns")
+        .expect("delft's metadata must carry an attribute_columns entry");
+    let mut attrs: Vec<String> = serde_json::from_str(
+        attr_kv
+            .value
+            .as_deref()
+            .expect("attribute_columns KV must carry a value"),
+    )
+    .unwrap();
+    assert!(
+        !attrs.is_empty(),
+        "delft must have at least one attribute column to rename"
+    );
+    let old_name = attrs[0].clone();
+    let new_name = format!("{old_name}_renamed");
+    attrs[0] = new_name.clone();
+
+    let new_kvs: Vec<KeyValue> = kvs
+        .into_iter()
+        .map(|kv| {
+            if kv.key == "attribute_columns" {
+                KeyValue::new(
+                    "attribute_columns".to_string(),
+                    serde_json::to_string(&attrs).unwrap(),
+                )
+            } else {
+                kv
+            }
+        })
+        .collect();
+
+    let renamed_schema = Arc::new(Schema::new(
+        schema
+            .fields()
+            .iter()
+            .map(|f| {
+                if f.name() == &old_name {
+                    Arc::new(
+                        Field::new(new_name.clone(), f.data_type().clone(), f.is_nullable())
+                            .with_metadata(f.metadata().clone()),
+                    )
+                } else {
+                    Arc::clone(f)
+                }
+            })
+            .collect::<Vec<_>>(),
+    ));
+    let renamed_batch =
+        RecordBatch::try_new(Arc::clone(&renamed_schema), combined.columns().to_vec()).unwrap();
+
+    let props = WriterProperties::builder()
+        .set_key_value_metadata(Some(new_kvs))
+        .build();
+    let out_file = std::fs::File::create(&table_b_path).unwrap();
+    let mut writer =
+        ArrowWriter::try_new(out_file, Arc::clone(&renamed_schema), Some(props)).unwrap();
+    writer.write(&renamed_batch).unwrap();
+    writer.close().unwrap();
+
+    let mut manifest = read_manifest(package_dir.path());
+    manifest.tables = vec![name_a, name_b.clone()];
+    write_manifest(package_dir.path(), &manifest);
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    let error = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output,
+    })
+    .unwrap_err();
+    let msg = error.to_string();
+    assert!(
+        msg.contains(&name_b),
+        "expected an error naming the mismatched table '{name_b}', got: {msg}"
+    );
 }
