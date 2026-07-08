@@ -296,3 +296,115 @@ fn run_skips_a_format_with_no_prepared_artefact_and_still_produces_the_other() {
     );
     assert_eq!(rows[0].field("format"), "cityparquet");
 }
+
+/// Object-level scenarios (`AttrFilter`/`AttrStats`/`Project`/`IdLookup`) are
+/// CityObject-level for EVERY format (see `coordinator`'s own module doc),
+/// so their selectivity denominator must be the dataset-global CityObject
+/// total — the `cityparquet` package's own `Count` — shared across every
+/// format, never a per-format total. On `delft.city.jsonl`,
+/// `cityjsonseq`'s own `Count` is 1115 (feature-level: one line per
+/// top-level `Building`), while `AttrFilter(object_type == "BuildingPart")`
+/// is 1116 (CityObject-level: `BuildingPart`s are children flattened out of
+/// their parent `Building` features) — dividing the object-level numerator
+/// by the feature-level `cityjsonseq` total therefore yields `1116/1115 ≈
+/// 1.0009`, a selectivity > 1.0, which is nonsensical and was the pre-fix
+/// bug this test pins down as GREEN (it would fail RED against the
+/// unfixed coordinator, which used `total_count_for(format, path)` — each
+/// format's OWN count — as the denominator for every non-BBoxQuery
+/// scenario).
+#[test]
+fn attr_filter_selectivity_uses_the_shared_cityparquet_object_total_as_denominator() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+
+    let package_dir = prepared.path().join("delft.parquet");
+    let report = convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    // The dataset-global CityObject total (parents AND children) —
+    // `crates/cityparquet/tests/query_real_data.rs` pins the same known
+    // split: `BuildingPart: 1116`, `Building: 1115`, `1116 + 1115 = 2231`.
+    assert_eq!(
+        report.object_count, 2231,
+        "delft.city.jsonl's known CityObject total"
+    );
+
+    let out_csv = prepared.path().join("out.csv");
+
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "attr-filter",
+        "--formats",
+        "cityparquet,cityjsonseq",
+    ]);
+
+    let csv_text = std::fs::read_to_string(&out_csv).expect("coordinator must write the CSV");
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(
+        rows.len(),
+        2,
+        "expected exactly one attr-filter row per format, got {}: {csv_text}",
+        rows.len()
+    );
+
+    let cityparquet_row = rows
+        .iter()
+        .find(|r| r.field("format") == "cityparquet")
+        .expect("missing cityparquet row");
+    let cityjsonseq_row = rows
+        .iter()
+        .find(|r| r.field("format") == "cityjsonseq")
+        .expect("missing cityjsonseq row");
+
+    // Both formats agree on the CityObject-level result_count — this
+    // scenario's grain is identical across formats (the coordinator's own
+    // self-consistency check covers this too, but pin it here as the
+    // premise the denominator assertion below depends on).
+    let cp_count: u64 = cityparquet_row.field("result_count").parse().unwrap();
+    let cjseq_count: u64 = cityjsonseq_row.field("result_count").parse().unwrap();
+    assert_eq!(
+        cp_count, cjseq_count,
+        "AttrFilter(object_type) result_count must match across formats (both CityObject-level)"
+    );
+    assert_eq!(
+        cp_count, 1116,
+        "delft.city.jsonl's known BuildingPart count"
+    );
+
+    let cp_selectivity: f64 = cityparquet_row.field("selectivity").parse().unwrap();
+    let cjseq_selectivity: f64 = cityjsonseq_row.field("selectivity").parse().unwrap();
+
+    for (label, selectivity) in [
+        ("cityparquet", cp_selectivity),
+        ("cityjsonseq", cjseq_selectivity),
+    ] {
+        assert!(
+            selectivity > 0.0 && selectivity <= 1.0,
+            "{label}'s AttrFilter selectivity must be in (0, 1], got {selectivity} \
+             (pre-fix cityjsonseq value would be 1116/1115 ≈ 1.0009)"
+        );
+    }
+
+    // Same numerator (1116) over the SAME shared denominator (2231, the
+    // cityparquet package's own object total) must produce identical
+    // selectivity for both formats — proving the denominator is no longer
+    // per-format.
+    assert!(
+        (cp_selectivity - cjseq_selectivity).abs() < 1e-6,
+        "expected identical selectivity for both formats (same numerator, same shared \
+         denominator), got cityparquet={cp_selectivity} cityjsonseq={cjseq_selectivity}"
+    );
+    let expected = cp_count as f64 / report.object_count as f64;
+    assert!(
+        (cp_selectivity - expected).abs() < 1e-6,
+        "expected selectivity == result_count / cityparquet object total \
+         ({cp_count}/{}) = {expected}, got {cp_selectivity}",
+        report.object_count
+    );
+}

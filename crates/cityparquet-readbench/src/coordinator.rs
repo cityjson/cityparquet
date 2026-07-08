@@ -194,10 +194,20 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     let numeric_attr = pick_numeric_attribute(&meta, &schema);
     let sample_id = sample_object_id(&cp_table)?;
 
+    // The dataset-global CityObject total — the SAME denominator for every
+    // format's object-level scenarios (`AttrFilter`/`AttrStats`/`Project`/
+    // `IdLookup`), because those scenarios are deliberately CityObject-level
+    // on every format (see this module's own doc comment). `cityparquet`'s
+    // own `Count` is exactly that total (one row per CityObject), and the
+    // cityparquet package is already required/located above regardless of
+    // `--formats`.
+    let cp_object_total = total_count_for("cityparquet", &cp_table)
+        .context("deriving the dataset-global CityObject total from the cityparquet package")?;
+
     eprintln!(
         "cityparquet-readbench: derived params for '{dataset}': bbox={dataset_bbox:?}, \
          object_type most-frequent='{object_type_value}' (n={object_type_count}), numeric \
-         attribute={numeric_attr:?}, sample id='{sample_id}'"
+         attribute={numeric_attr:?}, sample id='{sample_id}', CityObject total={cp_object_total}"
     );
 
     if let Some(parent) = opts.out.parent()
@@ -272,7 +282,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         *scenario,
                         &params,
                         opts.repeat,
-                        Some(total),
+                        Some(cp_object_total),
                         &notes,
                     )?;
                     attr_filter_counts.insert(format.clone(), count);
@@ -292,7 +302,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             *scenario,
                             &params,
                             opts.repeat,
-                            Some(total),
+                            Some(cp_object_total),
                             &notes,
                         )?;
                     }
@@ -316,7 +326,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         *scenario,
                         &params,
                         opts.repeat,
-                        Some(total),
+                        Some(cp_object_total),
                         &notes,
                     )?;
                 }
@@ -586,7 +596,10 @@ fn utf8_values(array: &dyn Array) -> Result<Vec<Option<String>>> {
 /// The most-frequent `object_type` value in `table` (and its count) — a
 /// single-column projected scan, tallied in memory (the reserved
 /// `object_type` column is always present, so this never needs the
-/// attribute-column machinery).
+/// attribute-column machinery). Ties are broken deterministically by the
+/// `object_type` string itself (rather than `HashMap` iteration order, which
+/// is SipHash-randomised per process) so the derived `AttrFilter` predicate —
+/// and therefore the whole run — is reproducible run-to-run.
 fn most_frequent_object_type(table: &Path) -> Result<(String, u64)> {
     let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
@@ -606,7 +619,7 @@ fn most_frequent_object_type(table: &Path) -> Result<(String, u64)> {
     }
     counts
         .into_iter()
-        .max_by_key(|(_, count)| *count)
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
         .ok_or_else(|| anyhow::anyhow!("{} has no object_type values", table.display()))
 }
 
@@ -763,25 +776,18 @@ fn spawn_child(
 }
 
 /// A single `Count`-scenario child call (untimed — its own `time_s` is
-/// discarded), used purely to establish `format`'s own total object/feature
-/// count as the SELECTIVITY denominator for every other scenario against
-/// this same format. Each format counts at its own natural grain (see
-/// `formats::cityparquet`/`formats::cityjsonseq`/`formats::flatcitybuf`'s
-/// own module docs on CityObject-vs-feature granularity), so `total` is
-/// deliberately per-format, never a single cross-format constant.
-///
-/// **Disclosed caveat, not silently hidden.** For `cityjsonseq`/
-/// `cityjsonseq-gz`/`flatcitybuf`, `Count` is FEATURE-level while
-/// `AttrFilter`/`AttrStats`/`Project` are CityObject-level (a feature bundles
-/// a parent CityObject with all its children) — so a format whose features
-/// each carry more than one CityObject on average can see
-/// `selectivity > 1.0` for those scenarios (e.g. `delft.city.jsonl`:
-/// `cityjsonseq`'s own `Count` is 1115 features, but its `AttrFilter(
-/// object_type == "BuildingPart")` is 1116 CityObjects — selectivity
-/// 1.000897). This is a real artefact of comparing a feature-level
-/// denominator against an object-level numerator for the SAME format, not a
-/// bug in this function; the methodology doc is responsible for calling it
-/// out alongside the numbers.
+/// discarded), used to establish `format`'s own total object/feature count.
+/// Each format counts at its own natural grain (see
+/// `formats::cityparquet`/`formats::cityjsonseq`/`formats::flatcitybuf`'s own
+/// module docs on CityObject-vs-feature granularity), so this per-format
+/// total is the correct SELECTIVITY denominator only for [`Scenario::BBoxQuery`]
+/// (feature-level numerator over a feature-level denominator, for every
+/// format). For the CityObject-level scenarios (`AttrFilter`/`AttrStats`/
+/// `Project`/`IdLookup`), [`run`] instead uses the dataset-global CityObject
+/// total — this same function called once against the `cityparquet` package
+/// — as a SHARED denominator across every format, so those scenarios'
+/// selectivity is directly comparable and always in `(0, 1]` (see this
+/// module's own doc comment).
 fn total_count_for(format: &str, path: &Path) -> Result<u64> {
     let line = spawn_child(format, Scenario::Count, path, &QueryParams::default())?;
     Ok(line.result_count)
