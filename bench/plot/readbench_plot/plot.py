@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import cast
 
 import matplotlib
 
@@ -82,7 +83,7 @@ def load_csv(path: Path) -> pd.DataFrame | None:
     df = pd.read_csv(path)
     for col in ("time_s", "peak_heap_bytes"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df[df["notes"] != "cold"]
+    return cast(pd.DataFrame, df[df["notes"] != "cold"])
 
 
 def aggregate(df: pd.DataFrame) -> pd.DataFrame:
@@ -91,9 +92,12 @@ def aggregate(df: pd.DataFrame) -> pd.DataFrame:
     Scenarios with several rows per format (distinct selectivities, e.g.
     bbox-query's 1%/5%/25% windows) are collapsed to a single point.
     """
-    return df.groupby(["scenario", "format"], as_index=False)[
-        ["time_s", "peak_heap_bytes"]
-    ].median()
+    return cast(
+        pd.DataFrame,
+        df.groupby(["scenario", "format"], as_index=False)[
+            ["time_s", "peak_heap_bytes"]
+        ].median(),
+    )
 
 
 def _grouped_bar(
