@@ -262,6 +262,7 @@ fn bench_run_rejects_duplicate_variant_suffixes() {
         "cityparquet+hilbert+hilbert",
         "cityparquet+by-type+by-type",
         "cityparquet+rg4096+rg8192",
+        "cityparquet+gzip+zstd",
     ] {
         let out_dir = tempfile::tempdir().unwrap();
         let opts = BenchOptions {
@@ -311,4 +312,101 @@ fn bench_run_rejects_a_malformed_rg_suffix() {
             "variant '{variant}': error should name the offending variant, got: {msg}"
         );
     }
+}
+
+/// A `+<codec>` suffix combines with `+rg<N>` (and every other existing
+/// suffix) without disturbing the grammar: `cityparquet+gzip+rg512` must
+/// parse and run to completion, producing exactly one CSV row.
+#[test]
+fn bench_run_accepts_a_codec_suffix_combined_with_rg() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let out_csv = out_dir.path().join("bench.csv");
+
+    let opts = BenchOptions {
+        input: fixture("delft.city.jsonl"),
+        out_csv: out_csv.clone(),
+        repeat: 1,
+        variants: vec!["cityparquet+gzip+rg512".to_string()],
+        window_frac: 0.05,
+        skip_roundtrip: true,
+    };
+
+    run(&opts).expect("cityparquet+gzip+rg512 must parse and run");
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<&str> = csv_text.lines().skip(1).collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one variant must produce exactly one CSV row, got: {csv_text}"
+    );
+    assert!(
+        rows[0].contains("cityparquet+gzip+rg512"),
+        "the row must be labelled with the exact variant id, got: {}",
+        rows[0]
+    );
+}
+
+/// The compression-codec axis: `+uncompressed`/`+gzip`/`+zstd` all override
+/// the `cityparquet` preset's default codec, all round-trip losslessly on a
+/// real fixture, and — proving the codec actually took effect — the
+/// resulting `total_bytes` differ, with uncompressed strictly the largest.
+#[test]
+fn bench_run_compression_variants_differ_in_total_bytes() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let out_csv = out_dir.path().join("bench.csv");
+
+    let opts = BenchOptions {
+        input: fixture("delft.city.jsonl"),
+        out_csv: out_csv.clone(),
+        repeat: 1,
+        variants: vec![
+            "cityparquet+gzip".to_string(),
+            "cityparquet+zstd".to_string(),
+            "cityparquet+uncompressed".to_string(),
+        ],
+        window_frac: 0.05,
+        skip_roundtrip: false,
+    };
+
+    run(&opts).expect("bench::run should succeed across compression-codec variants");
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let mut lines = csv_text.lines();
+    let header = lines.next().expect("CSV must have a header line");
+    let columns: Vec<&str> = header.split(',').collect();
+
+    let mut total_bytes_by_variant = std::collections::HashMap::new();
+    for line in lines {
+        let fields: Vec<&str> = line.split(',').collect();
+        let get = |name: &str| -> &str {
+            let idx = columns.iter().position(|c| *c == name).unwrap();
+            fields[idx]
+        };
+        let variant = get("variant").to_string();
+        let roundtrip_equal = get("roundtrip_equal");
+        assert_eq!(
+            roundtrip_equal, "true",
+            "variant {variant}: roundtrip_equal must be true, got: {csv_text}"
+        );
+        let total_bytes: u64 = get("total_bytes").parse().unwrap();
+        total_bytes_by_variant.insert(variant, total_bytes);
+    }
+
+    let gzip = total_bytes_by_variant["cityparquet+gzip"];
+    let zstd = total_bytes_by_variant["cityparquet+zstd"];
+    let uncompressed = total_bytes_by_variant["cityparquet+uncompressed"];
+
+    assert!(
+        uncompressed > zstd,
+        "uncompressed total_bytes ({uncompressed}) must exceed zstd's ({zstd})"
+    );
+    assert!(
+        uncompressed > gzip,
+        "uncompressed total_bytes ({uncompressed}) must exceed gzip's ({gzip})"
+    );
+    assert_ne!(
+        gzip, zstd,
+        "gzip and zstd should produce differently-sized packages, both got {gzip} bytes"
+    );
 }

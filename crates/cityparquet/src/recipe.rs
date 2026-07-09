@@ -9,12 +9,62 @@
 
 use arrow_schema::Field;
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
-use parquet::basic::{Compression, Encoding, ZstdLevel};
+use parquet::basic::{BrotliLevel, Compression, Encoding, GzipLevel, ZstdLevel};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use parquet::schema::types::ColumnPath;
 
 use cityparquet_schema::{CityParquetError, CityParquetMetadata, CityParquetSchema, Result};
+
+/// A compression codec, overriding whichever codec [`RecipePreset`] would
+/// otherwise pick — the benchmark's compression-codec axis, orthogonal to
+/// the preset's per-column tuning rules and to [`WriterRecipe::row_group_size`].
+///
+/// `Lz4` renders to `Compression::LZ4_RAW`, the variant parquet-rs actually
+/// writes; plain `Compression::LZ4` is the deprecated Hadoop-era codec and is
+/// effectively read-only in this ecosystem (see `parquet::basic::Compression`'s
+/// own doc comment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Codec {
+    Uncompressed,
+    Snappy,
+    Gzip,
+    Lz4,
+    Brotli,
+    Zstd,
+}
+
+impl Codec {
+    /// Every codec, in the order they are named — used to enumerate valid
+    /// `--compression` / `+<codec>` values.
+    pub const ALL: [Codec; 6] = [
+        Codec::Uncompressed,
+        Codec::Snappy,
+        Codec::Gzip,
+        Codec::Lz4,
+        Codec::Brotli,
+        Codec::Zstd,
+    ];
+
+    /// The stable, kebab-case name used on the CLI and in benchmark variant
+    /// identifiers.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Codec::Uncompressed => "uncompressed",
+            Codec::Snappy => "snappy",
+            Codec::Gzip => "gzip",
+            Codec::Lz4 => "lz4",
+            Codec::Brotli => "brotli",
+            Codec::Zstd => "zstd",
+        }
+    }
+
+    /// Parses one of [`Codec::name`]'s exact strings; `None` for anything
+    /// else (the caller decides how to report the invalid name).
+    pub fn parse(s: &str) -> Option<Codec> {
+        Codec::ALL.into_iter().find(|codec| codec.name() == s)
+    }
+}
 
 /// The six fixed `bbox` struct leaves, in the order [`crate::scan`]'s bbox
 /// union rule and [`cityparquet_schema::model::bbox_data_type`] both use.
@@ -113,6 +163,13 @@ pub struct WriterRecipe {
     /// [`RecipePreset::CityParquet`], preserving this struct's pre-M5
     /// behaviour when constructed with `..WriterRecipe::default()`.
     pub preset: RecipePreset,
+    /// Overrides the compression codec [`preset`](Self::preset) would
+    /// otherwise pick (SNAPPY for [`RecipePreset::Snappy`], ZSTD at
+    /// [`zstd_level`](Self::zstd_level) for every other preset). `None`
+    /// (the default) keeps that exact preset behaviour untouched — this
+    /// field is the benchmark's compression-codec axis, independent of the
+    /// per-column tuning rules a preset selects.
+    pub compression: Option<Codec>,
 }
 
 impl Default for WriterRecipe {
@@ -122,6 +179,7 @@ impl Default for WriterRecipe {
             zstd_level: 3,
             statistics_for_json: false,
             preset: RecipePreset::CityParquet,
+            compression: None,
         }
     }
 }
@@ -179,15 +237,29 @@ impl WriterRecipe {
             ));
         }
 
-        // `Snappy` compresses with Snappy and ignores `zstd_level`; every
-        // other preset compresses with zstd at `zstd_level`.
-        let compression = if self.preset == RecipePreset::Snappy {
-            Compression::SNAPPY
-        } else {
-            let zstd_level = ZstdLevel::try_new(self.zstd_level).map_err(|e| {
-                CityParquetError::Schema(format!("invalid zstd level {}: {e}", self.zstd_level))
-            })?;
-            Compression::ZSTD(zstd_level)
+        // `compression` OVERRIDES the preset's default codec when set;
+        // `None` keeps the exact pre-existing behaviour: `Snappy` compresses
+        // with Snappy and ignores `zstd_level`, every other preset
+        // compresses with zstd at `zstd_level`.
+        let compression = match self.compression {
+            Some(Codec::Uncompressed) => Compression::UNCOMPRESSED,
+            Some(Codec::Snappy) => Compression::SNAPPY,
+            Some(Codec::Gzip) => Compression::GZIP(GzipLevel::default()),
+            Some(Codec::Lz4) => Compression::LZ4_RAW,
+            Some(Codec::Brotli) => Compression::BROTLI(BrotliLevel::default()),
+            Some(Codec::Zstd) => {
+                let zstd_level = ZstdLevel::try_new(self.zstd_level).map_err(|e| {
+                    CityParquetError::Schema(format!("invalid zstd level {}: {e}", self.zstd_level))
+                })?;
+                Compression::ZSTD(zstd_level)
+            }
+            None if self.preset == RecipePreset::Snappy => Compression::SNAPPY,
+            None => {
+                let zstd_level = ZstdLevel::try_new(self.zstd_level).map_err(|e| {
+                    CityParquetError::Schema(format!("invalid zstd level {}: {e}", self.zstd_level))
+                })?;
+                Compression::ZSTD(zstd_level)
+            }
         };
 
         let mut builder = WriterProperties::builder()
@@ -588,5 +660,92 @@ mod tests {
         let kvs = props.key_value_metadata().expect("key-value metadata set");
         assert!(kvs.iter().any(|kv| kv.key == "cityparquet_version"));
         assert!(kvs.iter().any(|kv| kv.key == "geo"));
+    }
+
+    #[test]
+    fn codec_all_lists_exactly_six_codecs() {
+        assert_eq!(Codec::ALL.len(), 6);
+    }
+
+    #[test]
+    fn codec_parse_round_trips_every_name() {
+        for codec in Codec::ALL {
+            assert_eq!(
+                Codec::parse(codec.name()),
+                Some(codec),
+                "parse(name()) must round-trip for {codec:?}"
+            );
+        }
+        assert_eq!(Codec::parse("not-a-real-codec"), None);
+    }
+
+    #[test]
+    fn compression_override_none_keeps_preset_default_codec() {
+        let schema = sample_schema();
+        let metadata = sample_metadata();
+
+        // cityparquet preset defaults to ZSTD at zstd_level.
+        let props = WriterRecipe::default()
+            .writer_properties(&schema, &metadata, true)
+            .unwrap();
+        assert_eq!(
+            props.compression(&ColumnPath::from("yoc")),
+            Compression::ZSTD(ZstdLevel::try_new(3).unwrap())
+        );
+
+        // snappy preset defaults to SNAPPY.
+        let props = RecipePreset::Snappy
+            .recipe()
+            .writer_properties(&schema, &metadata, true)
+            .unwrap();
+        assert_eq!(
+            props.compression(&ColumnPath::from("yoc")),
+            Compression::SNAPPY
+        );
+    }
+
+    #[test]
+    fn compression_override_wins_over_the_preset_default() {
+        let schema = sample_schema();
+        let metadata = sample_metadata();
+
+        let expected = [
+            (Codec::Uncompressed, Compression::UNCOMPRESSED),
+            (Codec::Snappy, Compression::SNAPPY),
+            (Codec::Gzip, Compression::GZIP(GzipLevel::default())),
+            (Codec::Lz4, Compression::LZ4_RAW),
+            (Codec::Brotli, Compression::BROTLI(BrotliLevel::default())),
+            (
+                Codec::Zstd,
+                Compression::ZSTD(ZstdLevel::try_new(3).unwrap()),
+            ),
+        ];
+
+        for (codec, want) in expected {
+            let recipe = WriterRecipe {
+                compression: Some(codec),
+                ..WriterRecipe::default()
+            };
+            let props = recipe.writer_properties(&schema, &metadata, true).unwrap();
+            assert_eq!(
+                props.compression(&ColumnPath::from("yoc")),
+                want,
+                "codec {codec:?} should render to {want:?}"
+            );
+
+            // The override also applies on top of a non-default preset (e.g.
+            // Snappy, which would otherwise force SNAPPY regardless).
+            let recipe = WriterRecipe {
+                preset: RecipePreset::Snappy,
+                compression: Some(codec),
+                ..WriterRecipe::default()
+            };
+            let props = recipe.writer_properties(&schema, &metadata, true).unwrap();
+            assert_eq!(
+                props.compression(&ColumnPath::from("yoc")),
+                want,
+                "codec {codec:?} should override the snappy preset's default too"
+            );
+        }
     }
 }

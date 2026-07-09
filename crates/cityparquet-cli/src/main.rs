@@ -1,7 +1,7 @@
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
-use cityparquet::recipe::{RecipePreset, WriterRecipe};
+use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
 use cityparquet_cli::bench::{self, BenchOptions};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -53,6 +53,14 @@ enum Commands {
         /// top where meaningful.
         #[arg(long, default_value = "cityparquet")]
         recipe: String,
+
+        /// Compression codec, overriding whichever codec --recipe would
+        /// otherwise pick: uncompressed, snappy, gzip, lz4, brotli, zstd.
+        /// Unset by default, which keeps the recipe's own codec choice
+        /// (zstd at --zstd-level for every preset but snappy, which always
+        /// uses snappy).
+        #[arg(long)]
+        compression: Option<String>,
 
         /// Row-emission order for the main table: "source" (as the input
         /// stream yields features) or "hilbert" (buffer every feature and
@@ -126,9 +134,9 @@ enum Commands {
         repeat: usize,
 
         /// Comma-separated variant identifiers
-        /// (`<preset>[+hilbert][+by-type][+rg<N>]`, e.g.
-        /// `cityparquet+hilbert`, `cityparquet+rg512`); omit for the
-        /// default 10-variant set
+        /// (`<preset>[+hilbert][+by-type][+rg<N>][+<codec>]`, e.g.
+        /// `cityparquet+hilbert`, `cityparquet+rg512`,
+        /// `cityparquet+gzip+rg512`); omit for the default 10-variant set
         #[arg(long)]
         variants: Option<String>,
 
@@ -156,6 +164,7 @@ fn main() -> std::process::ExitCode {
             row_group_size,
             zstd_level,
             recipe,
+            compression,
             ordering,
             layout,
             geoarrow,
@@ -186,11 +195,28 @@ fn main() -> std::process::ExitCode {
                 }
             };
 
+            let compression = match compression {
+                Some(s) => match Codec::parse(&s) {
+                    Some(codec) => Some(codec),
+                    None => {
+                        let valid: Vec<&str> = Codec::ALL.iter().map(|c| c.name()).collect();
+                        eprintln!(
+                            "error: invalid compression '{}' (expected one of: {})",
+                            s,
+                            valid.join(", ")
+                        );
+                        return std::process::ExitCode::FAILURE;
+                    }
+                },
+                None => None,
+            };
+
             let recipe = WriterRecipe {
                 row_group_size,
                 zstd_level,
                 statistics_for_json: false,
                 preset,
+                compression,
             };
 
             let ordering = match ordering.as_str() {

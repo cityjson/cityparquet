@@ -30,7 +30,7 @@ use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
 use cityparquet::reader::{CityParquetReaderBuilder, row_group_intersects};
-use cityparquet::recipe::{RecipePreset, WriterRecipe};
+use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
 use cityparquet::schema::{PackageManifest, Profile};
 use cityparquet::{CityParquetError, Result};
 
@@ -98,8 +98,9 @@ fn default_variant_ids() -> Vec<String> {
 }
 
 /// One parsed variant identifier: a [`RecipePreset`] plus the row ordering,
-/// table layout, and (optional) row-group-size override its
-/// `+hilbert`/`+by-type`/`+rg<N>` suffixes (if any) select.
+/// table layout, (optional) row-group-size override, and (optional)
+/// compression-codec override its
+/// `+hilbert`/`+by-type`/`+rg<N>`/`+<codec>` suffixes (if any) select.
 #[derive(Debug, Clone, Copy)]
 struct ParsedVariant {
     preset: RecipePreset,
@@ -108,28 +109,38 @@ struct ParsedVariant {
     /// `Some(n)` overrides [`RecipePreset::recipe`]'s default row-group size
     /// (parsed from a `+rg<N>` suffix); `None` keeps the preset's default.
     row_group_size: Option<usize>,
+    /// `Some(codec)` overrides the preset's default compression codec
+    /// (parsed from a `+<codec>` suffix, e.g. `+gzip`); `None` keeps the
+    /// preset's default codec.
+    compression: Option<Codec>,
 }
 
 impl ParsedVariant {
-    /// This variant's [`WriterRecipe`], with [`Self::row_group_size`]
-    /// applied on top of the preset's default when present.
+    /// This variant's [`WriterRecipe`], with [`Self::row_group_size`] and
+    /// [`Self::compression`] applied on top of the preset's default when
+    /// present.
     fn recipe(&self) -> WriterRecipe {
         let mut recipe = self.preset.recipe();
         if let Some(row_group_size) = self.row_group_size {
             recipe.row_group_size = row_group_size;
         }
+        if let Some(compression) = self.compression {
+            recipe.compression = Some(compression);
+        }
         recipe
     }
 }
 
-/// Parses `<preset>[+hilbert][+by-type][+rg<N>]` (suffixes in any order,
-/// each at most once) — e.g. `cityparquet`, `cityparquet+hilbert`,
+/// Parses `<preset>[+hilbert][+by-type][+rg<N>][+<codec>]` (suffixes in any
+/// order, each at most once) — e.g. `cityparquet`, `cityparquet+hilbert`,
 /// `no-bss+by-type+hilbert`, `cityparquet+rg512`,
-/// `cityparquet+hilbert+rg512`. `<N>` in `+rg<N>` must be a positive
-/// (non-zero) integer; a duplicated suffix (e.g.
-/// `cityparquet+hilbert+hilbert`, or two `+rg<N>`s) is rejected rather than
-/// silently accepted as a distinct-looking label for the same or an
-/// ambiguous configuration (M5 Codex review, Minor finding).
+/// `cityparquet+hilbert+rg512`, `cityparquet+gzip+rg512`. `<N>` in `+rg<N>`
+/// must be a positive (non-zero) integer; `<codec>` is one of
+/// [`Codec::ALL`]'s names (`uncompressed`/`snappy`/`gzip`/`lz4`/`brotli`/
+/// `zstd`). A duplicated suffix (e.g. `cityparquet+hilbert+hilbert`, two
+/// `+rg<N>`s, or two codec tokens) is rejected rather than silently accepted
+/// as a distinct-looking label for the same or an ambiguous configuration
+/// (M5 Codex review, Minor finding).
 fn parse_variant(id: &str) -> Result<ParsedVariant> {
     let mut parts = id.split('+');
     let preset_name = parts.next().unwrap_or("");
@@ -138,6 +149,7 @@ fn parse_variant(id: &str) -> Result<ParsedVariant> {
     let mut ordering = RowOrder::Source;
     let mut layout = TableLayout::Single;
     let mut row_group_size: Option<usize> = None;
+    let mut compression: Option<Codec> = None;
     let mut seen_hilbert = false;
     let mut seen_by_type = false;
     for part in parts {
@@ -150,6 +162,13 @@ fn parse_variant(id: &str) -> Result<ParsedVariant> {
                 return Err(variant_grammar_err(id));
             }
             row_group_size = Some(n);
+            continue;
+        }
+        if let Some(codec) = Codec::parse(part) {
+            if compression.is_some() {
+                return Err(variant_grammar_err(id));
+            }
+            compression = Some(codec);
             continue;
         }
         match part {
@@ -170,14 +189,18 @@ fn parse_variant(id: &str) -> Result<ParsedVariant> {
         ordering,
         layout,
         row_group_size,
+        compression,
     })
 }
 
 fn variant_grammar_err(id: &str) -> CityParquetError {
     let presets: Vec<&str> = RecipePreset::ALL.iter().map(|p| p.name()).collect();
+    let codecs: Vec<&str> = Codec::ALL.iter().map(|c| c.name()).collect();
     CityParquetError::Schema(format!(
-        "invalid variant '{id}': expected `<preset>[+hilbert][+by-type][+rg<N>]` (each suffix \
-         at most once, <N> a positive integer) where preset is one of: {}",
+        "invalid variant '{id}': expected `<preset>[+hilbert][+by-type][+rg<N>][+<codec>]` \
+         (each suffix at most once, <N> a positive integer, <codec> one of: {}) where preset is \
+         one of: {}",
+        codecs.join(", "),
         presets.join(", ")
     ))
 }

@@ -397,6 +397,91 @@ fn convert_defaults_to_by_type_layout_named_without_prefix() {
     );
 }
 
+/// `--compression` overrides the recipe's default codec: converting the same
+/// fixture with `gzip` vs `zstd` both succeed, both round-trip losslessly,
+/// and — proving the codec actually took effect — the two runs produce
+/// DIFFERENT `cityobjects.parquet` sizes.
+#[test]
+fn convert_with_compression_override_changes_output_size_and_round_trips() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+
+    let convert_and_export = |codec: &str| -> u64 {
+        let out = tempfile::tempdir().unwrap();
+        let status = Command::new(binary)
+            .arg("convert")
+            .arg(fixture("delft.city.jsonl"))
+            .arg(out.path())
+            .arg("--layout")
+            .arg("single")
+            .arg("--compression")
+            .arg(codec)
+            .status()
+            .expect("failed to run convert");
+        assert!(status.success(), "convert --compression {codec} failed");
+
+        let cityobjects = out.path().join("cityobjects.parquet");
+        assert!(cityobjects.exists());
+        let size = std::fs::metadata(&cityobjects).unwrap().len();
+
+        let export_dir = tempfile::tempdir().unwrap();
+        let export_path = export_dir.path().join("exported.city.jsonl");
+        let status = Command::new(binary)
+            .arg("export")
+            .arg(out.path())
+            .arg(&export_path)
+            .status()
+            .expect("failed to run export");
+        assert!(
+            status.success(),
+            "export after --compression {codec} failed"
+        );
+
+        let compare = Command::new(binary)
+            .arg("compare")
+            .arg(fixture("delft.city.jsonl"))
+            .arg(&export_path)
+            .output()
+            .expect("failed to run compare");
+        assert!(
+            compare.status.success(),
+            "round trip after --compression {codec} was not equal: {}",
+            String::from_utf8_lossy(&compare.stdout)
+        );
+
+        size
+    };
+
+    let gzip_size = convert_and_export("gzip");
+    let zstd_size = convert_and_export("zstd");
+
+    assert_ne!(
+        gzip_size, zstd_size,
+        "gzip and zstd should produce differently-sized cityobjects.parquet, both got {gzip_size} bytes"
+    );
+}
+
+/// An unrecognised `--compression` value must fail with a clear error.
+#[test]
+fn convert_with_an_invalid_compression_fails() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let output = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg(out.path())
+        .arg("--compression")
+        .arg("bogus")
+        .output()
+        .expect("failed to run convert");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid compression"),
+        "expected an invalid-compression error, got: {stderr}"
+    );
+}
+
 /// Passing `--layout single` explicitly still opts back into the single
 /// `cityobjects.parquet` table.
 #[test]
