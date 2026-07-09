@@ -157,6 +157,54 @@ write-bench FOLDER OUT='bench/results':
     fi
     echo "write-bench: ${found} file(s) benchmarked into {{OUT}}"
 
+# Compression-codec + row-group WRITE-bench recipe: for every CityJSON/
+# CityJSONSeq file found under FOLDER (recursive), runs `cityparquet bench`
+# over an 8-variant matrix — a codec axis (bare `cityparquet` = zstd,
+# `+uncompressed`, `+snappy`, `+gzip`, `+lz4`, `+brotli`, all at the default
+# row-group size 65536) and a row-group axis (`cityparquet`, `+rg512`,
+# `+rg4096`, all zstd) — into one OUT/<name>.csv per dataset. Each
+# OUT/<name>.csv is removed first so a re-run is always clean. Once every
+# dataset is done, renders charts from the CSVs via the `compression-plot`
+# recipe (best-effort: a missing `uv`/plotting setup doesn't fail the
+# benchmark run, only skips the charts). Network-independent given already-
+# fetched inputs; kept OUT of `just check`/CI.
+compression-bench FOLDER OUT='bench/compression_results':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{OUT}}"
+    found=0
+    while IFS= read -r -d '' f; do
+        base="$(basename "$f")"
+        name="${base%.city.jsonl}"; name="${name%.city.json}"
+        name="${name%.jsonl}"; name="${name%.json}"
+        out="{{OUT}}/${name}.csv"
+        echo ">> ${f} -> ${out}"
+        rm -f "$out"
+
+        cargo run --release -p cityparquet-cli --bin cityparquet -- bench \
+            --input "$f" --out "$out" \
+            --variants "cityparquet,cityparquet+uncompressed,cityparquet+snappy,cityparquet+gzip,cityparquet+lz4,cityparquet+brotli,cityparquet+rg512,cityparquet+rg4096"
+
+        found=$((found + 1))
+    done < <(find "{{FOLDER}}" -type f \
+        \( -name '*.json' -o -name '*.jsonl' \) ! -name 'metadata.json' -print0 \
+        | sort -z)
+    if [[ "$found" -eq 0 ]]; then
+        echo "compression-bench: no CityJSON/CityJSONSeq files found under {{FOLDER}}" >&2
+        exit 1
+    fi
+    echo "compression-bench: ${found} file(s) benchmarked into {{OUT}}"
+
+    just compression-plot "{{OUT}}" || echo "plot skipped"
+
+# Render compression-codec and row-group comparison charts from the
+# compression-bench CSVs in RESULTS (default bench/compression_results) via
+# the `bench/plot` uv project: per dataset, two codec-axis charts
+# (<name>-codec-size.png, <name>-codec-time.png) and one row-group-axis
+# chart (<name>-rowgroup.png), under RESULTS/plots/. Needs `uv` on PATH.
+compression-plot RESULTS='bench/compression_results':
+    uv run --project bench/plot python -m readbench_plot.compression {{RESULTS}}
+
 # Render charts from the read-benchmark CSVs in RESULTS (default
 # bench/read_results) via the `bench/plot` uv project: a grouped bar chart
 # of median time_s and one of peak_heap_bytes per scenario x format, one PNG
