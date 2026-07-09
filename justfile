@@ -122,6 +122,7 @@ bench FOLDER OUT='bench/read_results':
     echo "bench: ${found} file(s) benchmarked into {{OUT}}"
 
     just plot "{{OUT}}" || echo "plot skipped (uv not available)"
+    just sizes "bench/data/readbench" "{{OUT}}" || echo "sizes skipped (uv not available)"
 
 # Encoding-variant WRITE benchmark (M5): for every CityJSON/CityJSONSeq file
 # found under FOLDER (recursive), run the `cityparquet bench` variant matrix
@@ -162,3 +163,11 @@ write-bench FOLDER OUT='bench/results':
 # pair per dataset CSV, under RESULTS/plots/. Needs `uv` on PATH.
 plot RESULTS='bench/read_results':
     uv run --project bench/plot python -m readbench_plot {{RESULTS}}
+
+# Render the file-size / compression-ratio report from PREPARED_DIR (default
+# bench/data/readbench, the same per-format artefacts `readbench_prepare.sh`
+# populates): OUT/sizes.csv (dataset, format, bytes, mb,
+# ratio_vs_cityjsonseq) plus two grouped bar charts under OUT/plots/
+# (sizes.png, compression-ratio.png). Needs `uv` on PATH.
+sizes PREPARED_DIR='bench/data/readbench' OUT='bench/read_results':
+    uv run --project bench/plot python -m readbench_plot.sizes {{PREPARED_DIR}} {{OUT}}
