@@ -154,7 +154,9 @@ def build_report(prepared_dir: Path) -> pd.DataFrame:
         rows.extend(measure_dataset(name, prepared_dir))
 
     df = pd.DataFrame(rows, columns=["dataset", "format", "bytes", "ratio_vs_cityjsonseq"])
-    df["bytes"] = pd.to_numeric(df["bytes"], errors="coerce").astype("int64")
+    df["bytes"] = cast(pd.Series, pd.to_numeric(df["bytes"], errors="coerce")).astype(
+        "int64"
+    )
     df["mb"] = df["bytes"] / (1024 * 1024)
     df["ratio_vs_cityjsonseq"] = pd.to_numeric(df["ratio_vs_cityjsonseq"], errors="coerce")
     return cast(
