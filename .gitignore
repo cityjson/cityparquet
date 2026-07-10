@@ -40,3 +40,5 @@ target
 /bench/plot/.venv/
 **/__pycache__/
 
+
+.DS_Store
