@@ -22,6 +22,8 @@
 #             START=201 scripts/encode_3dbag_tiles.sh '' '' 100
 #
 # Env knobs (equivalent to / on top of the positional args):
+#   TILES_FILE=PATH    same as the 1st positional (input URL list)
+#   OUT_DIR=DIR        same as the 2nd positional (where packages are written)
 #   LIMIT=N            same as the COUNT positional (how many tiles to process)
 #   START=N            1-based line number to begin at (default 1); lines
 #                      before START are not counted toward COUNT/LIMIT
@@ -31,8 +33,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TILES_FILE="${1:-$ROOT/bench/data/3dbag_tiles.txt}"
-OUT_DIR="${2:-$ROOT/bench/data/3dbag_cityparquet}"
+# Each of TILES_FILE / OUT_DIR: positional arg wins, else same-named env var,
+# else the default under bench/data/.
+TILES_FILE="${1:-${TILES_FILE:-$ROOT/bench/data/3dbag_tiles.txt}}"
+OUT_DIR="${2:-${OUT_DIR:-$ROOT/bench/data/3dbag_cityparquet}}"
 # COUNT: 3rd positional wins; else LIMIT env; else 0 (= all).
 LIMIT="${3:-${LIMIT:-0}}"
 START="${START:-1}"            # 1-based line to begin at
