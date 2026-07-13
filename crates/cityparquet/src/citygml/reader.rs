@@ -34,8 +34,13 @@ impl FeatureReader {
             .map_err(|e| CityParquetError::Io(format!("cannot reopen {}: {e}", path.display())))?;
         let scale = triple(&transform.scale, "scale")?;
         let translate = triple(&transform.translate, "translate")?;
+        let mut reader = NsReader::from_reader(BufReader::new(file));
+        // Self-closing elements (`<gml:surfaceMember xlink:href=.../>`) must
+        // arrive as Start+End so the geometry parsers see the xlink; otherwise
+        // quick-xml emits Event::Empty, which the Start-matching loops drop.
+        reader.config_mut().expand_empty_elements = true;
         Ok(Self {
-            reader: NsReader::from_reader(BufReader::new(file)),
+            reader,
             buf: Vec::new(),
             scale,
             translate,

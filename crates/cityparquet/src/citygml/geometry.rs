@@ -1,10 +1,19 @@
-//! Streaming GML geometry parsing into float intermediates.
+//! Streaming GML geometry parsing.
 //!
-//! Parses `gml:Solid` / `gml:CompositeSurface` / `gml:MultiSurface` /
-//! `gml:Polygon` / `gml:LinearRing` with coordinates in either `gml:posList`
-//! or per-point `gml:pos`. Each function is called just after its element's
-//! `Start` event and consumes through the matching `End`. GML's closing
-//! duplicate ring point is dropped (CityJSON rings are not closed).
+//! Two concerns live here:
+//! - Parsing a `gml:Solid` / `gml:CompositeSolid` into an *unresolved* tree of
+//!   [`SurfaceRef`]s: each surface member is either an `xlink:href` to a polygon
+//!   defined elsewhere in the same building, or an inline `gml:Polygon`, with an
+//!   optional orientation flip (`gml:OrientableSurface orientation="-"`).
+//!   Resolution against the building's polygon registry happens in `building`.
+//! - Harvesting inline `gml:Polygon`s (with their `gml:id`) from a subtree
+//!   ([`collect_polygons`]), used for `boundedBy` semantic surfaces and the
+//!   standalone `lodNMultiSurface` polygons the solid references.
+//!
+//! Coordinates come from `gml:posList` or per-point `gml:pos`; the GML closing
+//! duplicate ring point is dropped (CityJSON rings are not closed). The reader
+//! runs with `expand_empty_elements`, so a self-closing `<... xlink:href=.../>`
+//! arrives as a `Start`+`End` pair.
 
 use std::io::BufRead;
 
@@ -12,7 +21,9 @@ use cityparquet_schema::{CityParquetError, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 
-use super::xml::{NS_GML, get_attr, ns_is, read_text, skip_element, xml_err};
+use super::xml::{
+    NS_GML, get_attr, gml_id, ns_is, read_text, skip_element, xlink_fragment, xml_err,
+};
 
 pub type Ring = Vec<[f64; 3]>;
 
@@ -23,16 +34,95 @@ pub struct Polygon {
     pub interiors: Vec<Ring>,
 }
 
-/// A `gml:Solid`: one or more shells (exterior first), each a list of surfaces.
+/// One surface of a solid shell, before xlink resolution.
 #[derive(Debug, Clone)]
-pub struct Solid {
-    pub shells: Vec<Vec<Polygon>>,
+pub struct SurfaceRef {
+    /// `true` when the surface's orientation is reversed (its rings must be
+    /// wound backwards so the outward normal flips — CityJSON has no
+    /// orientation flag).
+    pub reverse: bool,
+    pub target: RefTarget,
+}
+
+#[derive(Debug, Clone)]
+pub enum RefTarget {
+    /// A `#fragment` reference to a polygon defined elsewhere in the building.
+    Xlink(String),
+    /// A polygon defined inline in the solid.
+    Inline(Polygon),
+}
+
+/// A shell: an ordered list of surface references.
+pub type Shell = Vec<SurfaceRef>;
+
+/// A `gml:Solid`: exterior shell first, then interior shells.
+#[derive(Debug, Clone)]
+pub struct RawSolid {
+    pub shells: Vec<Shell>,
+}
+
+/// The solid geometry of a `bldg:lodNSolid`.
+#[derive(Debug, Clone)]
+pub enum SolidGeom {
+    Solid(RawSolid),
+    Composite(Vec<RawSolid>),
+}
+
+/// Parse a `gml:CompositeSolid` (positioned after its `Start`) into its solids.
+pub fn read_composite_solid<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<Vec<RawSolid>> {
+    let mut solids = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                if gml && local.as_ref() == b"solidMember" {
+                    solids.push(read_solid_member(reader, buf)?);
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"CompositeSolid" => break,
+            Event::Eof => return Err(eof("CompositeSolid")),
+            _ => {}
+        }
+    }
+    Ok(solids)
+}
+
+/// A `gml:solidMember`: wraps one `gml:Solid`.
+fn read_solid_member<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<RawSolid> {
+    let mut solid: Option<RawSolid> = None;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                if gml && local.as_ref() == b"Solid" {
+                    solid = Some(read_solid(reader, buf)?);
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"solidMember" => break,
+            Event::Eof => return Err(eof("solidMember")),
+            _ => {}
+        }
+    }
+    solid.ok_or_else(|| CityParquetError::Schema("gml:solidMember without gml:Solid".to_string()))
 }
 
 /// Parse a `gml:Solid` (positioned after its `Start`).
-pub fn read_solid<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<Solid> {
-    let mut exterior: Option<Vec<Polygon>> = None;
-    let mut interiors: Vec<Vec<Polygon>> = Vec::new();
+pub fn read_solid<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<RawSolid> {
+    let mut exterior: Option<Shell> = None;
+    let mut interiors: Vec<Shell> = Vec::new();
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -56,17 +146,17 @@ pub fn read_solid<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Re
         shells.push(ext);
     }
     shells.extend(interiors);
-    Ok(Solid { shells })
+    Ok(RawSolid { shells })
 }
 
-/// A shell (the `gml:exterior`/`gml:interior` of a Solid), which wraps a
-/// `gml:CompositeSurface`.
+/// A shell wrapper (`gml:exterior`/`gml:interior`), holding a
+/// `gml:CompositeSurface` (or `gml:Surface`) of surface members.
 fn read_shell<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     end: &[u8],
-) -> Result<Vec<Polygon>> {
-    let mut polys = Vec::new();
+) -> Result<Shell> {
+    let mut refs = Vec::new();
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -77,7 +167,7 @@ fn read_shell<R: BufRead>(
                 match (gml, local.as_ref()) {
                     (true, b"CompositeSurface") | (true, b"Surface") => {
                         let end = local.as_ref().to_vec();
-                        polys = read_surface_collection(reader, buf, end)?
+                        refs = read_surface_refs(reader, buf, end)?
                     }
                     _ => skip_element(reader, buf)?,
                 }
@@ -87,17 +177,17 @@ fn read_shell<R: BufRead>(
             _ => {}
         }
     }
-    Ok(polys)
+    Ok(refs)
 }
 
-/// A `gml:CompositeSurface` / `gml:MultiSurface` (positioned after its `Start`):
-/// a sequence of `gml:surfaceMember`s.
-pub fn read_surface_collection<R: BufRead>(
+/// The `gml:surfaceMember`s of a `CompositeSurface`/`MultiSurface`, each a
+/// [`SurfaceRef`].
+fn read_surface_refs<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     end: Vec<u8>,
-) -> Result<Vec<Polygon>> {
-    let mut polys = Vec::new();
+) -> Result<Vec<SurfaceRef>> {
+    let mut refs = Vec::new();
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -106,7 +196,17 @@ pub fn read_surface_collection<R: BufRead>(
             Event::Start(e) => {
                 let local = e.local_name();
                 if gml && local.as_ref() == b"surfaceMember" {
-                    polys.append(&mut read_surface_member(reader, buf)?);
+                    // An xlink on the surfaceMember itself references a polygon
+                    // defined elsewhere.
+                    if let Some(id) = xlink_fragment(&e)? {
+                        refs.push(SurfaceRef {
+                            reverse: false,
+                            target: RefTarget::Xlink(id),
+                        });
+                        skip_element(reader, buf)?;
+                    } else {
+                        refs.append(&mut read_surface_member_children(reader, buf)?);
+                    }
                 } else {
                     skip_element(reader, buf)?;
                 }
@@ -116,16 +216,16 @@ pub fn read_surface_collection<R: BufRead>(
             _ => {}
         }
     }
-    Ok(polys)
+    Ok(refs)
 }
 
-/// A `gml:surfaceMember`: a `gml:Polygon`, or a nested surface collection that
-/// is flattened into polygons.
-fn read_surface_member<R: BufRead>(
+/// The inline content of a non-xlink `gml:surfaceMember`: an inline
+/// `gml:Polygon`, a `gml:OrientableSurface`, or a nested surface collection.
+fn read_surface_member_children<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
-) -> Result<Vec<Polygon>> {
-    let mut polys = Vec::new();
+) -> Result<Vec<SurfaceRef>> {
+    let mut refs = Vec::new();
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -134,10 +234,17 @@ fn read_surface_member<R: BufRead>(
             Event::Start(e) => {
                 let local = e.local_name();
                 match (gml, local.as_ref()) {
-                    (true, b"Polygon") => polys.push(read_polygon(reader, buf)?),
+                    (true, b"Polygon") => refs.push(SurfaceRef {
+                        reverse: false,
+                        target: RefTarget::Inline(read_polygon(reader, buf)?),
+                    }),
+                    (true, b"OrientableSurface") => {
+                        let reverse = orientation_reversed(&e);
+                        refs.push(read_orientable_surface(reader, buf, reverse)?);
+                    }
                     (true, b"CompositeSurface") | (true, b"MultiSurface") => {
                         let end = local.as_ref().to_vec();
-                        polys.append(&mut read_surface_collection(reader, buf, end)?)
+                        refs.append(&mut read_surface_refs(reader, buf, end)?);
                     }
                     _ => skip_element(reader, buf)?,
                 }
@@ -147,7 +254,128 @@ fn read_surface_member<R: BufRead>(
             _ => {}
         }
     }
-    Ok(polys)
+    Ok(refs)
+}
+
+/// A `gml:OrientableSurface` (positioned after its `Start`): a single
+/// `gml:baseSurface` whose orientation is flipped when `reverse` is set.
+/// Nested orientable surfaces XOR their flips.
+fn read_orientable_surface<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    reverse: bool,
+) -> Result<SurfaceRef> {
+    let mut result: Option<SurfaceRef> = None;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                if gml && local.as_ref() == b"baseSurface" {
+                    if let Some(id) = xlink_fragment(&e)? {
+                        result = Some(SurfaceRef {
+                            reverse,
+                            target: RefTarget::Xlink(id),
+                        });
+                        skip_element(reader, buf)?;
+                    } else {
+                        let inner = read_base_surface_inline(reader, buf)?;
+                        result = Some(SurfaceRef {
+                            reverse: reverse ^ inner.reverse,
+                            target: inner.target,
+                        });
+                    }
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"OrientableSurface" => break,
+            Event::Eof => return Err(eof("OrientableSurface")),
+            _ => {}
+        }
+    }
+    result
+        .ok_or_else(|| CityParquetError::Schema("gml:OrientableSurface without baseSurface".into()))
+}
+
+/// The inline content of a `gml:baseSurface`: a `gml:Polygon` or a nested
+/// `gml:OrientableSurface`.
+fn read_base_surface_inline<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<SurfaceRef> {
+    let mut result: Option<SurfaceRef> = None;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                match (gml, local.as_ref()) {
+                    (true, b"Polygon") => {
+                        result = Some(SurfaceRef {
+                            reverse: false,
+                            target: RefTarget::Inline(read_polygon(reader, buf)?),
+                        })
+                    }
+                    (true, b"OrientableSurface") => {
+                        let reverse = orientation_reversed(&e);
+                        result = Some(read_orientable_surface(reader, buf, reverse)?);
+                    }
+                    _ => skip_element(reader, buf)?,
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"baseSurface" => break,
+            Event::Eof => return Err(eof("baseSurface")),
+            _ => {}
+        }
+    }
+    result.ok_or_else(|| CityParquetError::Schema("gml:baseSurface without a surface".into()))
+}
+
+fn orientation_reversed(e: &quick_xml::events::BytesStart) -> bool {
+    get_attr(e, b"orientation").as_deref() == Some("-")
+}
+
+/// Harvest every `gml:Polygon` (with its `gml:id`, if any) inside the current
+/// element's subtree. Call right after the subtree's `Start`; consumes through
+/// its matching `End`.
+pub fn collect_polygons<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+) -> Result<Vec<(Option<String>, Polygon)>> {
+    let mut out = Vec::new();
+    let mut depth = 1usize;
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                if gml && e.local_name().as_ref() == b"Polygon" {
+                    // `read_polygon` consumes the whole Polygon subtree, so the
+                    // depth is unchanged by this branch.
+                    let id = gml_id(&e);
+                    let poly = read_polygon(reader, buf)?;
+                    out.push((id, poly));
+                } else {
+                    depth += 1;
+                }
+            }
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Eof => return Err(eof("polygon collection")),
+            _ => {}
+        }
+    }
+    Ok(out)
 }
 
 /// A `gml:Polygon` (positioned after its `Start`): exterior ring + holes.
@@ -224,12 +452,7 @@ fn read_linear_ring<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> 
             Event::Start(e) => {
                 let local = e.local_name();
                 match (gml, local.as_ref()) {
-                    (true, b"pos") => {
-                        let dim = srs_dimension(&e).unwrap_or(3);
-                        let text = read_text(reader, buf)?;
-                        ring.extend(parse_coords(&text, dim)?);
-                    }
-                    (true, b"posList") => {
+                    (true, b"pos") | (true, b"posList") => {
                         let dim = srs_dimension(&e).unwrap_or(3);
                         let text = read_text(reader, buf)?;
                         ring.extend(parse_coords(&text, dim)?);

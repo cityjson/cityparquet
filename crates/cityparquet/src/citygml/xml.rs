@@ -40,6 +40,38 @@ pub fn gml_id(e: &BytesStart) -> Option<String> {
     get_attr(e, b"gml:id").or_else(|| get_attr(e, b"id"))
 }
 
+/// The value of an attribute matched by its *local* name (prefix stripped), so
+/// `xlink:href` is found regardless of the prefix the document binds.
+pub fn get_attr_local(e: &BytesStart, local: &[u8]) -> Option<String> {
+    e.attributes().flatten().find_map(|a| {
+        let key = a.key.as_ref();
+        let key_local = key.rsplit(|&b| b == b':').next().unwrap_or(key);
+        if key_local == local {
+            std::str::from_utf8(a.value.as_ref())
+                .ok()
+                .map(str::to_owned)
+        } else {
+            None
+        }
+    })
+}
+
+/// The `#fragment` target id of an `xlink:href` on this element, if present.
+/// Errors on an external reference (`other.gml#id`) or a non-fragment href —
+/// only intra-document references are resolvable by the streaming reader.
+pub fn xlink_fragment(e: &BytesStart) -> Result<Option<String>> {
+    let Some(href) = get_attr_local(e, b"href") else {
+        return Ok(None);
+    };
+    match href.strip_prefix('#') {
+        Some(id) if !id.is_empty() && !id.contains('#') => Ok(Some(id.to_string())),
+        _ => Err(CityParquetError::Schema(format!(
+            "CityGML xlink:href {href:?} is not an intra-document #fragment reference \
+             (external/shared geometry is out of scope)"
+        ))),
+    }
+}
+
 pub fn xml_err(e: impl std::fmt::Display) -> CityParquetError {
     CityParquetError::Schema(format!("CityGML XML parse error: {e}"))
 }
