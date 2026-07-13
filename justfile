@@ -17,6 +17,11 @@ fixtures:
     mkdir -p tests/fixtures
     curl -sSfo tests/fixtures/delft.city.jsonl https://storage.googleapis.com/cityjson/delft.city.jsonl
     curl -sSfo tests/fixtures/lod3_railway.city.json https://storage.googleapis.com/cityjson/lod3_railway.city.json
+    # CityGML 2.0 reader fixtures (jklimke/libcitygml, pinned to a commit SHA):
+    # b1_lod2_s = one Building / lod2 gml:Solid (gml:pos coords, no CRS/attrs/semantics);
+    # b1_lod2_cs_w_sem = lod2 Solid + boundedBy Wall/Roof/Ground via xlink (semantics).
+    curl -sSfo tests/fixtures/b1_lod2_s.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_s.gml
+    curl -sSfo tests/fixtures/b1_lod2_cs_w_sem.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_cs_w_sem.gml
 
 interop:
     ./scripts/interop.sh

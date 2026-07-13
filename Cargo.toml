@@ -19,6 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 cjseq = "0.4"
+quick-xml = "0.37"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 wkb = "0.9"
