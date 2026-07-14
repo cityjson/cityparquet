@@ -9,9 +9,10 @@
 //! 2. Resolve the solid's xlinks against the polygon registry and emit exactly
 //!    one CityJSON geometry (`Solid`/`CompositeSolid`) with its `semantics`.
 //!
-//! M2 scope: LoD1/LoD2 solids with semantic surfaces referenced by xlink
-//! (direction A). Attributes, BuildingParts, and the boundedBy-only /
-//! `lodNMultiSurface`-primary geometry cases (no `lodNSolid`) arrive in M3/M4.
+//! Scope so far: LoD1/LoD2 solids with semantic surfaces referenced by xlink,
+//! plus building-level typed `bldg:` and `gen:` generic attributes (repeats
+//! accumulate into arrays). BuildingParts and the boundedBy-only /
+//! `lodNMultiSurface`-primary geometry cases (no `lodNSolid`) arrive in M4.
 
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -22,9 +23,10 @@ use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 use serde_json::{Value, json};
 
+use super::attributes;
 use super::geometry::{self, Polygon, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use super::vertices::VertexBuilder;
-use super::xml::{NS_BLDG, NS_GML, ns_is, skip_element, xml_err};
+use super::xml::{NS_BLDG, NS_GEN, NS_GML, get_attr_local, ns_is, skip_element, xml_err};
 
 /// A buffered building: everything pass 1 collects before resolution.
 pub struct RawBuilding {
@@ -38,6 +40,8 @@ pub struct RawBuilding {
     surfaces: Vec<String>,
     /// `gml:id` of a boundary polygon -> its index into `surfaces`.
     semantic_of_polygon: HashMap<String, usize>,
+    /// Building-level attributes (typed `bldg:` + `gen:` generic), by name.
+    attributes: serde_json::Map<String, Value>,
 }
 
 /// Read a `bldg:Building` subtree (positioned after its `Start`).
@@ -52,6 +56,7 @@ pub fn read_building<R: BufRead>(
         polygons: HashMap::new(),
         surfaces: Vec::new(),
         semantic_of_polygon: HashMap::new(),
+        attributes: serde_json::Map::new(),
     };
 
     loop {
@@ -80,6 +85,20 @@ pub fn read_building<R: BufRead>(
                     }
                 } else if bldg && name == b"boundedBy" {
                     read_bounded_by(reader, buf, &mut b)?;
+                } else if bldg && let Some(ty) = attributes::typed_building_attr(&name) {
+                    if let Some((k, v)) = attributes::read_typed_attribute(reader, buf, &name, ty)?
+                    {
+                        attributes::accumulate(&mut b.attributes, k, v);
+                    }
+                } else if let (true, Some(ty)) =
+                    (ns_is(&rr, NS_GEN), attributes::generic_attr(&name))
+                {
+                    let attr_name = get_attr_local(&e, b"name");
+                    if let Some((k, v)) =
+                        attributes::read_generic_attribute(reader, buf, attr_name, ty)?
+                    {
+                        attributes::accumulate(&mut b.attributes, k, v);
+                    }
                 } else {
                     skip_element(reader, buf)?;
                 }
@@ -210,9 +229,17 @@ impl RawBuilding {
             geoms_json.push(self.build_solid_geometry(geom, lod, &mut vb)?);
         }
 
-        let id = self.id.unwrap_or_else(|| format!("Building_{index}"));
-        let co_json = json!({ "type": "Building", "geometry": geoms_json });
-        let co: CityObject = serde_json::from_value(co_json).map_err(|e| {
+        let id = self
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("Building_{index}"));
+        let mut co_obj = serde_json::Map::new();
+        co_obj.insert("type".to_string(), json!("Building"));
+        co_obj.insert("geometry".to_string(), Value::Array(geoms_json));
+        if !self.attributes.is_empty() {
+            co_obj.insert("attributes".to_string(), Value::Object(self.attributes));
+        }
+        let co: CityObject = serde_json::from_value(Value::Object(co_obj)).map_err(|e| {
             CityParquetError::Schema(format!("failed to build CityObject from CityGML: {e}"))
         })?;
 

@@ -19,6 +19,7 @@
 
 pub mod crs;
 
+mod attributes;
 mod building;
 mod geometry;
 mod header;

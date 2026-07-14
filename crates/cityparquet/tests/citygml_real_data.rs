@@ -17,6 +17,14 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// A committed (in-repo) fixture under `crates/cityparquet/tests/data/` — small
+/// real fragments with provenance headers, not fetched by `just fixtures`.
+fn data_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(name)
+}
+
 /// Dequantise a feature vertex back to world coordinates using the header
 /// transform (the reader must set `header.transform` to whatever it quantised
 /// the feature vertices against).
@@ -306,6 +314,81 @@ fn citygml2_composite_solid_scans_to_correct_bbox() {
     for (got, exp) in bbox.iter().zip([0.0, 0.0, 0.0, 100.0, 100.0, 150.0]) {
         assert!((got - exp).abs() < 1e-6, "bbox {got} != {exp}");
     }
+}
+
+// `savenow_ingolstadt_lod2.gml` (committed fragment, CC BY 4.0): 3 real German
+// LoD2 buildings, CRS EPSG:25832, with `bldg:measuredHeight`/`roofType` typed
+// attributes and building-level `gen:stringAttribute`s. Per-surface generic
+// attributes (inside boundedBy) must NOT attach to the building.
+#[test]
+fn citygml2_real_building_attributes_and_crs() {
+    let src = Source::open(&data_fixture("savenow_ingolstadt_lod2.gml")).unwrap();
+
+    // Real EPSG:25832 envelope -> advertised CRS and transform translate at the
+    // envelope's lower corner.
+    let rs = src
+        .header()
+        .metadata
+        .as_ref()
+        .and_then(|m| m.reference_system.as_ref())
+        .expect("EPSG:25832 -> reference system");
+    assert_eq!(rs.to_url(), "https://www.opengis.net/def/crs/EPSG/0/25832");
+    assert!((src.header().transform.translate[0] - 675864.55).abs() < 1e-3);
+
+    let feats: Vec<_> = src
+        .features()
+        .unwrap()
+        .collect::<cityparquet::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(feats.len(), 3);
+
+    let co = feats
+        .iter()
+        .flat_map(|f| f.city_objects.iter())
+        .find(|(id, _)| id.as_str() == "DEBY_LOD2_51985910")
+        .map(|(_, co)| co)
+        .expect("building DEBY_LOD2_51985910");
+    let attrs = co
+        .attributes
+        .as_ref()
+        .and_then(|v| v.as_object())
+        .expect("building attributes");
+
+    // bldg: typed attributes: measuredHeight is numeric, roofType a codelist string.
+    assert_eq!(
+        attrs.get("measuredHeight").and_then(|v| v.as_f64()),
+        Some(3.448)
+    );
+    assert_eq!(attrs.get("roofType").and_then(|v| v.as_str()), Some("1000"));
+    // gen: generic attributes keyed by their `name`.
+    assert_eq!(
+        attrs.get("Gemeindeschluessel").and_then(|v| v.as_str()),
+        Some("09161000")
+    );
+    assert_eq!(
+        attrs.get("citygml_function").and_then(|v| v.as_str()),
+        Some("51009_1610")
+    );
+    // A per-surface generic attribute (inside a boundedBy RoofSurface) must not
+    // be hoisted onto the Building.
+    assert!(
+        !attrs.contains_key("Dachneigung"),
+        "surface-level generic attribute leaked onto the building"
+    );
+}
+
+#[test]
+fn citygml2_attributes_infer_columns() {
+    use cityparquet::scan::scan;
+    use cityparquet::schema::AttributeType;
+
+    let src = Source::open(&data_fixture("savenow_ingolstadt_lod2.gml")).unwrap();
+    let s = scan(&src).unwrap();
+    let cols: std::collections::BTreeMap<String, AttributeType> =
+        s.schema.attributes.iter().cloned().collect();
+    assert_eq!(cols.get("measuredHeight"), Some(&AttributeType::Float64));
+    assert_eq!(cols.get("roofType"), Some(&AttributeType::String));
+    assert_eq!(cols.get("Gemeindeschluessel"), Some(&AttributeType::String));
 }
 
 #[test]
