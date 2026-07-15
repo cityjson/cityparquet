@@ -23,6 +23,11 @@ impl Lod {
         Ok(Self { major, minor })
     }
 
+    /// The major LoD component (`2` for both `2` and `2.2`).
+    pub fn major(&self) -> u8 {
+        self.major
+    }
+
     /// CityParquet geometry column suffix, e.g. `lod2_2` for LoD 2.2.
     pub fn column_suffix(&self) -> String {
         match self.minor {
@@ -346,6 +351,13 @@ mod lod_tests {
             Some(Lod::parse("1").unwrap())
         );
         assert_eq!(Lod::from_column_suffix("geometry"), None);
+    }
+
+    #[test]
+    fn lod_major_extracts_major_component() {
+        assert_eq!(Lod::parse("2").unwrap().major(), 2);
+        assert_eq!(Lod::parse("2.2").unwrap().major(), 2);
+        assert_eq!(Lod::parse("1").unwrap().major(), 1);
     }
 
     #[test]
