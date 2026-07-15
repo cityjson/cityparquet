@@ -19,7 +19,7 @@ use serde_json::Value;
 use super::WriteReport;
 use super::attributes::write_attributes;
 use super::document::Bounds;
-use super::geometry::write_solid;
+use super::geometry::{write_composite_solid, write_solid};
 use crate::Result;
 use crate::wkb_read::{DecodedGeometry, DecodedKind};
 
@@ -70,8 +70,14 @@ pub fn write_building<W: Write>(
     // BTreeMap keeps the majors in ascending order for emission.
     let mut by_major: BTreeMap<u8, (Lod, &DecodedGeometry, Option<&Value>)> = BTreeMap::new();
     for (lod, geom, props) in &b.solids {
-        if !matches!(geom.kind, DecodedKind::PolyhedralSurface(_)) {
-            // Only a Solid becomes a lodNSolid; a stray non-Solid is skipped.
+        // A Solid (PolyhedralSurface) or a CompositeSolid (GeometryCollection,
+        // routed here by the driver — MultiSolid is skipped upstream) becomes a
+        // lodNSolid; any stray other shape is skipped.
+        let representable = matches!(
+            geom.kind,
+            DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_)
+        );
+        if !representable {
             report.lod_columns_skipped += 1;
             continue;
         }
@@ -129,18 +135,22 @@ pub fn write_building<W: Write>(
 
     for (major, (_, geom, props)) in &by_major {
         let elem = format!("bldg:lod{major}Solid");
-        let DecodedKind::PolyhedralSurface(faces) = &geom.kind else {
-            unreachable!("only PolyhedralSurface entries reach by_major");
-        };
         w.write_event(Event::Start(BytesStart::new(elem.as_str())))
             .map_err(io_err)?;
-        write_solid(w, &geom.coords, faces, *props)?;
-        for face in faces {
-            for ring in face {
-                for &i in ring {
-                    bounds.add(geom.coords[i]);
-                }
+        match &geom.kind {
+            DecodedKind::PolyhedralSurface(faces) => {
+                write_solid(w, &geom.coords, faces, *props)?;
             }
+            DecodedKind::GeometryCollection(members) => {
+                write_composite_solid(w, &geom.coords, members, *props)?;
+                report.composite_solids_written += 1;
+            }
+            _ => unreachable!("only PolyhedralSurface/GeometryCollection reach by_major"),
+        }
+        // Accumulate the geometry's coord pool (equals the referenced set for
+        // WKB-decoded geometry; covers both solids and composite members).
+        for c in &geom.coords {
+            bounds.add(*c);
         }
         w.write_event(Event::End(BytesEnd::new(elem.as_str())))
             .map_err(io_err)?;
@@ -168,6 +178,41 @@ mod tests {
     /// requires `type: "Solid"`.
     fn solid_props() -> Value {
         serde_json::json!({ "type": "Solid" })
+    }
+
+    fn composite_props() -> Value {
+        serde_json::json!({ "type": "CompositeSolid", "solid_shell_faces": [[1]] })
+    }
+
+    fn composite_geom() -> DecodedGeometry {
+        DecodedGeometry {
+            coords: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            kind: DecodedKind::GeometryCollection(vec![DecodedKind::PolyhedralSurface(vec![
+                vec![vec![0usize, 1, 2]],
+            ])]),
+        }
+    }
+
+    #[test]
+    fn composite_solid_is_emitted_and_counted() {
+        let b = BuildingSolids {
+            id: "C1".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![(
+                Lod::parse("2").unwrap(),
+                composite_geom(),
+                Some(composite_props()),
+            )],
+        };
+        let mut report = WriteReport::default();
+        let mut w = Writer::new(Vec::new());
+        assert!(write_building(&mut w, &b, &mut Bounds::new(), &mut report).unwrap());
+        let xml = String::from_utf8(w.into_inner()).unwrap();
+        assert!(
+            xml.contains("<bldg:lod2Solid><gml:CompositeSolid>"),
+            "{xml}"
+        );
+        assert_eq!(report.composite_solids_written, 1);
     }
 
     #[test]

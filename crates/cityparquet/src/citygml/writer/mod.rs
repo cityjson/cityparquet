@@ -14,7 +14,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use cityparquet_schema::{CityParquetError, PackageManifest};
+use cityparquet_schema::{CityParquetError, Lod, PackageManifest};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use quick_xml::Writer;
 use quick_xml::events::{BytesDecl, Event};
@@ -26,7 +26,7 @@ use crate::citygml::crs::srs_name_for;
 use crate::decode::decode_batch;
 use crate::export::first_schema_mismatch;
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
-use crate::wkb_read::DecodedKind;
+use crate::wkb_read::{DecodedGeometry, DecodedKind};
 
 /// Options for one CityParquet package -> CityGML 2.0 `.gml` conversion.
 pub struct WriteOptions {
@@ -45,9 +45,11 @@ pub struct WriteReport {
     pub non_building_skipped: usize,
     /// Building rows with no emittable Solid in any major LoD — skipped whole.
     pub buildings_without_solid_skipped: usize,
-    /// LoD columns skipped because the WKB was MultiSolid/CompositeSolid
-    /// (`GeometryCollection`) — deferred to W-M2.
-    pub composite_solids_skipped: usize,
+    /// `gml:CompositeSolid` geometries emitted.
+    pub composite_solids_written: usize,
+    /// MultiSolid geometry columns skipped: CityGML 2.0 `Building` has no
+    /// `lodNMultiSolid` slot and `gml:MultiSolid` is not a `gml:_Solid`.
+    pub multi_solids_skipped: usize,
     /// LoD columns skipped because they collided on a major LoD already kept
     /// for that building, or mapped to an unrepresentable LoD (0, >4, lodless),
     /// or held a non-Solid geometry.
@@ -62,6 +64,45 @@ pub struct WriteReport {
 
 fn io_err(e: std::io::Error) -> CityParquetError {
     CityParquetError::Io(e.to_string())
+}
+
+/// How one decoded geometry column of a Building is routed by the driver.
+enum GeomRoute {
+    /// Emit as a `bldg:lodNSolid` — a Solid (`PolyhedralSurface`) or a
+    /// CompositeSolid (`GeometryCollection`). Carries the geometry onward.
+    Emit(Lod, DecodedGeometry, Option<serde_json::Value>),
+    /// A MultiSolid: CityGML 2.0 `Building` has no `lodNMultiSolid` slot and
+    /// `gml:MultiSolid` is not a `gml:_Solid`, so it is skipped-with-counter.
+    MultiSolid,
+    /// A lodless geometry cannot be a `lod<n>Solid`; skipped-with-counter.
+    Lodless,
+}
+
+/// Classify one geometry column. A `GeometryCollection` (CompositeSolid or
+/// MultiSolid) is distinguished by its `geometry_properties.type`: only
+/// `MultiSolid` is skipped; a CompositeSolid (or any other lodded shape) is
+/// emitted and `write_building` decides representability.
+fn route_geometry(
+    lod: Option<Lod>,
+    decoded: DecodedGeometry,
+    props: Option<serde_json::Value>,
+) -> GeomRoute {
+    match (&decoded.kind, lod) {
+        (DecodedKind::GeometryCollection(_), Some(lod)) => {
+            let is_multi = props
+                .as_ref()
+                .and_then(|p| p.get("type"))
+                .and_then(|t| t.as_str())
+                == Some("MultiSolid");
+            if is_multi {
+                GeomRoute::MultiSolid
+            } else {
+                GeomRoute::Emit(lod, decoded, props)
+            }
+        }
+        (_, None) => GeomRoute::Lodless,
+        (_, Some(lod)) => GeomRoute::Emit(lod, decoded, props),
+    }
 }
 
 /// Serialise a CityParquet package directory into a CityGML 2.0 document.
@@ -153,14 +194,12 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                 }
                 let mut solids = Vec::new();
                 for (lod, decoded, props) in obj.geometries {
-                    match (&decoded.kind, lod) {
-                        // MultiSolid/CompositeSolid — deferred to W-M2.
-                        (DecodedKind::GeometryCollection(_), _) => {
-                            report.composite_solids_skipped += 1
-                        }
+                    match route_geometry(lod, decoded, props) {
+                        GeomRoute::Emit(lod, decoded, props) => solids.push((lod, decoded, props)),
+                        // No CityGML 2.0 Building slot for a MultiSolid.
+                        GeomRoute::MultiSolid => report.multi_solids_skipped += 1,
                         // A lodless geometry cannot be a lod<n>Solid.
-                        (_, None) => report.lod_columns_skipped += 1,
-                        (_, Some(lod)) => solids.push((lod, decoded, props)),
+                        GeomRoute::Lodless => report.lod_columns_skipped += 1,
                     }
                 }
                 let attributes = obj
@@ -214,4 +253,70 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
         .map_err(io_err)?;
     write_city_model_close(&mut doc)?;
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn solid(kind: DecodedKind) -> DecodedGeometry {
+        DecodedGeometry {
+            coords: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            kind,
+        }
+    }
+
+    fn geometry_collection() -> DecodedKind {
+        DecodedKind::GeometryCollection(vec![DecodedKind::PolyhedralSurface(vec![vec![vec![
+            0usize, 1, 2,
+        ]]])])
+    }
+
+    #[test]
+    fn multi_solid_is_routed_to_skip() {
+        let props = Some(json!({ "type": "MultiSolid", "solid_shell_faces": [[1]] }));
+        let route = route_geometry(
+            Some(Lod::parse("2").unwrap()),
+            solid(geometry_collection()),
+            props,
+        );
+        assert!(matches!(route, GeomRoute::MultiSolid));
+    }
+
+    #[test]
+    fn composite_solid_is_routed_to_emit() {
+        let props = Some(json!({ "type": "CompositeSolid", "solid_shell_faces": [[1]] }));
+        let route = route_geometry(
+            Some(Lod::parse("2").unwrap()),
+            solid(geometry_collection()),
+            props,
+        );
+        assert!(matches!(route, GeomRoute::Emit(..)));
+    }
+
+    #[test]
+    fn plain_solid_is_routed_to_emit() {
+        let props = Some(json!({ "type": "Solid" }));
+        let route = route_geometry(
+            Some(Lod::parse("2").unwrap()),
+            solid(DecodedKind::PolyhedralSurface(vec![vec![vec![
+                0usize, 1, 2,
+            ]]])),
+            props,
+        );
+        assert!(matches!(route, GeomRoute::Emit(..)));
+    }
+
+    #[test]
+    fn lodless_geometry_is_routed_to_skip() {
+        let route = route_geometry(
+            None,
+            solid(DecodedKind::PolyhedralSurface(vec![vec![vec![
+                0usize, 1, 2,
+            ]]])),
+            Some(json!({ "type": "Solid" })),
+        );
+        assert!(matches!(route, GeomRoute::Lodless));
+    }
 }
