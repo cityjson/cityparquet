@@ -147,9 +147,11 @@ mod tests {
         let xml = emit(|w| write_city_model_open(w, Some("urn:ogc:def:crs:EPSG::28992"), &b));
         assert!(xml.contains("<CityModel xmlns=\"http://www.opengis.net/citygml/2.0\""));
         assert!(xml.contains("xmlns:bldg=\"http://www.opengis.net/citygml/building/2.0\""));
-        assert!(xml.contains(
-            "<gml:Envelope srsName=\"urn:ogc:def:crs:EPSG::28992\" srsDimension=\"3\">"
-        ));
+        assert!(
+            xml.contains(
+                "<gml:Envelope srsName=\"urn:ogc:def:crs:EPSG::28992\" srsDimension=\"3\">"
+            )
+        );
         assert!(xml.contains("<gml:lowerCorner>1 2 3</gml:lowerCorner>"));
         assert!(xml.contains("<gml:upperCorner>4 5 6</gml:upperCorner>"));
     }

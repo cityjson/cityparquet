@@ -99,11 +99,7 @@ pub fn write_building<W: Write>(
     // envelope. (WKB's 2^53 magnitude guard does not catch NaN, whose
     // comparisons are always false.) No-op for an attributes-only building.
     for (_, geom, _) in by_major.values() {
-        if geom
-            .coords
-            .iter()
-            .any(|c| c.iter().any(|v| !v.is_finite()))
-        {
+        if geom.coords.iter().any(|c| c.iter().any(|v| !v.is_finite())) {
             return Err(CityParquetError::Geometry(format!(
                 "building {:?} has a non-finite coordinate; cannot serialise as gml:posList",
                 b.id
@@ -215,13 +211,7 @@ mod tests {
         };
         let mut w = Writer::new(Vec::new());
         assert!(
-            write_building(
-                &mut w,
-                &b,
-                &mut Bounds::new(),
-                &mut WriteReport::default()
-            )
-            .unwrap()
+            write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).unwrap()
         );
         let xml = String::from_utf8(w.into_inner()).unwrap();
         let lod1 = xml.find("<bldg:lod1Solid>").unwrap();
@@ -280,7 +270,11 @@ mod tests {
     fn attributes_only_building_emits_with_no_solid() {
         let mut attributes = serde_json::Map::new();
         attributes.insert("roofType".into(), serde_json::json!("1000"));
-        let b = BuildingSolids { id: "B5".into(), attributes, solids: vec![] };
+        let b = BuildingSolids {
+            id: "B5".into(),
+            attributes,
+            solids: vec![],
+        };
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
         assert!(write_building(&mut w, &b, &mut Bounds::new(), &mut report).unwrap());

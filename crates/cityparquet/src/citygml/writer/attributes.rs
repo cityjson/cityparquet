@@ -71,8 +71,9 @@ fn value_kind(v: &Value) -> Kind {
 /// typed attribute. Mirrors `citygml::attributes`.
 fn bldg_forced_kind(name: &str) -> Option<Kind> {
     Some(match name {
-        "function" | "usage" | "class" | "roofType" | "yearOfConstruction"
-        | "yearOfDemolition" => Kind::Str,
+        "function" | "usage" | "class" | "roofType" | "yearOfConstruction" | "yearOfDemolition" => {
+            Kind::Str
+        }
         "measuredHeight" => Kind::Float,
         "storeysAboveGround" | "storeysBelowGround" => Kind::Int,
         _ => return None,
@@ -101,8 +102,10 @@ fn write_bldg_element<W: Write>(
         start.push_attribute(("uom", u));
     }
     w.write_event(Event::Start(start)).map_err(io_err)?;
-    w.write_event(Event::Text(BytesText::new(text))).map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new(&tag))).map_err(io_err)?;
+    w.write_event(Event::Text(BytesText::new(text)))
+        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new(&tag)))
+        .map_err(io_err)?;
     Ok(())
 }
 
@@ -116,10 +119,14 @@ fn write_gen_element<W: Write>(
     let mut start = BytesStart::new(&tag);
     start.push_attribute(("name", name));
     w.write_event(Event::Start(start)).map_err(io_err)?;
-    w.write_event(Event::Start(BytesStart::new("gen:value"))).map_err(io_err)?;
-    w.write_event(Event::Text(BytesText::new(text))).map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new("gen:value"))).map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new(&tag))).map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("gen:value")))
+        .map_err(io_err)?;
+    w.write_event(Event::Text(BytesText::new(text)))
+        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("gen:value")))
+        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new(&tag)))
+        .map_err(io_err)?;
     Ok(())
 }
 
@@ -205,7 +212,10 @@ mod tests {
         let mut report = WriteReport::default();
         let n = write_attributes(&mut w, attrs, &mut report).unwrap();
         let xml = String::from_utf8(w.into_inner()).unwrap();
-        assert_eq!(n, report.attributes_written, "return value counts written values");
+        assert_eq!(
+            n, report.attributes_written,
+            "return value counts written values"
+        );
         (xml, report)
     }
 
@@ -218,7 +228,10 @@ mod tests {
         // measuredHeight stored as float -> matches reader-forced Float -> bldg:, uom="m".
         // serde's shortest round-trip form of 8.0 is "8.0" (re-parses to 8.0).
         let (xml, r) = emit(&map(vec![("measuredHeight", Value::from(8.0))]));
-        assert!(xml.contains("<bldg:measuredHeight uom=\"m\">8.0</bldg:measuredHeight>"), "{xml}");
+        assert!(
+            xml.contains("<bldg:measuredHeight uom=\"m\">8.0</bldg:measuredHeight>"),
+            "{xml}"
+        );
         assert_eq!(r.attributes_written, 1);
         assert_eq!(r.attributes_skipped, 0);
     }
@@ -232,7 +245,10 @@ mod tests {
     #[test]
     fn integer_storeys_uses_bldg_element() {
         let (xml, _) = emit(&map(vec![("storeysAboveGround", Value::from(3i64))]));
-        assert!(xml.contains("<bldg:storeysAboveGround>3</bldg:storeysAboveGround>"), "{xml}");
+        assert!(
+            xml.contains("<bldg:storeysAboveGround>3</bldg:storeysAboveGround>"),
+            "{xml}"
+        );
     }
 
     #[test]
@@ -308,7 +324,10 @@ mod tests {
 
     #[test]
     fn empty_and_whitespace_strings_are_skipped() {
-        let (_, r) = emit(&map(vec![("a", Value::from("")), ("b", Value::from("   "))]));
+        let (_, r) = emit(&map(vec![
+            ("a", Value::from("")),
+            ("b", Value::from("   ")),
+        ]));
         assert_eq!(r.attributes_skipped, 2);
         assert_eq!(r.attributes_written, 0);
     }
@@ -327,7 +346,11 @@ mod tests {
             let start = xml.find("<gen:value>").unwrap() + "<gen:value>".len();
             let end = xml.find("</gen:value>").unwrap();
             let parsed: f64 = xml[start..end].parse().unwrap();
-            assert!(parsed.to_bits() == v.to_bits() || (parsed == v), "{v} -> {}", &xml[start..end]);
+            assert!(
+                parsed.to_bits() == v.to_bits() || (parsed == v),
+                "{v} -> {}",
+                &xml[start..end]
+            );
         }
     }
 }

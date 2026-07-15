@@ -94,11 +94,11 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     // First table's footer metadata + rendered schema are authoritative.
     let first_name = &manifest.tables[0];
     let first_path = opts.package_dir.join(first_name);
-    let first_builder = ParquetRecordBatchReaderBuilder::try_new(
-        fs::File::open(&first_path)
-            .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", first_path.display())))?,
-    )
-    .map_err(|e| CityParquetError::Parquet(format!("cannot open parquet reader: {e}")))?;
+    let first_builder =
+        ParquetRecordBatchReaderBuilder::try_new(fs::File::open(&first_path).map_err(|e| {
+            CityParquetError::Io(format!("cannot open {}: {e}", first_path.display()))
+        })?)
+        .map_err(|e| CityParquetError::Parquet(format!("cannot open parquet reader: {e}")))?;
     let meta = first_builder.cityparquet_metadata()?;
     let schema = first_builder.cityparquet_arrow_schema()?;
     let srs_name = srs_name_for(meta.crs.as_ref())?;
@@ -112,17 +112,19 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     for (idx, name) in manifest.tables.iter().enumerate() {
         let reader = if idx == 0 {
             let builder = first_builder.take().expect("first builder taken once");
-            let pr = builder
-                .build()
-                .map_err(|e| CityParquetError::Parquet(format!("cannot build parquet reader: {e}")))?;
+            let pr = builder.build().map_err(|e| {
+                CityParquetError::Parquet(format!("cannot build parquet reader: {e}"))
+            })?;
             CityParquetRecordBatchReader::new(pr, Arc::clone(&schema))
         } else {
             let path = opts.package_dir.join(name);
-            let builder = ParquetRecordBatchReaderBuilder::try_new(
-                fs::File::open(&path)
-                    .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?,
-            )
-            .map_err(|e| CityParquetError::Parquet(format!("cannot open parquet reader: {e}")))?;
+            let builder =
+                ParquetRecordBatchReaderBuilder::try_new(fs::File::open(&path).map_err(|e| {
+                    CityParquetError::Io(format!("cannot open {}: {e}", path.display()))
+                })?)
+                .map_err(|e| {
+                    CityParquetError::Parquet(format!("cannot open parquet reader: {e}"))
+                })?;
             let table_meta = builder.cityparquet_metadata()?;
             if table_meta.cityparquet_version != meta.cityparquet_version {
                 return Err(CityParquetError::Metadata(format!(
@@ -136,9 +138,9 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     "table '{name}' {mismatch} (matching '{first_name}')"
                 )));
             }
-            let pr = builder
-                .build()
-                .map_err(|e| CityParquetError::Parquet(format!("cannot build parquet reader: {e}")))?;
+            let pr = builder.build().map_err(|e| {
+                CityParquetError::Parquet(format!("cannot build parquet reader: {e}"))
+            })?;
             CityParquetRecordBatchReader::new(pr, Arc::clone(&schema))
         };
 
@@ -168,7 +170,11 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     .and_then(serde_json::Value::as_object)
                     .cloned()
                     .unwrap_or_default();
-                let building = BuildingSolids { id: obj.id, attributes, solids };
+                let building = BuildingSolids {
+                    id: obj.id,
+                    attributes,
+                    solids,
+                };
                 // Buffer this member on its own so the document-unique `gml:id`
                 // is reserved ONLY for a Building that actually emits — a
                 // duplicate id shared by two skipped/no-solid Buildings must not

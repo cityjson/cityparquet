@@ -49,10 +49,11 @@ fn solid_coords(pkg: &Path) -> CoordsByBuildingLod {
 
     let mut map: CoordsByBuildingLod = BTreeMap::new();
     for name in &manifest.tables {
-        let reader = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
-            .unwrap()
-            .build()
-            .unwrap();
+        let reader =
+            ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
+                .unwrap()
+                .build()
+                .unwrap();
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {
@@ -63,7 +64,10 @@ fn solid_coords(pkg: &Path) -> CoordsByBuildingLod {
                     if matches!(decoded.kind, DecodedKind::PolyhedralSurface(_)) {
                         // W-M1 only emits majors 1..=4; mirror that here so the
                         // two sides compare the same projection.
-                        let Some(major) = lod.as_ref().map(|l| l.major()).filter(|m| (1..=4).contains(m))
+                        let Some(major) = lod
+                            .as_ref()
+                            .map(|l| l.major())
+                            .filter(|m| (1..=4).contains(m))
                         else {
                             continue;
                         };
@@ -94,10 +98,11 @@ fn building_attributes(pkg: &Path) -> AttrsByBuilding {
 
     let mut map = AttrsByBuilding::new();
     for name in &manifest.tables {
-        let reader = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
-            .unwrap()
-            .build()
-            .unwrap();
+        let reader =
+            ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
+                .unwrap()
+                .build()
+                .unwrap();
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {
@@ -129,9 +134,15 @@ fn ingolstadt_lod2_solids_round_trip_gml_to_parquet_to_gml() {
     convert(&ConvertOptions::new(fixture(), pkg.clone())).unwrap();
 
     // 2. package -> .gml.
-    let report =
-        write_package(&WriteOptions { package_dir: pkg.clone(), output: out_gml.clone() }).unwrap();
-    assert_eq!(report.buildings_written, 3, "3 Buildings with lod2Solid expected");
+    let report = write_package(&WriteOptions {
+        package_dir: pkg.clone(),
+        output: out_gml.clone(),
+    })
+    .unwrap();
+    assert_eq!(
+        report.buildings_written, 3,
+        "3 Buildings with lod2Solid expected"
+    );
 
     // 3. the writer's output must be reader-parseable: re-convert it.
     //    (A convert failure here would mean the emitted CityGML is malformed.)
@@ -141,8 +152,14 @@ fn ingolstadt_lod2_solids_round_trip_gml_to_parquet_to_gml() {
     //    round trip (geometry projection — not attributes/semantics).
     let before = solid_coords(&pkg);
     let after = solid_coords(&pkg2);
-    assert!(!before.is_empty(), "the original package must have solid geometry");
-    assert_eq!(before, after, "Building solid coordinates must survive the round trip");
+    assert!(
+        !before.is_empty(),
+        "the original package must have solid geometry"
+    );
+    assert_eq!(
+        before, after,
+        "Building solid coordinates must survive the round trip"
+    );
 
     // 5. Attributes must survive the round trip too (measuredHeight/roofType/
     //    storeysAboveGround + gen: string attributes on this fixture).
@@ -152,6 +169,12 @@ fn ingolstadt_lod2_solids_round_trip_gml_to_parquet_to_gml() {
         attrs_before.values().any(|m| !m.is_empty()),
         "the original package must carry building attributes"
     );
-    assert_eq!(attrs_before, attrs_after, "Building attributes must survive the round trip");
-    assert_eq!(report.attributes_skipped, 0, "Ingolstadt attributes are all representable");
+    assert_eq!(
+        attrs_before, attrs_after,
+        "Building attributes must survive the round trip"
+    );
+    assert_eq!(
+        report.attributes_skipped, 0,
+        "Ingolstadt attributes are all representable"
+    );
 }

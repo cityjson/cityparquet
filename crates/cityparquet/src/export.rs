@@ -283,9 +283,9 @@ pub(crate) fn partition_shells(
             // a debug panic / release wraparound that then mis-partitions.
             let mut total: usize = 0;
             for &n in counts {
-                total = total.checked_add(n).ok_or_else(|| {
-                    err("solid_shell_faces counts overflow usize".to_string())
-                })?;
+                total = total
+                    .checked_add(n)
+                    .ok_or_else(|| err("solid_shell_faces counts overflow usize".to_string()))?;
             }
             if total != faces.len() {
                 return Err(err(format!(
