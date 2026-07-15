@@ -322,7 +322,7 @@ pub(crate) fn shell_faces_flat(props: Option<&Value>) -> Result<Option<Vec<usize
 /// `solid_shell_faces` from `geometry_properties`, shaped for
 /// `MultiSolid`/`CompositeSolid` (one flat per-shell face-count list per
 /// solid).
-fn shell_faces_nested(props: Option<&Value>) -> Result<Option<Vec<Vec<usize>>>> {
+pub(crate) fn shell_faces_nested(props: Option<&Value>) -> Result<Option<Vec<Vec<usize>>>> {
     let Some(v) = props.and_then(|p| p.get("solid_shell_faces")) else {
         return Ok(None);
     };
