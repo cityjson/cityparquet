@@ -272,7 +272,7 @@ fn remap_face_list(faces: &[Vec<Vec<usize>>], vmap: &[usize]) -> Vec<Vec<Vec<usi
 /// every face when `counts` is absent. Counts that do not sum to exactly
 /// the face total are an error — silently mis-partitioning (or dropping
 /// trailing faces) would corrupt the geometry.
-fn partition_shells(
+pub(crate) fn partition_shells(
     faces: Vec<Vec<Vec<usize>>>,
     counts: Option<&[usize]>,
 ) -> Result<Vec<Vec<Vec<Vec<usize>>>>> {
@@ -304,7 +304,7 @@ fn geom_shape_err(gtype: &GeometryType, kind: &DecodedKind) -> CityParquetError 
 
 /// `solid_shell_faces` from `geometry_properties`, shaped for a single
 /// `Solid` (flat per-shell face counts).
-fn shell_faces_flat(props: Option<&Value>) -> Result<Option<Vec<usize>>> {
+pub(crate) fn shell_faces_flat(props: Option<&Value>) -> Result<Option<Vec<usize>>> {
     let Some(v) = props.and_then(|p| p.get("solid_shell_faces")) else {
         return Ok(None);
     };
