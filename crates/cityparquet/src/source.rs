@@ -1,4 +1,6 @@
-//! Unified feature access over CityJSON documents and CityJSONSeq streams.
+//! Unified feature access over CityJSON documents, CityJSONSeq streams, and
+//! CityGML 2.0 documents (the last via [`crate::citygml`], which synthesises a
+//! CityJSON header and streams `bldg:Building`s as features).
 
 use std::fs;
 use std::fs::File;
@@ -12,6 +14,7 @@ use cjseq::{CityJSON, CityJSONFeature, SortingStrategy};
 pub enum SourceFormat {
     CityJson,
     CityJsonSeq,
+    CityGml,
 }
 
 pub struct Source {
@@ -33,6 +36,20 @@ fn io_err(msg: String) -> CityParquetError {
 
 impl Source {
     pub fn open(path: &Path) -> Result<Self> {
+        // CityGML 2.0 is XML, not JSON — detect it by its root element before
+        // the CityJSON/Seq sniff below (a `<?xml ...` file would otherwise fall
+        // through and fail JSON parsing). The reader synthesises a CityJSON
+        // header (transform + CRS) and streams `bldg:Building`s as features.
+        if crate::citygml::is_citygml(path) {
+            let header = crate::citygml::parse_header(path)?;
+            return Ok(Self {
+                path: path.to_path_buf(),
+                format: SourceFormat::CityGml,
+                header,
+                doc: None,
+            });
+        }
+
         // CityJSONSeq: first line is a CityJSON header, later lines are features.
         // A document only counts as Seq when a feature stream actually follows
         // the header — a minified CityJSON doc with a trailing newline must not
@@ -145,6 +162,9 @@ impl Source {
                 doc: self.doc.as_ref().expect("doc set"),
                 i: 0,
             }),
+            SourceFormat::CityGml => Ok(FeatureIter::CityGml(Box::new(
+                crate::citygml::FeatureReader::open(&self.path, &self.header.transform)?,
+            ))),
         }
     }
 }
@@ -152,6 +172,7 @@ impl Source {
 pub enum FeatureIter<'a> {
     Seq(std::io::Lines<BufReader<File>>),
     Doc { doc: &'a CityJSON, i: usize },
+    CityGml(Box<crate::citygml::FeatureReader>),
 }
 
 impl Iterator for FeatureIter<'_> {
@@ -176,6 +197,7 @@ impl Iterator for FeatureIter<'_> {
                 *i += 1;
                 Some(Ok(f))
             }
+            FeatureIter::CityGml(reader) => reader.next(),
         }
     }
 }

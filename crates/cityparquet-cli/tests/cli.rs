@@ -504,3 +504,53 @@ fn convert_layout_single_still_emits_cityobjects_parquet() {
     );
     assert!(out.path().join("cityobjects.parquet").exists());
 }
+
+#[test]
+fn export_package_to_gml_writes_citygml() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("pkg");
+    let gml = tmp.path().join("model.gml");
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let ingolstadt = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../cityparquet/tests/data/savenow_ingolstadt_lod2.gml");
+    assert!(ingolstadt.exists(), "missing Ingolstadt CityGML fixture");
+
+    // .gml -> CityParquet package.
+    let c = Command::new(binary)
+        .arg("convert")
+        .arg(&ingolstadt)
+        .arg(&pkg)
+        .arg("--layout")
+        .arg("single")
+        .output()
+        .expect("failed to run convert");
+    assert!(
+        c.status.success(),
+        "convert failed: {}",
+        String::from_utf8_lossy(&c.stderr)
+    );
+
+    // package -> .gml (the new export branch).
+    let e = Command::new(binary)
+        .arg("export")
+        .arg(&pkg)
+        .arg(&gml)
+        .output()
+        .expect("failed to run export");
+    assert!(
+        e.status.success(),
+        "export to gml failed: {}",
+        String::from_utf8_lossy(&e.stderr)
+    );
+
+    let text = std::fs::read_to_string(&gml).unwrap();
+    assert!(text.contains("<CityModel"), "output must be a CityModel");
+    assert!(text.contains("<bldg:Building"), "output must contain a Building");
+
+    let stdout = String::from_utf8_lossy(&e.stdout);
+    assert_eq!(
+        stdout.split_whitespace().next(),
+        Some("3"),
+        "report line should start with buildings_written=3, got {stdout:?}"
+    );
+}

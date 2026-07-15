@@ -124,7 +124,7 @@ fn io_err(msg: String) -> CityParquetError {
 /// or a retyped one), or `None` if every field matches exactly. See the
 /// M5 Codex review multi-table schema-check finding at this function's call
 /// site in [`export`].
-fn first_schema_mismatch(first: &Schema, other: &Schema) -> Option<String> {
+pub(crate) fn first_schema_mismatch(first: &Schema, other: &Schema) -> Option<String> {
     if first.fields().len() != other.fields().len() {
         return Some(format!(
             "has {} column(s), expected {}",
@@ -272,13 +272,21 @@ fn remap_face_list(faces: &[Vec<Vec<usize>>], vmap: &[usize]) -> Vec<Vec<Vec<usi
 /// every face when `counts` is absent. Counts that do not sum to exactly
 /// the face total are an error — silently mis-partitioning (or dropping
 /// trailing faces) would corrupt the geometry.
-fn partition_shells(
+pub(crate) fn partition_shells(
     faces: Vec<Vec<Vec<usize>>>,
     counts: Option<&[usize]>,
 ) -> Result<Vec<Vec<Vec<Vec<usize>>>>> {
     match counts {
         Some(counts) => {
-            let total: usize = counts.iter().sum();
+            // Checked sum: `solid_shell_faces` can come from untrusted package
+            // data, so a sum that overflows `usize` must be a clean error, not
+            // a debug panic / release wraparound that then mis-partitions.
+            let mut total: usize = 0;
+            for &n in counts {
+                total = total.checked_add(n).ok_or_else(|| {
+                    err("solid_shell_faces counts overflow usize".to_string())
+                })?;
+            }
             if total != faces.len() {
                 return Err(err(format!(
                     "solid_shell_faces counts sum to {total} but the stored geometry has {} faces",
@@ -304,7 +312,7 @@ fn geom_shape_err(gtype: &GeometryType, kind: &DecodedKind) -> CityParquetError 
 
 /// `solid_shell_faces` from `geometry_properties`, shaped for a single
 /// `Solid` (flat per-shell face counts).
-fn shell_faces_flat(props: Option<&Value>) -> Result<Option<Vec<usize>>> {
+pub(crate) fn shell_faces_flat(props: Option<&Value>) -> Result<Option<Vec<usize>>> {
     let Some(v) = props.and_then(|p| p.get("solid_shell_faces")) else {
         return Ok(None);
     };

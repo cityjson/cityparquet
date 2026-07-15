@@ -57,6 +57,7 @@ fn to_schema_source_format(format: SourceFormat) -> SchemaSourceFormat {
     match format {
         SourceFormat::CityJson => SchemaSourceFormat::CityJson,
         SourceFormat::CityJsonSeq => SchemaSourceFormat::CityJsonSeq,
+        SourceFormat::CityGml => SchemaSourceFormat::CityGml,
     }
 }
 

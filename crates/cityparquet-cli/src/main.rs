@@ -1,4 +1,5 @@
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
+use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
 use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
@@ -282,26 +283,52 @@ fn main() -> std::process::ExitCode {
             package_dir,
             output,
         } => {
-            let opts = ExportOptions {
-                package_dir,
-                output,
-            };
-
-            match export(&opts) {
-                Ok(report) => {
-                    println!(
-                        "{} {} {} {} {}",
-                        report.feature_count,
-                        report.object_count,
-                        report.instance_geometries_dropped,
-                        report.appearance_refs_dropped,
-                        report.appearance_lod_misses
-                    );
-                    std::process::ExitCode::SUCCESS
+            // A `.gml` output goes to the native CityGML 2.0 writer; every
+            // other extension is CityJSON/CityJSONSeq via `export`.
+            if output.extension().and_then(|e| e.to_str()) == Some("gml") {
+                let opts = WriteOptions {
+                    package_dir,
+                    output,
+                };
+                match write_package(&opts) {
+                    Ok(report) => {
+                        println!(
+                            "{} {} {} {} {}",
+                            report.buildings_written,
+                            report.non_building_skipped,
+                            report.buildings_without_solid_skipped,
+                            report.composite_solids_skipped,
+                            report.lod_columns_skipped
+                        );
+                        std::process::ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("error: {}", e);
+                        std::process::ExitCode::FAILURE
+                    }
                 }
-                Err(e) => {
-                    eprintln!("error: {}", e);
-                    std::process::ExitCode::FAILURE
+            } else {
+                let opts = ExportOptions {
+                    package_dir,
+                    output,
+                };
+
+                match export(&opts) {
+                    Ok(report) => {
+                        println!(
+                            "{} {} {} {} {}",
+                            report.feature_count,
+                            report.object_count,
+                            report.instance_geometries_dropped,
+                            report.appearance_refs_dropped,
+                            report.appearance_lod_misses
+                        );
+                        std::process::ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("error: {}", e);
+                        std::process::ExitCode::FAILURE
+                    }
                 }
             }
         }
