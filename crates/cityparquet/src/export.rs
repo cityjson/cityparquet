@@ -124,7 +124,7 @@ fn io_err(msg: String) -> CityParquetError {
 /// or a retyped one), or `None` if every field matches exactly. See the
 /// M5 Codex review multi-table schema-check finding at this function's call
 /// site in [`export`].
-fn first_schema_mismatch(first: &Schema, other: &Schema) -> Option<String> {
+pub(crate) fn first_schema_mismatch(first: &Schema, other: &Schema) -> Option<String> {
     if first.fields().len() != other.fields().len() {
         return Some(format!(
             "has {} column(s), expected {}",
