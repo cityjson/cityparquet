@@ -6,6 +6,8 @@
 //! `[solid][shell][face]`, MultiSurface flat `[position]`. A `null` value means
 //! the face has no semantic surface.
 
+use std::collections::HashSet;
+
 use cityparquet_schema::CityParquetError;
 use serde_json::Value;
 
@@ -14,6 +16,31 @@ use crate::Result;
 
 /// A face is rings of coord indices (ring 0 exterior, 1.. holes).
 pub type Face = Vec<Vec<usize>>;
+
+/// Allocates document-unique `gml:id`s for emitted polygons: `_cpq_p<N>` with a
+/// monotonic counter, checked against (and inserted into) the shared `seen`
+/// set that also holds CityObject `gml:id`s, so a generated id can never clash
+/// with an object id or another polygon.
+pub struct IdAlloc<'a> {
+    next: usize,
+    seen: &'a mut HashSet<String>,
+}
+
+impl<'a> IdAlloc<'a> {
+    pub fn new(seen: &'a mut HashSet<String>) -> Self {
+        Self { next: 0, seen }
+    }
+
+    pub fn alloc(&mut self) -> String {
+        loop {
+            let id = format!("_cpq_p{}", self.next);
+            self.next += 1;
+            if self.seen.insert(id.clone()) {
+                return id;
+            }
+        }
+    }
+}
 
 /// Parsed `geometry_properties.semantics`: a flat list of surface type strings
 /// and the raw (nested) `values` array.
@@ -220,5 +247,14 @@ mod tests {
     #[test]
     fn multisurface_length_mismatch_errors() {
         assert!(multisurface_face_surfaces(&json!([0, 1]), 3, 2).is_err());
+    }
+
+    #[test]
+    fn id_alloc_is_unique_and_avoids_seen() {
+        let mut seen = HashSet::from(["_cpq_p0".to_string()]);
+        let mut a = IdAlloc::new(&mut seen);
+        assert_eq!(a.alloc(), "_cpq_p1"); // p0 already taken
+        assert_eq!(a.alloc(), "_cpq_p2");
+        assert!(seen.contains("_cpq_p1") && seen.contains("_cpq_p2"));
     }
 }
