@@ -404,3 +404,45 @@ fn citygml2_features_restartable() {
     assert_eq!(count(), 1);
     assert_eq!(count(), 1, "features() must be restartable");
 }
+
+// `railway_lod3_fragment.gml`: a Building ("Chapel") whose geometry lives ONLY
+// in `boundedBy` semantic surfaces' `lod3MultiSurface` — NO `lodNSolid` (the
+// M4 boundedBy-MultiSurface case). Counts hand-derived from the fixture: 19
+// top-level semantic surfaces (11 Wall, 3 Roof, 1 Ground, 3 OuterCeiling, 1
+// OuterFloor) + 17 openings' Door/Window (1 Door, 16 Window) = 36 semantic
+// surfaces; 44 boundary polygons (the Bridge/vegetation objects AFTER the
+// Building are separate features and must not be counted). The two `outerBuildingInstallation`
+// lod3Geometry MultiSurfaces are NOT the Building's own geometry and must not
+// leak as extra geometry.
+#[test]
+fn citygml2_boundedby_multisurface_building_no_solid() {
+    let src = Source::open(&data_fixture("railway_lod3_fragment.gml")).unwrap();
+    let feats: Vec<_> = src
+        .features()
+        .unwrap()
+        .collect::<cityparquet::Result<Vec<_>>>()
+        .unwrap();
+    let bldg = feats
+        .iter()
+        .flat_map(|f| f.city_objects.values())
+        .find(|co| co.thetype == "Building")
+        .expect("a Building feature");
+
+    let geoms = bldg.geometry.as_ref().expect("building has geometry");
+    assert_eq!(geoms.len(), 1, "one MultiSurface geometry; installations must not leak");
+    let gv = serde_json::to_value(&geoms[0]).unwrap();
+    assert_eq!(gv["type"], "MultiSurface");
+    assert_eq!(gv["lod"], "3");
+
+    let surfaces = gv["boundaries"].as_array().unwrap();
+    assert_eq!(surfaces.len(), 44, "44 boundedBy polygons as MultiSurface members");
+
+    let stypes = gv["semantics"]["surfaces"].as_array().unwrap();
+    assert_eq!(stypes.len(), 36, "19 top-level surfaces + 17 Door/Window");
+    let values = gv["semantics"]["values"].as_array().unwrap();
+    assert_eq!(values.len(), 44, "one semantic value per MultiSurface member");
+    for v in values {
+        let i = v.as_u64().expect("semantic value is an index") as usize;
+        assert!(i < 36, "every value indexes into surfaces");
+    }
+}
