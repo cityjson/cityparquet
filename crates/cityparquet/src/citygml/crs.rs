@@ -97,6 +97,57 @@ fn epsg_code(name: &str) -> Option<String> {
         .map(|t| t.to_string())
 }
 
+/// Map the package CRS metadata (an OGC EPSG URL string, or a PROJJSON object
+/// with an `id.authority`/`id.code`) to a validated writer `srsName`.
+///
+/// `None` CRS -> `Ok(None)` (no CRS to advertise). Otherwise the candidate
+/// EPSG code is built into a `urn:ogc:def:crs:EPSG::<code>` and round-tripped
+/// through [`resolve`], which must hand back the *same* projected code — this
+/// reuses the reader's geographic-CRS rejection (and its exact-syntax
+/// parsing) so the writer can never emit an `srsName` the reader would refuse
+/// to consume. A geographic code (e.g. 4326), an unsupported/non-EPSG
+/// authority, or anything else `resolve` cannot parse back to the same code
+/// is an error.
+pub fn srs_name_for(crs: Option<&serde_json::Value>) -> Result<Option<String>> {
+    let Some(crs) = crs else {
+        return Ok(None);
+    };
+    let code = extract_epsg_code(crs).ok_or_else(|| {
+        CityParquetError::Schema(format!(
+            "package CRS {crs:?} is not a recognised EPSG identifier (expected an OGC EPSG \
+             URL or a PROJJSON object with an EPSG authority)"
+        ))
+    })?;
+    let urn = format!("urn:ogc:def:crs:EPSG::{code}");
+    match resolve(&urn)? {
+        CrsResolution::Epsg(resolved) if resolved == code => Ok(Some(urn)),
+        _ => Err(CityParquetError::Schema(format!(
+            "package CRS EPSG:{code} did not round-trip through the reader's srsName resolver"
+        ))),
+    }
+}
+
+/// Extract a bare EPSG code from the package CRS metadata: either an OGC EPSG
+/// URL string (reusing [`epsg_code`]'s parsing) or a PROJJSON object with
+/// `id.authority == "EPSG"` and a numeric (or all-digit string) `id.code`.
+fn extract_epsg_code(crs: &serde_json::Value) -> Option<String> {
+    if let Some(s) = crs.as_str() {
+        return epsg_code(s);
+    }
+    let id = crs.as_object()?.get("id")?;
+    let authority = id.get("authority")?.as_str()?;
+    if !authority.eq_ignore_ascii_case("EPSG") {
+        return None;
+    }
+    match id.get("code")? {
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::String(s) if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) => {
+            Some(s.clone())
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +225,46 @@ mod tests {
             reference_system("5555").to_url(),
             "https://www.opengis.net/def/crs/EPSG/0/5555"
         );
+    }
+
+    #[test]
+    fn srs_name_from_epsg_url_round_trips_through_resolve() {
+        let crs = serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/28992");
+        let srs = srs_name_for(Some(&crs)).unwrap().unwrap();
+        assert_eq!(srs, "urn:ogc:def:crs:EPSG::28992");
+        // The emitted srsName must resolve back to the SAME code.
+        assert!(matches!(resolve(&srs).unwrap(), CrsResolution::Epsg(c) if c == "28992"));
+    }
+
+    #[test]
+    fn srs_name_from_projjson_epsg_object() {
+        let crs = serde_json::json!({ "id": { "authority": "EPSG", "code": 28992 } });
+        assert_eq!(
+            srs_name_for(Some(&crs)).unwrap().unwrap(),
+            "urn:ogc:def:crs:EPSG::28992"
+        );
+    }
+
+    #[test]
+    fn srs_name_none_when_no_crs() {
+        assert_eq!(srs_name_for(None).unwrap(), None);
+    }
+
+    #[test]
+    fn srs_name_geographic_crs_errors() {
+        let crs = serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/4326");
+        assert!(srs_name_for(Some(&crs)).is_err());
+    }
+
+    #[test]
+    fn srs_name_non_epsg_authority_errors() {
+        let crs = serde_json::json!({ "id": { "authority": "ESRI", "code": 102100 } });
+        assert!(srs_name_for(Some(&crs)).is_err());
+    }
+
+    #[test]
+    fn srs_name_unparseable_crs_errors() {
+        let crs = serde_json::json!("some-local-engineering-crs");
+        assert!(srs_name_for(Some(&crs)).is_err());
     }
 }
