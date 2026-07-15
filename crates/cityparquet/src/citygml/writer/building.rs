@@ -8,7 +8,7 @@
 //! W-M1; `GeometryCollection` (MultiSolid/CompositeSolid) and other shapes are
 //! the driver's concern to count, but a stray non-Solid is guarded here too.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 
 use cityparquet_schema::{AttributeType, CityParquetError, Lod};
@@ -297,6 +297,100 @@ pub fn write_object_content<W: Write>(
     }
 
     Ok(attrs_written > 0 || !by_major.is_empty())
+}
+
+/// The read-only object graph a Building assembly is rendered from: every
+/// object's content and its `children` id list, plus the attribute type map.
+pub struct BuildingTree<'a> {
+    pub content_by_id: &'a HashMap<String, BuildingSolids>,
+    pub children_by_id: &'a HashMap<String, Vec<String>>,
+    pub types: &'a HashMap<String, AttributeType>,
+}
+
+/// Render an object's INNER bytes (attributes + geometry, then each non-empty
+/// child part wrapped in `consistsOfBuildingPart/bldg:BuildingPart`, in the
+/// stored `children` order — `consistsOfBuildingPart` comes last per the CityGML
+/// 2.0 sequence). Returns `(inner, non_empty)`; `non_empty` is false when the
+/// object has no geometry, no writable attribute, and no rendered part. The
+/// caller wraps a non-empty root in `cityObjectMember/bldg:Building`. `visited`
+/// guards cycles; `seen_ids` enforces document-unique `gml:id`s on emit.
+#[allow(clippy::too_many_arguments)]
+pub fn render_abstract_object(
+    obj_id: &str,
+    tree: &BuildingTree,
+    next_feature_index: &mut usize,
+    bounds: &mut Bounds,
+    report: &mut WriteReport,
+    visited: &mut HashSet<String>,
+    seen_ids: &mut HashSet<String>,
+) -> Result<(Vec<u8>, bool)> {
+    if !is_ncname(obj_id) {
+        return Err(CityParquetError::Schema(format!(
+            "CityObject id {obj_id:?} is not a valid XML NCName; cannot serialise as gml:id"
+        )));
+    }
+    // A cycle in the stored parents/children: this object is its own ancestor.
+    if !visited.insert(obj_id.to_string()) {
+        return Ok((Vec::new(), false));
+    }
+
+    let obj = &tree.content_by_id[obj_id];
+    let feature_index = *next_feature_index;
+    *next_feature_index += 1;
+
+    let mut inner = Writer::new(Vec::new());
+    let self_emitted =
+        write_object_content(&mut inner, obj, tree.types, feature_index, bounds, report)?;
+
+    let children = tree
+        .children_by_id
+        .get(obj_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut any_part = false;
+    for child_id in children {
+        if !tree.content_by_id.contains_key(child_id) {
+            report.children_unresolved += 1;
+            continue;
+        }
+        let (child_inner, child_nonempty) = render_abstract_object(
+            child_id,
+            tree,
+            next_feature_index,
+            bounds,
+            report,
+            visited,
+            seen_ids,
+        )?;
+        if child_nonempty {
+            inner
+                .write_event(Event::Start(BytesStart::new("bldg:consistsOfBuildingPart")))
+                .map_err(io_err)?;
+            let mut bp = BytesStart::new("bldg:BuildingPart");
+            bp.push_attribute(("gml:id", child_id.as_str()));
+            inner.write_event(Event::Start(bp)).map_err(io_err)?;
+            inner.get_mut().write_all(&child_inner).map_err(io_err)?;
+            inner
+                .write_event(Event::End(BytesEnd::new("bldg:BuildingPart")))
+                .map_err(io_err)?;
+            inner
+                .write_event(Event::End(BytesEnd::new("bldg:consistsOfBuildingPart")))
+                .map_err(io_err)?;
+            report.building_parts_written += 1;
+            any_part = true;
+        } else {
+            report.building_parts_skipped += 1;
+        }
+    }
+
+    visited.remove(obj_id);
+    let non_empty = self_emitted || any_part;
+    if non_empty && !seen_ids.insert(obj_id.to_string()) {
+        return Err(CityParquetError::Schema(format!(
+            "duplicate CityObject id {obj_id:?}; CityGML gml:id must be document-unique"
+        )));
+    }
+    Ok((inner.into_inner(), non_empty))
 }
 
 #[cfg(test)]
@@ -653,6 +747,117 @@ mod tests {
         );
         // Nothing should have been emitted before the error.
         assert!(w.into_inner().is_empty());
+    }
+
+    fn content(id: &str, solids: Vec<(Lod, DecodedGeometry, Option<Value>)>) -> BuildingSolids {
+        BuildingSolids {
+            id: id.into(),
+            attributes: serde_json::Map::new(),
+            solids,
+        }
+    }
+
+    fn solid_lod2() -> (Lod, DecodedGeometry, Option<Value>) {
+        (Lod::parse("2").unwrap(), tri_solid(), Some(solid_props()))
+    }
+
+    fn render(
+        root: &str,
+        content_by_id: HashMap<String, BuildingSolids>,
+        children_by_id: HashMap<String, Vec<String>>,
+    ) -> (String, bool, WriteReport) {
+        let no_types = HashMap::new();
+        let tree = BuildingTree {
+            content_by_id: &content_by_id,
+            children_by_id: &children_by_id,
+            types: &no_types,
+        };
+        let mut nfi = 0usize;
+        let mut bounds = Bounds::new();
+        let mut report = WriteReport::default();
+        let mut visited = HashSet::new();
+        let mut seen = HashSet::new();
+        let (inner, ne) = render_abstract_object(
+            root,
+            &tree,
+            &mut nfi,
+            &mut bounds,
+            &mut report,
+            &mut visited,
+            &mut seen,
+        )
+        .unwrap();
+        (String::from_utf8(inner).unwrap(), ne, report)
+    }
+
+    #[test]
+    fn geometryless_parent_with_part_emits_consists_of_building_part() {
+        let content_by_id = HashMap::from([
+            ("P".to_string(), content("P", vec![])), // geometry-less parent
+            ("P_c".to_string(), content("P_c", vec![solid_lod2()])),
+        ]);
+        let children_by_id = HashMap::from([("P".to_string(), vec!["P_c".to_string()])]);
+        let (xml, ne, r) = render("P", content_by_id, children_by_id);
+        assert!(ne, "a geometry-less parent WITH a rendered part emits");
+        assert!(
+            xml.contains("<bldg:consistsOfBuildingPart><bldg:BuildingPart gml:id=\"P_c\">"),
+            "{xml}"
+        );
+        assert!(xml.contains("<bldg:lod2Solid>"), "{xml}");
+        assert_eq!(r.building_parts_written, 1);
+    }
+
+    #[test]
+    fn parts_emitted_in_stored_children_order() {
+        let content_by_id = HashMap::from([
+            ("P".to_string(), content("P", vec![])),
+            ("c1".to_string(), content("c1", vec![solid_lod2()])),
+            ("c2".to_string(), content("c2", vec![solid_lod2()])),
+        ]);
+        // children order [c2, c1] must emit c2 before c1 (not map/row order).
+        let children_by_id =
+            HashMap::from([("P".to_string(), vec!["c2".to_string(), "c1".to_string()])]);
+        let (xml, _, _) = render("P", content_by_id, children_by_id);
+        assert!(
+            xml.find("gml:id=\"c2\"").unwrap() < xml.find("gml:id=\"c1\"").unwrap(),
+            "parts follow children order: {xml}"
+        );
+    }
+
+    #[test]
+    fn parent_with_only_empty_parts_skips() {
+        let content_by_id = HashMap::from([
+            ("P".to_string(), content("P", vec![])),
+            ("P_c".to_string(), content("P_c", vec![])), // empty part
+        ]);
+        let children_by_id = HashMap::from([("P".to_string(), vec!["P_c".to_string()])]);
+        let (_, ne, r) = render("P", content_by_id, children_by_id);
+        assert!(!ne, "a parent with only empty parts collapses");
+        assert_eq!(r.building_parts_skipped, 1);
+    }
+
+    #[test]
+    fn cycle_guard_terminates() {
+        // P -> c -> P (a cycle in the stored children); must terminate.
+        let content_by_id = HashMap::from([
+            ("P".to_string(), content("P", vec![solid_lod2()])),
+            ("c".to_string(), content("c", vec![])),
+        ]);
+        let children_by_id = HashMap::from([
+            ("P".to_string(), vec!["c".to_string()]),
+            ("c".to_string(), vec!["P".to_string()]),
+        ]);
+        let (xml, ne, _) = render("P", content_by_id, children_by_id);
+        assert!(ne, "P has a solid");
+        assert!(xml.contains("<bldg:lod2Solid>"), "{xml}");
+    }
+
+    #[test]
+    fn unresolved_child_is_counted() {
+        let content_by_id = HashMap::from([("P".to_string(), content("P", vec![solid_lod2()]))]);
+        let children_by_id = HashMap::from([("P".to_string(), vec!["missing".to_string()])]);
+        let (_, _, r) = render("P", content_by_id, children_by_id);
+        assert_eq!(r.children_unresolved, 1);
     }
 
     #[test]
