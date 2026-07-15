@@ -120,7 +120,39 @@ pub fn write_building<W: Write>(
             b.id
         )));
     }
+    // Render the content into a buffer so the emptiness decision (no geometry AND
+    // no writable attribute) can suppress the whole element.
+    let mut content = Writer::new(Vec::new());
+    if !write_object_content(&mut content, b, types, feature_index, bounds, report)? {
+        return Ok(false);
+    }
+    w.write_event(Event::Start(BytesStart::new("cityObjectMember")))
+        .map_err(io_err)?;
+    let mut bldg = BytesStart::new("bldg:Building");
+    bldg.push_attribute(("gml:id", b.id.as_str()));
+    w.write_event(Event::Start(bldg)).map_err(io_err)?;
+    w.get_mut()
+        .write_all(&content.into_inner())
+        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("bldg:Building")))
+        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("cityObjectMember")))
+        .map_err(io_err)?;
+    Ok(true)
+}
 
+/// Emit the `_AbstractBuilding` content — attributes then geometry, the inside of
+/// a `<bldg:Building>`/`<bldg:BuildingPart>` WITHOUT the wrapper. Returns whether
+/// anything (a writable attribute or a geometry) was emitted; the caller
+/// suppresses the wrapper when nothing was.
+pub fn write_object_content<W: Write>(
+    w: &mut Writer<W>,
+    b: &BuildingSolids,
+    types: &HashMap<String, AttributeType>,
+    feature_index: usize,
+    bounds: &mut Bounds,
+    report: &mut WriteReport,
+) -> Result<bool> {
     // Keep at most one solid per major LoD (1..=4), the highest minor.
     // BTreeMap keeps the majors in ascending order for emission.
     let mut by_major: BTreeMap<u8, (Lod, &DecodedGeometry, Option<&Value>)> = BTreeMap::new();
@@ -175,25 +207,8 @@ pub fn write_building<W: Write>(
         }
     }
 
-    // Buffer attributes first so the emptiness decision can see whether any
-    // attribute is actually writable: an attributes-only Building is valid, but
-    // a Building with neither geometry nor a writable attribute is not emitted.
-    let mut attr_buf = Writer::new(Vec::new());
-    let attrs_written = write_attributes(&mut attr_buf, &b.attributes, types, report)?;
-
-    if by_major.is_empty() && attrs_written == 0 {
-        return Ok(false);
-    }
-
-    w.write_event(Event::Start(BytesStart::new("cityObjectMember")))
-        .map_err(io_err)?;
-    let mut bldg = BytesStart::new("bldg:Building");
-    bldg.push_attribute(("gml:id", b.id.as_str()));
-    w.write_event(Event::Start(bldg)).map_err(io_err)?;
     // Attributes precede geometry in the CityGML _CityObject / Building sequence.
-    w.get_mut()
-        .write_all(&attr_buf.into_inner())
-        .map_err(io_err)?;
+    let attrs_written = write_attributes(w, &b.attributes, types, report)?;
 
     // A building's semantics can round-trip for at most ONE LoD: the reader
     // builds a single building-wide `surfaces` array applied to every geometry,
@@ -281,11 +296,7 @@ pub fn write_building<W: Write>(
         }
     }
 
-    w.write_event(Event::End(BytesEnd::new("bldg:Building")))
-        .map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new("cityObjectMember")))
-        .map_err(io_err)?;
-    Ok(true)
+    Ok(attrs_written > 0 || !by_major.is_empty())
 }
 
 #[cfg(test)]
