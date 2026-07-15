@@ -545,7 +545,10 @@ fn export_package_to_gml_writes_citygml() {
 
     let text = std::fs::read_to_string(&gml).unwrap();
     assert!(text.contains("<CityModel"), "output must be a CityModel");
-    assert!(text.contains("<bldg:Building"), "output must contain a Building");
+    assert!(
+        text.contains("<bldg:Building"),
+        "output must contain a Building"
+    );
 
     let stdout = String::from_utf8_lossy(&e.stdout);
     assert_eq!(

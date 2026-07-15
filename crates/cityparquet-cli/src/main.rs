@@ -1,5 +1,5 @@
-use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::citygml::writer::{WriteOptions, write_package};
+use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
 use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
