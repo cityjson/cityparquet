@@ -7,15 +7,30 @@
 //! the face has no semantic surface.
 
 use std::collections::HashSet;
+use std::io::Write;
 
 use cityparquet_schema::CityParquetError;
+use quick_xml::Writer;
+use quick_xml::events::{BytesEnd, BytesStart, Event};
 use serde_json::Value;
 
 use super::building::is_ncname;
+use super::geometry::{write_inline_member, write_xlink_member};
 use crate::Result;
+use crate::wkb_read::DecodedKind;
+
+fn io_err(e: std::io::Error) -> CityParquetError {
+    CityParquetError::Io(e.to_string())
+}
 
 /// A face is rings of coord indices (ring 0 exterior, 1.. holes).
 pub type Face = Vec<Vec<usize>>;
+
+/// One solid's shells, each a list of faces (as `partition_shells` returns).
+type Shells = Vec<Vec<Face>>;
+
+/// A flat per-face surface index in shell-concatenation order (`None` = null).
+type FaceSurfaces = Vec<Option<usize>>;
 
 /// Allocates document-unique `gml:id`s for emitted polygons: `_cpq_p<N>` with a
 /// monotonic counter, checked against (and inserted into) the shared `seen`
@@ -104,7 +119,7 @@ pub fn solid_face_surfaces(
     values: &Value,
     shells: &[Vec<Face>],
     nsurfaces: usize,
-) -> Result<Vec<Option<usize>>> {
+) -> Result<FaceSurfaces> {
     let vshells = values
         .as_array()
         .ok_or_else(|| err("solid semantics values must be an array of shells"))?;
@@ -138,9 +153,9 @@ pub fn solid_face_surfaces(
 /// vec per member.
 pub fn composite_face_surfaces(
     values: &Value,
-    members: &[Vec<Vec<Face>>],
+    members: &[Shells],
     nsurfaces: usize,
-) -> Result<Vec<Vec<Option<usize>>>> {
+) -> Result<Vec<FaceSurfaces>> {
     let vmembers = values
         .as_array()
         .ok_or_else(|| err("composite semantics values must be an array of solids"))?;
@@ -175,6 +190,192 @@ pub fn multisurface_face_surfaces(
         )));
     }
     vs.iter().map(|v| face_index(v, nsurfaces)).collect()
+}
+
+/// Emit one `<gml:Solid>` whose shells are `gml:CompositeSurface`s of
+/// `surfaceMember`s: an `xlink:href` for a semantic face (its polygon lives in
+/// `boundedBy`) or an inline `gml:Polygon` for a null face. `ids` is the flat
+/// per-face id list in shell-concatenation order.
+fn write_one_solid<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    shells: &[Vec<Face>],
+    ids: &[Option<String>],
+) -> Result<()> {
+    w.write_event(Event::Start(BytesStart::new("gml:Solid")))
+        .map_err(io_err)?;
+    let mut fi = 0usize;
+    for (si, shell) in shells.iter().enumerate() {
+        let boundary = if si == 0 {
+            "gml:exterior"
+        } else {
+            "gml:interior"
+        };
+        w.write_event(Event::Start(BytesStart::new(boundary)))
+            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new("gml:CompositeSurface")))
+            .map_err(io_err)?;
+        for face in shell {
+            match &ids[fi] {
+                Some(id) => write_xlink_member(w, id)?,
+                None => write_inline_member(w, coords, face, None)?,
+            }
+            fi += 1;
+        }
+        w.write_event(Event::End(BytesEnd::new("gml:CompositeSurface")))
+            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new(boundary)))
+            .map_err(io_err)?;
+    }
+    w.write_event(Event::End(BytesEnd::new("gml:Solid")))
+        .map_err(io_err)?;
+    Ok(())
+}
+
+/// Emit the `bldg:boundedBy` block: one element per `surface_types` entry, in
+/// array order, holding the inline `gml:Polygon`s (with their ids) of the faces
+/// assigned to it; a zero-face surface is an empty element.
+#[allow(clippy::too_many_arguments)]
+fn write_boundedby<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    surface_types: &[String],
+    members: &[Shells],
+    surfaces: &[FaceSurfaces],
+    face_ids: &[Vec<Option<String>>],
+    major: u8,
+) -> Result<()> {
+    for (i, ty) in surface_types.iter().enumerate() {
+        let mut polys: Vec<(&Face, &str)> = Vec::new();
+        for (m, shells) in members.iter().enumerate() {
+            let mut fi = 0usize;
+            for shell in shells {
+                for face in shell {
+                    if surfaces[m][fi] == Some(i) {
+                        let id = face_ids[m][fi].as_deref().expect("non-null face has an id");
+                        polys.push((face, id));
+                    }
+                    fi += 1;
+                }
+            }
+        }
+        w.write_event(Event::Start(BytesStart::new("bldg:boundedBy")))
+            .map_err(io_err)?;
+        let tag = format!("bldg:{ty}");
+        if polys.is_empty() {
+            w.write_event(Event::Empty(BytesStart::new(tag.as_str())))
+                .map_err(io_err)?;
+        } else {
+            w.write_event(Event::Start(BytesStart::new(tag.as_str())))
+                .map_err(io_err)?;
+            let ms = format!("bldg:lod{major}MultiSurface");
+            w.write_event(Event::Start(BytesStart::new(ms.as_str())))
+                .map_err(io_err)?;
+            for (face, id) in polys {
+                write_inline_member(w, coords, face, Some(id))?;
+            }
+            w.write_event(Event::End(BytesEnd::new(ms.as_str())))
+                .map_err(io_err)?;
+            w.write_event(Event::End(BytesEnd::new(tag.as_str())))
+                .map_err(io_err)?;
+        }
+        w.write_event(Event::End(BytesEnd::new("bldg:boundedBy")))
+            .map_err(io_err)?;
+    }
+    Ok(())
+}
+
+/// Emit a Solid/CompositeSolid with semantics: `bldg:lod<major>Solid` whose
+/// faces are xlink references (semantic faces) or inline (null faces), followed
+/// by the `bldg:boundedBy` surfaces holding the inline geometry. Errors bubble
+/// up so the caller can fall back to geometry-only.
+pub fn write_solid_with_semantics<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    kind: &DecodedKind,
+    props: Option<&Value>,
+    sem: &Semantics,
+    ids: &mut IdAlloc,
+    major: u8,
+) -> Result<()> {
+    let nsurf = sem.surfaces.len();
+
+    // 1. Partition into members -> shells -> faces + per-face surface index.
+    let (members, surfaces, composite): (Vec<Shells>, Vec<FaceSurfaces>, bool) = match kind {
+        DecodedKind::PolyhedralSurface(faces) => {
+            let counts = crate::export::shell_faces_flat(props)?;
+            let shells = crate::export::partition_shells(faces.clone(), counts.as_deref())?;
+            let flat = solid_face_surfaces(&sem.values, &shells, nsurf)?;
+            (vec![shells], vec![flat], false)
+        }
+        DecodedKind::GeometryCollection(gc) => {
+            let nested = crate::export::shell_faces_nested(props)?;
+            if let Some(c) = &nested
+                && c.len() != gc.len()
+            {
+                return Err(err(format!(
+                    "solid_shell_faces lists {} solids but the CompositeSolid has {}",
+                    c.len(),
+                    gc.len()
+                )));
+            }
+            let mut mshells = Vec::with_capacity(gc.len());
+            for (m, member) in gc.iter().enumerate() {
+                let DecodedKind::PolyhedralSurface(faces) = member else {
+                    return Err(err("CompositeSolid member is not a PolyhedralSurface"));
+                };
+                let counts = nested.as_ref().map(|c| c[m].as_slice());
+                mshells.push(crate::export::partition_shells(faces.clone(), counts)?);
+            }
+            let surfaces = composite_face_surfaces(&sem.values, &mshells, nsurf)?;
+            (mshells, surfaces, true)
+        }
+        _ => {
+            return Err(err(
+                "semantics solid path needs a PolyhedralSurface/GeometryCollection",
+            ));
+        }
+    };
+
+    // 2. Allocate a gml:id for every non-null face, aligned to `surfaces`.
+    let face_ids: Vec<Vec<Option<String>>> = surfaces
+        .iter()
+        .map(|msurf| msurf.iter().map(|s| s.map(|_| ids.alloc())).collect())
+        .collect();
+
+    // 3. Emit bldg:lod<major>Solid (xlink/inline members).
+    let elem = format!("bldg:lod{major}Solid");
+    w.write_event(Event::Start(BytesStart::new(elem.as_str())))
+        .map_err(io_err)?;
+    if composite {
+        w.write_event(Event::Start(BytesStart::new("gml:CompositeSolid")))
+            .map_err(io_err)?;
+        for (m, shells) in members.iter().enumerate() {
+            w.write_event(Event::Start(BytesStart::new("gml:solidMember")))
+                .map_err(io_err)?;
+            write_one_solid(w, coords, shells, &face_ids[m])?;
+            w.write_event(Event::End(BytesEnd::new("gml:solidMember")))
+                .map_err(io_err)?;
+        }
+        w.write_event(Event::End(BytesEnd::new("gml:CompositeSolid")))
+            .map_err(io_err)?;
+    } else {
+        write_one_solid(w, coords, &members[0], &face_ids[0])?;
+    }
+    w.write_event(Event::End(BytesEnd::new(elem.as_str())))
+        .map_err(io_err)?;
+
+    // 4. Emit bldg:boundedBy per surface.
+    write_boundedby(
+        w,
+        coords,
+        &sem.surfaces,
+        &members,
+        &surfaces,
+        &face_ids,
+        major,
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -256,5 +457,107 @@ mod tests {
         assert_eq!(a.alloc(), "_cpq_p1"); // p0 already taken
         assert_eq!(a.alloc(), "_cpq_p2");
         assert!(seen.contains("_cpq_p1") && seen.contains("_cpq_p2"));
+    }
+
+    use crate::wkb_read::DecodedKind;
+
+    fn tri(a: usize, b: usize, c: usize) -> DecodedKind {
+        // one triangular face; coords are irrelevant to the structural asserts.
+        DecodedKind::PolyhedralSurface(vec![vec![vec![a, b, c]]])
+    }
+
+    fn semantic_coords() -> Vec<[f64; 3]> {
+        (0..9).map(|i| [i as f64, 0.0, 0.0]).collect()
+    }
+
+    fn emit_solid_sem(
+        coords: &[[f64; 3]],
+        kind: &DecodedKind,
+        props: &Value,
+        sem: &Semantics,
+    ) -> String {
+        let mut seen = HashSet::new();
+        let mut ids = IdAlloc::new(&mut seen);
+        let mut w = Writer::new(Vec::new());
+        write_solid_with_semantics(&mut w, coords, kind, Some(props), sem, &mut ids, 2).unwrap();
+        String::from_utf8(w.into_inner()).unwrap()
+    }
+
+    #[test]
+    fn solid_semantics_emits_xlinked_solid_and_boundedby() {
+        // 1 shell, 3 faces; values [[0, null, 1]]; surfaces [Wall, Roof].
+        let coords = semantic_coords();
+        let kind = DecodedKind::PolyhedralSurface(vec![
+            vec![vec![0, 1, 2]],
+            vec![vec![3, 4, 5]],
+            vec![vec![6, 7, 8]],
+        ]);
+        let props = json!({ "type": "Solid", "solid_shell_faces": [3] });
+        let sem = Semantics {
+            surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
+            values: json!([[0, null, 1]]),
+        };
+        let xml = emit_solid_sem(&coords, &kind, &props, &sem);
+        // Solid comes first, with xlink members for faces 0 & 2 and inline for face 1.
+        assert!(xml.starts_with("<bldg:lod2Solid><gml:Solid>"), "{xml}");
+        assert_eq!(
+            xml.matches("<gml:surfaceMember xlink:href=").count(),
+            2,
+            "{xml}"
+        );
+        // The null face (index 1) is inline in the solid.
+        let solid_end = xml.find("</bldg:lod2Solid>").unwrap();
+        assert!(
+            xml[..solid_end].contains("<gml:surfaceMember><gml:Polygon>"),
+            "inline null face: {xml}"
+        );
+        // boundedBy: Wall then Roof, each xlink id matches a gml:Polygon gml:id.
+        assert!(xml.contains("<bldg:boundedBy><bldg:WallSurface>"), "{xml}");
+        assert!(xml.contains("<bldg:boundedBy><bldg:RoofSurface>"), "{xml}");
+        assert!(xml.contains("xlink:href=\"#_cpq_p0\""), "{xml}");
+        assert!(xml.contains("<gml:Polygon gml:id=\"_cpq_p0\">"), "{xml}");
+        assert!(xml.contains("xlink:href=\"#_cpq_p1\""), "{xml}");
+        assert!(xml.contains("<gml:Polygon gml:id=\"_cpq_p1\">"), "{xml}");
+        // Wall precedes Roof (surfaces array order).
+        assert!(xml.find("WallSurface").unwrap() < xml.find("RoofSurface").unwrap());
+    }
+
+    #[test]
+    fn zero_face_surface_is_emitted_empty() {
+        // 1 face -> surface 0; surface 1 (Roof) has no faces.
+        let coords = semantic_coords();
+        let kind = tri(0, 1, 2);
+        let props = json!({ "type": "Solid", "solid_shell_faces": [1] });
+        let sem = Semantics {
+            surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
+            values: json!([[0]]),
+        };
+        let xml = emit_solid_sem(&coords, &kind, &props, &sem);
+        assert!(
+            xml.contains("<bldg:boundedBy><bldg:RoofSurface/></bldg:boundedBy>"),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn composite_solid_semantics_spans_members() {
+        // 2 members, each 1 shell of 1 face; values [[[0]], [[1]]].
+        let coords = semantic_coords();
+        let kind = DecodedKind::GeometryCollection(vec![
+            DecodedKind::PolyhedralSurface(vec![vec![vec![0, 1, 2]]]),
+            DecodedKind::PolyhedralSurface(vec![vec![vec![3, 4, 5]]]),
+        ]);
+        let props = json!({ "type": "CompositeSolid", "solid_shell_faces": [[1], [1]] });
+        let sem = Semantics {
+            surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
+            values: json!([[[0]], [[1]]]),
+        };
+        let xml = emit_solid_sem(&coords, &kind, &props, &sem);
+        assert!(xml.contains("<gml:CompositeSolid>"), "{xml}");
+        assert_eq!(xml.matches("<gml:solidMember>").count(), 2, "{xml}");
+        assert!(
+            xml.contains("<bldg:WallSurface>") && xml.contains("<bldg:RoofSurface>"),
+            "{xml}"
+        );
     }
 }
