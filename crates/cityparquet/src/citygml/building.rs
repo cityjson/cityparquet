@@ -35,7 +35,7 @@ use serde_json::{Value, json};
 use super::attributes;
 use super::geometry::{self, Polygon, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use super::vertices::VertexBuilder;
-use super::xml::{NS_BLDG, NS_GEN, NS_GML, get_attr_local, ns_is, skip_element, xml_err};
+use super::xml::{NS_BLDG, NS_GEN, NS_GML, get_attr_local, gml_id, ns_is, skip_element, xml_err};
 
 /// A buffered building: everything pass 1 collects before resolution.
 pub struct RawBuilding {
@@ -55,7 +55,14 @@ pub struct RawBuilding {
     boundary_polys: Vec<(usize, String, Polygon)>,
     /// Building-level attributes (typed `bldg:` + `gen:` generic), by name.
     attributes: serde_json::Map<String, Value>,
+    /// Nested `bldg:BuildingPart`s (`consistsOfBuildingPart`), in document order.
+    /// A tree: a part may itself have parts.
+    parts: Vec<RawBuilding>,
 }
+
+/// Maximum `bldg:consistsOfBuildingPart` nesting depth — a guard against
+/// attacker-controlled XML recursion.
+const MAX_PART_DEPTH: usize = 32;
 
 /// Read a `bldg:Building` subtree (positioned after its `Start`).
 pub fn read_building<R: BufRead>(
@@ -63,6 +70,23 @@ pub fn read_building<R: BufRead>(
     buf: &mut Vec<u8>,
     id: Option<String>,
 ) -> Result<RawBuilding> {
+    read_abstract_building(reader, buf, id, b"Building", 0)
+}
+
+/// Read a `_AbstractBuilding` subtree (a `bldg:Building` or `bldg:BuildingPart`,
+/// identical content model), breaking on `End(end_name)`.
+fn read_abstract_building<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    id: Option<String>,
+    end_name: &[u8],
+    depth: usize,
+) -> Result<RawBuilding> {
+    if depth > MAX_PART_DEPTH {
+        return Err(CityParquetError::Schema(format!(
+            "bldg:consistsOfBuildingPart nested deeper than {MAX_PART_DEPTH}"
+        )));
+    }
     let mut b = RawBuilding {
         id,
         solids: Vec::new(),
@@ -71,6 +95,7 @@ pub fn read_building<R: BufRead>(
         semantic_of_polygon: HashMap::new(),
         boundary_polys: Vec::new(),
         attributes: serde_json::Map::new(),
+        parts: Vec::new(),
     };
 
     loop {
@@ -99,6 +124,8 @@ pub fn read_building<R: BufRead>(
                     }
                 } else if bldg && name == b"boundedBy" {
                     read_bounded_by(reader, buf, &mut b)?;
+                } else if bldg && name == b"consistsOfBuildingPart" {
+                    read_consists_of_part(reader, buf, &mut b, depth)?;
                 } else if bldg && let Some(ty) = attributes::typed_building_attr(&name) {
                     if let Some((k, v)) = attributes::read_typed_attribute(reader, buf, &name, ty)?
                     {
@@ -117,16 +144,52 @@ pub fn read_building<R: BufRead>(
                     skip_element(reader, buf)?;
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == b"Building" => break,
+            Event::End(e) if e.local_name().as_ref() == end_name => break,
             Event::Eof => {
                 return Err(CityParquetError::Schema(
-                    "unexpected end of document inside <bldg:Building>".to_string(),
+                    "unexpected end of document inside a bldg:Building/BuildingPart".to_string(),
                 ));
             }
             _ => {}
         }
     }
     Ok(b)
+}
+
+/// Read a `bldg:consistsOfBuildingPart` PROPERTY: descend to the inner
+/// `bldg:BuildingPart`, recurse into it as a child `RawBuilding`, and consume
+/// the property's `End`. An empty or `xlink:href`-only property (which
+/// `expand_empty_elements` delivers as `Start`+`End` with no child) yields no
+/// part.
+fn read_consists_of_part<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    b: &mut RawBuilding,
+    depth: usize,
+) -> Result<()> {
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                if ns_is(&rr, NS_BLDG) && e.local_name().as_ref() == b"BuildingPart" {
+                    let id = gml_id(&e);
+                    let part = read_abstract_building(reader, buf, id, b"BuildingPart", depth + 1)?;
+                    b.parts.push(part);
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"consistsOfBuildingPart" => break,
+            Event::Eof => {
+                return Err(CityParquetError::Schema(
+                    "unexpected end of document inside <bldg:consistsOfBuildingPart>".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// `bldg:lodN<suffix>` -> the CityJSON lod string `"N"`, else `None`.
@@ -318,11 +381,32 @@ impl RawBuilding {
         index: usize,
     ) -> Result<CityJSONFeature> {
         let mut vb = VertexBuilder::new(scale, translate);
+        let mut feature = CityJSONFeature::new();
+        let root_id = self
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("Building_{index}"));
+        feature.id = root_id.clone();
+        self.emit_into(&root_id, None, &mut vb, &mut feature)?;
+        feature.vertices = vb.into_vertices();
+        Ok(feature)
+    }
+
+    /// The id a part at position `i` uses: its own `gml:id`, else a deterministic
+    /// synthesis from the parent id (`<parent>_part_<i>`, an NCName).
+    fn part_id(&self, parent_id: &str, i: usize) -> String {
+        self.id
+            .clone()
+            .unwrap_or_else(|| format!("{parent_id}_part_{i}"))
+    }
+
+    /// Build this object's CityJSON geometry array (solids + boundedBy-only
+    /// MultiSurfaces), resolving against this `RawBuilding`'s own registries.
+    fn build_geometries(&self, vb: &mut VertexBuilder) -> Result<Vec<Value>> {
         let mut geoms_json: Vec<Value> = Vec::new();
         for (lod, geom) in &self.solids {
-            geoms_json.push(self.build_solid_geometry(geom, lod, &mut vb)?);
+            geoms_json.push(self.build_solid_geometry(geom, lod, vb)?);
         }
-
         // For each LoD whose geometry lives only in `boundedBy` surfaces (no
         // `lodNSolid` at that LoD), emit one MultiSurface. When a solid exists
         // at that LoD the boundary polygons are already its xlink targets, so
@@ -335,28 +419,67 @@ impl RawBuilding {
             }
         }
         for lod in &ms_lods {
-            geoms_json.push(self.build_multisurface_geometry(lod, &mut vb)?);
+            geoms_json.push(self.build_multisurface_geometry(lod, vb)?);
         }
+        Ok(geoms_json)
+    }
 
-        let id = self
-            .id
-            .clone()
-            .unwrap_or_else(|| format!("Building_{index}"));
+    /// Emit this object (a `Building` when `parent_id` is `None`, else a
+    /// `BuildingPart`) and, depth-first, each of its parts as sibling
+    /// CityObjects of the same feature (one shared vertex pool). `parents`/
+    /// `children` link the tree.
+    fn emit_into(
+        &self,
+        my_id: &str,
+        parent_id: Option<&str>,
+        vb: &mut VertexBuilder,
+        feature: &mut CityJSONFeature,
+    ) -> Result<()> {
+        let geoms_json = self.build_geometries(vb)?;
+        let child_ids: Vec<String> = self
+            .parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| p.part_id(my_id, i))
+            .collect();
+
         let mut co_obj = serde_json::Map::new();
-        co_obj.insert("type".to_string(), json!("Building"));
+        co_obj.insert(
+            "type".to_string(),
+            json!(if parent_id.is_none() {
+                "Building"
+            } else {
+                "BuildingPart"
+            }),
+        );
         co_obj.insert("geometry".to_string(), Value::Array(geoms_json));
         if !self.attributes.is_empty() {
-            co_obj.insert("attributes".to_string(), Value::Object(self.attributes));
+            co_obj.insert(
+                "attributes".to_string(),
+                Value::Object(self.attributes.clone()),
+            );
+        }
+        if let Some(p) = parent_id {
+            co_obj.insert("parents".to_string(), json!([p]));
+        }
+        if !child_ids.is_empty() {
+            co_obj.insert("children".to_string(), json!(child_ids));
         }
         let co: CityObject = serde_json::from_value(Value::Object(co_obj)).map_err(|e| {
             CityParquetError::Schema(format!("failed to build CityObject from CityGML: {e}"))
         })?;
 
-        let mut feature = CityJSONFeature::new();
-        feature.id = id.clone();
-        feature.add_co(id, co);
-        feature.vertices = vb.into_vertices();
-        Ok(feature)
+        if feature.city_objects.contains_key(my_id) {
+            return Err(CityParquetError::Schema(format!(
+                "duplicate CityObject id {my_id:?} within a Building assembly"
+            )));
+        }
+        feature.add_co(my_id.to_string(), co);
+
+        for (i, part) in self.parts.iter().enumerate() {
+            part.emit_into(&child_ids[i], Some(my_id), vb, feature)?;
+        }
+        Ok(())
     }
 
     /// Build one CityJSON `Solid`/`CompositeSolid` geometry object, emitting
