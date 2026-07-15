@@ -98,7 +98,7 @@ pub fn write_building<W: Write>(
     // are not valid XML Schema `double` lexical forms and NaN would poison the
     // envelope. (WKB's 2^53 magnitude guard does not catch NaN, whose
     // comparisons are always false.)
-    for (_, (_, geom, _)) in &by_major {
+    for (_, geom, _) in by_major.values() {
         if geom
             .coords
             .iter()

@@ -35,7 +35,9 @@ fn mm(v: f64) -> i64 {
 /// its `Solid` (`PolyhedralSurface`) geometry, on the 1 mm grid. Keying by
 /// `(id, major)` — not one global set — means a swapped building, a lost LoD,
 /// or geometry attached to the wrong object is caught, not masked.
-fn solid_coords(pkg: &Path) -> BTreeMap<(String, u8), BTreeSet<(i64, i64, i64)>> {
+type CoordsByBuildingLod = BTreeMap<(String, u8), BTreeSet<(i64, i64, i64)>>;
+
+fn solid_coords(pkg: &Path) -> CoordsByBuildingLod {
     let manifest: PackageManifest =
         serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
     let meta = ParquetRecordBatchReaderBuilder::try_new(
@@ -45,7 +47,7 @@ fn solid_coords(pkg: &Path) -> BTreeMap<(String, u8), BTreeSet<(i64, i64, i64)>>
     .cityparquet_metadata()
     .unwrap();
 
-    let mut map: BTreeMap<(String, u8), BTreeSet<(i64, i64, i64)>> = BTreeMap::new();
+    let mut map: CoordsByBuildingLod = BTreeMap::new();
     for name in &manifest.tables {
         let reader = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
             .unwrap()
