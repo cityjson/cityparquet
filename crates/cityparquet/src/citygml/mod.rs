@@ -26,6 +26,7 @@ mod header;
 pub mod reader;
 mod sniff;
 mod vertices;
+pub mod writer;
 mod xml;
 
 pub use header::parse_header;
