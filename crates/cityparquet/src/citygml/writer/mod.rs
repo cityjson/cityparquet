@@ -3,6 +3,7 @@
 //! W-M1: CityModel + envelope + srsName, and bldg:Building with LoD gml:Solid.
 //! Standalone — reuses wkb_read/reader/export shell helpers, no cjseq document.
 
+pub mod attributes;
 pub mod building;
 pub mod document;
 pub mod geometry;
@@ -51,6 +52,12 @@ pub struct WriteReport {
     /// for that building, or mapped to an unrepresentable LoD (0, >4, lodless),
     /// or held a non-Solid geometry.
     pub lod_columns_skipped: usize,
+    /// Attribute values emitted as `bldg:`/`gen:` elements.
+    pub attributes_written: usize,
+    /// Attribute values skipped as unrepresentable in CityGML 2.0 (Boolean,
+    /// nested/heterogeneous `Json`, single/empty string lists, empty/whitespace
+    /// strings, XML-illegal control chars).
+    pub attributes_skipped: usize,
 }
 
 fn io_err(e: std::io::Error) -> CityParquetError {
