@@ -161,7 +161,14 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                         (_, Some(lod)) => solids.push((lod, decoded, props)),
                     }
                 }
-                let building = BuildingSolids { id: obj.id, solids };
+                let attributes = obj
+                    .object
+                    .attributes
+                    .as_ref()
+                    .and_then(serde_json::Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                let building = BuildingSolids { id: obj.id, attributes, solids };
                 // Buffer this member on its own so the document-unique `gml:id`
                 // is reserved ONLY for a Building that actually emits — a
                 // duplicate id shared by two skipped/no-solid Buildings must not

@@ -17,6 +17,7 @@ use quick_xml::events::{BytesEnd, BytesStart, Event};
 use serde_json::Value;
 
 use super::WriteReport;
+use super::attributes::write_attributes;
 use super::document::Bounds;
 use super::geometry::write_solid;
 use crate::Result;
@@ -41,6 +42,9 @@ pub fn is_ncname(id: &str) -> bool {
 /// driver. Each solid is `(lod, decoded geometry, its geometry_properties)`.
 pub struct BuildingSolids {
     pub id: String,
+    /// Building-level attributes (already decoded from the package's typed
+    /// columns), emitted before geometry.
+    pub attributes: serde_json::Map<String, Value>,
     pub solids: Vec<(Lod, DecodedGeometry, Option<Value>)>,
 }
 
@@ -90,14 +94,10 @@ pub fn write_building<W: Write>(
         }
     }
 
-    if by_major.is_empty() {
-        return Ok(false);
-    }
-
     // Reject non-finite coordinates before emitting anything: `inf`/`-inf`/`NaN`
     // are not valid XML Schema `double` lexical forms and NaN would poison the
     // envelope. (WKB's 2^53 magnitude guard does not catch NaN, whose
-    // comparisons are always false.)
+    // comparisons are always false.) No-op for an attributes-only building.
     for (_, geom, _) in by_major.values() {
         if geom
             .coords
@@ -111,11 +111,25 @@ pub fn write_building<W: Write>(
         }
     }
 
+    // Buffer attributes first so the emptiness decision can see whether any
+    // attribute is actually writable: an attributes-only Building is valid, but
+    // a Building with neither geometry nor a writable attribute is not emitted.
+    let mut attr_buf = Writer::new(Vec::new());
+    let attrs_written = write_attributes(&mut attr_buf, &b.attributes, report)?;
+
+    if by_major.is_empty() && attrs_written == 0 {
+        return Ok(false);
+    }
+
     w.write_event(Event::Start(BytesStart::new("cityObjectMember")))
         .map_err(io_err)?;
     let mut bldg = BytesStart::new("bldg:Building");
     bldg.push_attribute(("gml:id", b.id.as_str()));
     w.write_event(Event::Start(bldg)).map_err(io_err)?;
+    // Attributes precede geometry in the CityGML _CityObject / Building sequence.
+    w.get_mut()
+        .write_all(&attr_buf.into_inner())
+        .map_err(io_err)?;
 
     for (major, (_, geom, props)) in &by_major {
         let elem = format!("bldg:lod{major}Solid");
@@ -173,6 +187,7 @@ mod tests {
     fn major_lod_collision_keeps_highest_minor_and_counts_the_rest() {
         let b = BuildingSolids {
             id: "B1".into(),
+            attributes: serde_json::Map::new(),
             solids: vec![
                 (Lod::parse("2").unwrap(), tri_solid(), Some(solid_props())),
                 (Lod::parse("2.2").unwrap(), tri_solid(), Some(solid_props())),
@@ -192,6 +207,7 @@ mod tests {
     fn multiple_majors_emitted_in_ascending_order() {
         let b = BuildingSolids {
             id: "B2".into(),
+            attributes: serde_json::Map::new(),
             solids: vec![
                 (Lod::parse("2").unwrap(), tri_solid(), Some(solid_props())),
                 (Lod::parse("1").unwrap(), tri_solid(), Some(solid_props())),
@@ -218,6 +234,7 @@ mod tests {
         // A lod0 solid is not a valid lodNSolid (only 1..4).
         let b = BuildingSolids {
             id: "B3".into(),
+            attributes: serde_json::Map::new(),
             solids: vec![(Lod::parse("0").unwrap(), tri_solid(), None)],
         };
         let mut report = WriteReport::default();
@@ -235,6 +252,7 @@ mod tests {
         };
         let b = BuildingSolids {
             id: "B4".into(),
+            attributes: serde_json::Map::new(),
             solids: vec![(Lod::parse("2").unwrap(), geom, None)],
         };
         let mut w = Writer::new(Vec::new());
@@ -249,11 +267,55 @@ mod tests {
     fn invalid_ncname_id_errors() {
         let b = BuildingSolids {
             id: "3bad".into(),
+            attributes: serde_json::Map::new(),
             solids: vec![],
         };
         let mut w = Writer::new(Vec::new());
         assert!(
             write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).is_err()
         );
+    }
+
+    #[test]
+    fn attributes_only_building_emits_with_no_solid() {
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("roofType".into(), serde_json::json!("1000"));
+        let b = BuildingSolids { id: "B5".into(), attributes, solids: vec![] };
+        let mut report = WriteReport::default();
+        let mut w = Writer::new(Vec::new());
+        assert!(write_building(&mut w, &b, &mut Bounds::new(), &mut report).unwrap());
+        let xml = String::from_utf8(w.into_inner()).unwrap();
+        assert!(xml.contains("<bldg:Building gml:id=\"B5\">"));
+        assert!(xml.contains("<bldg:roofType>1000</bldg:roofType>"));
+        assert_eq!(report.attributes_written, 1);
+    }
+
+    #[test]
+    fn empty_building_still_returns_false() {
+        let b = BuildingSolids {
+            id: "B6".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![],
+        };
+        let mut w = Writer::new(Vec::new());
+        assert!(
+            !write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).unwrap()
+        );
+        assert!(w.into_inner().is_empty());
+    }
+
+    #[test]
+    fn attributes_precede_geometry() {
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("roofType".into(), serde_json::json!("1000"));
+        let b = BuildingSolids {
+            id: "B7".into(),
+            attributes,
+            solids: vec![(Lod::parse("2").unwrap(), tri_solid(), Some(solid_props()))],
+        };
+        let mut w = Writer::new(Vec::new());
+        write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).unwrap();
+        let xml = String::from_utf8(w.into_inner()).unwrap();
+        assert!(xml.find("<bldg:roofType>").unwrap() < xml.find("<bldg:lod2Solid>").unwrap());
     }
 }

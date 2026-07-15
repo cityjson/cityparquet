@@ -70,9 +70,10 @@ fn corner(c: [f64; 3]) -> String {
     format!("{} {} {}", c[0], c[1], c[2])
 }
 
-/// Open the `<CityModel>` root element (four namespaces: unprefixed core,
-/// `bldg`, `gml`, `xlink`) and, when `bounds.any`, its
-/// `gml:boundedBy/gml:Envelope`.
+/// Open the `<CityModel>` root element (five namespaces: unprefixed core,
+/// `bldg`, `gen`, `gml`, `xlink`) and, when `bounds.any`, its
+/// `gml:boundedBy/gml:Envelope`. `gen` binds the CityGML generics namespace so
+/// the reader recognises the `gen:*Attribute` elements the writer emits.
 pub fn write_city_model_open<W: Write>(
     w: &mut Writer<W>,
     srs_name: Option<&str>,
@@ -81,6 +82,7 @@ pub fn write_city_model_open<W: Write>(
     let mut root = BytesStart::new("CityModel");
     root.push_attribute(("xmlns", "http://www.opengis.net/citygml/2.0"));
     root.push_attribute(("xmlns:bldg", "http://www.opengis.net/citygml/building/2.0"));
+    root.push_attribute(("xmlns:gen", "http://www.opengis.net/citygml/generics/2.0"));
     root.push_attribute(("xmlns:gml", "http://www.opengis.net/gml"));
     root.push_attribute(("xmlns:xlink", "http://www.w3.org/1999/xlink"));
     w.write_event(Event::Start(root)).map_err(io_err)?;

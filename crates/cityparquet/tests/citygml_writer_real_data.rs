@@ -79,6 +79,45 @@ fn solid_coords(pkg: &Path) -> CoordsByBuildingLod {
     map
 }
 
+type AttrsByBuilding = BTreeMap<String, serde_json::Map<String, serde_json::Value>>;
+
+/// Per Building `id`, its decoded attribute map, for round-trip comparison.
+fn building_attributes(pkg: &Path) -> AttrsByBuilding {
+    let manifest: PackageManifest =
+        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
+    let meta = ParquetRecordBatchReaderBuilder::try_new(
+        fs::File::open(pkg.join(&manifest.tables[0])).unwrap(),
+    )
+    .unwrap()
+    .cityparquet_metadata()
+    .unwrap();
+
+    let mut map = AttrsByBuilding::new();
+    for name in &manifest.tables {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        for batch in reader {
+            let batch = batch.unwrap();
+            for obj in decode_batch(&batch, &meta).unwrap() {
+                if obj.object.thetype != "Building" {
+                    continue;
+                }
+                let attrs = obj
+                    .object
+                    .attributes
+                    .as_ref()
+                    .and_then(serde_json::Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                map.insert(obj.id.clone(), attrs);
+            }
+        }
+    }
+    map
+}
+
 #[test]
 fn ingolstadt_lod2_solids_round_trip_gml_to_parquet_to_gml() {
     let tmp = tempfile::tempdir().unwrap();
@@ -104,4 +143,15 @@ fn ingolstadt_lod2_solids_round_trip_gml_to_parquet_to_gml() {
     let after = solid_coords(&pkg2);
     assert!(!before.is_empty(), "the original package must have solid geometry");
     assert_eq!(before, after, "Building solid coordinates must survive the round trip");
+
+    // 5. Attributes must survive the round trip too (measuredHeight/roofType/
+    //    storeysAboveGround + gen: string attributes on this fixture).
+    let attrs_before = building_attributes(&pkg);
+    let attrs_after = building_attributes(&pkg2);
+    assert!(
+        attrs_before.values().any(|m| !m.is_empty()),
+        "the original package must carry building attributes"
+    );
+    assert_eq!(attrs_before, attrs_after, "Building attributes must survive the round trip");
+    assert_eq!(report.attributes_skipped, 0, "Ingolstadt attributes are all representable");
 }
