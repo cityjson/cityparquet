@@ -441,8 +441,41 @@ fn citygml2_boundedby_multisurface_building_no_solid() {
     assert_eq!(stypes.len(), 36, "19 top-level surfaces + 17 Door/Window");
     let values = gv["semantics"]["values"].as_array().unwrap();
     assert_eq!(values.len(), 44, "one semantic value per MultiSurface member");
+
+    // Semantic MAPPING (not just counts): tally each member's surface type via
+    // its value index. Expected histogram is hand-derived by walking the
+    // fixture's boundedBy (each gml:Polygon -> its enclosing semantic surface).
+    let mut hist: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for v in values {
         let i = v.as_u64().expect("semantic value is an index") as usize;
-        assert!(i < 36, "every value indexes into surfaces");
+        assert!(i < stypes.len(), "every value indexes into surfaces");
+        let ty = stypes[i]["type"].as_str().expect("surface has a type").to_string();
+        *hist.entry(ty).or_default() += 1;
+    }
+    let expected: std::collections::BTreeMap<String, usize> = [
+        ("WallSurface", 12),
+        ("RoofSurface", 10),
+        ("GroundSurface", 1),
+        ("OuterCeilingSurface", 3),
+        ("OuterFloorSurface", 1),
+        ("Window", 16),
+        ("Door", 1),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), *v))
+    .collect();
+    assert_eq!(hist, expected, "per-member semantic-type histogram must match the fixture");
+
+    // Structure: each MultiSurface member is [ring][idx] with ≥1 ring of ≥3
+    // vertex indices (the convert-to-WKB path separately proves the indices
+    // form valid geometry).
+    for surface in surfaces {
+        let rings = surface.as_array().expect("member is an array of rings");
+        assert!(!rings.is_empty(), "a surface has at least one (exterior) ring");
+        for ring in rings {
+            let idxs = ring.as_array().expect("ring is an array of indices");
+            assert!(idxs.len() >= 3, "a ring has at least 3 vertices");
+            assert!(idxs.iter().all(|i| i.as_u64().is_some()), "indices are numbers");
+        }
     }
 }

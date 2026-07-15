@@ -16,6 +16,12 @@
 //! `opening` Door/Window surfaces; plus building-level typed `bldg:` and
 //! `gen:` generic attributes (repeats accumulate into arrays). BuildingParts
 //! and `BuildingInstallation` child geometry remain future work.
+//!
+//! Known limitation: boundedBy geometry is read from **inline** `gml:Polygon`s
+//! (as all real fixtures carry it). A boundedBy surface whose members are
+//! `xlink:href` references — rather than inline polygons — would contribute no
+//! MultiSurface geometry; resolving xlinked boundary members (the solid path
+//! already resolves solid-member xlinks) is future work.
 
 use std::collections::HashMap;
 use std::io::BufRead;
