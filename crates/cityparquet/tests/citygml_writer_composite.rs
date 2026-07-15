@@ -1,15 +1,11 @@
-//! W-M2 CompositeSolid round-trip oracle over a real fixture.
+//! W-M3 CompositeSolid + semantics round-trip oracle over a real fixture.
 //!
 //! `b1_lod2_cs_w_sem.gml` (one Building whose `bldg:lod2Solid` is a 2-member
-//! `gml:CompositeSolid`, plus `boundedBy` semantic surfaces) is converted to a
-//! package, written back to `.gml`, and re-converted. The oracle asserts:
-//!   1. the CompositeSolid's STRUCTURE (member partition, per-member faces,
-//!      per-face rings — not just a coordinate set) survives the round trip; and
-//!   2. the semantic surfaces are dropped, reported by
-//!      `WriteReport::semantic_surfaces_dropped`, and absent from the re-read
-//!      package (W-M2 emits geometry only; `bldg:boundedBy` is W-M3). Asserting
-//!      the drop explicitly means a regression or half-landed W-M3 cannot pass
-//!      silently.
+//! `gml:CompositeSolid` with `boundedBy` semantic surfaces) is converted to a
+//! package, written back to `.gml`, and re-converted. The oracle asserts the
+//! CompositeSolid's STRUCTURE (member/face/ring) AND its `semantics`
+//! (`surfaces` + `values`) survive the round trip, that all 9 surfaces are
+//! emitted (not dropped), and that the re-read package still carries semantics.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -22,11 +18,11 @@ use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::PackageManifest;
 use cityparquet::wkb_read::DecodedKind;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use serde_json::Value;
 
-/// A ring is a sequence of mm-grid coord tuples; a face is its rings; a member
-/// is its faces; a geometry is its members. Keyed by `(building_id, major_lod)`.
 type Ring = Vec<(i64, i64, i64)>;
 type Structure = BTreeMap<(String, u8), Vec<Vec<Vec<Ring>>>>;
+type SemanticsMap = BTreeMap<(String, u8), Value>;
 
 fn fixture() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/b1_lod2_cs_w_sem.gml")
@@ -36,9 +32,6 @@ fn mm(v: f64) -> i64 {
     (v * 1000.0).round() as i64
 }
 
-/// A ring rotated to start at its lexicographically-smallest vertex, so the
-/// (arbitrary) start vertex of a closed ring does not spuriously differ across
-/// the round trip while genuine vertex-order changes still do.
 fn canonical_ring(ring: &[usize], coords: &[[f64; 3]]) -> Ring {
     let tuples: Ring = ring
         .iter()
@@ -52,9 +45,7 @@ fn canonical_ring(ring: &[usize], coords: &[[f64; 3]]) -> Ring {
     rot
 }
 
-/// The structural decomposition of every CompositeSolid (`GeometryCollection`)
-/// in a package, keyed by `(building_id, major_lod)`.
-fn composite_structure(pkg: &Path) -> Structure {
+fn open_meta(pkg: &Path) -> (PackageManifest, cityparquet::schema::CityParquetMetadata) {
     let manifest: PackageManifest =
         serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
     let meta = ParquetRecordBatchReaderBuilder::try_new(
@@ -63,7 +54,12 @@ fn composite_structure(pkg: &Path) -> Structure {
     .unwrap()
     .cityparquet_metadata()
     .unwrap();
+    (manifest, meta)
+}
 
+/// The structural decomposition of every CompositeSolid, keyed by `(id, major)`.
+fn composite_structure(pkg: &Path) -> Structure {
+    let (manifest, meta) = open_meta(pkg);
     let mut map = Structure::new();
     for name in &manifest.tables {
         let reader =
@@ -110,18 +106,11 @@ fn composite_structure(pkg: &Path) -> Structure {
     map
 }
 
-/// Whether any Building geometry in the package carries
-/// `geometry_properties.semantics` — used to prove the writer dropped it.
-fn any_semantics(pkg: &Path) -> bool {
-    let manifest: PackageManifest =
-        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
-    let meta = ParquetRecordBatchReaderBuilder::try_new(
-        fs::File::open(pkg.join(&manifest.tables[0])).unwrap(),
-    )
-    .unwrap()
-    .cityparquet_metadata()
-    .unwrap();
-
+/// The stored `geometry_properties.semantics` of every CompositeSolid, keyed by
+/// `(id, major)`.
+fn semantics_map(pkg: &Path) -> SemanticsMap {
+    let (manifest, meta) = open_meta(pkg);
+    let mut map = SemanticsMap::new();
     for name in &manifest.tables {
         let reader =
             ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
@@ -131,19 +120,32 @@ fn any_semantics(pkg: &Path) -> bool {
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {
-                for (_lod, _decoded, props) in &obj.geometries {
-                    if props.as_ref().is_some_and(|p| p.get("semantics").is_some()) {
-                        return true;
+                if obj.object.thetype != "Building" {
+                    continue;
+                }
+                for (lod, decoded, props) in &obj.geometries {
+                    if !matches!(decoded.kind, DecodedKind::GeometryCollection(_)) {
+                        continue;
+                    }
+                    let Some(major) = lod
+                        .as_ref()
+                        .map(|l| l.major())
+                        .filter(|m| (1..=4).contains(m))
+                    else {
+                        continue;
+                    };
+                    if let Some(sem) = props.as_ref().and_then(|p| p.get("semantics")) {
+                        map.insert((obj.id.clone(), major), sem.clone());
                     }
                 }
             }
         }
     }
-    false
+    map
 }
 
 #[test]
-fn b1_composite_solid_round_trips_gml_to_parquet_to_gml() {
+fn b1_composite_solid_semantics_round_trip_gml_to_parquet_to_gml() {
     let tmp = tempfile::tempdir().unwrap();
     let pkg = tmp.path().join("pkg");
     let out_gml = tmp.path().join("out.gml");
@@ -155,23 +157,18 @@ fn b1_composite_solid_round_trips_gml_to_parquet_to_gml() {
         output: out_gml.clone(),
     })
     .unwrap();
-    assert_eq!(
-        report.composite_solids_written, 1,
-        "one CompositeSolid expected"
-    );
-    assert_eq!(report.multi_solids_skipped, 0);
 
-    // The b1 fixture has 9 boundedBy semantic surfaces (1 Ground, 4 Roof, 4
-    // Wall). W-M2 drops them (geometry only) but must REPORT the drop.
+    // All 9 b1 semantic surfaces (1 Ground, 4 Roof, 4 Wall) are now emitted.
     assert_eq!(
-        report.semantic_surfaces_dropped, 9,
-        "all 9 b1 semantic surfaces must be counted as dropped"
+        report.semantic_surfaces_written, 9,
+        "all 9 surfaces emitted"
     );
+    assert_eq!(report.semantic_surfaces_dropped, 0, "nothing dropped");
+    assert_eq!(report.multi_solids_skipped, 0);
 
     convert(&ConvertOptions::new(out_gml.clone(), pkg2.clone())).unwrap();
 
-    // Geometry structure (members/faces/rings) must be identical; a coord set
-    // alone would miss member re-partitioning, face loss, or ring changes.
+    // Geometry structure (members/faces/rings) survives.
     let before = composite_structure(&pkg);
     let after = composite_structure(&pkg2);
     assert!(
@@ -183,14 +180,15 @@ fn b1_composite_solid_round_trips_gml_to_parquet_to_gml() {
         "CompositeSolid structure must survive the round trip"
     );
 
-    // The original package carried semantics; the re-read one must not (the
-    // drop is real, and this pins the W-M3 flip point so it can't regress).
+    // Semantics (surfaces + values) survive.
+    let sem_before = semantics_map(&pkg);
+    let sem_after = semantics_map(&pkg2);
     assert!(
-        any_semantics(&pkg),
+        !sem_before.is_empty(),
         "the original package must carry semantics"
     );
-    assert!(
-        !any_semantics(&pkg2),
-        "the writer must have dropped semantics (W-M3 feature)"
+    assert_eq!(
+        sem_before, sem_after,
+        "CompositeSolid semantics must survive the round trip"
     );
 }

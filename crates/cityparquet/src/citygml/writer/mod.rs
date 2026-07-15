@@ -161,6 +161,8 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     let mut bounds = Bounds::new();
     let mut seen_ids: HashSet<String> = HashSet::new();
     let mut members = Writer::new(Vec::new());
+    // Monotonic per-Building index; namespaces each building's polygon gml:ids.
+    let mut next_feature_index = 0usize;
 
     let mut first_builder = Some(first_builder);
     for (idx, name) in manifest.tables.iter().enumerate() {
@@ -205,14 +207,25 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     report.non_building_skipped += 1;
                     continue;
                 }
+                let feature_index = next_feature_index;
+                next_feature_index += 1;
                 let mut solids = Vec::new();
                 for (lod, decoded, props) in obj.geometries {
+                    // Semantics on a geometry we are about to skip are dropped;
+                    // count them (computed before `props` is moved).
+                    let sem_count = semantics::semantic_surface_count(props.as_ref());
                     match route_geometry(lod, decoded, props) {
                         GeomRoute::Emit(lod, decoded, props) => solids.push((lod, decoded, props)),
                         // No CityGML 2.0 Building slot for a MultiSolid.
-                        GeomRoute::MultiSolid => report.multi_solids_skipped += 1,
+                        GeomRoute::MultiSolid => {
+                            report.multi_solids_skipped += 1;
+                            report.semantic_surfaces_dropped += sem_count;
+                        }
                         // A lodless geometry cannot be a lod<n>Solid.
-                        GeomRoute::Lodless => report.lod_columns_skipped += 1,
+                        GeomRoute::Lodless => {
+                            report.lod_columns_skipped += 1;
+                            report.semantic_surfaces_dropped += sem_count;
+                        }
                     }
                 }
                 let attributes = obj
@@ -236,6 +249,7 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     &mut member,
                     &building,
                     &attr_types,
+                    feature_index,
                     &mut bounds,
                     &mut report,
                 )? {

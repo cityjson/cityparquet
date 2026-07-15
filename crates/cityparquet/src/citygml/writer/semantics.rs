@@ -6,7 +6,6 @@
 //! `[solid][shell][face]`, MultiSurface flat `[position]`. A `null` value means
 //! the face has no semantic surface.
 
-use std::collections::HashSet;
 use std::io::Write;
 
 use cityparquet_schema::CityParquetError;
@@ -33,28 +32,29 @@ type Shells = Vec<Vec<Face>>;
 /// A flat per-face surface index in shell-concatenation order (`None` = null).
 type FaceSurfaces = Vec<Option<usize>>;
 
-/// Allocates document-unique `gml:id`s for emitted polygons: `_cpq_p<N>` with a
-/// monotonic counter, checked against (and inserted into) the shared `seen`
-/// set that also holds CityObject `gml:id`s, so a generated id can never clash
-/// with an object id or another polygon.
-pub struct IdAlloc<'a> {
+/// Allocates `gml:id`s for a single building's emitted polygons:
+/// `_cpq_b<feature_index>_p<N>`. The per-building `feature_index` (unique per
+/// package row) makes the ids document-unique by construction — no shared
+/// counter or seen-set is needed. (A CityObject id literally equal to a
+/// `_cpq_b*_p*` string would collide; the distinctive prefix makes this
+/// negligible in practice — see the design's known limitations.)
+pub struct IdAlloc {
+    prefix: String,
     next: usize,
-    seen: &'a mut HashSet<String>,
 }
 
-impl<'a> IdAlloc<'a> {
-    pub fn new(seen: &'a mut HashSet<String>) -> Self {
-        Self { next: 0, seen }
+impl IdAlloc {
+    pub fn new(feature_index: usize) -> Self {
+        Self {
+            prefix: format!("_cpq_b{feature_index}_p"),
+            next: 0,
+        }
     }
 
     pub fn alloc(&mut self) -> String {
-        loop {
-            let id = format!("_cpq_p{}", self.next);
-            self.next += 1;
-            if self.seen.insert(id.clone()) {
-                return id;
-            }
-        }
+        let id = format!("{}{}", self.prefix, self.next);
+        self.next += 1;
+        id
     }
 }
 
@@ -91,6 +91,16 @@ pub fn parse_semantics(props: Option<&Value>) -> Option<Semantics> {
 /// extension type (`+Foo`) is not, so such a geometry falls back to geometry-only.
 pub fn surfaces_emittable(s: &Semantics) -> bool {
     !s.surfaces.is_empty() && s.surfaces.iter().all(|t| is_ncname(t))
+}
+
+/// The number of semantic surfaces on a geometry's `geometry_properties`
+/// (`semantics.surfaces`), used to count drops when they are not emitted.
+pub fn semantic_surface_count(props: Option<&Value>) -> usize {
+    props
+        .and_then(|p| p.get("semantics"))
+        .and_then(|s| s.get("surfaces"))
+        .and_then(|s| s.as_array())
+        .map_or(0, Vec::len)
 }
 
 /// One face's value: `null` -> `None`, a non-negative integer in range ->
@@ -493,12 +503,13 @@ mod tests {
     }
 
     #[test]
-    fn id_alloc_is_unique_and_avoids_seen() {
-        let mut seen = HashSet::from(["_cpq_p0".to_string()]);
-        let mut a = IdAlloc::new(&mut seen);
-        assert_eq!(a.alloc(), "_cpq_p1"); // p0 already taken
-        assert_eq!(a.alloc(), "_cpq_p2");
-        assert!(seen.contains("_cpq_p1") && seen.contains("_cpq_p2"));
+    fn id_alloc_is_per_building_unique() {
+        let mut a = IdAlloc::new(0);
+        assert_eq!(a.alloc(), "_cpq_b0_p0");
+        assert_eq!(a.alloc(), "_cpq_b0_p1");
+        // A different feature index gives a disjoint id space.
+        let mut b = IdAlloc::new(7);
+        assert_eq!(b.alloc(), "_cpq_b7_p0");
     }
 
     use crate::wkb_read::DecodedKind;
@@ -518,8 +529,7 @@ mod tests {
         props: &Value,
         sem: &Semantics,
     ) -> String {
-        let mut seen = HashSet::new();
-        let mut ids = IdAlloc::new(&mut seen);
+        let mut ids = IdAlloc::new(0);
         let mut w = Writer::new(Vec::new());
         write_solid_with_semantics(&mut w, coords, kind, Some(props), sem, &mut ids, 2).unwrap();
         String::from_utf8(w.into_inner()).unwrap()
@@ -556,10 +566,10 @@ mod tests {
         // boundedBy: Wall then Roof, each xlink id matches a gml:Polygon gml:id.
         assert!(xml.contains("<bldg:boundedBy><bldg:WallSurface>"), "{xml}");
         assert!(xml.contains("<bldg:boundedBy><bldg:RoofSurface>"), "{xml}");
-        assert!(xml.contains("xlink:href=\"#_cpq_p0\""), "{xml}");
-        assert!(xml.contains("<gml:Polygon gml:id=\"_cpq_p0\">"), "{xml}");
-        assert!(xml.contains("xlink:href=\"#_cpq_p1\""), "{xml}");
-        assert!(xml.contains("<gml:Polygon gml:id=\"_cpq_p1\">"), "{xml}");
+        assert!(xml.contains("xlink:href=\"#_cpq_b0_p0\""), "{xml}");
+        assert!(xml.contains("<gml:Polygon gml:id=\"_cpq_b0_p0\">"), "{xml}");
+        assert!(xml.contains("xlink:href=\"#_cpq_b0_p1\""), "{xml}");
+        assert!(xml.contains("<gml:Polygon gml:id=\"_cpq_b0_p1\">"), "{xml}");
         // Wall precedes Roof (surfaces array order).
         assert!(xml.find("WallSurface").unwrap() < xml.find("RoofSurface").unwrap());
     }

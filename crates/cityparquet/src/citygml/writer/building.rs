@@ -20,6 +20,10 @@ use super::WriteReport;
 use super::attributes::write_attributes;
 use super::document::Bounds;
 use super::geometry::{write_composite_solid, write_solid};
+use super::semantics::{
+    IdAlloc, parse_semantics, semantic_surface_count, surfaces_emittable,
+    write_multisurface_with_semantics, write_solid_with_semantics,
+};
 use crate::Result;
 use crate::wkb_read::{DecodedGeometry, DecodedKind};
 
@@ -27,15 +31,32 @@ fn io_err(e: std::io::Error) -> CityParquetError {
     CityParquetError::Io(e.to_string())
 }
 
-/// Count the semantic surfaces attached to a geometry's `geometry_properties`
-/// (`semantics.surfaces`). W-M2 emits geometry only, so these are dropped; the
-/// count is reported (never silently) via `WriteReport::semantic_surfaces_dropped`.
-fn semantic_surface_count(props: Option<&Value>) -> usize {
-    props
-        .and_then(|p| p.get("semantics"))
-        .and_then(|s| s.get("surfaces"))
-        .and_then(|s| s.as_array())
-        .map_or(0, Vec::len)
+/// Emit a `bldg:lod<major>Solid` with plain (geometry-only) inline geometry —
+/// the W-M2 form, used when a geometry has no emittable semantics or when the
+/// semantics path fails and falls back. Any semantics present but not emitted
+/// are counted as dropped.
+fn write_plain_lodn_solid<W: Write>(
+    w: &mut Writer<W>,
+    geom: &DecodedGeometry,
+    props: Option<&Value>,
+    major: u8,
+    report: &mut WriteReport,
+) -> Result<()> {
+    let elem = format!("bldg:lod{major}Solid");
+    w.write_event(Event::Start(BytesStart::new(elem.as_str())))
+        .map_err(io_err)?;
+    match &geom.kind {
+        DecodedKind::PolyhedralSurface(faces) => write_solid(w, &geom.coords, faces, props)?,
+        DecodedKind::GeometryCollection(members) => {
+            write_composite_solid(w, &geom.coords, members, props)?;
+            report.composite_solids_written += 1;
+        }
+        _ => unreachable!("only PolyhedralSurface/GeometryCollection reach the plain solid path"),
+    }
+    w.write_event(Event::End(BytesEnd::new(elem.as_str())))
+        .map_err(io_err)?;
+    report.semantic_surfaces_dropped += semantic_surface_count(props);
+    Ok(())
 }
 
 /// A valid XML `NCName` (ASCII-pragmatic, matching real CityGML ids): first
@@ -68,6 +89,7 @@ pub fn write_building<W: Write>(
     w: &mut Writer<W>,
     b: &BuildingSolids,
     types: &HashMap<String, AttributeType>,
+    feature_index: usize,
     bounds: &mut Bounds,
     report: &mut WriteReport,
 ) -> Result<bool> {
@@ -82,13 +104,17 @@ pub fn write_building<W: Write>(
     // BTreeMap keeps the majors in ascending order for emission.
     let mut by_major: BTreeMap<u8, (Lod, &DecodedGeometry, Option<&Value>)> = BTreeMap::new();
     for (lod, geom, props) in &b.solids {
-        // A Solid (PolyhedralSurface) or a CompositeSolid (GeometryCollection,
-        // routed here by the driver — MultiSolid is skipped upstream) becomes a
-        // lodNSolid; any stray other shape is skipped.
-        let representable = matches!(
-            geom.kind,
-            DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_)
-        );
+        // A Solid (PolyhedralSurface) or a CompositeSolid (GeometryCollection)
+        // becomes a lodNSolid; a MultiSurface (MultiPolygon) is representable
+        // only when it carries emittable semantics (W-M3 boundedBy). Any other
+        // shape is skipped.
+        let representable = match &geom.kind {
+            DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_) => true,
+            DecodedKind::MultiPolygon(_) => {
+                parse_semantics(props.as_ref()).is_some_and(|s| surfaces_emittable(&s))
+            }
+            _ => false,
+        };
         if !representable {
             report.lod_columns_skipped += 1;
             continue;
@@ -146,29 +172,43 @@ pub fn write_building<W: Write>(
         .map_err(io_err)?;
 
     for (major, (_, geom, props)) in &by_major {
-        let elem = format!("bldg:lod{major}Solid");
-        w.write_event(Event::Start(BytesStart::new(elem.as_str())))
-            .map_err(io_err)?;
-        match &geom.kind {
-            DecodedKind::PolyhedralSurface(faces) => {
-                write_solid(w, &geom.coords, faces, *props)?;
+        let major = *major;
+        let props = *props;
+        // A geometry with emittable semantics takes the W-M3 path; otherwise the
+        // plain W-M2 path (which counts any un-emittable semantics as dropped).
+        let sem = parse_semantics(props).filter(surfaces_emittable);
+        match (&geom.kind, sem) {
+            (DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_), Some(sem)) => {
+                let mut ids = IdAlloc::new(feature_index);
+                match write_solid_with_semantics(
+                    w,
+                    &geom.coords,
+                    &geom.kind,
+                    props,
+                    &sem,
+                    &mut ids,
+                    major,
+                ) {
+                    Ok(()) => report.semantic_surfaces_written += sem.surfaces.len(),
+                    // Resolution failed (corrupt/external values): emit plain
+                    // geometry and count the surfaces as dropped.
+                    Err(_) => write_plain_lodn_solid(w, geom, props, major, report)?,
+                }
             }
-            DecodedKind::GeometryCollection(members) => {
-                write_composite_solid(w, &geom.coords, members, *props)?;
-                report.composite_solids_written += 1;
+            (DecodedKind::MultiPolygon(faces), Some(sem)) => {
+                write_multisurface_with_semantics(w, &geom.coords, faces, &sem, major, report)?;
+                report.semantic_surfaces_written += sem.surfaces.len();
             }
-            _ => unreachable!("only PolyhedralSurface/GeometryCollection reach by_major"),
+            (DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_), None) => {
+                write_plain_lodn_solid(w, geom, props, major, report)?;
+            }
+            _ => unreachable!("the representable gate excludes other (kind, semantics) cases"),
         }
-        // W-M2 emits geometry but not bldg:boundedBy semantic surfaces; report
-        // how many were dropped so the loss is machine-visible, not silent.
-        report.semantic_surfaces_dropped += semantic_surface_count(*props);
         // Accumulate the geometry's coord pool (equals the referenced set for
-        // WKB-decoded geometry; covers both solids and composite members).
+        // WKB-decoded geometry; covers solids, composites, and multisurfaces).
         for c in &geom.coords {
             bounds.add(*c);
         }
-        w.write_event(Event::End(BytesEnd::new(elem.as_str())))
-            .map_err(io_err)?;
     }
 
     w.write_event(Event::End(BytesEnd::new("bldg:Building")))
@@ -216,6 +256,100 @@ mod tests {
             .collect()
     }
 
+    fn run_building(b: &BuildingSolids) -> (String, WriteReport) {
+        let mut report = WriteReport::default();
+        let mut w = Writer::new(Vec::new());
+        write_building(&mut w, b, &types(), 0, &mut Bounds::new(), &mut report).unwrap();
+        (String::from_utf8(w.into_inner()).unwrap(), report)
+    }
+
+    #[test]
+    fn solid_with_semantics_emits_boundedby() {
+        let props = serde_json::json!({
+            "type": "Solid", "solid_shell_faces": [1],
+            "semantics": { "surfaces": [{"type": "WallSurface"}], "values": [[0]] }
+        });
+        let b = BuildingSolids {
+            id: "S1".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![(Lod::parse("2").unwrap(), tri_solid(), Some(props))],
+        };
+        let (xml, r) = run_building(&b);
+        assert!(xml.contains("<bldg:boundedBy><bldg:WallSurface>"), "{xml}");
+        assert!(xml.contains("<bldg:lod2Solid><gml:Solid>"), "{xml}");
+        assert_eq!(r.semantic_surfaces_written, 1);
+        assert_eq!(r.semantic_surfaces_dropped, 0);
+    }
+
+    #[test]
+    fn multisurface_with_semantics_emits_boundedby_no_solid() {
+        let geom = DecodedGeometry {
+            coords: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            kind: DecodedKind::MultiPolygon(vec![vec![vec![0, 1, 2]]]),
+        };
+        let props = serde_json::json!({
+            "type": "MultiSurface",
+            "semantics": { "surfaces": [{"type": "RoofSurface"}], "values": [0] }
+        });
+        let b = BuildingSolids {
+            id: "M1".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![(Lod::parse("2").unwrap(), geom, Some(props))],
+        };
+        let (xml, r) = run_building(&b);
+        assert!(xml.contains("<bldg:boundedBy><bldg:RoofSurface>"), "{xml}");
+        assert!(
+            !xml.contains("<bldg:lod2Solid>"),
+            "no solid for a MultiSurface: {xml}"
+        );
+        assert_eq!(r.semantic_surfaces_written, 1);
+    }
+
+    #[test]
+    fn multisurface_without_semantics_is_skipped() {
+        let geom = DecodedGeometry {
+            coords: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            kind: DecodedKind::MultiPolygon(vec![vec![vec![0, 1, 2]]]),
+        };
+        let b = BuildingSolids {
+            id: "M2".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![(
+                Lod::parse("2").unwrap(),
+                geom,
+                Some(serde_json::json!({"type": "MultiSurface"})),
+            )],
+        };
+        let (xml, r) = run_building(&b);
+        assert!(
+            xml.is_empty(),
+            "an unsemantic MultiSurface is not representable: {xml}"
+        );
+        assert_eq!(r.lod_columns_skipped, 1);
+    }
+
+    #[test]
+    fn semantics_resolution_error_falls_back_to_plain_solid() {
+        // 1 face but values claims 2 -> resolution error -> geometry-only fallback.
+        let props = serde_json::json!({
+            "type": "Solid", "solid_shell_faces": [1],
+            "semantics": { "surfaces": [{"type": "WallSurface"}], "values": [[0, 1]] }
+        });
+        let b = BuildingSolids {
+            id: "S2".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![(Lod::parse("2").unwrap(), tri_solid(), Some(props))],
+        };
+        let (xml, r) = run_building(&b);
+        assert!(xml.contains("<bldg:lod2Solid><gml:Solid>"), "{xml}");
+        assert!(
+            !xml.contains("<bldg:boundedBy>"),
+            "fallback emits no boundedBy: {xml}"
+        );
+        assert_eq!(r.semantic_surfaces_written, 0);
+        assert_eq!(r.semantic_surfaces_dropped, 1);
+    }
+
     #[test]
     fn composite_solid_is_emitted_and_counted() {
         let b = BuildingSolids {
@@ -229,7 +363,7 @@ mod tests {
         };
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(write_building(&mut w, &b, &types(), &mut Bounds::new(), &mut report).unwrap());
+        assert!(write_building(&mut w, &b, &types(), 0, &mut Bounds::new(), &mut report).unwrap());
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert!(
             xml.contains("<bldg:lod2Solid><gml:CompositeSolid>"),
@@ -260,7 +394,7 @@ mod tests {
         let mut bounds = Bounds::new();
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(write_building(&mut w, &b, &types(), &mut bounds, &mut report).unwrap());
+        assert!(write_building(&mut w, &b, &types(), 0, &mut bounds, &mut report).unwrap());
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert_eq!(xml.matches("<bldg:lod2Solid>").count(), 1);
         assert_eq!(report.lod_columns_skipped, 1);
@@ -283,6 +417,7 @@ mod tests {
                 &mut w,
                 &b,
                 &types(),
+                0,
                 &mut Bounds::new(),
                 &mut WriteReport::default()
             )
@@ -304,7 +439,7 @@ mod tests {
         };
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(!write_building(&mut w, &b, &types(), &mut Bounds::new(), &mut report).unwrap());
+        assert!(!write_building(&mut w, &b, &types(), 0, &mut Bounds::new(), &mut report).unwrap());
         assert!(w.into_inner().is_empty());
         assert_eq!(report.lod_columns_skipped, 1);
     }
@@ -326,6 +461,7 @@ mod tests {
                 &mut w,
                 &b,
                 &types(),
+                0,
                 &mut Bounds::new(),
                 &mut WriteReport::default()
             )
@@ -348,6 +484,7 @@ mod tests {
                 &mut w,
                 &b,
                 &types(),
+                0,
                 &mut Bounds::new(),
                 &mut WriteReport::default()
             )
@@ -366,7 +503,7 @@ mod tests {
         };
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(write_building(&mut w, &b, &types(), &mut Bounds::new(), &mut report).unwrap());
+        assert!(write_building(&mut w, &b, &types(), 0, &mut Bounds::new(), &mut report).unwrap());
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert!(xml.contains("<bldg:Building gml:id=\"B5\">"));
         assert!(xml.contains("<bldg:roofType>1000</bldg:roofType>"));
@@ -386,6 +523,7 @@ mod tests {
                 &mut w,
                 &b,
                 &types(),
+                0,
                 &mut Bounds::new(),
                 &mut WriteReport::default()
             )
@@ -408,6 +546,7 @@ mod tests {
             &mut w,
             &b,
             &types(),
+            0,
             &mut Bounds::new(),
             &mut WriteReport::default(),
         )
