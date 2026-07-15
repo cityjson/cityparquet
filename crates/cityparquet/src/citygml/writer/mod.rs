@@ -61,11 +61,16 @@ pub struct WriteReport {
     /// nested/heterogeneous `Json`, string lists with an unwritable item,
     /// empty/whitespace strings, XML-illegal strings/names, un-typed columns).
     pub attributes_skipped: usize,
-    /// Semantic surfaces (`geometry_properties.semantics.surfaces`) dropped from
-    /// emitted geometry: W-M2 writes geometry only, not `bldg:boundedBy`
-    /// semantic surfaces (deferred to W-M3). Counted so the loss is reported,
-    /// not silent — a currently-known, machine-reported round-trip gap.
+    /// `bldg:boundedBy` semantic surfaces emitted (W-M3).
+    pub semantic_surfaces_written: usize,
+    /// Semantic surfaces dropped when a geometry falls back to geometry-only
+    /// (an extension surface type, a `values`/shape mismatch, or a MultiSolid
+    /// whose geometry is skipped). Counted so the loss is reported, not silent.
     pub semantic_surfaces_dropped: usize,
+    /// `null`-value faces of a no-solid MultiSurface, which have no CityGML 2.0
+    /// home (the reader's MultiSurface path never produces a null value).
+    /// Unreachable for CityGML-sourced input.
+    pub multisurface_null_faces_dropped: usize,
 }
 
 fn io_err(e: std::io::Error) -> CityParquetError {

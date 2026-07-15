@@ -14,6 +14,7 @@ use quick_xml::Writer;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use serde_json::Value;
 
+use super::WriteReport;
 use super::building::is_ncname;
 use super::geometry::{write_inline_member, write_xlink_member};
 use crate::Result;
@@ -232,10 +233,45 @@ fn write_one_solid<W: Write>(
     Ok(())
 }
 
-/// Emit the `bldg:boundedBy` block: one element per `surface_types` entry, in
-/// array order, holding the inline `gml:Polygon`s (with their ids) of the faces
-/// assigned to it; a zero-face surface is an empty element.
-#[allow(clippy::too_many_arguments)]
+/// Emit one `<bldg:boundedBy><bldg:{ty}>…` surface holding `polys` as inline
+/// `gml:Polygon`s (each with its optional `gml:id`); a zero-face surface is an
+/// empty `<bldg:{ty}/>`. Shared by the solid (xlinked ids) and MultiSurface
+/// (no ids) paths.
+fn write_boundedby_surface<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    ty: &str,
+    major: u8,
+    polys: &[(&Face, Option<&str>)],
+) -> Result<()> {
+    w.write_event(Event::Start(BytesStart::new("bldg:boundedBy")))
+        .map_err(io_err)?;
+    let tag = format!("bldg:{ty}");
+    if polys.is_empty() {
+        w.write_event(Event::Empty(BytesStart::new(tag.as_str())))
+            .map_err(io_err)?;
+    } else {
+        w.write_event(Event::Start(BytesStart::new(tag.as_str())))
+            .map_err(io_err)?;
+        let ms = format!("bldg:lod{major}MultiSurface");
+        w.write_event(Event::Start(BytesStart::new(ms.as_str())))
+            .map_err(io_err)?;
+        for (face, id) in polys {
+            write_inline_member(w, coords, face, *id)?;
+        }
+        w.write_event(Event::End(BytesEnd::new(ms.as_str())))
+            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new(tag.as_str())))
+            .map_err(io_err)?;
+    }
+    w.write_event(Event::End(BytesEnd::new("bldg:boundedBy")))
+        .map_err(io_err)?;
+    Ok(())
+}
+
+/// Emit the `bldg:boundedBy` block for a solid: one element per `surface_types`
+/// entry, in array order, each holding the inline (id-stamped) polygons of the
+/// faces assigned to it.
 fn write_boundedby<W: Write>(
     w: &mut Writer<W>,
     coords: &[[f64; 3]],
@@ -246,41 +282,20 @@ fn write_boundedby<W: Write>(
     major: u8,
 ) -> Result<()> {
     for (i, ty) in surface_types.iter().enumerate() {
-        let mut polys: Vec<(&Face, &str)> = Vec::new();
+        let mut polys: Vec<(&Face, Option<&str>)> = Vec::new();
         for (m, shells) in members.iter().enumerate() {
             let mut fi = 0usize;
             for shell in shells {
                 for face in shell {
                     if surfaces[m][fi] == Some(i) {
                         let id = face_ids[m][fi].as_deref().expect("non-null face has an id");
-                        polys.push((face, id));
+                        polys.push((face, Some(id)));
                     }
                     fi += 1;
                 }
             }
         }
-        w.write_event(Event::Start(BytesStart::new("bldg:boundedBy")))
-            .map_err(io_err)?;
-        let tag = format!("bldg:{ty}");
-        if polys.is_empty() {
-            w.write_event(Event::Empty(BytesStart::new(tag.as_str())))
-                .map_err(io_err)?;
-        } else {
-            w.write_event(Event::Start(BytesStart::new(tag.as_str())))
-                .map_err(io_err)?;
-            let ms = format!("bldg:lod{major}MultiSurface");
-            w.write_event(Event::Start(BytesStart::new(ms.as_str())))
-                .map_err(io_err)?;
-            for (face, id) in polys {
-                write_inline_member(w, coords, face, Some(id))?;
-            }
-            w.write_event(Event::End(BytesEnd::new(ms.as_str())))
-                .map_err(io_err)?;
-            w.write_event(Event::End(BytesEnd::new(tag.as_str())))
-                .map_err(io_err)?;
-        }
-        w.write_event(Event::End(BytesEnd::new("bldg:boundedBy")))
-            .map_err(io_err)?;
+        write_boundedby_surface(w, coords, ty, major, &polys)?;
     }
     Ok(())
 }
@@ -375,6 +390,33 @@ pub fn write_solid_with_semantics<W: Write>(
         &face_ids,
         major,
     )?;
+    Ok(())
+}
+
+/// Emit a semantics-bearing MultiSurface (no solid): one `bldg:boundedBy` per
+/// surface, with the surface's faces as inline `gml:Polygon`s. A `null`-value
+/// face has no CityGML home here (the reader's MultiSurface path never produces
+/// a null value) and is dropped with a counter.
+pub fn write_multisurface_with_semantics<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    faces: &[Face],
+    sem: &Semantics,
+    major: u8,
+    report: &mut WriteReport,
+) -> Result<()> {
+    let nsurf = sem.surfaces.len();
+    let surfaces = multisurface_face_surfaces(&sem.values, faces.len(), nsurf)?;
+    report.multisurface_null_faces_dropped += surfaces.iter().filter(|s| s.is_none()).count();
+    for (i, ty) in sem.surfaces.iter().enumerate() {
+        let polys: Vec<(&Face, Option<&str>)> = faces
+            .iter()
+            .zip(&surfaces)
+            .filter(|(_, s)| **s == Some(i))
+            .map(|(f, _)| (f, None))
+            .collect();
+        write_boundedby_surface(w, coords, ty, major, &polys)?;
+    }
     Ok(())
 }
 
@@ -533,6 +575,65 @@ mod tests {
             values: json!([[0]]),
         };
         let xml = emit_solid_sem(&coords, &kind, &props, &sem);
+        assert!(
+            xml.contains("<bldg:boundedBy><bldg:RoofSurface/></bldg:boundedBy>"),
+            "{xml}"
+        );
+    }
+
+    fn emit_ms_sem(coords: &[[f64; 3]], faces: &[Face], sem: &Semantics) -> (String, WriteReport) {
+        let mut report = WriteReport::default();
+        let mut w = Writer::new(Vec::new());
+        write_multisurface_with_semantics(&mut w, coords, faces, sem, 3, &mut report).unwrap();
+        (String::from_utf8(w.into_inner()).unwrap(), report)
+    }
+
+    #[test]
+    fn multisurface_semantics_groups_faces_by_surface_no_solid() {
+        let coords = semantic_coords();
+        let faces = vec![
+            vec![vec![0, 1, 2]],
+            vec![vec![3, 4, 5]],
+            vec![vec![6, 7, 8]],
+        ];
+        let sem = Semantics {
+            surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
+            values: json!([0, 0, 1]),
+        };
+        let (xml, r) = emit_ms_sem(&coords, &faces, &sem);
+        assert!(
+            !xml.contains("<gml:Solid>"),
+            "no solid in the MultiSurface case: {xml}"
+        );
+        assert!(xml.contains("<bldg:boundedBy><bldg:WallSurface>"), "{xml}");
+        // Wall has 2 polygons, Roof 1.
+        let wall = xml.find("WallSurface").unwrap();
+        let roof = xml.find("RoofSurface").unwrap();
+        assert_eq!(xml[wall..roof].matches("<gml:Polygon>").count(), 2, "{xml}");
+        assert_eq!(r.multisurface_null_faces_dropped, 0);
+    }
+
+    #[test]
+    fn multisurface_null_face_is_dropped_and_counted() {
+        let coords = semantic_coords();
+        let faces = vec![vec![vec![0, 1, 2]], vec![vec![3, 4, 5]]];
+        let sem = Semantics {
+            surfaces: vec!["WallSurface".into()],
+            values: json!([0, null]),
+        };
+        let (_xml, r) = emit_ms_sem(&coords, &faces, &sem);
+        assert_eq!(r.multisurface_null_faces_dropped, 1);
+    }
+
+    #[test]
+    fn multisurface_zero_face_surface_is_empty() {
+        let coords = semantic_coords();
+        let faces = vec![vec![vec![0, 1, 2]]];
+        let sem = Semantics {
+            surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
+            values: json!([0]),
+        };
+        let (xml, _) = emit_ms_sem(&coords, &faces, &sem);
         assert!(
             xml.contains("<bldg:boundedBy><bldg:RoofSurface/></bldg:boundedBy>"),
             "{xml}"
