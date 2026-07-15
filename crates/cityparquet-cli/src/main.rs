@@ -293,12 +293,17 @@ fn main() -> std::process::ExitCode {
                 match write_package(&opts) {
                     Ok(report) => {
                         println!(
-                            "{} {} {} {} {}",
+                            "{} buildings written; {} non-building skipped, {} without geometry, \
+                             {} composite solids written, {} multi-solids skipped, \
+                             {} lod columns skipped, {} attributes written, {} attributes skipped",
                             report.buildings_written,
                             report.non_building_skipped,
                             report.buildings_without_solid_skipped,
-                            report.composite_solids_skipped,
-                            report.lod_columns_skipped
+                            report.composite_solids_written,
+                            report.multi_solids_skipped,
+                            report.lod_columns_skipped,
+                            report.attributes_written,
+                            report.attributes_skipped,
                         );
                         std::process::ExitCode::SUCCESS
                     }
