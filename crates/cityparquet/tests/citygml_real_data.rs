@@ -429,18 +429,30 @@ fn citygml2_boundedby_multisurface_building_no_solid() {
         .expect("a Building feature");
 
     let geoms = bldg.geometry.as_ref().expect("building has geometry");
-    assert_eq!(geoms.len(), 1, "one MultiSurface geometry; installations must not leak");
+    assert_eq!(
+        geoms.len(),
+        1,
+        "one MultiSurface geometry; installations must not leak"
+    );
     let gv = serde_json::to_value(&geoms[0]).unwrap();
     assert_eq!(gv["type"], "MultiSurface");
     assert_eq!(gv["lod"], "3");
 
     let surfaces = gv["boundaries"].as_array().unwrap();
-    assert_eq!(surfaces.len(), 44, "44 boundedBy polygons as MultiSurface members");
+    assert_eq!(
+        surfaces.len(),
+        44,
+        "44 boundedBy polygons as MultiSurface members"
+    );
 
     let stypes = gv["semantics"]["surfaces"].as_array().unwrap();
     assert_eq!(stypes.len(), 36, "19 top-level surfaces + 17 Door/Window");
     let values = gv["semantics"]["values"].as_array().unwrap();
-    assert_eq!(values.len(), 44, "one semantic value per MultiSurface member");
+    assert_eq!(
+        values.len(),
+        44,
+        "one semantic value per MultiSurface member"
+    );
 
     // Semantic MAPPING (not just counts): tally each member's surface type via
     // its value index. Expected histogram is hand-derived by walking the
@@ -449,7 +461,10 @@ fn citygml2_boundedby_multisurface_building_no_solid() {
     for v in values {
         let i = v.as_u64().expect("semantic value is an index") as usize;
         assert!(i < stypes.len(), "every value indexes into surfaces");
-        let ty = stypes[i]["type"].as_str().expect("surface has a type").to_string();
+        let ty = stypes[i]["type"]
+            .as_str()
+            .expect("surface has a type")
+            .to_string();
         *hist.entry(ty).or_default() += 1;
     }
     let expected: std::collections::BTreeMap<String, usize> = [
@@ -464,18 +479,27 @@ fn citygml2_boundedby_multisurface_building_no_solid() {
     .iter()
     .map(|(k, v)| (k.to_string(), *v))
     .collect();
-    assert_eq!(hist, expected, "per-member semantic-type histogram must match the fixture");
+    assert_eq!(
+        hist, expected,
+        "per-member semantic-type histogram must match the fixture"
+    );
 
     // Structure: each MultiSurface member is [ring][idx] with ≥1 ring of ≥3
     // vertex indices (the convert-to-WKB path separately proves the indices
     // form valid geometry).
     for surface in surfaces {
         let rings = surface.as_array().expect("member is an array of rings");
-        assert!(!rings.is_empty(), "a surface has at least one (exterior) ring");
+        assert!(
+            !rings.is_empty(),
+            "a surface has at least one (exterior) ring"
+        );
         for ring in rings {
             let idxs = ring.as_array().expect("ring is an array of indices");
             assert!(idxs.len() >= 3, "a ring has at least 3 vertices");
-            assert!(idxs.iter().all(|i| i.as_u64().is_some()), "indices are numbers");
+            assert!(
+                idxs.iter().all(|i| i.as_u64().is_some()),
+                "indices are numbers"
+            );
         }
     }
 }

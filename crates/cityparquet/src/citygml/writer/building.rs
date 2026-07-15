@@ -8,22 +8,34 @@
 //! W-M1; `GeometryCollection` (MultiSolid/CompositeSolid) and other shapes are
 //! the driver's concern to count, but a stray non-Solid is guarded here too.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
-use cityparquet_schema::{CityParquetError, Lod};
+use cityparquet_schema::{AttributeType, CityParquetError, Lod};
 use quick_xml::Writer;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use serde_json::Value;
 
 use super::WriteReport;
+use super::attributes::write_attributes;
 use super::document::Bounds;
-use super::geometry::write_solid;
+use super::geometry::{write_composite_solid, write_solid};
 use crate::Result;
 use crate::wkb_read::{DecodedGeometry, DecodedKind};
 
 fn io_err(e: std::io::Error) -> CityParquetError {
     CityParquetError::Io(e.to_string())
+}
+
+/// Count the semantic surfaces attached to a geometry's `geometry_properties`
+/// (`semantics.surfaces`). W-M2 emits geometry only, so these are dropped; the
+/// count is reported (never silently) via `WriteReport::semantic_surfaces_dropped`.
+fn semantic_surface_count(props: Option<&Value>) -> usize {
+    props
+        .and_then(|p| p.get("semantics"))
+        .and_then(|s| s.get("surfaces"))
+        .and_then(|s| s.as_array())
+        .map_or(0, Vec::len)
 }
 
 /// A valid XML `NCName` (ASCII-pragmatic, matching real CityGML ids): first
@@ -41,6 +53,9 @@ pub fn is_ncname(id: &str) -> bool {
 /// driver. Each solid is `(lod, decoded geometry, its geometry_properties)`.
 pub struct BuildingSolids {
     pub id: String,
+    /// Building-level attributes (already decoded from the package's typed
+    /// columns), emitted before geometry.
+    pub attributes: serde_json::Map<String, Value>,
     pub solids: Vec<(Lod, DecodedGeometry, Option<Value>)>,
 }
 
@@ -52,6 +67,7 @@ pub struct BuildingSolids {
 pub fn write_building<W: Write>(
     w: &mut Writer<W>,
     b: &BuildingSolids,
+    types: &HashMap<String, AttributeType>,
     bounds: &mut Bounds,
     report: &mut WriteReport,
 ) -> Result<bool> {
@@ -66,8 +82,14 @@ pub fn write_building<W: Write>(
     // BTreeMap keeps the majors in ascending order for emission.
     let mut by_major: BTreeMap<u8, (Lod, &DecodedGeometry, Option<&Value>)> = BTreeMap::new();
     for (lod, geom, props) in &b.solids {
-        if !matches!(geom.kind, DecodedKind::PolyhedralSurface(_)) {
-            // Only a Solid becomes a lodNSolid; a stray non-Solid is skipped.
+        // A Solid (PolyhedralSurface) or a CompositeSolid (GeometryCollection,
+        // routed here by the driver — MultiSolid is skipped upstream) becomes a
+        // lodNSolid; any stray other shape is skipped.
+        let representable = matches!(
+            geom.kind,
+            DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_)
+        );
+        if !representable {
             report.lod_columns_skipped += 1;
             continue;
         }
@@ -90,20 +112,12 @@ pub fn write_building<W: Write>(
         }
     }
 
-    if by_major.is_empty() {
-        return Ok(false);
-    }
-
     // Reject non-finite coordinates before emitting anything: `inf`/`-inf`/`NaN`
     // are not valid XML Schema `double` lexical forms and NaN would poison the
     // envelope. (WKB's 2^53 magnitude guard does not catch NaN, whose
-    // comparisons are always false.)
-    for (_, (_, geom, _)) in &by_major {
-        if geom
-            .coords
-            .iter()
-            .any(|c| c.iter().any(|v| !v.is_finite()))
-        {
+    // comparisons are always false.) No-op for an attributes-only building.
+    for (_, geom, _) in by_major.values() {
+        if geom.coords.iter().any(|c| c.iter().any(|v| !v.is_finite())) {
             return Err(CityParquetError::Geometry(format!(
                 "building {:?} has a non-finite coordinate; cannot serialise as gml:posList",
                 b.id
@@ -111,26 +125,47 @@ pub fn write_building<W: Write>(
         }
     }
 
+    // Buffer attributes first so the emptiness decision can see whether any
+    // attribute is actually writable: an attributes-only Building is valid, but
+    // a Building with neither geometry nor a writable attribute is not emitted.
+    let mut attr_buf = Writer::new(Vec::new());
+    let attrs_written = write_attributes(&mut attr_buf, &b.attributes, types, report)?;
+
+    if by_major.is_empty() && attrs_written == 0 {
+        return Ok(false);
+    }
+
     w.write_event(Event::Start(BytesStart::new("cityObjectMember")))
         .map_err(io_err)?;
     let mut bldg = BytesStart::new("bldg:Building");
     bldg.push_attribute(("gml:id", b.id.as_str()));
     w.write_event(Event::Start(bldg)).map_err(io_err)?;
+    // Attributes precede geometry in the CityGML _CityObject / Building sequence.
+    w.get_mut()
+        .write_all(&attr_buf.into_inner())
+        .map_err(io_err)?;
 
     for (major, (_, geom, props)) in &by_major {
         let elem = format!("bldg:lod{major}Solid");
-        let DecodedKind::PolyhedralSurface(faces) = &geom.kind else {
-            unreachable!("only PolyhedralSurface entries reach by_major");
-        };
         w.write_event(Event::Start(BytesStart::new(elem.as_str())))
             .map_err(io_err)?;
-        write_solid(w, &geom.coords, faces, *props)?;
-        for face in faces {
-            for ring in face {
-                for &i in ring {
-                    bounds.add(geom.coords[i]);
-                }
+        match &geom.kind {
+            DecodedKind::PolyhedralSurface(faces) => {
+                write_solid(w, &geom.coords, faces, *props)?;
             }
+            DecodedKind::GeometryCollection(members) => {
+                write_composite_solid(w, &geom.coords, members, *props)?;
+                report.composite_solids_written += 1;
+            }
+            _ => unreachable!("only PolyhedralSurface/GeometryCollection reach by_major"),
+        }
+        // W-M2 emits geometry but not bldg:boundedBy semantic surfaces; report
+        // how many were dropped so the loss is machine-visible, not silent.
+        report.semantic_surfaces_dropped += semantic_surface_count(*props);
+        // Accumulate the geometry's coord pool (equals the referenced set for
+        // WKB-decoded geometry; covers both solids and composite members).
+        for c in &geom.coords {
+            bounds.add(*c);
         }
         w.write_event(Event::End(BytesEnd::new(elem.as_str())))
             .map_err(io_err)?;
@@ -160,6 +195,49 @@ mod tests {
         serde_json::json!({ "type": "Solid" })
     }
 
+    fn composite_props() -> Value {
+        serde_json::json!({ "type": "CompositeSolid", "solid_shell_faces": [[1]] })
+    }
+
+    fn composite_geom() -> DecodedGeometry {
+        DecodedGeometry {
+            coords: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            kind: DecodedKind::GeometryCollection(vec![DecodedKind::PolyhedralSurface(vec![
+                vec![vec![0usize, 1, 2]],
+            ])]),
+        }
+    }
+
+    /// A type map covering the attribute names these tests use (`roofType`); an
+    /// unused entry is harmless for the geometry-only tests that share it.
+    fn types() -> HashMap<String, AttributeType> {
+        [("roofType".to_string(), AttributeType::String)]
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn composite_solid_is_emitted_and_counted() {
+        let b = BuildingSolids {
+            id: "C1".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![(
+                Lod::parse("2").unwrap(),
+                composite_geom(),
+                Some(composite_props()),
+            )],
+        };
+        let mut report = WriteReport::default();
+        let mut w = Writer::new(Vec::new());
+        assert!(write_building(&mut w, &b, &types(), &mut Bounds::new(), &mut report).unwrap());
+        let xml = String::from_utf8(w.into_inner()).unwrap();
+        assert!(
+            xml.contains("<bldg:lod2Solid><gml:CompositeSolid>"),
+            "{xml}"
+        );
+        assert_eq!(report.composite_solids_written, 1);
+    }
+
     #[test]
     fn is_ncname_accepts_3dbag_ids_rejects_bad() {
         assert!(is_ncname("NL.IMBAG.Pand.0503100000013175-0"));
@@ -173,6 +251,7 @@ mod tests {
     fn major_lod_collision_keeps_highest_minor_and_counts_the_rest() {
         let b = BuildingSolids {
             id: "B1".into(),
+            attributes: serde_json::Map::new(),
             solids: vec![
                 (Lod::parse("2").unwrap(), tri_solid(), Some(solid_props())),
                 (Lod::parse("2.2").unwrap(), tri_solid(), Some(solid_props())),
@@ -181,7 +260,7 @@ mod tests {
         let mut bounds = Bounds::new();
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(write_building(&mut w, &b, &mut bounds, &mut report).unwrap());
+        assert!(write_building(&mut w, &b, &types(), &mut bounds, &mut report).unwrap());
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert_eq!(xml.matches("<bldg:lod2Solid>").count(), 1);
         assert_eq!(report.lod_columns_skipped, 1);
@@ -192,6 +271,7 @@ mod tests {
     fn multiple_majors_emitted_in_ascending_order() {
         let b = BuildingSolids {
             id: "B2".into(),
+            attributes: serde_json::Map::new(),
             solids: vec![
                 (Lod::parse("2").unwrap(), tri_solid(), Some(solid_props())),
                 (Lod::parse("1").unwrap(), tri_solid(), Some(solid_props())),
@@ -202,6 +282,7 @@ mod tests {
             write_building(
                 &mut w,
                 &b,
+                &types(),
                 &mut Bounds::new(),
                 &mut WriteReport::default()
             )
@@ -218,11 +299,12 @@ mod tests {
         // A lod0 solid is not a valid lodNSolid (only 1..4).
         let b = BuildingSolids {
             id: "B3".into(),
+            attributes: serde_json::Map::new(),
             solids: vec![(Lod::parse("0").unwrap(), tri_solid(), None)],
         };
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(!write_building(&mut w, &b, &mut Bounds::new(), &mut report).unwrap());
+        assert!(!write_building(&mut w, &b, &types(), &mut Bounds::new(), &mut report).unwrap());
         assert!(w.into_inner().is_empty());
         assert_eq!(report.lod_columns_skipped, 1);
     }
@@ -235,11 +317,19 @@ mod tests {
         };
         let b = BuildingSolids {
             id: "B4".into(),
+            attributes: serde_json::Map::new(),
             solids: vec![(Lod::parse("2").unwrap(), geom, None)],
         };
         let mut w = Writer::new(Vec::new());
         assert!(
-            write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).is_err()
+            write_building(
+                &mut w,
+                &b,
+                &types(),
+                &mut Bounds::new(),
+                &mut WriteReport::default()
+            )
+            .is_err()
         );
         // Nothing should have been emitted before the error.
         assert!(w.into_inner().is_empty());
@@ -249,11 +339,80 @@ mod tests {
     fn invalid_ncname_id_errors() {
         let b = BuildingSolids {
             id: "3bad".into(),
+            attributes: serde_json::Map::new(),
             solids: vec![],
         };
         let mut w = Writer::new(Vec::new());
         assert!(
-            write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).is_err()
+            write_building(
+                &mut w,
+                &b,
+                &types(),
+                &mut Bounds::new(),
+                &mut WriteReport::default()
+            )
+            .is_err()
         );
+    }
+
+    #[test]
+    fn attributes_only_building_emits_with_no_solid() {
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("roofType".into(), serde_json::json!("1000"));
+        let b = BuildingSolids {
+            id: "B5".into(),
+            attributes,
+            solids: vec![],
+        };
+        let mut report = WriteReport::default();
+        let mut w = Writer::new(Vec::new());
+        assert!(write_building(&mut w, &b, &types(), &mut Bounds::new(), &mut report).unwrap());
+        let xml = String::from_utf8(w.into_inner()).unwrap();
+        assert!(xml.contains("<bldg:Building gml:id=\"B5\">"));
+        assert!(xml.contains("<bldg:roofType>1000</bldg:roofType>"));
+        assert_eq!(report.attributes_written, 1);
+    }
+
+    #[test]
+    fn empty_building_still_returns_false() {
+        let b = BuildingSolids {
+            id: "B6".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![],
+        };
+        let mut w = Writer::new(Vec::new());
+        assert!(
+            !write_building(
+                &mut w,
+                &b,
+                &types(),
+                &mut Bounds::new(),
+                &mut WriteReport::default()
+            )
+            .unwrap()
+        );
+        assert!(w.into_inner().is_empty());
+    }
+
+    #[test]
+    fn attributes_precede_geometry() {
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("roofType".into(), serde_json::json!("1000"));
+        let b = BuildingSolids {
+            id: "B7".into(),
+            attributes,
+            solids: vec![(Lod::parse("2").unwrap(), tri_solid(), Some(solid_props()))],
+        };
+        let mut w = Writer::new(Vec::new());
+        write_building(
+            &mut w,
+            &b,
+            &types(),
+            &mut Bounds::new(),
+            &mut WriteReport::default(),
+        )
+        .unwrap();
+        let xml = String::from_utf8(w.into_inner()).unwrap();
+        assert!(xml.find("<bldg:roofType>").unwrap() < xml.find("<bldg:lod2Solid>").unwrap());
     }
 }

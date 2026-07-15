@@ -112,10 +112,7 @@ pub fn write_solid<W: Write>(
     // geometry_properties actually says `type: "Solid"`. Missing or mismatched
     // properties would otherwise let `partition_shells(None)` silently collapse
     // a multi-shell solid into one exterior shell, dropping cavities.
-    let is_solid = props
-        .and_then(|p| p.get("type"))
-        .and_then(|t| t.as_str())
-        == Some("Solid");
+    let is_solid = props.and_then(|p| p.get("type")).and_then(|t| t.as_str()) == Some("Solid");
     if !is_solid {
         return Err(CityParquetError::Schema(
             "geometry_properties.type is not \"Solid\"; refusing to emit a gml:Solid from a \
@@ -124,7 +121,19 @@ pub fn write_solid<W: Write>(
         ));
     }
     let counts = crate::export::shell_faces_flat(props)?;
-    let shells = crate::export::partition_shells(faces.to_vec(), counts.as_deref())?;
+    write_gml_solid(w, coords, faces, counts.as_deref())
+}
+
+/// Emit one `<gml:Solid>` from a flat face list + its shell partition counts,
+/// with shell 0 exterior and shells 1.. interior. Shared by the top-level
+/// [`write_solid`] and each [`write_composite_solid`] member.
+fn write_gml_solid<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    faces: &[Vec<Vec<usize>>],
+    counts: Option<&[usize]>,
+) -> Result<()> {
+    let shells = crate::export::partition_shells(faces.to_vec(), counts)?;
 
     w.write_event(Event::Start(BytesStart::new("gml:Solid")))
         .map_err(io_err)?;
@@ -148,6 +157,62 @@ pub fn write_solid<W: Write>(
     }
 
     w.write_event(Event::End(BytesEnd::new("gml:Solid")))
+        .map_err(io_err)?;
+    Ok(())
+}
+
+/// A `GeometryCollection` of `PolyhedralSurface` members (a CityJSON
+/// `CompositeSolid`) -> `<gml:CompositeSolid>` of `<gml:solidMember>`-wrapped
+/// `<gml:Solid>`s. Each member's shells come from the nested
+/// `geometry_properties.solid_shell_faces[m]`. `MultiSolid` is NOT routed here
+/// (CityGML 2.0 `Building` has no slot; the driver skips it).
+pub fn write_composite_solid<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    members: &[crate::wkb_read::DecodedKind],
+    props: Option<&serde_json::Value>,
+) -> Result<()> {
+    let is_composite =
+        props.and_then(|p| p.get("type")).and_then(|t| t.as_str()) == Some("CompositeSolid");
+    if !is_composite {
+        return Err(CityParquetError::Schema(
+            "geometry_properties.type is not \"CompositeSolid\"; refusing to emit a \
+             gml:CompositeSolid"
+                .to_string(),
+        ));
+    }
+    if members.is_empty() {
+        return Err(CityParquetError::Geometry(
+            "CompositeSolid has no solid members (gml:solidMember is minOccurs=1)".to_string(),
+        ));
+    }
+    let nested = crate::export::shell_faces_nested(props)?;
+    if let Some(counts) = &nested
+        && counts.len() != members.len()
+    {
+        return Err(CityParquetError::Geometry(format!(
+            "solid_shell_faces lists {} solids but the CompositeSolid has {} members",
+            counts.len(),
+            members.len()
+        )));
+    }
+
+    w.write_event(Event::Start(BytesStart::new("gml:CompositeSolid")))
+        .map_err(io_err)?;
+    for (m, member) in members.iter().enumerate() {
+        let crate::wkb_read::DecodedKind::PolyhedralSurface(faces) = member else {
+            return Err(CityParquetError::Geometry(
+                "CompositeSolid member is not a PolyhedralSurface".to_string(),
+            ));
+        };
+        let counts = nested.as_ref().map(|c| c[m].as_slice());
+        w.write_event(Event::Start(BytesStart::new("gml:solidMember")))
+            .map_err(io_err)?;
+        write_gml_solid(w, coords, faces, counts)?;
+        w.write_event(Event::End(BytesEnd::new("gml:solidMember")))
+            .map_err(io_err)?;
+    }
+    w.write_event(Event::End(BytesEnd::new("gml:CompositeSolid")))
         .map_err(io_err)?;
     Ok(())
 }
@@ -280,5 +345,77 @@ mod tests {
         let props = serde_json::json!({ "solid_shell_faces": [1, 1] }); // claims 2
         let mut w = Writer::new(Vec::new());
         assert!(write_solid(&mut w, &coords, &faces, Some(&props)).is_err());
+    }
+
+    use crate::wkb_read::DecodedKind;
+
+    fn two_member_props() -> serde_json::Value {
+        // Each solid: one shell of one face.
+        serde_json::json!({ "type": "CompositeSolid", "solid_shell_faces": [[1], [1]] })
+    }
+
+    #[test]
+    fn write_composite_solid_emits_a_member_per_solid() {
+        let coords = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0], // member 0 face
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0], // member 1 face
+        ];
+        let members = vec![
+            DecodedKind::PolyhedralSurface(vec![vec![vec![0usize, 1, 2]]]),
+            DecodedKind::PolyhedralSurface(vec![vec![vec![3usize, 4, 5]]]),
+        ];
+        let props = two_member_props();
+        let xml = emit(|w| write_composite_solid(w, &coords, &members, Some(&props)));
+        assert!(xml.starts_with("<gml:CompositeSolid>"), "{xml}");
+        assert_eq!(xml.matches("<gml:solidMember>").count(), 2, "{xml}");
+        assert_eq!(xml.matches("<gml:Solid>").count(), 2, "{xml}");
+    }
+
+    #[test]
+    fn write_composite_solid_single_member_stays_composite() {
+        let coords = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
+        let members = vec![DecodedKind::PolyhedralSurface(vec![vec![vec![
+            0usize, 1, 2,
+        ]]])];
+        let props = serde_json::json!({ "type": "CompositeSolid", "solid_shell_faces": [[1]] });
+        let xml = emit(|w| write_composite_solid(w, &coords, &members, Some(&props)));
+        assert!(xml.starts_with("<gml:CompositeSolid>"));
+        assert_eq!(xml.matches("<gml:solidMember>").count(), 1);
+    }
+
+    #[test]
+    fn write_composite_solid_rejects_zero_members() {
+        let members: Vec<DecodedKind> = vec![];
+        let props = serde_json::json!({ "type": "CompositeSolid", "solid_shell_faces": [] });
+        let mut w = Writer::new(Vec::new());
+        assert!(write_composite_solid(&mut w, &[], &members, Some(&props)).is_err());
+    }
+
+    #[test]
+    fn write_composite_solid_rejects_non_composite_type() {
+        let coords = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
+        let members = vec![DecodedKind::PolyhedralSurface(vec![vec![vec![
+            0usize, 1, 2,
+        ]]])];
+        let props = serde_json::json!({ "type": "MultiSolid", "solid_shell_faces": [[1]] });
+        let mut w = Writer::new(Vec::new());
+        assert!(write_composite_solid(&mut w, &coords, &members, Some(&props)).is_err());
+    }
+
+    #[test]
+    fn write_composite_solid_rejects_member_count_mismatch() {
+        let coords = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
+        let members = vec![DecodedKind::PolyhedralSurface(vec![vec![vec![
+            0usize, 1, 2,
+        ]]])];
+        // counts claim 2 solids, only 1 member present.
+        let props =
+            serde_json::json!({ "type": "CompositeSolid", "solid_shell_faces": [[1], [1]] });
+        let mut w = Writer::new(Vec::new());
+        assert!(write_composite_solid(&mut w, &coords, &members, Some(&props)).is_err());
     }
 }

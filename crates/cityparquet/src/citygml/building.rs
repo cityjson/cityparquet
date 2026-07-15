@@ -235,8 +235,7 @@ fn read_bounded_by<R: BufRead>(
                     // surface type.
                     let name = local.as_ref().to_vec();
                     let idx = b.surfaces.len();
-                    b.surfaces
-                        .push(String::from_utf8_lossy(&name).into_owned());
+                    b.surfaces.push(String::from_utf8_lossy(&name).into_owned());
                     read_semantic_surface(reader, buf, b, idx, &name)?;
                 } else {
                     skip_element(reader, buf)?;
@@ -286,8 +285,7 @@ fn read_semantic_surface<R: BufRead>(
                     // A nested semantic surface (e.g. a Door/Window directly
                     // present): its own entry, resolved recursively.
                     let idx = b.surfaces.len();
-                    b.surfaces
-                        .push(String::from_utf8_lossy(&name).into_owned());
+                    b.surfaces.push(String::from_utf8_lossy(&name).into_owned());
                     read_semantic_surface(reader, buf, b, idx, &name)?;
                 } else if bldg && name == b"opening" {
                     // Transparent wrapper: its Door/Window child is a nested

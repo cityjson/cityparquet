@@ -283,9 +283,9 @@ pub(crate) fn partition_shells(
             // a debug panic / release wraparound that then mis-partitions.
             let mut total: usize = 0;
             for &n in counts {
-                total = total.checked_add(n).ok_or_else(|| {
-                    err("solid_shell_faces counts overflow usize".to_string())
-                })?;
+                total = total
+                    .checked_add(n)
+                    .ok_or_else(|| err("solid_shell_faces counts overflow usize".to_string()))?;
             }
             if total != faces.len() {
                 return Err(err(format!(
@@ -322,7 +322,7 @@ pub(crate) fn shell_faces_flat(props: Option<&Value>) -> Result<Option<Vec<usize
 /// `solid_shell_faces` from `geometry_properties`, shaped for
 /// `MultiSolid`/`CompositeSolid` (one flat per-shell face-count list per
 /// solid).
-fn shell_faces_nested(props: Option<&Value>) -> Result<Option<Vec<Vec<usize>>>> {
+pub(crate) fn shell_faces_nested(props: Option<&Value>) -> Result<Option<Vec<Vec<usize>>>> {
     let Some(v) = props.and_then(|p| p.get("solid_shell_faces")) else {
         return Ok(None);
     };
