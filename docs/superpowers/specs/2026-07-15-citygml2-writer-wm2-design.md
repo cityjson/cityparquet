@@ -213,3 +213,42 @@ CityObject type.
 - Boolean and heterogeneous/nested (`Json`) attributes, single-element string lists, and
   empty-string attributes have no round-trip-stable CityGML 2.0 form and are
   skipped-with-counter.
+
+## Review addendum (Codex + Fable, 2026-07-15)
+
+Applied after implementation:
+
+- **Attributes route by the stored Arrow `AttributeType`** (built from the schema + the
+  `arrow.json` extension marker), not the decoded value's JSON shape. This fixes a
+  `Json`-column type-flip (a primitive value in a heterogeneous `Json` column was being
+  written as a typed `gen:` attribute and re-inferring as `Int64`) and removes a
+  date/timestamp predicate that duplicated the inferer. `Boolean`/`Json` columns are skipped
+  wholesale; `StringList`s are all-or-nothing (a partial list would flip to `String`); only
+  `function`/`usage` repeat as `bldg:` (others' lists → repeated `gen:stringAttribute`).
+- **XML-illegal characters** now include `U+FFFE`/`U+FFFF`, and a `gen:` attribute whose
+  column **name** contains an illegal character is skipped (it would otherwise emit malformed
+  XML and fail the re-convert step).
+- **`semantic_surfaces_dropped`** counter added: W-M2 emits geometry only, so every
+  `geometry_properties.semantics.surfaces` entry on an emitted geometry is dropped and
+  counted (b1 = 9). The CompositeSolid oracle asserts this count, compares geometry
+  **structurally** (member/face/ring, not a coordinate set), and asserts semantics are
+  present before but absent after the round trip — pinning the W-M3 flip point.
+
+**Deferred with documentation (XSD-conformance only — package round-trip is unaffected
+because the reader accepts any order and re-infers types from values):**
+
+- Attribute element **order**: emitted in map order, but the CityGML XSD wants `gen:`
+  attributes before `bldg:` properties and `bldg:` in a fixed sequence. W-M2 deferred XSD
+  validation, and the reader is order-independent.
+- **Lexical validity** of schema-constrained typed values (`xs:date`, `xs:gYear`): e.g. a
+  `Date` column value is physically a valid date, but an out-of-range value in a `String`
+  column emitted as `gen:stringAttribute` round-trips as `String`; a `bldg:yearOfConstruction`
+  with non-`gYear` text is String-forced on re-read. XSD-invalid, round-trip-safe.
+- **Residual `String`→`Date`/`Timestamp` flip (Hole A):** a `String` column whose only
+  surviving value is date/timestamp-shaped (because the sibling values that anchored it to
+  `String` were themselves skipped, e.g. empty strings) re-infers as `Date`/`Timestamp`. No
+  element choice can prevent this — the reader forces `gen:*` values to `String` and
+  inference is value-driven. Rare; documented as a known residual.
+- `buildings_without_solid_skipped` is retained by name but now means "no emittable geometry
+  **and** no writable attribute" (attributes-only Buildings emit). The CLI `export … .gml`
+  report line prints the full W-M2 counter set (first token remains `buildings_written`).
