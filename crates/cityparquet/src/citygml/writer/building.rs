@@ -21,8 +21,8 @@ use super::attributes::write_attributes;
 use super::document::Bounds;
 use super::geometry::{write_composite_solid, write_solid};
 use super::semantics::{
-    IdAlloc, parse_semantics, semantic_surface_count, surfaces_emittable,
-    write_multisurface_with_semantics, write_solid_with_semantics,
+    IdAlloc, Semantics, droppable_surface_count, has_nonnull_value, parse_semantics,
+    surfaces_emittable, write_multisurface_with_semantics, write_solid_with_semantics,
 };
 use crate::Result;
 use crate::wkb_read::{DecodedGeometry, DecodedKind};
@@ -31,10 +31,31 @@ fn io_err(e: std::io::Error) -> CityParquetError {
     CityParquetError::Io(e.to_string())
 }
 
+/// The semantics a geometry can actually emit as `bldg:boundedBy`, or `None`.
+/// Requires: a major in `2..=4` (CityGML 2.0 `_BoundarySurface` has no
+/// `lod1MultiSurface`), an emittable geometry kind, every surface type a legal
+/// NCName, and at least one non-null value (a real semantic face — not a
+/// building-wide surfaces array stamped with all-null values on every geometry).
+fn emittable_semantics(major: u8, kind: &DecodedKind, props: Option<&Value>) -> Option<Semantics> {
+    if !(2..=4).contains(&major) {
+        return None;
+    }
+    if !matches!(
+        kind,
+        DecodedKind::PolyhedralSurface(_)
+            | DecodedKind::GeometryCollection(_)
+            | DecodedKind::MultiPolygon(_)
+    ) {
+        return None;
+    }
+    let sem = parse_semantics(props)?;
+    (surfaces_emittable(&sem) && has_nonnull_value(&sem.values)).then_some(sem)
+}
+
 /// Emit a `bldg:lod<major>Solid` with plain (geometry-only) inline geometry —
-/// the W-M2 form, used when a geometry has no emittable semantics or when the
-/// semantics path fails and falls back. Any semantics present but not emitted
-/// are counted as dropped.
+/// the W-M2 form, used when a geometry has no emittable semantics (or is not the
+/// building's chosen semantic LoD). Any real (non-null) semantics not emitted
+/// here are counted as dropped.
 fn write_plain_lodn_solid<W: Write>(
     w: &mut Writer<W>,
     geom: &DecodedGeometry,
@@ -55,7 +76,7 @@ fn write_plain_lodn_solid<W: Write>(
     }
     w.write_event(Event::End(BytesEnd::new(elem.as_str())))
         .map_err(io_err)?;
-    report.semantic_surfaces_dropped += semantic_surface_count(props);
+    report.semantic_surfaces_dropped += droppable_surface_count(props);
     Ok(())
 }
 
@@ -110,13 +131,16 @@ pub fn write_building<W: Write>(
         // shape is skipped.
         let representable = match &geom.kind {
             DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_) => true,
+            // A MultiSurface has no geometry-only form, so it is representable
+            // only as an emittable semantic surface set.
             DecodedKind::MultiPolygon(_) => {
-                parse_semantics(props.as_ref()).is_some_and(|s| surfaces_emittable(&s))
+                emittable_semantics(lod.major(), &geom.kind, props.as_ref()).is_some()
             }
             _ => false,
         };
         if !representable {
             report.lod_columns_skipped += 1;
+            report.semantic_surfaces_dropped += droppable_surface_count(props.as_ref());
             continue;
         }
         let major = lod.major();
@@ -171,43 +195,89 @@ pub fn write_building<W: Write>(
         .write_all(&attr_buf.into_inner())
         .map_err(io_err)?;
 
+    // A building's semantics can round-trip for at most ONE LoD: the reader
+    // builds a single building-wide `surfaces` array applied to every geometry,
+    // so per-LoD boundedBy blocks would duplicate/offset it. Emit semantics for
+    // the highest emittable-semantic major; every other LoD is geometry-only.
+    let chosen_major = by_major
+        .iter()
+        .filter(|(major, (_, geom, props))| {
+            emittable_semantics(**major, &geom.kind, *props).is_some()
+        })
+        .map(|(major, _)| *major)
+        .max();
+
     for (major, (_, geom, props)) in &by_major {
         let major = *major;
         let props = *props;
-        // A geometry with emittable semantics takes the W-M3 path; otherwise the
-        // plain W-M2 path (which counts any un-emittable semantics as dropped).
-        let sem = parse_semantics(props).filter(surfaces_emittable);
-        match (&geom.kind, sem) {
-            (DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_), Some(sem)) => {
-                let mut ids = IdAlloc::new(feature_index);
-                match write_solid_with_semantics(
-                    w,
-                    &geom.coords,
-                    &geom.kind,
-                    props,
-                    &sem,
-                    &mut ids,
-                    major,
-                ) {
-                    Ok(()) => report.semantic_surfaces_written += sem.surfaces.len(),
-                    // Resolution failed (corrupt/external values): emit plain
-                    // geometry and count the surfaces as dropped.
-                    Err(_) => write_plain_lodn_solid(w, geom, props, major, report)?,
+        let mut emitted_geometry = true;
+        if Some(major) == chosen_major {
+            // The one LoD that emits bldg:boundedBy semantic surfaces.
+            let sem = emittable_semantics(major, &geom.kind, props)
+                .expect("chosen major has emittable semantics");
+            match &geom.kind {
+                DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_) => {
+                    let mut ids = IdAlloc::new(feature_index, major);
+                    match write_solid_with_semantics(
+                        w,
+                        &geom.coords,
+                        &geom.kind,
+                        props,
+                        &sem,
+                        &mut ids,
+                        major,
+                    ) {
+                        Ok(()) => {
+                            report.semantic_surfaces_written += sem.surfaces.len();
+                            if matches!(geom.kind, DecodedKind::GeometryCollection(_)) {
+                                report.composite_solids_written += 1;
+                            }
+                        }
+                        // Resolution failed (corrupt/external values): fall back
+                        // to plain geometry, counting the surfaces as dropped.
+                        Err(_) => write_plain_lodn_solid(w, geom, props, major, report)?,
+                    }
                 }
+                DecodedKind::MultiPolygon(faces) => {
+                    match write_multisurface_with_semantics(
+                        w,
+                        &geom.coords,
+                        faces,
+                        &sem,
+                        major,
+                        report,
+                    ) {
+                        Ok(()) => report.semantic_surfaces_written += sem.surfaces.len(),
+                        // A MultiSurface has no geometry-only form; drop it.
+                        Err(_) => {
+                            report.semantic_surfaces_dropped += sem.surfaces.len();
+                            emitted_geometry = false;
+                        }
+                    }
+                }
+                _ => unreachable!("the representable gate excludes other kinds"),
             }
-            (DecodedKind::MultiPolygon(faces), Some(sem)) => {
-                write_multisurface_with_semantics(w, &geom.coords, faces, &sem, major, report)?;
-                report.semantic_surfaces_written += sem.surfaces.len();
+        } else {
+            // Not the chosen semantic LoD: emit geometry only (solids), or drop a
+            // MultiSurface (which has no geometry-only form). Real semantics are
+            // counted as dropped (by write_plain_lodn_solid or here).
+            match &geom.kind {
+                DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_) => {
+                    write_plain_lodn_solid(w, geom, props, major, report)?;
+                }
+                DecodedKind::MultiPolygon(_) => {
+                    report.semantic_surfaces_dropped += droppable_surface_count(props);
+                    emitted_geometry = false;
+                }
+                _ => unreachable!("the representable gate excludes other kinds"),
             }
-            (DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_), None) => {
-                write_plain_lodn_solid(w, geom, props, major, report)?;
-            }
-            _ => unreachable!("the representable gate excludes other (kind, semantics) cases"),
         }
-        // Accumulate the geometry's coord pool (equals the referenced set for
-        // WKB-decoded geometry; covers solids, composites, and multisurfaces).
-        for c in &geom.coords {
-            bounds.add(*c);
+        // Accumulate the coord pool of geometry we actually emitted (a dropped
+        // MultiSurface contributes nothing to the envelope).
+        if emitted_geometry {
+            for c in &geom.coords {
+                bounds.add(*c);
+            }
         }
     }
 
@@ -326,6 +396,109 @@ mod tests {
             "an unsemantic MultiSurface is not representable: {xml}"
         );
         assert_eq!(r.lod_columns_skipped, 1);
+    }
+
+    fn sem_solid_props(value: serde_json::Value) -> Value {
+        serde_json::json!({
+            "type": "Solid", "solid_shell_faces": [1],
+            "semantics": { "surfaces": [{"type": "WallSurface"}], "values": [[value]] }
+        })
+    }
+
+    #[test]
+    fn only_the_highest_semantic_lod_emits_boundedby() {
+        // Two semantic LoDs -> only the highest (lod3) emits boundedBy; lod2 is
+        // geometry-only and its surface is counted dropped (CityGML shares one
+        // building-wide surface set, so per-LoD semantics can't both round-trip).
+        let b = BuildingSolids {
+            id: "ML".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![
+                (
+                    Lod::parse("2").unwrap(),
+                    tri_solid(),
+                    Some(sem_solid_props(serde_json::json!(0))),
+                ),
+                (
+                    Lod::parse("3").unwrap(),
+                    tri_solid(),
+                    Some(sem_solid_props(serde_json::json!(0))),
+                ),
+            ],
+        };
+        let (xml, r) = run_building(&b);
+        assert_eq!(
+            xml.matches("<bldg:boundedBy>").count(),
+            1,
+            "only one LoD emits semantics: {xml}"
+        );
+        assert!(
+            xml.contains("<bldg:lod2Solid>") && xml.contains("<bldg:lod3Solid>"),
+            "{xml}"
+        );
+        assert_eq!(r.semantic_surfaces_written, 1, "lod3's surface");
+        assert_eq!(r.semantic_surfaces_dropped, 1, "lod2's surface dropped");
+    }
+
+    #[test]
+    fn plain_lod1_with_stamped_null_semantics_does_not_over_count() {
+        // The common 3DBAG shape after one CityGML cycle: a plain lod1 solid
+        // carries the building-wide surfaces stamped all-null, and lod2 has real
+        // semantics. lod2 emits; lod1 is geometry-only and counts NOTHING dropped.
+        let b = BuildingSolids {
+            id: "PL".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![
+                (
+                    Lod::parse("1").unwrap(),
+                    tri_solid(),
+                    Some(sem_solid_props(serde_json::json!(null))),
+                ),
+                (
+                    Lod::parse("2").unwrap(),
+                    tri_solid(),
+                    Some(sem_solid_props(serde_json::json!(0))),
+                ),
+            ],
+        };
+        let (xml, r) = run_building(&b);
+        assert_eq!(
+            xml.matches("<bldg:boundedBy>").count(),
+            1,
+            "only lod2 emits: {xml}"
+        );
+        assert!(
+            xml.contains("<bldg:lod1Solid>"),
+            "lod1 geometry-only: {xml}"
+        );
+        assert_eq!(r.semantic_surfaces_written, 1);
+        assert_eq!(
+            r.semantic_surfaces_dropped, 0,
+            "all-null lod1 must not count as dropped"
+        );
+    }
+
+    #[test]
+    fn lod1_only_semantics_are_dropped_no_lod1_multisurface() {
+        // CityGML 2.0 has no lod1MultiSurface, so lod1 semantics cannot be
+        // emitted: geometry-only + counted dropped.
+        let b = BuildingSolids {
+            id: "L1".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![(
+                Lod::parse("1").unwrap(),
+                tri_solid(),
+                Some(sem_solid_props(serde_json::json!(0))),
+            )],
+        };
+        let (xml, r) = run_building(&b);
+        assert!(!xml.contains("boundedBy"), "no boundedBy for lod1: {xml}");
+        assert!(
+            xml.contains("<bldg:lod1Solid>"),
+            "lod1 geometry emitted: {xml}"
+        );
+        assert_eq!(r.semantic_surfaces_written, 0);
+        assert_eq!(r.semantic_surfaces_dropped, 1);
     }
 
     #[test]

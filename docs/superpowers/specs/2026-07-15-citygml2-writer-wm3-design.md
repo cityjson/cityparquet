@@ -174,3 +174,44 @@ stores only surface `type`), `uom` fidelity, XSD validation of emitted output.
 - CityJSON-sourced packages whose MultiSurface `values` are not contiguous by
   surface, or carry extra surface keys, are outside the round-trip guarantee
   (the W-M3 oracles use CityGML-sourced fixtures only).
+
+## Review addendum (Codex + Fable, 2026-07-15)
+
+Applied after implementation:
+
+- **Semantics round-trip for at most ONE LoD per building.** The reader builds a
+  single building-wide `surfaces` array applied to every geometry, so per-LoD
+  `boundedBy` blocks would duplicate/offset it — a building with real semantics
+  on two LoDs cannot round-trip both (Codex Critical). The writer now emits
+  `bldg:boundedBy` for the **highest** major in `2..=4` whose semantics are
+  emittable **and** have at least one non-null value; every other LoD is
+  geometry-only and its real (non-null) surfaces are counted in
+  `semantic_surfaces_dropped`. Polygon `gml:id`s are namespaced per LoD
+  (`_cpq_b<idx>_l<major>_p<n>`) so the (now unreachable) duplicate-id case is
+  also structurally impossible.
+- **No `lod1MultiSurface` in CityGML 2.0** (`_BoundarySurface` has only
+  lod2/3/4): lod1 semantics are never emitted — geometry-only + counted dropped.
+- **`droppable_surface_count`** counts surfaces only when a geometry has a
+  non-null value, so the common post-cycle shape (a plain lod1 solid carrying the
+  building-wide surfaces stamped all-null, plus a semantic lod2) does **not**
+  spuriously inflate the dropped counter.
+- **Graceful fallback everywhere**: a MultiSurface semantics-resolution error
+  drops the geometry with a counter (no longer aborts the conversion); the solid
+  path already fell back to geometry-only.
+
+**Deferred with documentation (XSD-conformance only; package round-trip
+unaffected, or corrupt-input edges):**
+
+- **Openings** and any surface type emit as a top-level `bldg:{type}` under
+  `bldg:boundedBy` (Door/Window belong under `bldg:opening`; arbitrary types are
+  invalid `bldg:` elements). XSD-invalid, package-lossless via the lenient reader.
+- **Dispatch is by decoded WKB kind**, which is authoritative and consistent with
+  `geometry_properties.type` for encoder-produced packages; a hand-rolled package
+  that mislabels `type` is a corrupt-input edge.
+- **MultiSurface faces are grouped by surface** on emission, so a CityJSON-sourced
+  package whose `values` are not already contiguous-by-surface would re-read in a
+  permuted face order (reader-sourced packages are contiguous by construction).
+- **Multi-LoD semantics with an element-wise identical surfaces array** (the one
+  case the reader itself produces) is mergeable in principle into a single
+  `boundedBy` set carrying lod2+lod3 geometry — a future refinement, not a W-M3
+  blocker.

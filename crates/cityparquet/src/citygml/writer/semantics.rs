@@ -32,21 +32,21 @@ type Shells = Vec<Vec<Face>>;
 /// A flat per-face surface index in shell-concatenation order (`None` = null).
 type FaceSurfaces = Vec<Option<usize>>;
 
-/// Allocates `gml:id`s for a single building's emitted polygons:
-/// `_cpq_b<feature_index>_p<N>`. The per-building `feature_index` (unique per
-/// package row) makes the ids document-unique by construction — no shared
-/// counter or seen-set is needed. (A CityObject id literally equal to a
-/// `_cpq_b*_p*` string would collide; the distinctive prefix makes this
-/// negligible in practice — see the design's known limitations.)
+/// Allocates `gml:id`s for a single building-LoD's emitted polygons:
+/// `_cpq_b<feature_index>_l<major>_p<N>`. The per-building `feature_index`
+/// (unique per package row) plus the LoD major make the ids document-unique by
+/// construction — no shared counter or seen-set is needed. (A CityObject id
+/// literally equal to such a string would collide; the distinctive prefix makes
+/// this negligible in practice — see the design's known limitations.)
 pub struct IdAlloc {
     prefix: String,
     next: usize,
 }
 
 impl IdAlloc {
-    pub fn new(feature_index: usize) -> Self {
+    pub fn new(feature_index: usize, major: u8) -> Self {
         Self {
-            prefix: format!("_cpq_b{feature_index}_p"),
+            prefix: format!("_cpq_b{feature_index}_l{major}_p"),
             next: 0,
         }
     }
@@ -55,6 +55,19 @@ impl IdAlloc {
         let id = format!("{}{}", self.prefix, self.next);
         self.next += 1;
         id
+    }
+}
+
+/// Whether a (possibly nested) `values` array contains at least one non-null
+/// (integer) leaf — i.e. at least one face is assigned a semantic surface.
+/// Distinguishes a geometry with real semantics from one that merely carries a
+/// building-wide surfaces array stamped with all-null values (which the reader
+/// attaches to every geometry of a semantic building).
+pub fn has_nonnull_value(values: &Value) -> bool {
+    match values {
+        Value::Number(_) => true,
+        Value::Array(a) => a.iter().any(has_nonnull_value),
+        _ => false,
     }
 }
 
@@ -93,14 +106,15 @@ pub fn surfaces_emittable(s: &Semantics) -> bool {
     !s.surfaces.is_empty() && s.surfaces.iter().all(|t| is_ncname(t))
 }
 
-/// The number of semantic surfaces on a geometry's `geometry_properties`
-/// (`semantics.surfaces`), used to count drops when they are not emitted.
-pub fn semantic_surface_count(props: Option<&Value>) -> usize {
-    props
-        .and_then(|p| p.get("semantics"))
-        .and_then(|s| s.get("surfaces"))
-        .and_then(|s| s.as_array())
-        .map_or(0, Vec::len)
+/// The number of *real* semantic surfaces on a geometry (surfaces present AND
+/// at least one non-null value), used to count drops. Returns 0 for a geometry
+/// that only carries an all-null (stamped) surfaces array, so dropping such a
+/// geometry does not spuriously inflate `semantic_surfaces_dropped`.
+pub fn droppable_surface_count(props: Option<&Value>) -> usize {
+    match parse_semantics(props) {
+        Some(sem) if has_nonnull_value(&sem.values) => sem.surfaces.len(),
+        _ => 0,
+    }
 }
 
 /// One face's value: `null` -> `None`, a non-negative integer in range ->
@@ -503,13 +517,13 @@ mod tests {
     }
 
     #[test]
-    fn id_alloc_is_per_building_unique() {
-        let mut a = IdAlloc::new(0);
-        assert_eq!(a.alloc(), "_cpq_b0_p0");
-        assert_eq!(a.alloc(), "_cpq_b0_p1");
-        // A different feature index gives a disjoint id space.
-        let mut b = IdAlloc::new(7);
-        assert_eq!(b.alloc(), "_cpq_b7_p0");
+    fn id_alloc_is_per_building_lod_unique() {
+        let mut a = IdAlloc::new(0, 2);
+        assert_eq!(a.alloc(), "_cpq_b0_l2_p0");
+        assert_eq!(a.alloc(), "_cpq_b0_l2_p1");
+        // A different feature index or LoD gives a disjoint id space.
+        assert_eq!(IdAlloc::new(7, 2).alloc(), "_cpq_b7_l2_p0");
+        assert_eq!(IdAlloc::new(0, 3).alloc(), "_cpq_b0_l3_p0");
     }
 
     use crate::wkb_read::DecodedKind;
@@ -529,7 +543,7 @@ mod tests {
         props: &Value,
         sem: &Semantics,
     ) -> String {
-        let mut ids = IdAlloc::new(0);
+        let mut ids = IdAlloc::new(0, 2);
         let mut w = Writer::new(Vec::new());
         write_solid_with_semantics(&mut w, coords, kind, Some(props), sem, &mut ids, 2).unwrap();
         String::from_utf8(w.into_inner()).unwrap()
@@ -566,10 +580,16 @@ mod tests {
         // boundedBy: Wall then Roof, each xlink id matches a gml:Polygon gml:id.
         assert!(xml.contains("<bldg:boundedBy><bldg:WallSurface>"), "{xml}");
         assert!(xml.contains("<bldg:boundedBy><bldg:RoofSurface>"), "{xml}");
-        assert!(xml.contains("xlink:href=\"#_cpq_b0_p0\""), "{xml}");
-        assert!(xml.contains("<gml:Polygon gml:id=\"_cpq_b0_p0\">"), "{xml}");
-        assert!(xml.contains("xlink:href=\"#_cpq_b0_p1\""), "{xml}");
-        assert!(xml.contains("<gml:Polygon gml:id=\"_cpq_b0_p1\">"), "{xml}");
+        assert!(xml.contains("xlink:href=\"#_cpq_b0_l2_p0\""), "{xml}");
+        assert!(
+            xml.contains("<gml:Polygon gml:id=\"_cpq_b0_l2_p0\">"),
+            "{xml}"
+        );
+        assert!(xml.contains("xlink:href=\"#_cpq_b0_l2_p1\""), "{xml}");
+        assert!(
+            xml.contains("<gml:Polygon gml:id=\"_cpq_b0_l2_p1\">"),
+            "{xml}"
+        );
         // Wall precedes Roof (surfaces array order).
         assert!(xml.find("WallSurface").unwrap() < xml.find("RoofSurface").unwrap());
     }

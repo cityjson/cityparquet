@@ -211,9 +211,9 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                 next_feature_index += 1;
                 let mut solids = Vec::new();
                 for (lod, decoded, props) in obj.geometries {
-                    // Semantics on a geometry we are about to skip are dropped;
-                    // count them (computed before `props` is moved).
-                    let sem_count = semantics::semantic_surface_count(props.as_ref());
+                    // Real semantics on a geometry we are about to skip are
+                    // dropped; count them (computed before `props` is moved).
+                    let sem_count = semantics::droppable_surface_count(props.as_ref());
                     match route_geometry(lod, decoded, props) {
                         GeomRoute::Emit(lod, decoded, props) => solids.push((lod, decoded, props)),
                         // No CityGML 2.0 Building slot for a MultiSolid.
