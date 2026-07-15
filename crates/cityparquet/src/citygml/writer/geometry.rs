@@ -70,8 +70,23 @@ pub fn write_polygon<W: Write>(
     coords: &[[f64; 3]],
     face: &[Vec<usize>],
 ) -> Result<()> {
-    w.write_event(Event::Start(BytesStart::new("gml:Polygon")))
-        .map_err(io_err)?;
+    write_polygon_with_id(w, coords, face, None)
+}
+
+/// Like [`write_polygon`] but stamps a `gml:id` on the `gml:Polygon` when
+/// `id` is `Some` — used for the inline boundedBy polygons that a solid
+/// references by `xlink:href`.
+pub fn write_polygon_with_id<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    face: &[Vec<usize>],
+    id: Option<&str>,
+) -> Result<()> {
+    let mut poly = BytesStart::new("gml:Polygon");
+    if let Some(id) = id {
+        poly.push_attribute(("gml:id", id));
+    }
+    w.write_event(Event::Start(poly)).map_err(io_err)?;
 
     let (exterior, interiors) = face
         .split_first()
@@ -92,6 +107,31 @@ pub fn write_polygon<W: Write>(
     }
 
     w.write_event(Event::End(BytesEnd::new("gml:Polygon")))
+        .map_err(io_err)?;
+    Ok(())
+}
+
+/// `<gml:surfaceMember xlink:href="#id"/>` — an empty element referencing a
+/// polygon defined (inline, with that `gml:id`) elsewhere in the document.
+pub fn write_xlink_member<W: Write>(w: &mut Writer<W>, id: &str) -> Result<()> {
+    let mut m = BytesStart::new("gml:surfaceMember");
+    m.push_attribute(("xlink:href", format!("#{id}").as_str()));
+    w.write_event(Event::Empty(m)).map_err(io_err)?;
+    Ok(())
+}
+
+/// `<gml:surfaceMember><gml:Polygon>…</gml:surfaceMember>` — an inline face,
+/// with an optional `gml:id` (used when the same polygon is xlinked elsewhere).
+pub fn write_inline_member<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    face: &[Vec<usize>],
+    id: Option<&str>,
+) -> Result<()> {
+    w.write_event(Event::Start(BytesStart::new("gml:surfaceMember")))
+        .map_err(io_err)?;
+    write_polygon_with_id(w, coords, face, id)?;
+    w.write_event(Event::End(BytesEnd::new("gml:surfaceMember")))
         .map_err(io_err)?;
     Ok(())
 }
@@ -247,6 +287,27 @@ mod tests {
         let mut w = Writer::new(Vec::new());
         f(&mut w).unwrap();
         String::from_utf8(w.into_inner()).unwrap()
+    }
+
+    #[test]
+    fn xlink_member_is_empty_element() {
+        let xml = emit(|w| write_xlink_member(w, "_cpq_p3"));
+        assert_eq!(xml, "<gml:surfaceMember xlink:href=\"#_cpq_p3\"/>");
+    }
+
+    #[test]
+    fn inline_member_wraps_polygon_with_optional_id() {
+        let coords = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
+        let face = vec![vec![0usize, 1, 2]];
+        let xml = emit(|w| write_inline_member(w, &coords, &face, Some("_cpq_p0")));
+        assert!(
+            xml.starts_with("<gml:surfaceMember><gml:Polygon gml:id=\"_cpq_p0\">"),
+            "{xml}"
+        );
+        assert!(xml.ends_with("</gml:Polygon></gml:surfaceMember>"), "{xml}");
+        // Without an id, no gml:id attribute is emitted.
+        let xml2 = emit(|w| write_inline_member(w, &coords, &face, None));
+        assert!(xml2.contains("<gml:Polygon>"), "{xml2}");
     }
 
     #[test]

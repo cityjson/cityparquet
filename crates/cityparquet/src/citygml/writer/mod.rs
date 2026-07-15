@@ -7,6 +7,7 @@ pub mod attributes;
 pub mod building;
 pub mod document;
 pub mod geometry;
+pub mod semantics;
 
 use std::collections::HashSet;
 use std::fs;
@@ -60,11 +61,16 @@ pub struct WriteReport {
     /// nested/heterogeneous `Json`, string lists with an unwritable item,
     /// empty/whitespace strings, XML-illegal strings/names, un-typed columns).
     pub attributes_skipped: usize,
-    /// Semantic surfaces (`geometry_properties.semantics.surfaces`) dropped from
-    /// emitted geometry: W-M2 writes geometry only, not `bldg:boundedBy`
-    /// semantic surfaces (deferred to W-M3). Counted so the loss is reported,
-    /// not silent — a currently-known, machine-reported round-trip gap.
+    /// `bldg:boundedBy` semantic surfaces emitted (W-M3).
+    pub semantic_surfaces_written: usize,
+    /// Semantic surfaces dropped when a geometry falls back to geometry-only
+    /// (an extension surface type, a `values`/shape mismatch, or a MultiSolid
+    /// whose geometry is skipped). Counted so the loss is reported, not silent.
     pub semantic_surfaces_dropped: usize,
+    /// `null`-value faces of a no-solid MultiSurface, which have no CityGML 2.0
+    /// home (the reader's MultiSurface path never produces a null value).
+    /// Unreachable for CityGML-sourced input.
+    pub multisurface_null_faces_dropped: usize,
 }
 
 fn io_err(e: std::io::Error) -> CityParquetError {
@@ -155,6 +161,8 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     let mut bounds = Bounds::new();
     let mut seen_ids: HashSet<String> = HashSet::new();
     let mut members = Writer::new(Vec::new());
+    // Monotonic per-Building index; namespaces each building's polygon gml:ids.
+    let mut next_feature_index = 0usize;
 
     let mut first_builder = Some(first_builder);
     for (idx, name) in manifest.tables.iter().enumerate() {
@@ -199,14 +207,25 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     report.non_building_skipped += 1;
                     continue;
                 }
+                let feature_index = next_feature_index;
+                next_feature_index += 1;
                 let mut solids = Vec::new();
                 for (lod, decoded, props) in obj.geometries {
+                    // Real semantics on a geometry we are about to skip are
+                    // dropped; count them (computed before `props` is moved).
+                    let sem_count = semantics::droppable_surface_count(props.as_ref());
                     match route_geometry(lod, decoded, props) {
                         GeomRoute::Emit(lod, decoded, props) => solids.push((lod, decoded, props)),
                         // No CityGML 2.0 Building slot for a MultiSolid.
-                        GeomRoute::MultiSolid => report.multi_solids_skipped += 1,
+                        GeomRoute::MultiSolid => {
+                            report.multi_solids_skipped += 1;
+                            report.semantic_surfaces_dropped += sem_count;
+                        }
                         // A lodless geometry cannot be a lod<n>Solid.
-                        GeomRoute::Lodless => report.lod_columns_skipped += 1,
+                        GeomRoute::Lodless => {
+                            report.lod_columns_skipped += 1;
+                            report.semantic_surfaces_dropped += sem_count;
+                        }
                     }
                 }
                 let attributes = obj
@@ -230,6 +249,7 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     &mut member,
                     &building,
                     &attr_types,
+                    feature_index,
                     &mut bounds,
                     &mut report,
                 )? {
