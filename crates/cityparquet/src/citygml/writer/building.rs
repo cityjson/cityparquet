@@ -94,6 +94,23 @@ pub fn write_building<W: Write>(
         return Ok(false);
     }
 
+    // Reject non-finite coordinates before emitting anything: `inf`/`-inf`/`NaN`
+    // are not valid XML Schema `double` lexical forms and NaN would poison the
+    // envelope. (WKB's 2^53 magnitude guard does not catch NaN, whose
+    // comparisons are always false.)
+    for (_, (_, geom, _)) in &by_major {
+        if geom
+            .coords
+            .iter()
+            .any(|c| c.iter().any(|v| !v.is_finite()))
+        {
+            return Err(CityParquetError::Geometry(format!(
+                "building {:?} has a non-finite coordinate; cannot serialise as gml:posList",
+                b.id
+            )));
+        }
+    }
+
     w.write_event(Event::Start(BytesStart::new("cityObjectMember")))
         .map_err(io_err)?;
     let mut bldg = BytesStart::new("bldg:Building");
@@ -137,6 +154,12 @@ mod tests {
         }
     }
 
+    /// The `geometry_properties` a stored `Solid` always carries — `write_solid`
+    /// requires `type: "Solid"`.
+    fn solid_props() -> Value {
+        serde_json::json!({ "type": "Solid" })
+    }
+
     #[test]
     fn is_ncname_accepts_3dbag_ids_rejects_bad() {
         assert!(is_ncname("NL.IMBAG.Pand.0503100000013175-0"));
@@ -151,8 +174,8 @@ mod tests {
         let b = BuildingSolids {
             id: "B1".into(),
             solids: vec![
-                (Lod::parse("2").unwrap(), tri_solid(), None),
-                (Lod::parse("2.2").unwrap(), tri_solid(), None),
+                (Lod::parse("2").unwrap(), tri_solid(), Some(solid_props())),
+                (Lod::parse("2.2").unwrap(), tri_solid(), Some(solid_props())),
             ],
         };
         let mut bounds = Bounds::new();
@@ -170,8 +193,8 @@ mod tests {
         let b = BuildingSolids {
             id: "B2".into(),
             solids: vec![
-                (Lod::parse("2").unwrap(), tri_solid(), None),
-                (Lod::parse("1").unwrap(), tri_solid(), None),
+                (Lod::parse("2").unwrap(), tri_solid(), Some(solid_props())),
+                (Lod::parse("1").unwrap(), tri_solid(), Some(solid_props())),
             ],
         };
         let mut w = Writer::new(Vec::new());
@@ -202,6 +225,24 @@ mod tests {
         assert!(!write_building(&mut w, &b, &mut Bounds::new(), &mut report).unwrap());
         assert!(w.into_inner().is_empty());
         assert_eq!(report.lod_columns_skipped, 1);
+    }
+
+    #[test]
+    fn non_finite_coordinate_errors() {
+        let geom = DecodedGeometry {
+            coords: vec![[0.0, 0.0, 0.0], [1.0, f64::NAN, 0.0], [1.0, 1.0, 0.0]],
+            kind: DecodedKind::PolyhedralSurface(vec![vec![vec![0, 1, 2]]]),
+        };
+        let b = BuildingSolids {
+            id: "B4".into(),
+            solids: vec![(Lod::parse("2").unwrap(), geom, None)],
+        };
+        let mut w = Writer::new(Vec::new());
+        assert!(
+            write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).is_err()
+        );
+        // Nothing should have been emitted before the error.
+        assert!(w.into_inner().is_empty());
     }
 
     #[test]

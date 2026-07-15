@@ -108,6 +108,21 @@ pub fn write_solid<W: Write>(
     faces: &[Vec<Vec<usize>>],
     props: Option<&serde_json::Value>,
 ) -> Result<()> {
+    // A PolyhedralSurface WKB is emitted as a gml:Solid only when its paired
+    // geometry_properties actually says `type: "Solid"`. Missing or mismatched
+    // properties would otherwise let `partition_shells(None)` silently collapse
+    // a multi-shell solid into one exterior shell, dropping cavities.
+    let is_solid = props
+        .and_then(|p| p.get("type"))
+        .and_then(|t| t.as_str())
+        == Some("Solid");
+    if !is_solid {
+        return Err(CityParquetError::Schema(
+            "geometry_properties.type is not \"Solid\"; refusing to emit a gml:Solid from a \
+             PolyhedralSurface without Solid shell metadata"
+                .to_string(),
+        ));
+    }
     let counts = crate::export::shell_faces_flat(props)?;
     let shells = crate::export::partition_shells(faces.to_vec(), counts.as_deref())?;
 
@@ -229,11 +244,25 @@ mod tests {
     }
 
     #[test]
+    fn write_solid_rejects_non_solid_or_missing_type() {
+        let coords = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
+        let faces = vec![vec![vec![0usize, 1, 2]]];
+        // No props at all.
+        let mut w = Writer::new(Vec::new());
+        assert!(write_solid(&mut w, &coords, &faces, None).is_err());
+        // Props present but the wrong type.
+        let props = serde_json::json!({ "type": "MultiSurface" });
+        let mut w = Writer::new(Vec::new());
+        assert!(write_solid(&mut w, &coords, &faces, Some(&props)).is_err());
+    }
+
+    #[test]
     fn write_solid_single_shell_has_no_interior() {
         let coords = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
         let faces = vec![vec![vec![0usize, 1, 2]]];
-        // No solid_shell_faces -> single shell fallback.
-        let xml = emit(|w| write_solid(w, &coords, &faces, None));
+        // type Solid, no solid_shell_faces -> single shell fallback.
+        let props = serde_json::json!({ "type": "Solid" });
+        let xml = emit(|w| write_solid(w, &coords, &faces, Some(&props)));
         assert_eq!(
             xml.matches("<gml:exterior><gml:CompositeSurface>").count(),
             1

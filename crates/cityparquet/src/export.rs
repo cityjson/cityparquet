@@ -278,7 +278,15 @@ pub(crate) fn partition_shells(
 ) -> Result<Vec<Vec<Vec<Vec<usize>>>>> {
     match counts {
         Some(counts) => {
-            let total: usize = counts.iter().sum();
+            // Checked sum: `solid_shell_faces` can come from untrusted package
+            // data, so a sum that overflows `usize` must be a clean error, not
+            // a debug panic / release wraparound that then mis-partitions.
+            let mut total: usize = 0;
+            for &n in counts {
+                total = total.checked_add(n).ok_or_else(|| {
+                    err("solid_shell_faces counts overflow usize".to_string())
+                })?;
+            }
             if total != faces.len() {
                 return Err(err(format!(
                     "solid_shell_faces counts sum to {total} but the stored geometry has {} faces",

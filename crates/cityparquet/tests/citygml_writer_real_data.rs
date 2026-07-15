@@ -8,7 +8,7 @@
 //! the package -> CityGML -> package round-trip. Attributes and semantic
 //! surfaces are intentionally NOT compared — W-M1 emits geometry only.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -31,9 +31,11 @@ fn mm(v: f64) -> i64 {
     (v * 1000.0).round() as i64
 }
 
-/// The set of distinct world coordinates in every Building `Solid`
-/// (`PolyhedralSurface`) of a package, on the 1 mm grid.
-fn solid_coords(pkg: &Path) -> BTreeSet<(i64, i64, i64)> {
+/// Per Building `id`, per major LoD, the set of distinct world coordinates of
+/// its `Solid` (`PolyhedralSurface`) geometry, on the 1 mm grid. Keying by
+/// `(id, major)` — not one global set — means a swapped building, a lost LoD,
+/// or geometry attached to the wrong object is caught, not masked.
+fn solid_coords(pkg: &Path) -> BTreeMap<(String, u8), BTreeSet<(i64, i64, i64)>> {
     let manifest: PackageManifest =
         serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
     let meta = ParquetRecordBatchReaderBuilder::try_new(
@@ -43,7 +45,7 @@ fn solid_coords(pkg: &Path) -> BTreeSet<(i64, i64, i64)> {
     .cityparquet_metadata()
     .unwrap();
 
-    let mut set = BTreeSet::new();
+    let mut map: BTreeMap<(String, u8), BTreeSet<(i64, i64, i64)>> = BTreeMap::new();
     for name in &manifest.tables {
         let reader = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
             .unwrap()
@@ -55,17 +57,24 @@ fn solid_coords(pkg: &Path) -> BTreeSet<(i64, i64, i64)> {
                 if obj.object.thetype != "Building" {
                     continue;
                 }
-                for (_lod, decoded, _props) in &obj.geometries {
+                for (lod, decoded, _props) in &obj.geometries {
                     if matches!(decoded.kind, DecodedKind::PolyhedralSurface(_)) {
+                        // W-M1 only emits majors 1..=4; mirror that here so the
+                        // two sides compare the same projection.
+                        let Some(major) = lod.as_ref().map(|l| l.major()).filter(|m| (1..=4).contains(m))
+                        else {
+                            continue;
+                        };
+                        let entry = map.entry((obj.id.clone(), major)).or_default();
                         for c in &decoded.coords {
-                            set.insert((mm(c[0]), mm(c[1]), mm(c[2])));
+                            entry.insert((mm(c[0]), mm(c[1]), mm(c[2])));
                         }
                     }
                 }
             }
         }
     }
-    set
+    map
 }
 
 #[test]

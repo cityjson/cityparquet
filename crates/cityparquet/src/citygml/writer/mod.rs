@@ -155,13 +155,22 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     }
                 }
                 let building = BuildingSolids { id: obj.id, solids };
-                if !seen_ids.insert(building.id.clone()) {
-                    return Err(CityParquetError::Schema(format!(
-                        "duplicate CityObject id {:?}; CityGML gml:id must be document-unique",
-                        building.id
-                    )));
-                }
-                if write_building(&mut members, &building, &mut bounds, &mut report)? {
+                // Buffer this member on its own so the document-unique `gml:id`
+                // is reserved ONLY for a Building that actually emits — a
+                // duplicate id shared by two skipped/no-solid Buildings must not
+                // fail a document in which neither id ever appears.
+                let mut member = Writer::new(Vec::new());
+                if write_building(&mut member, &building, &mut bounds, &mut report)? {
+                    if !seen_ids.insert(building.id.clone()) {
+                        return Err(CityParquetError::Schema(format!(
+                            "duplicate CityObject id {:?}; CityGML gml:id must be document-unique",
+                            building.id
+                        )));
+                    }
+                    members
+                        .get_mut()
+                        .write_all(&member.into_inner())
+                        .map_err(io_err)?;
                     report.buildings_written += 1;
                 } else {
                     report.buildings_without_solid_skipped += 1;
