@@ -8,10 +8,10 @@
 //! W-M1; `GeometryCollection` (MultiSolid/CompositeSolid) and other shapes are
 //! the driver's concern to count, but a stray non-Solid is guarded here too.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
-use cityparquet_schema::{CityParquetError, Lod};
+use cityparquet_schema::{AttributeType, CityParquetError, Lod};
 use quick_xml::Writer;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use serde_json::Value;
@@ -25,6 +25,17 @@ use crate::wkb_read::{DecodedGeometry, DecodedKind};
 
 fn io_err(e: std::io::Error) -> CityParquetError {
     CityParquetError::Io(e.to_string())
+}
+
+/// Count the semantic surfaces attached to a geometry's `geometry_properties`
+/// (`semantics.surfaces`). W-M2 emits geometry only, so these are dropped; the
+/// count is reported (never silently) via `WriteReport::semantic_surfaces_dropped`.
+fn semantic_surface_count(props: Option<&Value>) -> usize {
+    props
+        .and_then(|p| p.get("semantics"))
+        .and_then(|s| s.get("surfaces"))
+        .and_then(|s| s.as_array())
+        .map_or(0, Vec::len)
 }
 
 /// A valid XML `NCName` (ASCII-pragmatic, matching real CityGML ids): first
@@ -56,6 +67,7 @@ pub struct BuildingSolids {
 pub fn write_building<W: Write>(
     w: &mut Writer<W>,
     b: &BuildingSolids,
+    types: &HashMap<String, AttributeType>,
     bounds: &mut Bounds,
     report: &mut WriteReport,
 ) -> Result<bool> {
@@ -117,7 +129,7 @@ pub fn write_building<W: Write>(
     // attribute is actually writable: an attributes-only Building is valid, but
     // a Building with neither geometry nor a writable attribute is not emitted.
     let mut attr_buf = Writer::new(Vec::new());
-    let attrs_written = write_attributes(&mut attr_buf, &b.attributes, report)?;
+    let attrs_written = write_attributes(&mut attr_buf, &b.attributes, types, report)?;
 
     if by_major.is_empty() && attrs_written == 0 {
         return Ok(false);
@@ -147,6 +159,9 @@ pub fn write_building<W: Write>(
             }
             _ => unreachable!("only PolyhedralSurface/GeometryCollection reach by_major"),
         }
+        // W-M2 emits geometry but not bldg:boundedBy semantic surfaces; report
+        // how many were dropped so the loss is machine-visible, not silent.
+        report.semantic_surfaces_dropped += semantic_surface_count(*props);
         // Accumulate the geometry's coord pool (equals the referenced set for
         // WKB-decoded geometry; covers both solids and composite members).
         for c in &geom.coords {
@@ -193,6 +208,14 @@ mod tests {
         }
     }
 
+    /// A type map covering the attribute names these tests use (`roofType`); an
+    /// unused entry is harmless for the geometry-only tests that share it.
+    fn types() -> HashMap<String, AttributeType> {
+        [("roofType".to_string(), AttributeType::String)]
+            .into_iter()
+            .collect()
+    }
+
     #[test]
     fn composite_solid_is_emitted_and_counted() {
         let b = BuildingSolids {
@@ -206,7 +229,7 @@ mod tests {
         };
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(write_building(&mut w, &b, &mut Bounds::new(), &mut report).unwrap());
+        assert!(write_building(&mut w, &b, &types(), &mut Bounds::new(), &mut report).unwrap());
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert!(
             xml.contains("<bldg:lod2Solid><gml:CompositeSolid>"),
@@ -237,7 +260,7 @@ mod tests {
         let mut bounds = Bounds::new();
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(write_building(&mut w, &b, &mut bounds, &mut report).unwrap());
+        assert!(write_building(&mut w, &b, &types(), &mut bounds, &mut report).unwrap());
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert_eq!(xml.matches("<bldg:lod2Solid>").count(), 1);
         assert_eq!(report.lod_columns_skipped, 1);
@@ -256,7 +279,14 @@ mod tests {
         };
         let mut w = Writer::new(Vec::new());
         assert!(
-            write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).unwrap()
+            write_building(
+                &mut w,
+                &b,
+                &types(),
+                &mut Bounds::new(),
+                &mut WriteReport::default()
+            )
+            .unwrap()
         );
         let xml = String::from_utf8(w.into_inner()).unwrap();
         let lod1 = xml.find("<bldg:lod1Solid>").unwrap();
@@ -274,7 +304,7 @@ mod tests {
         };
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(!write_building(&mut w, &b, &mut Bounds::new(), &mut report).unwrap());
+        assert!(!write_building(&mut w, &b, &types(), &mut Bounds::new(), &mut report).unwrap());
         assert!(w.into_inner().is_empty());
         assert_eq!(report.lod_columns_skipped, 1);
     }
@@ -292,7 +322,14 @@ mod tests {
         };
         let mut w = Writer::new(Vec::new());
         assert!(
-            write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).is_err()
+            write_building(
+                &mut w,
+                &b,
+                &types(),
+                &mut Bounds::new(),
+                &mut WriteReport::default()
+            )
+            .is_err()
         );
         // Nothing should have been emitted before the error.
         assert!(w.into_inner().is_empty());
@@ -307,7 +344,14 @@ mod tests {
         };
         let mut w = Writer::new(Vec::new());
         assert!(
-            write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).is_err()
+            write_building(
+                &mut w,
+                &b,
+                &types(),
+                &mut Bounds::new(),
+                &mut WriteReport::default()
+            )
+            .is_err()
         );
     }
 
@@ -322,7 +366,7 @@ mod tests {
         };
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(write_building(&mut w, &b, &mut Bounds::new(), &mut report).unwrap());
+        assert!(write_building(&mut w, &b, &types(), &mut Bounds::new(), &mut report).unwrap());
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert!(xml.contains("<bldg:Building gml:id=\"B5\">"));
         assert!(xml.contains("<bldg:roofType>1000</bldg:roofType>"));
@@ -338,7 +382,14 @@ mod tests {
         };
         let mut w = Writer::new(Vec::new());
         assert!(
-            !write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).unwrap()
+            !write_building(
+                &mut w,
+                &b,
+                &types(),
+                &mut Bounds::new(),
+                &mut WriteReport::default()
+            )
+            .unwrap()
         );
         assert!(w.into_inner().is_empty());
     }
@@ -353,7 +404,14 @@ mod tests {
             solids: vec![(Lod::parse("2").unwrap(), tri_solid(), Some(solid_props()))],
         };
         let mut w = Writer::new(Vec::new());
-        write_building(&mut w, &b, &mut Bounds::new(), &mut WriteReport::default()).unwrap();
+        write_building(
+            &mut w,
+            &b,
+            &types(),
+            &mut Bounds::new(),
+            &mut WriteReport::default(),
+        )
+        .unwrap();
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert!(xml.find("<bldg:roofType>").unwrap() < xml.find("<bldg:lod2Solid>").unwrap());
     }

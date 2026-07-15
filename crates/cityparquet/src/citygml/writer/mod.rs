@@ -57,9 +57,14 @@ pub struct WriteReport {
     /// Attribute values emitted as `bldg:`/`gen:` elements.
     pub attributes_written: usize,
     /// Attribute values skipped as unrepresentable in CityGML 2.0 (Boolean,
-    /// nested/heterogeneous `Json`, single/empty string lists, empty/whitespace
-    /// strings, XML-illegal control chars).
+    /// nested/heterogeneous `Json`, string lists with an unwritable item,
+    /// empty/whitespace strings, XML-illegal strings/names, un-typed columns).
     pub attributes_skipped: usize,
+    /// Semantic surfaces (`geometry_properties.semantics.surfaces`) dropped from
+    /// emitted geometry: W-M2 writes geometry only, not `bldg:boundedBy`
+    /// semantic surfaces (deferred to W-M3). Counted so the loss is reported,
+    /// not silent — a currently-known, machine-reported round-trip gap.
+    pub semantic_surfaces_dropped: usize,
 }
 
 fn io_err(e: std::io::Error) -> CityParquetError {
@@ -143,6 +148,8 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     let meta = first_builder.cityparquet_metadata()?;
     let schema = first_builder.cityparquet_arrow_schema()?;
     let srs_name = srs_name_for(meta.crs.as_ref())?;
+    // Stored attribute column types drive attribute routing (not value shapes).
+    let attr_types = attributes::attribute_types(&schema, &meta.attribute_columns);
 
     let mut report = WriteReport::default();
     let mut bounds = Bounds::new();
@@ -219,7 +226,13 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                 // duplicate id shared by two skipped/no-solid Buildings must not
                 // fail a document in which neither id ever appears.
                 let mut member = Writer::new(Vec::new());
-                if write_building(&mut member, &building, &mut bounds, &mut report)? {
+                if write_building(
+                    &mut member,
+                    &building,
+                    &attr_types,
+                    &mut bounds,
+                    &mut report,
+                )? {
                     if !seen_ids.insert(building.id.clone()) {
                         return Err(CityParquetError::Schema(format!(
                             "duplicate CityObject id {:?}; CityGML gml:id must be document-unique",
