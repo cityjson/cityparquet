@@ -7,6 +7,7 @@ pub mod attributes;
 pub mod building;
 pub mod document;
 pub mod geometry;
+pub mod semantics;
 
 use std::collections::HashSet;
 use std::fs;
