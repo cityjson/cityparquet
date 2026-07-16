@@ -110,7 +110,10 @@ fn transform_axes(transform: &Transform) -> ([f64; 3], [f64; 3]) {
 /// The min/max corners (world coordinates, dequantised via `transform`) of
 /// every vertex in `vertices`, or `None` if `vertices` is empty (a feature
 /// with no vertices at all — no geometry whatsoever).
-fn vertices_minmax(vertices: &[Vec<i64>], transform: &Transform) -> Option<([f64; 3], [f64; 3])> {
+pub(crate) fn vertices_minmax(
+    vertices: &[Vec<i64>],
+    transform: &Transform,
+) -> Option<([f64; 3], [f64; 3])> {
     let (scale, translate) = transform_axes(transform);
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];

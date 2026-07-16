@@ -16,6 +16,7 @@ fn convert_delft_to_tempdir_succeeds() {
     let output = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(out.path())
         .arg("--layout")
         .arg("single")
@@ -33,6 +34,121 @@ fn convert_delft_to_tempdir_succeeds() {
     );
 }
 
+/// Multiple DISTINCT inputs (delft + a copy of it) merge into ONE package; the
+/// object count doubles (2231 * 2 = 4462). Two distinct paths are needed
+/// because `resolve_inputs` de-duplicates identical paths.
+#[test]
+fn convert_two_inputs_merges_into_one_package() {
+    let out = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let copy = tmp.path().join("delft_copy.city.jsonl");
+    std::fs::copy(fixture("delft.city.jsonl"), &copy).unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let output = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg(&copy)
+        .arg("-o")
+        .arg(out.path())
+        .arg("--layout")
+        .arg("single")
+        .output()
+        .expect("failed to run convert");
+
+    assert!(
+        output.status.success(),
+        "merge convert failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.split_whitespace().next() == Some("4462"),
+        "merged object count should be 2231*2=4462, got: {stdout}"
+    );
+    assert!(out.path().join("cityobjects.parquet").exists());
+}
+
+/// `--partition count --number 3` writes 3 self-contained package subdirs.
+#[test]
+fn partition_count_writes_n_package_dirs() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let o = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(out.path())
+        .arg("--partition")
+        .arg("count")
+        .arg("--number")
+        .arg("3")
+        .arg("--layout")
+        .arg("single")
+        .output()
+        .expect("run");
+    assert!(
+        o.status.success(),
+        "partition convert failed: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    for i in 0..3 {
+        assert!(
+            out.path()
+                .join(format!("count-{i:05}"))
+                .join("cityobjects.parquet")
+                .exists(),
+            "missing partition count-{i:05}"
+        );
+    }
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        stdout.contains("partitions=3"),
+        "summary should report partitions=3, got: {stdout}"
+    );
+}
+
+/// `--partition box` without `--cell-size` must fail with a clear error.
+#[test]
+fn partition_box_requires_cell_size() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let o = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(out.path())
+        .arg("--partition")
+        .arg("box")
+        .output()
+        .expect("run");
+    assert!(!o.status.success(), "box without --cell-size must fail");
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        stderr.contains("cell-size"),
+        "error should mention --cell-size, got: {stderr}"
+    );
+}
+
+/// A sizing flag without `--partition` is a usage error.
+#[test]
+fn sizing_flag_without_partition_errors() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let o = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(out.path())
+        .arg("--number")
+        .arg("3")
+        .output()
+        .expect("run");
+    assert!(
+        !o.status.success(),
+        "--number without --partition must fail"
+    );
+}
+
 #[test]
 fn convert_without_overwrite_fails_on_existing_output() {
     let out = tempfile::tempdir().unwrap();
@@ -42,6 +158,7 @@ fn convert_without_overwrite_fails_on_existing_output() {
     let status = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(out.path())
         .status()
         .expect("failed to run first convert");
@@ -51,6 +168,7 @@ fn convert_without_overwrite_fails_on_existing_output() {
     let output = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(out.path())
         .output()
         .expect("failed to run second convert");
@@ -72,6 +190,7 @@ fn convert_with_overwrite_succeeds() {
     let status = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(out.path())
         .arg("--layout")
         .arg("single")
@@ -83,6 +202,7 @@ fn convert_with_overwrite_succeeds() {
     let status = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(out.path())
         .arg("--overwrite")
         .arg("--layout")
@@ -108,6 +228,7 @@ fn convert_compatibility_reports_sidecar_counts() {
     let output = Command::new(binary)
         .arg("convert")
         .arg(fixture("lod3_railway.city.json"))
+        .arg("-o")
         .arg(out.path())
         .arg("--profile")
         .arg("compatibility")
@@ -145,6 +266,7 @@ fn export_package_to_cityjsonl() {
     let status = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(package_dir.path())
         .status()
         .expect("failed to run convert");
@@ -191,6 +313,7 @@ fn export_and_compare_source_vs_exported_is_equal() {
     let status = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(package_dir.path())
         .status()
         .expect("failed to run convert");
@@ -268,6 +391,7 @@ fn export_and_compare_railway_with_exclusions() {
     let status = Command::new(binary)
         .arg("convert")
         .arg(fixture("lod3_railway.city.json"))
+        .arg("-o")
         .arg(package_dir.path())
         .status()
         .expect("failed to run convert");
@@ -319,6 +443,7 @@ fn convert_with_by_type_layout_writes_family_tables() {
     let output = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(out.path())
         .arg("--layout")
         .arg("by-type")
@@ -353,6 +478,7 @@ fn convert_with_an_invalid_layout_fails() {
     let output = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(out.path())
         .arg("--layout")
         .arg("bogus")
@@ -378,6 +504,7 @@ fn convert_defaults_to_by_type_layout_named_without_prefix() {
     let output = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(out.path())
         .output()
         .expect("failed to run convert");
@@ -410,6 +537,7 @@ fn convert_with_compression_override_changes_output_size_and_round_trips() {
         let status = Command::new(binary)
             .arg("convert")
             .arg(fixture("delft.city.jsonl"))
+            .arg("-o")
             .arg(out.path())
             .arg("--layout")
             .arg("single")
@@ -468,6 +596,7 @@ fn convert_with_an_invalid_compression_fails() {
     let output = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(out.path())
         .arg("--compression")
         .arg("bogus")
@@ -491,6 +620,7 @@ fn convert_layout_single_still_emits_cityobjects_parquet() {
     let output = Command::new(binary)
         .arg("convert")
         .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
         .arg(out.path())
         .arg("--layout")
         .arg("single")
@@ -519,6 +649,7 @@ fn export_package_to_gml_writes_citygml() {
     let c = Command::new(binary)
         .arg("convert")
         .arg(&ingolstadt)
+        .arg("-o")
         .arg(&pkg)
         .arg("--layout")
         .arg("single")

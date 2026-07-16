@@ -1,8 +1,12 @@
 use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
-use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
+use cityparquet::inputs::resolve_inputs;
+use cityparquet::merge::merge_sources;
+use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert_source};
+use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
+use cityparquet::source::{Source, SourceFormat};
 use cityparquet_cli::bench::{self, BenchOptions};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -17,15 +21,36 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Convert CityJSON/CityJSONSeq to CityParquet package
+    /// Convert CityJSON/CityJSONSeq/CityGML to a CityParquet package
     Convert {
-        /// Input CityJSON or CityJSONSeq file
-        #[arg(value_name = "INPUT")]
-        input: PathBuf,
+        /// Input files, directories, or glob patterns (CityJSON, CityJSONSeq,
+        /// CityGML). Multiple inputs are merged into one dataset; directories
+        /// contribute their immediate .json/.jsonl/.gml children.
+        #[arg(value_name = "INPUTS", required = true, num_args = 1..)]
+        inputs: Vec<PathBuf>,
 
-        /// Output directory for CityParquet package
-        #[arg(value_name = "OUTPUT")]
+        /// Output directory for the CityParquet package (parent directory of
+        /// per-partition packages when --partition is given)
+        #[arg(short = 'o', long = "output", value_name = "OUTPUT")]
         output: PathBuf,
+
+        /// Partition method: "count" (N equal chunks, needs --number),
+        /// "features" (<= M features each, needs --feature-num), or "box"
+        /// (spatial grid, needs --cell-size). Omit to write one package.
+        #[arg(long, value_name = "METHOD")]
+        partition: Option<String>,
+
+        /// count: number of partitions
+        #[arg(long, value_name = "N")]
+        number: Option<usize>,
+
+        /// features: maximum features per partition
+        #[arg(long, value_name = "M")]
+        feature_num: Option<usize>,
+
+        /// box: square grid cell edge length, in CRS units (metres)
+        #[arg(long, value_name = "METRES")]
+        cell_size: Option<f64>,
 
         /// Profile: core or compatibility
         #[arg(long, default_value = "core")]
@@ -152,13 +177,102 @@ enum Commands {
     },
 }
 
+/// Resolve `inputs` (files/dirs/globs) and open each as a [`Source`].
+fn resolve_and_open(inputs: &[PathBuf]) -> Result<Vec<Source>, String> {
+    let resolved = resolve_inputs(inputs).map_err(|e| e.to_string())?;
+    let mut sources = Vec::with_capacity(resolved.len());
+    for p in &resolved {
+        sources.push(Source::open(p).map_err(|e| e.to_string())?);
+    }
+    Ok(sources)
+}
+
+/// Collapse `sources` to one [`Source`]: the lone input directly, or — for
+/// several — a merged in-memory source ([`merge_sources`] enforces a shared
+/// CRS and requantises onto one transform).
+fn merge_to_one(sources: Vec<Source>) -> Result<Source, String> {
+    if sources.len() == 1 {
+        return Ok(sources.into_iter().next().expect("one source"));
+    }
+    let merged = merge_sources(&sources).map_err(|e| e.to_string())?;
+    Ok(Source::from_parts(
+        merged.header,
+        merged.features,
+        merged.doc_appearance,
+        SourceFormat::CityJsonSeq,
+    ))
+}
+
+/// Build a [`PartitionSpec`] from the `--partition` method and its sizing flag,
+/// requiring exactly the matching flag and rejecting flags for other methods.
+fn parse_partition_spec(
+    method: &str,
+    number: Option<usize>,
+    feature_num: Option<usize>,
+    cell_size: Option<f64>,
+) -> Result<PartitionSpec, String> {
+    let extras = |allowed: &str| -> Result<(), String> {
+        let mut wrong = Vec::new();
+        if allowed != "number" && number.is_some() {
+            wrong.push("--number");
+        }
+        if allowed != "feature_num" && feature_num.is_some() {
+            wrong.push("--feature-num");
+        }
+        if allowed != "cell_size" && cell_size.is_some() {
+            wrong.push("--cell-size");
+        }
+        if wrong.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "--partition {method} does not accept {}",
+                wrong.join(", ")
+            ))
+        }
+    };
+    match method {
+        "count" => {
+            extras("number")?;
+            let n = number.ok_or("--partition count requires --number")?;
+            if n < 1 {
+                return Err("--number must be >= 1".to_string());
+            }
+            Ok(PartitionSpec::Count(n))
+        }
+        "features" => {
+            extras("feature_num")?;
+            let m = feature_num.ok_or("--partition features requires --feature-num")?;
+            if m < 1 {
+                return Err("--feature-num must be >= 1".to_string());
+            }
+            Ok(PartitionSpec::Features(m))
+        }
+        "box" => {
+            extras("cell_size")?;
+            let c = cell_size.ok_or("--partition box requires --cell-size")?;
+            if c.is_nan() || c <= 0.0 {
+                return Err("--cell-size must be > 0".to_string());
+            }
+            Ok(PartitionSpec::Box { cell: c })
+        }
+        other => Err(format!(
+            "invalid partition method '{other}' (expected count, features, or box)"
+        )),
+    }
+}
+
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Convert {
-            input,
+            inputs,
             output,
+            partition,
+            number,
+            feature_num,
+            cell_size,
             profile,
             overwrite,
             batch_size,
@@ -245,7 +359,7 @@ fn main() -> std::process::ExitCode {
             };
 
             let opts = ConvertOptions {
-                input,
+                input: inputs.first().cloned().unwrap_or_default(),
                 output_dir: output,
                 profile,
                 overwrite,
@@ -256,25 +370,80 @@ fn main() -> std::process::ExitCode {
                 geoarrow,
             };
 
-            match convert(&opts) {
-                Ok(report) => {
-                    println!(
-                        "{} {} {} {} {} {} {} {} {}",
-                        report.object_count,
-                        report.files.len(),
-                        report.skipped_same_lod_geometries,
-                        report.attribute_coercion_nulls,
-                        report.degenerate_rings_dropped,
-                        report.degenerate_surfaces_dropped,
-                        report.materials_written,
-                        report.textures_written,
-                        report.templates_written
-                    );
-                    std::process::ExitCode::SUCCESS
-                }
+            // A sizing flag only makes sense with --partition.
+            if partition.is_none()
+                && (number.is_some() || feature_num.is_some() || cell_size.is_some())
+            {
+                eprintln!(
+                    "error: --number/--feature-num/--cell-size require --partition <count|features|box>"
+                );
+                return std::process::ExitCode::FAILURE;
+            }
+
+            let sources = match resolve_and_open(&inputs) {
+                Ok(sources) => sources,
                 Err(e) => {
                     eprintln!("error: {}", e);
-                    std::process::ExitCode::FAILURE
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+
+            match partition {
+                Some(method) => {
+                    let spec = match parse_partition_spec(&method, number, feature_num, cell_size) {
+                        Ok(spec) => spec,
+                        Err(e) => {
+                            eprintln!("error: {}", e);
+                            return std::process::ExitCode::FAILURE;
+                        }
+                    };
+                    match convert_partitioned(&sources, &spec, &opts) {
+                        Ok(report) => {
+                            println!(
+                                "partitions={} duplicate_ids={}",
+                                report.partitions.len(),
+                                report.duplicate_ids
+                            );
+                            for (label, r) in &report.partitions {
+                                println!("{} {}", label, r.object_count);
+                            }
+                            std::process::ExitCode::SUCCESS
+                        }
+                        Err(e) => {
+                            eprintln!("error: {}", e);
+                            std::process::ExitCode::FAILURE
+                        }
+                    }
+                }
+                None => {
+                    let source = match merge_to_one(sources) {
+                        Ok(source) => source,
+                        Err(e) => {
+                            eprintln!("error: {}", e);
+                            return std::process::ExitCode::FAILURE;
+                        }
+                    };
+                    match convert_source(&source, &opts) {
+                        Ok(report) => {
+                            println!(
+                                "{} {} {} {} {} {} {} {} {}",
+                                report.object_count,
+                                report.files.len(),
+                                report.skipped_same_lod_geometries,
+                                report.attribute_coercion_nulls,
+                                report.degenerate_rings_dropped,
+                                report.degenerate_surfaces_dropped,
+                                report.materials_written,
+                                report.textures_written,
+                                report.templates_written
+                            );
+                            std::process::ExitCode::SUCCESS
+                        }
+                        Err(e) => {
+                            eprintln!("error: {}", e);
+                            std::process::ExitCode::FAILURE
+                        }
+                    }
                 }
             }
         }

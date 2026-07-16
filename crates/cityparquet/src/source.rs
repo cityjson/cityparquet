@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use cityparquet_schema::{CityParquetError, Result};
-use cjseq::{CityJSON, CityJSONFeature, SortingStrategy};
+use cjseq::{Appearance, CityJSON, CityJSONFeature, SortingStrategy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceFormat {
@@ -24,6 +24,19 @@ pub struct Source {
     /// Parsed whole document (CityJson format only), pre-sorted for
     /// deterministic feature emission.
     doc: Option<CityJSON>,
+    /// In-memory features + doc appearance, set by [`Source::from_parts`] for
+    /// a synthetic source (the merge/partition pipeline). When present it is
+    /// the sole feature source — `path`/`doc` are unused — so `features()`
+    /// yields from it directly rather than reopening any file.
+    buffered: Option<BufferedSource>,
+}
+
+/// The backing store for an in-memory [`Source`] (see [`Source::from_parts`]):
+/// buffered features plus the doc-level appearance array their
+/// geometry-template `material`/`texture` maps resolve against.
+struct BufferedSource {
+    features: Vec<CityJSONFeature>,
+    doc_appearance: Option<Appearance>,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -47,6 +60,7 @@ impl Source {
                 format: SourceFormat::CityGml,
                 header,
                 doc: None,
+                buffered: None,
             });
         }
 
@@ -94,6 +108,7 @@ impl Source {
                 format: SourceFormat::CityJsonSeq,
                 header,
                 doc: None,
+                buffered: None,
             })
         } else {
             let text = fs::read_to_string(path)
@@ -107,7 +122,35 @@ impl Source {
                 format: SourceFormat::CityJson,
                 header,
                 doc: Some(doc),
+                buffered: None,
             })
+        }
+    }
+
+    /// Build an in-memory source from already-parsed parts: a `header`
+    /// (transform + metadata + geometry templates), the `features` to stream,
+    /// the doc-level `doc_appearance` array those features' template maps
+    /// resolve against, and the `format` tag to report. Used by the
+    /// merge/partition pipeline to feed a buffered feature subset through the
+    /// same `scan`/`encode`/`convert` machinery a file-backed source drives —
+    /// no file is ever opened. Callers pass [`SourceFormat::CityJsonSeq`]: a
+    /// buffered feature is self-contained (feature-local appearance), the Seq
+    /// convention.
+    pub fn from_parts(
+        header: CityJSON,
+        features: Vec<CityJSONFeature>,
+        doc_appearance: Option<Appearance>,
+        format: SourceFormat,
+    ) -> Self {
+        Self {
+            path: PathBuf::new(),
+            format,
+            header,
+            doc: None,
+            buffered: Some(BufferedSource {
+                features,
+                doc_appearance,
+            }),
         }
     }
 
@@ -143,6 +186,9 @@ impl Source {
     /// if at all). `header().appearance` is therefore already the right defs
     /// array in that case.
     pub fn doc_appearance(&self) -> Option<&cjseq::Appearance> {
+        if let Some(buffered) = &self.buffered {
+            return buffered.doc_appearance.as_ref();
+        }
         match &self.doc {
             Some(doc) => doc.appearance.as_ref(),
             None => self.header.appearance.as_ref(),
@@ -150,6 +196,9 @@ impl Source {
     }
 
     pub fn features(&self) -> Result<FeatureIter<'_>> {
+        if let Some(buffered) = &self.buffered {
+            return Ok(FeatureIter::Buffered(buffered.features.iter()));
+        }
         match self.format {
             SourceFormat::CityJsonSeq => {
                 let file = File::open(&self.path)
@@ -171,8 +220,15 @@ impl Source {
 
 pub enum FeatureIter<'a> {
     Seq(std::io::Lines<BufReader<File>>),
-    Doc { doc: &'a CityJSON, i: usize },
+    Doc {
+        doc: &'a CityJSON,
+        i: usize,
+    },
     CityGml(Box<crate::citygml::FeatureReader>),
+    /// In-memory features (an [`Source::from_parts`] source); each is cloned
+    /// on yield so the iterator can hand back owned `CityJSONFeature`s like
+    /// every other arm while the buffer stays intact for re-iteration.
+    Buffered(std::slice::Iter<'a, CityJSONFeature>),
 }
 
 impl Iterator for FeatureIter<'_> {
@@ -198,6 +254,7 @@ impl Iterator for FeatureIter<'_> {
                 Some(Ok(f))
             }
             FeatureIter::CityGml(reader) => reader.next(),
+            FeatureIter::Buffered(iter) => iter.next().map(|f| Ok(f.clone())),
         }
     }
 }
@@ -205,6 +262,31 @@ impl Iterator for FeatureIter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buffered_source_round_trips_features_and_header() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/delft.city.jsonl");
+        let disk = Source::open(&path).unwrap();
+        let feats: Vec<_> = disk
+            .features()
+            .unwrap()
+            .map(|f| f.unwrap())
+            .take(3)
+            .collect();
+        let mem = Source::from_parts(
+            disk.header().clone(),
+            feats.clone(),
+            None,
+            SourceFormat::CityJsonSeq,
+        );
+        let got: Vec<_> = mem.features().unwrap().map(|f| f.unwrap()).collect();
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].id, feats[0].id);
+        assert_eq!(mem.format(), SourceFormat::CityJsonSeq);
+        // Re-iteration works (buffer is not consumed).
+        assert_eq!(mem.features().unwrap().count(), 3);
+    }
 
     #[test]
     fn open_nonexistent_path_is_io_error() {
