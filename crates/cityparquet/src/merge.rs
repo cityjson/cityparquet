@@ -45,6 +45,11 @@ fn transform_eq(a: &Transform, b: &Transform) -> bool {
     a.scale == b.scale && a.translate == b.translate
 }
 
+/// CRS identity is compared by the referenceSystem's serialised form. This is
+/// strict string equality — the same authority/code spelled differently (e.g.
+/// `http` vs `https` OGC URLs) is treated as a mismatch. Adequate here: tiles
+/// from one producer carry byte-identical CRS strings; normalise if a
+/// heterogeneous-spelling corpus ever needs merging (gpt-5.6-sol review note).
 fn crs_key(header: &CityJSON) -> Result<Option<serde_json::Value>> {
     match header
         .metadata

@@ -251,8 +251,8 @@ fn parse_partition_spec(
         "box" => {
             extras("cell_size")?;
             let c = cell_size.ok_or("--partition box requires --cell-size")?;
-            if c.is_nan() || c <= 0.0 {
-                return Err("--cell-size must be > 0".to_string());
+            if !c.is_finite() || c <= 0.0 {
+                return Err("--cell-size must be a finite value > 0".to_string());
             }
             Ok(PartitionSpec::Box { cell: c })
         }

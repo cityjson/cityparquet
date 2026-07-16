@@ -129,6 +129,31 @@ fn partition_box_requires_cell_size() {
     );
 }
 
+/// A non-finite `--cell-size` (e.g. `inf`) must be rejected, not silently
+/// collapse every feature into one `box_x0_y0` partition.
+#[test]
+fn partition_box_rejects_nonfinite_cell_size() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let o = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(out.path())
+        .arg("--partition")
+        .arg("box")
+        .arg("--cell-size")
+        .arg("inf")
+        .output()
+        .expect("run");
+    assert!(!o.status.success(), "--cell-size inf must fail");
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        stderr.contains("finite"),
+        "error should mention finite, got: {stderr}"
+    );
+}
+
 /// A sizing flag without `--partition` is a usage error.
 #[test]
 fn sizing_flag_without_partition_errors() {
