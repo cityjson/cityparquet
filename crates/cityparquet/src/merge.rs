@@ -97,6 +97,27 @@ pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
         }
     }
 
+    // Validate every transform up front so the min/requantise arithmetic below
+    // can index [0..3] and divide by scale without panicking or producing NaN.
+    for s in sources {
+        let t = &s.header().transform;
+        if t.scale.len() < 3 || t.translate.len() < 3 {
+            return Err(err(
+                "CityJSON transform scale/translate must have 3 components".to_string(),
+            ));
+        }
+        if t.scale.iter().take(3).any(|&x| !x.is_finite() || x <= 0.0) {
+            return Err(err(
+                "CityJSON transform scale must be finite and positive".to_string()
+            ));
+        }
+        if t.translate.iter().take(3).any(|&x| !x.is_finite()) {
+            return Err(err(
+                "CityJSON transform translate must be finite".to_string()
+            ));
+        }
+    }
+
     // Transform: adopt the shared one if all equal (features untouched);
     // otherwise componentwise-min scale + translate and requantise below.
     let transforms: Vec<&Transform> = sources.iter().map(|s| &s.header().transform).collect();
@@ -154,7 +175,12 @@ pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
     }
     let doc_appearance = match carriers.first() {
         Some(&ci) => {
+            // Take the carrier's templates AND its header appearance together —
+            // its templates' global appearance indices, and its default themes,
+            // resolve against the carrier's own appearance, not the first
+            // source's (which may differ or be absent).
             header.geometry_templates = sources[ci].header().geometry_templates.clone();
+            header.appearance = sources[ci].header().appearance.clone();
             sources[ci].doc_appearance().cloned()
         }
         None => {

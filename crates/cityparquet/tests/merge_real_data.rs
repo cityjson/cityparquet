@@ -5,8 +5,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cityparquet::merge::merge_sources;
-use cityparquet::source::Source;
+use cityparquet::source::{Source, SourceFormat};
 use cjseq::{CityJSON, CityJSONFeature, Transform};
+
+/// A buffered source built from delft's header with a mutated transform.
+fn delft_source_with_transform(scale: Vec<f64>, translate: Vec<f64>) -> Source {
+    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let mut header = src.header().clone();
+    header.transform = Transform { scale, translate };
+    let feats: Vec<CityJSONFeature> = src
+        .features()
+        .unwrap()
+        .map(|f| f.unwrap())
+        .take(2)
+        .collect();
+    Source::from_parts(header, feats, None, SourceFormat::CityJsonSeq)
+}
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -149,6 +163,26 @@ fn crs_mismatch_is_error() {
     let sa = Source::open(&a).unwrap();
     let sb = Source::open(&b).unwrap();
     assert!(merge_sources(&[sa, sb]).is_err(), "CRS mismatch must error");
+}
+
+#[test]
+fn transform_with_fewer_than_three_components_is_rejected() {
+    let bad = delft_source_with_transform(vec![1.0], vec![0.0, 0.0, 0.0]);
+    assert!(
+        merge_sources(&[bad]).is_err(),
+        "a <3-component scale must error, not panic"
+    );
+}
+
+#[test]
+fn zero_or_nonfinite_scale_is_rejected() {
+    let zero = delft_source_with_transform(vec![0.0, 0.001, 0.001], vec![0.0, 0.0, 0.0]);
+    assert!(merge_sources(&[zero]).is_err(), "zero scale must error");
+    let inf = delft_source_with_transform(vec![f64::INFINITY, 0.001, 0.001], vec![0.0, 0.0, 0.0]);
+    assert!(
+        merge_sources(&[inf]).is_err(),
+        "non-finite scale must error"
+    );
 }
 
 #[test]

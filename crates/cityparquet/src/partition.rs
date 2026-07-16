@@ -104,24 +104,24 @@ fn io_err(msg: String) -> CityParquetError {
     CityParquetError::Io(msg)
 }
 
-/// A partition subdirectory this driver produces (so overwrite only ever
-/// touches its own output, never unrelated files a caller keeps alongside).
+/// True only for the EXACT subdirectory names this driver produces
+/// (`count-<digits>`, `features-<digits>`, `box_x…`, `box_none`), so overwrite
+/// never deletes an unrelated directory that merely shares a prefix (e.g.
+/// `box-office`, `counter`).
 fn is_partition_dir_name(name: &str) -> bool {
-    name.starts_with("count-") || name.starts_with("features-") || name.starts_with("box")
+    fn indexed(prefix: &str, name: &str) -> bool {
+        name.strip_prefix(prefix)
+            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+    }
+    name == "box_none"
+        || name.starts_with("box_x")
+        || indexed("count-", name)
+        || indexed("features-", name)
 }
 
-/// Prepare the parent output directory: error if it already holds partition
-/// subdirectories and `overwrite` is off; otherwise purge those stale
-/// subdirectories so a re-run with different sizing never leaves orphan
-/// partitions polluting an `OUT/*/…` glob.
-fn prepare_parent_dir(dir: &Path, overwrite: bool) -> Result<()> {
-    fs::create_dir_all(dir).map_err(|e| {
-        io_err(format!(
-            "cannot create output directory {}: {e}",
-            dir.display()
-        ))
-    })?;
-    let existing: Vec<std::path::PathBuf> = fs::read_dir(dir)
+/// The partition subdirectories currently under `dir` (its own prior output).
+fn existing_partition_dirs(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    Ok(fs::read_dir(dir)
         .map_err(|e| {
             io_err(format!(
                 "cannot read output directory {}: {e}",
@@ -135,22 +135,29 @@ fn prepare_parent_dir(dir: &Path, overwrite: bool) -> Result<()> {
                     .and_then(|n| n.to_str())
                     .is_some_and(is_partition_dir_name)
         })
-        .collect();
+        .collect())
+}
+
+/// Create the parent dir and fail fast if it already holds partition packages
+/// and `overwrite` is off. Returns the stale partition subdirectories to purge
+/// LATER (after the canonical scan succeeds — see [`convert_partitioned`]), so
+/// a bad-input failure never destroys a prior complete output before any new
+/// work has succeeded.
+fn ensure_parent_ready(dir: &Path, overwrite: bool) -> Result<Vec<std::path::PathBuf>> {
+    fs::create_dir_all(dir).map_err(|e| {
+        io_err(format!(
+            "cannot create output directory {}: {e}",
+            dir.display()
+        ))
+    })?;
+    let existing = existing_partition_dirs(dir)?;
     if !existing.is_empty() && !overwrite {
         return Err(err(format!(
             "output directory {} already holds partition packages (pass overwrite to replace them)",
             dir.display()
         )));
     }
-    for p in existing {
-        fs::remove_dir_all(&p).map_err(|e| {
-            io_err(format!(
-                "cannot remove stale partition {}: {e}",
-                p.display()
-            ))
-        })?;
-    }
-    Ok(())
+    Ok(existing)
 }
 
 /// Merge `sources`, partition the merged features by `spec`, and write one
@@ -168,7 +175,9 @@ pub fn convert_partitioned(
     opts: &ConvertOptions,
 ) -> Result<PartitionReport> {
     let merged = merge_sources(sources)?;
-    prepare_parent_dir(&opts.output_dir, opts.overwrite)?;
+    // Fail fast if the parent is non-empty without overwrite; the stale
+    // partitions are only purged AFTER the scan below succeeds.
+    let stale = ensure_parent_ready(&opts.output_dir, opts.overwrite)?;
 
     // Canonical schema: one scan over the entire merged dataset.
     let full = Source::from_parts(
@@ -183,6 +192,20 @@ pub fn convert_partitioned(
         lods: full_scan.lods.clone(),
     };
     drop(full);
+
+    // The scan (the likeliest early failure, e.g. bad geometry) has succeeded,
+    // so it is now safe to purge the prior run's partitions. NOTE: the set of
+    // partition packages is still not written atomically — a failure partway
+    // through the sequential writes below leaves a partial replacement; re-run
+    // to complete it (documented limitation for this research tool).
+    for p in stale {
+        fs::remove_dir_all(&p).map_err(|e| {
+            io_err(format!(
+                "cannot remove stale partition {}: {e}",
+                p.display()
+            ))
+        })?;
+    }
 
     let groups = assign_partitions(&merged.features, spec, &merged.header.transform);
     let mut partitions = Vec::with_capacity(groups.len());

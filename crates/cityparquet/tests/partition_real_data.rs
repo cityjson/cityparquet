@@ -144,6 +144,32 @@ fn box_partitions_each_round_trip_clean() {
     }
 }
 
+/// Overwrite must delete only this driver's own partition subdirs, never an
+/// unrelated directory that merely shares a name prefix (e.g. `box-office`).
+#[test]
+fn overwrite_preserves_unrelated_sibling_directories() {
+    let out = tempfile::tempdir().unwrap();
+    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let mut opts = delft_opts(out.path());
+    convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(2), &opts).unwrap();
+
+    // Unrelated directories whose names collide with a partition prefix.
+    for name in ["box-office", "counter", "features_backup"] {
+        std::fs::create_dir(out.path().join(name)).unwrap();
+        std::fs::write(out.path().join(name).join("keep.txt"), b"x").unwrap();
+    }
+
+    opts.overwrite = true;
+    convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(2), &opts).unwrap();
+
+    for name in ["box-office", "counter", "features_backup"] {
+        assert!(
+            out.path().join(name).join("keep.txt").exists(),
+            "unrelated dir {name} must survive overwrite"
+        );
+    }
+}
+
 #[test]
 fn non_empty_parent_without_overwrite_errors() {
     let out = tempfile::tempdir().unwrap();

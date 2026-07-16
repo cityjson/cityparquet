@@ -51,13 +51,20 @@ pub fn resolve_inputs(patterns: &[PathBuf]) -> Result<Vec<PathBuf>> {
                 }
             }
         } else if pat.is_dir() {
-            let mut children: Vec<PathBuf> = std::fs::read_dir(pat)
-                .map_err(|e| {
-                    CityParquetError::Io(format!("cannot read dir {}: {e}", pat.display()))
-                })?
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| is_recognised(p))
-                .collect();
+            let mut children: Vec<PathBuf> = Vec::new();
+            for entry in std::fs::read_dir(pat).map_err(|e| {
+                CityParquetError::Io(format!("cannot read dir {}: {e}", pat.display()))
+            })? {
+                // Propagate a per-entry read error rather than silently
+                // omitting a file the user asked to convert.
+                let entry = entry.map_err(|e| {
+                    CityParquetError::Io(format!("cannot read entry in {}: {e}", pat.display()))
+                })?;
+                let p = entry.path();
+                if is_recognised(&p) {
+                    children.push(p);
+                }
+            }
             children.sort();
             out.append(&mut children);
         } else if pat.is_file() {
