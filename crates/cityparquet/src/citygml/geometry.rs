@@ -30,6 +30,10 @@ pub type Ring = Vec<[f64; 3]>;
 /// A CityJSON "surface": an exterior ring plus optional interior (hole) rings.
 #[derive(Debug, Clone)]
 pub struct Polygon {
+    /// The polygon's `gml:id`, if any — the id an `app:target="#id"` appearance
+    /// reference (or an `xlink:href`) resolves to. `None` for an anonymous inline
+    /// polygon (which is therefore untargetable by appearance).
+    pub id: Option<String>,
     pub exterior: Ring,
     pub interiors: Vec<Ring>,
 }
@@ -234,10 +238,15 @@ fn read_surface_member_children<R: BufRead>(
             Event::Start(e) => {
                 let local = e.local_name();
                 match (gml, local.as_ref()) {
-                    (true, b"Polygon") => refs.push(SurfaceRef {
-                        reverse: false,
-                        target: RefTarget::Inline(read_polygon(reader, buf)?),
-                    }),
+                    (true, b"Polygon") => {
+                        let id = gml_id(&e);
+                        let mut poly = read_polygon(reader, buf)?;
+                        poly.id = id;
+                        refs.push(SurfaceRef {
+                            reverse: false,
+                            target: RefTarget::Inline(poly),
+                        });
+                    }
                     (true, b"OrientableSurface") => {
                         let reverse = orientation_reversed(&e);
                         refs.push(read_orientable_surface(reader, buf, reverse)?);
@@ -316,9 +325,12 @@ fn read_base_surface_inline<R: BufRead>(
                 let local = e.local_name();
                 match (gml, local.as_ref()) {
                     (true, b"Polygon") => {
+                        let id = gml_id(&e);
+                        let mut poly = read_polygon(reader, buf)?;
+                        poly.id = id;
                         result = Some(SurfaceRef {
                             reverse: false,
-                            target: RefTarget::Inline(read_polygon(reader, buf)?),
+                            target: RefTarget::Inline(poly),
                         })
                     }
                     (true, b"OrientableSurface") => {
@@ -359,7 +371,8 @@ pub fn collect_polygons<R: BufRead>(
                     // `read_polygon` consumes the whole Polygon subtree, so the
                     // depth is unchanged by this branch.
                     let id = gml_id(&e);
-                    let poly = read_polygon(reader, buf)?;
+                    let mut poly = read_polygon(reader, buf)?;
+                    poly.id = id.clone();
                     out.push((id, poly));
                 } else {
                     depth += 1;
@@ -407,6 +420,7 @@ pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> 
     let exterior = exterior
         .ok_or_else(|| CityParquetError::Schema("gml:Polygon without exterior ring".to_string()))?;
     Ok(Polygon {
+        id: None,
         exterior,
         interiors,
     })

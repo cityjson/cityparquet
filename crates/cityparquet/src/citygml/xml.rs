@@ -13,6 +13,7 @@ use quick_xml::reader::NsReader;
 pub const NS_GML: &str = "http://www.opengis.net/gml";
 pub const NS_BLDG: &str = "http://www.opengis.net/citygml/building/2.0";
 pub const NS_GEN: &str = "http://www.opengis.net/citygml/generics/2.0";
+pub const NS_APP: &str = "http://www.opengis.net/citygml/appearance/2.0";
 /// CityGML 2.0 core namespace — used to sniff the `CityModel` root. Matching
 /// this exact version (not the `.../citygml` family) means a 1.0/3.0 document is
 /// not misclassified as CityGML 2.0 and then silently yielding no features.

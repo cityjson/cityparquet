@@ -27,15 +27,19 @@ use std::collections::HashMap;
 use std::io::BufRead;
 
 use cityparquet_schema::{CityParquetError, Result};
-use cjseq::{CityJSONFeature, CityObject};
+use cjseq::{Appearance, CityJSONFeature, CityObject};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 use serde_json::{Value, json};
 
+use super::appearance::ReadMaterial;
 use super::attributes;
 use super::geometry::{self, Polygon, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use super::vertices::VertexBuilder;
-use super::xml::{NS_BLDG, NS_GEN, NS_GML, get_attr_local, gml_id, ns_is, skip_element, xml_err};
+use super::xml::{
+    NS_APP, NS_BLDG, NS_GEN, NS_GML, get_attr_local, gml_id, ns_is, skip_element, xml_err,
+};
+use crate::appearance::AppearanceInterner;
 
 /// A buffered building: everything pass 1 collects before resolution.
 pub struct RawBuilding {
@@ -58,6 +62,9 @@ pub struct RawBuilding {
     /// Nested `bldg:BuildingPart`s (`consistsOfBuildingPart`), in document order.
     /// A tree: a part may itself have parts.
     parts: Vec<RawBuilding>,
+    /// `app:X3DMaterial`s from this object's `app:appearance`, in document order.
+    /// Applied to faces (by target `gml:id`) during geometry emission.
+    appearance: Vec<ReadMaterial>,
 }
 
 /// Maximum `bldg:consistsOfBuildingPart` nesting depth — a guard against
@@ -96,6 +103,7 @@ fn read_abstract_building<R: BufRead>(
         boundary_polys: Vec::new(),
         attributes: serde_json::Map::new(),
         parts: Vec::new(),
+        appearance: Vec::new(),
     };
 
     loop {
@@ -126,6 +134,9 @@ fn read_abstract_building<R: BufRead>(
                     read_bounded_by(reader, buf, &mut b)?;
                 } else if bldg && name == b"consistsOfBuildingPart" {
                     read_consists_of_part(reader, buf, &mut b, depth)?;
+                } else if ns_is(&rr, NS_APP) && name == b"appearance" {
+                    b.appearance
+                        .extend(super::appearance::read_appearance(reader, buf)?);
                 } else if bldg && let Some(ty) = attributes::typed_building_attr(&name) {
                     if let Some((k, v)) = attributes::read_typed_attribute(reader, buf, &name, ty)?
                     {
@@ -381,14 +392,28 @@ impl RawBuilding {
         index: usize,
     ) -> Result<CityJSONFeature> {
         let mut vb = VertexBuilder::new(scale, translate);
+        // Feature-local interner: an assembly (a Building and its parts) shares
+        // ONE appearance block, so the parent and every part intern into the
+        // same table and their geometry material indices are feature-wide.
+        let mut interner = AppearanceInterner::new();
         let mut feature = CityJSONFeature::new();
         let root_id = self
             .id
             .clone()
             .unwrap_or_else(|| format!("Building_{index}"));
         feature.id = root_id.clone();
-        self.emit_into(&root_id, None, &mut vb, &mut feature)?;
+        self.emit_into(&root_id, None, &mut vb, &mut interner, &mut feature)?;
         feature.vertices = vb.into_vertices();
+        let materials = interner.materials();
+        if !materials.is_empty() {
+            feature.appearance = Some(Appearance {
+                materials: Some(materials.to_vec()),
+                textures: None,
+                vertices_texture: None,
+                default_theme_texture: None,
+                default_theme_material: None,
+            });
+        }
         Ok(feature)
     }
 
@@ -401,11 +426,20 @@ impl RawBuilding {
     }
 
     /// Build this object's CityJSON geometry array (solids + boundedBy-only
-    /// MultiSurfaces), resolving against this `RawBuilding`'s own registries.
-    fn build_geometries(&self, vb: &mut VertexBuilder) -> Result<Vec<Value>> {
-        let mut geoms_json: Vec<Value> = Vec::new();
+    /// MultiSurfaces), resolving against this `RawBuilding`'s own registries and
+    /// stamping each geometry's `material` map from this object's appearance.
+    fn build_geometries(
+        &self,
+        vb: &mut VertexBuilder,
+        interner: &mut AppearanceInterner,
+    ) -> Result<Vec<Value>> {
+        // Each entry: (geometry JSON, face-id tree). The face-id tree mirrors the
+        // geometry's `boundaries` minus the two innermost levels (ring, vertex),
+        // its leaf being the face polygon's `gml:id` (or null when the inline
+        // polygon is anonymous) — the address `app:target`s resolve against.
+        let mut built: Vec<(Value, Value)> = Vec::new();
         for (lod, geom) in &self.solids {
-            geoms_json.push(self.build_solid_geometry(geom, lod, vb)?);
+            built.push(self.build_solid_geometry(geom, lod, vb)?);
         }
         // For each LoD whose geometry lives only in `boundedBy` surfaces (no
         // `lodNSolid` at that LoD), emit one MultiSurface. When a solid exists
@@ -419,9 +453,48 @@ impl RawBuilding {
             }
         }
         for lod in &ms_lods {
-            geoms_json.push(self.build_multisurface_geometry(lod, vb)?);
+            built.push(self.build_multisurface_geometry(lod, vb)?);
         }
-        Ok(geoms_json)
+        self.apply_materials(&mut built, interner);
+        Ok(built.into_iter().map(|(g, _)| g).collect())
+    }
+
+    /// Intern this object's `app:X3DMaterial`s and stamp each geometry's
+    /// `material` map. A material is interned even when target-less (so unused
+    /// definitions survive at the feature level); a theme that colours no face
+    /// of a geometry is omitted for that geometry. Two materials targeting the
+    /// same face+theme are last-wins (document order).
+    fn apply_materials(&self, built: &mut [(Value, Value)], interner: &mut AppearanceInterner) {
+        if self.appearance.is_empty() {
+            return;
+        }
+        let mut themes: Vec<String> = Vec::new();
+        let mut theme_maps: HashMap<String, HashMap<String, usize>> = HashMap::new();
+        for rm in &self.appearance {
+            let idx = interner.intern_material(&rm.material);
+            if !theme_maps.contains_key(&rm.theme) {
+                themes.push(rm.theme.clone());
+            }
+            let map = theme_maps.entry(rm.theme.clone()).or_default();
+            for target in &rm.targets {
+                map.insert(target.clone(), idx); // last-wins
+            }
+        }
+        for (geom, face_ids) in built.iter_mut() {
+            let mut material_obj = serde_json::Map::new();
+            for theme in &themes {
+                let map = &theme_maps[theme];
+                let (values, any) = material_values_from_face_ids(face_ids, map);
+                if any {
+                    material_obj.insert(theme.clone(), json!({ "values": values }));
+                }
+            }
+            if !material_obj.is_empty()
+                && let Some(obj) = geom.as_object_mut()
+            {
+                obj.insert("material".to_string(), Value::Object(material_obj));
+            }
+        }
     }
 
     /// Emit this object (a `Building` when `parent_id` is `None`, else a
@@ -433,9 +506,10 @@ impl RawBuilding {
         my_id: &str,
         parent_id: Option<&str>,
         vb: &mut VertexBuilder,
+        interner: &mut AppearanceInterner,
         feature: &mut CityJSONFeature,
     ) -> Result<()> {
-        let geoms_json = self.build_geometries(vb)?;
+        let geoms_json = self.build_geometries(vb, interner)?;
         let child_ids: Vec<String> = self
             .parts
             .iter()
@@ -477,7 +551,7 @@ impl RawBuilding {
         feature.add_co(my_id.to_string(), co);
 
         for (i, part) in self.parts.iter().enumerate() {
-            part.emit_into(&child_ids[i], Some(my_id), vb, feature)?;
+            part.emit_into(&child_ids[i], Some(my_id), vb, interner, feature)?;
         }
         Ok(())
     }
@@ -490,21 +564,28 @@ impl RawBuilding {
         geom: &SolidGeom,
         lod: &str,
         vb: &mut VertexBuilder,
-    ) -> Result<Value> {
-        let (gtype, boundaries, values) = match geom {
+    ) -> Result<(Value, Value)> {
+        let (gtype, boundaries, values, face_ids) = match geom {
             SolidGeom::Solid(solid) => {
-                let (b, v) = self.build_solid(solid, vb)?;
-                ("Solid", Value::Array(b), Value::Array(v))
+                let (b, v, id) = self.build_solid(solid, vb)?;
+                ("Solid", Value::Array(b), Value::Array(v), Value::Array(id))
             }
             SolidGeom::Composite(solids) => {
                 let mut sb = Vec::with_capacity(solids.len());
                 let mut sv = Vec::with_capacity(solids.len());
+                let mut sid = Vec::with_capacity(solids.len());
                 for solid in solids {
-                    let (b, v) = self.build_solid(solid, vb)?;
+                    let (b, v, id) = self.build_solid(solid, vb)?;
                     sb.push(Value::Array(b));
                     sv.push(Value::Array(v));
+                    sid.push(Value::Array(id));
                 }
-                ("CompositeSolid", Value::Array(sb), Value::Array(sv))
+                (
+                    "CompositeSolid",
+                    Value::Array(sb),
+                    Value::Array(sv),
+                    Value::Array(sid),
+                )
             }
         };
 
@@ -513,7 +594,7 @@ impl RawBuilding {
             let surfaces: Vec<Value> = self.surfaces.iter().map(|k| json!({ "type": k })).collect();
             g["semantics"] = json!({ "surfaces": surfaces, "values": values });
         }
-        Ok(g)
+        Ok((g, face_ids))
     }
 
     /// Build one CityJSON `MultiSurface` geometry for `lod` from the
@@ -521,15 +602,21 @@ impl RawBuilding {
     /// and `semantics.values` is one entry per surface (the semantic index of
     /// the boundary polygon's surface). Used only when there is no `lodNSolid`
     /// at `lod`.
-    fn build_multisurface_geometry(&self, lod: &str, vb: &mut VertexBuilder) -> Result<Value> {
+    fn build_multisurface_geometry(
+        &self,
+        lod: &str,
+        vb: &mut VertexBuilder,
+    ) -> Result<(Value, Value)> {
         let mut boundaries = Vec::new();
         let mut values = Vec::new();
+        let mut face_ids = Vec::new();
         for (sem_idx, poly_lod, poly) in &self.boundary_polys {
             if poly_lod != lod {
                 continue;
             }
             boundaries.push(surface_rings(poly, false, vb)?);
             values.push(json!(sem_idx));
+            face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
         }
         let mut g = json!({
             "type": "MultiSurface",
@@ -540,29 +627,36 @@ impl RawBuilding {
             let surfaces: Vec<Value> = self.surfaces.iter().map(|k| json!({ "type": k })).collect();
             g["semantics"] = json!({ "surfaces": surfaces, "values": Value::Array(values) });
         }
-        Ok(g)
+        Ok((g, Value::Array(face_ids)))
     }
 
-    /// A `RawSolid` -> (`[shell][surface][ring][idx]`, `[shell][face]` values).
+    /// A `RawSolid` -> (`[shell][surface][ring][idx]` boundaries, `[shell][face]`
+    /// semantic values, `[shell][face]` face-ids). The face-id leaf is the
+    /// polygon's `gml:id` (a `Value::String`) or `null` for an anonymous inline
+    /// polygon — the address an appearance `app:target` resolves against.
     fn build_solid(
         &self,
         solid: &RawSolid,
         vb: &mut VertexBuilder,
-    ) -> Result<(Vec<Value>, Vec<Value>)> {
+    ) -> Result<(Vec<Value>, Vec<Value>, Vec<Value>)> {
         let mut shells_b = Vec::with_capacity(solid.shells.len());
         let mut shells_v = Vec::with_capacity(solid.shells.len());
+        let mut shells_id = Vec::with_capacity(solid.shells.len());
         for shell in &solid.shells {
             let mut faces_b = Vec::with_capacity(shell.len());
             let mut faces_v = Vec::with_capacity(shell.len());
+            let mut faces_id = Vec::with_capacity(shell.len());
             for sref in shell {
                 let poly = self.resolve(sref)?;
                 faces_b.push(surface_rings(poly, sref.reverse, vb)?);
                 faces_v.push(self.semantic_value(sref));
+                faces_id.push(face_id(sref, poly));
             }
             shells_b.push(Value::Array(faces_b));
             shells_v.push(Value::Array(faces_v));
+            shells_id.push(Value::Array(faces_id));
         }
-        Ok((shells_b, shells_v))
+        Ok((shells_b, shells_v, shells_id))
     }
 
     /// The polygon a surface reference points at (xlink resolved against the
@@ -590,6 +684,40 @@ impl RawBuilding {
             },
             RefTarget::Inline(_) => Value::Null,
         }
+    }
+}
+
+/// A face's polygon `gml:id` as a face-id-tree leaf: the xlink target id, or the
+/// inline polygon's own id, or `null` when an inline polygon is anonymous (and
+/// hence untargetable by appearance).
+fn face_id(sref: &SurfaceRef, poly: &Polygon) -> Value {
+    match &sref.target {
+        RefTarget::Xlink(id) => Value::from(id.clone()),
+        RefTarget::Inline(_) => poly.id.clone().map(Value::from).unwrap_or(Value::Null),
+    }
+}
+
+/// Turn a face-id tree into a `material.{theme}.values` tree by mapping each
+/// leaf id through `map` (a hit → its material index, a miss/`null` → `null`).
+/// Returns the tree and whether any leaf resolved (used to omit a theme that
+/// colours no face of the geometry).
+fn material_values_from_face_ids(node: &Value, map: &HashMap<String, usize>) -> (Value, bool) {
+    match node {
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            let mut any = false;
+            for it in items {
+                let (v, hit) = material_values_from_face_ids(it, map);
+                any |= hit;
+                out.push(v);
+            }
+            (Value::Array(out), any)
+        }
+        Value::String(id) => match map.get(id) {
+            Some(&i) => (json!(i), true),
+            None => (Value::Null, false),
+        },
+        _ => (Value::Null, false),
     }
 }
 

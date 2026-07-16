@@ -549,3 +549,67 @@ fn citygml2_reads_building_parts() {
     let stypes = g2["semantics"]["surfaces"].as_array().unwrap();
     assert_eq!(stypes.len(), 2, "WallSurface + RoofSurface");
 }
+
+// W-M5a: app:X3DMaterial appearance. `building_with_materials.gml` is a
+// hand-authored fixture: Building "BM" with a lod2Solid tetrahedron (inline
+// polygons p0..p3) and an app:appearance theme "visual" — red -> {p0,p1},
+// green -> {p2}, p3 untargeted (null), blue an unused (target-less) definition.
+#[test]
+fn citygml2_reads_x3d_materials() {
+    let src = Source::open(&data_fixture("building_with_materials.gml")).unwrap();
+    let feats: Vec<_> = src
+        .features()
+        .unwrap()
+        .collect::<cityparquet::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(feats.len(), 1);
+    let f = &feats[0];
+    let co = f.city_objects.get("BM").expect("Building BM");
+    let g = &co.geometry.as_ref().expect("geometry")[0];
+
+    // Feature-local material table: red, green and the target-less blue are all
+    // interned (blue distinct so the theme-blind interner keeps it separate).
+    let app = f.appearance.as_ref().expect("feature appearance");
+    let mats = app.materials.as_ref().expect("materials table");
+    assert_eq!(mats.len(), 3, "red, green, blue interned");
+    let by_name = |n: &str| {
+        mats.iter()
+            .find(|m| m["name"] == serde_json::json!(n))
+            .unwrap_or_else(|| panic!("material {n}"))
+    };
+    assert_eq!(
+        by_name("red")["diffuseColor"],
+        serde_json::json!([1.0, 0.0, 0.0])
+    );
+    assert_eq!(
+        by_name("green")["diffuseColor"],
+        serde_json::json!([0.0, 1.0, 0.0])
+    );
+    assert_eq!(
+        by_name("blue")["diffuseColor"],
+        serde_json::json!([0.0, 0.0, 1.0])
+    );
+
+    // Per-face material in theme "visual": [[red, red, green, null]] (Solid ->
+    // [shell][face]). Dereference indices so the assertion is index-permutation
+    // independent.
+    let mat = g.material.as_ref().expect("geometry material");
+    let visual = mat.get("visual").expect("visual theme");
+    let values = visual.values.as_ref().expect("values").as_array().unwrap();
+    assert_eq!(values.len(), 1, "one shell");
+    let faces = values[0].as_array().unwrap();
+    assert_eq!(faces.len(), 4, "four faces");
+    let name_at = |face: usize| -> Option<String> {
+        match &faces[face] {
+            serde_json::Value::Null => None,
+            v => {
+                let idx = v.as_u64().unwrap() as usize;
+                Some(mats[idx]["name"].as_str().unwrap().to_string())
+            }
+        }
+    };
+    assert_eq!(name_at(0).as_deref(), Some("red"), "p0 -> red");
+    assert_eq!(name_at(1).as_deref(), Some("red"), "p1 -> red");
+    assert_eq!(name_at(2).as_deref(), Some("green"), "p2 -> green");
+    assert_eq!(name_at(3), None, "p3 untargeted -> null");
+}
