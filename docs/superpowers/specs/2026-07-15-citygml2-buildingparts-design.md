@@ -188,3 +188,29 @@ faithful emission; the pre-existing `boundedBy`-after-lod3/4 XSD-order issue
 - `boundedBy` is emitted adjacent to its chosen LoD's solid; when the chosen
   major is 3 or 4 this is XSD-order-invalid (pre-existing from W-M3), package-
   lossless via the order-independent reader.
+
+## Review addendum (Codex, 2026-07-16)
+
+Applied after implementation (no Criticals; all Important/Minor fixed):
+
+- **No empty husks.** `write_object_content` returns "emitted" only when a
+  writable attribute or an *actually-written* geometry was produced — a
+  `by_major` entry that drops at emit (e.g. a MultiSurface resolution failure)
+  no longer makes an otherwise-empty object non-empty.
+- **Writer nesting bounded** at `MAX_PART_DEPTH` (32), symmetric with the reader,
+  so a written document is always re-readable and a deep acyclic chain cannot
+  overflow the recursion.
+- **Duplicate package id rejected** at collection time (an earlier row would
+  otherwise be silently overwritten before the emit-time `seen_ids` check).
+- **`render_abstract_object` uses `.get()`** for the root/object lookup (no
+  indexing panic on a missing key in the public API).
+- **`children`/`parents` reconciliation:** a `children` entry is nested only when
+  it names a `BuildingPart` row (else `children_unresolved`); orphans are now
+  computed as BuildingParts *never reached* via any parent's `children`
+  (`reached_parts`), not via a `parents[0]` pre-pass — so a part missing from its
+  parent's `children` is no longer silently dropped uncounted. A multi-parent
+  part still emits under the parent whose `children` lists it.
+- **Oracle strengthened:** compares `children` in document order (not sorted),
+  includes attributes, and compares geometry by canonical member/face/ring
+  structure (not a coordinate set) — catches child-order changes, attribute loss,
+  and ring/topology corruption.

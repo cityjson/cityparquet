@@ -36,15 +36,41 @@ fn mm(v: f64) -> i64 {
     (v * 1000.0).round() as i64
 }
 
-/// One geometry's fingerprint: (kind, lod, semantics JSON, canonical coord set).
-type GeomInfo = (String, Option<String>, String, Vec<(i64, i64, i64)>);
+type Ring = Vec<(i64, i64, i64)>;
 
-/// A stable per-CityObject fingerprint: type, sorted parents/children, geometries.
+fn canonical_ring(ring: &[usize], coords: &[[f64; 3]]) -> Ring {
+    let t: Ring = ring
+        .iter()
+        .map(|&i| (mm(coords[i][0]), mm(coords[i][1]), mm(coords[i][2])))
+        .collect();
+    let Some(m) = (0..t.len()).min_by_key(|&i| t[i]) else {
+        return t;
+    };
+    let mut r = t[m..].to_vec();
+    r.extend_from_slice(&t[..m]);
+    r
+}
+
+fn faces_struct(faces: &[Vec<Vec<usize>>], coords: &[[f64; 3]]) -> Vec<Vec<Ring>> {
+    faces
+        .iter()
+        .map(|f| f.iter().map(|r| canonical_ring(r, coords)).collect())
+        .collect()
+}
+
+/// One geometry's fingerprint: kind, lod, semantics JSON, and its structural
+/// decomposition (member → face → canonical ring) — catches ring/topology
+/// corruption, not just a coordinate set.
+type GeomInfo = (String, Option<String>, String, Vec<Vec<Vec<Ring>>>);
+
+/// A stable per-CityObject fingerprint: type, parents, `children` in DOCUMENT
+/// order (order matters for round-trip), attributes, and geometries.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ObjInfo {
     thetype: String,
     parents: Vec<String>,
     children: Vec<String>,
+    attributes: Vec<(String, String)>,
     geoms: Vec<GeomInfo>,
 }
 
@@ -68,34 +94,56 @@ fn objects(pkg: &Path) -> BTreeMap<String, ObjInfo> {
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {
-                let mut parents: Vec<String> = obj.object.parents.clone().unwrap_or_default();
-                parents.sort();
-                let mut children: Vec<String> = obj.object.children.clone().unwrap_or_default();
-                children.sort();
+                let parents: Vec<String> = obj.object.parents.clone().unwrap_or_default();
+                let children: Vec<String> = obj.object.children.clone().unwrap_or_default();
+                let attributes: Vec<(String, String)> = obj
+                    .object
+                    .attributes
+                    .as_ref()
+                    .and_then(serde_json::Value::as_object)
+                    .map(|m| {
+                        let mut v: Vec<(String, String)> = m
+                            .iter()
+                            .map(|(k, val)| (k.clone(), val.to_string()))
+                            .collect();
+                        v.sort();
+                        v
+                    })
+                    .unwrap_or_default();
                 let mut geoms = Vec::new();
                 for (lod, decoded, props) in &obj.geometries {
-                    let kind = match decoded.kind {
-                        DecodedKind::PolyhedralSurface(_) => "PolyhedralSurface",
-                        DecodedKind::GeometryCollection(_) => "GeometryCollection",
-                        DecodedKind::MultiPolygon(_) => "MultiPolygon",
-                        _ => "other",
+                    let (kind, structure): (&str, Vec<Vec<Vec<Ring>>>) = match &decoded.kind {
+                        DecodedKind::PolyhedralSurface(faces) => (
+                            "PolyhedralSurface",
+                            vec![faces_struct(faces, &decoded.coords)],
+                        ),
+                        DecodedKind::GeometryCollection(members) => (
+                            "GeometryCollection",
+                            members
+                                .iter()
+                                .map(|m| match m {
+                                    DecodedKind::PolyhedralSurface(f) => {
+                                        faces_struct(f, &decoded.coords)
+                                    }
+                                    _ => Vec::new(),
+                                })
+                                .collect(),
+                        ),
+                        DecodedKind::MultiPolygon(faces) => {
+                            ("MultiPolygon", vec![faces_struct(faces, &decoded.coords)])
+                        }
+                        _ => ("other", Vec::new()),
                     };
                     let sem = props
                         .as_ref()
                         .and_then(|p| p.get("semantics"))
                         .map(|s| s.to_string())
                         .unwrap_or_default();
-                    let mut coords: Vec<(i64, i64, i64)> = decoded
-                        .coords
-                        .iter()
-                        .map(|c| (mm(c[0]), mm(c[1]), mm(c[2])))
-                        .collect();
-                    coords.sort();
                     geoms.push((
                         kind.to_string(),
                         lod.as_ref().map(|l| l.to_string()),
                         sem,
-                        coords,
+                        structure,
                     ));
                 }
                 geoms.sort();
@@ -105,6 +153,7 @@ fn objects(pkg: &Path) -> BTreeMap<String, ObjInfo> {
                         thetype: obj.object.thetype.clone(),
                         parents,
                         children,
+                        attributes,
                         geoms,
                     },
                 );

@@ -222,6 +222,7 @@ pub fn write_object_content<W: Write>(
         .map(|(major, _)| *major)
         .max();
 
+    let mut any_geometry = false;
     for (major, (_, geom, props)) in &by_major {
         let major = *major;
         let props = *props;
@@ -290,20 +291,31 @@ pub fn write_object_content<W: Write>(
         // Accumulate the coord pool of geometry we actually emitted (a dropped
         // MultiSurface contributes nothing to the envelope).
         if emitted_geometry {
+            any_geometry = true;
             for c in &geom.coords {
                 bounds.add(*c);
             }
         }
     }
 
-    Ok(attrs_written > 0 || !by_major.is_empty())
+    // Emitted iff a writable attribute or an ACTUALLY-written geometry — a
+    // by_major entry that dropped (e.g. a MultiSurface resolution failure) must
+    // not make an otherwise-empty object non-empty (no husk elements).
+    Ok(attrs_written > 0 || any_geometry)
 }
 
+/// Maximum `consistsOfBuildingPart` nesting the writer emits — symmetric with the
+/// reader's bound, so a written document is always re-readable (and a deep
+/// acyclic chain cannot overflow the recursion).
+const MAX_PART_DEPTH: usize = 32;
+
 /// The read-only object graph a Building assembly is rendered from: every
-/// object's content and its `children` id list, plus the attribute type map.
+/// object's content, its `children` id list, its CityObject `type`, and the
+/// attribute type map.
 pub struct BuildingTree<'a> {
     pub content_by_id: &'a HashMap<String, BuildingSolids>,
     pub children_by_id: &'a HashMap<String, Vec<String>>,
+    pub type_by_id: &'a HashMap<String, String>,
     pub types: &'a HashMap<String, AttributeType>,
 }
 
@@ -318,12 +330,19 @@ pub struct BuildingTree<'a> {
 pub fn render_abstract_object(
     obj_id: &str,
     tree: &BuildingTree,
+    depth: usize,
     next_feature_index: &mut usize,
     bounds: &mut Bounds,
     report: &mut WriteReport,
     visited: &mut HashSet<String>,
     seen_ids: &mut HashSet<String>,
+    reached_parts: &mut HashSet<String>,
 ) -> Result<(Vec<u8>, bool)> {
+    if depth > MAX_PART_DEPTH {
+        return Err(CityParquetError::Schema(format!(
+            "consistsOfBuildingPart nested deeper than {MAX_PART_DEPTH}"
+        )));
+    }
     if !is_ncname(obj_id) {
         return Err(CityParquetError::Schema(format!(
             "CityObject id {obj_id:?} is not a valid XML NCName; cannot serialise as gml:id"
@@ -334,7 +353,10 @@ pub fn render_abstract_object(
         return Ok((Vec::new(), false));
     }
 
-    let obj = &tree.content_by_id[obj_id];
+    let Some(obj) = tree.content_by_id.get(obj_id) else {
+        visited.remove(obj_id);
+        return Ok((Vec::new(), false));
+    };
     let feature_index = *next_feature_index;
     *next_feature_index += 1;
 
@@ -349,18 +371,23 @@ pub fn render_abstract_object(
         .unwrap_or(&[]);
     let mut any_part = false;
     for child_id in children {
-        if !tree.content_by_id.contains_key(child_id) {
+        // Only a BuildingPart row is nested; a `children` entry naming an absent
+        // row or a non-BuildingPart (e.g. a Building) is an unresolved child.
+        if tree.type_by_id.get(child_id).map(String::as_str) != Some("BuildingPart") {
             report.children_unresolved += 1;
             continue;
         }
+        reached_parts.insert(child_id.clone());
         let (child_inner, child_nonempty) = render_abstract_object(
             child_id,
             tree,
+            depth + 1,
             next_feature_index,
             bounds,
             report,
             visited,
             seen_ids,
+            reached_parts,
         )?;
         if child_nonempty {
             inner
@@ -767,9 +794,22 @@ mod tests {
         children_by_id: HashMap<String, Vec<String>>,
     ) -> (String, bool, WriteReport) {
         let no_types = HashMap::new();
+        // The root is a Building; every other present object is a BuildingPart.
+        let type_by_id: HashMap<String, String> = content_by_id
+            .keys()
+            .map(|id| {
+                let ty = if id == root {
+                    "Building"
+                } else {
+                    "BuildingPart"
+                };
+                (id.clone(), ty.to_string())
+            })
+            .collect();
         let tree = BuildingTree {
             content_by_id: &content_by_id,
             children_by_id: &children_by_id,
+            type_by_id: &type_by_id,
             types: &no_types,
         };
         let mut nfi = 0usize;
@@ -777,14 +817,17 @@ mod tests {
         let mut report = WriteReport::default();
         let mut visited = HashSet::new();
         let mut seen = HashSet::new();
+        let mut reached = HashSet::new();
         let (inner, ne) = render_abstract_object(
             root,
             &tree,
+            0,
             &mut nfi,
             &mut bounds,
             &mut report,
             &mut visited,
             &mut seen,
+            &mut reached,
         )
         .unwrap();
         (String::from_utf8(inner).unwrap(), ne, report)
@@ -850,6 +893,35 @@ mod tests {
         let (xml, ne, _) = render("P", content_by_id, children_by_id);
         assert!(ne, "P has a solid");
         assert!(xml.contains("<bldg:lod2Solid>"), "{xml}");
+    }
+
+    #[test]
+    fn multisurface_resolution_failure_yields_no_husk() {
+        // A MultiSurface with emittable-looking semantics but a values/faces
+        // length mismatch: it fails at emit, so the object has no geometry and
+        // (no attributes) must render EMPTY — not an empty husk counted as one.
+        let geom = DecodedGeometry {
+            coords: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            kind: DecodedKind::MultiPolygon(vec![vec![vec![0, 1, 2]]]), // 1 face
+        };
+        let props = serde_json::json!({
+            "type": "MultiSurface",
+            "semantics": { "surfaces": [{"type": "WallSurface"}], "values": [0, 1] } // 2 values
+        });
+        let content_by_id = HashMap::from([(
+            "P".to_string(),
+            BuildingSolids {
+                id: "P".into(),
+                attributes: serde_json::Map::new(),
+                solids: vec![(Lod::parse("2").unwrap(), geom, Some(props))],
+            },
+        )]);
+        let (xml, ne, _) = render("P", content_by_id, HashMap::new());
+        assert!(
+            !ne,
+            "a geometry-less-after-failure, attribute-less object renders empty"
+        );
+        assert!(xml.is_empty(), "{xml}");
     }
 
     #[test]

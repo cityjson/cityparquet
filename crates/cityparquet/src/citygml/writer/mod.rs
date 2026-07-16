@@ -176,7 +176,6 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     let mut content_by_id: HashMap<String, BuildingSolids> = HashMap::new();
     let mut children_by_id: HashMap<String, Vec<String>> = HashMap::new();
     let mut type_by_id: HashMap<String, String> = HashMap::new();
-    let mut parents_by_id: HashMap<String, Vec<String>> = HashMap::new();
     let mut root_ids: Vec<String> = Vec::new();
 
     let mut first_builder = Some(first_builder);
@@ -252,14 +251,19 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     .cloned()
                     .unwrap_or_default();
                 let id = obj.id;
+                // A duplicate CityObject id would silently overwrite the earlier
+                // row (and evade the emit-time `seen_ids` check) — reject it.
+                if type_by_id.contains_key(&id) {
+                    return Err(CityParquetError::Metadata(format!(
+                        "duplicate CityObject id {id:?} in the package"
+                    )));
+                }
                 let children = obj.object.children.clone().unwrap_or_default();
-                let parents = obj.object.parents.clone().unwrap_or_default();
                 if ty == "Building" {
                     root_ids.push(id.clone());
                 }
                 type_by_id.insert(id.clone(), ty);
                 children_by_id.insert(id.clone(), children);
-                parents_by_id.insert(id.clone(), parents);
                 content_by_id.insert(
                     id.clone(),
                     BuildingSolids {
@@ -272,39 +276,29 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
         }
     }
 
-    // Orphan pre-pass: a BuildingPart whose `parents[0]` names no present
-    // Building/BuildingPart row is orphaned (its geometry has no parent to nest
-    // under).
-    for (id, ty) in &type_by_id {
-        if ty == "BuildingPart" {
-            let anchored = parents_by_id
-                .get(id)
-                .and_then(|p| p.first())
-                .is_some_and(|p0| type_by_id.contains_key(p0));
-            if !anchored {
-                report.building_parts_orphaned += 1;
-            }
-        }
-    }
-
     // Emit each root Building with its parts (bottom-up; parts in `children`
-    // order). `next_feature_index` namespaces each emitted object's polygon ids.
+    // order). `next_feature_index` namespaces each emitted object's polygon ids;
+    // `reached_parts` collects every BuildingPart nested under some Building.
     let tree = BuildingTree {
         content_by_id: &content_by_id,
         children_by_id: &children_by_id,
+        type_by_id: &type_by_id,
         types: &attr_types,
     };
     let mut next_feature_index = 0usize;
+    let mut reached_parts: HashSet<String> = HashSet::new();
     for root_id in &root_ids {
         let mut visited: HashSet<String> = HashSet::new();
         let (inner, non_empty) = render_abstract_object(
             root_id,
             &tree,
+            0,
             &mut next_feature_index,
             &mut bounds,
             &mut report,
             &mut visited,
             &mut seen_ids,
+            &mut reached_parts,
         )?;
         if non_empty {
             members
@@ -323,6 +317,14 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
             report.buildings_written += 1;
         } else {
             report.buildings_without_solid_skipped += 1;
+        }
+    }
+
+    // A BuildingPart never nested under any Building (not reached via any
+    // parent's `children`) is orphaned — its geometry has no home.
+    for (id, ty) in &type_by_id {
+        if ty == "BuildingPart" && !reached_parts.contains(id) {
+            report.building_parts_orphaned += 1;
         }
     }
 
