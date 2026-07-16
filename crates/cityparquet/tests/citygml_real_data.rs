@@ -667,3 +667,41 @@ fn citygml2_reads_parameterized_texture() {
         assert_eq!(ring, &vec![serde_json::Value::Null], "face {k} untextured");
     }
 }
+
+/// CG-1: a `bldg:boundedBy` semantic surface whose geometry is
+/// `gml:surfaceMember xlink:href` (not inline) must still tag the referenced
+/// solid faces. `building_xlink_boundedby.gml` has a lod2Solid of inline
+/// p0..p3 and Ground->p0 / Wall->{p1,p2} / Roof->p3 attached purely by xlink.
+#[test]
+fn citygml2_resolves_xlinked_boundedby_semantics() {
+    let src = Source::open(&data_fixture("building_xlink_boundedby.gml")).unwrap();
+    let feats: Vec<_> = src
+        .features()
+        .unwrap()
+        .collect::<cityparquet::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(feats.len(), 1);
+    let f = &feats[0];
+    let co = f.city_objects.get("BX").expect("Building BX");
+    let g = &co.geometry.as_ref().expect("geometry")[0];
+    assert!(
+        matches!(g.thetype, cityparquet::cjseq::GeometryType::Solid),
+        "expected Solid, got {:?}",
+        g.thetype
+    );
+
+    let sem = g.semantics.as_ref().expect("solid semantics");
+    let surfaces = sem["surfaces"].as_array().unwrap();
+    // Solid values nesting: [shell][face]; expect [Ground, Wall, Wall, Roof].
+    let shell = sem["values"].as_array().unwrap()[0].as_array().unwrap();
+    let type_of = |face: &serde_json::Value| -> String {
+        let idx = face.as_u64().expect("non-null semantic value") as usize;
+        surfaces[idx]["type"].as_str().unwrap().to_string()
+    };
+    let got: Vec<String> = shell.iter().map(type_of).collect();
+    assert_eq!(
+        got,
+        vec!["GroundSurface", "WallSurface", "WallSurface", "RoofSurface"],
+        "xlinked boundedBy must tag solid faces by referenced polygon id"
+    );
+}

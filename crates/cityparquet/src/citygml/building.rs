@@ -17,11 +17,12 @@
 //! `gen:` generic attributes (repeats accumulate into arrays). BuildingParts
 //! and `BuildingInstallation` child geometry remain future work.
 //!
-//! Known limitation: boundedBy geometry is read from **inline** `gml:Polygon`s
-//! (as all real fixtures carry it). A boundedBy surface whose members are
-//! `xlink:href` references — rather than inline polygons — would contribute no
-//! MultiSurface geometry; resolving xlinked boundary members (the solid path
-//! already resolves solid-member xlinks) is future work.
+//! boundedBy geometry is read from inline `gml:Polygon`s AND from
+//! `gml:surfaceMember xlink:href` references (CG-1): an xlinked boundary member
+//! tags any solid face carrying that `gml:id` (via `semantic_of_polygon`) and,
+//! for a LoD with no solid, is resolved against the polygon registry into the
+//! MultiSurface geometry. An xlink to an id defined in no accessible geometry
+//! contributes no face (its tag is simply never consulted).
 
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -87,6 +88,12 @@ pub struct RawBuilding {
     /// semantic-surface index and lod. Used to emit a MultiSurface geometry per
     /// lod that has no solid (the geometry-in-boundedBy case, e.g. Railway).
     boundary_polys: Vec<(usize, String, Polygon)>,
+    /// `boundedBy` members that are `xlink:href` references (not inline
+    /// polygons), tagged `(sem_idx, lod, fragment id)`. Resolved against
+    /// `polygons` at emit time for the no-solid MultiSurface path; their
+    /// `semantic_of_polygon` entry (set at read time) already tags any solid
+    /// face carrying that id (CG-1).
+    boundary_refs: Vec<(usize, String, String)>,
     /// Building-level attributes (typed `bldg:` + `gen:` generic), by name.
     attributes: serde_json::Map<String, Value>,
     /// Nested `bldg:BuildingPart`s (`consistsOfBuildingPart`), in document order.
@@ -132,6 +139,7 @@ fn read_abstract_building<R: BufRead>(
         surfaces: Vec::new(),
         semantic_of_polygon: HashMap::new(),
         boundary_polys: Vec::new(),
+        boundary_refs: Vec::new(),
         attributes: serde_json::Map::new(),
         parts: Vec::new(),
         appearance: ReadAppearance::default(),
@@ -380,12 +388,19 @@ fn read_semantic_surface<R: BufRead>(
                 let local = e.local_name();
                 let name = local.as_ref().to_vec();
                 if bldg && let Some(lod) = boundary_lod(&name) {
-                    for (id, poly) in geometry::collect_polygons(reader, buf)? {
+                    let (polys, xlinks) = geometry::collect_polygons_with_xlinks(reader, buf)?;
+                    for (id, poly) in polys {
                         if let Some(id) = &id {
                             b.semantic_of_polygon.insert(id.clone(), sem_idx);
                             b.polygons.insert(id.clone(), poly.clone());
                         }
                         b.boundary_polys.push((sem_idx, lod.clone(), poly));
+                    }
+                    for href in xlinks {
+                        // Tag any solid face carrying this id, and keep the ref
+                        // for the no-solid MultiSurface path (resolved at emit).
+                        b.semantic_of_polygon.insert(href.clone(), sem_idx);
+                        b.boundary_refs.push((sem_idx, lod.clone(), href));
                     }
                 } else if bldg && is_semantic_surface(&name) {
                     // A nested semantic surface (e.g. a Door/Window directly
@@ -482,7 +497,12 @@ impl RawBuilding {
         // at that LoD the boundary polygons are already its xlink targets, so
         // they must NOT leak as a second geometry.
         let mut ms_lods: Vec<String> = Vec::new();
-        for (_, lod, _) in &self.boundary_polys {
+        let boundary_lods = self
+            .boundary_polys
+            .iter()
+            .map(|(_, lod, _)| lod)
+            .chain(self.boundary_refs.iter().map(|(_, lod, _)| lod));
+        for lod in boundary_lods {
             let has_solid = self.solids.iter().any(|(l, _)| l == lod);
             if !has_solid && !ms_lods.contains(lod) {
                 ms_lods.push(lod.clone());
@@ -716,6 +736,21 @@ impl RawBuilding {
             face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
             ring_ids.push(ring_ids_value(poly));
         }
+        // Resolve xlinked boundary members against the polygon registry (CG-1);
+        // an unresolvable ref simply contributes no face (its solid-face tag,
+        // if any, is applied separately via `semantic_of_polygon`).
+        for (sem_idx, ref_lod, href) in &self.boundary_refs {
+            if ref_lod != lod {
+                continue;
+            }
+            let Some(poly) = self.polygons.get(href) else {
+                continue;
+            };
+            boundaries.push(surface_rings(poly, false, vb)?);
+            values.push(json!(sem_idx));
+            face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
+            ring_ids.push(ring_ids_value(poly));
+        }
         let mut g = json!({
             "type": "MultiSurface",
             "lod": lod,
@@ -776,12 +811,16 @@ impl RawBuilding {
     /// of the referenced boundary polygon, or `null` (inline / no boundary
     /// surface, e.g. an internal ceiling).
     fn semantic_value(&self, sref: &SurfaceRef) -> Value {
-        match &sref.target {
-            RefTarget::Xlink(id) => match self.semantic_of_polygon.get(id) {
-                Some(&i) => json!(i),
-                None => Value::Null,
-            },
-            RefTarget::Inline(_) => Value::Null,
+        // The face's own `gml:id`: the xlink target, or an inline polygon's own
+        // id. Either may be tagged in `semantic_of_polygon` — an inline solid
+        // face is tagged when a boundedBy surface xlinks to it (CG-1).
+        let id = match &sref.target {
+            RefTarget::Xlink(id) => Some(id.as_str()),
+            RefTarget::Inline(poly) => poly.id.as_deref(),
+        };
+        match id.and_then(|id| self.semantic_of_polygon.get(id)) {
+            Some(&i) => json!(i),
+            None => Value::Null,
         }
     }
 }
