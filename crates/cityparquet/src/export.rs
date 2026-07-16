@@ -503,7 +503,11 @@ fn build_header(meta: &CityParquetMetadata) -> Result<CityJSON> {
 /// per-object map), parsed once per batch alongside `decode_batch`'s own
 /// pass — `decode_batch` deliberately excludes these (see its module docs),
 /// so export reads them straight off the batch.
-fn row_json_object(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<Value>> {
+pub(crate) fn row_json_object(
+    batch: &RecordBatch,
+    name: &str,
+    row: usize,
+) -> Result<Option<Value>> {
     let Some(col) = batch.column_by_name(name) else {
         return Ok(None);
     };

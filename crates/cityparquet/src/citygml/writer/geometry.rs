@@ -148,6 +148,20 @@ pub fn write_solid<W: Write>(
     faces: &[Vec<Vec<usize>>],
     props: Option<&serde_json::Value>,
 ) -> Result<()> {
+    write_solid_with_ids(w, coords, faces, props, None)
+}
+
+/// Like [`write_solid`] but stamps a `gml:id` on each face's inline `gml:Polygon`
+/// from `face_ids` (flat, in shell-concatenation walk order) — used so an
+/// appearance `app:target` can reference a material-bearing face. `None` (or a
+/// `None` entry) leaves that polygon id-less, byte-identical to [`write_solid`].
+pub fn write_solid_with_ids<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    faces: &[Vec<Vec<usize>>],
+    props: Option<&serde_json::Value>,
+    face_ids: Option<&[Option<String>]>,
+) -> Result<()> {
     // A PolyhedralSurface WKB is emitted as a gml:Solid only when its paired
     // geometry_properties actually says `type: "Solid"`. Missing or mismatched
     // properties would otherwise let `partition_shells(None)` silently collapse
@@ -161,7 +175,8 @@ pub fn write_solid<W: Write>(
         ));
     }
     let counts = crate::export::shell_faces_flat(props)?;
-    write_gml_solid(w, coords, faces, counts.as_deref())
+    let mut cursor = 0usize;
+    write_gml_solid(w, coords, faces, counts.as_deref(), face_ids, &mut cursor)
 }
 
 /// Emit one `<gml:Solid>` from a flat face list + its shell partition counts,
@@ -172,6 +187,8 @@ fn write_gml_solid<W: Write>(
     coords: &[[f64; 3]],
     faces: &[Vec<Vec<usize>>],
     counts: Option<&[usize]>,
+    face_ids: Option<&[Option<String>]>,
+    cursor: &mut usize,
 ) -> Result<()> {
     let shells = crate::export::partition_shells(faces.to_vec(), counts)?;
 
@@ -184,14 +201,14 @@ fn write_gml_solid<W: Write>(
 
     w.write_event(Event::Start(BytesStart::new("gml:exterior")))
         .map_err(io_err)?;
-    write_composite_surface(w, coords, exterior)?;
+    write_composite_surface(w, coords, exterior, face_ids, cursor)?;
     w.write_event(Event::End(BytesEnd::new("gml:exterior")))
         .map_err(io_err)?;
 
     for shell in interiors {
         w.write_event(Event::Start(BytesStart::new("gml:interior")))
             .map_err(io_err)?;
-        write_composite_surface(w, coords, shell)?;
+        write_composite_surface(w, coords, shell, face_ids, cursor)?;
         w.write_event(Event::End(BytesEnd::new("gml:interior")))
             .map_err(io_err)?;
     }
@@ -211,6 +228,18 @@ pub fn write_composite_solid<W: Write>(
     coords: &[[f64; 3]],
     members: &[crate::wkb_read::DecodedKind],
     props: Option<&serde_json::Value>,
+) -> Result<()> {
+    write_composite_solid_with_ids(w, coords, members, props, None)
+}
+
+/// Like [`write_composite_solid`] but stamps `gml:id`s on faces from `face_ids`
+/// (flat, in `[solid][shell][face]` walk order across all members).
+pub fn write_composite_solid_with_ids<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    members: &[crate::wkb_read::DecodedKind],
+    props: Option<&serde_json::Value>,
+    face_ids: Option<&[Option<String>]>,
 ) -> Result<()> {
     let is_composite =
         props.and_then(|p| p.get("type")).and_then(|t| t.as_str()) == Some("CompositeSolid");
@@ -239,6 +268,7 @@ pub fn write_composite_solid<W: Write>(
 
     w.write_event(Event::Start(BytesStart::new("gml:CompositeSolid")))
         .map_err(io_err)?;
+    let mut cursor = 0usize;
     for (m, member) in members.iter().enumerate() {
         let crate::wkb_read::DecodedKind::PolyhedralSurface(faces) = member else {
             return Err(CityParquetError::Geometry(
@@ -248,7 +278,7 @@ pub fn write_composite_solid<W: Write>(
         let counts = nested.as_ref().map(|c| c[m].as_slice());
         w.write_event(Event::Start(BytesStart::new("gml:solidMember")))
             .map_err(io_err)?;
-        write_gml_solid(w, coords, faces, counts)?;
+        write_gml_solid(w, coords, faces, counts, face_ids, &mut cursor)?;
         w.write_event(Event::End(BytesEnd::new("gml:solidMember")))
             .map_err(io_err)?;
     }
@@ -258,20 +288,28 @@ pub fn write_composite_solid<W: Write>(
 }
 
 /// A shell (list of faces) -> `<gml:CompositeSurface>` of `gml:surfaceMember`
-/// wrapped `gml:Polygon`s.
+/// wrapped `gml:Polygon`s. `cursor` advances one per face across the whole
+/// solid; when `face_ids` has an id at that position it is stamped on the
+/// polygon (so appearance can target it).
 fn write_composite_surface<W: Write>(
     w: &mut Writer<W>,
     coords: &[[f64; 3]],
     shell: &[Vec<Vec<usize>>],
+    face_ids: Option<&[Option<String>]>,
+    cursor: &mut usize,
 ) -> Result<()> {
     w.write_event(Event::Start(BytesStart::new("gml:CompositeSurface")))
         .map_err(io_err)?;
     for face in shell {
+        let id = face_ids
+            .and_then(|a| a.get(*cursor))
+            .and_then(|o| o.as_deref());
         w.write_event(Event::Start(BytesStart::new("gml:surfaceMember")))
             .map_err(io_err)?;
-        write_polygon(w, coords, face)?;
+        write_polygon_with_id(w, coords, face, id)?;
         w.write_event(Event::End(BytesEnd::new("gml:surfaceMember")))
             .map_err(io_err)?;
+        *cursor += 1;
     }
     w.write_event(Event::End(BytesEnd::new("gml:CompositeSurface")))
         .map_err(io_err)?;

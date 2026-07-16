@@ -3,6 +3,7 @@
 //! W-M1: CityModel + envelope + srsName, and bldg:Building with LoD gml:Solid.
 //! Standalone — reuses wkb_read/reader/export shell helpers, no cjseq document.
 
+pub mod appearance;
 pub mod attributes;
 pub mod building;
 pub mod document;
@@ -25,8 +26,9 @@ use self::document::{Bounds, write_city_model_close, write_city_model_open};
 use crate::Result;
 use crate::citygml::crs::srs_name_for;
 use crate::decode::decode_batch;
-use crate::export::first_schema_mismatch;
+use crate::export::{first_schema_mismatch, row_json_object};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
+use crate::sidecar::read_materials;
 use crate::wkb_read::{DecodedGeometry, DecodedKind};
 
 /// Options for one CityParquet package -> CityGML 2.0 `.gml` conversion.
@@ -81,6 +83,16 @@ pub struct WriteReport {
     /// A Building's `children` entry with no matching part row (explains a
     /// shrunken re-read `children` array).
     pub children_unresolved: usize,
+    /// `app:X3DMaterial` elements emitted (one per used material def per theme).
+    pub materials_written: usize,
+    /// Geometries whose `material` map could not be resolved (dangling/out-of-
+    /// range global id, values/faces shape mismatch) — appearance dropped for
+    /// that geometry, geometry itself still emitted.
+    pub material_geometries_dropped: usize,
+    /// Geometries carrying a `material` map on a Core-profile package (no
+    /// `materials.parquet`): the definitions are unavailable, so appearance is
+    /// skipped.
+    pub appearance_skipped_core_profile: usize,
 }
 
 fn io_err(e: std::io::Error) -> CityParquetError {
@@ -167,6 +179,16 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     // Stored attribute column types drive attribute routing (not value shapes).
     let attr_types = attributes::attribute_types(&schema, &meta.attribute_columns);
 
+    // Global materials table (Compatibility profile): appearance definitions the
+    // per-geometry material maps' global ids resolve against. Absent on a Core
+    // package (no materials.parquet listed) — appearance is then skipped.
+    let global_materials: Option<Vec<serde_json::Value>> = manifest
+        .sidecar_files
+        .iter()
+        .any(|f| f == "materials.parquet")
+        .then(|| read_materials(&opts.package_dir.join("materials.parquet")))
+        .transpose()?;
+
     let mut report = WriteReport::default();
     let mut bounds = Bounds::new();
     let mut seen_ids: HashSet<String> = HashSet::new();
@@ -216,7 +238,8 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
 
         for batch in reader {
             let batch = batch?;
-            for obj in decode_batch(&batch, &meta)? {
+            let objects = decode_batch(&batch, &meta)?;
+            for (row, obj) in objects.into_iter().enumerate() {
                 let ty = obj.object.thetype.clone();
                 // Only Building and BuildingPart are handled; other CityObject
                 // types are out of scope (BuildingPart no longer counts here).
@@ -224,13 +247,20 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     report.non_building_skipped += 1;
                     continue;
                 }
+                // This row's per-LoD material map (`{"<lod>": {theme: {...}}}`),
+                // keyed out per geometry below. `decode_batch` excludes it.
+                let material_col = row_json_object(&batch, "material", row)?;
                 let mut solids = Vec::new();
                 for (lod, decoded, props) in obj.geometries {
                     // Real semantics on a geometry we are about to skip are
                     // dropped; count them (computed before `props` is moved).
                     let sem_count = semantics::droppable_surface_count(props.as_ref());
+                    let lod_key = lod.map(|l| l.to_string()).unwrap_or_default();
+                    let material = material_col.as_ref().and_then(|m| m.get(&lod_key)).cloned();
                     match route_geometry(lod, decoded, props) {
-                        GeomRoute::Emit(lod, decoded, props) => solids.push((lod, decoded, props)),
+                        GeomRoute::Emit(lod, decoded, props) => {
+                            solids.push((lod, decoded, props, material))
+                        }
                         // No CityGML 2.0 Building slot for a MultiSolid.
                         GeomRoute::MultiSolid => {
                             report.multi_solids_skipped += 1;
@@ -284,6 +314,7 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
         children_by_id: &children_by_id,
         type_by_id: &type_by_id,
         types: &attr_types,
+        materials: global_materials.as_deref(),
     };
     let mut next_feature_index = 0usize;
     let mut reached_parts: HashSet<String> = HashSet::new();
