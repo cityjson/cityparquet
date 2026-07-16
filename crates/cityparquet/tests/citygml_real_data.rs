@@ -705,3 +705,23 @@ fn citygml2_resolves_xlinked_boundedby_semantics() {
         "xlinked boundedBy must tag solid faces by referenced polygon id"
     );
 }
+
+/// CG-1 robustness: a boundedBy-only Building whose only member is an xlink to
+/// a missing id must NOT emit a faceless MultiSurface — the Building ends up
+/// with no geometry rather than an empty one.
+#[test]
+fn citygml2_unresolved_boundedby_xlink_emits_no_empty_geometry() {
+    let src = Source::open(&data_fixture("building_broken_xlink_boundedby.gml")).unwrap();
+    let feats: Vec<_> = src
+        .features()
+        .unwrap()
+        .collect::<cityparquet::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(feats.len(), 1);
+    let co = feats[0].city_objects.get("BB").expect("Building BB");
+    let n = co.geometry.as_ref().map(|g| g.len()).unwrap_or(0);
+    assert_eq!(
+        n, 0,
+        "a broken xlink must not produce an empty MultiSurface"
+    );
+}

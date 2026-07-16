@@ -509,7 +509,13 @@ impl RawBuilding {
             }
         }
         for lod in &ms_lods {
-            built.push(self.build_multisurface_geometry(lod, vb)?);
+            let ms = self.build_multisurface_geometry(lod, vb)?;
+            // A LoD whose boundedBy members were all unresolved xlinks would
+            // otherwise emit a faceless MultiSurface — skip it.
+            let empty = ms.0["boundaries"].as_array().is_some_and(|b| b.is_empty());
+            if !empty {
+                built.push(ms);
+            }
         }
         self.apply_materials(&mut built, &mut app.interner);
         self.apply_textures(&mut built, app);
@@ -727,8 +733,17 @@ impl RawBuilding {
         let mut values = Vec::new();
         let mut face_ids = Vec::new();
         let mut ring_ids = Vec::new();
+        // Face ids already emitted at this LoD, so a polygon referenced more
+        // than once (e.g. two boundedBy surfaces xlinking the same id) is not
+        // emitted as a duplicate face.
+        let mut emitted: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for (sem_idx, poly_lod, poly) in &self.boundary_polys {
             if poly_lod != lod {
+                continue;
+            }
+            if let Some(id) = poly.id.as_deref()
+                && !emitted.insert(id)
+            {
                 continue;
             }
             boundaries.push(surface_rings(poly, false, vb)?);
@@ -736,14 +751,20 @@ impl RawBuilding {
             face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
             ring_ids.push(ring_ids_value(poly));
         }
-        // Resolve xlinked boundary members against the polygon registry (CG-1);
-        // an unresolvable ref simply contributes no face (its solid-face tag,
-        // if any, is applied separately via `semantic_of_polygon`).
+        // Resolve xlinked boundary members against the polygon registry (CG-1).
         for (sem_idx, ref_lod, href) in &self.boundary_refs {
             if ref_lod != lod {
                 continue;
             }
+            if !emitted.insert(href) {
+                continue; // already emitted (duplicate reference)
+            }
             let Some(poly) = self.polygons.get(href) else {
+                // A boundedBy xlink to an id defined in no accessible geometry:
+                // contribute no face, but do not stay silent.
+                eprintln!(
+                    "warning: bldg:boundedBy references #{href}, which resolves to no polygon in this building; skipping"
+                );
                 continue;
             };
             boundaries.push(surface_rings(poly, false, vb)?);
