@@ -725,3 +725,59 @@ fn citygml2_unresolved_boundedby_xlink_emits_no_empty_geometry() {
         "a broken xlink must not produce an empty MultiSurface"
     );
 }
+
+/// CG-2: a solid face reached through a reversed `gml:OrientableSurface`
+/// (orientation="-") has its vertices wound backwards, so its texture UVs must
+/// be reversed too — while a normal face's UVs stay in authored order.
+/// `building_orientable_texture.gml`: face p0 (reversed) and p1 (normal), both
+/// textured with UVs (0,0)(1,0)(0,1).
+#[test]
+fn citygml2_reverses_uvs_for_reversed_orientable_surface() {
+    let src = Source::open(&data_fixture("building_orientable_texture.gml")).unwrap();
+    let feats: Vec<_> = src
+        .features()
+        .unwrap()
+        .collect::<cityparquet::Result<Vec<_>>>()
+        .unwrap();
+    let f = &feats[0];
+    let co = f.city_objects.get("BO").expect("Building BO");
+    let g = &co.geometry.as_ref().expect("geometry")[0];
+    let uvs = f
+        .appearance
+        .as_ref()
+        .expect("appearance")
+        .vertices_texture
+        .as_ref()
+        .expect("vertices-texture");
+
+    let t = g.texture.as_ref().expect("geometry texture");
+    let values = t
+        .get("visual")
+        .expect("visual theme")
+        .values
+        .as_ref()
+        .expect("values")
+        .as_array()
+        .unwrap();
+    let faces = values[0].as_array().unwrap(); // Solid: [shell][face]
+    // Dereference a face's ring-0 UV indices to coordinate pairs.
+    let face_uvs = |i: usize| -> Vec<Vec<f64>> {
+        let ring0 = faces[i].as_array().unwrap()[0].as_array().unwrap();
+        ring0[1..]
+            .iter()
+            .map(|k| uvs[k.as_u64().unwrap() as usize].clone())
+            .collect()
+    };
+    // p0 (face 0) went through a reversed OrientableSurface -> UVs reversed.
+    assert_eq!(
+        face_uvs(0),
+        vec![vec![0.0, 1.0], vec![1.0, 0.0], vec![0.0, 0.0]],
+        "reversed OrientableSurface face must have reversed UVs"
+    );
+    // p1 (face 1) is a plain polygon -> UVs in authored order.
+    assert_eq!(
+        face_uvs(1),
+        vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]],
+        "normal face keeps authored UV order"
+    );
+}
