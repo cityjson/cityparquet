@@ -36,6 +36,10 @@ pub struct Polygon {
     pub id: Option<String>,
     pub exterior: Ring,
     pub interiors: Vec<Ring>,
+    /// The `gml:id` of each ring, parallel to `[exterior, interiors...]` — the id
+    /// an `app:textureCoordinates ring="#id"` reference resolves to. `None` for an
+    /// anonymous ring.
+    pub ring_ids: Vec<Option<String>>,
 }
 
 /// One surface of a solid shell, before xlink resolution.
@@ -393,8 +397,8 @@ pub fn collect_polygons<R: BufRead>(
 
 /// A `gml:Polygon` (positioned after its `Start`): exterior ring + holes.
 pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<Polygon> {
-    let mut exterior: Option<Ring> = None;
-    let mut interiors: Vec<Ring> = Vec::new();
+    let mut exterior: Option<(Ring, Option<String>)> = None;
+    let mut interiors: Vec<(Ring, Option<String>)> = Vec::new();
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -417,22 +421,34 @@ pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> 
             _ => {}
         }
     }
-    let exterior = exterior
+    let (exterior, ext_id) = exterior
         .ok_or_else(|| CityParquetError::Schema("gml:Polygon without exterior ring".to_string()))?;
+    let mut ring_ids = Vec::with_capacity(1 + interiors.len());
+    ring_ids.push(ext_id);
+    let interior_rings = interiors
+        .into_iter()
+        .map(|(ring, id)| {
+            ring_ids.push(id);
+            ring
+        })
+        .collect();
     Ok(Polygon {
         id: None,
         exterior,
-        interiors,
+        interiors: interior_rings,
+        ring_ids,
     })
 }
 
 /// The `gml:exterior`/`gml:interior` of a Polygon, wrapping a `gml:LinearRing`.
+/// Returns the ring coords plus the `gml:LinearRing`'s `gml:id` (for texture
+/// coordinate targeting), if any.
 fn read_ring_container<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     end: &[u8],
-) -> Result<Ring> {
-    let mut ring: Option<Ring> = None;
+) -> Result<(Ring, Option<String>)> {
+    let mut ring: Option<(Ring, Option<String>)> = None;
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -441,7 +457,8 @@ fn read_ring_container<R: BufRead>(
             Event::Start(e) => {
                 let local = e.local_name();
                 if gml && local.as_ref() == b"LinearRing" {
-                    ring = Some(read_linear_ring(reader, buf)?);
+                    let id = gml_id(&e);
+                    ring = Some((read_linear_ring(reader, buf)?, id));
                 } else {
                     skip_element(reader, buf)?;
                 }
