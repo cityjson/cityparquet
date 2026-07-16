@@ -70,7 +70,11 @@ struct AppearanceState {
 
 /// One solid's `(boundaries, semantic values, face-ids, ring-ids)`, each
 /// `[shell]`-nested (see [`RawBuilding::build_solid`]).
-type SolidTrees = (Vec<Value>, Vec<Value>, Vec<Value>, Vec<Value>);
+// (boundaries, semantic values, face-ids, ring-ids, ring-reverse flags) — the
+// last mirrors the ring-ids tree with a per-ring bool: true when the face was
+// wound backwards by a reversed `gml:OrientableSurface`, so its texture UVs
+// must be reversed to stay aligned (CG-2).
+type SolidTrees = (Vec<Value>, Vec<Value>, Vec<Value>, Vec<Value>, Vec<Value>);
 
 /// A buffered building: everything pass 1 collects before resolution.
 pub struct RawBuilding {
@@ -485,10 +489,12 @@ impl RawBuilding {
         vb: &mut VertexBuilder,
         app: &mut AppearanceState,
     ) -> Result<Vec<Value>> {
-        // Each entry: (geometry JSON, face-id tree, ring-id tree). The face-id
-        // tree addresses `app:target`s (materials, at face level); the ring-id
-        // tree addresses `app:textureCoordinates ring`s (textures, at ring level).
-        let mut built: Vec<(Value, Value, Value)> = Vec::new();
+        // Each entry: (geometry JSON, face-id tree, ring-id tree, ring-reverse
+        // tree). The face-id tree addresses `app:target`s (materials, at face
+        // level); the ring-id tree addresses `app:textureCoordinates ring`s
+        // (textures, at ring level); the reverse tree (parallel to ring-ids)
+        // flags rings whose UVs must be reversed (CG-2).
+        let mut built: Vec<(Value, Value, Value, Value)> = Vec::new();
         for (lod, geom) in &self.solids {
             built.push(self.build_solid_geometry(geom, lod, vb)?);
         }
@@ -519,7 +525,7 @@ impl RawBuilding {
         }
         self.apply_materials(&mut built, &mut app.interner);
         self.apply_textures(&mut built, app);
-        Ok(built.into_iter().map(|(g, _, _)| g).collect())
+        Ok(built.into_iter().map(|(g, _, _, _)| g).collect())
     }
 
     /// Intern this object's `app:X3DMaterial`s and stamp each geometry's
@@ -529,7 +535,7 @@ impl RawBuilding {
     /// same face+theme are last-wins (document order).
     fn apply_materials(
         &self,
-        built: &mut [(Value, Value, Value)],
+        built: &mut [(Value, Value, Value, Value)],
         interner: &mut AppearanceInterner,
     ) {
         if self.appearance.materials.is_empty() {
@@ -547,7 +553,7 @@ impl RawBuilding {
                 map.insert(target.clone(), idx); // last-wins
             }
         }
-        for (geom, face_ids, _) in built.iter_mut() {
+        for (geom, face_ids, _, _) in built.iter_mut() {
             let mut material_obj = serde_json::Map::new();
             for theme in &themes {
                 let map = &theme_maps[theme];
@@ -569,13 +575,16 @@ impl RawBuilding {
     /// a theme that textures no ring of a geometry is omitted. Two textures on the
     /// same ring+theme are last-wins (document order).
     ///
-    /// Known limitation: a face reached through a REVERSED `gml:OrientableSurface`
-    /// has its ring vertices wound backwards ([`surface_rings`] with `reverse`),
-    /// but the ring's UVs are stored in document order — so on such a face UVs
-    /// misalign with the reversed vertices. Our own writer never emits
-    /// `OrientableSurface`, so the paired round-trip is unaffected; this is a
-    /// foreign-file loss (like TexCoordGen / seams).
-    fn apply_textures(&self, built: &mut [(Value, Value, Value)], app: &mut AppearanceState) {
+    /// A face reached through a REVERSED `gml:OrientableSurface` has its ring
+    /// vertices wound backwards ([`surface_rings`] with `reverse`); its UVs are
+    /// reversed in lockstep (CG-2) via the per-ring reverse tree, keeping them
+    /// aligned with the reversed vertices. Handled per-face, so a polygon reused
+    /// both flipped and unflipped textures correctly in each use.
+    fn apply_textures(
+        &self,
+        built: &mut [(Value, Value, Value, Value)],
+        app: &mut AppearanceState,
+    ) {
         if self.appearance.textures.is_empty() {
             return;
         }
@@ -593,11 +602,11 @@ impl RawBuilding {
                 map.insert(ring_id.clone(), (tex_idx, uv_idxs)); // last-wins
             }
         }
-        for (geom, _, ring_ids) in built.iter_mut() {
+        for (geom, _, ring_ids, reverse) in built.iter_mut() {
             let mut texture_obj = serde_json::Map::new();
             for theme in &themes {
                 let map = &theme_maps[theme];
-                let (values, any) = texture_values_from_ring_ids(ring_ids, map);
+                let (values, any) = texture_values_from_ring_ids(ring_ids, reverse, map);
                 if any {
                     texture_obj.insert(theme.clone(), json!({ "values": values }));
                 }
@@ -677,16 +686,17 @@ impl RawBuilding {
         geom: &SolidGeom,
         lod: &str,
         vb: &mut VertexBuilder,
-    ) -> Result<(Value, Value, Value)> {
-        let (gtype, boundaries, values, face_ids, ring_ids) = match geom {
+    ) -> Result<(Value, Value, Value, Value)> {
+        let (gtype, boundaries, values, face_ids, ring_ids, reverse) = match geom {
             SolidGeom::Solid(solid) => {
-                let (b, v, id, r) = self.build_solid(solid, vb)?;
+                let (b, v, id, r, rev) = self.build_solid(solid, vb)?;
                 (
                     "Solid",
                     Value::Array(b),
                     Value::Array(v),
                     Value::Array(id),
                     Value::Array(r),
+                    Value::Array(rev),
                 )
             }
             SolidGeom::Composite(solids) => {
@@ -694,12 +704,14 @@ impl RawBuilding {
                 let mut sv = Vec::with_capacity(solids.len());
                 let mut sid = Vec::with_capacity(solids.len());
                 let mut sring = Vec::with_capacity(solids.len());
+                let mut srev = Vec::with_capacity(solids.len());
                 for solid in solids {
-                    let (b, v, id, r) = self.build_solid(solid, vb)?;
+                    let (b, v, id, r, rev) = self.build_solid(solid, vb)?;
                     sb.push(Value::Array(b));
                     sv.push(Value::Array(v));
                     sid.push(Value::Array(id));
                     sring.push(Value::Array(r));
+                    srev.push(Value::Array(rev));
                 }
                 (
                     "CompositeSolid",
@@ -707,6 +719,7 @@ impl RawBuilding {
                     Value::Array(sv),
                     Value::Array(sid),
                     Value::Array(sring),
+                    Value::Array(srev),
                 )
             }
         };
@@ -716,7 +729,7 @@ impl RawBuilding {
             let surfaces: Vec<Value> = self.surfaces.iter().map(|k| json!({ "type": k })).collect();
             g["semantics"] = json!({ "surfaces": surfaces, "values": values });
         }
-        Ok((g, face_ids, ring_ids))
+        Ok((g, face_ids, ring_ids, reverse))
     }
 
     /// Build one CityJSON `MultiSurface` geometry for `lod` from the
@@ -728,11 +741,14 @@ impl RawBuilding {
         &self,
         lod: &str,
         vb: &mut VertexBuilder,
-    ) -> Result<(Value, Value, Value)> {
+    ) -> Result<(Value, Value, Value, Value)> {
         let mut boundaries = Vec::new();
         let mut values = Vec::new();
         let mut face_ids = Vec::new();
         let mut ring_ids = Vec::new();
+        // boundedBy faces are never wound backwards, so every ring's reverse
+        // flag is false (kept parallel to ring_ids for the texture path).
+        let mut reverse = Vec::new();
         // Face ids already emitted at this LoD, so a polygon referenced more
         // than once (e.g. two boundedBy surfaces xlinking the same id) is not
         // emitted as a duplicate face.
@@ -750,6 +766,7 @@ impl RawBuilding {
             values.push(json!(sem_idx));
             face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
             ring_ids.push(ring_ids_value(poly));
+            reverse.push(reverse_leaf(poly, false));
         }
         // Resolve xlinked boundary members against the polygon registry (CG-1).
         for (sem_idx, ref_lod, href) in &self.boundary_refs {
@@ -771,6 +788,7 @@ impl RawBuilding {
             values.push(json!(sem_idx));
             face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
             ring_ids.push(ring_ids_value(poly));
+            reverse.push(reverse_leaf(poly, false));
         }
         let mut g = json!({
             "type": "MultiSurface",
@@ -781,7 +799,12 @@ impl RawBuilding {
             let surfaces: Vec<Value> = self.surfaces.iter().map(|k| json!({ "type": k })).collect();
             g["semantics"] = json!({ "surfaces": surfaces, "values": Value::Array(values) });
         }
-        Ok((g, Value::Array(face_ids), Value::Array(ring_ids)))
+        Ok((
+            g,
+            Value::Array(face_ids),
+            Value::Array(ring_ids),
+            Value::Array(reverse),
+        ))
     }
 
     /// A `RawSolid` -> (`[shell][surface][ring][idx]` boundaries, `[shell][face]`
@@ -794,24 +817,28 @@ impl RawBuilding {
         let mut shells_v = Vec::with_capacity(solid.shells.len());
         let mut shells_id = Vec::with_capacity(solid.shells.len());
         let mut shells_ring = Vec::with_capacity(solid.shells.len());
+        let mut shells_rev = Vec::with_capacity(solid.shells.len());
         for shell in &solid.shells {
             let mut faces_b = Vec::with_capacity(shell.len());
             let mut faces_v = Vec::with_capacity(shell.len());
             let mut faces_id = Vec::with_capacity(shell.len());
             let mut faces_ring = Vec::with_capacity(shell.len());
+            let mut faces_rev = Vec::with_capacity(shell.len());
             for sref in shell {
                 let poly = self.resolve(sref)?;
                 faces_b.push(surface_rings(poly, sref.reverse, vb)?);
                 faces_v.push(self.semantic_value(sref));
                 faces_id.push(face_id(sref, poly));
                 faces_ring.push(ring_ids_value(poly));
+                faces_rev.push(reverse_leaf(poly, sref.reverse));
             }
             shells_b.push(Value::Array(faces_b));
             shells_v.push(Value::Array(faces_v));
             shells_id.push(Value::Array(faces_id));
             shells_ring.push(Value::Array(faces_ring));
+            shells_rev.push(Value::Array(faces_rev));
         }
-        Ok((shells_b, shells_v, shells_id, shells_ring))
+        Ok((shells_b, shells_v, shells_id, shells_ring, shells_rev))
     }
 
     /// The polygon a surface reference points at (xlink resolved against the
@@ -868,6 +895,14 @@ fn ring_ids_value(poly: &Polygon) -> Value {
     )
 }
 
+/// A face's per-ring reverse flags, mirroring [`ring_ids_value`]'s shape: one
+/// `bool` per ring, all equal to `reverse` (a reversed `gml:OrientableSurface`
+/// winds every ring of the face backwards together). Consumed by
+/// [`texture_values_from_ring_ids`] to reverse that ring's UVs (CG-2).
+fn reverse_leaf(poly: &Polygon, reverse: bool) -> Value {
+    Value::Array(vec![json!(reverse); poly.ring_ids.len()])
+}
+
 /// Turn a ring-id tree into a `texture.{theme}.values` tree: each ring leaf id is
 /// mapped to `[texture index, uv indices…]` (a hit) or `[null]` (a miss/anonymous
 /// ring). Returns the tree and whether any ring resolved (to omit an untextured
@@ -876,23 +911,37 @@ fn ring_ids_value(poly: &Polygon) -> Value {
 /// `Array` is a container to recurse into.
 fn texture_values_from_ring_ids(
     node: &Value,
+    reverse: &Value,
     map: &HashMap<String, (usize, Vec<usize>)>,
 ) -> (Value, bool) {
     match node {
         Value::String(id) => match map.get(id) {
             Some((tex, uvs)) => {
+                // A ring wound backwards by a reversed OrientableSurface needs
+                // its per-vertex UVs reversed to stay aligned (CG-2). The
+                // closing pair is already dropped on both vertices and UVs, so
+                // a full reverse is the exact inverse of the vertex reversal.
+                let reversed = reverse.as_bool().unwrap_or(false);
                 let mut leaf = Vec::with_capacity(1 + uvs.len());
                 leaf.push(json!(tex));
-                leaf.extend(uvs.iter().map(|u| json!(u)));
+                if reversed {
+                    leaf.extend(uvs.iter().rev().map(|u| json!(u)));
+                } else {
+                    leaf.extend(uvs.iter().map(|u| json!(u)));
+                }
                 (Value::Array(leaf), true)
             }
             None => (json!([Value::Null]), false),
         },
         Value::Array(items) => {
+            let rev_items = reverse.as_array();
             let mut out = Vec::with_capacity(items.len());
             let mut any = false;
-            for it in items {
-                let (v, hit) = texture_values_from_ring_ids(it, map);
+            for (i, it) in items.iter().enumerate() {
+                let rev = rev_items
+                    .and_then(|r| r.get(i))
+                    .unwrap_or(&Value::Bool(false));
+                let (v, hit) = texture_values_from_ring_ids(it, rev, map);
                 any |= hit;
                 out.push(v);
             }
