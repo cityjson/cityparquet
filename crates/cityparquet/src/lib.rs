@@ -6,6 +6,7 @@ pub mod compare;
 pub mod decode;
 pub mod encode;
 pub mod export;
+pub mod inputs;
 pub mod order;
 pub mod package;
 pub mod query;
