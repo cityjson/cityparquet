@@ -147,11 +147,53 @@ profile Hilbert already has (documented).
 
 ## Benchmark payoff
 
-Each partition package's `metadata.json` carries its own bbox + feature count
-(computed by the existing `scan` over that partition's features). DuckDB
-globbing `OUTPUT/*/building.parquet` then gets package-level spatial pruning
-"for free" from those bboxes + Parquet footer stats — the read/query effect the
-downstream benchmark measures.
+Each partition package is scanned over its OWN features, so its **Parquet footer
+KV + row-group statistics** carry that partition's true bbox + counts (NOT
+`metadata.json`, which is a plain package manifest today). DuckDB globbing
+`OUTPUT/*/building.parquet` then gets file-/row-group-level spatial pruning "for
+free" from those footer stats — the read/query effect the downstream benchmark
+measures. (See the Fable adjustments below for the correction to an earlier
+draft that mis-attributed this to `metadata.json`.)
+
+## Fable risk-review adjustments (2026-07-16, pre-execution)
+
+Applied after Fable reviewed the plan against the real code + the delft fixture:
+
+1. **Canonical schema across partitions (critical).** Each partition else
+   re-infers its own attribute/LoD columns → divergent Parquet schemas and a
+   broken `read_parquet('OUT/*/…')` glob. Fix: the driver scans the **merged**
+   dataset once for a canonical `(schema, lods)` and stamps it into every
+   partition; each partition still scans its own features for bbox/count/stats.
+   `convert_source` gains an optional schema override seam for this.
+2. **Requantise is bounded, not lossless.** delft's `translate`
+   (`85088.390625`) is not integral over `scale 0.001`, so requantising onto a
+   different grid adds ≤ `mergedScale/2` per axis. Merged transform uses
+   componentwise-**min translate** + componentwise-**min scale** (min translate
+   keeps ints small and is exact for the min-translate source when scales
+   match). Round-trip tests assert within `mergedScale`, not `0`. The A4
+   heterogeneous fixture is built with `scale ÷10, vertices ×10` (an exact
+   re-quantisation of the real fixture).
+3. **Strip stale `geographicalExtent`.** The merged header clones the first
+   source's `metadata`; `scan` serialises it verbatim into every partition's
+   footer, so each partition would advertise the whole-dataset extent.
+   `merge_sources` strips `geographicalExtent` from the merged metadata (the
+   true per-partition extent is in the Parquet footer stats).
+4. **Stale-partition purge.** Re-running with a different `--cell-size` leaves
+   old `box_*` subdirs (each `convert_source` overwrite-checks only its own
+   subdir). `convert_partitioned` treats the parent dir like `convert` treats
+   an output dir: non-empty + no `--overwrite` → error; `--overwrite` → clear
+   existing partition subdirs first.
+5. **`count` clamps N ≤ total features** (fewer, gap-labelled partitions
+   otherwise); pinned by test.
+6. **Benchmark-payoff correction.** Per-file bbox + feature count live in the
+   **Parquet footer KV / row-group stats**, not in `metadata.json` (which is a
+   plain package manifest today, not yet a STAC Item). DuckDB file/row-group
+   pruning uses those footer stats — the payoff stands, the mechanism is the
+   footer, not `metadata.json`.
+7. **Documented confounds (not fixed):** every partition re-writes the full
+   doc-level `geometry_templates` sidecar (referenced or not); duplicate feature
+   ids from merging the *same* file twice cannot faithfully `export` (last-wins)
+   — so multi-input round-trip tests use **disjoint** slices.
 
 ## Non-goals (this milestone)
 
