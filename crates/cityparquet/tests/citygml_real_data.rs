@@ -503,3 +503,49 @@ fn citygml2_boundedby_multisurface_building_no_solid() {
         }
     }
 }
+
+// W-M4: bldg:consistsOfBuildingPart -> parent Building + BuildingPart CityObjects
+// in ONE feature with children/parents links. `building_with_parts.gml` is a
+// hand-authored fixture: Building "B" (own lod1Solid) + parts "B_p1" (lod2Solid)
+// and "B_p2" (boundedBy-only MultiSurface).
+#[test]
+fn citygml2_reads_building_parts() {
+    let src = Source::open(&data_fixture("building_with_parts.gml")).unwrap();
+    let feats: Vec<_> = src
+        .features()
+        .unwrap()
+        .collect::<cityparquet::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(feats.len(), 1, "one feature (the Building assembly)");
+    let f = &feats[0];
+    assert_eq!(f.id, "B", "feature id is the parent Building id");
+    assert_eq!(f.city_objects.len(), 3, "parent + 2 parts as CityObjects");
+
+    let parent = &f.city_objects["B"];
+    assert_eq!(parent.thetype, "Building");
+    let children = parent.children.as_ref().expect("parent has children");
+    assert_eq!(
+        children,
+        &vec!["B_p1".to_string(), "B_p2".to_string()],
+        "children in doc order"
+    );
+    assert!(
+        parent.geometry.as_ref().is_some_and(|g| !g.is_empty()),
+        "parent has its own lod1 geometry"
+    );
+
+    let p1 = &f.city_objects["B_p1"];
+    assert_eq!(p1.thetype, "BuildingPart");
+    assert_eq!(p1.parents.as_ref().unwrap(), &vec!["B".to_string()]);
+    let g1 = serde_json::to_value(&p1.geometry.as_ref().unwrap()[0]).unwrap();
+    assert_eq!(g1["type"], "Solid");
+    assert_eq!(g1["lod"], "2");
+
+    let p2 = &f.city_objects["B_p2"];
+    assert_eq!(p2.thetype, "BuildingPart");
+    assert_eq!(p2.parents.as_ref().unwrap(), &vec!["B".to_string()]);
+    let g2 = serde_json::to_value(&p2.geometry.as_ref().unwrap()[0]).unwrap();
+    assert_eq!(g2["type"], "MultiSurface", "boundedBy-only part");
+    let stypes = g2["semantics"]["surfaces"].as_array().unwrap();
+    assert_eq!(stypes.len(), 2, "WallSurface + RoofSurface");
+}
