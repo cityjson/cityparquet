@@ -10,6 +10,7 @@ pub mod inputs;
 pub mod merge;
 pub mod order;
 pub mod package;
+pub mod partition;
 pub mod query;
 pub mod reader;
 pub mod recipe;
