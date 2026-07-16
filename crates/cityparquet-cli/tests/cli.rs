@@ -68,6 +68,87 @@ fn convert_two_inputs_merges_into_one_package() {
     assert!(out.path().join("cityobjects.parquet").exists());
 }
 
+/// `--partition count --number 3` writes 3 self-contained package subdirs.
+#[test]
+fn partition_count_writes_n_package_dirs() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let o = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(out.path())
+        .arg("--partition")
+        .arg("count")
+        .arg("--number")
+        .arg("3")
+        .arg("--layout")
+        .arg("single")
+        .output()
+        .expect("run");
+    assert!(
+        o.status.success(),
+        "partition convert failed: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    for i in 0..3 {
+        assert!(
+            out.path()
+                .join(format!("count-{i:05}"))
+                .join("cityobjects.parquet")
+                .exists(),
+            "missing partition count-{i:05}"
+        );
+    }
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        stdout.contains("partitions=3"),
+        "summary should report partitions=3, got: {stdout}"
+    );
+}
+
+/// `--partition box` without `--cell-size` must fail with a clear error.
+#[test]
+fn partition_box_requires_cell_size() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let o = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(out.path())
+        .arg("--partition")
+        .arg("box")
+        .output()
+        .expect("run");
+    assert!(!o.status.success(), "box without --cell-size must fail");
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        stderr.contains("cell-size"),
+        "error should mention --cell-size, got: {stderr}"
+    );
+}
+
+/// A sizing flag without `--partition` is a usage error.
+#[test]
+fn sizing_flag_without_partition_errors() {
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let o = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(out.path())
+        .arg("--number")
+        .arg("3")
+        .output()
+        .expect("run");
+    assert!(
+        !o.status.success(),
+        "--number without --partition must fail"
+    );
+}
+
 #[test]
 fn convert_without_overwrite_fails_on_existing_output() {
     let out = tempfile::tempdir().unwrap();
