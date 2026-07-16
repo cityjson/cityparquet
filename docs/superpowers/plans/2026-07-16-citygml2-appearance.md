@@ -72,6 +72,37 @@
 - [ ] Finish branch (verify `just check`, merge to `main`, delete branch).
 - [ ] Update milestone memory: W-M5 done (materials+textures, feature-local); note W-M5c (CityModel-level appearance pre-scan) as the remaining reader-robustness future work. The CityGML reader+writer round-trip stack is then complete.
 
+## Design refinement (Fable, 2026-07-16)
+
+Applied before implementation:
+
+- **id-tree, not null-template+path registry.** In the SAME walk that
+  `build_solid`/`build_multisurface_geometry` builds `semantics.values`, build a
+  parallel **face-id tree** (identical nesting, leaf = `Option<String>` polygon
+  id). To apply a theme: build `HashMap<poly_id, local_idx>` from that theme's
+  `ReadMaterial`s, walk the id-tree once per (geometry, theme) producing the
+  `values` tree, and **omit the theme for a geometry whose values are all-null**.
+  No path arithmetic, no mutation, and a face shared by xlink from multiple
+  positions (the CompositeSolid shared-wall case `resolve()` already supports) is
+  set at every occurrence by construction.
+- **Target container fan-out is foreign-file only, deferred.** A real
+  `app:target` may name a `gml:MultiSurface`/`CompositeSurface`/
+  `OrientableSurface` id (applies to all descendant polygons). Our paired
+  round-trip's writer targets polygon ids directly, so this never arises in the
+  round-trip; parse hand fixtures with polygon targets. A target that resolves to
+  nothing → `appearance_targets_unresolved` (loud); container fan-out is a
+  documented W-M5c-adjacent limitation.
+- **Unused defs are dropped at encode** (`intern_material` only runs on
+  referenced indices) — confirmed. Keep the unused X3DMaterial ONLY in the
+  reader unit test (with properties DISTINCT from every used def, else the
+  theme-blind interner collapses it and the table-length assert lies); the
+  round-trip oracle must NOT assert unused-material survival; the writer never
+  emits target-less unused defs (dead scope — removed from Task 2).
+- **Empty theme symmetry.** `""` theme ⇄ absent `app:theme`. The writer emits
+  `app:theme` only when the theme is non-empty; the oracle treats missing ≡ `""`.
+- Interning deferred to pass 2, iterated in document order (deterministic
+  indices). Inline polygon with no `gml:id` is simply untargetable — no counter.
+
 ## Self-Review
 
 - Coverage: reader materials (1), writer materials (2), materials oracle (3), reader textures (4), writer textures (5), full+scale oracle (6). Matches spec W-M5a/W-M5b.
