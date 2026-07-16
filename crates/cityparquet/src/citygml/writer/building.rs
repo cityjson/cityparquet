@@ -17,9 +17,13 @@ use quick_xml::events::{BytesEnd, BytesStart, Event};
 use serde_json::Value;
 
 use super::WriteReport;
+use super::appearance::{
+    AppearanceAcc, TextureAcc, TextureFaceMaps, count_faces, face_ring_counts, material_face_maps,
+    material_union, texture_face_maps, texture_ring_needs, write_appearance,
+};
 use super::attributes::write_attributes;
 use super::document::Bounds;
-use super::geometry::{write_composite_solid, write_solid};
+use super::geometry::{FaceIds, write_composite_solid_with_ids, write_solid_with_ids};
 use super::semantics::{
     IdAlloc, Semantics, droppable_surface_count, has_nonnull_value, parse_semantics,
     surfaces_emittable, write_multisurface_with_semantics, write_solid_with_semantics,
@@ -54,22 +58,26 @@ fn emittable_semantics(major: u8, kind: &DecodedKind, props: Option<&Value>) -> 
 
 /// Emit a `bldg:lod<major>Solid` with plain (geometry-only) inline geometry —
 /// the W-M2 form, used when a geometry has no emittable semantics (or is not the
-/// building's chosen semantic LoD). Any real (non-null) semantics not emitted
-/// here are counted as dropped.
+/// building's chosen semantic LoD). `face_ids` stamps a `gml:id` on each
+/// material-bearing face's inline polygon (so appearance can target it). Any real
+/// (non-null) semantics not emitted here are counted as dropped.
 fn write_plain_lodn_solid<W: Write>(
     w: &mut Writer<W>,
     geom: &DecodedGeometry,
     props: Option<&Value>,
     major: u8,
     report: &mut WriteReport,
+    face_ids: Option<&[FaceIds]>,
 ) -> Result<()> {
     let elem = format!("bldg:lod{major}Solid");
     w.write_event(Event::Start(BytesStart::new(elem.as_str())))
         .map_err(io_err)?;
     match &geom.kind {
-        DecodedKind::PolyhedralSurface(faces) => write_solid(w, &geom.coords, faces, props)?,
+        DecodedKind::PolyhedralSurface(faces) => {
+            write_solid_with_ids(w, &geom.coords, faces, props, face_ids)?
+        }
         DecodedKind::GeometryCollection(members) => {
-            write_composite_solid(w, &geom.coords, members, props)?;
+            write_composite_solid_with_ids(w, &geom.coords, members, props, face_ids)?;
             report.composite_solids_written += 1;
         }
         _ => unreachable!("only PolyhedralSurface/GeometryCollection reach the plain solid path"),
@@ -78,6 +86,32 @@ fn write_plain_lodn_solid<W: Write>(
         .map_err(io_err)?;
     report.semantic_surfaces_dropped += droppable_surface_count(props);
     Ok(())
+}
+
+/// Pre-allocate polygon + ring `gml:id`s for each appearance-bearing face (in
+/// face-walk order) — a polygon id when the face has a material OR any textured
+/// ring, and a `<polyid>_r<K>` id per textured ring. Used by the plain path and
+/// the semantic fallback so `app:target`/`app:textureCoordinates ring` can
+/// reference the inline polygon.
+fn plain_face_ids(mat_union: &[bool], ring_needs: &[Vec<bool>], ids: &mut IdAlloc) -> Vec<FaceIds> {
+    let n = mat_union.len().max(ring_needs.len());
+    (0..n)
+        .map(|i| {
+            let mat = mat_union.get(i).copied().unwrap_or(false);
+            let rings = ring_needs.get(i).map(Vec::as_slice).unwrap_or(&[]);
+            let needs_face = mat || rings.iter().any(|&b| b);
+            let poly = needs_face.then(|| ids.alloc());
+            let ring_ids = rings
+                .iter()
+                .enumerate()
+                .map(|(r, &need)| need.then(|| format!("{}_r{r}", poly.as_deref().unwrap())))
+                .collect();
+            FaceIds {
+                poly,
+                rings: ring_ids,
+            }
+        })
+        .collect()
 }
 
 /// A valid XML `NCName` (ASCII-pragmatic, matching real CityGML ids): first
@@ -98,14 +132,30 @@ pub struct BuildingSolids {
     /// Building-level attributes (already decoded from the package's typed
     /// columns), emitted before geometry.
     pub attributes: serde_json::Map<String, Value>,
-    pub solids: Vec<(Lod, DecodedGeometry, Option<Value>)>,
+    /// `(lod, decoded geometry, geometry_properties, material map, texture map)`.
+    /// The material/texture maps are this geometry's `{theme: {values|value}}`
+    /// (already keyed out of the row's per-LoD `material`/`texture` columns), with
+    /// global ids into the package's materials/textures tables; `None` when the
+    /// geometry carries that kind of appearance not at all.
+    pub solids: Vec<SolidEntry>,
 }
+
+/// One candidate geometry of a Building: its LoD, decoded WKB, properties, and
+/// (Compatibility profile) its material/texture maps.
+pub type SolidEntry = (
+    Lod,
+    DecodedGeometry,
+    Option<Value>,
+    Option<Value>,
+    Option<Value>,
+);
 
 /// Emit `<cityObjectMember><bldg:Building gml:id="…">` with one
 /// `bldg:lod<major>Solid` per major LoD (highest minor wins), accumulating
 /// every emitted coordinate into `bounds`. Returns `Ok(false)` (nothing
 /// written) when no solid survives — the caller counts that building in
 /// `buildings_without_solid_skipped`. Errors when `id` is not a valid NCName.
+#[allow(clippy::too_many_arguments)]
 pub fn write_building<W: Write>(
     w: &mut Writer<W>,
     b: &BuildingSolids,
@@ -113,6 +163,8 @@ pub fn write_building<W: Write>(
     feature_index: usize,
     bounds: &mut Bounds,
     report: &mut WriteReport,
+    materials: Option<&[Value]>,
+    textures: Option<&[Value]>,
 ) -> Result<bool> {
     if !is_ncname(&b.id) {
         return Err(CityParquetError::Schema(format!(
@@ -123,7 +175,16 @@ pub fn write_building<W: Write>(
     // Render the content into a buffer so the emptiness decision (no geometry AND
     // no writable attribute) can suppress the whole element.
     let mut content = Writer::new(Vec::new());
-    if !write_object_content(&mut content, b, types, feature_index, bounds, report)? {
+    if !write_object_content(
+        &mut content,
+        b,
+        types,
+        feature_index,
+        bounds,
+        report,
+        materials,
+        textures,
+    )? {
         return Ok(false);
     }
     w.write_event(Event::Start(BytesStart::new("cityObjectMember")))
@@ -145,6 +206,7 @@ pub fn write_building<W: Write>(
 /// a `<bldg:Building>`/`<bldg:BuildingPart>` WITHOUT the wrapper. Returns whether
 /// anything (a writable attribute or a geometry) was emitted; the caller
 /// suppresses the wrapper when nothing was.
+#[allow(clippy::too_many_arguments)]
 pub fn write_object_content<W: Write>(
     w: &mut Writer<W>,
     b: &BuildingSolids,
@@ -152,11 +214,20 @@ pub fn write_object_content<W: Write>(
     feature_index: usize,
     bounds: &mut Bounds,
     report: &mut WriteReport,
+    materials: Option<&[Value]>,
+    textures: Option<&[Value]>,
 ) -> Result<bool> {
     // Keep at most one solid per major LoD (1..=4), the highest minor.
     // BTreeMap keeps the majors in ascending order for emission.
-    let mut by_major: BTreeMap<u8, (Lod, &DecodedGeometry, Option<&Value>)> = BTreeMap::new();
-    for (lod, geom, props) in &b.solids {
+    type MajorGeom<'a> = (
+        Lod,
+        &'a DecodedGeometry,
+        Option<&'a Value>,
+        Option<&'a Value>,
+        Option<&'a Value>,
+    );
+    let mut by_major: BTreeMap<u8, MajorGeom> = BTreeMap::new();
+    for (lod, geom, props, material, texture) in &b.solids {
         // A Solid (PolyhedralSurface) or a CompositeSolid (GeometryCollection)
         // becomes a lodNSolid; a MultiSurface (MultiPolygon) is representable
         // only when it carries emittable semantics (W-M3 boundedBy). Any other
@@ -180,14 +251,21 @@ pub fn write_object_content<W: Write>(
             report.lod_columns_skipped += 1;
             continue;
         }
+        let entry = (
+            *lod,
+            geom,
+            props.as_ref(),
+            material.as_ref(),
+            texture.as_ref(),
+        );
         match by_major.get(&major) {
             None => {
-                by_major.insert(major, (*lod, geom, props.as_ref()));
+                by_major.insert(major, entry);
             }
-            Some((existing, _, _)) => {
+            Some((existing, _, _, _, _)) => {
                 // One of the two collides away; keep the higher minor.
                 if *lod > *existing {
-                    by_major.insert(major, (*lod, geom, props.as_ref()));
+                    by_major.insert(major, entry);
                 }
                 report.lod_columns_skipped += 1;
             }
@@ -198,7 +276,7 @@ pub fn write_object_content<W: Write>(
     // are not valid XML Schema `double` lexical forms and NaN would poison the
     // envelope. (WKB's 2^53 magnitude guard does not catch NaN, whose
     // comparisons are always false.) No-op for an attributes-only building.
-    for (_, geom, _) in by_major.values() {
+    for (_, geom, _, _, _) in by_major.values() {
         if geom.coords.iter().any(|c| c.iter().any(|v| !v.is_finite())) {
             return Err(CityParquetError::Geometry(format!(
                 "building {:?} has a non-finite coordinate; cannot serialise as gml:posList",
@@ -216,24 +294,33 @@ pub fn write_object_content<W: Write>(
     // the highest emittable-semantic major; every other LoD is geometry-only.
     let chosen_major = by_major
         .iter()
-        .filter(|(major, (_, geom, props))| {
+        .filter(|(major, (_, geom, props, _, _))| {
             emittable_semantics(**major, &geom.kind, *props).is_some()
         })
         .map(|(major, _)| *major)
         .max();
 
     let mut any_geometry = false;
-    for (major, (_, geom, props)) in &by_major {
+    let mut mat_acc = AppearanceAcc::new();
+    let mut tex_acc = TextureAcc::new();
+    for (major, (_, geom, props, material, texture)) in &by_major {
         let major = *major;
         let props = *props;
+        // Resolve this geometry's material/texture maps to flat per-face/-ring
+        // appearance; a resolution failure (or a Core-profile package with no
+        // table) drops that appearance for this geometry but keeps the geometry.
+        let n_faces = count_faces(&geom.kind);
+        let (maps, mat_union) = resolve_materials(*material, materials, &geom.kind, report);
+        let tex_maps = resolve_textures(*texture, textures, &geom.kind, report);
+        let ring_needs = texture_ring_needs(&tex_maps, n_faces);
+        let mut ids = IdAlloc::new(feature_index, major);
         let mut emitted_geometry = true;
-        if Some(major) == chosen_major {
+        let face_ids: Vec<FaceIds> = if Some(major) == chosen_major {
             // The one LoD that emits bldg:boundedBy semantic surfaces.
             let sem = emittable_semantics(major, &geom.kind, props)
                 .expect("chosen major has emittable semantics");
             match &geom.kind {
                 DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_) => {
-                    let mut ids = IdAlloc::new(feature_index, major);
                     match write_solid_with_semantics(
                         w,
                         &geom.coords,
@@ -242,16 +329,23 @@ pub fn write_object_content<W: Write>(
                         &sem,
                         &mut ids,
                         major,
+                        &mat_union,
+                        &ring_needs,
                     ) {
-                        Ok(()) => {
+                        Ok(face_ids) => {
                             report.semantic_surfaces_written += sem.surfaces.len();
                             if matches!(geom.kind, DecodedKind::GeometryCollection(_)) {
                                 report.composite_solids_written += 1;
                             }
+                            face_ids
                         }
                         // Resolution failed (corrupt/external values): fall back
                         // to plain geometry, counting the surfaces as dropped.
-                        Err(_) => write_plain_lodn_solid(w, geom, props, major, report)?,
+                        Err(_) => {
+                            let fids = plain_face_ids(&mat_union, &ring_needs, &mut ids);
+                            write_plain_lodn_solid(w, geom, props, major, report, Some(&fids))?;
+                            fids
+                        }
                     }
                 }
                 DecodedKind::MultiPolygon(faces) => {
@@ -262,12 +356,19 @@ pub fn write_object_content<W: Write>(
                         &sem,
                         major,
                         report,
+                        &mut ids,
+                        &mat_union,
+                        &ring_needs,
                     ) {
-                        Ok(()) => report.semantic_surfaces_written += sem.surfaces.len(),
+                        Ok(face_ids) => {
+                            report.semantic_surfaces_written += sem.surfaces.len();
+                            face_ids
+                        }
                         // A MultiSurface has no geometry-only form; drop it.
                         Err(_) => {
                             report.semantic_surfaces_dropped += sem.surfaces.len();
                             emitted_geometry = false;
+                            Vec::new()
                         }
                     }
                 }
@@ -279,29 +380,120 @@ pub fn write_object_content<W: Write>(
             // counted as dropped (by write_plain_lodn_solid or here).
             match &geom.kind {
                 DecodedKind::PolyhedralSurface(_) | DecodedKind::GeometryCollection(_) => {
-                    write_plain_lodn_solid(w, geom, props, major, report)?;
+                    let fids = plain_face_ids(&mat_union, &ring_needs, &mut ids);
+                    write_plain_lodn_solid(w, geom, props, major, report, Some(&fids))?;
+                    fids
                 }
                 DecodedKind::MultiPolygon(_) => {
                     report.semantic_surfaces_dropped += droppable_surface_count(props);
                     emitted_geometry = false;
+                    Vec::new()
                 }
                 _ => unreachable!("the representable gate excludes other kinds"),
             }
-        }
-        // Accumulate the coord pool of geometry we actually emitted (a dropped
-        // MultiSurface contributes nothing to the envelope).
+        };
+        // Accumulate the coord pool + appearance of geometry we actually emitted
+        // (a dropped MultiSurface contributes nothing).
         if emitted_geometry {
             any_geometry = true;
             for c in &geom.coords {
                 bounds.add(*c);
             }
+            let poly_ids: Vec<Option<String>> = face_ids.iter().map(|f| f.poly.clone()).collect();
+            mat_acc.add(&maps, &poly_ids);
+            tex_acc.add(&tex_maps, &face_ids);
         }
+    }
+
+    // Feature-local appearance: one app:appearance/app:Appearance per theme, after
+    // the geometry (order-independent for the round-trip reader).
+    if !mat_acc.is_empty() || !tex_acc.is_empty() {
+        write_appearance(
+            w,
+            &mat_acc,
+            &tex_acc,
+            materials.unwrap_or(&[]),
+            textures.unwrap_or(&[]),
+            report,
+        )?;
     }
 
     // Emitted iff a writable attribute or an ACTUALLY-written geometry — a
     // by_major entry that dropped (e.g. a MultiSurface resolution failure) must
     // not make an otherwise-empty object non-empty (no husk elements).
     Ok(attrs_written > 0 || any_geometry)
+}
+
+/// Resolve one geometry's stored `material` map to per-theme flat global ids and
+/// the per-face union. A missing map → empty. A present map with no materials
+/// table (Core profile) or an unresolvable map → empty + a report counter, so
+/// the geometry still emits without appearance.
+fn resolve_materials(
+    material: Option<&Value>,
+    materials: Option<&[Value]>,
+    kind: &DecodedKind,
+    report: &mut WriteReport,
+) -> (
+    std::collections::BTreeMap<String, Vec<Option<usize>>>,
+    Vec<bool>,
+) {
+    let empty = std::collections::BTreeMap::new();
+    let Some(material) = material else {
+        return (empty, Vec::new());
+    };
+    let Some(table) = materials else {
+        report.appearance_skipped_core_profile += 1;
+        return (empty, Vec::new());
+    };
+    let n_faces = count_faces(kind);
+    match material_face_maps(material, n_faces, table.len()) {
+        Ok(maps) => {
+            let union = material_union(&maps, n_faces);
+            (maps, union)
+        }
+        Err(_) => {
+            report.material_geometries_dropped += 1;
+            (empty, Vec::new())
+        }
+    }
+}
+
+/// Resolve one geometry's stored `texture` map to per-theme `[face][ring]`
+/// textures. A missing map → empty. A present map with no textures table (Core
+/// profile) or an unresolvable map → empty + a counter, so the geometry still
+/// emits without texture appearance.
+fn resolve_textures(
+    texture: Option<&Value>,
+    textures: Option<&[Value]>,
+    kind: &DecodedKind,
+    report: &mut WriteReport,
+) -> TextureFaceMaps {
+    let Some(texture) = texture else {
+        return TextureFaceMaps::new();
+    };
+    let Some(table) = textures else {
+        report.appearance_skipped_core_profile += 1;
+        return TextureFaceMaps::new();
+    };
+    match texture_face_maps(texture, table.len()) {
+        // The `[face][ring]` tree must match the geometry's shape exactly — else
+        // ring ids would be allocated for phantom rings and `app:target`s would
+        // dangle. A mismatch drops this geometry's textures with a counter.
+        Ok(maps) if texture_shape_matches(&maps, kind) => maps,
+        Ok(_) | Err(_) => {
+            report.texture_geometries_dropped += 1;
+            TextureFaceMaps::new()
+        }
+    }
+}
+
+/// Whether every theme's flattened `[face][ring]` texture shape matches the
+/// geometry's face count and per-face ring counts.
+fn texture_shape_matches(maps: &TextureFaceMaps, kind: &DecodedKind) -> bool {
+    let want = face_ring_counts(kind);
+    maps.values().all(|faces| {
+        faces.len() == want.len() && faces.iter().zip(&want).all(|(rings, &n)| rings.len() == n)
+    })
 }
 
 /// Maximum `consistsOfBuildingPart` nesting the writer emits — symmetric with the
@@ -317,6 +509,11 @@ pub struct BuildingTree<'a> {
     pub children_by_id: &'a HashMap<String, Vec<String>>,
     pub type_by_id: &'a HashMap<String, String>,
     pub types: &'a HashMap<String, AttributeType>,
+    /// The package's global materials table (`materials.parquet`), or `None` on a
+    /// Core-profile package with no appearance definitions.
+    pub materials: Option<&'a [Value]>,
+    /// The package's global textures table (`textures.parquet`), or `None`.
+    pub textures: Option<&'a [Value]>,
 }
 
 /// Render an object's INNER bytes (attributes + geometry, then each non-empty
@@ -361,8 +558,16 @@ pub fn render_abstract_object(
     *next_feature_index += 1;
 
     let mut inner = Writer::new(Vec::new());
-    let self_emitted =
-        write_object_content(&mut inner, obj, tree.types, feature_index, bounds, report)?;
+    let self_emitted = write_object_content(
+        &mut inner,
+        obj,
+        tree.types,
+        feature_index,
+        bounds,
+        report,
+        tree.materials,
+        tree.textures,
+    )?;
 
     let children = tree
         .children_by_id
@@ -461,7 +666,17 @@ mod tests {
     fn run_building(b: &BuildingSolids) -> (String, WriteReport) {
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        write_building(&mut w, b, &types(), 0, &mut Bounds::new(), &mut report).unwrap();
+        write_building(
+            &mut w,
+            b,
+            &types(),
+            0,
+            &mut Bounds::new(),
+            &mut report,
+            None,
+            None,
+        )
+        .unwrap();
         (String::from_utf8(w.into_inner()).unwrap(), report)
     }
 
@@ -474,7 +689,13 @@ mod tests {
         let b = BuildingSolids {
             id: "S1".into(),
             attributes: serde_json::Map::new(),
-            solids: vec![(Lod::parse("2").unwrap(), tri_solid(), Some(props))],
+            solids: vec![(
+                Lod::parse("2").unwrap(),
+                tri_solid(),
+                Some(props),
+                None,
+                None,
+            )],
         };
         let (xml, r) = run_building(&b);
         assert!(xml.contains("<bldg:boundedBy><bldg:WallSurface>"), "{xml}");
@@ -496,7 +717,7 @@ mod tests {
         let b = BuildingSolids {
             id: "M1".into(),
             attributes: serde_json::Map::new(),
-            solids: vec![(Lod::parse("2").unwrap(), geom, Some(props))],
+            solids: vec![(Lod::parse("2").unwrap(), geom, Some(props), None, None)],
         };
         let (xml, r) = run_building(&b);
         assert!(xml.contains("<bldg:boundedBy><bldg:RoofSurface>"), "{xml}");
@@ -520,6 +741,8 @@ mod tests {
                 Lod::parse("2").unwrap(),
                 geom,
                 Some(serde_json::json!({"type": "MultiSurface"})),
+                None,
+                None,
             )],
         };
         let (xml, r) = run_building(&b);
@@ -550,11 +773,15 @@ mod tests {
                     Lod::parse("2").unwrap(),
                     tri_solid(),
                     Some(sem_solid_props(serde_json::json!(0))),
+                    None,
+                    None,
                 ),
                 (
                     Lod::parse("3").unwrap(),
                     tri_solid(),
                     Some(sem_solid_props(serde_json::json!(0))),
+                    None,
+                    None,
                 ),
             ],
         };
@@ -585,11 +812,15 @@ mod tests {
                     Lod::parse("1").unwrap(),
                     tri_solid(),
                     Some(sem_solid_props(serde_json::json!(null))),
+                    None,
+                    None,
                 ),
                 (
                     Lod::parse("2").unwrap(),
                     tri_solid(),
                     Some(sem_solid_props(serde_json::json!(0))),
+                    None,
+                    None,
                 ),
             ],
         };
@@ -621,6 +852,8 @@ mod tests {
                 Lod::parse("1").unwrap(),
                 tri_solid(),
                 Some(sem_solid_props(serde_json::json!(0))),
+                None,
+                None,
             )],
         };
         let (xml, r) = run_building(&b);
@@ -643,7 +876,13 @@ mod tests {
         let b = BuildingSolids {
             id: "S2".into(),
             attributes: serde_json::Map::new(),
-            solids: vec![(Lod::parse("2").unwrap(), tri_solid(), Some(props))],
+            solids: vec![(
+                Lod::parse("2").unwrap(),
+                tri_solid(),
+                Some(props),
+                None,
+                None,
+            )],
         };
         let (xml, r) = run_building(&b);
         assert!(xml.contains("<bldg:lod2Solid><gml:Solid>"), "{xml}");
@@ -664,11 +903,25 @@ mod tests {
                 Lod::parse("2").unwrap(),
                 composite_geom(),
                 Some(composite_props()),
+                None,
+                None,
             )],
         };
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(write_building(&mut w, &b, &types(), 0, &mut Bounds::new(), &mut report).unwrap());
+        assert!(
+            write_building(
+                &mut w,
+                &b,
+                &types(),
+                0,
+                &mut Bounds::new(),
+                &mut report,
+                None,
+                None
+            )
+            .unwrap()
+        );
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert!(
             xml.contains("<bldg:lod2Solid><gml:CompositeSolid>"),
@@ -692,14 +945,38 @@ mod tests {
             id: "B1".into(),
             attributes: serde_json::Map::new(),
             solids: vec![
-                (Lod::parse("2").unwrap(), tri_solid(), Some(solid_props())),
-                (Lod::parse("2.2").unwrap(), tri_solid(), Some(solid_props())),
+                (
+                    Lod::parse("2").unwrap(),
+                    tri_solid(),
+                    Some(solid_props()),
+                    None,
+                    None,
+                ),
+                (
+                    Lod::parse("2.2").unwrap(),
+                    tri_solid(),
+                    Some(solid_props()),
+                    None,
+                    None,
+                ),
             ],
         };
         let mut bounds = Bounds::new();
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(write_building(&mut w, &b, &types(), 0, &mut bounds, &mut report).unwrap());
+        assert!(
+            write_building(
+                &mut w,
+                &b,
+                &types(),
+                0,
+                &mut bounds,
+                &mut report,
+                None,
+                None
+            )
+            .unwrap()
+        );
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert_eq!(xml.matches("<bldg:lod2Solid>").count(), 1);
         assert_eq!(report.lod_columns_skipped, 1);
@@ -712,8 +989,20 @@ mod tests {
             id: "B2".into(),
             attributes: serde_json::Map::new(),
             solids: vec![
-                (Lod::parse("2").unwrap(), tri_solid(), Some(solid_props())),
-                (Lod::parse("1").unwrap(), tri_solid(), Some(solid_props())),
+                (
+                    Lod::parse("2").unwrap(),
+                    tri_solid(),
+                    Some(solid_props()),
+                    None,
+                    None,
+                ),
+                (
+                    Lod::parse("1").unwrap(),
+                    tri_solid(),
+                    Some(solid_props()),
+                    None,
+                    None,
+                ),
             ],
         };
         let mut w = Writer::new(Vec::new());
@@ -724,7 +1013,9 @@ mod tests {
                 &types(),
                 0,
                 &mut Bounds::new(),
-                &mut WriteReport::default()
+                &mut WriteReport::default(),
+                None,
+                None
             )
             .unwrap()
         );
@@ -740,11 +1031,23 @@ mod tests {
         let b = BuildingSolids {
             id: "B3".into(),
             attributes: serde_json::Map::new(),
-            solids: vec![(Lod::parse("0").unwrap(), tri_solid(), None)],
+            solids: vec![(Lod::parse("0").unwrap(), tri_solid(), None, None, None)],
         };
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(!write_building(&mut w, &b, &types(), 0, &mut Bounds::new(), &mut report).unwrap());
+        assert!(
+            !write_building(
+                &mut w,
+                &b,
+                &types(),
+                0,
+                &mut Bounds::new(),
+                &mut report,
+                None,
+                None
+            )
+            .unwrap()
+        );
         assert!(w.into_inner().is_empty());
         assert_eq!(report.lod_columns_skipped, 1);
     }
@@ -758,7 +1061,7 @@ mod tests {
         let b = BuildingSolids {
             id: "B4".into(),
             attributes: serde_json::Map::new(),
-            solids: vec![(Lod::parse("2").unwrap(), geom, None)],
+            solids: vec![(Lod::parse("2").unwrap(), geom, None, None, None)],
         };
         let mut w = Writer::new(Vec::new());
         assert!(
@@ -768,7 +1071,9 @@ mod tests {
                 &types(),
                 0,
                 &mut Bounds::new(),
-                &mut WriteReport::default()
+                &mut WriteReport::default(),
+                None,
+                None
             )
             .is_err()
         );
@@ -776,7 +1081,7 @@ mod tests {
         assert!(w.into_inner().is_empty());
     }
 
-    fn content(id: &str, solids: Vec<(Lod, DecodedGeometry, Option<Value>)>) -> BuildingSolids {
+    fn content(id: &str, solids: Vec<SolidEntry>) -> BuildingSolids {
         BuildingSolids {
             id: id.into(),
             attributes: serde_json::Map::new(),
@@ -784,8 +1089,14 @@ mod tests {
         }
     }
 
-    fn solid_lod2() -> (Lod, DecodedGeometry, Option<Value>) {
-        (Lod::parse("2").unwrap(), tri_solid(), Some(solid_props()))
+    fn solid_lod2() -> SolidEntry {
+        (
+            Lod::parse("2").unwrap(),
+            tri_solid(),
+            Some(solid_props()),
+            None,
+            None,
+        )
     }
 
     fn render(
@@ -811,6 +1122,8 @@ mod tests {
             children_by_id: &children_by_id,
             type_by_id: &type_by_id,
             types: &no_types,
+            materials: None,
+            textures: None,
         };
         let mut nfi = 0usize;
         let mut bounds = Bounds::new();
@@ -913,7 +1226,7 @@ mod tests {
             BuildingSolids {
                 id: "P".into(),
                 attributes: serde_json::Map::new(),
-                solids: vec![(Lod::parse("2").unwrap(), geom, Some(props))],
+                solids: vec![(Lod::parse("2").unwrap(), geom, Some(props), None, None)],
             },
         )]);
         let (xml, ne, _) = render("P", content_by_id, HashMap::new());
@@ -947,7 +1260,9 @@ mod tests {
                 &types(),
                 0,
                 &mut Bounds::new(),
-                &mut WriteReport::default()
+                &mut WriteReport::default(),
+                None,
+                None
             )
             .is_err()
         );
@@ -964,7 +1279,19 @@ mod tests {
         };
         let mut report = WriteReport::default();
         let mut w = Writer::new(Vec::new());
-        assert!(write_building(&mut w, &b, &types(), 0, &mut Bounds::new(), &mut report).unwrap());
+        assert!(
+            write_building(
+                &mut w,
+                &b,
+                &types(),
+                0,
+                &mut Bounds::new(),
+                &mut report,
+                None,
+                None
+            )
+            .unwrap()
+        );
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert!(xml.contains("<bldg:Building gml:id=\"B5\">"));
         assert!(xml.contains("<bldg:roofType>1000</bldg:roofType>"));
@@ -986,7 +1313,9 @@ mod tests {
                 &types(),
                 0,
                 &mut Bounds::new(),
-                &mut WriteReport::default()
+                &mut WriteReport::default(),
+                None,
+                None
             )
             .unwrap()
         );
@@ -1000,7 +1329,13 @@ mod tests {
         let b = BuildingSolids {
             id: "B7".into(),
             attributes,
-            solids: vec![(Lod::parse("2").unwrap(), tri_solid(), Some(solid_props()))],
+            solids: vec![(
+                Lod::parse("2").unwrap(),
+                tri_solid(),
+                Some(solid_props()),
+                None,
+                None,
+            )],
         };
         let mut w = Writer::new(Vec::new());
         write_building(
@@ -1010,9 +1345,128 @@ mod tests {
             0,
             &mut Bounds::new(),
             &mut WriteReport::default(),
+            None,
+            None,
         )
         .unwrap();
         let xml = String::from_utf8(w.into_inner()).unwrap();
         assert!(xml.find("<bldg:roofType>").unwrap() < xml.find("<bldg:lod2Solid>").unwrap());
+    }
+
+    #[test]
+    fn plain_solid_emits_x3d_material_with_targets() {
+        // A plain lod2 solid of 3 faces; material.visual.values = [[0,0,1]] -> red
+        // (global 0) on faces 0,1 and green (global 1) on face 2.
+        let coords: Vec<[f64; 3]> = (0..9).map(|i| [i as f64, 0.0, 0.0]).collect();
+        let geom = DecodedGeometry {
+            coords,
+            kind: DecodedKind::PolyhedralSurface(vec![
+                vec![vec![0, 1, 2]],
+                vec![vec![3, 4, 5]],
+                vec![vec![6, 7, 8]],
+            ]),
+        };
+        let props = serde_json::json!({ "type": "Solid", "solid_shell_faces": [3] });
+        let material = serde_json::json!({ "visual": { "values": [[0, 0, 1]] } });
+        let table = vec![
+            serde_json::json!({ "name": "red", "diffuseColor": [1.0, 0.0, 0.0] }),
+            serde_json::json!({ "name": "green", "diffuseColor": [0.0, 1.0, 0.0] }),
+        ];
+        let b = BuildingSolids {
+            id: "MAT".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![(
+                Lod::parse("2").unwrap(),
+                geom,
+                Some(props),
+                Some(material),
+                None,
+            )],
+        };
+        let mut report = WriteReport::default();
+        let mut w = Writer::new(Vec::new());
+        write_building(
+            &mut w,
+            &b,
+            &types(),
+            0,
+            &mut Bounds::new(),
+            &mut report,
+            Some(&table),
+            None,
+        )
+        .unwrap();
+        let xml = String::from_utf8(w.into_inner()).unwrap();
+        // Two X3DMaterials (red used by two faces, green by one), theme "visual".
+        assert_eq!(report.materials_written, 2, "{xml}");
+        assert_eq!(xml.matches("<app:X3DMaterial>").count(), 2, "{xml}");
+        assert!(xml.contains("<app:theme>visual</app:theme>"), "{xml}");
+        assert!(
+            xml.contains("<gml:name>red</gml:name>")
+                && xml.contains("<app:diffuseColor>1 0 0</app:diffuseColor>"),
+            "{xml}"
+        );
+        // Every material-bearing face got a gml:id, referenced by an app:target.
+        assert_eq!(xml.matches("<app:target>").count(), 3, "{xml}");
+        assert!(
+            xml.contains("<gml:Polygon gml:id=\"_cpq_b0_l2_p0\">"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<app:target>#_cpq_b0_l2_p0</app:target>"),
+            "{xml}"
+        );
+        // Appearance follows the geometry.
+        assert!(
+            xml.find("<bldg:lod2Solid>").unwrap() < xml.find("<app:appearance>").unwrap(),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn texture_shape_mismatch_is_dropped_and_counted() {
+        // A 1-ring face whose texture values carry TWO ring leaves: the shape does
+        // not match the geometry, so the texture is dropped (no dangling ring
+        // ids/targets) and counted — not silently emitted.
+        let coords: Vec<[f64; 3]> = (0..3).map(|i| [i as f64, 0.0, 0.0]).collect();
+        let geom = DecodedGeometry {
+            coords,
+            kind: DecodedKind::PolyhedralSurface(vec![vec![vec![0, 1, 2]]]),
+        };
+        let props = serde_json::json!({ "type": "Solid", "solid_shell_faces": [1] });
+        // Face 0 has 1 ring, but the texture gives it 2 ring leaves.
+        let texture = serde_json::json!({
+            "visual": { "values": [[[0, [0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], [null]]] }
+        });
+        let tex_table = vec![serde_json::json!({ "type": "JPG", "image": "t.jpg" })];
+        let b = BuildingSolids {
+            id: "TM".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![(
+                Lod::parse("2").unwrap(),
+                geom,
+                Some(props),
+                None,
+                Some(texture),
+            )],
+        };
+        let mut report = WriteReport::default();
+        let mut w = Writer::new(Vec::new());
+        write_building(
+            &mut w,
+            &b,
+            &types(),
+            0,
+            &mut Bounds::new(),
+            &mut report,
+            None,
+            Some(&tex_table),
+        )
+        .unwrap();
+        let xml = String::from_utf8(w.into_inner()).unwrap();
+        assert_eq!(report.textures_written, 0, "{xml}");
+        assert_eq!(report.texture_geometries_dropped, 1);
+        assert!(!xml.contains("app:ParameterizedTexture"), "{xml}");
+        assert!(!xml.contains("app:appearance"), "{xml}");
     }
 }

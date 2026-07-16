@@ -27,15 +27,49 @@ use std::collections::HashMap;
 use std::io::BufRead;
 
 use cityparquet_schema::{CityParquetError, Result};
-use cjseq::{CityJSONFeature, CityObject};
+use cjseq::{Appearance, CityJSONFeature, CityObject};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 use serde_json::{Value, json};
 
+use super::appearance::ReadAppearance;
 use super::attributes;
 use super::geometry::{self, Polygon, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use super::vertices::VertexBuilder;
-use super::xml::{NS_BLDG, NS_GEN, NS_GML, get_attr_local, gml_id, ns_is, skip_element, xml_err};
+use super::xml::{
+    NS_APP, NS_BLDG, NS_GEN, NS_GML, get_attr_local, gml_id, ns_is, skip_element, xml_err,
+};
+use crate::appearance::AppearanceInterner;
+
+/// A feature-local UV vertex pool for textures, deduped by exact bit pattern
+/// (`f64::to_bits`) — the same identity `export`'s pool uses.
+#[derive(Default)]
+struct UvPool {
+    uvs: Vec<[f64; 2]>,
+    index: HashMap<(u64, u64), usize>,
+}
+
+impl UvPool {
+    fn intern(&mut self, uv: [f64; 2]) -> usize {
+        let key = (uv[0].to_bits(), uv[1].to_bits());
+        let next = self.uvs.len();
+        *self.index.entry(key).or_insert_with(|| {
+            self.uvs.push(uv);
+            next
+        })
+    }
+}
+
+/// Feature-local appearance state threaded through an assembly's emission: one
+/// interner (materials + textures, deduped by canonical JSON) plus one UV pool.
+struct AppearanceState {
+    interner: AppearanceInterner,
+    uvs: UvPool,
+}
+
+/// One solid's `(boundaries, semantic values, face-ids, ring-ids)`, each
+/// `[shell]`-nested (see [`RawBuilding::build_solid`]).
+type SolidTrees = (Vec<Value>, Vec<Value>, Vec<Value>, Vec<Value>);
 
 /// A buffered building: everything pass 1 collects before resolution.
 pub struct RawBuilding {
@@ -58,6 +92,10 @@ pub struct RawBuilding {
     /// Nested `bldg:BuildingPart`s (`consistsOfBuildingPart`), in document order.
     /// A tree: a part may itself have parts.
     parts: Vec<RawBuilding>,
+    /// This object's `app:appearance` (X3DMaterials + ParameterizedTextures), in
+    /// document order. Applied to faces/rings (by target `gml:id`) during
+    /// geometry emission.
+    appearance: ReadAppearance,
 }
 
 /// Maximum `bldg:consistsOfBuildingPart` nesting depth — a guard against
@@ -96,6 +134,7 @@ fn read_abstract_building<R: BufRead>(
         boundary_polys: Vec::new(),
         attributes: serde_json::Map::new(),
         parts: Vec::new(),
+        appearance: ReadAppearance::default(),
     };
 
     loop {
@@ -126,6 +165,10 @@ fn read_abstract_building<R: BufRead>(
                     read_bounded_by(reader, buf, &mut b)?;
                 } else if bldg && name == b"consistsOfBuildingPart" {
                     read_consists_of_part(reader, buf, &mut b, depth)?;
+                } else if ns_is(&rr, NS_APP) && name == b"appearance" {
+                    let app = super::appearance::read_appearance(reader, buf)?;
+                    b.appearance.materials.extend(app.materials);
+                    b.appearance.textures.extend(app.textures);
                 } else if bldg && let Some(ty) = attributes::typed_building_attr(&name) {
                     if let Some((k, v)) = attributes::read_typed_attribute(reader, buf, &name, ty)?
                     {
@@ -381,14 +424,33 @@ impl RawBuilding {
         index: usize,
     ) -> Result<CityJSONFeature> {
         let mut vb = VertexBuilder::new(scale, translate);
+        // Feature-local appearance: an assembly (a Building and its parts) shares
+        // ONE appearance block, so the parent and every part intern into the same
+        // material/texture tables + UV pool, feature-wide.
+        let mut app = AppearanceState {
+            interner: AppearanceInterner::new(),
+            uvs: UvPool::default(),
+        };
         let mut feature = CityJSONFeature::new();
         let root_id = self
             .id
             .clone()
             .unwrap_or_else(|| format!("Building_{index}"));
         feature.id = root_id.clone();
-        self.emit_into(&root_id, None, &mut vb, &mut feature)?;
+        self.emit_into(&root_id, None, &mut vb, &mut app, &mut feature)?;
         feature.vertices = vb.into_vertices();
+        let materials = app.interner.materials();
+        let textures = app.interner.textures();
+        if !materials.is_empty() || !textures.is_empty() {
+            feature.appearance = Some(Appearance {
+                materials: (!materials.is_empty()).then(|| materials.to_vec()),
+                textures: (!textures.is_empty()).then(|| textures.to_vec()),
+                vertices_texture: (!app.uvs.uvs.is_empty())
+                    .then(|| app.uvs.uvs.iter().map(|uv| uv.to_vec()).collect()),
+                default_theme_texture: None,
+                default_theme_material: None,
+            });
+        }
         Ok(feature)
     }
 
@@ -401,11 +463,19 @@ impl RawBuilding {
     }
 
     /// Build this object's CityJSON geometry array (solids + boundedBy-only
-    /// MultiSurfaces), resolving against this `RawBuilding`'s own registries.
-    fn build_geometries(&self, vb: &mut VertexBuilder) -> Result<Vec<Value>> {
-        let mut geoms_json: Vec<Value> = Vec::new();
+    /// MultiSurfaces), resolving against this `RawBuilding`'s own registries and
+    /// stamping each geometry's `material` map from this object's appearance.
+    fn build_geometries(
+        &self,
+        vb: &mut VertexBuilder,
+        app: &mut AppearanceState,
+    ) -> Result<Vec<Value>> {
+        // Each entry: (geometry JSON, face-id tree, ring-id tree). The face-id
+        // tree addresses `app:target`s (materials, at face level); the ring-id
+        // tree addresses `app:textureCoordinates ring`s (textures, at ring level).
+        let mut built: Vec<(Value, Value, Value)> = Vec::new();
         for (lod, geom) in &self.solids {
-            geoms_json.push(self.build_solid_geometry(geom, lod, vb)?);
+            built.push(self.build_solid_geometry(geom, lod, vb)?);
         }
         // For each LoD whose geometry lives only in `boundedBy` surfaces (no
         // `lodNSolid` at that LoD), emit one MultiSurface. When a solid exists
@@ -419,9 +489,99 @@ impl RawBuilding {
             }
         }
         for lod in &ms_lods {
-            geoms_json.push(self.build_multisurface_geometry(lod, vb)?);
+            built.push(self.build_multisurface_geometry(lod, vb)?);
         }
-        Ok(geoms_json)
+        self.apply_materials(&mut built, &mut app.interner);
+        self.apply_textures(&mut built, app);
+        Ok(built.into_iter().map(|(g, _, _)| g).collect())
+    }
+
+    /// Intern this object's `app:X3DMaterial`s and stamp each geometry's
+    /// `material` map. A material is interned even when target-less (so unused
+    /// definitions survive at the feature level); a theme that colours no face
+    /// of a geometry is omitted for that geometry. Two materials targeting the
+    /// same face+theme are last-wins (document order).
+    fn apply_materials(
+        &self,
+        built: &mut [(Value, Value, Value)],
+        interner: &mut AppearanceInterner,
+    ) {
+        if self.appearance.materials.is_empty() {
+            return;
+        }
+        let mut themes: Vec<String> = Vec::new();
+        let mut theme_maps: HashMap<String, HashMap<String, usize>> = HashMap::new();
+        for rm in &self.appearance.materials {
+            let idx = interner.intern_material(&rm.material);
+            if !theme_maps.contains_key(&rm.theme) {
+                themes.push(rm.theme.clone());
+            }
+            let map = theme_maps.entry(rm.theme.clone()).or_default();
+            for target in &rm.targets {
+                map.insert(target.clone(), idx); // last-wins
+            }
+        }
+        for (geom, face_ids, _) in built.iter_mut() {
+            let mut material_obj = serde_json::Map::new();
+            for theme in &themes {
+                let map = &theme_maps[theme];
+                let (values, any) = material_values_from_face_ids(face_ids, map);
+                if any {
+                    material_obj.insert(theme.clone(), json!({ "values": values }));
+                }
+            }
+            if !material_obj.is_empty()
+                && let Some(obj) = geom.as_object_mut()
+            {
+                obj.insert("material".to_string(), Value::Object(material_obj));
+            }
+        }
+    }
+
+    /// Intern this object's `app:ParameterizedTexture`s (defs + UVs) and stamp
+    /// each geometry's `texture` map. A ring not textured in a theme is `[null]`;
+    /// a theme that textures no ring of a geometry is omitted. Two textures on the
+    /// same ring+theme are last-wins (document order).
+    ///
+    /// Known limitation: a face reached through a REVERSED `gml:OrientableSurface`
+    /// has its ring vertices wound backwards ([`surface_rings`] with `reverse`),
+    /// but the ring's UVs are stored in document order — so on such a face UVs
+    /// misalign with the reversed vertices. Our own writer never emits
+    /// `OrientableSurface`, so the paired round-trip is unaffected; this is a
+    /// foreign-file loss (like TexCoordGen / seams).
+    fn apply_textures(&self, built: &mut [(Value, Value, Value)], app: &mut AppearanceState) {
+        if self.appearance.textures.is_empty() {
+            return;
+        }
+        // theme -> (ring gml:id -> (texture index, [uv indices]))
+        let mut themes: Vec<String> = Vec::new();
+        let mut theme_maps: HashMap<String, HashMap<String, (usize, Vec<usize>)>> = HashMap::new();
+        for rt in &self.appearance.textures {
+            let tex_idx = app.interner.intern_texture(&rt.texture);
+            if !theme_maps.contains_key(&rt.theme) {
+                themes.push(rt.theme.clone());
+            }
+            let map = theme_maps.entry(rt.theme.clone()).or_default();
+            for (ring_id, uvs) in &rt.rings {
+                let uv_idxs: Vec<usize> = uvs.iter().map(|&uv| app.uvs.intern(uv)).collect();
+                map.insert(ring_id.clone(), (tex_idx, uv_idxs)); // last-wins
+            }
+        }
+        for (geom, _, ring_ids) in built.iter_mut() {
+            let mut texture_obj = serde_json::Map::new();
+            for theme in &themes {
+                let map = &theme_maps[theme];
+                let (values, any) = texture_values_from_ring_ids(ring_ids, map);
+                if any {
+                    texture_obj.insert(theme.clone(), json!({ "values": values }));
+                }
+            }
+            if !texture_obj.is_empty()
+                && let Some(obj) = geom.as_object_mut()
+            {
+                obj.insert("texture".to_string(), Value::Object(texture_obj));
+            }
+        }
     }
 
     /// Emit this object (a `Building` when `parent_id` is `None`, else a
@@ -433,9 +593,10 @@ impl RawBuilding {
         my_id: &str,
         parent_id: Option<&str>,
         vb: &mut VertexBuilder,
+        app: &mut AppearanceState,
         feature: &mut CityJSONFeature,
     ) -> Result<()> {
-        let geoms_json = self.build_geometries(vb)?;
+        let geoms_json = self.build_geometries(vb, app)?;
         let child_ids: Vec<String> = self
             .parts
             .iter()
@@ -477,7 +638,7 @@ impl RawBuilding {
         feature.add_co(my_id.to_string(), co);
 
         for (i, part) in self.parts.iter().enumerate() {
-            part.emit_into(&child_ids[i], Some(my_id), vb, feature)?;
+            part.emit_into(&child_ids[i], Some(my_id), vb, app, feature)?;
         }
         Ok(())
     }
@@ -490,21 +651,37 @@ impl RawBuilding {
         geom: &SolidGeom,
         lod: &str,
         vb: &mut VertexBuilder,
-    ) -> Result<Value> {
-        let (gtype, boundaries, values) = match geom {
+    ) -> Result<(Value, Value, Value)> {
+        let (gtype, boundaries, values, face_ids, ring_ids) = match geom {
             SolidGeom::Solid(solid) => {
-                let (b, v) = self.build_solid(solid, vb)?;
-                ("Solid", Value::Array(b), Value::Array(v))
+                let (b, v, id, r) = self.build_solid(solid, vb)?;
+                (
+                    "Solid",
+                    Value::Array(b),
+                    Value::Array(v),
+                    Value::Array(id),
+                    Value::Array(r),
+                )
             }
             SolidGeom::Composite(solids) => {
                 let mut sb = Vec::with_capacity(solids.len());
                 let mut sv = Vec::with_capacity(solids.len());
+                let mut sid = Vec::with_capacity(solids.len());
+                let mut sring = Vec::with_capacity(solids.len());
                 for solid in solids {
-                    let (b, v) = self.build_solid(solid, vb)?;
+                    let (b, v, id, r) = self.build_solid(solid, vb)?;
                     sb.push(Value::Array(b));
                     sv.push(Value::Array(v));
+                    sid.push(Value::Array(id));
+                    sring.push(Value::Array(r));
                 }
-                ("CompositeSolid", Value::Array(sb), Value::Array(sv))
+                (
+                    "CompositeSolid",
+                    Value::Array(sb),
+                    Value::Array(sv),
+                    Value::Array(sid),
+                    Value::Array(sring),
+                )
             }
         };
 
@@ -513,7 +690,7 @@ impl RawBuilding {
             let surfaces: Vec<Value> = self.surfaces.iter().map(|k| json!({ "type": k })).collect();
             g["semantics"] = json!({ "surfaces": surfaces, "values": values });
         }
-        Ok(g)
+        Ok((g, face_ids, ring_ids))
     }
 
     /// Build one CityJSON `MultiSurface` geometry for `lod` from the
@@ -521,15 +698,23 @@ impl RawBuilding {
     /// and `semantics.values` is one entry per surface (the semantic index of
     /// the boundary polygon's surface). Used only when there is no `lodNSolid`
     /// at `lod`.
-    fn build_multisurface_geometry(&self, lod: &str, vb: &mut VertexBuilder) -> Result<Value> {
+    fn build_multisurface_geometry(
+        &self,
+        lod: &str,
+        vb: &mut VertexBuilder,
+    ) -> Result<(Value, Value, Value)> {
         let mut boundaries = Vec::new();
         let mut values = Vec::new();
+        let mut face_ids = Vec::new();
+        let mut ring_ids = Vec::new();
         for (sem_idx, poly_lod, poly) in &self.boundary_polys {
             if poly_lod != lod {
                 continue;
             }
             boundaries.push(surface_rings(poly, false, vb)?);
             values.push(json!(sem_idx));
+            face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
+            ring_ids.push(ring_ids_value(poly));
         }
         let mut g = json!({
             "type": "MultiSurface",
@@ -540,29 +725,37 @@ impl RawBuilding {
             let surfaces: Vec<Value> = self.surfaces.iter().map(|k| json!({ "type": k })).collect();
             g["semantics"] = json!({ "surfaces": surfaces, "values": Value::Array(values) });
         }
-        Ok(g)
+        Ok((g, Value::Array(face_ids), Value::Array(ring_ids)))
     }
 
-    /// A `RawSolid` -> (`[shell][surface][ring][idx]`, `[shell][face]` values).
-    fn build_solid(
-        &self,
-        solid: &RawSolid,
-        vb: &mut VertexBuilder,
-    ) -> Result<(Vec<Value>, Vec<Value>)> {
+    /// A `RawSolid` -> (`[shell][surface][ring][idx]` boundaries, `[shell][face]`
+    /// semantic values, `[shell][face]` face-ids, `[shell][face][ring]` ring-ids).
+    /// The face-id leaf is the polygon's `gml:id` (or `null`); the ring-id leaf
+    /// each ring's `gml:id` (or `null`) — the addresses `app:target` /
+    /// `app:textureCoordinates ring` resolve against.
+    fn build_solid(&self, solid: &RawSolid, vb: &mut VertexBuilder) -> Result<SolidTrees> {
         let mut shells_b = Vec::with_capacity(solid.shells.len());
         let mut shells_v = Vec::with_capacity(solid.shells.len());
+        let mut shells_id = Vec::with_capacity(solid.shells.len());
+        let mut shells_ring = Vec::with_capacity(solid.shells.len());
         for shell in &solid.shells {
             let mut faces_b = Vec::with_capacity(shell.len());
             let mut faces_v = Vec::with_capacity(shell.len());
+            let mut faces_id = Vec::with_capacity(shell.len());
+            let mut faces_ring = Vec::with_capacity(shell.len());
             for sref in shell {
                 let poly = self.resolve(sref)?;
                 faces_b.push(surface_rings(poly, sref.reverse, vb)?);
                 faces_v.push(self.semantic_value(sref));
+                faces_id.push(face_id(sref, poly));
+                faces_ring.push(ring_ids_value(poly));
             }
             shells_b.push(Value::Array(faces_b));
             shells_v.push(Value::Array(faces_v));
+            shells_id.push(Value::Array(faces_id));
+            shells_ring.push(Value::Array(faces_ring));
         }
-        Ok((shells_b, shells_v))
+        Ok((shells_b, shells_v, shells_id, shells_ring))
     }
 
     /// The polygon a surface reference points at (xlink resolved against the
@@ -590,6 +783,86 @@ impl RawBuilding {
             },
             RefTarget::Inline(_) => Value::Null,
         }
+    }
+}
+
+/// A face's polygon `gml:id` as a face-id-tree leaf: the xlink target id, or the
+/// inline polygon's own id, or `null` when an inline polygon is anonymous (and
+/// hence untargetable by appearance).
+fn face_id(sref: &SurfaceRef, poly: &Polygon) -> Value {
+    match &sref.target {
+        RefTarget::Xlink(id) => Value::from(id.clone()),
+        RefTarget::Inline(_) => poly.id.clone().map(Value::from).unwrap_or(Value::Null),
+    }
+}
+
+/// A face's ring `gml:id`s as a ring-id-tree leaf: `[ring0_id, ring1_id, ...]`,
+/// each a `Value::String` (or `null` for an anonymous ring), in
+/// exterior-then-interior order (matching `surface_rings`).
+fn ring_ids_value(poly: &Polygon) -> Value {
+    Value::Array(
+        poly.ring_ids
+            .iter()
+            .map(|id| id.clone().map(Value::from).unwrap_or(Value::Null))
+            .collect(),
+    )
+}
+
+/// Turn a ring-id tree into a `texture.{theme}.values` tree: each ring leaf id is
+/// mapped to `[texture index, uv indices…]` (a hit) or `[null]` (a miss/anonymous
+/// ring). Returns the tree and whether any ring resolved (to omit an untextured
+/// theme). The ring-id tree is one level deeper than the face-id tree, so a
+/// `String`/`Null` node is a RING (producing the `[tex, uv…]` array), and an
+/// `Array` is a container to recurse into.
+fn texture_values_from_ring_ids(
+    node: &Value,
+    map: &HashMap<String, (usize, Vec<usize>)>,
+) -> (Value, bool) {
+    match node {
+        Value::String(id) => match map.get(id) {
+            Some((tex, uvs)) => {
+                let mut leaf = Vec::with_capacity(1 + uvs.len());
+                leaf.push(json!(tex));
+                leaf.extend(uvs.iter().map(|u| json!(u)));
+                (Value::Array(leaf), true)
+            }
+            None => (json!([Value::Null]), false),
+        },
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            let mut any = false;
+            for it in items {
+                let (v, hit) = texture_values_from_ring_ids(it, map);
+                any |= hit;
+                out.push(v);
+            }
+            (Value::Array(out), any)
+        }
+        _ => (json!([Value::Null]), false),
+    }
+}
+
+/// Turn a face-id tree into a `material.{theme}.values` tree by mapping each
+/// leaf id through `map` (a hit → its material index, a miss/`null` → `null`).
+/// Returns the tree and whether any leaf resolved (used to omit a theme that
+/// colours no face of the geometry).
+fn material_values_from_face_ids(node: &Value, map: &HashMap<String, usize>) -> (Value, bool) {
+    match node {
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            let mut any = false;
+            for it in items {
+                let (v, hit) = material_values_from_face_ids(it, map);
+                any |= hit;
+                out.push(v);
+            }
+            (Value::Array(out), any)
+        }
+        Value::String(id) => match map.get(id) {
+            Some(&i) => (json!(i), true),
+            None => (Value::Null, false),
+        },
+        _ => (Value::Null, false),
     }
 }
 

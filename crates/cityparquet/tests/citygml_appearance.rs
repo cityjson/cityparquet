@@ -1,0 +1,432 @@
+//! W-M5 appearance round-trip oracles.
+//!
+//! CityGML → package → `.gml` → package, comparing DEREFERENCED appearance
+//! (material/texture DEFINITIONS per face, not table indices — index/pool order
+//! legitimately permutes on re-intern). Materials: `building_with_materials.gml`.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
+
+use arrow_array::{Array, StringArray};
+use cityparquet::citygml::writer::{WriteOptions, write_package};
+use cityparquet::decode::decode_batch;
+use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet::schema::PackageManifest;
+use cityparquet::schema::Profile;
+use cityparquet::sidecar::{read_materials, read_textures};
+use cityparquet::wkb_read::{DecodedGeometry, DecodedKind};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use serde_json::Value;
+
+fn data_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(name)
+}
+
+/// Flatten a material `values` tree's leaves (a non-negative integer, or `null`)
+/// in DFS (face-walk) order.
+fn flatten(v: &Value, out: &mut Vec<Option<usize>>) {
+    match v {
+        Value::Array(items) => items.iter().for_each(|it| flatten(it, out)),
+        Value::Number(n) => out.push(Some(n.as_u64().unwrap() as usize)),
+        _ => out.push(None),
+    }
+}
+
+fn mm(v: f64) -> i64 {
+    (v * 1000.0).round() as i64
+}
+
+/// One ring canonicalised to a rotation-invariant vertex sequence (mm-quantised,
+/// rotated to start at its minimum vertex) so a face can be a stable key
+/// independent of the round-trip's face reordering.
+fn canonical_ring(ring: &[usize], coords: &[[f64; 3]]) -> String {
+    let t: Vec<(i64, i64, i64)> = ring
+        .iter()
+        .map(|&i| (mm(coords[i][0]), mm(coords[i][1]), mm(coords[i][2])))
+        .collect();
+    let rotated = match (0..t.len()).min_by_key(|&i| t[i]) {
+        Some(m) => {
+            let mut r = t[m..].to_vec();
+            r.extend_from_slice(&t[..m]);
+            r
+        }
+        None => t,
+    };
+    format!("{rotated:?}")
+}
+
+/// A geometry's faces in walk order, each a `Vec` of its canonical ring strings
+/// (exterior first). The appearance `values` trees flatten in this same order, so
+/// zipping pairs each face/ring with its geometry — letting the oracle key by
+/// geometry and stay order-independent (MultiSurface faces reorder via boundedBy).
+fn geometry_faces(dec: &DecodedGeometry) -> Vec<Vec<String>> {
+    fn walk(kind: &DecodedKind, coords: &[[f64; 3]], out: &mut Vec<Vec<String>>) {
+        match kind {
+            DecodedKind::PolyhedralSurface(fs) | DecodedKind::MultiPolygon(fs) => {
+                for f in fs {
+                    out.push(f.iter().map(|r| canonical_ring(r, coords)).collect());
+                }
+            }
+            DecodedKind::GeometryCollection(ms) => ms.iter().for_each(|m| walk(m, coords, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(&dec.kind, &dec.coords, &mut out);
+    out
+}
+
+/// Flatten a texture `values` tree to `[face][ring-leaf]` in walk order (each face
+/// an array of its ring leaves), collapsing the shell/solid nesting.
+fn texture_faces(v: &Value, out: &mut Vec<Vec<Value>>) {
+    if let Value::Array(items) = v {
+        let is_face = items.first().is_some_and(|f| {
+            matches!(f, Value::Array(a) if matches!(a.first(), Some(Value::Number(_)) | Some(Value::Null) | None))
+        });
+        if is_face {
+            out.push(items.clone());
+        } else {
+            items.iter().for_each(|it| texture_faces(it, out));
+        }
+    }
+}
+
+/// Per `(object id, lod, theme)`: the per-face material DEFINITION (canonical
+/// JSON string), `None` where the face has no material — dereferenced through the
+/// package's `materials.parquet`, so the comparison is index-permutation
+/// independent.
+type FaceMaterials = BTreeMap<(String, String, String), Vec<(String, Option<String>)>>;
+
+fn face_materials(pkg: &Path) -> FaceMaterials {
+    let manifest: PackageManifest =
+        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
+    let meta = ParquetRecordBatchReaderBuilder::try_new(
+        File::open(pkg.join(&manifest.tables[0])).unwrap(),
+    )
+    .unwrap()
+    .cityparquet_metadata()
+    .unwrap();
+    let table = read_materials(&pkg.join("materials.parquet")).unwrap();
+
+    let mut out = BTreeMap::new();
+    for name in &manifest.tables {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(pkg.join(name)).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        for batch in reader {
+            let batch = batch.unwrap();
+            let material_col = batch
+                .column_by_name("material")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let objs = decode_batch(&batch, &meta).unwrap();
+            for (row, obj) in objs.iter().enumerate() {
+                let Some(col) = material_col else { continue };
+                if col.is_null(row) {
+                    continue;
+                }
+                // Per-LoD geometry faces (canonical), to key materials by face.
+                let faces_by_lod: BTreeMap<String, Vec<Vec<String>>> = obj
+                    .geometries
+                    .iter()
+                    .map(|(lod, dec, _)| {
+                        (
+                            lod.as_ref().map(|l| l.to_string()).unwrap_or_default(),
+                            geometry_faces(dec),
+                        )
+                    })
+                    .collect();
+                let mat: Value = serde_json::from_str(col.value(row)).unwrap();
+                for (lod, themes) in mat.as_object().unwrap() {
+                    let faces = faces_by_lod.get(lod).cloned().unwrap_or_default();
+                    for (theme, inner) in themes.as_object().unwrap() {
+                        let mut leaves = Vec::new();
+                        if let Some(values) = inner.get("values") {
+                            flatten(values, &mut leaves);
+                        } else if let Some(v) = inner.get("value") {
+                            // Scalar (whole-geometry) → expand to every face.
+                            let g = v.as_u64().unwrap() as usize;
+                            leaves = vec![Some(g); faces.len()];
+                        }
+                        // Pair each face's material def with its (canonical) face,
+                        // then sort — order-independent (faces reorder on round-trip).
+                        let mut pairs: Vec<(String, Option<String>)> = leaves
+                            .iter()
+                            .enumerate()
+                            .map(|(fi, o)| {
+                                let key = faces.get(fi).map(|f| f.join("|")).unwrap_or_default();
+                                let def = o.map(|g| serde_json::to_string(&table[g]).unwrap());
+                                (key, def)
+                            })
+                            .collect();
+                        pairs.sort();
+                        out.insert((obj.id.clone(), lod.clone(), theme.clone()), pairs);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The package's materials table as a canonical-JSON set (order-independent).
+fn material_set(pkg: &Path) -> BTreeSet<String> {
+    read_materials(&pkg.join("materials.parquet"))
+        .unwrap()
+        .iter()
+        .map(|m| serde_json::to_string(m).unwrap())
+        .collect()
+}
+
+fn texture_set(pkg: &Path) -> BTreeSet<String> {
+    read_textures(&pkg.join("textures.parquet"))
+        .unwrap()
+        .iter()
+        .map(|t| serde_json::to_string(t).unwrap())
+        .collect()
+}
+
+/// Dereference a texture `values` tree: replace each ring leaf's texture INDEX
+/// (position 0) with the texture DEFINITION (canonical JSON string), keeping the
+/// inlined UV pairs — so the comparison is index-permutation independent.
+fn deref_texture(node: &Value, table: &[Value]) -> Value {
+    match node {
+        Value::Array(items) => match items.first() {
+            Some(Value::Number(n)) => {
+                let tid = n.as_u64().unwrap() as usize;
+                let mut out = vec![Value::String(serde_json::to_string(&table[tid]).unwrap())];
+                out.extend(items[1..].iter().cloned());
+                Value::Array(out)
+            }
+            Some(Value::Null) => node.clone(),
+            _ => Value::Array(items.iter().map(|i| deref_texture(i, table)).collect()),
+        },
+        _ => node.clone(),
+    }
+}
+
+type FaceTextures = BTreeMap<(String, String, String), Vec<(String, usize, String)>>;
+
+/// Per `(object id, lod, theme)`: a SORTED list of `(canonical face, ring index,
+/// dereferenced ring leaf)` — the texture def + inlined UVs of each textured ring,
+/// keyed by its face geometry so the comparison is order- and index-independent.
+fn face_textures(pkg: &Path) -> FaceTextures {
+    let manifest: PackageManifest =
+        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
+    let meta = ParquetRecordBatchReaderBuilder::try_new(
+        File::open(pkg.join(&manifest.tables[0])).unwrap(),
+    )
+    .unwrap()
+    .cityparquet_metadata()
+    .unwrap();
+    let table = read_textures(&pkg.join("textures.parquet")).unwrap();
+
+    let mut out = BTreeMap::new();
+    for name in &manifest.tables {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(pkg.join(name)).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        for batch in reader {
+            let batch = batch.unwrap();
+            let texture_col = batch
+                .column_by_name("texture")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let objs = decode_batch(&batch, &meta).unwrap();
+            for (row, obj) in objs.iter().enumerate() {
+                let Some(col) = texture_col else { continue };
+                if col.is_null(row) {
+                    continue;
+                }
+                let faces_by_lod: BTreeMap<String, Vec<Vec<String>>> = obj
+                    .geometries
+                    .iter()
+                    .map(|(lod, dec, _)| {
+                        (
+                            lod.as_ref().map(|l| l.to_string()).unwrap_or_default(),
+                            geometry_faces(dec),
+                        )
+                    })
+                    .collect();
+                let tex: Value = serde_json::from_str(col.value(row)).unwrap();
+                for (lod, themes) in tex.as_object().unwrap() {
+                    let faces = faces_by_lod.get(lod).cloned().unwrap_or_default();
+                    for (theme, inner) in themes.as_object().unwrap() {
+                        let mut flat_faces = Vec::new();
+                        texture_faces(inner.get("values").unwrap(), &mut flat_faces);
+                        let mut entries: Vec<(String, usize, String)> = Vec::new();
+                        for (fi, rings) in flat_faces.iter().enumerate() {
+                            let key = faces.get(fi).map(|f| f.join("|")).unwrap_or_default();
+                            for (ri, ring) in rings.iter().enumerate() {
+                                // Skip an untextured ring ([null]); record textured ones.
+                                if matches!(
+                                    ring.as_array().and_then(|a| a.first()),
+                                    Some(Value::Number(_))
+                                ) {
+                                    let d = serde_json::to_string(&deref_texture(ring, &table))
+                                        .unwrap();
+                                    entries.push((key.clone(), ri, d));
+                                }
+                            }
+                        }
+                        entries.sort();
+                        out.insert((obj.id.clone(), lod.clone(), theme.clone()), entries);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn materials_round_trip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("pkg");
+    let out_gml = tmp.path().join("out.gml");
+    let pkg2 = tmp.path().join("pkg2");
+
+    let mut opts = ConvertOptions::new(data_fixture("building_with_materials.gml"), pkg.clone());
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+    let report = write_package(&WriteOptions {
+        package_dir: pkg.clone(),
+        output: out_gml.clone(),
+    })
+    .unwrap();
+    // red (2 faces) + green (1 face) emitted; the unused "blue" was dropped at
+    // encode (unreferenced feature-local materials never reach the package).
+    assert_eq!(report.materials_written, 2);
+    assert_eq!(report.material_geometries_dropped, 0);
+    assert_eq!(report.appearance_skipped_core_profile, 0);
+
+    let mut opts2 = ConvertOptions::new(out_gml.clone(), pkg2.clone());
+    opts2.profile = Profile::Compatibility;
+    convert(&opts2).unwrap();
+
+    let before = face_materials(&pkg);
+    let after = face_materials(&pkg2);
+
+    // Sanity: BM's lod2 "visual" theme has 2 red faces, 1 green, 1 untargeted.
+    let visual = before
+        .get(&("BM".to_string(), "2".to_string(), "visual".to_string()))
+        .expect("BM lod2 visual materials");
+    assert_eq!(visual.len(), 4, "four faces");
+    let defs: Vec<&Option<String>> = visual.iter().map(|(_, d)| d).collect();
+    let has = |n: &str| {
+        defs.iter()
+            .filter(|d| d.as_ref().is_some_and(|s| s.contains(n)))
+            .count()
+    };
+    assert_eq!(has("\"red\""), 2, "{visual:?}");
+    assert_eq!(has("\"green\""), 1, "{visual:?}");
+    assert_eq!(defs.iter().filter(|d| d.is_none()).count(), 1, "{visual:?}");
+
+    assert_eq!(before, after, "per-face material definitions survive");
+    assert_eq!(
+        material_set(&pkg),
+        material_set(&pkg2),
+        "materials table equal as a canonical-JSON set"
+    );
+    assert_eq!(material_set(&pkg).len(), 2, "only red + green in the table");
+}
+
+fn compat(input: PathBuf, out: PathBuf) {
+    let mut opts = ConvertOptions::new(input, out);
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+}
+
+fn workspace_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(name)
+}
+
+#[test]
+fn full_appearance_round_trip() {
+    // building_with_appearance.gml: materials (red/green) + a texture on p0_r0.
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("pkg");
+    let out_gml = tmp.path().join("out.gml");
+    let pkg2 = tmp.path().join("pkg2");
+
+    compat(data_fixture("building_with_appearance.gml"), pkg.clone());
+    let report = write_package(&WriteOptions {
+        package_dir: pkg.clone(),
+        output: out_gml.clone(),
+    })
+    .unwrap();
+    assert_eq!(report.materials_written, 2);
+    assert_eq!(report.textures_written, 1);
+    assert_eq!(report.texture_geometries_dropped, 0);
+    compat(out_gml.clone(), pkg2.clone());
+
+    // Sanity: BA's lod2 "visual" texture dereferences to the wall.jpg JPG def.
+    let bt = face_textures(&pkg);
+    let visual = bt
+        .get(&("BA".to_string(), "2".to_string(), "visual".to_string()))
+        .expect("BA lod2 visual texture");
+    assert_eq!(visual.len(), 1, "one textured ring");
+    assert!(visual[0].2.contains("wall.jpg"), "{visual:?}");
+    assert!(
+        visual[0].2.contains("\\\"type\\\":\\\"JPG\\\""),
+        "{visual:?}"
+    );
+
+    assert_eq!(
+        face_materials(&pkg),
+        face_materials(&pkg2),
+        "per-face material defs survive"
+    );
+    assert_eq!(
+        face_textures(&pkg),
+        face_textures(&pkg2),
+        "per-ring texture defs + UVs survive"
+    );
+    assert_eq!(material_set(&pkg), material_set(&pkg2));
+    assert_eq!(texture_set(&pkg), texture_set(&pkg2));
+}
+
+#[test]
+fn lod3_railway_building_appearance_round_trip() {
+    // Real 3DCityDB export as the independent-authoring anchor for the appearance
+    // round-trip on non-synthetic data. The CityGML writer is Building-only (W-M1
+    // scope), so of railway's 121 objects across 14 types it emits only the 3
+    // `Building`s (lod3 MultiSurface: one material+texture, two texture-only) and
+    // drops the rest — so the round-trip is verified for exactly those Buildings.
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("pkg");
+    let out_gml = tmp.path().join("out.gml");
+    let pkg2 = tmp.path().join("pkg2");
+
+    compat(workspace_fixture("lod3_railway.city.json"), pkg.clone());
+    write_package(&WriteOptions {
+        package_dir: pkg.clone(),
+        output: out_gml.clone(),
+    })
+    .unwrap();
+    compat(out_gml.clone(), pkg2.clone());
+
+    let before_mat = face_materials(&pkg);
+    let after_mat = face_materials(&pkg2);
+    let before_tex = face_textures(&pkg);
+    let after_tex = face_textures(&pkg2);
+
+    // The writer-emitted objects (⊆ originals) carry real appearance and must
+    // round-trip it bit-exactly, keyed by face geometry.
+    assert!(
+        !after_tex.is_empty(),
+        "railway Buildings' textures survive the round-trip"
+    );
+    for (k, v) in &after_mat {
+        assert_eq!(before_mat.get(k), Some(v), "material {k:?}");
+    }
+    for (k, v) in &after_tex {
+        assert_eq!(before_tex.get(k), Some(v), "texture {k:?}");
+    }
+}

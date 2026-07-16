@@ -70,10 +70,11 @@ fn corner(c: [f64; 3]) -> String {
     format!("{} {} {}", c[0], c[1], c[2])
 }
 
-/// Open the `<CityModel>` root element (five namespaces: unprefixed core,
-/// `bldg`, `gen`, `gml`, `xlink`) and, when `bounds.any`, its
-/// `gml:boundedBy/gml:Envelope`. `gen` binds the CityGML generics namespace so
-/// the reader recognises the `gen:*Attribute` elements the writer emits.
+/// Open the `<CityModel>` root element (six namespaces: unprefixed core,
+/// `bldg`, `gen`, `app`, `gml`, `xlink`) and, when `bounds.any`, its
+/// `gml:boundedBy/gml:Envelope`. `gen`/`app` bind the CityGML generics and
+/// appearance namespaces so the reader recognises the `gen:*Attribute` and
+/// `app:appearance` elements the writer emits.
 pub fn write_city_model_open<W: Write>(
     w: &mut Writer<W>,
     srs_name: Option<&str>,
@@ -83,6 +84,7 @@ pub fn write_city_model_open<W: Write>(
     root.push_attribute(("xmlns", "http://www.opengis.net/citygml/2.0"));
     root.push_attribute(("xmlns:bldg", "http://www.opengis.net/citygml/building/2.0"));
     root.push_attribute(("xmlns:gen", "http://www.opengis.net/citygml/generics/2.0"));
+    root.push_attribute(("xmlns:app", "http://www.opengis.net/citygml/appearance/2.0"));
     root.push_attribute(("xmlns:gml", "http://www.opengis.net/gml"));
     root.push_attribute(("xmlns:xlink", "http://www.w3.org/1999/xlink"));
     w.write_event(Event::Start(root)).map_err(io_err)?;
@@ -147,6 +149,9 @@ mod tests {
         let xml = emit(|w| write_city_model_open(w, Some("urn:ogc:def:crs:EPSG::28992"), &b));
         assert!(xml.contains("<CityModel xmlns=\"http://www.opengis.net/citygml/2.0\""));
         assert!(xml.contains("xmlns:bldg=\"http://www.opengis.net/citygml/building/2.0\""));
+        // app binds the appearance namespace so the reader recognises the
+        // app:appearance the writer emits (else the prefix is unbound).
+        assert!(xml.contains("xmlns:app=\"http://www.opengis.net/citygml/appearance/2.0\""));
         assert!(
             xml.contains(
                 "<gml:Envelope srsName=\"urn:ogc:def:crs:EPSG::28992\" srsDimension=\"3\">"

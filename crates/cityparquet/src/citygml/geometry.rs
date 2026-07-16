@@ -30,8 +30,16 @@ pub type Ring = Vec<[f64; 3]>;
 /// A CityJSON "surface": an exterior ring plus optional interior (hole) rings.
 #[derive(Debug, Clone)]
 pub struct Polygon {
+    /// The polygon's `gml:id`, if any — the id an `app:target="#id"` appearance
+    /// reference (or an `xlink:href`) resolves to. `None` for an anonymous inline
+    /// polygon (which is therefore untargetable by appearance).
+    pub id: Option<String>,
     pub exterior: Ring,
     pub interiors: Vec<Ring>,
+    /// The `gml:id` of each ring, parallel to `[exterior, interiors...]` — the id
+    /// an `app:textureCoordinates ring="#id"` reference resolves to. `None` for an
+    /// anonymous ring.
+    pub ring_ids: Vec<Option<String>>,
 }
 
 /// One surface of a solid shell, before xlink resolution.
@@ -234,10 +242,15 @@ fn read_surface_member_children<R: BufRead>(
             Event::Start(e) => {
                 let local = e.local_name();
                 match (gml, local.as_ref()) {
-                    (true, b"Polygon") => refs.push(SurfaceRef {
-                        reverse: false,
-                        target: RefTarget::Inline(read_polygon(reader, buf)?),
-                    }),
+                    (true, b"Polygon") => {
+                        let id = gml_id(&e);
+                        let mut poly = read_polygon(reader, buf)?;
+                        poly.id = id;
+                        refs.push(SurfaceRef {
+                            reverse: false,
+                            target: RefTarget::Inline(poly),
+                        });
+                    }
                     (true, b"OrientableSurface") => {
                         let reverse = orientation_reversed(&e);
                         refs.push(read_orientable_surface(reader, buf, reverse)?);
@@ -316,9 +329,12 @@ fn read_base_surface_inline<R: BufRead>(
                 let local = e.local_name();
                 match (gml, local.as_ref()) {
                     (true, b"Polygon") => {
+                        let id = gml_id(&e);
+                        let mut poly = read_polygon(reader, buf)?;
+                        poly.id = id;
                         result = Some(SurfaceRef {
                             reverse: false,
-                            target: RefTarget::Inline(read_polygon(reader, buf)?),
+                            target: RefTarget::Inline(poly),
                         })
                     }
                     (true, b"OrientableSurface") => {
@@ -359,7 +375,8 @@ pub fn collect_polygons<R: BufRead>(
                     // `read_polygon` consumes the whole Polygon subtree, so the
                     // depth is unchanged by this branch.
                     let id = gml_id(&e);
-                    let poly = read_polygon(reader, buf)?;
+                    let mut poly = read_polygon(reader, buf)?;
+                    poly.id = id.clone();
                     out.push((id, poly));
                 } else {
                     depth += 1;
@@ -380,8 +397,8 @@ pub fn collect_polygons<R: BufRead>(
 
 /// A `gml:Polygon` (positioned after its `Start`): exterior ring + holes.
 pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> Result<Polygon> {
-    let mut exterior: Option<Ring> = None;
-    let mut interiors: Vec<Ring> = Vec::new();
+    let mut exterior: Option<(Ring, Option<String>)> = None;
+    let mut interiors: Vec<(Ring, Option<String>)> = Vec::new();
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -404,21 +421,34 @@ pub fn read_polygon<R: BufRead>(reader: &mut NsReader<R>, buf: &mut Vec<u8>) -> 
             _ => {}
         }
     }
-    let exterior = exterior
+    let (exterior, ext_id) = exterior
         .ok_or_else(|| CityParquetError::Schema("gml:Polygon without exterior ring".to_string()))?;
+    let mut ring_ids = Vec::with_capacity(1 + interiors.len());
+    ring_ids.push(ext_id);
+    let interior_rings = interiors
+        .into_iter()
+        .map(|(ring, id)| {
+            ring_ids.push(id);
+            ring
+        })
+        .collect();
     Ok(Polygon {
+        id: None,
         exterior,
-        interiors,
+        interiors: interior_rings,
+        ring_ids,
     })
 }
 
 /// The `gml:exterior`/`gml:interior` of a Polygon, wrapping a `gml:LinearRing`.
+/// Returns the ring coords plus the `gml:LinearRing`'s `gml:id` (for texture
+/// coordinate targeting), if any.
 fn read_ring_container<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     end: &[u8],
-) -> Result<Ring> {
-    let mut ring: Option<Ring> = None;
+) -> Result<(Ring, Option<String>)> {
+    let mut ring: Option<(Ring, Option<String>)> = None;
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
@@ -427,7 +457,8 @@ fn read_ring_container<R: BufRead>(
             Event::Start(e) => {
                 let local = e.local_name();
                 if gml && local.as_ref() == b"LinearRing" {
-                    ring = Some(read_linear_ring(reader, buf)?);
+                    let id = gml_id(&e);
+                    ring = Some((read_linear_ring(reader, buf)?, id));
                 } else {
                     skip_element(reader, buf)?;
                 }
