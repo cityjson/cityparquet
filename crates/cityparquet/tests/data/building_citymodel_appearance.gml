@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- hand-authored CityParquet test fixture (CG-3: CityModel-level appearance). -->
-<!-- The app:appearance is a DIRECT child of CityModel (sibling of the          -->
-<!-- cityObjectMember) and appears AFTER the building, so only a two-pass reader -->
+<!-- The app:appearanceMember (conformant CityModel-level global appearance)    -->
+<!-- is a child of CityModel, sibling of cityObjectMember, and appears AFTER     -->
+<!-- the building, so only a two-pass reader -->
 <!-- can apply it. Its X3DMaterial (red) targets solid face #p0; its texture    -->
 <!-- targets ring #p1_r0. A reader that only reads appearance INSIDE a Building  -->
 <!-- assigns no material/texture at all. -->
@@ -70,7 +71,7 @@
 			</bldg:lod2Solid>
 		</bldg:Building>
 	</cityObjectMember>
-	<app:appearance>
+	<app:appearanceMember>
 		<app:Appearance>
 			<app:theme>visual</app:theme>
 			<app:surfaceDataMember>
@@ -92,5 +93,5 @@
 				</app:ParameterizedTexture>
 			</app:surfaceDataMember>
 		</app:Appearance>
-	</app:appearance>
+	</app:appearanceMember>
 </CityModel>

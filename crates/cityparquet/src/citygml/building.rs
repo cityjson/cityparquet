@@ -33,7 +33,7 @@ use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 use serde_json::{Value, json};
 
-use super::appearance::{ReadAppearance, ReadMaterial, ReadTexture};
+use super::appearance::{ModelAppearance, ReadAppearance, ReadMaterial, ReadTexture};
 use super::attributes;
 use super::geometry::{self, Polygon, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use super::vertices::VertexBuilder;
@@ -178,7 +178,7 @@ fn read_abstract_building<R: BufRead>(
                 } else if bldg && name == b"consistsOfBuildingPart" {
                     read_consists_of_part(reader, buf, &mut b, depth)?;
                 } else if ns_is(&rr, NS_APP) && name == b"appearance" {
-                    let app = super::appearance::read_appearance(reader, buf)?;
+                    let app = super::appearance::read_appearance(reader, buf, b"appearance")?;
                     b.appearance.materials.extend(app.materials);
                     b.appearance.textures.extend(app.textures);
                 } else if bldg && let Some(ty) = attributes::typed_building_attr(&name) {
@@ -441,7 +441,7 @@ impl RawBuilding {
         scale: &[f64; 3],
         translate: &[f64; 3],
         index: usize,
-        model_app: &ReadAppearance,
+        model_app: &ModelAppearance,
     ) -> Result<CityJSONFeature> {
         let mut vb = VertexBuilder::new(scale, translate);
         // Feature-local appearance: an assembly (a Building and its parts) shares
@@ -489,7 +489,7 @@ impl RawBuilding {
         &self,
         vb: &mut VertexBuilder,
         app: &mut AppearanceState,
-        model_app: &ReadAppearance,
+        model_app: &ModelAppearance,
     ) -> Result<Vec<Value>> {
         // Each entry: (geometry JSON, face-id tree, ring-id tree, ring-reverse
         // tree). The face-id tree addresses `app:target`s (materials, at face
@@ -533,25 +533,24 @@ impl RawBuilding {
         // object's geometry — collected from the built face-id and ring-id
         // trees, which cover inline-in-solid polygons too (not just the
         // `polygons` registry, which holds only boundedBy/standalone ones).
-        let mut poly_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut ring_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (_, face_ids, ring_id_tree, _) in &built {
-            collect_string_ids(face_ids, &mut poly_ids);
-            collect_string_ids(ring_id_tree, &mut ring_ids);
-        }
-        let model_materials: Vec<&ReadMaterial> = model_app
-            .materials
-            .iter()
-            .filter(|m| m.targets.iter().any(|t| poly_ids.contains(t)))
-            .collect();
-        let model_textures: Vec<&ReadTexture> = model_app
-            .textures
-            .iter()
-            .filter(|t| t.rings.iter().any(|(rid, _)| ring_ids.contains(rid)))
-            .collect();
+        let (model_materials, model_textures) = if model_app.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            let mut poly_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut ring_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for (_, face_ids, ring_id_tree, _) in &built {
+                collect_string_ids(face_ids, &mut poly_ids);
+                collect_string_ids(ring_id_tree, &mut ring_ids);
+            }
+            // O(this object's ids) via the model index; textures are scoped to
+            // this object's rings so a shared texture never copies unrelated
+            // UVs into this feature.
+            model_app.scoped_for(&poly_ids, &ring_ids)
+        };
+        let model_texture_refs: Vec<&ReadTexture> = model_textures.iter().collect();
 
         self.apply_materials(&mut built, &mut app.interner, &model_materials);
-        self.apply_textures(&mut built, app, &model_textures);
+        self.apply_textures(&mut built, app, &model_texture_refs);
         Ok(built.into_iter().map(|(g, _, _, _)| g).collect())
     }
 
@@ -671,7 +670,7 @@ impl RawBuilding {
         vb: &mut VertexBuilder,
         app: &mut AppearanceState,
         feature: &mut CityJSONFeature,
-        model_app: &ReadAppearance,
+        model_app: &ModelAppearance,
     ) -> Result<()> {
         let geoms_json = self.build_geometries(vb, app, model_app)?;
         let child_ids: Vec<String> = self

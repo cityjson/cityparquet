@@ -14,7 +14,7 @@ use cjseq::{CityJSONFeature, Transform};
 use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 
-use super::appearance::{ReadAppearance, read_appearance};
+use super::appearance::{ModelAppearance, ReadAppearance, read_appearance};
 use super::building::read_building;
 use super::xml::{NS_APP, NS_BLDG, gml_id, ns_is, skip_element, xml_err};
 
@@ -25,17 +25,21 @@ pub struct FeatureReader {
     translate: [f64; 3],
     index: usize,
     done: bool,
-    /// CityModel-level `app:appearance` (a direct child of `<CityModel>`, not
-    /// inside any Building), collected up front in a separate pass so it can be
-    /// applied to every building's faces/rings by `gml:id` regardless of
-    /// whether it appears before or after the buildings (CG-3).
-    model_appearance: ReadAppearance,
+    /// CityModel-level appearance (`app:appearanceMember` on `<CityModel>`),
+    /// collected up front in a separate pass so it can be applied to every
+    /// building's faces/rings by `gml:id` regardless of whether it appears
+    /// before or after the buildings, and indexed for O(building-ids) lookup
+    /// (CG-3).
+    model_appearance: ModelAppearance,
 }
 
-/// Pre-pass: read every `app:appearance` that is NOT inside a `bldg:Building`
-/// (building subtrees are skipped, since their appearance is building-level and
-/// read during streaming) into one combined [`ReadAppearance`].
-fn read_model_appearance(path: &Path) -> Result<ReadAppearance> {
+/// Pre-pass: read every CityModel-level `app:appearanceMember` (the conformant
+/// CityGML 2.0 global-appearance property — a `_FeatureCollection` member of
+/// `CityModel`, distinct from a feature's own `app:appearance`) into one
+/// indexed [`ModelAppearance`]. Building subtrees are skipped, and a
+/// feature-level `app:appearance` (which uses the other property name) is NOT
+/// promoted to model scope.
+fn read_model_appearance(path: &Path) -> Result<ModelAppearance> {
     let file = File::open(path)
         .map_err(|e| CityParquetError::Io(format!("cannot reopen {}: {e}", path.display())))?;
     let mut reader = NsReader::from_reader(BufReader::new(file));
@@ -49,8 +53,8 @@ fn read_model_appearance(path: &Path) -> Result<ReadAppearance> {
             Event::Start(e) => {
                 if ns_is(&rr, NS_BLDG) && e.local_name().as_ref() == b"Building" {
                     skip_element(&mut reader, &mut buf)?;
-                } else if ns_is(&rr, NS_APP) && e.local_name().as_ref() == b"appearance" {
-                    let app = read_appearance(&mut reader, &mut buf)?;
+                } else if ns_is(&rr, NS_APP) && e.local_name().as_ref() == b"appearanceMember" {
+                    let app = read_appearance(&mut reader, &mut buf, b"appearanceMember")?;
                     out.materials.extend(app.materials);
                     out.textures.extend(app.textures);
                 }
@@ -59,7 +63,7 @@ fn read_model_appearance(path: &Path) -> Result<ReadAppearance> {
             _ => {}
         }
     }
-    Ok(out)
+    Ok(ModelAppearance::build(out))
 }
 
 impl FeatureReader {
