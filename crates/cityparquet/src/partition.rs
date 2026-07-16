@@ -51,7 +51,8 @@ pub fn assign_partitions(
             // rather than fewer, gap-labelled ones.
             let n = (*n).clamp(1, total.max(1));
             for i in 0..total {
-                let part = i * n / total; // floor, 0..n-1
+                // u64 math so `i * n` cannot overflow usize on 32-bit targets.
+                let part = ((i as u64 * n as u64) / total as u64) as usize; // floor, 0..n-1
                 groups
                     .entry(format!("count-{part:05}"))
                     .or_default()
@@ -104,19 +105,27 @@ fn io_err(msg: String) -> CityParquetError {
     CityParquetError::Io(msg)
 }
 
-/// True only for the EXACT subdirectory names this driver produces
-/// (`count-<digits>`, `features-<digits>`, `box_x…`, `box_none`), so overwrite
-/// never deletes an unrelated directory that merely shares a prefix (e.g.
-/// `box-office`, `counter`).
+/// True only for the EXACT subdirectory-name shapes this driver produces
+/// (`count-<digits>`, `features-<digits>`, `box_x<int>_y<int>`, `box_none`), so
+/// overwrite never deletes an unrelated directory that merely shares a prefix
+/// (e.g. `box-office`, `box_xylophone`, `counter`).
 fn is_partition_dir_name(name: &str) -> bool {
+    /// A signed integer with no leading `+` (matches `format!("{i}")` for i64).
+    fn is_int(s: &str) -> bool {
+        let digits = s.strip_prefix('-').unwrap_or(s);
+        !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+    }
     fn indexed(prefix: &str, name: &str) -> bool {
         name.strip_prefix(prefix)
             .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
     }
-    name == "box_none"
-        || name.starts_with("box_x")
-        || indexed("count-", name)
-        || indexed("features-", name)
+    fn is_box(name: &str) -> bool {
+        // box_x<int>_y<int> — parse both components, don't prefix-match.
+        name.strip_prefix("box_x")
+            .and_then(|rest| rest.split_once("_y"))
+            .is_some_and(|(x, y)| is_int(x) && is_int(y))
+    }
+    name == "box_none" || is_box(name) || indexed("count-", name) || indexed("features-", name)
 }
 
 /// The partition subdirectories currently under `dir` (its own prior output).
@@ -278,6 +287,34 @@ mod tests {
         let groups = assign_partitions(&feats, &PartitionSpec::Features(1000), &t);
         assert!(groups.iter().all(|(_, v)| v.len() <= 1000));
         assert_eq!(all_indices(&groups), (0..feats.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn partition_dir_name_matches_only_exact_labels() {
+        // Real labels this driver emits.
+        for good in [
+            "count-00000",
+            "features-00042",
+            "box_x3_y7",
+            "box_x-3_y-5",
+            "box_none",
+        ] {
+            assert!(is_partition_dir_name(good), "{good} should match");
+        }
+        // Prefix collisions that must NOT be treated as our output.
+        for bad in [
+            "box-office",
+            "box_xylophone",
+            "box_x3",
+            "box_x_y5",
+            "box_x3_yfoo",
+            "counter",
+            "count-",
+            "count-1a",
+            "features_backup",
+        ] {
+            assert!(!is_partition_dir_name(bad), "{bad} must NOT match");
+        }
     }
 
     #[test]
