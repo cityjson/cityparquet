@@ -7,6 +7,7 @@ pub mod decode;
 pub mod encode;
 pub mod export;
 pub mod inputs;
+pub mod merge;
 pub mod order;
 pub mod package;
 pub mod query;
