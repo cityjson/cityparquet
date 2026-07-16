@@ -781,3 +781,59 @@ fn citygml2_reverses_uvs_for_reversed_orientable_surface() {
         "normal face keeps authored UV order"
     );
 }
+
+/// CG-3: a CityModel-level `app:appearance` (direct child of CityModel, here
+/// AFTER the building) must be applied to the building's faces/rings by
+/// polygon/ring gml:id. `building_citymodel_appearance.gml`: material red -> p0,
+/// texture -> ring p1_r0.
+#[test]
+fn citygml2_reads_citymodel_level_appearance() {
+    let src = Source::open(&data_fixture("building_citymodel_appearance.gml")).unwrap();
+    let feats: Vec<_> = src
+        .features()
+        .unwrap()
+        .collect::<cityparquet::Result<Vec<_>>>()
+        .unwrap();
+    let f = &feats[0];
+    let co = f.city_objects.get("BM").expect("Building BM");
+    let g = &co.geometry.as_ref().expect("geometry")[0];
+
+    // Material "red" from the CityModel-level appearance tags face 0 (p0).
+    let app = f
+        .appearance
+        .as_ref()
+        .expect("feature appearance from CityModel level");
+    let mats = app.materials.as_ref().expect("materials table");
+    let red = mats
+        .iter()
+        .position(|m| m["diffuseColor"] == serde_json::json!([1.0, 0.0, 0.0]))
+        .expect("red material interned");
+    let mat = g.material.as_ref().expect("geometry material");
+    let mvals = mat
+        .get("visual")
+        .unwrap()
+        .values
+        .as_ref()
+        .unwrap()
+        .as_array()
+        .unwrap();
+    let mshell = mvals[0].as_array().unwrap();
+    assert_eq!(mshell[0], serde_json::json!(red), "p0 tagged red");
+    assert!(mshell[1].is_null(), "p1 has no material");
+
+    // Texture from the CityModel-level appearance tags face 1's ring (p1_r0).
+    let tex = g.texture.as_ref().expect("geometry texture");
+    let tvals = tex
+        .get("visual")
+        .unwrap()
+        .values
+        .as_ref()
+        .unwrap()
+        .as_array()
+        .unwrap();
+    let tshell = tvals[0].as_array().unwrap();
+    let face1_ring0 = tshell[1].as_array().unwrap()[0].as_array().unwrap();
+    assert!(face1_ring0.len() >= 2, "p1 ring textured [tex, uv...]");
+    let face0_ring0 = tshell[0].as_array().unwrap()[0].as_array().unwrap();
+    assert_eq!(face0_ring0, &vec![serde_json::Value::Null], "p0 untextured");
+}

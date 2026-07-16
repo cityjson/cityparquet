@@ -33,7 +33,7 @@ use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 use serde_json::{Value, json};
 
-use super::appearance::ReadAppearance;
+use super::appearance::{ReadAppearance, ReadMaterial, ReadTexture};
 use super::attributes;
 use super::geometry::{self, Polygon, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use super::vertices::VertexBuilder;
@@ -441,6 +441,7 @@ impl RawBuilding {
         scale: &[f64; 3],
         translate: &[f64; 3],
         index: usize,
+        model_app: &ReadAppearance,
     ) -> Result<CityJSONFeature> {
         let mut vb = VertexBuilder::new(scale, translate);
         // Feature-local appearance: an assembly (a Building and its parts) shares
@@ -456,7 +457,7 @@ impl RawBuilding {
             .clone()
             .unwrap_or_else(|| format!("Building_{index}"));
         feature.id = root_id.clone();
-        self.emit_into(&root_id, None, &mut vb, &mut app, &mut feature)?;
+        self.emit_into(&root_id, None, &mut vb, &mut app, &mut feature, model_app)?;
         feature.vertices = vb.into_vertices();
         let materials = app.interner.materials();
         let textures = app.interner.textures();
@@ -488,6 +489,7 @@ impl RawBuilding {
         &self,
         vb: &mut VertexBuilder,
         app: &mut AppearanceState,
+        model_app: &ReadAppearance,
     ) -> Result<Vec<Value>> {
         // Each entry: (geometry JSON, face-id tree, ring-id tree, ring-reverse
         // tree). The face-id tree addresses `app:target`s (materials, at face
@@ -523,8 +525,33 @@ impl RawBuilding {
                 built.push(ms);
             }
         }
-        self.apply_materials(&mut built, &mut app.interner);
-        self.apply_textures(&mut built, app);
+        // CityModel-level appearance (CG-3): apply only the model-level defs
+        // that target THIS object's polygons/rings, so a feature's local tables
+        // never bloat with defs meant for other buildings. Filter before
+        // interning; building-level defs (applied last) win on any collision.
+        // The targetable id set is every gml:id that actually appears in this
+        // object's geometry — collected from the built face-id and ring-id
+        // trees, which cover inline-in-solid polygons too (not just the
+        // `polygons` registry, which holds only boundedBy/standalone ones).
+        let mut poly_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut ring_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (_, face_ids, ring_id_tree, _) in &built {
+            collect_string_ids(face_ids, &mut poly_ids);
+            collect_string_ids(ring_id_tree, &mut ring_ids);
+        }
+        let model_materials: Vec<&ReadMaterial> = model_app
+            .materials
+            .iter()
+            .filter(|m| m.targets.iter().any(|t| poly_ids.contains(t)))
+            .collect();
+        let model_textures: Vec<&ReadTexture> = model_app
+            .textures
+            .iter()
+            .filter(|t| t.rings.iter().any(|(rid, _)| ring_ids.contains(rid)))
+            .collect();
+
+        self.apply_materials(&mut built, &mut app.interner, &model_materials);
+        self.apply_textures(&mut built, app, &model_textures);
         Ok(built.into_iter().map(|(g, _, _, _)| g).collect())
     }
 
@@ -537,13 +564,20 @@ impl RawBuilding {
         &self,
         built: &mut [(Value, Value, Value, Value)],
         interner: &mut AppearanceInterner,
+        model_materials: &[&ReadMaterial],
     ) {
-        if self.appearance.materials.is_empty() {
+        if self.appearance.materials.is_empty() && model_materials.is_empty() {
             return;
         }
         let mut themes: Vec<String> = Vec::new();
         let mut theme_maps: HashMap<String, HashMap<String, usize>> = HashMap::new();
-        for rm in &self.appearance.materials {
+        // Model-level defs first, this object's own defs last, so a building's
+        // own material wins over a CityModel-level one on the same face+theme.
+        for rm in model_materials
+            .iter()
+            .copied()
+            .chain(self.appearance.materials.iter())
+        {
             let idx = interner.intern_material(&rm.material);
             if !theme_maps.contains_key(&rm.theme) {
                 themes.push(rm.theme.clone());
@@ -584,14 +618,20 @@ impl RawBuilding {
         &self,
         built: &mut [(Value, Value, Value, Value)],
         app: &mut AppearanceState,
+        model_textures: &[&ReadTexture],
     ) {
-        if self.appearance.textures.is_empty() {
+        if self.appearance.textures.is_empty() && model_textures.is_empty() {
             return;
         }
         // theme -> (ring gml:id -> (texture index, [uv indices]))
         let mut themes: Vec<String> = Vec::new();
         let mut theme_maps: HashMap<String, HashMap<String, (usize, Vec<usize>)>> = HashMap::new();
-        for rt in &self.appearance.textures {
+        // Model-level defs first, this object's own defs last (own wins).
+        for rt in model_textures
+            .iter()
+            .copied()
+            .chain(self.appearance.textures.iter())
+        {
             let tex_idx = app.interner.intern_texture(&rt.texture);
             if !theme_maps.contains_key(&rt.theme) {
                 themes.push(rt.theme.clone());
@@ -623,6 +663,7 @@ impl RawBuilding {
     /// `BuildingPart`) and, depth-first, each of its parts as sibling
     /// CityObjects of the same feature (one shared vertex pool). `parents`/
     /// `children` link the tree.
+    #[allow(clippy::too_many_arguments)]
     fn emit_into(
         &self,
         my_id: &str,
@@ -630,8 +671,9 @@ impl RawBuilding {
         vb: &mut VertexBuilder,
         app: &mut AppearanceState,
         feature: &mut CityJSONFeature,
+        model_app: &ReadAppearance,
     ) -> Result<()> {
-        let geoms_json = self.build_geometries(vb, app)?;
+        let geoms_json = self.build_geometries(vb, app, model_app)?;
         let child_ids: Vec<String> = self
             .parts
             .iter()
@@ -673,7 +715,7 @@ impl RawBuilding {
         feature.add_co(my_id.to_string(), co);
 
         for (i, part) in self.parts.iter().enumerate() {
-            part.emit_into(&child_ids[i], Some(my_id), vb, app, feature)?;
+            part.emit_into(&child_ids[i], Some(my_id), vb, app, feature, model_app)?;
         }
         Ok(())
     }
@@ -893,6 +935,22 @@ fn ring_ids_value(poly: &Polygon) -> Value {
             .map(|id| id.clone().map(Value::from).unwrap_or(Value::Null))
             .collect(),
     )
+}
+
+/// Collect every `gml:id` string appearing in a face-id or ring-id tree into
+/// `out` (used to filter CityModel-level appearance to this object — CG-3).
+fn collect_string_ids(node: &Value, out: &mut std::collections::HashSet<String>) {
+    match node {
+        Value::String(s) => {
+            out.insert(s.clone());
+        }
+        Value::Array(items) => {
+            for it in items {
+                collect_string_ids(it, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// A face's per-ring reverse flags, mirroring [`ring_ids_value`]'s shape: one
