@@ -9,10 +9,18 @@
 //! across all partitions so `read_parquet('OUT/*/…')` sees a uniform layout.
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 
 use cjseq::{CityJSONFeature, Transform};
 
+use cityparquet_schema::{CityParquetError, Result};
+
+use crate::merge::merge_sources;
 use crate::order::vertices_minmax;
+use crate::package::{CanonicalSchema, ConvertOptions, ConvertReport, convert_source_impl};
+use crate::scan::scan;
+use crate::source::{Source, SourceFormat};
 
 /// How to split the merged dataset. Sizing is method-specific (no forced
 /// "exactly N files" on the spatial method).
@@ -78,6 +86,128 @@ pub fn assign_partitions(
         }
     }
     groups.into_iter().collect()
+}
+
+/// Outcome of a partitioned conversion: one [`ConvertReport`] per partition
+/// package (keyed by its subdirectory label) plus the merge duplicate-id count.
+#[derive(Debug, Clone)]
+pub struct PartitionReport {
+    pub partitions: Vec<(String, ConvertReport)>,
+    pub duplicate_ids: usize,
+}
+
+fn err(msg: String) -> CityParquetError {
+    CityParquetError::Schema(msg)
+}
+
+fn io_err(msg: String) -> CityParquetError {
+    CityParquetError::Io(msg)
+}
+
+/// A partition subdirectory this driver produces (so overwrite only ever
+/// touches its own output, never unrelated files a caller keeps alongside).
+fn is_partition_dir_name(name: &str) -> bool {
+    name.starts_with("count-") || name.starts_with("features-") || name.starts_with("box")
+}
+
+/// Prepare the parent output directory: error if it already holds partition
+/// subdirectories and `overwrite` is off; otherwise purge those stale
+/// subdirectories so a re-run with different sizing never leaves orphan
+/// partitions polluting an `OUT/*/…` glob.
+fn prepare_parent_dir(dir: &Path, overwrite: bool) -> Result<()> {
+    fs::create_dir_all(dir).map_err(|e| {
+        io_err(format!(
+            "cannot create output directory {}: {e}",
+            dir.display()
+        ))
+    })?;
+    let existing: Vec<std::path::PathBuf> = fs::read_dir(dir)
+        .map_err(|e| {
+            io_err(format!(
+                "cannot read output directory {}: {e}",
+                dir.display()
+            ))
+        })?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(is_partition_dir_name)
+        })
+        .collect();
+    if !existing.is_empty() && !overwrite {
+        return Err(err(format!(
+            "output directory {} already holds partition packages (pass overwrite to replace them)",
+            dir.display()
+        )));
+    }
+    for p in existing {
+        fs::remove_dir_all(&p).map_err(|e| {
+            io_err(format!(
+                "cannot remove stale partition {}: {e}",
+                p.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// Merge `sources`, partition the merged features by `spec`, and write one
+/// self-contained CityParquet package per non-empty partition into
+/// `opts.output_dir/<label>/`. All partitions share ONE canonical schema
+/// (computed from a single scan of the whole merged dataset) so a
+/// `read_parquet('OUT/*/…')` glob sees a uniform column layout; each partition
+/// still scans its own features for its own bbox/count/stats.
+///
+/// Memory: like `--ordering hilbert`, this buffers every feature (and clones
+/// each partition's subset before encoding) — the documented full-load cost.
+pub fn convert_partitioned(
+    sources: &[Source],
+    spec: &PartitionSpec,
+    opts: &ConvertOptions,
+) -> Result<PartitionReport> {
+    let merged = merge_sources(sources)?;
+    prepare_parent_dir(&opts.output_dir, opts.overwrite)?;
+
+    // Canonical schema: one scan over the entire merged dataset.
+    let full = Source::from_parts(
+        merged.header.clone(),
+        merged.features.clone(),
+        merged.doc_appearance.clone(),
+        SourceFormat::CityJsonSeq,
+    );
+    let full_scan = scan(&full)?;
+    let canonical = CanonicalSchema {
+        schema: full_scan.schema.clone(),
+        lods: full_scan.lods.clone(),
+    };
+    drop(full);
+
+    let groups = assign_partitions(&merged.features, spec, &merged.header.transform);
+    let mut partitions = Vec::with_capacity(groups.len());
+    for (label, idxs) in groups {
+        let subset: Vec<CityJSONFeature> =
+            idxs.iter().map(|&i| merged.features[i].clone()).collect();
+        let sub_source = Source::from_parts(
+            merged.header.clone(),
+            subset,
+            merged.doc_appearance.clone(),
+            SourceFormat::CityJsonSeq,
+        );
+        let mut sub_opts = opts.clone();
+        sub_opts.output_dir = opts.output_dir.join(&label);
+        // The parent was prepared above; each partition subdir is fresh, so the
+        // per-package overwrite check must not trip on a sibling.
+        sub_opts.overwrite = true;
+        let report = convert_source_impl(&sub_source, &sub_opts, Some(&canonical))?;
+        partitions.push((label, report));
+    }
+
+    Ok(PartitionReport {
+        partitions,
+        duplicate_ids: merged.duplicate_ids,
+    })
 }
 
 #[cfg(test)]
