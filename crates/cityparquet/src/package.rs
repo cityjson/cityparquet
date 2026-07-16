@@ -21,7 +21,9 @@ use parquet::arrow::ArrowWriter;
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
-use cityparquet_schema::{CITYPARQUET_VERSION, CityParquetError, PackageManifest, Profile, Result};
+use cityparquet_schema::{
+    CITYPARQUET_VERSION, CityParquetError, CityParquetSchema, Lod, PackageManifest, Profile, Result,
+};
 use cjseq::CityJSONFeature;
 
 use crate::appearance::AppearanceInterner;
@@ -924,6 +926,42 @@ fn write_package(
 /// BEFORE encoding the new one, so a mid-encode failure destroyed the old
 /// package and left no usable one behind at all).
 pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
+    let source = Source::open(&opts.input)?;
+    convert_source(&source, opts)
+}
+
+/// A schema (attribute columns + LoD set) computed once over a whole merged
+/// dataset and stamped into every partition's scan so all partition packages
+/// share ONE Parquet schema — without this a partition that happens to lack an
+/// attribute (or an LoD) infers fewer columns than its siblings, and
+/// `read_parquet('OUT/*/…')` across the partitions needs `union_by_name` or
+/// errors. See [`convert_source_impl`].
+#[derive(Debug, Clone)]
+pub struct CanonicalSchema {
+    pub schema: CityParquetSchema,
+    pub lods: Vec<Lod>,
+}
+
+/// Convert an already-open `source` into a package at `opts.output_dir` —
+/// everything [`convert`] does after `Source::open`, so a caller holding a
+/// [`Source`] (the merge/partition pipeline, which builds an in-memory
+/// [`Source::from_parts`]) reuses the identical scan → encode → sidecar →
+/// atomic-swap path. `opts.input` is ignored.
+pub fn convert_source(source: &Source, opts: &ConvertOptions) -> Result<ConvertReport> {
+    convert_source_impl(source, opts, None)
+}
+
+/// [`convert_source`] with an optional canonical-schema override. When
+/// `schema_override` is `Some`, the per-source scan still supplies this
+/// partition's own `dataset_bbox`/`object_count`/stats, but its inferred
+/// `schema`/`lods` are replaced by the canonical set so every partition writes
+/// an identical column layout (features missing an override attribute or LoD
+/// simply get null cells there, exactly as they would in the merged package).
+pub(crate) fn convert_source_impl(
+    source: &Source,
+    opts: &ConvertOptions,
+    schema_override: Option<&CanonicalSchema>,
+) -> Result<ConvertReport> {
     fs::create_dir_all(&opts.output_dir).map_err(|e| {
         io_err(format!(
             "cannot create output directory {}: {e}",
@@ -946,8 +984,11 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
         )));
     }
 
-    let source = Source::open(&opts.input)?;
-    let scan_result = scan(&source)?;
+    let mut scan_result = scan(source)?;
+    if let Some(canon) = schema_override {
+        scan_result.schema = canon.schema.clone();
+        scan_result.lods = canon.lods.clone();
+    }
 
     // `sidecar_files` is intentionally EXCLUDED from this pre-encode
     // key-value set (an empty list serialises to no key at all — see
@@ -993,7 +1034,7 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
         ))
     })?;
 
-    let written = match write_package(opts, &source, &scan_result, arrow_schema, props, &tmp_dir) {
+    let written = match write_package(opts, source, &scan_result, arrow_schema, props, &tmp_dir) {
         Ok(written) => written,
         Err(e) => {
             // Nothing in `opts.output_dir` was ever touched: only the

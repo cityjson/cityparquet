@@ -22,6 +22,18 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// `convert_source` (the seam the merge/partition pipeline drives) must
+/// reproduce `convert`'s result when handed the same source directly.
+#[test]
+fn convert_source_matches_convert_object_count() {
+    let out = tempfile::tempdir().unwrap();
+    let opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    let src = cityparquet::source::Source::open(&opts.input).unwrap();
+    let report = cityparquet::package::convert_source(&src, &opts).unwrap();
+    assert_eq!(report.object_count, 2231);
+    assert!(out.path().join("metadata.json").exists());
+}
+
 /// Recursively asserts every material index in a rewritten `material` map is
 /// a dataset-global id `< limit` (mirrors `cityparquet::appearance`'s own
 /// walk, duplicated here since this is a separate integration-test crate
