@@ -85,6 +85,65 @@ fn rerun_with_overwrite_purges_stale_partitions() {
     assert!(out.path().join("count-00001").exists());
 }
 
+/// Every box partition package is independently valid and round-trips: export
+/// it to CityJSONSeq, reconvert + re-export, and the two exports are
+/// semantically equal (an idempotent round-trip through the whole pipeline on
+/// the partition's own feature subset).
+#[test]
+fn box_partitions_each_round_trip_clean() {
+    use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
+    use cityparquet::export::{ExportOptions, export};
+    use cityparquet::package::convert;
+
+    let out = tempfile::tempdir().unwrap();
+    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let opts = delft_opts(out.path());
+    let rep = convert_partitioned(
+        std::slice::from_ref(&src),
+        &PartitionSpec::Box { cell: 1000.0 },
+        &opts,
+    )
+    .unwrap();
+
+    let no_excl = CompareOptions {
+        coord_tolerance: [0.0; 3],
+        exclusions: Exclusions {
+            appearance: false,
+            geometry_instances: false,
+        },
+    };
+
+    for (label, _) in &rep.partitions {
+        let pkg = out.path().join(label);
+        let export1 = out.path().join(format!("{label}_1.city.jsonl"));
+        export(&ExportOptions {
+            package_dir: pkg.clone(),
+            output: export1.clone(),
+        })
+        .unwrap();
+
+        // Reconvert the exported partition and re-export it; the two exports
+        // must be semantically identical.
+        let pkg2 = out.path().join(format!("{label}_pkg2"));
+        let mut o2 = ConvertOptions::new(export1.clone(), pkg2.clone());
+        o2.layout = TableLayout::Single;
+        convert(&o2).unwrap();
+        let export2 = out.path().join(format!("{label}_2.city.jsonl"));
+        export(&ExportOptions {
+            package_dir: pkg2.clone(),
+            output: export2.clone(),
+        })
+        .unwrap();
+
+        let rc = compare_datasets(&export1, &export2, &no_excl).unwrap();
+        assert!(
+            rc.equal,
+            "partition {label} not round-trip clean: {:?}",
+            rc.differences
+        );
+    }
+}
+
 #[test]
 fn non_empty_parent_without_overwrite_errors() {
     let out = tempfile::tempdir().unwrap();
