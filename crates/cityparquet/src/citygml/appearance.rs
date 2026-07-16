@@ -25,6 +25,7 @@ use super::xml::{NS_APP, NS_GML, get_attr_local, ns_is, read_text, skip_element,
 
 /// One `app:X3DMaterial`: its theme, the CityJSON material object, and the
 /// `gml:id`s of the polygons it targets (`app:target="#id"`, `#` stripped).
+#[derive(Clone)]
 pub struct ReadMaterial {
     pub theme: String,
     pub material: Value,
@@ -50,13 +51,99 @@ pub struct ReadAppearance {
     pub textures: Vec<ReadTexture>,
 }
 
-/// Read an `app:appearance` property (positioned after its `Start`): descend to
-/// the inner `app:Appearance` and parse its surface data. Consumes through the
-/// property's `End`. A property with no `app:Appearance` child (empty or
-/// `xlink`-only) yields nothing.
+/// CityModel-level appearance, indexed by target `gml:id` so applying it to a
+/// building is O(that building's ids) rather than O(all model defs) — CG-3
+/// perf. Built once by the reader and shared across every building.
+#[derive(Default)]
+pub struct ModelAppearance {
+    materials: Vec<ReadMaterial>,
+    textures: Vec<ReadTexture>,
+    /// polygon `gml:id` -> indices into `materials` targeting it.
+    material_by_target: std::collections::HashMap<String, Vec<usize>>,
+    /// ring `gml:id` -> indices into `textures` texturing it.
+    texture_by_ring: std::collections::HashMap<String, Vec<usize>>,
+}
+
+impl ModelAppearance {
+    /// Index a combined [`ReadAppearance`] by target/ring `gml:id`.
+    pub fn build(app: ReadAppearance) -> Self {
+        let mut material_by_target: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, m) in app.materials.iter().enumerate() {
+            for t in &m.targets {
+                material_by_target.entry(t.clone()).or_default().push(i);
+            }
+        }
+        let mut texture_by_ring: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, t) in app.textures.iter().enumerate() {
+            for (rid, _) in &t.rings {
+                texture_by_ring.entry(rid.clone()).or_default().push(i);
+            }
+        }
+        Self {
+            materials: app.materials,
+            textures: app.textures,
+            material_by_target,
+            texture_by_ring,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.materials.is_empty() && self.textures.is_empty()
+    }
+
+    /// The model-level materials (borrowed) and textures (scoped to only the
+    /// rings in `ring_ids`, so a texture spanning many buildings never copies
+    /// unrelated UVs into this feature) that target the given id sets.
+    pub fn scoped_for(
+        &self,
+        poly_ids: &std::collections::HashSet<String>,
+        ring_ids: &std::collections::HashSet<String>,
+    ) -> (Vec<&ReadMaterial>, Vec<ReadTexture>) {
+        let mut mat_idx: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for id in poly_ids {
+            if let Some(v) = self.material_by_target.get(id) {
+                mat_idx.extend(v);
+            }
+        }
+        let materials: Vec<&ReadMaterial> = mat_idx.iter().map(|&i| &self.materials[i]).collect();
+
+        let mut tex_idx: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for id in ring_ids {
+            if let Some(v) = self.texture_by_ring.get(id) {
+                tex_idx.extend(v);
+            }
+        }
+        let textures: Vec<ReadTexture> = tex_idx
+            .iter()
+            .map(|&i| {
+                let t = &self.textures[i];
+                ReadTexture {
+                    theme: t.theme.clone(),
+                    texture: t.texture.clone(),
+                    rings: t
+                        .rings
+                        .iter()
+                        .filter(|(rid, _)| ring_ids.contains(rid))
+                        .cloned()
+                        .collect(),
+                }
+            })
+            .collect();
+        (materials, textures)
+    }
+}
+
+/// Read an appearance property (positioned after its `Start`): descend to the
+/// inner `app:Appearance` and parse its surface data. Consumes through the
+/// property's `End` (`end_tag` — `app:appearance` for a feature-level property,
+/// `app:appearanceMember` for the CityModel-level one). A property with no
+/// `app:Appearance` child (empty or `xlink`-only) yields nothing.
 pub fn read_appearance<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
+    end_tag: &[u8],
 ) -> Result<ReadAppearance> {
     let mut out = ReadAppearance::default();
     loop {
@@ -70,7 +157,7 @@ pub fn read_appearance<R: BufRead>(
                     skip_element(reader, buf)?;
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == b"appearance" => break,
+            Event::End(e) if e.local_name().as_ref() == end_tag => break,
             Event::Eof => return Err(eof("appearance")),
             _ => {}
         }
