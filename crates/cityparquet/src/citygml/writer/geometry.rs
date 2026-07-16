@@ -39,14 +39,20 @@ pub fn pos_list(coords: &[[f64; 3]], ring: &[usize]) -> String {
     out
 }
 
-/// Write a `gml:LinearRing` wrapping this ring's (re-closed) `posList`.
+/// Write a `gml:LinearRing` wrapping this ring's (re-closed) `posList`, stamping a
+/// `gml:id` when `ring_id` is `Some` (so an `app:textureCoordinates ring` can
+/// reference it).
 fn write_linear_ring<W: Write>(
     w: &mut Writer<W>,
     coords: &[[f64; 3]],
     ring: &[usize],
+    ring_id: Option<&str>,
 ) -> Result<()> {
-    w.write_event(Event::Start(BytesStart::new("gml:LinearRing")))
-        .map_err(io_err)?;
+    let mut lr = BytesStart::new("gml:LinearRing");
+    if let Some(id) = ring_id {
+        lr.push_attribute(("gml:id", id));
+    }
+    w.write_event(Event::Start(lr)).map_err(io_err)?;
 
     let mut pos_list_start = BytesStart::new("gml:posList");
     pos_list_start.push_attribute(("srsDimension", "3"));
@@ -70,7 +76,7 @@ pub fn write_polygon<W: Write>(
     coords: &[[f64; 3]],
     face: &[Vec<usize>],
 ) -> Result<()> {
-    write_polygon_with_id(w, coords, face, None)
+    write_polygon_ids(w, coords, face, None, None)
 }
 
 /// Like [`write_polygon`] but stamps a `gml:id` on the `gml:Polygon` when
@@ -82,6 +88,19 @@ pub fn write_polygon_with_id<W: Write>(
     face: &[Vec<usize>],
     id: Option<&str>,
 ) -> Result<()> {
+    write_polygon_ids(w, coords, face, id, None)
+}
+
+/// Emit a `<gml:Polygon>` optionally stamping the polygon `gml:id` (`id`) and
+/// per-ring `gml:id`s (`ring_ids`, in exterior-then-hole order) — the addresses
+/// an `app:target` / `app:textureCoordinates ring` resolves against.
+pub fn write_polygon_ids<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    face: &[Vec<usize>],
+    id: Option<&str>,
+    ring_ids: Option<&[Option<String>]>,
+) -> Result<()> {
     let mut poly = BytesStart::new("gml:Polygon");
     if let Some(id) = id {
         poly.push_attribute(("gml:id", id));
@@ -91,17 +110,18 @@ pub fn write_polygon_with_id<W: Write>(
     let (exterior, interiors) = face
         .split_first()
         .ok_or_else(|| CityParquetError::Geometry("face has no rings to write".to_string()))?;
+    let ring_id = |k: usize| ring_ids.and_then(|r| r.get(k)).and_then(|o| o.as_deref());
 
     w.write_event(Event::Start(BytesStart::new("gml:exterior")))
         .map_err(io_err)?;
-    write_linear_ring(w, coords, exterior)?;
+    write_linear_ring(w, coords, exterior, ring_id(0))?;
     w.write_event(Event::End(BytesEnd::new("gml:exterior")))
         .map_err(io_err)?;
 
-    for hole in interiors {
+    for (k, hole) in interiors.iter().enumerate() {
         w.write_event(Event::Start(BytesStart::new("gml:interior")))
             .map_err(io_err)?;
-        write_linear_ring(w, coords, hole)?;
+        write_linear_ring(w, coords, hole, ring_id(k + 1))?;
         w.write_event(Event::End(BytesEnd::new("gml:interior")))
             .map_err(io_err)?;
     }
@@ -120,6 +140,21 @@ pub fn write_xlink_member<W: Write>(w: &mut Writer<W>, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// A face's assigned `gml:id`s for appearance targeting: the polygon id (for
+/// `app:target` — materials/semantics) and per-ring ids (for
+/// `app:textureCoordinates ring` — textures), rings in exterior-then-hole order.
+#[derive(Default, Clone)]
+pub struct FaceIds {
+    pub poly: Option<String>,
+    pub rings: Vec<Option<String>>,
+}
+
+impl FaceIds {
+    pub(crate) fn ring_slice(&self) -> Option<&[Option<String>]> {
+        (!self.rings.is_empty()).then_some(self.rings.as_slice())
+    }
+}
+
 /// `<gml:surfaceMember><gml:Polygon>…</gml:surfaceMember>` — an inline face,
 /// with an optional `gml:id` (used when the same polygon is xlinked elsewhere).
 pub fn write_inline_member<W: Write>(
@@ -128,9 +163,21 @@ pub fn write_inline_member<W: Write>(
     face: &[Vec<usize>],
     id: Option<&str>,
 ) -> Result<()> {
+    write_inline_member_ids(w, coords, face, id, None)
+}
+
+/// Like [`write_inline_member`] but also stamps per-ring `gml:id`s (for texture
+/// coordinate targeting).
+pub fn write_inline_member_ids<W: Write>(
+    w: &mut Writer<W>,
+    coords: &[[f64; 3]],
+    face: &[Vec<usize>],
+    id: Option<&str>,
+    ring_ids: Option<&[Option<String>]>,
+) -> Result<()> {
     w.write_event(Event::Start(BytesStart::new("gml:surfaceMember")))
         .map_err(io_err)?;
-    write_polygon_with_id(w, coords, face, id)?;
+    write_polygon_ids(w, coords, face, id, ring_ids)?;
     w.write_event(Event::End(BytesEnd::new("gml:surfaceMember")))
         .map_err(io_err)?;
     Ok(())
@@ -151,16 +198,17 @@ pub fn write_solid<W: Write>(
     write_solid_with_ids(w, coords, faces, props, None)
 }
 
-/// Like [`write_solid`] but stamps a `gml:id` on each face's inline `gml:Polygon`
-/// from `face_ids` (flat, in shell-concatenation walk order) — used so an
-/// appearance `app:target` can reference a material-bearing face. `None` (or a
-/// `None` entry) leaves that polygon id-less, byte-identical to [`write_solid`].
+/// Like [`write_solid`] but stamps polygon + ring `gml:id`s on each face's inline
+/// `gml:Polygon` from `face_ids` (flat, in shell-concatenation walk order) — so an
+/// appearance `app:target`/`app:textureCoordinates ring` can reference a
+/// material/texture-bearing face. `None` leaves polygons id-less, byte-identical
+/// to [`write_solid`].
 pub fn write_solid_with_ids<W: Write>(
     w: &mut Writer<W>,
     coords: &[[f64; 3]],
     faces: &[Vec<Vec<usize>>],
     props: Option<&serde_json::Value>,
-    face_ids: Option<&[Option<String>]>,
+    face_ids: Option<&[FaceIds]>,
 ) -> Result<()> {
     // A PolyhedralSurface WKB is emitted as a gml:Solid only when its paired
     // geometry_properties actually says `type: "Solid"`. Missing or mismatched
@@ -187,7 +235,7 @@ fn write_gml_solid<W: Write>(
     coords: &[[f64; 3]],
     faces: &[Vec<Vec<usize>>],
     counts: Option<&[usize]>,
-    face_ids: Option<&[Option<String>]>,
+    face_ids: Option<&[FaceIds]>,
     cursor: &mut usize,
 ) -> Result<()> {
     let shells = crate::export::partition_shells(faces.to_vec(), counts)?;
@@ -239,7 +287,7 @@ pub fn write_composite_solid_with_ids<W: Write>(
     coords: &[[f64; 3]],
     members: &[crate::wkb_read::DecodedKind],
     props: Option<&serde_json::Value>,
-    face_ids: Option<&[Option<String>]>,
+    face_ids: Option<&[FaceIds]>,
 ) -> Result<()> {
     let is_composite =
         props.and_then(|p| p.get("type")).and_then(|t| t.as_str()) == Some("CompositeSolid");
@@ -295,18 +343,18 @@ fn write_composite_surface<W: Write>(
     w: &mut Writer<W>,
     coords: &[[f64; 3]],
     shell: &[Vec<Vec<usize>>],
-    face_ids: Option<&[Option<String>]>,
+    face_ids: Option<&[FaceIds]>,
     cursor: &mut usize,
 ) -> Result<()> {
     w.write_event(Event::Start(BytesStart::new("gml:CompositeSurface")))
         .map_err(io_err)?;
     for face in shell {
-        let id = face_ids
-            .and_then(|a| a.get(*cursor))
-            .and_then(|o| o.as_deref());
+        let ids = face_ids.and_then(|a| a.get(*cursor));
+        let poly_id = ids.and_then(|f| f.poly.as_deref());
+        let ring_ids = ids.and_then(FaceIds::ring_slice);
         w.write_event(Event::Start(BytesStart::new("gml:surfaceMember")))
             .map_err(io_err)?;
-        write_polygon_with_id(w, coords, face, id)?;
+        write_polygon_ids(w, coords, face, poly_id, ring_ids)?;
         w.write_event(Event::End(BytesEnd::new("gml:surfaceMember")))
             .map_err(io_err)?;
         *cursor += 1;

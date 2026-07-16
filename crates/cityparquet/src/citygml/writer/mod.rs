@@ -28,7 +28,7 @@ use crate::citygml::crs::srs_name_for;
 use crate::decode::decode_batch;
 use crate::export::{first_schema_mismatch, row_json_object};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
-use crate::sidecar::read_materials;
+use crate::sidecar::{read_materials, read_textures};
 use crate::wkb_read::{DecodedGeometry, DecodedKind};
 
 /// Options for one CityParquet package -> CityGML 2.0 `.gml` conversion.
@@ -93,6 +93,12 @@ pub struct WriteReport {
     /// `materials.parquet`): the definitions are unavailable, so appearance is
     /// skipped.
     pub appearance_skipped_core_profile: usize,
+    /// `app:ParameterizedTexture` elements emitted (one per used texture def per
+    /// theme).
+    pub textures_written: usize,
+    /// Geometries whose `texture` map could not be resolved (dangling id, shape
+    /// mismatch) — texture appearance dropped for that geometry.
+    pub texture_geometries_dropped: usize,
 }
 
 fn io_err(e: std::io::Error) -> CityParquetError {
@@ -188,6 +194,12 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
         .any(|f| f == "materials.parquet")
         .then(|| read_materials(&opts.package_dir.join("materials.parquet")))
         .transpose()?;
+    let global_textures: Option<Vec<serde_json::Value>> = manifest
+        .sidecar_files
+        .iter()
+        .any(|f| f == "textures.parquet")
+        .then(|| read_textures(&opts.package_dir.join("textures.parquet")))
+        .transpose()?;
 
     let mut report = WriteReport::default();
     let mut bounds = Bounds::new();
@@ -247,9 +259,10 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     report.non_building_skipped += 1;
                     continue;
                 }
-                // This row's per-LoD material map (`{"<lod>": {theme: {...}}}`),
-                // keyed out per geometry below. `decode_batch` excludes it.
+                // This row's per-LoD material/texture maps (`{"<lod>": {...}}`),
+                // keyed out per geometry below. `decode_batch` excludes them.
                 let material_col = row_json_object(&batch, "material", row)?;
+                let texture_col = row_json_object(&batch, "texture", row)?;
                 let mut solids = Vec::new();
                 for (lod, decoded, props) in obj.geometries {
                     // Real semantics on a geometry we are about to skip are
@@ -257,9 +270,10 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     let sem_count = semantics::droppable_surface_count(props.as_ref());
                     let lod_key = lod.map(|l| l.to_string()).unwrap_or_default();
                     let material = material_col.as_ref().and_then(|m| m.get(&lod_key)).cloned();
+                    let texture = texture_col.as_ref().and_then(|t| t.get(&lod_key)).cloned();
                     match route_geometry(lod, decoded, props) {
                         GeomRoute::Emit(lod, decoded, props) => {
-                            solids.push((lod, decoded, props, material))
+                            solids.push((lod, decoded, props, material, texture))
                         }
                         // No CityGML 2.0 Building slot for a MultiSolid.
                         GeomRoute::MultiSolid => {
@@ -315,6 +329,7 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
         type_by_id: &type_by_id,
         types: &attr_types,
         materials: global_materials.as_deref(),
+        textures: global_textures.as_deref(),
     };
     let mut next_feature_index = 0usize;
     let mut reached_parts: HashSet<String> = HashSet::new();

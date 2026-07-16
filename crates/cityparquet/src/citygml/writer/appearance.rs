@@ -9,7 +9,7 @@
 //! a full literal `app:X3DMaterial` (CityGML has no shared material library) with
 //! its `app:target` face references.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use cityparquet_schema::CityParquetError;
@@ -18,8 +18,20 @@ use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use serde_json::Value;
 
 use super::WriteReport;
+use super::geometry::FaceIds;
 use crate::Result;
 use crate::wkb_read::DecodedKind;
+
+/// One geometry's faces, each a `Vec` of its rings' `(global texture id, UVs)`
+/// (`None` = untextured ring), in face-walk order.
+pub type FaceRingTextures = Vec<Vec<Option<(usize, Vec<[f64; 2]>)>>>;
+
+/// One geometry's per-theme flat texture maps. See [`texture_face_maps`].
+pub type TextureFaceMaps = BTreeMap<String, FaceRingTextures>;
+
+/// The textured polygons of one texture def: polygon `gml:id` -> its rings'
+/// `(ring gml:id, UVs)`.
+type TexPolys = BTreeMap<String, Vec<(String, Vec<[f64; 2]>)>>;
 
 fn io_err(e: std::io::Error) -> CityParquetError {
     CityParquetError::Io(e.to_string())
@@ -171,39 +183,203 @@ impl AppearanceAcc {
     }
 }
 
-/// Emit one `app:appearance/app:Appearance` per theme (each with its used
-/// `app:X3DMaterial`s and their `app:target`s), from the accumulated targets and
-/// the global materials table. `report.materials_written` counts each emitted
-/// `app:X3DMaterial`.
+/// Flatten one geometry's `texture` map to per-theme `[face][ring]` textures
+/// (global id + UVs, `None` = untextured ring). The stored texture tree mirrors
+/// `boundaries` with each ring's `[t, [u,v]…]` (or `[null]`) leaf; the walk over
+/// FACES (in walk order) collapses the shell/solid nesting.
+pub fn texture_face_maps(texture_map: &Value, n_textures: usize) -> Result<TextureFaceMaps> {
+    let obj = texture_map
+        .as_object()
+        .ok_or_else(|| err("texture map must be a JSON object of theme -> {values}"))?;
+    let mut out = BTreeMap::new();
+    for (theme, inner) in obj {
+        let values = inner
+            .as_object()
+            .and_then(|o| o.get("values"))
+            .ok_or_else(|| err(format!("texture theme '{theme}' is missing 'values'")))?;
+        let mut faces = Vec::new();
+        flatten_texture_faces(values, n_textures, &mut faces)?;
+        out.insert(theme.clone(), faces);
+    }
+    Ok(out)
+}
+
+/// The per-face-per-ring union across themes: `true` where any theme textures
+/// that ring (so the ring needs a `gml:id`). Faces beyond the geometry are
+/// ignored; shorter per-face vecs pad with `false`.
+pub fn texture_ring_needs(maps: &TextureFaceMaps, n_faces: usize) -> Vec<Vec<bool>> {
+    let mut needs: Vec<Vec<bool>> = vec![Vec::new(); n_faces];
+    for faces in maps.values() {
+        for (fi, rings) in faces.iter().enumerate() {
+            if fi >= n_faces {
+                continue;
+            }
+            if needs[fi].len() < rings.len() {
+                needs[fi].resize(rings.len(), false);
+            }
+            for (ri, ring) in rings.iter().enumerate() {
+                if ring.is_some() {
+                    needs[fi][ri] = true;
+                }
+            }
+        }
+    }
+    needs
+}
+
+/// Whether a node is a ring leaf `[t, [u,v]…]` or `[null]` (its first element is
+/// a number or null) — distinguishing a FACE (an array of ring leaves) from a
+/// shell/solid container (an array of faces).
+fn is_ring_leaf(v: &Value) -> bool {
+    matches!(v, Value::Array(a) if matches!(a.first(), Some(Value::Number(_)) | Some(Value::Null) | None))
+}
+
+fn parse_ring_leaf(v: &Value, n_textures: usize) -> Result<Option<(usize, Vec<[f64; 2]>)>> {
+    let a = v
+        .as_array()
+        .ok_or_else(|| err("texture ring leaf must be an array"))?;
+    match a.first() {
+        Some(Value::Number(n)) => {
+            let tex = n
+                .as_u64()
+                .ok_or_else(|| err("texture id is not an integer"))? as usize;
+            if tex >= n_textures {
+                return Err(err(format!(
+                    "texture id {tex} >= textures table length {n_textures}"
+                )));
+            }
+            let uvs = a[1..]
+                .iter()
+                .map(|uv| {
+                    let p = uv
+                        .as_array()
+                        .ok_or_else(|| err("UV must be a [u,v] array"))?;
+                    let u = p.first().and_then(Value::as_f64);
+                    let v = p.get(1).and_then(Value::as_f64);
+                    match (u, v) {
+                        (Some(u), Some(v)) => Ok([u, v]),
+                        _ => Err(err("UV must be two numbers")),
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Some((tex, uvs)))
+        }
+        _ => Ok(None), // [null]
+    }
+}
+
+fn flatten_texture_faces(v: &Value, n_textures: usize, out: &mut FaceRingTextures) -> Result<()> {
+    let Value::Array(items) = v else {
+        return Err(err("texture values must be an array"));
+    };
+    if items.first().is_some_and(is_ring_leaf) {
+        // `v` is a FACE: its children are ring leaves.
+        let rings = items
+            .iter()
+            .map(|r| parse_ring_leaf(r, n_textures))
+            .collect::<Result<Vec<_>>>()?;
+        out.push(rings);
+    } else {
+        for it in items {
+            flatten_texture_faces(it, n_textures, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Accumulates, per theme and global texture id, the textured polygons and their
+/// per-ring UVs. `BTreeMap`s key deterministically.
+#[derive(Default)]
+pub struct TextureAcc {
+    themes: BTreeMap<String, BTreeMap<usize, TexPolys>>,
+}
+
+impl TextureAcc {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.themes.is_empty()
+    }
+
+    /// Record one geometry's textured rings: for each theme, each ring with a
+    /// texture AND an allocated polygon+ring `gml:id`, add `(theme, texture id,
+    /// polygon id, (ring id, UVs))`.
+    pub fn add(&mut self, maps: &TextureFaceMaps, face_ids: &[FaceIds]) {
+        for (theme, faces) in maps {
+            for (fi, rings) in faces.iter().enumerate() {
+                let Some(fids) = face_ids.get(fi) else {
+                    continue;
+                };
+                let Some(poly) = fids.poly.as_ref() else {
+                    continue;
+                };
+                for (ri, ring) in rings.iter().enumerate() {
+                    if let (Some((tex, uvs)), Some(Some(rid))) = (ring, fids.rings.get(ri)) {
+                        self.themes
+                            .entry(theme.clone())
+                            .or_default()
+                            .entry(*tex)
+                            .or_default()
+                            .entry(poly.clone())
+                            .or_default()
+                            .push((rid.clone(), uvs.clone()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Emit one `app:appearance/app:Appearance` per theme (union of the material and
+/// texture themes), each with its used `app:X3DMaterial`s and
+/// `app:ParameterizedTexture`s. `report` counts each emitted element.
 pub fn write_appearance<W: Write>(
     w: &mut Writer<W>,
-    acc: &AppearanceAcc,
-    table: &[Value],
+    materials: &AppearanceAcc,
+    textures: &TextureAcc,
+    material_table: &[Value],
+    texture_table: &[Value],
     report: &mut WriteReport,
 ) -> Result<()> {
-    for (theme, mats) in &acc.themes {
+    let themes: BTreeSet<&String> = materials
+        .themes
+        .keys()
+        .chain(textures.themes.keys())
+        .collect();
+    for theme in themes {
         w.write_event(Event::Start(BytesStart::new("app:appearance")))
             .map_err(io_err)?;
         w.write_event(Event::Start(BytesStart::new("app:Appearance")))
             .map_err(io_err)?;
         // The empty-string theme round-trips to an ABSENT app:theme.
         if !theme.is_empty() {
-            w.write_event(Event::Start(BytesStart::new("app:theme")))
-                .map_err(io_err)?;
-            w.write_event(Event::Text(BytesText::new(theme)))
-                .map_err(io_err)?;
-            w.write_event(Event::End(BytesEnd::new("app:theme")))
-                .map_err(io_err)?;
+            text_elem(w, "app:theme", theme)?;
         }
-        for (gid, targets) in mats {
-            let def = table.get(*gid).ok_or_else(|| {
-                err(format!(
-                    "material global id {gid} out of range (table length {})",
-                    table.len()
-                ))
-            })?;
-            write_x3d_material(w, def, targets)?;
-            report.materials_written += 1;
+        if let Some(mats) = materials.themes.get(theme) {
+            for (gid, targets) in mats {
+                let def = material_table.get(*gid).ok_or_else(|| {
+                    err(format!(
+                        "material global id {gid} out of range (table length {})",
+                        material_table.len()
+                    ))
+                })?;
+                write_x3d_material(w, def, targets)?;
+                report.materials_written += 1;
+            }
+        }
+        if let Some(texs) = textures.themes.get(theme) {
+            for (tid, polys) in texs {
+                let def = texture_table.get(*tid).ok_or_else(|| {
+                    err(format!(
+                        "texture global id {tid} out of range (table length {})",
+                        texture_table.len()
+                    ))
+                })?;
+                write_parameterized_texture(w, def, polys)?;
+                report.textures_written += 1;
+            }
         }
         w.write_event(Event::End(BytesEnd::new("app:Appearance")))
             .map_err(io_err)?;
@@ -211,6 +387,101 @@ pub fn write_appearance<W: Write>(
             .map_err(io_err)?;
     }
     Ok(())
+}
+
+/// CityJSON texture `type` -> CityGML `app:mimeType`.
+fn type_to_mime(ty: &str) -> Option<&'static str> {
+    match ty {
+        "PNG" => Some("image/png"),
+        "JPG" => Some("image/jpeg"),
+        _ => None,
+    }
+}
+
+/// Emit one `<app:surfaceDataMember><app:ParameterizedTexture>` from a CityJSON
+/// texture definition and its textured polygons' per-ring UVs (re-closed:
+/// the closing pair the reader dropped is re-appended).
+fn write_parameterized_texture<W: Write>(
+    w: &mut Writer<W>,
+    def: &Value,
+    polys: &TexPolys,
+) -> Result<()> {
+    w.write_event(Event::Start(BytesStart::new("app:surfaceDataMember")))
+        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("app:ParameterizedTexture")))
+        .map_err(io_err)?;
+
+    if let Some(image) = def.get("image").and_then(Value::as_str) {
+        text_elem(w, "app:imageURI", image)?;
+    }
+    if let Some(mime) = def
+        .get("type")
+        .and_then(Value::as_str)
+        .and_then(type_to_mime)
+    {
+        text_elem(w, "app:mimeType", mime)?;
+    }
+    if let Some(tt) = def.get("textureType").and_then(Value::as_str) {
+        text_elem(w, "app:textureType", tt)?;
+    }
+    if let Some(wm) = def.get("wrapMode").and_then(Value::as_str) {
+        text_elem(w, "app:wrapMode", wm)?;
+    }
+    if let Some(bc) = def.get("borderColor").and_then(Value::as_array) {
+        let s = bc
+            .iter()
+            .filter_map(Value::as_f64)
+            .map(|x| format!("{x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        text_elem(w, "app:borderColor", &s)?;
+    }
+
+    for (polyid, rings) in polys {
+        let mut target = BytesStart::new("app:target");
+        target.push_attribute(("uri", format!("#{polyid}").as_str()));
+        w.write_event(Event::Start(target)).map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new("app:TexCoordList")))
+            .map_err(io_err)?;
+        for (ringid, uvs) in rings {
+            let mut tc = BytesStart::new("app:textureCoordinates");
+            tc.push_attribute(("ring", format!("#{ringid}").as_str()));
+            w.write_event(Event::Start(tc)).map_err(io_err)?;
+            w.write_event(Event::Text(BytesText::new(&closed_uvs(uvs))))
+                .map_err(io_err)?;
+            w.write_event(Event::End(BytesEnd::new("app:textureCoordinates")))
+                .map_err(io_err)?;
+        }
+        w.write_event(Event::End(BytesEnd::new("app:TexCoordList")))
+            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new("app:target")))
+            .map_err(io_err)?;
+    }
+
+    w.write_event(Event::End(BytesEnd::new("app:ParameterizedTexture")))
+        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("app:surfaceDataMember")))
+        .map_err(io_err)?;
+    Ok(())
+}
+
+/// UV pairs as `u v` text, RE-CLOSED (the first pair re-appended) — GML texture
+/// rings are closed. Numbers use the shortest round-tripping `f64` `Display`.
+fn closed_uvs(uvs: &[[f64; 2]]) -> String {
+    let mut out = String::new();
+    let mut push = |uv: [f64; 2]| {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("{} {}", uv[0], uv[1]));
+    };
+    for &uv in uvs {
+        push(uv);
+    }
+    if let Some(&first) = uvs.first() {
+        push(first);
+    }
+    out
 }
 
 /// Emit one `<app:surfaceDataMember><app:X3DMaterial>` from a CityJSON material

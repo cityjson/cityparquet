@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use super::WriteReport;
 use super::building::is_ncname;
-use super::geometry::{write_inline_member, write_xlink_member};
+use super::geometry::{FaceIds, write_inline_member, write_inline_member_ids, write_xlink_member};
 use crate::Result;
 use crate::wkb_read::DecodedKind;
 
@@ -56,6 +56,25 @@ impl IdAlloc {
         self.next += 1;
         id
     }
+}
+
+/// Allocate a face's ids: a polygon id when it needs one (semantic OR material OR
+/// any textured ring), and a `<polyid>_r<K>` id per textured ring (in
+/// exterior-then-hole order).
+fn plan_face_ids(
+    semantic: bool,
+    material: bool,
+    ring_needs: &[bool],
+    ids: &mut IdAlloc,
+) -> FaceIds {
+    let needs_face = semantic || material || ring_needs.iter().any(|&b| b);
+    let poly = needs_face.then(|| ids.alloc());
+    let rings = ring_needs
+        .iter()
+        .enumerate()
+        .map(|(r, &need)| need.then(|| format!("{}_r{r}", poly.as_deref().unwrap())))
+        .collect();
+    FaceIds { poly, rings }
 }
 
 /// Whether a (possibly nested) `values` array contains at least one non-null
@@ -219,26 +238,15 @@ pub fn multisurface_face_surfaces(
 
 /// How one face of a semantic solid is emitted inside the `gml:Solid`:
 /// - `Xlink` — a semantic face; the solid emits `<gml:surfaceMember
-///   xlink:href="#id">` and the polygon (with `gml:id="id"`) lives in
+///   xlink:href="#polyid">` and the polygon (with its `gml:id`s) lives in
 ///   `bldg:boundedBy`.
-/// - `InlineId` — a material-only face (no semantics but appearance targets it);
-///   the solid emits the polygon inline WITH `gml:id="id"` so `app:target` can
-///   reference it.
-/// - `Plain` — neither; the polygon is emitted inline with no id.
+/// - `InlineId` — a material/texture-only face (no semantics but appearance
+///   targets it); the solid emits the polygon inline WITH its `gml:id`s.
+/// - `Plain` — neither; the polygon is emitted inline with no ids.
 pub enum FaceEmit {
-    Xlink(String),
-    InlineId(String),
+    Xlink(FaceIds),
+    InlineId(FaceIds),
     Plain,
-}
-
-impl FaceEmit {
-    /// The `gml:id` stamped on this face (for appearance targeting), if any.
-    fn id(&self) -> Option<&str> {
-        match self {
-            FaceEmit::Xlink(id) | FaceEmit::InlineId(id) => Some(id),
-            FaceEmit::Plain => None,
-        }
-    }
 }
 
 /// Emit one `<gml:Solid>` whose shells are `gml:CompositeSurface`s of
@@ -265,8 +273,14 @@ fn write_one_solid<W: Write>(
             .map_err(io_err)?;
         for face in shell {
             match &plan[fi] {
-                FaceEmit::Xlink(id) => write_xlink_member(w, id)?,
-                FaceEmit::InlineId(id) => write_inline_member(w, coords, face, Some(id))?,
+                // The polygon (with its ring ids) lives in boundedBy; the solid
+                // only references it. Texture coords target the boundedBy rings.
+                FaceEmit::Xlink(ids) => {
+                    write_xlink_member(w, ids.poly.as_deref().expect("xlink face has an id"))?
+                }
+                FaceEmit::InlineId(ids) => {
+                    write_inline_member_ids(w, coords, face, ids.poly.as_deref(), ids.ring_slice())?
+                }
                 FaceEmit::Plain => write_inline_member(w, coords, face, None)?,
             }
             fi += 1;
@@ -282,15 +296,15 @@ fn write_one_solid<W: Write>(
 }
 
 /// Emit one `<bldg:boundedBy><bldg:{ty}>…` surface holding `polys` as inline
-/// `gml:Polygon`s (each with its optional `gml:id`); a zero-face surface is an
-/// empty `<bldg:{ty}/>`. Shared by the solid (xlinked ids) and MultiSurface
-/// (no ids) paths.
+/// `gml:Polygon`s (each with its optional polygon + ring `gml:id`s); a zero-face
+/// surface is an empty `<bldg:{ty}/>`. Shared by the solid (xlinked ids) and
+/// MultiSurface paths.
 fn write_boundedby_surface<W: Write>(
     w: &mut Writer<W>,
     coords: &[[f64; 3]],
     ty: &str,
     major: u8,
-    polys: &[(&Face, Option<&str>)],
+    polys: &[(&Face, Option<&FaceIds>)],
 ) -> Result<()> {
     w.write_event(Event::Start(BytesStart::new("bldg:boundedBy")))
         .map_err(io_err)?;
@@ -304,8 +318,10 @@ fn write_boundedby_surface<W: Write>(
         let ms = format!("bldg:lod{major}MultiSurface");
         w.write_event(Event::Start(BytesStart::new(ms.as_str())))
             .map_err(io_err)?;
-        for (face, id) in polys {
-            write_inline_member(w, coords, face, *id)?;
+        for (face, ids) in polys {
+            let poly_id = ids.and_then(|f| f.poly.as_deref());
+            let ring_ids = ids.and_then(FaceIds::ring_slice);
+            write_inline_member_ids(w, coords, face, poly_id, ring_ids)?;
         }
         w.write_event(Event::End(BytesEnd::new(ms.as_str())))
             .map_err(io_err)?;
@@ -330,14 +346,17 @@ fn write_boundedby<W: Write>(
     major: u8,
 ) -> Result<()> {
     for (i, ty) in surface_types.iter().enumerate() {
-        let mut polys: Vec<(&Face, Option<&str>)> = Vec::new();
+        let mut polys: Vec<(&Face, Option<&FaceIds>)> = Vec::new();
         for (m, shells) in members.iter().enumerate() {
             let mut fi = 0usize;
             for shell in shells {
                 for face in shell {
                     if surfaces[m][fi] == Some(i) {
-                        let id = plans[m][fi].id().expect("semantic face has an id");
-                        polys.push((face, Some(id)));
+                        let ids = match &plans[m][fi] {
+                            FaceEmit::Xlink(ids) => ids,
+                            _ => panic!("semantic face must be an Xlink FaceEmit"),
+                        };
+                        polys.push((face, Some(ids)));
                     }
                     fi += 1;
                 }
@@ -362,7 +381,8 @@ pub fn write_solid_with_semantics<W: Write>(
     ids: &mut IdAlloc,
     major: u8,
     mat_union: &[bool],
-) -> Result<Vec<Option<String>>> {
+    ring_needs: &[Vec<bool>],
+) -> Result<Vec<FaceIds>> {
     let nsurf = sem.surfaces.len();
 
     // 1. Partition into members -> shells -> faces + per-face surface index.
@@ -402,24 +422,30 @@ pub fn write_solid_with_semantics<W: Write>(
         }
     };
 
-    // 2. Plan each face's emission, allocating a gml:id for every SEMANTIC face
-    // (Xlink) and every material-only face (InlineId), in the global face-walk
-    // order `mat_union` uses. `flat_ids` mirrors that order for the appearance
-    // accumulator.
+    // 2. Plan each face's emission, allocating a polygon gml:id for every SEMANTIC
+    // face (Xlink), material-only face, or textured face (InlineId), plus a ring
+    // gml:id per textured ring, in the global face-walk order the appearance
+    // inputs use. `flat_ids` mirrors that order for the appearance accumulator.
     let mut plans: Vec<Vec<FaceEmit>> = Vec::with_capacity(members.len());
-    let mut flat_ids: Vec<Option<String>> = Vec::new();
+    let mut flat_ids: Vec<FaceIds> = Vec::new();
     let mut flat = 0usize;
     for msurf in &surfaces {
         let mut mp = Vec::with_capacity(msurf.len());
         for s in msurf {
+            let fids = plan_face_ids(
+                s.is_some(),
+                mat_union.get(flat).copied().unwrap_or(false),
+                ring_needs.get(flat).map(Vec::as_slice).unwrap_or(&[]),
+                ids,
+            );
             let entry = if s.is_some() {
-                FaceEmit::Xlink(ids.alloc())
-            } else if mat_union.get(flat).copied().unwrap_or(false) {
-                FaceEmit::InlineId(ids.alloc())
+                FaceEmit::Xlink(fids.clone())
+            } else if fids.poly.is_some() {
+                FaceEmit::InlineId(fids.clone())
             } else {
                 FaceEmit::Plain
             };
-            flat_ids.push(entry.id().map(str::to_string));
+            flat_ids.push(fids);
             mp.push(entry);
             flat += 1;
         }
@@ -467,26 +493,36 @@ pub fn write_multisurface_with_semantics<W: Write>(
     report: &mut WriteReport,
     ids: &mut IdAlloc,
     mat_union: &[bool],
-) -> Result<Vec<Option<String>>> {
+    ring_needs: &[Vec<bool>],
+) -> Result<Vec<FaceIds>> {
     let nsurf = sem.surfaces.len();
     let surfaces = multisurface_face_surfaces(&sem.values, faces.len(), nsurf)?;
     report.multisurface_null_faces_dropped += surfaces.iter().filter(|s| s.is_none()).count();
-    // A face's boundedBy polygon gets a gml:id iff it is emitted (has a semantic
-    // surface) AND appearance targets it. Allocate in face order so `flat_ids`
-    // aligns with the material `values` leaf order.
-    let flat_ids: Vec<Option<String>> = (0..faces.len())
+    // A face's boundedBy polygon gets a polygon gml:id iff it is emitted (has a
+    // semantic surface) AND appearance (material/texture) targets it; textured
+    // rings get ring ids. Allocate in face order so `flat_ids` aligns with the
+    // appearance `values` leaf order.
+    let flat_ids: Vec<FaceIds> = (0..faces.len())
         .map(|k| {
-            (surfaces[k].is_some() && mat_union.get(k).copied().unwrap_or(false))
-                .then(|| ids.alloc())
+            if surfaces[k].is_none() {
+                // A dropped (null-value) face: no home, no ids.
+                return FaceIds::default();
+            }
+            plan_face_ids(
+                false,
+                mat_union.get(k).copied().unwrap_or(false),
+                ring_needs.get(k).map(Vec::as_slice).unwrap_or(&[]),
+                ids,
+            )
         })
         .collect();
     for (i, ty) in sem.surfaces.iter().enumerate() {
-        let polys: Vec<(&Face, Option<&str>)> = faces
+        let polys: Vec<(&Face, Option<&FaceIds>)> = faces
             .iter()
             .zip(&surfaces)
             .enumerate()
             .filter(|(_, (_, s))| **s == Some(i))
-            .map(|(k, (f, _))| (f, flat_ids[k].as_deref()))
+            .map(|(k, (f, _))| (f, Some(&flat_ids[k])))
             .collect();
         write_boundedby_surface(w, coords, ty, major, &polys)?;
     }
@@ -594,8 +630,18 @@ mod tests {
     ) -> String {
         let mut ids = IdAlloc::new(0, 2);
         let mut w = Writer::new(Vec::new());
-        write_solid_with_semantics(&mut w, coords, kind, Some(props), sem, &mut ids, 2, &[])
-            .unwrap();
+        write_solid_with_semantics(
+            &mut w,
+            coords,
+            kind,
+            Some(props),
+            sem,
+            &mut ids,
+            2,
+            &[],
+            &[],
+        )
+        .unwrap();
         String::from_utf8(w.into_inner()).unwrap()
     }
 
@@ -673,6 +719,7 @@ mod tests {
             3,
             &mut report,
             &mut ids,
+            &[],
             &[],
         )
         .unwrap();
