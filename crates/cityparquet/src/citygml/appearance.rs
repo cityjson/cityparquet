@@ -182,8 +182,10 @@ fn read_x3d_material<R: BufRead>(
                             m.insert(key, json!(parse_scalar(&read_text(reader, buf)?)?));
                         }
                         b"isSmooth" => {
+                            // XML Schema boolean: "true"/"1" are both true.
                             let v = read_text(reader, buf)?;
-                            m.insert("isSmooth".to_string(), json!(v.trim() == "true"));
+                            let b = matches!(v.trim(), "true" | "1");
+                            m.insert("isSmooth".to_string(), json!(b));
                         }
                         b"target" => {
                             let t = read_text(reader, buf)?;

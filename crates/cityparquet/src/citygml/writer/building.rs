@@ -18,8 +18,8 @@ use serde_json::Value;
 
 use super::WriteReport;
 use super::appearance::{
-    AppearanceAcc, TextureAcc, TextureFaceMaps, count_faces, material_face_maps, material_union,
-    texture_face_maps, texture_ring_needs, write_appearance,
+    AppearanceAcc, TextureAcc, TextureFaceMaps, count_faces, face_ring_counts, material_face_maps,
+    material_union, texture_face_maps, texture_ring_needs, write_appearance,
 };
 use super::attributes::write_attributes;
 use super::document::Bounds;
@@ -311,7 +311,7 @@ pub fn write_object_content<W: Write>(
         // table) drops that appearance for this geometry but keeps the geometry.
         let n_faces = count_faces(&geom.kind);
         let (maps, mat_union) = resolve_materials(*material, materials, &geom.kind, report);
-        let tex_maps = resolve_textures(*texture, textures, report);
+        let tex_maps = resolve_textures(*texture, textures, &geom.kind, report);
         let ring_needs = texture_ring_needs(&tex_maps, n_faces);
         let mut ids = IdAlloc::new(feature_index, major);
         let mut emitted_geometry = true;
@@ -465,6 +465,7 @@ fn resolve_materials(
 fn resolve_textures(
     texture: Option<&Value>,
     textures: Option<&[Value]>,
+    kind: &DecodedKind,
     report: &mut WriteReport,
 ) -> TextureFaceMaps {
     let Some(texture) = texture else {
@@ -475,12 +476,24 @@ fn resolve_textures(
         return TextureFaceMaps::new();
     };
     match texture_face_maps(texture, table.len()) {
-        Ok(maps) => maps,
-        Err(_) => {
+        // The `[face][ring]` tree must match the geometry's shape exactly — else
+        // ring ids would be allocated for phantom rings and `app:target`s would
+        // dangle. A mismatch drops this geometry's textures with a counter.
+        Ok(maps) if texture_shape_matches(&maps, kind) => maps,
+        Ok(_) | Err(_) => {
             report.texture_geometries_dropped += 1;
             TextureFaceMaps::new()
         }
     }
+}
+
+/// Whether every theme's flattened `[face][ring]` texture shape matches the
+/// geometry's face count and per-face ring counts.
+fn texture_shape_matches(maps: &TextureFaceMaps, kind: &DecodedKind) -> bool {
+    let want = face_ring_counts(kind);
+    maps.values().all(|faces| {
+        faces.len() == want.len() && faces.iter().zip(&want).all(|(rings, &n)| rings.len() == n)
+    })
 }
 
 /// Maximum `consistsOfBuildingPart` nesting the writer emits — symmetric with the
@@ -1408,5 +1421,52 @@ mod tests {
             xml.find("<bldg:lod2Solid>").unwrap() < xml.find("<app:appearance>").unwrap(),
             "{xml}"
         );
+    }
+
+    #[test]
+    fn texture_shape_mismatch_is_dropped_and_counted() {
+        // A 1-ring face whose texture values carry TWO ring leaves: the shape does
+        // not match the geometry, so the texture is dropped (no dangling ring
+        // ids/targets) and counted — not silently emitted.
+        let coords: Vec<[f64; 3]> = (0..3).map(|i| [i as f64, 0.0, 0.0]).collect();
+        let geom = DecodedGeometry {
+            coords,
+            kind: DecodedKind::PolyhedralSurface(vec![vec![vec![0, 1, 2]]]),
+        };
+        let props = serde_json::json!({ "type": "Solid", "solid_shell_faces": [1] });
+        // Face 0 has 1 ring, but the texture gives it 2 ring leaves.
+        let texture = serde_json::json!({
+            "visual": { "values": [[[0, [0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], [null]]] }
+        });
+        let tex_table = vec![serde_json::json!({ "type": "JPG", "image": "t.jpg" })];
+        let b = BuildingSolids {
+            id: "TM".into(),
+            attributes: serde_json::Map::new(),
+            solids: vec![(
+                Lod::parse("2").unwrap(),
+                geom,
+                Some(props),
+                None,
+                Some(texture),
+            )],
+        };
+        let mut report = WriteReport::default();
+        let mut w = Writer::new(Vec::new());
+        write_building(
+            &mut w,
+            &b,
+            &types(),
+            0,
+            &mut Bounds::new(),
+            &mut report,
+            None,
+            Some(&tex_table),
+        )
+        .unwrap();
+        let xml = String::from_utf8(w.into_inner()).unwrap();
+        assert_eq!(report.textures_written, 0, "{xml}");
+        assert_eq!(report.texture_geometries_dropped, 1);
+        assert!(!xml.contains("app:ParameterizedTexture"), "{xml}");
+        assert!(!xml.contains("app:appearance"), "{xml}");
     }
 }

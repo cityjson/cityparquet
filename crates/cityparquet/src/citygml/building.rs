@@ -542,6 +542,13 @@ impl RawBuilding {
     /// each geometry's `texture` map. A ring not textured in a theme is `[null]`;
     /// a theme that textures no ring of a geometry is omitted. Two textures on the
     /// same ring+theme are last-wins (document order).
+    ///
+    /// Known limitation: a face reached through a REVERSED `gml:OrientableSurface`
+    /// has its ring vertices wound backwards ([`surface_rings`] with `reverse`),
+    /// but the ring's UVs are stored in document order — so on such a face UVs
+    /// misalign with the reversed vertices. Our own writer never emits
+    /// `OrientableSurface`, so the paired round-trip is unaffected; this is a
+    /// foreign-file loss (like TexCoordGen / seams).
     fn apply_textures(&self, built: &mut [(Value, Value, Value)], app: &mut AppearanceState) {
         if self.appearance.textures.is_empty() {
             return;

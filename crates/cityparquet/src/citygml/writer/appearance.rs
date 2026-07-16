@@ -52,6 +52,23 @@ pub fn count_faces(kind: &DecodedKind) -> usize {
     }
 }
 
+/// The ring count of each face in face-walk order — the shape a `texture` map's
+/// `[face][ring]` tree must match (a mismatch would leave ring ids dangling).
+pub fn face_ring_counts(kind: &DecodedKind) -> Vec<usize> {
+    fn push(kind: &DecodedKind, out: &mut Vec<usize>) {
+        match kind {
+            DecodedKind::PolyhedralSurface(faces) | DecodedKind::MultiPolygon(faces) => {
+                out.extend(faces.iter().map(Vec::len));
+            }
+            DecodedKind::GeometryCollection(members) => members.iter().for_each(|m| push(m, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    push(kind, &mut out);
+    out
+}
+
 /// Flatten a material `values` tree's leaves (a non-negative integer -> a global
 /// material id, `null` -> no material) in DFS (face-walk) order, range-checked
 /// against the table length.
