@@ -1,8 +1,11 @@
 use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
-use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
+use cityparquet::inputs::resolve_inputs;
+use cityparquet::merge::merge_sources;
+use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert_source};
 use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
+use cityparquet::source::{Source, SourceFormat};
 use cityparquet_cli::bench::{self, BenchOptions};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -17,14 +20,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Convert CityJSON/CityJSONSeq to CityParquet package
+    /// Convert CityJSON/CityJSONSeq/CityGML to a CityParquet package
     Convert {
-        /// Input CityJSON or CityJSONSeq file
-        #[arg(value_name = "INPUT")]
-        input: PathBuf,
+        /// Input files, directories, or glob patterns (CityJSON, CityJSONSeq,
+        /// CityGML). Multiple inputs are merged into one dataset; directories
+        /// contribute their immediate .json/.jsonl/.gml children.
+        #[arg(value_name = "INPUTS", required = true, num_args = 1..)]
+        inputs: Vec<PathBuf>,
 
-        /// Output directory for CityParquet package
-        #[arg(value_name = "OUTPUT")]
+        /// Output directory for the CityParquet package
+        #[arg(short = 'o', long = "output", value_name = "OUTPUT")]
         output: PathBuf,
 
         /// Profile: core or compatibility
@@ -152,12 +157,33 @@ enum Commands {
     },
 }
 
+/// Resolve `inputs` (files/dirs/globs), open each source, and return a single
+/// [`Source`]: the lone input directly, or — for several — a merged in-memory
+/// source ([`merge_sources`] enforces a shared CRS and requantises).
+fn open_and_merge(inputs: &[PathBuf]) -> Result<Source, String> {
+    let resolved = resolve_inputs(inputs).map_err(|e| e.to_string())?;
+    let mut sources = Vec::with_capacity(resolved.len());
+    for p in &resolved {
+        sources.push(Source::open(p).map_err(|e| e.to_string())?);
+    }
+    if sources.len() == 1 {
+        return Ok(sources.into_iter().next().expect("one source"));
+    }
+    let merged = merge_sources(&sources).map_err(|e| e.to_string())?;
+    Ok(Source::from_parts(
+        merged.header,
+        merged.features,
+        merged.doc_appearance,
+        SourceFormat::CityJsonSeq,
+    ))
+}
+
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Convert {
-            input,
+            inputs,
             output,
             profile,
             overwrite,
@@ -245,7 +271,7 @@ fn main() -> std::process::ExitCode {
             };
 
             let opts = ConvertOptions {
-                input,
+                input: inputs.first().cloned().unwrap_or_default(),
                 output_dir: output,
                 profile,
                 overwrite,
@@ -256,7 +282,15 @@ fn main() -> std::process::ExitCode {
                 geoarrow,
             };
 
-            match convert(&opts) {
+            let source = match open_and_merge(&inputs) {
+                Ok(source) => source,
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+
+            match convert_source(&source, &opts) {
                 Ok(report) => {
                     println!(
                         "{} {} {} {} {} {} {} {} {}",
