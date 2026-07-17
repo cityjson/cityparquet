@@ -34,7 +34,10 @@ fn citygml_object_type(local: &[u8]) -> Option<&'static str> {
         b"PlantCover" => "PlantCover",
         b"Bridge" => "Bridge",
         b"Tunnel" => "Tunnel",
-        b"ReliefFeature" => "TINRelief",
+        // ReliefFeature is deliberately NOT mapped: a CityGML ReliefFeature may
+        // be raster/breakline/mass-point/TIN, and only a TIN maps cleanly to
+        // CityJSON TINRelief; its `reliefComponent` geometry is nested
+        // differently. Deferred to avoid misclassifying non-TIN reliefs.
         b"GenericCityObject" => "GenericCityObject",
         b"CityObjectGroup" => "CityObjectGroup",
         b"Road" => "Road",

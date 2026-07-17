@@ -865,10 +865,10 @@ fn citygml2_reads_non_building_city_objects() {
         cityparquet::cjseq::GeometryType::Solid
     ));
     assert_eq!(wg.lod.as_deref(), Some("2"));
-    assert_eq!(
-        water.attributes.as_ref().unwrap()["usage"],
-        serde_json::json!("leisure")
-    );
+    let wattrs = water.attributes.as_ref().unwrap();
+    assert_eq!(wattrs["usage"], serde_json::json!("leisure"));
+    // A typed module property (wtr:class) is captured as a string attribute.
+    assert_eq!(wattrs["class"], serde_json::json!("river"));
 
     let land = feats
         .iter()

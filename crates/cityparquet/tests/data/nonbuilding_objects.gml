@@ -14,6 +14,7 @@
 			<gen:stringAttribute name="usage">
 				<gen:value>leisure</gen:value>
 			</gen:stringAttribute>
+			<wtr:class>river</wtr:class>
 			<wtr:lod2Solid>
 				<gml:Solid>
 					<gml:exterior>

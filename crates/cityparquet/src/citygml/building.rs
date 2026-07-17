@@ -173,14 +173,22 @@ pub fn read_generic_object<R: BufRead>(
                     if !b.solids.iter().any(|(l, _)| *l == lod) {
                         b.solids.push((lod, geom));
                     }
-                } else if let Some(lod) =
-                    lod_suffix(&name, b"MultiSurface").or_else(|| lod_suffix(&name, b"Geometry"))
-                {
+                } else if let Some(lod) = lod_suffix(&name, b"MultiSurface") {
+                    // Only `lodNMultiSurface` is unambiguously a surface
+                    // collection. `lodNGeometry` (which may wrap a Solid) is NOT
+                    // flattened here — descending it correctly is deferred.
                     let polys: Vec<Polygon> = geometry::collect_polygons(reader, buf)?
                         .into_iter()
                         .map(|(_, p)| p)
                         .collect();
                     if !polys.is_empty() {
+                        // Register ided polygons so a sibling solid may xlink to
+                        // them, then keep the list as this object's geometry.
+                        for poly in &polys {
+                            if let Some(id) = &poly.id {
+                                b.polygons.insert(id.clone(), poly.clone());
+                            }
+                        }
                         b.plain_surfaces.push((lod, polys));
                     }
                 } else if let (true, Some(ty)) =
@@ -191,6 +199,18 @@ pub fn read_generic_object<R: BufRead>(
                         attributes::read_generic_attribute(reader, buf, attr_name, ty)?
                     {
                         attributes::accumulate(&mut b.attributes, k, v);
+                    }
+                } else if !ns_is(&rr, NS_GML) {
+                    // A typed module property (e.g. wtr:class, luse:function): if
+                    // it is a leaf with text, keep it as a string attribute;
+                    // otherwise (structural, e.g. boundedBy) it is consumed and
+                    // dropped. gml: elements are never attributes.
+                    if let Some(text) = read_leaf_text(reader, buf, &name)? {
+                        attributes::accumulate(
+                            &mut b.attributes,
+                            String::from_utf8_lossy(&name).into_owned(),
+                            Value::String(text),
+                        );
                     }
                 } else {
                     skip_element(reader, buf)?;
@@ -1124,6 +1144,42 @@ fn material_values_from_face_ids(node: &Value, map: &HashMap<String, usize>) -> 
         },
         _ => (Value::Null, false),
     }
+}
+
+/// Read a leaf element's text content (positioned after its `Start`, ending at
+/// `End(end)`): `Some(trimmed text)` for a text-only leaf, `None` if it has any
+/// child element (structural, not a scalar attribute) or is empty. Used to
+/// capture a non-building object's typed module properties generically (CG-7).
+fn read_leaf_text<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    end: &[u8],
+) -> Result<Option<String>> {
+    let mut text = String::new();
+    let mut has_child = false;
+    loop {
+        buf.clear();
+        match reader.read_event_into(buf).map_err(xml_err)? {
+            Event::Text(t) => text.push_str(&t.unescape().map_err(xml_err)?),
+            Event::CData(t) => text.push_str(&String::from_utf8_lossy(&t)),
+            Event::Start(_) => {
+                has_child = true;
+                skip_element(reader, buf)?;
+            }
+            Event::End(e) if e.local_name().as_ref() == end => break,
+            Event::Eof => {
+                return Err(CityParquetError::Schema(
+                    "unexpected end of document inside a typed property".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if has_child {
+        return Ok(None);
+    }
+    let t = text.trim();
+    Ok((!t.is_empty()).then(|| t.to_string()))
 }
 
 /// Build a CityJSON `MultiSurface` geometry (no semantics) for a non-building
