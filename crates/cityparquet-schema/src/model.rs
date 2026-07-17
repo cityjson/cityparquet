@@ -169,7 +169,14 @@ impl CityParquetSchema {
 
         let mut fields: Vec<Field> = vec![
             reserved(Field::new("id", DataType::Utf8, false)),
-            reserved(Field::new("feature_id", DataType::Utf8, true)),
+            // Non-null per spec §5.1: `feature_id` is the key a consumer
+            // groups a feature family by, so a null orphans the row from its
+            // own family. The encoder has always satisfied this (it appends
+            // the source feature's non-optional id for every row); only the
+            // declaration lagged. Readers stay tolerant of nulls — see
+            // `cityparquet::decode` — since a foreign or pre-G4 file may
+            // still carry them.
+            reserved(Field::new("feature_id", DataType::Utf8, false)),
             reserved(Field::new(
                 "object_type",
                 DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
@@ -327,6 +334,22 @@ mod tests {
                 .data_type(),
             &DataType::Binary
         );
+    }
+
+    /// RED (G4): spec §5.1 marks `feature_id` required and non-null on every
+    /// row — it is the key a consumer groups a feature family by (§5.1's
+    /// `feature_id` rule), so a null would silently orphan a row from its own
+    /// family. The encoder already never writes one (it always appends the
+    /// source feature's non-optional id), so only the declaration is wrong.
+    #[test]
+    fn required_columns_are_non_nullable() {
+        let schema = sample().to_arrow_schema().unwrap();
+        for name in ["id", "feature_id", "object_type"] {
+            assert!(
+                !schema.field_with_name(name).unwrap().is_nullable(),
+                "spec §5.1 requires '{name}' to be non-null on every row"
+            );
+        }
     }
 
     #[test]
