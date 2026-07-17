@@ -1089,7 +1089,32 @@ struct ObjectData {
     attributes: Value,
     parents: HashSet<String>,
     children: HashSet<String>,
+    /// `child id -> role`, pairing `children[i]` with `children_roles[i]`
+    /// (§5.1). Keyed by child rather than compared positionally so it is, like
+    /// `children`, independent of the order the round-trip lists children in.
+    children_roles: HashMap<String, String>,
     geometries: HashMap<Option<String>, NormGeometry>,
+}
+
+/// Extract a CityObject's `children_roles` paired with its `children`. cjseq
+/// 0.4.1 has no typed field for `children_roles` (it lives in the struct's
+/// private `#[serde(flatten)]` member), so it is read through a serialize
+/// round-trip — mirroring `crate::encode`.
+fn children_roles_map(co: &cjseq::CityObject) -> HashMap<String, String> {
+    let Some(children) = &co.children else {
+        return HashMap::new();
+    };
+    let Ok(value) = serde_json::to_value(co) else {
+        return HashMap::new();
+    };
+    let Some(Value::Array(roles)) = value.get("children_roles") else {
+        return HashMap::new();
+    };
+    children
+        .iter()
+        .zip(roles)
+        .filter_map(|(child, role)| role.as_str().map(|r| (child.clone(), r.to_string())))
+        .collect()
 }
 
 /// Recursively drops `null`-valued object entries so an explicit-null
@@ -1401,6 +1426,7 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
                     attributes,
                     parents,
                     children,
+                    children_roles: children_roles_map(co),
                     geometries,
                 },
             );
@@ -1496,6 +1522,12 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
         out.push(format!(
             "object {id}: children differ: {:?} vs {:?}",
             a.children, b.children
+        ));
+    }
+    if a.children_roles != b.children_roles {
+        out.push(format!(
+            "object {id}: children_roles differ: {:?} vs {:?}",
+            a.children_roles, b.children_roles
         ));
     }
     if !values_equal(&a.attributes, &b.attributes) {

@@ -231,6 +231,10 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
 
     let parents_col = downcast::<ListArray>(get_column(batch, "parents")?.as_ref(), "parents")?;
     let children_col = downcast::<ListArray>(get_column(batch, "children")?.as_ref(), "children")?;
+    let children_roles_col = downcast::<ListArray>(
+        get_column(batch, "children_roles")?.as_ref(),
+        "children_roles",
+    )?;
 
     let template_col =
         downcast::<StructArray>(get_column(batch, "template")?.as_ref(), "template")?;
@@ -287,6 +291,15 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
             json.insert(
                 "children".to_string(),
                 Value::Array(children.into_iter().map(Value::String).collect()),
+            );
+        }
+        // `children_roles` has no typed cjseq field; placing it in the JSON
+        // that builds the CityObject lets it survive in the struct's private
+        // `#[serde(flatten)]` member and re-serialise on export (§5.1, G5).
+        if let Some(children_roles) = string_list_value(children_roles_col, row)? {
+            json.insert(
+                "children_roles".to_string(),
+                Value::Array(children_roles.into_iter().map(Value::String).collect()),
             );
         }
         let object: cjseq::CityObject = serde_json::from_value(Value::Object(json))?;

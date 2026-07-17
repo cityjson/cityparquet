@@ -855,6 +855,29 @@ impl RowWriter {
         }
     }
 
+    /// CityJSON's `children_roles` (one role per child, §5.1). cjseq 0.4.1 has
+    /// no typed field for it — it is captured in `CityObject`'s private
+    /// `#[serde(flatten)]` member — so it is recovered through a serialize
+    /// round-trip. That clones the object, so it is done ONLY for objects that
+    /// actually carry `children` (a leaf object never has roles, and this
+    /// avoids cloning geometry-heavy leaves on the hot path). A non-array
+    /// `children_roles`, or its absence, yields `None`.
+    fn children_roles(co: &CityObject) -> Result<Option<Vec<String>>> {
+        if co.children.is_none() {
+            return Ok(None);
+        }
+        let value = serde_json::to_value(co)?;
+        let Some(Value::Array(roles)) = value.get("children_roles") else {
+            return Ok(None);
+        };
+        Ok(Some(
+            roles
+                .iter()
+                .map(|v| v.as_str().unwrap_or_default().to_string())
+                .collect(),
+        ))
+    }
+
     /// Encode one CityObject row. `id` must be a key of `feature.city_objects`.
     fn push_object(
         &mut self,
@@ -875,7 +898,8 @@ impl RowWriter {
         self.object_type.append(&co.thetype)?;
         Self::push_string_list(&mut self.parents, co.parents.as_deref());
         Self::push_string_list(&mut self.children, co.children.as_deref());
-        self.children_roles.append_null(); // M2 limitation: always null
+        let children_roles = Self::children_roles(co)?;
+        Self::push_string_list(&mut self.children_roles, children_roles.as_deref());
         self.other.append_null(); // M2 limitation: always null
 
         let mut acc = GeometryAccumulator::default();

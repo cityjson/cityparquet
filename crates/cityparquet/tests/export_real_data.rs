@@ -683,6 +683,65 @@ fn attributes_named_like_appearance_columns_do_not_corrupt_export() {
     assert!(checked, "target object must be present in the export");
 }
 
+/// RED (G5): a CityObject's `children_roles` (CityJSON 2.0 §3, one role per
+/// child) must round-trip. It lives in cjseq's private flatten, so the
+/// encoder previously left the column null and the exporter dropped it.
+/// Derived from railway: give a parent object one role per child, then
+/// convert → export and require the roles back verbatim on that object.
+#[test]
+fn children_roles_round_trip() {
+    const TARGET_OBJECT_ID: &str = "UUID_f488e8ce-b953-4b35-a3fe-a394fb203868";
+
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    let roles: Vec<String> = {
+        let co = doc["CityObjects"][TARGET_OBJECT_ID]
+            .as_object_mut()
+            .unwrap();
+        let n = co["children"].as_array().unwrap().len();
+        assert!(n > 0, "precondition: target object must have children");
+        let roles: Vec<String> = (0..n).map(|i| format!("role{i}")).collect();
+        co.insert("children_roles".to_string(), serde_json::json!(roles));
+        roles
+    };
+
+    let input_dir = tempfile::tempdir().unwrap();
+    let input_path = input_dir.path().join("railway_children_roles.city.json");
+    std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let package_dir = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        input_path,
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let export_path = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: export_path.clone(),
+    })
+    .unwrap();
+
+    let text = std::fs::read_to_string(&export_path).unwrap();
+    let mut checked = false;
+    for line in text.lines().skip(1) {
+        let feature: Value = serde_json::from_str(line).unwrap();
+        let Some(co) = feature["CityObjects"].get(TARGET_OBJECT_ID) else {
+            continue;
+        };
+        assert_eq!(
+            co["children_roles"],
+            serde_json::json!(roles),
+            "children_roles must round-trip verbatim on {TARGET_OBJECT_ID}"
+        );
+        checked = true;
+    }
+    assert!(checked, "target object must be present in the export");
+}
+
 /// M5 debt item 2, rule half (a): `LocalAppearance::into_appearance` must
 /// return `Some` only when the feature referenced a definition OR
 /// dataset-wide defaults exist — never unconditionally for every feature.
