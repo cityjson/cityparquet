@@ -855,27 +855,49 @@ impl RowWriter {
         }
     }
 
-    /// CityJSON's `children_roles` (one role per child, §5.1). cjseq 0.4.1 has
-    /// no typed field for it — it is captured in `CityObject`'s private
-    /// `#[serde(flatten)]` member — so it is recovered through a serialize
-    /// round-trip. That clones the object, so it is done ONLY for objects that
-    /// actually carry `children` (a leaf object never has roles, and this
-    /// avoids cloning geometry-heavy leaves on the hot path). A non-array
-    /// `children_roles`, or its absence, yields `None`.
-    fn children_roles(co: &CityObject) -> Result<Option<Vec<String>>> {
-        if co.children.is_none() {
+    /// CityJSON's `children_roles`: the role of each child in a
+    /// `CityObjectGroup`, one per child. The CityJSON 2.0.1 schema permits it
+    /// ONLY on `CityObjectGroup` (§2.5), so only those objects are inspected —
+    /// spec-correct, and it keeps the (necessarily whole-object) serialize off
+    /// the hot path for the common `Building`/`BuildingPart` hierarchy, whose
+    /// parents carry `children` but never `children_roles`. cjseq 0.4.1 has no
+    /// typed field for it (it is captured in `CityObject`'s private
+    /// `#[serde(flatten)]` member), hence the serialize round-trip.
+    ///
+    /// A present `children_roles` MUST be an array of strings with exactly one
+    /// entry per child (CityJSON 2.0.1 §2.5); anything else is rejected, not
+    /// silently coerced, so a corrupt role list can never be stored.
+    fn children_roles(co: &CityObject, id: &str) -> Result<Option<Vec<String>>> {
+        if co.thetype != "CityObjectGroup" {
             return Ok(None);
         }
-        let value = serde_json::to_value(co)?;
-        let Some(Value::Array(roles)) = value.get("children_roles") else {
+        let Some(roles) = serde_json::to_value(co)?.get("children_roles").cloned() else {
             return Ok(None);
         };
-        Ok(Some(
-            roles
-                .iter()
-                .map(|v| v.as_str().unwrap_or_default().to_string())
-                .collect(),
-        ))
+        let Value::Array(roles) = roles else {
+            return Err(CityParquetError::Schema(format!(
+                "object {id}: children_roles must be an array of strings"
+            )));
+        };
+        let child_count = co.children.as_ref().map_or(0, Vec::len);
+        if roles.len() != child_count {
+            return Err(CityParquetError::Schema(format!(
+                "object {id}: children_roles has {} entries but the object has {child_count} \
+                 children (CityJSON 2.0.1 requires one role per child)",
+                roles.len()
+            )));
+        }
+        roles
+            .iter()
+            .map(|role| {
+                role.as_str().map(str::to_string).ok_or_else(|| {
+                    CityParquetError::Schema(format!(
+                        "object {id}: every children_roles entry must be a string"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<String>>>()
+            .map(Some)
     }
 
     /// Encode one CityObject row. `id` must be a key of `feature.city_objects`.
@@ -898,7 +920,7 @@ impl RowWriter {
         self.object_type.append(&co.thetype)?;
         Self::push_string_list(&mut self.parents, co.parents.as_deref());
         Self::push_string_list(&mut self.children, co.children.as_deref());
-        let children_roles = Self::children_roles(co)?;
+        let children_roles = Self::children_roles(co, id)?;
         Self::push_string_list(&mut self.children_roles, children_roles.as_deref());
         self.other.append_null(); // M2 limitation: always null
 

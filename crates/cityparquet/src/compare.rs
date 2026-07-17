@@ -1096,24 +1096,44 @@ struct ObjectData {
     geometries: HashMap<Option<String>, NormGeometry>,
 }
 
-/// Extract a CityObject's `children_roles` paired with its `children`. cjseq
-/// 0.4.1 has no typed field for `children_roles` (it lives in the struct's
-/// private `#[serde(flatten)]` member), so it is read through a serialize
-/// round-trip — mirroring `crate::encode`.
+/// Extract a CityObject's `children_roles` paired with its `children` as a
+/// `child id -> role` map (order-independent, like the `children` set).
+/// `children_roles` lives only on `CityObjectGroup` (CityJSON 2.0.1 §2.5) and,
+/// like everything in cjseq's private `#[serde(flatten)]`, is read through a
+/// serialize round-trip — mirroring `crate::encode`.
+///
+/// This must not normalise malformation away, or a corrupt export could
+/// false-pass against a valid source: it pairs over `max(children, roles)`, so
+/// a surplus/missing role or a non-string entry yields a distinguishing
+/// sentinel key/value rather than being silently truncated. For well-formed,
+/// equal-length, aligned input it is a pure `child -> role` map, so an aligned
+/// reorder compares equal.
 fn children_roles_map(co: &cjseq::CityObject) -> HashMap<String, String> {
-    let Some(children) = &co.children else {
+    if co.thetype != "CityObjectGroup" {
         return HashMap::new();
-    };
-    let Ok(value) = serde_json::to_value(co) else {
-        return HashMap::new();
-    };
-    let Some(Value::Array(roles)) = value.get("children_roles") else {
-        return HashMap::new();
-    };
-    children
-        .iter()
-        .zip(roles)
-        .filter_map(|(child, role)| role.as_str().map(|r| (child.clone(), r.to_string())))
+    }
+    let children = co.children.clone().unwrap_or_default();
+    let roles = serde_json::to_value(co)
+        .ok()
+        .and_then(|v| v.get("children_roles").cloned())
+        .and_then(|v| match v {
+            Value::Array(roles) => Some(roles),
+            _ => None,
+        })
+        .unwrap_or_default();
+    (0..children.len().max(roles.len()))
+        .map(|i| {
+            let key = children
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("\u{0}surplus_role_{i}"));
+            let value = roles
+                .get(i)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("\u{0}missing_or_nonstring_{i}"));
+            (key, value)
+        })
         .collect()
 }
 

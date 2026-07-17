@@ -683,7 +683,7 @@ fn attributes_named_like_appearance_columns_do_not_corrupt_export() {
     assert!(checked, "target object must be present in the export");
 }
 
-/// RED (G5): a CityObject's `children_roles` (CityJSON 2.0 §3, one role per
+/// RED (G5): a CityObjectGroup's `children_roles` (CityJSON 2.0.1 §2.5, one role per
 /// child) must round-trip. It lives in cjseq's private flatten, so the
 /// encoder previously left the column null and the exporter dropped it.
 /// Derived from railway: give a parent object one role per child, then
@@ -737,9 +737,53 @@ fn children_roles_round_trip() {
             serde_json::json!(roles),
             "children_roles must round-trip verbatim on {TARGET_OBJECT_ID}"
         );
+        // The children list must survive too, and in the same order the roles
+        // are aligned to (a role is meaningless without its child).
+        assert_eq!(
+            co["children"].as_array().map(Vec::len),
+            Some(roles.len()),
+            "the children list must round-trip with one entry per role"
+        );
         checked = true;
     }
     assert!(checked, "target object must be present in the export");
+}
+
+/// G5 sol-review Finding 1: a malformed `children_roles` (here, more roles
+/// than children) is invalid CityJSON 2.0.1 (§2.5 requires one role per child)
+/// and must be REJECTED at convert, not silently truncated or coerced.
+/// Derived from railway's CityObjectGroup.
+#[test]
+fn mismatched_children_roles_is_rejected() {
+    const TARGET_OBJECT_ID: &str = "UUID_f488e8ce-b953-4b35-a3fe-a394fb203868";
+
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    {
+        let co = doc["CityObjects"][TARGET_OBJECT_ID]
+            .as_object_mut()
+            .unwrap();
+        let n = co["children"].as_array().unwrap().len();
+        // One MORE role than children — invalid.
+        let roles: Vec<String> = (0..n + 1).map(|i| format!("role{i}")).collect();
+        co.insert("children_roles".to_string(), serde_json::json!(roles));
+    }
+    let input_dir = tempfile::tempdir().unwrap();
+    let input_path = input_dir.path().join("railway_bad_roles.city.json");
+    std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let package_dir = tempfile::tempdir().unwrap();
+    let err = convert(&ConvertOptions::new(
+        input_path,
+        package_dir.path().to_path_buf(),
+    ))
+    .expect_err("a children_roles length mismatch must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains(TARGET_OBJECT_ID) && msg.contains("children_roles"),
+        "error must name the object and cite children_roles, got: {msg}"
+    );
 }
 
 /// M5 debt item 2, rule half (a): `LocalAppearance::into_appearance` must
