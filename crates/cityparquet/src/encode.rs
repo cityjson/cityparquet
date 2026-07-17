@@ -539,23 +539,29 @@ fn accumulate_geometry(
         let Some(outcome) = geometry_to_wkb(geom, pool)? else {
             continue;
         };
-        // Row bbox deliberately covers ALL source geometry (including skipped
-        // duplicate-LoD and lod-less entries): the object occupies that
-        // extent, and a superset bbox can only cause false-positive reads,
-        // never false-negative pruning.
+        // Row bbox deliberately covers ALL of the object's analysis geometry,
+        // including a duplicate-(object, LoD) geometry that is later skipped
+        // (§10, G10): the object occupies that extent, and a superset bbox can
+        // only cause false-positive reads, never false-negative pruning.
         union_bbox(&mut acc.own_bbox, outcome.bbox);
 
-        let slot_key = if per_lod {
-            match geom.lod.as_deref().and_then(|s| Lod::parse(s).ok()) {
-                Some(lod) => lod.column_suffix(),
-                // Unreachable for valid input: [`crate::scan`] rejects a
-                // lod-less non-instance geometry before encode runs, and a
-                // `GeometryInstance` (also lod-less) never reaches here — it
-                // is routed to the `template` column above. Defensive skip.
-                None => continue,
+        // Every geometry reaching here is a non-instance that produced WKB
+        // (instances are routed to `template` above). For a `ScanResult` that
+        // matches this `Source`, [`crate::scan`] guarantees such a geometry
+        // carries a valid lod and that the dataset is therefore per-LoD — so
+        // both a missing/unparseable lod and `per_lod == false` mean the scan
+        // does not match the source (`encode` is public and takes an
+        // independent scan; a Seq file is also reopened between the scan and
+        // encode passes). Reject rather than silently drop or misplace the
+        // geometry.
+        let slot_key = match geom.lod.as_deref().and_then(|s| Lod::parse(s).ok()) {
+            Some(lod) if per_lod => lod.column_suffix(),
+            _ => {
+                return Err(CityParquetError::Lod(format!(
+                    "object {id}: geometry has no valid lod for a per-LoD column \
+                     (the ScanResult does not match this source)"
+                )));
             }
-        } else {
-            String::new()
         };
 
         if acc.slots.contains_key(&slot_key) {

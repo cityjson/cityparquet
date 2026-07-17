@@ -50,8 +50,11 @@ pub struct DecodedObject {
     pub object: cjseq::CityObject,
     /// `(lod, decoded WKB geometry, geometry_properties)`, one entry per
     /// non-null geometry cell on this row, ascending by LoD. `None` LoD means
-    /// the dataset's single unsuffixed `geometry` column (the lodless binding
-    /// rule; see [`cityparquet_schema::model`]'s lods-empty branch).
+    /// the dataset's single unsuffixed `geometry` column — the
+    /// zero-analysis-geometry fallback (a dataset with only GeometryInstances,
+    /// or none; see [`cityparquet_schema::model`]'s lods-empty branch). In
+    /// that dataset the column is all-null, so this variant does not arise in
+    /// practice.
     pub geometries: Vec<(Option<Lod>, DecodedGeometry, Option<Value>)>,
     pub template: Option<TemplateInstance>,
 }
@@ -82,8 +85,8 @@ fn downcast<'a, T: 'static>(array: &'a dyn Array, name: &str) -> Result<&'a T> {
 /// `CityParquetReaderBuilder::cityparquet_arrow_schema`'s LoD derivation:
 /// only `geometry_lod*` names parse as a LoD suffix — `geometry_properties_lod*`
 /// also starts with `geometry_` but is excluded because `"properties_lod1"`
-/// does not parse as one. A lodless dataset instead has the single unsuffixed
-/// `geometry`/`geometry_properties` pair ([`cityparquet_schema::model`]'s
+/// does not parse as one. A zero-analysis-geometry dataset instead has the
+/// single unsuffixed `geometry`/`geometry_properties` pair ([`cityparquet_schema::model`]'s
 /// lods-empty branch), returned as a `None`-LoD entry; the two shapes are
 /// mutually exclusive by construction, but both are checked unconditionally
 /// so a file carrying both would still decode every geometry column.

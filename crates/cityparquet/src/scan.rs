@@ -28,7 +28,8 @@ pub struct ScanResult {
     /// lod — [`scan`] rejects any that does not (§9, CityJSON 2.0 §3).
     pub lods: Vec<Lod>,
     pub object_count: usize,
-    /// Union of every geometry's bbox, `None` if no geometry contributed one.
+    /// Union of every analysis geometry's bbox, `None` if none contributed one
+    /// (`GeometryInstance`s produce no WKB, so they contribute nothing here).
     pub dataset_bbox: Option<[f64; 6]>,
     /// The dataset's reference system as the raw OGC CRS URL string (from
     /// CityJSON header metadata), not yet resolved to full PROJJSON.

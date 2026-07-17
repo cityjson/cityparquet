@@ -197,7 +197,9 @@ impl CityParquetSchema {
                 &[(ROLE_KEY, ROLE_RESERVED)],
             ));
             // Appearance parallels geometry (§11.1): the un-suffixed pair for
-            // the transitional lod-less path (removed once G3 lands).
+            // the zero-analysis-geometry fallback (a dataset with only
+            // GeometryInstances, or none — §9). A lod-less non-instance
+            // geometry never reaches here; scan rejects it (§9, G3).
             for name in ["material", "texture"] {
                 fields.push(with_meta(
                     json_field(name, true).as_ref().clone(),

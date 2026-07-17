@@ -54,10 +54,68 @@ fn lodless_non_instance_geometry_is_rejected() {
 
     let src = Source::open(&path).unwrap();
     let err = scan(&src).expect_err("lod-less non-instance geometry must be rejected");
+    assert!(
+        matches!(err, cityparquet::CityParquetError::Lod(_)),
+        "must be a Lod error, got {err:?}"
+    );
     let msg = err.to_string();
     assert!(
-        msg.contains(&target_id) && msg.contains("lod"),
+        msg.contains(&target_id) && msg.contains("no \"lod\""),
         "error must name the offending object and cite the missing lod, got: {msg}"
+    );
+}
+
+/// The uniformly-lod-less case: a feature whose EVERY non-instance geometry
+/// lost its `lod` must also be rejected — not silently kept in an un-suffixed
+/// column, the old behaviour when no geometry had a lod. (The test above
+/// covers the mixed case, where the object retains other LoD-bearing
+/// geometries.)
+#[test]
+fn uniformly_lodless_dataset_is_rejected() {
+    let mut doc: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(fixture("delft.city.jsonl"))
+            .unwrap()
+            .lines()
+            .nth(1)
+            .expect("delft has feature lines"),
+    )
+    .unwrap();
+
+    // Strip `lod` from EVERY geometry of EVERY object.
+    let mut stripped = 0usize;
+    for (_, co) in doc["CityObjects"].as_object_mut().unwrap() {
+        if let Some(geoms) = co.get_mut("geometry").and_then(|g| g.as_array_mut()) {
+            for g in geoms {
+                if g.as_object_mut().unwrap().remove("lod").is_some() {
+                    stripped += 1;
+                }
+            }
+        }
+    }
+    assert!(stripped > 0, "the feature must have had lods to strip");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delft_all_lodless.city.jsonl");
+    let header = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n{}",
+            header.lines().next().unwrap(),
+            serde_json::to_string(&doc).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let src = Source::open(&path).unwrap();
+    let err = scan(&src).expect_err("a uniformly lod-less dataset must be rejected");
+    assert!(
+        matches!(err, cityparquet::CityParquetError::Lod(_)),
+        "must be a Lod error, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("lod"),
+        "error must cite the missing lod, got: {err}"
     );
 }
 
