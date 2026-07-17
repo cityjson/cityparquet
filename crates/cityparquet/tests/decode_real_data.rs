@@ -204,41 +204,43 @@ fn railway_decodes_templates_and_semantics() {
     );
 }
 
-/// Derived-from-real lodless dataset: `lod3_railway.city.json` with the
-/// `"lod"` key removed from EVERY geometry. Per the scan binding rule a
-/// dataset with zero LoD-bearing geometries stores every kept geometry in
-/// the single unsuffixed `geometry` column — which decode must read too,
-/// not just `geometry_lod*`.
+/// The zero-analysis-geometry case that G3 preserves: a dataset whose only
+/// geometry is `GeometryInstance`s (plus objects with no geometry) has no LoD
+/// to suffix, so it falls back to the un-suffixed `geometry` column — which is
+/// entirely null (instances route to `template`, not a geometry column). This
+/// is the ONLY way `lods` is empty now: a lod-less NON-instance geometry is
+/// rejected at scan (§9, CityJSON 2.0 §3), covered in `scan_real_data.rs`.
 ///
-/// Recounted with python3 over the fixture, replaying the writer's rules
-/// (GeometryInstance entries route to `template`; one `""` slot per object,
-/// first geometry kept): 105 objects have >= 1 kept geometry -> 105 non-null
-/// `geometry` cells (of 121 rows: 15 objects carry only a GeometryInstance
-/// and 1 has no geometry at all); no object carries more than one
-/// non-GeometryInstance geometry, so nothing is dedup-skipped.
+/// Derived from `lod3_railway.city.json` by removing every non-instance
+/// geometry, keeping its 15 `GeometryInstance`s. Decode must read the all-null
+/// un-suffixed column without error and still route the instances to template.
 #[test]
-fn lodless_dataset_decodes_the_unsuffixed_geometry_column() {
-    // Build the lodless variant of the real fixture.
+fn instances_only_dataset_uses_the_unsuffixed_geometry_column() {
     let text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
     let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();
-    let mut removed = 0usize;
+    let mut kept_instances = 0usize;
     for (_, co) in doc["CityObjects"].as_object_mut().unwrap() {
         let Some(geoms) = co.get_mut("geometry").and_then(|g| g.as_array_mut()) else {
             continue;
         };
-        for geom in geoms {
-            if geom.as_object_mut().unwrap().remove("lod").is_some() {
-                removed += 1;
+        geoms.retain(|g| {
+            let is_instance = g.get("type").and_then(|t| t.as_str()) == Some("GeometryInstance");
+            if is_instance {
+                kept_instances += 1;
             }
-        }
+            is_instance
+        });
     }
-    assert!(removed > 0, "fixture must have had lod keys to remove");
+    assert_eq!(
+        kept_instances, 15,
+        "railway must carry 15 GeometryInstances to keep"
+    );
     let src_dir = tempfile::tempdir().unwrap();
-    let lodless_path = src_dir.path().join("railway_lodless.city.json");
-    std::fs::write(&lodless_path, serde_json::to_string(&doc).unwrap()).unwrap();
+    let path = src_dir.path().join("railway_instances_only.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
 
     let out = tempfile::tempdir().unwrap();
-    let report = convert(&ConvertOptions::new(lodless_path, out.path().to_path_buf())).unwrap();
+    let report = convert(&ConvertOptions::new(path, out.path().to_path_buf())).unwrap();
     assert_eq!(report.object_count, 121);
 
     let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
@@ -246,18 +248,17 @@ fn lodless_dataset_decodes_the_unsuffixed_geometry_column() {
     let meta = builder.cityparquet_metadata().unwrap();
     let schema = builder.cityparquet_arrow_schema().unwrap();
 
-    // The lodless binding rule really kicked in: one unsuffixed geometry
-    // column pair, no per-LoD columns.
+    // No LoD-bearing geometry: the un-suffixed geometry column, no per-LoD ones.
     assert!(
         schema.field_with_name("geometry").is_ok(),
-        "lodless dataset must have the unsuffixed geometry column"
+        "a zero-analysis-geometry dataset uses the unsuffixed geometry column"
     );
     assert!(
         !schema
             .fields()
             .iter()
             .any(|f| f.name().starts_with("geometry_lod")),
-        "lodless dataset must have no geometry_lod* columns"
+        "a zero-analysis-geometry dataset must have no geometry_lod* columns"
     );
 
     let parquet_reader = builder.build().unwrap();
@@ -272,29 +273,14 @@ fn lodless_dataset_decodes_the_unsuffixed_geometry_column() {
         objects.extend(decode_batch(&batch, &meta).unwrap());
     }
     assert_eq!(objects.len(), 121);
-    assert_eq!(non_null_cells, 105, "the recount above");
-
-    let total_geometries: usize = objects.iter().map(|o| o.geometries.len()).sum();
-    assert!(
-        total_geometries > 0,
-        "decode must read the unsuffixed geometry column, not silently drop it"
-    );
     assert_eq!(
-        total_geometries, non_null_cells,
-        "every non-null unsuffixed geometry cell must decode to exactly one geometry"
+        non_null_cells, 0,
+        "instances produce no analysis geometry, so the unsuffixed column is all null"
     );
-    for obj in &objects {
-        for (lod, _decoded, _props) in &obj.geometries {
-            assert!(
-                lod.is_none(),
-                "unsuffixed-column geometries carry no LoD, got {lod:?} on object {}",
-                obj.id
-            );
-        }
-    }
+    let total_geometries: usize = objects.iter().map(|o| o.geometries.len()).sum();
+    assert_eq!(total_geometries, 0, "no non-instance geometry survives");
 
-    // GeometryInstance entries still route to template, exactly as in the
-    // LoD-bearing conversion.
+    // The 15 GeometryInstances still route to template.
     let template_count = objects.iter().filter(|o| o.template.is_some()).count();
     assert_eq!(template_count, 15);
 }

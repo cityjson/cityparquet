@@ -503,10 +503,10 @@ pub(crate) fn rewrite_geometry_appearance(
 
 /// Walk one object's own geometries, bucketing them into `acc`. `per_lod`
 /// mirrors the dataset-wide binding rule from [`crate::scan`]: `true` means
-/// every kept geometry needs an `lod` to have a column to live in (lod-less
-/// geometries are silently unplaceable, already counted at the dataset
-/// level by `scan`'s `lodless_geometries`); `false` means every kept
-/// geometry shares the single un-suffixed `geometry` column.
+/// the dataset has LoD-bearing geometry, so each geometry is placed by its
+/// (now mandatory — [`crate::scan`] rejects a lod-less non-instance geometry)
+/// LoD; `false` means the dataset has no analysis geometry and the single
+/// un-suffixed `geometry` column is used.
 ///
 /// `id` is `co`'s own CityObject id, used only to name the object in the
 /// error surfaced when a geometry's `material`/`texture` map has indices
@@ -548,7 +548,11 @@ fn accumulate_geometry(
         let slot_key = if per_lod {
             match geom.lod.as_deref().and_then(|s| Lod::parse(s).ok()) {
                 Some(lod) => lod.column_suffix(),
-                None => continue, // lod-less in a mixed dataset: no column to place it in
+                // Unreachable for valid input: [`crate::scan`] rejects a
+                // lod-less non-instance geometry before encode runs, and a
+                // `GeometryInstance` (also lod-less) never reaches here — it
+                // is routed to the `template` column above. Defensive skip.
+                None => continue,
             }
         } else {
             String::new()

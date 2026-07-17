@@ -11,6 +11,64 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// RED (G3): CityJSON 2.0 §3 requires a `lod` on every non-`GeometryInstance`
+/// geometry. A source geometry without one is invalid input, and scan must
+/// reject it naming the object — never silently drop it (mixed dataset) or
+/// keep it in an un-suffixed column (uniformly lod-less dataset), the two
+/// behaviours the old code chose between. Derived from delft: strip `lod`
+/// from one object's geometry.
+#[test]
+fn lodless_non_instance_geometry_is_rejected() {
+    let mut doc: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(fixture("delft.city.jsonl"))
+            .unwrap()
+            .lines()
+            .nth(1)
+            .expect("delft has feature lines"),
+    )
+    .unwrap();
+
+    // Strip `lod` from the first geometry of the first object that has one.
+    let mut target_id = None;
+    for (id, co) in doc["CityObjects"].as_object_mut().unwrap() {
+        if let Some(geoms) = co.get_mut("geometry").and_then(|g| g.as_array_mut())
+            && let Some(g) = geoms.first_mut()
+        {
+            g.as_object_mut().unwrap().remove("lod");
+            target_id = Some(id.clone());
+            break;
+        }
+    }
+    let target_id = target_id.expect("a delft feature must carry a geometry");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delft_lodless.city.jsonl");
+    // A one-feature CityJSONSeq stream: header line + the mutated feature.
+    let header = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let header_line = header.lines().next().unwrap();
+    std::fs::write(
+        &path,
+        format!("{header_line}\n{}", serde_json::to_string(&doc).unwrap()),
+    )
+    .unwrap();
+
+    let src = Source::open(&path).unwrap();
+    let err = scan(&src).expect_err("lod-less non-instance geometry must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains(&target_id) && msg.contains("lod"),
+        "error must name the offending object and cite the missing lod, got: {msg}"
+    );
+}
+
+/// A `GeometryInstance` is legitimately lod-less (its template carries the
+/// lod, §12), so railway — which has 15 instances — must still scan cleanly.
+#[test]
+fn geometry_instances_are_not_rejected_as_lodless() {
+    let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    scan(&src).expect("GeometryInstance geometries are lod-less by design, not an error");
+}
+
 #[test]
 fn delft_scan_matches_known_content() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();

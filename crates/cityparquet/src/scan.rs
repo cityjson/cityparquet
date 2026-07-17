@@ -11,6 +11,8 @@ use cityparquet_schema::{
     CityParquetSchema, Lod, Result, SourceFormat as SchemaSourceFormat, normalise_attribute_name,
 };
 
+use cjseq::GeometryType;
+
 use crate::source::{Source, SourceFormat};
 use crate::wkb_write::{VertexPool, geometry_to_wkb};
 
@@ -20,12 +22,13 @@ use crate::wkb_write::{VertexPool, geometry_to_wkb};
 #[derive(Debug, Clone)]
 pub struct ScanResult {
     pub schema: CityParquetSchema,
-    /// LoDs present, ascending; empty means every kept geometry goes in a
-    /// single un-suffixed `geometry` column.
+    /// LoDs present, ascending; empty means the dataset has no analysis
+    /// geometry (only `GeometryInstance`s, or no geometry at all) and uses the
+    /// un-suffixed `geometry` column. Every non-instance source geometry has a
+    /// lod — [`scan`] rejects any that does not (§9, CityJSON 2.0 §3).
     pub lods: Vec<Lod>,
     pub object_count: usize,
-    /// Union of every kept geometry's bbox (see `lodless_geometries` for what
-    /// "kept" excludes), `None` if no geometry contributed one.
+    /// Union of every geometry's bbox, `None` if no geometry contributed one.
     pub dataset_bbox: Option<[f64; 6]>,
     /// The dataset's reference system as the raw OGC CRS URL string (from
     /// CityJSON header metadata), not yet resolved to full PROJJSON.
@@ -43,12 +46,6 @@ pub struct ScanResult {
     /// the header's `appearance` default-theme members, `None` if neither is
     /// set.
     pub appearance_defaults: Option<serde_json::Value>,
-    /// Count of geometries with no `lod` string, on a dataset that also has
-    /// LoD-bearing geometries. These are skipped from `lods` and
-    /// `dataset_bbox` because there is no per-LoD column to place them in;
-    /// see the module docs on the "mixed" binding rule for why a dataset
-    /// that is *uniformly* LoD-less does not skip anything.
-    pub lodless_geometries: usize,
     source_format: SchemaSourceFormat,
     source_version: String,
 }
@@ -82,13 +79,8 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
     let mut inferer = AttributeInferer::default();
     let mut lod_strings: Vec<String> = Vec::new();
     let mut object_count = 0usize;
-    // Kept separately because whether the lod-less bucket is "skipped" (mixed
-    // dataset) or "the whole dataset" (uniformly lod-less) is only knowable
-    // after the full scan.
     let mut bbox_with_lod: Option<[f64; 6]> = None;
-    let mut bbox_lodless: Option<[f64; 6]> = None;
     let mut geometries_with_lod = 0usize;
-    let mut geometries_without_lod = 0usize;
 
     for feature in source.features()? {
         let feature = feature?;
@@ -122,9 +114,21 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
                         }
                     }
                     None => {
-                        geometries_without_lod += 1;
-                        if let Some(bbox) = bbox {
-                            union_bbox(&mut bbox_lodless, bbox);
+                        // A `GeometryInstance` is lod-less by design — its
+                        // referenced template carries the lod (§12) and it
+                        // routes to the `template` column, not a geometry
+                        // column. Any OTHER lod-less geometry is invalid
+                        // CityJSON 2.0 (§3 requires `lod` on every
+                        // non-instance geometry) and MUST be rejected here,
+                        // not silently dropped (in a mixed dataset) nor kept
+                        // in an un-suffixed column (in a uniformly lod-less
+                        // one) — the two behaviours the old code chose
+                        // between depending on the rest of the dataset.
+                        if geom.thetype != GeometryType::GeometryInstance {
+                            return Err(CityParquetError::Lod(format!(
+                                "object {id}: geometry has no \"lod\" (CityJSON 2.0 §3 \
+                                 requires it on every non-GeometryInstance geometry)"
+                            )));
                         }
                     }
                 }
@@ -132,21 +136,22 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         }
     }
 
-    // Binding rule: a dataset with at least one LoD-bearing geometry uses
-    // per-LoD columns, and any lod-less geometry is skipped (counted) since
-    // it has no column to go in. A dataset with none at all (uniformly
-    // lod-less, including the no-geometry-at-all case) uses the plain
-    // un-suffixed `geometry` column and keeps every geometry.
-    let (lods, dataset_bbox, lodless_geometries) = if geometries_with_lod > 0 {
+    // A dataset with at least one LoD-bearing geometry uses per-LoD columns
+    // (every non-instance geometry now has a lod — the loop above rejected any
+    // that did not). A dataset with none — only `GeometryInstance`s, or an
+    // attributes-only dataset with no geometry at all — has no analysis
+    // geometry, hence no LoDs and no dataset bbox; it uses the un-suffixed
+    // geometry columns (the zero-analysis-geometry case, §9 / Appendix B).
+    let (lods, dataset_bbox) = if geometries_with_lod > 0 {
         let mut lods: Vec<Lod> = lod_strings
             .iter()
             .map(|s| Lod::parse(s).expect("already validated above"))
             .collect();
         lods.sort();
         lods.dedup();
-        (lods, bbox_with_lod, geometries_without_lod)
+        (lods, bbox_with_lod)
     } else {
-        (Vec::new(), bbox_lodless, 0)
+        (Vec::new(), None)
     };
 
     let crs_url = header
@@ -207,7 +212,6 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         extensions: header.extensions.clone(),
         source_metadata,
         appearance_defaults,
-        lodless_geometries,
         source_format: to_schema_source_format(source.format()),
         source_version: header.version.clone(),
     })
