@@ -89,9 +89,19 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         // `geometry_` but does not parse as a LoD suffix). The metadata no
         // longer carries a `reserved_columns` list — §13.1: reserved names are
         // fixed by the spec, so they are read straight off the schema.
+        //
+        // A column listed in `attributes` is an attribute, NOT reserved
+        // (§13.1), even if it happens to be named like a geometry column for
+        // some LoD the dataset does not otherwise use (e.g. a `geometry_lod3`
+        // attribute in a LoD-2-only dataset — legal, since only geometry
+        // columns for the dataset's actual LoDs are reserved). Exclude the
+        // declared attributes first, so such a name is not mistaken for a LoD.
+        let attribute_names: std::collections::HashSet<&str> =
+            meta.attribute_columns.iter().map(String::as_str).collect();
         let mut lods: Vec<Lod> = actual
             .fields()
             .iter()
+            .filter(|f| !attribute_names.contains(f.name().as_str()))
             .filter_map(|f| f.name().strip_prefix("geometry_"))
             .filter_map(Lod::from_column_suffix)
             .collect();

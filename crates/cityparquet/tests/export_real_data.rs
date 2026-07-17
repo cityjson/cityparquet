@@ -1517,7 +1517,7 @@ fn export_rejects_a_second_table_with_a_renamed_attribute_column() {
         attr_kv
             .value
             .as_deref()
-            .expect("attribute_columns KV must carry a value"),
+            .expect("the `attributes` KV must carry a value"),
     )
     .unwrap();
     assert!(

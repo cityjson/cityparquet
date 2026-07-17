@@ -223,9 +223,11 @@ point (WKB `PointZ`) and `transformationMatrix` in its `template` column.
 Dataset-level metadata is written both to the Parquet file's key/value
 metadata and to `metadata.json` for package-level discovery. Keys include
 `cityparquet_version`, `source_format`/`source_version`, `crs` (PROJJSON),
-`transform`, `extensions`, `attribute_columns`, `reserved_columns`,
-`default_geometry`, `bbox_column`, `sidecar_files`, `source_metadata` (the
-source header `metadata`, verbatim), and `appearance_defaults`. A GeoParquet
+`transform`, `extensions`, `attributes` (the inferred attribute-column list;
+any column not named here is a reserved structural column, so no separate
+`reserved_columns` key is written), `default_geometry`, `bbox_column`,
+`sidecar_files`, `source_metadata` (the source header `metadata`, verbatim),
+`appearance_defaults`, and `other` (free-form producer metadata). A GeoParquet
 `geo` key is derived so GeoParquet readers recognise the geometry columns.
 
 `metadata.json` (the `PackageManifest`) is the **authoritative** description
