@@ -26,7 +26,7 @@ use self::document::{Bounds, write_city_model_close, write_city_model_open};
 use crate::Result;
 use crate::citygml::crs::srs_name_for;
 use crate::decode::decode_batch;
-use crate::export::{first_schema_mismatch, read_lod_keyed_appearance};
+use crate::export::{appearance_columns, first_schema_mismatch, read_lod_keyed_appearance};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use crate::sidecar::{read_materials, read_textures};
 use crate::wkb_read::{DecodedGeometry, DecodedKind};
@@ -250,6 +250,8 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
 
         for batch in reader {
             let batch = batch?;
+            let material_cols = appearance_columns(&batch, "material");
+            let texture_cols = appearance_columns(&batch, "texture");
             let objects = decode_batch(&batch, &meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
                 let ty = obj.object.thetype.clone();
@@ -263,8 +265,8 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                 // `material_lod*` / `texture_lod*` columns into a
                 // `{"<canonical-lod>": {...}}` map and keyed out per geometry
                 // below. `decode_batch` excludes these columns.
-                let material_col = read_lod_keyed_appearance(&batch, "material", row)?;
-                let texture_col = read_lod_keyed_appearance(&batch, "texture", row)?;
+                let material_col = read_lod_keyed_appearance(&batch, &material_cols, row)?;
+                let texture_col = read_lod_keyed_appearance(&batch, &texture_cols, row)?;
                 let mut solids = Vec::new();
                 for (lod, decoded, props) in obj.geometries {
                     // Real semantics on a geometry we are about to skip are

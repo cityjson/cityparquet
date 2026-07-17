@@ -400,13 +400,6 @@ fn railway_compatibility_export_restores_appearance_feature_local() {
     );
 }
 
-/// M5 debt item 3: the encoder keys a Compatibility-profile object's
-/// per-LoD `material`/`texture` map by the geometry's RAW source `lod`
-/// string (`geom.lod.clone().unwrap_or_default()` in
-/// `crate::encode::accumulate_geometry`), while export looks the entry up
-/// by the CANONICAL `Lod` string (`lod.map(|l| l.to_string())`, `Lod`
-/// having already normalised e.g. `"03"` to `"3"`). A non-canonical source
-/// LoD string therefore silently loses its appearance restoration: the
 /// G20 regression: a non-canonical source `lod` string must NOT lose its
 /// appearance on round-trip. Under the old single-column layout the encoder
 /// keyed the per-object appearance map by the raw `lod` (`"03"`) while export
@@ -493,10 +486,10 @@ fn railway_export_restores_appearance_under_a_non_canonical_lod() {
     })
     .unwrap();
 
-    // The "03" geometry's texture must survive: the derived export carries the
-    // SAME number of texture blocks as pristine railway. Under the old
-    // single-column layout this geometry's texture was silently dropped
-    // (raw "03" key vs canonical "3" lookup), so the count would be one lower.
+    // Global count: the derived export carries the SAME number of texture
+    // blocks as pristine railway. Under the old single-column layout this
+    // geometry's texture was silently dropped (raw "03" key vs canonical "3"
+    // lookup), so the count would be one lower.
     let (_, derived_textures) = count_geometry_appearance_keys(&export_path);
     assert_eq!(
         derived_textures, pristine_textures,
@@ -505,6 +498,37 @@ fn railway_export_restores_appearance_under_a_non_canonical_lod() {
     assert!(
         derived_textures > 0,
         "precondition: railway export must carry at least one texture block"
+    );
+
+    // Targeted: the specific rewritten object's own LoD-3 geometry must carry a
+    // texture in the export (a global count alone could mask a lost target
+    // texture offset by a duplicate elsewhere).
+    let target_texture = |path: &std::path::Path| -> Value {
+        let text = std::fs::read_to_string(path).unwrap();
+        for line in text.lines().skip(1) {
+            let feature: Value = serde_json::from_str(line).unwrap();
+            let Some(co) = feature["CityObjects"].get(TARGET_OBJECT_ID) else {
+                continue;
+            };
+            for geom in co["geometry"].as_array().unwrap() {
+                if geom.get("type").and_then(Value::as_str) == Some("GeometryInstance") {
+                    continue;
+                }
+                return geom.get("texture").cloned().unwrap_or(Value::Null);
+            }
+        }
+        Value::Null
+    };
+    let derived_target = target_texture(&export_path);
+    assert!(
+        derived_target.is_object(),
+        "the rewritten object's own LoD-3 geometry must keep its texture, got: {derived_target:?}"
+    );
+    // And it must be the SAME texture the pristine object exports.
+    assert_eq!(
+        derived_target,
+        target_texture(&pristine_out),
+        "the rewritten object's texture must match pristine railway's"
     );
 }
 
@@ -579,6 +603,84 @@ fn multi_lod_object_with_single_lod_appearance_round_trips() {
         "a multi-lod object with single-lod appearance must round-trip; differences: {:#?}",
         report.differences
     );
+}
+
+/// G20 sol-review Finding 1: with per-LoD appearance columns the bare
+/// `material` / `texture` names are no longer reserved, so a source attribute
+/// may legally be named `material` (a plain `VARCHAR`) or `material_lod03`
+/// (canonicalises to LoD 3, colliding with the real `material_lod3`). Export
+/// must classify appearance columns by their reserved-role metadata, not by
+/// name, so those attributes are never read as appearance — otherwise export
+/// would try to parse the `VARCHAR` `"brick"` as JSON (a hard error) or let
+/// `material_lod03` overwrite the genuine `material_lod3` restore.
+/// Derived from the railway fixture by injecting the two lookalike attributes.
+#[test]
+fn attributes_named_like_appearance_columns_do_not_corrupt_export() {
+    const TARGET_OBJECT_ID: &str = "UUID_bd865e62-18de-40ff-85da-883709a86f0f";
+
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    {
+        let co = doc["CityObjects"][TARGET_OBJECT_ID]
+            .as_object_mut()
+            .expect("precondition: target object must exist");
+        let attrs = co
+            .entry("attributes")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()))
+            .as_object_mut()
+            .unwrap();
+        // A plain string (invalid JSON) named exactly like the bare appearance
+        // prefix, and a non-canonical-suffix lookalike of material_lod3.
+        attrs.insert("material".to_string(), serde_json::json!("brick"));
+        attrs.insert(
+            "material_lod03".to_string(),
+            serde_json::json!("also brick"),
+        );
+    }
+
+    let input_dir = tempfile::tempdir().unwrap();
+    let input_path = input_dir.path().join("railway_lookalike_attrs.city.json");
+    std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(input_path.clone(), package_dir.path().to_path_buf());
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let export_path = export_dir.path().join("export.city.jsonl");
+    // Must not error: the lookalike attributes must be skipped by the
+    // reserved-role filter, never parsed as appearance JSON.
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: export_path.clone(),
+    })
+    .expect("export must not misread lookalike attributes as appearance");
+
+    // The target object's real LoD-3 texture must still round-trip, and the
+    // lookalike string attributes must survive as attributes.
+    let text = std::fs::read_to_string(&export_path).unwrap();
+    let mut checked = false;
+    for line in text.lines().skip(1) {
+        let feature: Value = serde_json::from_str(line).unwrap();
+        let Some(co) = feature["CityObjects"].get(TARGET_OBJECT_ID) else {
+            continue;
+        };
+        assert_eq!(
+            co["attributes"]["material"].as_str(),
+            Some("brick"),
+            "the `material` string attribute must round-trip as an attribute"
+        );
+        let has_texture = co["geometry"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g.get("texture").is_some());
+        assert!(has_texture, "the real LoD-3 texture must survive");
+        checked = true;
+    }
+    assert!(checked, "target object must be present in the export");
 }
 
 /// M5 debt item 2, rule half (a): `LocalAppearance::into_appearance` must

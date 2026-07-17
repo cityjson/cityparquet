@@ -54,7 +54,8 @@ use arrow_schema::Schema;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
-use cityparquet_schema::{CityParquetError, CityParquetMetadata, Lod, PackageManifest, Result};
+use cityparquet_schema::model::{LOD_KEY, ROLE_KEY, ROLE_RESERVED};
+use cityparquet_schema::{CityParquetError, CityParquetMetadata, PackageManifest, Result};
 use cjseq::{
     Appearance, CityJSON, CityJSONFeature, Geometry, GeometryTemplates, GeometryType, Material,
     Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
@@ -483,61 +484,76 @@ fn build_header(meta: &CityParquetMetadata) -> Result<CityJSON> {
     Ok(header)
 }
 
-/// One row's `material`/`texture` JSON (the encoder's `{"<lod>": {...}}`
-/// per-object map), parsed once per batch alongside `decode_batch`'s own
-/// pass — `decode_batch` deliberately excludes these (see its module docs),
-/// so export reads them straight off the batch.
-pub(crate) fn row_json_object(
-    batch: &RecordBatch,
-    name: &str,
-    row: usize,
-) -> Result<Option<Value>> {
-    let Some(col) = batch.column_by_name(name) else {
-        return Ok(None);
-    };
-    if col.is_null(row) {
-        return Ok(None);
-    }
-    let arr = col
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| err(format!("column '{name}' is not a Utf8 array")))?;
-    Ok(Some(serde_json::from_str(arr.value(row))?))
+/// The reserved appearance columns for one theme prefix (`"material"` /
+/// `"texture"`) in a batch, resolved ONCE per batch so the per-row reader need
+/// not rescan the schema. Each entry pairs the column's array index with the
+/// canonical LoD key it maps to — taken from the field's `cityparquet:lod`
+/// metadata, or `""` for the transitional bare lod-less column.
+///
+/// A column qualifies only if it carries the reserved role (§5.1). This is
+/// load-bearing: with per-LoD appearance columns the bare `material` /
+/// `texture` names are no longer reserved, so a source ATTRIBUTE may legally
+/// be named `material`, or `material_lod03` (which canonicalises to LoD 3 and
+/// would otherwise collide with the real `material_lod3`). Classifying by the
+/// reserved-role metadata rather than the name alone keeps such attributes out.
+pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usize, String)> {
+    batch
+        .schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| {
+            if field.metadata().get(ROLE_KEY).map(String::as_str) != Some(ROLE_RESERVED) {
+                return None;
+            }
+            if field.name() == prefix {
+                return Some((index, String::new()));
+            }
+            if field
+                .name()
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with("_lod"))
+            {
+                // A reserved per-LoD appearance field always carries its
+                // canonical LoD in `cityparquet:lod` (set by the schema), so
+                // trust that rather than re-parsing a possibly non-canonical
+                // suffix out of the column name.
+                return field
+                    .metadata()
+                    .get(LOD_KEY)
+                    .map(|lod| (index, lod.clone()));
+            }
+            None
+        })
+        .collect()
 }
 
 /// Rebuild an object row's appearance into an in-memory `{"<lod>": <theme
-/// map>}` object, reading the per-LoD `material_lod*` / `texture_lod*` columns
-/// (§11.1) and keying each by the **canonical** LoD string of the column it
-/// came from. This is the inverse of the encoder's per-LoD column layout: the
-/// downstream restore loop looks appearance up by a geometry's canonical LoD
-/// (`lod.to_string()`), and because both sides now derive that key from the
-/// same §9 column suffix, the raw-vs-canonical key mismatch the single-column
-/// layout had to detect (the former `appearance_lod_misses`) cannot arise.
-/// A bare un-suffixed column (the transitional lod-less path) keys to `""`.
-/// Returns `None` when the row carries no appearance at all.
+/// map>}` object from the pre-resolved appearance `columns` (see
+/// [`appearance_columns`]), keyed by each column's canonical LoD. This is the
+/// inverse of the encoder's per-LoD column layout: the downstream restore loop
+/// looks appearance up by a geometry's canonical LoD (`lod.to_string()`), and
+/// because both sides now derive that key from the same §9 column suffix, the
+/// raw-vs-canonical key mismatch the single-column layout had to detect (the
+/// former `appearance_lod_misses`) cannot arise. Returns `None` when the row
+/// carries no appearance at all.
 pub(crate) fn read_lod_keyed_appearance(
     batch: &RecordBatch,
-    prefix: &str,
+    columns: &[(usize, String)],
     row: usize,
 ) -> Result<Option<Value>> {
     let mut map = serde_json::Map::new();
-    if let Some(value) = row_json_object(batch, prefix, row)? {
-        map.insert(String::new(), value);
-    }
-    for field in batch.schema().fields() {
-        let Some(suffix) = field
-            .name()
-            .strip_prefix(prefix)
-            .and_then(|rest| rest.strip_prefix('_'))
-        else {
+    for (index, lod_key) in columns {
+        let col = batch.column(*index);
+        if col.is_null(row) {
             continue;
-        };
-        let Some(lod) = Lod::from_column_suffix(suffix) else {
-            continue;
-        };
-        if let Some(value) = row_json_object(batch, field.name(), row)? {
-            map.insert(lod.to_string(), value);
         }
+        let arr = col.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+            err(format!(
+                "appearance column at index {index} is not a Utf8 array"
+            ))
+        })?;
+        map.insert(lod_key.clone(), serde_json::from_str(arr.value(row))?);
     }
     Ok((!map.is_empty()).then_some(Value::Object(map)))
 }
@@ -1131,10 +1147,12 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         };
         for batch in reader {
             let batch = batch?;
+            let material_cols = appearance_columns(&batch, "material");
+            let texture_cols = appearance_columns(&batch, "texture");
             let objects = decode_batch(&batch, &meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
-                let material = read_lod_keyed_appearance(&batch, "material", row)?;
-                let texture = read_lod_keyed_appearance(&batch, "texture", row)?;
+                let material = read_lod_keyed_appearance(&batch, &material_cols, row)?;
+                let texture = read_lod_keyed_appearance(&batch, &texture_cols, row)?;
                 let key = obj.feature_id.clone().unwrap_or_else(|| obj.id.clone());
                 object_count += 1;
                 groups.push(key, (obj, material, texture));
