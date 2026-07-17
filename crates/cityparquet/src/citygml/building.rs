@@ -79,6 +79,16 @@ type SolidTrees = (Vec<Value>, Vec<Value>, Vec<Value>, Vec<Value>, Vec<Value>);
 /// A buffered building: everything pass 1 collects before resolution.
 pub struct RawBuilding {
     pub id: Option<String>,
+    /// The CityJSON object type of the ROOT object (`"Building"` for a
+    /// `bldg:Building`; a mapped type such as `"WaterBody"`/`"LandUse"` for a
+    /// generic 1st-level non-building object — CG-7). Parts are always
+    /// `"BuildingPart"` (only buildings have parts here).
+    object_type: String,
+    /// Standalone `lodN{MultiSurface,Geometry}` geometry a NON-building object
+    /// carries directly (not via `boundedBy`): one CityJSON `MultiSurface` per
+    /// LoD, no semantics. Empty for a Building (whose MultiSurfaces come from
+    /// `boundedBy`) — CG-7.
+    plain_surfaces: Vec<(String, Vec<Polygon>)>,
     /// One solid geometry per distinct LoD (`bldg:lodNSolid`); each LoD maps to
     /// its own CityParquet geometry column, so all are emitted.
     solids: Vec<(String, SolidGeom)>,
@@ -122,6 +132,103 @@ pub fn read_building<R: BufRead>(
     read_abstract_building(reader, buf, id, b"Building", 0)
 }
 
+/// Read a generic 1st-level NON-building CityObject subtree (positioned after
+/// its `Start`, ending at `End(end_name)`) into a [`RawBuilding`] tagged with
+/// `object_type` (CG-7). Reads its `lodN{Solid}` (as Solid geometry),
+/// `lodN{MultiSurface,Geometry}` (as a plain MultiSurface, no semantics), and
+/// `gen:` generic attributes. Semantic surfaces, parts, and appearance on
+/// non-building objects are out of scope for this milestone.
+pub fn read_generic_object<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    object_type: &str,
+    id: Option<String>,
+    end_name: &[u8],
+) -> Result<RawBuilding> {
+    let mut b = RawBuilding {
+        id,
+        object_type: object_type.to_string(),
+        plain_surfaces: Vec::new(),
+        solids: Vec::new(),
+        polygons: HashMap::new(),
+        surfaces: Vec::new(),
+        semantic_of_polygon: HashMap::new(),
+        boundary_polys: Vec::new(),
+        boundary_refs: Vec::new(),
+        attributes: serde_json::Map::new(),
+        parts: Vec::new(),
+        appearance: ReadAppearance::default(),
+    };
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                let name = local.as_ref().to_vec();
+                // Geometry containers are in the object's own module namespace
+                // (never gml:), so match by local-name suffix.
+                if let Some(lod) = lod_suffix(&name, b"Solid") {
+                    let geom = read_lod_solid(reader, buf, name)?;
+                    if !b.solids.iter().any(|(l, _)| *l == lod) {
+                        b.solids.push((lod, geom));
+                    }
+                } else if let Some(lod) = lod_suffix(&name, b"MultiSurface") {
+                    // Only `lodNMultiSurface` is unambiguously a surface
+                    // collection. `lodNGeometry` (which may wrap a Solid) is NOT
+                    // flattened here — descending it correctly is deferred.
+                    let polys: Vec<Polygon> = geometry::collect_polygons(reader, buf)?
+                        .into_iter()
+                        .map(|(_, p)| p)
+                        .collect();
+                    if !polys.is_empty() {
+                        // Register ided polygons so a sibling solid may xlink to
+                        // them, then keep the list as this object's geometry.
+                        for poly in &polys {
+                            if let Some(id) = &poly.id {
+                                b.polygons.insert(id.clone(), poly.clone());
+                            }
+                        }
+                        b.plain_surfaces.push((lod, polys));
+                    }
+                } else if let (true, Some(ty)) =
+                    (ns_is(&rr, NS_GEN), attributes::generic_attr(&name))
+                {
+                    let attr_name = get_attr_local(&e, b"name");
+                    if let Some((k, v)) =
+                        attributes::read_generic_attribute(reader, buf, attr_name, ty)?
+                    {
+                        attributes::accumulate(&mut b.attributes, k, v);
+                    }
+                } else if !ns_is(&rr, NS_GML) {
+                    // A typed module property (e.g. wtr:class, luse:function): if
+                    // it is a leaf with text, keep it as a string attribute;
+                    // otherwise (structural, e.g. boundedBy) it is consumed and
+                    // dropped. gml: elements are never attributes.
+                    if let Some(text) = read_leaf_text(reader, buf, &name)? {
+                        attributes::accumulate(
+                            &mut b.attributes,
+                            String::from_utf8_lossy(&name).into_owned(),
+                            Value::String(text),
+                        );
+                    }
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == end_name => break,
+            Event::Eof => {
+                return Err(CityParquetError::Schema(format!(
+                    "unexpected end of document inside <{}>",
+                    String::from_utf8_lossy(end_name)
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(b)
+}
+
 /// Read a `_AbstractBuilding` subtree (a `bldg:Building` or `bldg:BuildingPart`,
 /// identical content model), breaking on `End(end_name)`.
 fn read_abstract_building<R: BufRead>(
@@ -138,6 +245,8 @@ fn read_abstract_building<R: BufRead>(
     }
     let mut b = RawBuilding {
         id,
+        object_type: "Building".to_string(),
+        plain_surfaces: Vec::new(),
         solids: Vec::new(),
         polygons: HashMap::new(),
         surfaces: Vec::new(),
@@ -500,6 +609,11 @@ impl RawBuilding {
         for (lod, geom) in &self.solids {
             built.push(self.build_solid_geometry(geom, lod, vb)?);
         }
+        // A non-building object's own lodN{MultiSurface,Geometry} geometry
+        // (CG-7): one CityJSON MultiSurface per LoD, no semantics.
+        for (lod, polys) in &self.plain_surfaces {
+            built.push(build_plain_multisurface(polys, lod, vb)?);
+        }
         // For each LoD whose geometry lives only in `boundedBy` surfaces (no
         // `lodNSolid` at that LoD), emit one MultiSurface. When a solid exists
         // at that LoD the boundary polygons are already its xlink targets, so
@@ -684,7 +798,7 @@ impl RawBuilding {
         co_obj.insert(
             "type".to_string(),
             json!(if parent_id.is_none() {
-                "Building"
+                self.object_type.as_str()
             } else {
                 "BuildingPart"
             }),
@@ -1030,6 +1144,74 @@ fn material_values_from_face_ids(node: &Value, map: &HashMap<String, usize>) -> 
         },
         _ => (Value::Null, false),
     }
+}
+
+/// Read a leaf element's text content (positioned after its `Start`, ending at
+/// `End(end)`): `Some(trimmed text)` for a text-only leaf, `None` if it has any
+/// child element (structural, not a scalar attribute) or is empty. Used to
+/// capture a non-building object's typed module properties generically (CG-7).
+fn read_leaf_text<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    end: &[u8],
+) -> Result<Option<String>> {
+    let mut text = String::new();
+    let mut has_child = false;
+    loop {
+        buf.clear();
+        match reader.read_event_into(buf).map_err(xml_err)? {
+            Event::Text(t) => text.push_str(&t.unescape().map_err(xml_err)?),
+            Event::CData(t) => text.push_str(&String::from_utf8_lossy(&t)),
+            Event::Start(_) => {
+                has_child = true;
+                skip_element(reader, buf)?;
+            }
+            Event::End(e) if e.local_name().as_ref() == end => break,
+            Event::Eof => {
+                return Err(CityParquetError::Schema(
+                    "unexpected end of document inside a typed property".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if has_child {
+        return Ok(None);
+    }
+    let t = text.trim();
+    Ok((!t.is_empty()).then(|| t.to_string()))
+}
+
+/// Build a CityJSON `MultiSurface` geometry (no semantics) for a non-building
+/// object's `lodN{MultiSurface,Geometry}` from a flat polygon list, returning
+/// the `(geometry, face-id, ring-id, reverse)` trees like the other builders
+/// (CG-7). Every face has reverse=false.
+fn build_plain_multisurface(
+    polys: &[Polygon],
+    lod: &str,
+    vb: &mut VertexBuilder,
+) -> Result<(Value, Value, Value, Value)> {
+    let mut boundaries = Vec::with_capacity(polys.len());
+    let mut face_ids = Vec::with_capacity(polys.len());
+    let mut ring_ids = Vec::with_capacity(polys.len());
+    let mut reverse = Vec::with_capacity(polys.len());
+    for poly in polys {
+        boundaries.push(surface_rings(poly, false, vb)?);
+        face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
+        ring_ids.push(ring_ids_value(poly));
+        reverse.push(reverse_leaf(poly, false));
+    }
+    let g = json!({
+        "type": "MultiSurface",
+        "lod": lod,
+        "boundaries": Value::Array(boundaries),
+    });
+    Ok((
+        g,
+        Value::Array(face_ids),
+        Value::Array(ring_ids),
+        Value::Array(reverse),
+    ))
 }
 
 /// A surface's rings `[exterior, hole...]`, each a list of vertex indices; when

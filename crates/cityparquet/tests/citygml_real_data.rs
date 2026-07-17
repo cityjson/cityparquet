@@ -837,3 +837,51 @@ fn citygml2_reads_citymodel_level_appearance() {
     let face0_ring0 = tshell[0].as_array().unwrap()[0].as_array().unwrap();
     assert_eq!(face0_ring0, &vec![serde_json::Value::Null], "p0 untextured");
 }
+
+/// CG-7: 1st-level non-building CityObjects (here a WaterBody with a lod2Solid
+/// and a LandUse with a lod1MultiSurface) are read as CityObjects of the
+/// mapped CityJSON type with their geometry + generic attributes.
+#[test]
+fn citygml2_reads_non_building_city_objects() {
+    let src = Source::open(&data_fixture("nonbuilding_objects.gml")).unwrap();
+    let feats: Vec<_> = src
+        .features()
+        .unwrap()
+        .collect::<cityparquet::Result<Vec<_>>>()
+        .unwrap();
+    // One feature per top-level object.
+    assert_eq!(feats.len(), 2, "WaterBody + LandUse");
+
+    let water = feats
+        .iter()
+        .flat_map(|f| f.city_objects.iter())
+        .find(|(id, _)| id.as_str() == "W1")
+        .map(|(_, co)| co)
+        .expect("WaterBody W1");
+    assert_eq!(water.thetype.as_str(), "WaterBody");
+    let wg = &water.geometry.as_ref().expect("water geometry")[0];
+    assert!(matches!(
+        wg.thetype,
+        cityparquet::cjseq::GeometryType::Solid
+    ));
+    assert_eq!(wg.lod.as_deref(), Some("2"));
+    let wattrs = water.attributes.as_ref().unwrap();
+    assert_eq!(wattrs["usage"], serde_json::json!("leisure"));
+    // A typed module property (wtr:class) is captured as a string attribute.
+    assert_eq!(wattrs["class"], serde_json::json!("river"));
+
+    let land = feats
+        .iter()
+        .flat_map(|f| f.city_objects.iter())
+        .find(|(id, _)| id.as_str() == "L1")
+        .map(|(_, co)| co)
+        .expect("LandUse L1");
+    assert_eq!(land.thetype.as_str(), "LandUse");
+    let lg = &land.geometry.as_ref().expect("land geometry")[0];
+    assert!(matches!(
+        lg.thetype,
+        cityparquet::cjseq::GeometryType::MultiSurface
+    ));
+    assert_eq!(lg.lod.as_deref(), Some("1"));
+    assert_eq!(lg.boundaries.as_array().unwrap().len(), 2, "two surfaces");
+}
