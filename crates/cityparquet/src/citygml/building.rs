@@ -351,15 +351,19 @@ fn read_installation<R: BufRead>(
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
         match ev {
             Event::Start(e) => {
-                if ns_is(&rr, NS_BLDG) && e.local_name().as_ref() == b"BuildingInstallation" {
+                let local = e.local_name();
+                // `outerBuildingInstallation` wraps `bldg:BuildingInstallation`;
+                // `interiorBuildingInstallation` wraps `bldg:IntBuildingInstallation`.
+                // Both map to the CityJSON `BuildingInstallation` type.
+                let is_install = ns_is(&rr, NS_BLDG)
+                    && matches!(
+                        local.as_ref(),
+                        b"BuildingInstallation" | b"IntBuildingInstallation"
+                    );
+                if is_install {
+                    let end = local.as_ref().to_vec();
                     let id = gml_id(&e);
-                    let inst = read_generic_object(
-                        reader,
-                        buf,
-                        "BuildingInstallation",
-                        id,
-                        b"BuildingInstallation",
-                    )?;
+                    let inst = read_generic_object(reader, buf, "BuildingInstallation", id, &end)?;
                     b.parts.push(inst);
                 } else {
                     skip_element(reader, buf)?;

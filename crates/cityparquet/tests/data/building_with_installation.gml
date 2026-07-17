@@ -87,6 +87,27 @@
 					</bldg:lod2Geometry>
 				</bldg:BuildingInstallation>
 			</bldg:outerBuildingInstallation>
+			<bldg:interiorBuildingInstallation>
+				<bldg:IntBuildingInstallation gml:id="inst2">
+					<bldg:function>stairs</bldg:function>
+					<bldg:lod2Geometry>
+						<gml:MultiSurface>
+							<gml:surfaceMember>
+								<gml:Polygon>
+									<gml:exterior>
+										<gml:LinearRing>
+											<gml:pos>1.0 1.0 1.0</gml:pos>
+											<gml:pos>2.0 1.0 1.0</gml:pos>
+											<gml:pos>1.0 2.0 1.0</gml:pos>
+											<gml:pos>1.0 1.0 1.0</gml:pos>
+										</gml:LinearRing>
+									</gml:exterior>
+								</gml:Polygon>
+							</gml:surfaceMember>
+						</gml:MultiSurface>
+					</bldg:lod2Geometry>
+				</bldg:IntBuildingInstallation>
+			</bldg:interiorBuildingInstallation>
 		</bldg:Building>
 	</cityObjectMember>
 </CityModel>

@@ -901,10 +901,24 @@ fn citygml2_reads_building_installation_child() {
 
     let bi = f.city_objects.get("BI").expect("Building BI");
     assert_eq!(bi.thetype.as_str(), "Building");
+    let children = bi.children.as_ref().unwrap();
     assert!(
-        bi.children.as_ref().unwrap().contains(&"inst1".to_string()),
-        "Building lists inst1 as a child"
+        children.contains(&"inst1".to_string()),
+        "outer installation"
     );
+    assert!(
+        children.contains(&"inst2".to_string()),
+        "interior IntBuildingInstallation is also a child"
+    );
+
+    // The interior installation (bldg:IntBuildingInstallation) maps to the same
+    // CityJSON BuildingInstallation type.
+    let inst2 = f
+        .city_objects
+        .get("inst2")
+        .expect("interior installation inst2");
+    assert_eq!(inst2.thetype.as_str(), "BuildingInstallation");
+    assert_eq!(inst2.parents.as_ref().unwrap(), &vec!["BI".to_string()]);
 
     let inst = f.city_objects.get("inst1").expect("installation inst1");
     assert_eq!(inst.thetype.as_str(), "BuildingInstallation");
