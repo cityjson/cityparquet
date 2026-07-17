@@ -92,22 +92,6 @@ pub struct ExportReport {
     /// (M4 sidecar data), so exporting them would leave dangling references
     /// — invalid CityJSON, same reasoning as the GeometryInstance drop.
     pub appearance_refs_dropped: usize,
-    /// Geometries on the SIDECAR-PRESENT restore path (`LocalAppearance` is
-    /// available, i.e. `materials.parquet`/`textures.parquet` were loaded)
-    /// whose object-level per-LoD `material`/`texture` map carries a RAW key
-    /// that `Lod::parse`s to this geometry's own canonical lod yet
-    /// string-mismatches it — the encoder keyed the entry by a non-canonical
-    /// source `lod` string (e.g. `"03"`, which `Lod::parse` normalises to
-    /// `"3"`) while export looks the entry up by the canonical string,
-    /// silently missing it. This is a distinct failure mode from
-    /// [`Self::appearance_refs_dropped`] (which only ever applies to the
-    /// NO-sidecar path, where the whole map is deliberately dropped
-    /// regardless of key). Deliberately does NOT fire merely because the map
-    /// has entries for OTHER lods and none for this one — an object with
-    /// several geometries at different lods, appearance defined on only
-    /// some of them, is legitimate CityJSON, not a restore failure. `0` for
-    /// both shipped fixtures, which use only canonical lod strings.
-    pub appearance_lod_misses: usize,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -521,9 +505,46 @@ pub(crate) fn row_json_object(
     Ok(Some(serde_json::from_str(arr.value(row))?))
 }
 
-/// Whether the object-level `{"<lod>": {...}}` appearance map (the encoder's
-/// per-LoD keying of `material`/`texture`) has an entry for the geometry at
-/// `lod_key`. Used only on the Core-profile path (no `materials.parquet`/
+/// Rebuild an object row's appearance into an in-memory `{"<lod>": <theme
+/// map>}` object, reading the per-LoD `material_lod*` / `texture_lod*` columns
+/// (§11.1) and keying each by the **canonical** LoD string of the column it
+/// came from. This is the inverse of the encoder's per-LoD column layout: the
+/// downstream restore loop looks appearance up by a geometry's canonical LoD
+/// (`lod.to_string()`), and because both sides now derive that key from the
+/// same §9 column suffix, the raw-vs-canonical key mismatch the single-column
+/// layout had to detect (the former `appearance_lod_misses`) cannot arise.
+/// A bare un-suffixed column (the transitional lod-less path) keys to `""`.
+/// Returns `None` when the row carries no appearance at all.
+pub(crate) fn read_lod_keyed_appearance(
+    batch: &RecordBatch,
+    prefix: &str,
+    row: usize,
+) -> Result<Option<Value>> {
+    let mut map = serde_json::Map::new();
+    if let Some(value) = row_json_object(batch, prefix, row)? {
+        map.insert(String::new(), value);
+    }
+    for field in batch.schema().fields() {
+        let Some(suffix) = field
+            .name()
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix('_'))
+        else {
+            continue;
+        };
+        let Some(lod) = Lod::from_column_suffix(suffix) else {
+            continue;
+        };
+        if let Some(value) = row_json_object(batch, field.name(), row)? {
+            map.insert(lod.to_string(), value);
+        }
+    }
+    Ok((!map.is_empty()).then_some(Value::Object(map)))
+}
+
+/// Whether the rebuilt `{"<lod>": {...}}` appearance map (see
+/// [`read_lod_keyed_appearance`]) has an entry for the geometry at `lod_key`.
+/// Used only on the Core-profile path (no `materials.parquet`/
 /// `textures.parquet` sidecars listed in the manifest): the appearance
 /// DEFINITIONS these maps index are not stored anywhere in that kind of
 /// package, so export only ever CHECKS for the entry (to count the drop) and
@@ -532,35 +553,6 @@ pub(crate) fn row_json_object(
 /// the actual re-attachment instead and this function is not consulted.
 fn has_appearance_for_lod(map: &Option<Value>, lod_key: &str) -> bool {
     map.as_ref().is_some_and(|m| m.get(lod_key).is_some())
-}
-
-/// The PRECISE `appearance_lod_misses` detector (see
-/// [`ExportReport::appearance_lod_misses`]): true only when the canonical
-/// lookup for this geometry's own lod missed (`hit == false`) AND the
-/// per-object `{"<raw-lod>": {...}}` map carries some RAW key that
-/// `Lod::parse`s to this geometry's own canonical `lod` yet differs from it
-/// as a string (`canonical_key`) — i.e. the non-canonical-key encoding bug
-/// this counter exists to catch. A map that simply has no entry for this
-/// geometry's lod (because appearance was only ever defined for a DIFFERENT
-/// lod of this object — legitimate CityJSON) does NOT count: no key in the
-/// map parses to THIS lod at all, canonical or otherwise. `lod: None`
-/// (no canonical lod to match against) never counts.
-fn map_has_noncanonical_lod_match(
-    map: &Option<Value>,
-    hit: bool,
-    lod: Option<Lod>,
-    canonical_key: &str,
-) -> bool {
-    if hit {
-        return false;
-    }
-    let Some(lod) = lod else {
-        return false;
-    };
-    map.as_ref().and_then(Value::as_object).is_some_and(|o| {
-        o.keys()
-            .any(|k| k != canonical_key && Lod::parse(k).is_ok_and(|parsed| parsed == lod))
-    })
 }
 
 /// A *ring* is the innermost texture-map array. Pre-rewrite/pre-localisation
@@ -1141,8 +1133,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             let batch = batch?;
             let objects = decode_batch(&batch, &meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
-                let material = row_json_object(&batch, "material", row)?;
-                let texture = row_json_object(&batch, "texture", row)?;
+                let material = read_lod_keyed_appearance(&batch, "material", row)?;
+                let texture = read_lod_keyed_appearance(&batch, "texture", row)?;
                 let key = obj.feature_id.clone().unwrap_or_else(|| obj.id.clone());
                 object_count += 1;
                 groups.push(key, (obj, material, texture));
@@ -1152,7 +1144,6 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
 
     let mut instance_geometries_dropped = 0usize;
     let mut appearance_refs_dropped = 0usize;
-    let mut appearance_lod_misses = 0usize;
     let mut features: Vec<CityJSONFeature> = Vec::with_capacity(groups.items.len());
     for (feature_id, entries) in groups.into_ordered() {
         let mut feature = CityJSONFeature::new();
@@ -1183,16 +1174,11 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     reconstruct_boundaries(&decoded.kind, &gtype, props.as_ref(), &vmap)?;
                 let semantics = props.as_ref().and_then(|p| p.get("semantics")).cloned();
 
-                // Keyed by the CANONICAL Lod string. The encoder
-                // (`crate::encode::accumulate_geometry`) keys the per-object
-                // appearance map by the RAW source lod string
-                // (`geom.lod.clone().unwrap_or_default()`), so a
-                // non-canonical source LoD (e.g. "03", which `Lod::parse`
-                // normalises to "3") does not match this canonical lookup
-                // key — a real restore miss, counted below in
-                // `appearance_lod_misses` on the sidecar-present path (both
-                // real fixtures use canonical strings only, so this stays 0
-                // for them).
+                // Look appearance up by this geometry's CANONICAL LoD. Both
+                // this key and the map's keys (see `read_lod_keyed_appearance`)
+                // derive from the same §9 column suffix, so the lookup is exact
+                // — the raw-vs-canonical mismatch the single-column layout had
+                // to detect (G20) is gone with the per-LoD columns.
                 let lod_key = lod.map(|l| l.to_string()).unwrap_or_default();
                 let mut geom_material: Option<HashMap<String, Material>> = None;
                 let mut geom_texture: Option<HashMap<String, Texture>> = None;
@@ -1217,28 +1203,6 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                                 ))
                             })?;
                             geom_texture = Some(serde_json::from_value(localised)?);
-                        }
-                        // The sidecar IS present (defs are restorable in
-                        // principle): a raw map key that parses to this
-                        // geometry's own canonical lod but string-mismatches
-                        // it is a real miss, distinct from
-                        // `appearance_refs_dropped` below (which only ever
-                        // fires on the no-sidecar path). A map that simply
-                        // has no entry for THIS lod (appearance defined only
-                        // for a different lod of this object) is NOT a miss
-                        // — see `map_has_noncanonical_lod_match`'s docs.
-                        if map_has_noncanonical_lod_match(
-                            material,
-                            material_hit.is_some(),
-                            *lod,
-                            &lod_key,
-                        ) || map_has_noncanonical_lod_match(
-                            texture,
-                            texture_hit.is_some(),
-                            *lod,
-                            &lod_key,
-                        ) {
-                            appearance_lod_misses += 1;
                         }
                     }
                     None => {
@@ -1322,7 +1286,6 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         object_count,
         instance_geometries_dropped,
         appearance_refs_dropped,
-        appearance_lod_misses,
     })
 }
 

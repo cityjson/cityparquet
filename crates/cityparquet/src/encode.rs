@@ -374,12 +374,23 @@ fn build_template(geom: &Geometry, pool: &VertexPool) -> Result<Option<TemplateF
 #[derive(Default)]
 struct GeometryAccumulator {
     /// Column slot key (LoD suffix, or `""` for the un-suffixed `geometry`
-    /// column) -> (WKB bytes, bbox, geometry_properties JSON).
-    slots: HashMap<String, (Vec<u8>, [f64; 6], String)>,
-    material: serde_json::Map<String, Value>,
-    texture: serde_json::Map<String, Value>,
+    /// column) -> (WKB bytes, bbox, geometry_properties JSON, material JSON,
+    /// texture JSON). Appearance is keyed by the SAME canonical slot key as
+    /// the geometry it decorates (§11.1), so the raw-vs-canonical LoD-key
+    /// mismatch that the old single-column layout had to guard against
+    /// cannot arise: a LoD's geometry, semantics and appearance share one key.
+    slots: HashMap<String, GeometrySlotData>,
     template: Option<TemplateFields>,
     own_bbox: Option<[f64; 6]>,
+}
+
+/// One geometry slot's per-object payload: WKB, bbox, and the three JSON
+/// columns (`geometry_properties`, `material`, `texture`) that decorate it.
+struct GeometrySlotData {
+    bytes: Vec<u8>,
+    properties: String,
+    material: Option<Value>,
+    texture: Option<Value>,
 }
 
 /// This feature's local material definitions, from `feature.appearance`
@@ -559,18 +570,18 @@ fn accumulate_geometry(
         // indices are rewritten to dataset-global ids — both handled by the
         // shared pipeline in `rewrite_geometry_appearance` (also used by the
         // geometry-templates sidecar, see its doc comment).
-        let lod_key = geom.lod.clone().unwrap_or_default();
         let (material, texture, props) =
             rewrite_geometry_appearance(geom, &outcome, interner, defs, &format!("object {id}"))?;
-        if let Some(material) = material {
-            acc.material.insert(lod_key.clone(), material);
-        }
-        if let Some(texture) = texture {
-            acc.texture.insert(lod_key, texture);
-        }
 
-        acc.slots
-            .insert(slot_key, (outcome.bytes, outcome.bbox, props));
+        acc.slots.insert(
+            slot_key,
+            GeometrySlotData {
+                bytes: outcome.bytes,
+                properties: props,
+                material,
+                texture,
+            },
+        );
     }
     Ok(())
 }
@@ -709,12 +720,16 @@ fn push_attribute_value(
     Ok(())
 }
 
-/// One geometry/geometry_properties column pair for a single LoD (or the
-/// single un-suffixed pair when the dataset has no LoDs).
+/// The four columns of a single LoD (or the un-suffixed set when the dataset
+/// has no LoDs): geometry WKB, geometry_properties, material, texture (§9,
+/// §11.1). Appearance builders live here so a LoD's appearance is paired to
+/// its geometry by the shared column suffix, never by a JSON key.
 struct GeometrySlot {
     key: String,
     geometry: BinaryBuilder,
     properties: StringBuilder,
+    material: StringBuilder,
+    texture: StringBuilder,
 }
 
 /// Owns one builder per rendered Arrow schema column; [`Self::finish_arrays`]
@@ -732,8 +747,6 @@ struct RowWriter {
     bbox_nulls: NullBufferBuilder,
     per_lod: bool,
     geometry_slots: Vec<GeometrySlot>,
-    material: StringBuilder,
-    texture: StringBuilder,
     template_id: StringBuilder,
     template_point: BinaryBuilder,
     template_matrix: StringBuilder,
@@ -746,21 +759,20 @@ struct RowWriter {
 impl RowWriter {
     fn new(scan: &ScanResult) -> Self {
         let per_lod = !scan.lods.is_empty();
+        let new_slot = |key: String| GeometrySlot {
+            key,
+            geometry: BinaryBuilder::new(),
+            properties: StringBuilder::new(),
+            material: StringBuilder::new(),
+            texture: StringBuilder::new(),
+        };
         let geometry_slots = if per_lod {
             scan.lods
                 .iter()
-                .map(|lod| GeometrySlot {
-                    key: lod.column_suffix(),
-                    geometry: BinaryBuilder::new(),
-                    properties: StringBuilder::new(),
-                })
+                .map(|lod| new_slot(lod.column_suffix()))
                 .collect()
         } else {
-            vec![GeometrySlot {
-                key: String::new(),
-                geometry: BinaryBuilder::new(),
-                properties: StringBuilder::new(),
-            }]
+            vec![new_slot(String::new())]
         };
         let attributes = scan
             .schema
@@ -779,8 +791,6 @@ impl RowWriter {
             bbox_nulls: NullBufferBuilder::new(0),
             per_lod,
             geometry_slots,
-            material: StringBuilder::new(),
-            texture: StringBuilder::new(),
             template_id: StringBuilder::new(),
             template_point: BinaryBuilder::new(),
             template_matrix: StringBuilder::new(),
@@ -877,28 +887,25 @@ impl RowWriter {
 
         for slot in &mut self.geometry_slots {
             match acc.slots.get(&slot.key) {
-                Some((bytes, _bbox, props)) => {
-                    slot.geometry.append_value(bytes);
-                    slot.properties.append_value(props);
+                Some(data) => {
+                    slot.geometry.append_value(&data.bytes);
+                    slot.properties.append_value(&data.properties);
+                    match &data.material {
+                        Some(m) => slot.material.append_value(serde_json::to_string(m)?),
+                        None => slot.material.append_null(),
+                    }
+                    match &data.texture {
+                        Some(t) => slot.texture.append_value(serde_json::to_string(t)?),
+                        None => slot.texture.append_null(),
+                    }
                 }
                 None => {
                     slot.geometry.append_null();
                     slot.properties.append_null();
+                    slot.material.append_null();
+                    slot.texture.append_null();
                 }
             }
-        }
-
-        if acc.material.is_empty() {
-            self.material.append_null();
-        } else {
-            self.material
-                .append_value(serde_json::to_string(&Value::Object(acc.material))?);
-        }
-        if acc.texture.is_empty() {
-            self.texture.append_null();
-        } else {
-            self.texture
-                .append_value(serde_json::to_string(&Value::Object(acc.texture))?);
         }
 
         let bbox = resolve_bbox(acc.own_bbox, id, co, feature, &pool)?;
@@ -964,9 +971,9 @@ impl RowWriter {
         for slot in &mut self.geometry_slots {
             arrays.push(Arc::new(slot.geometry.finish()));
             arrays.push(Arc::new(slot.properties.finish()));
+            arrays.push(Arc::new(slot.material.finish()));
+            arrays.push(Arc::new(slot.texture.finish()));
         }
-        arrays.push(Arc::new(self.material.finish()));
-        arrays.push(Arc::new(self.texture.finish()));
         arrays.push(self.finish_template());
         arrays.push(Arc::new(self.other.finish()));
         for (_, builder) in &mut self.attributes {
@@ -1341,8 +1348,8 @@ mod tests {
         assert_eq!(stats.degenerate_rings_dropped, 1);
         assert_eq!(stats.degenerate_surfaces_dropped, 1);
 
-        let (_, _, props) = acc.slots.get("lod2").expect("lod2 slot populated");
-        let props: Value = serde_json::from_str(props).unwrap();
+        let slot = acc.slots.get("lod2").expect("lod2 slot populated");
+        let props: Value = serde_json::from_str(&slot.properties).unwrap();
         assert_eq!(
             props["dropped_degenerate"],
             serde_json::json!({"rings": 1, "surfaces": [0]})
@@ -1364,12 +1371,12 @@ mod tests {
         let gid_material_7 = interner.intern_material(&local_materials[7]);
         let gid_texture_1 = interner.intern_texture(&local_textures[1]);
         assert_eq!(
-            acc.material["2"],
+            *slot.material.as_ref().unwrap(),
             serde_json::json!({"visual": {"values": [gid_material_7]}}),
             "material per-surface values must be realigned and globally rewritten"
         );
         assert_eq!(
-            acc.texture["2"],
+            *slot.texture.as_ref().unwrap(),
             serde_json::json!({"visual": {"values": [[[
                 gid_texture_1,
                 [0.0, 0.0],
@@ -1460,8 +1467,8 @@ mod tests {
         assert_eq!(stats.degenerate_rings_dropped, 1);
         assert_eq!(stats.degenerate_surfaces_dropped, 1);
 
-        let (_, _, props) = acc.slots.get("lod2").expect("lod2 slot populated");
-        let props: Value = serde_json::from_str(props).unwrap();
+        let slot = acc.slots.get("lod2").expect("lod2 slot populated");
+        let props: Value = serde_json::from_str(&slot.properties).unwrap();
         assert_eq!(
             props["dropped_degenerate"],
             serde_json::json!({"rings": 1, "surfaces": [1]})
@@ -1489,12 +1496,12 @@ mod tests {
         let gid_texture_0 = interner.intern_texture(&local_textures[0]);
         let gid_texture_2 = interner.intern_texture(&local_textures[2]);
         assert_eq!(
-            acc.material["2"],
+            *slot.material.as_ref().unwrap(),
             serde_json::json!({"visual": {"values": [[gid_material_1, gid_material_3]]}}),
             "material values must be realigned within the shell nesting and globally rewritten"
         );
         assert_eq!(
-            acc.texture["2"],
+            *slot.texture.as_ref().unwrap(),
             serde_json::json!({"visual": {"values": [[[[gid_texture_0]], [[gid_texture_2]]]]}}),
             "texture values must be realigned within the shell nesting and globally rewritten"
         );
@@ -1587,8 +1594,8 @@ mod tests {
         assert_eq!(stats.degenerate_rings_dropped, 2);
         assert_eq!(stats.degenerate_surfaces_dropped, 2);
 
-        let (_, _, props) = acc.slots.get("lod2").expect("lod2 slot populated");
-        let props: Value = serde_json::from_str(props).unwrap();
+        let slot = acc.slots.get("lod2").expect("lod2 slot populated");
+        let props: Value = serde_json::from_str(&slot.properties).unwrap();
         assert_eq!(
             props["dropped_degenerate"],
             serde_json::json!({"rings": 2, "surfaces": [2, 4]})
@@ -1611,7 +1618,7 @@ mod tests {
         let gid_material_2 = interner.intern_material(&local_materials[2]);
         let gid_material_4 = interner.intern_material(&local_materials[4]);
         assert_eq!(
-            acc.material["2"],
+            *slot.material.as_ref().unwrap(),
             serde_json::json!({"visual": {"values": [[[gid_material_1, gid_material_2], []], [[gid_material_4]]]}}),
             "material values must be realigned across solids and shells, and globally rewritten"
         );
@@ -1619,7 +1626,7 @@ mod tests {
         let gid_texture_1 = interner.intern_texture(&local_textures[1]);
         let gid_texture_3 = interner.intern_texture(&local_textures[3]);
         assert_eq!(
-            acc.texture["2"],
+            *slot.texture.as_ref().unwrap(),
             serde_json::json!({
                 "visual": {
                     "values": [

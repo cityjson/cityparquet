@@ -179,30 +179,44 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
 
     let mut checked_material = false;
     let mut checked_texture = false;
+    // Per-LoD appearance columns (§11.1, G20): each `material_lod*` /
+    // `texture_lod*` cell holds the plain `{"<theme>": …}` shape. The index
+    // checks are structure-agnostic (they recurse for integer leaves), so
+    // each per-LoD column value can be walked directly.
+    let per_lod_cols = |batch: &arrow_array::RecordBatch, prefix: &str| -> Vec<usize> {
+        batch
+            .schema()
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                f.name()
+                    .strip_prefix(prefix)
+                    .is_some_and(|r| r.starts_with("_lod"))
+            })
+            .map(|(i, _)| i)
+            .collect()
+    };
     for batch in reader {
         let batch = batch.unwrap();
-        let material_col: &StringArray = batch
-            .column_by_name("material")
-            .unwrap()
-            .as_any()
-            .downcast_ref()
-            .unwrap();
-        let texture_col: &StringArray = batch
-            .column_by_name("texture")
-            .unwrap()
-            .as_any()
-            .downcast_ref()
-            .unwrap();
+        let material_idx = per_lod_cols(&batch, "material");
+        let texture_idx = per_lod_cols(&batch, "texture");
         for row in 0..batch.num_rows() {
-            if !material_col.is_null(row) {
-                let map: Value = serde_json::from_str(material_col.value(row)).unwrap();
-                assert_every_material_index_below(&map, 83);
-                checked_material = true;
+            for &i in &material_idx {
+                let col: &StringArray = batch.column(i).as_any().downcast_ref().unwrap();
+                if !col.is_null(row) {
+                    let map: Value = serde_json::from_str(col.value(row)).unwrap();
+                    assert_every_material_index_below(&map, 83);
+                    checked_material = true;
+                }
             }
-            if !texture_col.is_null(row) {
-                let map: Value = serde_json::from_str(texture_col.value(row)).unwrap();
-                assert_every_texture_ring_valid(&map, 33);
-                checked_texture = true;
+            for &i in &texture_idx {
+                let col: &StringArray = batch.column(i).as_any().downcast_ref().unwrap();
+                if !col.is_null(row) {
+                    let map: Value = serde_json::from_str(col.value(row)).unwrap();
+                    assert_every_texture_ring_valid(&map, 33);
+                    checked_texture = true;
+                }
             }
         }
     }

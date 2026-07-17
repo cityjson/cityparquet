@@ -407,40 +407,23 @@ fn railway_compatibility_export_restores_appearance_feature_local() {
 /// by the CANONICAL `Lod` string (`lod.map(|l| l.to_string())`, `Lod`
 /// having already normalised e.g. `"03"` to `"3"`). A non-canonical source
 /// LoD string therefore silently loses its appearance restoration: the
-/// per-object map IS non-empty (it has an entry keyed `"03"`) but the
-/// canonical lookup key `"3"` never matches it. Derived from a copy of the
-/// railway fixture: object `UUID_bd865e62-18de-40ff-85da-883709a86f0f`'s
-/// only (non-instance) geometry — a `lod: "3"` `MultiSurface` carrying a
-/// `texture` block — has its `lod` rewritten to `"03"` (parses to the same
-/// canonical LoD 3, so it still lands in the SAME `geometry_lod3` column,
-/// but the map key mismatches). `appearance_lod_misses` must count exactly
-/// this one miss; pristine railway (no rewrite) must count zero.
+/// G20 regression: a non-canonical source `lod` string must NOT lose its
+/// appearance on round-trip. Under the old single-column layout the encoder
+/// keyed the per-object appearance map by the raw `lod` (`"03"`) while export
+/// looked it up by the canonical `"3"`, so the texture was silently dropped
+/// (the old `appearance_lod_misses` counter existed only to notice this).
+/// With per-LoD `texture_lod*` columns the appearance is paired to its
+/// geometry by the shared `lod3` column suffix, so `"03"` restores exactly.
+/// Derived from the railway fixture: object
+/// `UUID_bd865e62-18de-40ff-85da-883709a86f0f`'s only (non-instance)
+/// geometry — a `lod: "3"` `MultiSurface` carrying a `texture` block — has
+/// its `lod` rewritten to `"03"` (same canonical LoD 3, so still the
+/// `geometry_lod3` / `texture_lod3` columns). The derived document must
+/// round-trip losslessly.
 #[test]
-fn railway_compatibility_export_counts_a_non_canonical_lod_restore_miss() {
+fn railway_export_restores_appearance_under_a_non_canonical_lod() {
     const TARGET_OBJECT_ID: &str = "UUID_bd865e62-18de-40ff-85da-883709a86f0f";
 
-    // Pristine railway: no non-canonical LoD strings anywhere, so no misses.
-    let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        package_dir.path().to_path_buf(),
-    );
-    opts.profile = Profile::Compatibility;
-    convert(&opts).unwrap();
-    let export_dir = tempfile::tempdir().unwrap();
-    let report = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: export_dir.path().join("export.city.jsonl"),
-    })
-    .unwrap();
-    assert_eq!(
-        report.appearance_lod_misses, 0,
-        "pristine railway uses only canonical lod strings"
-    );
-
-    // Derived: rewrite the target object's only non-instance geometry's
-    // `lod` from the canonical "3" to the non-canonical "03" (same
-    // canonical LoD, different raw string).
     let mut doc: Value =
         serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
             .unwrap();
@@ -480,39 +463,62 @@ fn railway_compatibility_export_counts_a_non_canonical_lod_restore_miss() {
     let input_path = input_dir.path().join("railway_noncanonical_lod.city.json");
     std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
 
-    let derived_package_dir = tempfile::tempdir().unwrap();
-    let mut derived_opts =
-        ConvertOptions::new(input_path, derived_package_dir.path().to_path_buf());
-    derived_opts.profile = Profile::Compatibility;
-    convert(&derived_opts).unwrap();
-
-    let derived_export_dir = tempfile::tempdir().unwrap();
-    let derived_report = export(&ExportOptions {
-        package_dir: derived_package_dir.path().to_path_buf(),
-        output: derived_export_dir.path().join("export.city.jsonl"),
+    // Baseline: pristine railway (canonical "3") exports with its texture.
+    let pristine_pkg = tempfile::tempdir().unwrap();
+    let mut pristine_opts = ConvertOptions::new(
+        fixture("lod3_railway.city.json"),
+        pristine_pkg.path().to_path_buf(),
+    );
+    pristine_opts.profile = Profile::Compatibility;
+    convert(&pristine_opts).unwrap();
+    let pristine_export = tempfile::tempdir().unwrap();
+    let pristine_out = pristine_export.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: pristine_pkg.path().to_path_buf(),
+        output: pristine_out.clone(),
     })
     .unwrap();
+    let (_, pristine_textures) = count_geometry_appearance_keys(&pristine_out);
+
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(input_path, package_dir.path().to_path_buf());
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let export_path = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: export_path.clone(),
+    })
+    .unwrap();
+
+    // The "03" geometry's texture must survive: the derived export carries the
+    // SAME number of texture blocks as pristine railway. Under the old
+    // single-column layout this geometry's texture was silently dropped
+    // (raw "03" key vs canonical "3" lookup), so the count would be one lower.
+    let (_, derived_textures) = count_geometry_appearance_keys(&export_path);
     assert_eq!(
-        derived_report.appearance_lod_misses, 1,
-        "exactly the one rewritten geometry's per-LoD restore must miss"
+        derived_textures, pristine_textures,
+        "the non-canonical-lod geometry's texture must survive export, not be dropped"
+    );
+    assert!(
+        derived_textures > 0,
+        "precondition: railway export must carry at least one texture block"
     );
 }
 
-/// M5 final-review fix: an object with geometries at SEVERAL lods, where
-/// appearance is defined for only SOME of them, is legitimate CityJSON — it
-/// must NOT be counted as an `appearance_lod_misses` restore failure. The
-/// old detector fired for ANY geometry whose canonical lod key was absent
-/// from a non-empty per-object map, which over-counts exactly this case.
-/// Derived from a copy of the railway fixture: object
+/// An object with geometries at SEVERAL lods, where appearance is defined for
+/// only SOME of them, is legitimate CityJSON and must round-trip exactly: the
+/// LoD that has a texture keeps it, the LoD that has none stays bare. With
+/// per-LoD appearance columns (G20) this is structural — `texture_lod3` is
+/// non-null, `texture_lod2` is null — so no cross-LoD confusion is possible.
+/// Derived from the railway fixture: object
 /// `UUID_bd865e62-18de-40ff-85da-883709a86f0f`'s only (non-instance)
-/// geometry (`lod: "3"`, carrying a `texture` block) gains a SECOND
-/// geometry at a DIFFERENT lod (`"2"`, same boundaries — content does not
-/// matter here) that carries no material/texture of its own. The object's
-/// per-object appearance map therefore has an entry only for `"3"`; the
-/// `"2"` geometry's canonical lookup at `"2"` correctly misses, but that is
-/// not a restore failure (there was never anything to restore for `"2"`).
+/// geometry (`lod: "3"`, carrying a `texture` block) gains a SECOND geometry
+/// at lod `"2"` (same boundaries) that carries no material/texture.
 #[test]
-fn multi_lod_object_with_single_lod_appearance_is_not_counted_as_a_restore_miss() {
+fn multi_lod_object_with_single_lod_appearance_round_trips() {
     const TARGET_OBJECT_ID: &str = "UUID_bd865e62-18de-40ff-85da-883709a86f0f";
 
     let mut doc: Value =
@@ -555,19 +561,23 @@ fn multi_lod_object_with_single_lod_appearance_is_not_counted_as_a_restore_miss(
     std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
 
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(input_path, package_dir.path().to_path_buf());
+    let mut opts = ConvertOptions::new(input_path.clone(), package_dir.path().to_path_buf());
     opts.profile = Profile::Compatibility;
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
-    let report = export(&ExportOptions {
+    let export_path = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
         package_dir: package_dir.path().to_path_buf(),
-        output: export_dir.path().join("export.city.jsonl"),
+        output: export_path.clone(),
     })
     .unwrap();
-    assert_eq!(
-        report.appearance_lod_misses, 0,
-        "a legitimate single-lod appearance on a multi-lod object must not be counted as a restore miss"
+
+    let report = compare_datasets(&input_path, &export_path, &CompareOptions::default()).unwrap();
+    assert!(
+        report.equal,
+        "a multi-lod object with single-lod appearance must round-trip; differences: {:#?}",
+        report.differences
     );
 }
 

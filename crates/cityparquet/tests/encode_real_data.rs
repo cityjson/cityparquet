@@ -71,7 +71,7 @@ fn railway_realigns_material_values_for_dropped_surfaces() {
             .downcast_ref::<StringArray>()
             .unwrap();
         let materials = batch
-            .column_by_name("material")
+            .column_by_name("material_lod3")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()
@@ -108,7 +108,7 @@ fn railway_realigns_material_values_for_dropped_surfaces() {
             if id != "UUID_d96effed-08fe-4f74-b134-05b194aa3cff" {
                 let material: serde_json::Value =
                     serde_json::from_str(materials.value(row)).unwrap();
-                let values = material["3"]["visual"]["values"]
+                let values = material["visual"]["values"]
                     .as_array()
                     .expect("per-surface material values array");
                 assert_eq!(
@@ -321,20 +321,20 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
         );
 
         let material = batch
-            .column_by_name("material")
+            .column_by_name("material_lod1_2")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
         let material: serde_json::Value = serde_json::from_str(material.value(row)).unwrap();
         assert_eq!(
-            material["1.2"]["visual"]["values"][0],
+            material["visual"]["values"][0],
             serde_json::json!([0, 1, 1, 0, 1]),
             "material values must be realigned within the shell nesting"
         );
 
         let texture = batch
-            .column_by_name("texture")
+            .column_by_name("texture_lod1_2")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()
@@ -346,7 +346,7 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
         // pool (see the comment where `vertices_texture` is built above).
         let uv = |i: usize| vertices_texture[i].clone();
         assert_eq!(
-            texture["1.2"]["visual"]["values"][0],
+            texture["visual"]["values"][0],
             serde_json::json!([
                 [[0, uv(0), uv(1), uv(2), uv(3)]],
                 [[0, uv(4), uv(5), uv(6), uv(7)]],

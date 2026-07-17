@@ -317,14 +317,15 @@ fn export_package_to_cityjsonl() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // stdout should contain: feature_count, object_count,
-    // instance_geometries_dropped, appearance_refs_dropped,
-    // appearance_lod_misses (M5 debt item 3: the export report line gains 1
-    // field, appended after the 4 it already printed).
+    // instance_geometries_dropped, appearance_refs_dropped. (The former
+    // 5th field, appearance_lod_misses, was removed with G20's per-LoD
+    // appearance columns — the raw-vs-canonical LoD-key miss it counted can
+    // no longer occur.)
     let parts: Vec<&str> = stdout.split_whitespace().collect();
     assert_eq!(
         parts.len(),
-        5,
-        "export should print 5 space-separated values, got: {}",
+        4,
+        "export should print 4 space-separated values, got: {}",
         stdout
     );
 }
