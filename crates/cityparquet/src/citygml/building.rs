@@ -15,7 +15,10 @@
 //! chapel) emitted as a `MultiSurface` with semantics, including nested
 //! `opening` Door/Window surfaces; plus building-level typed `bldg:` and
 //! `gen:` generic attributes (repeats accumulate into arrays). BuildingParts
-//! and `BuildingInstallation` child geometry remain future work.
+//! (`consistsOfBuildingPart`) and `{outer,interior}BuildingInstallation`
+//! children are read (CG-5); generic 1st-level non-building objects too (CG-7).
+//! Installation semantic surfaces / nested parts / appearance remain future
+//! work.
 //!
 //! boundedBy geometry is read from inline `gml:Polygon`s AND from
 //! `gml:surfaceMember xlink:href` references (CG-1): an xlinked boundary member
@@ -129,15 +132,16 @@ pub fn read_building<R: BufRead>(
     buf: &mut Vec<u8>,
     id: Option<String>,
 ) -> Result<RawBuilding> {
-    read_abstract_building(reader, buf, id, b"Building", 0)
+    read_abstract_building(reader, buf, id, b"Building", 0, "Building")
 }
 
 /// Read a generic 1st-level NON-building CityObject subtree (positioned after
 /// its `Start`, ending at `End(end_name)`) into a [`RawBuilding`] tagged with
-/// `object_type` (CG-7). Reads its `lodN{Solid}` (as Solid geometry),
-/// `lodN{MultiSurface,Geometry}` (as a plain MultiSurface, no semantics), and
-/// `gen:` generic attributes. Semantic surfaces, parts, and appearance on
-/// non-building objects are out of scope for this milestone.
+/// `object_type` (CG-7/CG-5). Reads `lodN{Solid}` (Solid), `lodNMultiSurface`
+/// (plain MultiSurface, no semantics), `lodN{Geometry}` (dispatched by inner
+/// gml type — Solid or surfaces), `gen:` generic attributes, and typed module
+/// leaf-text properties. Semantic surfaces, parts, and appearance on such
+/// objects are out of scope.
 pub fn read_generic_object<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
@@ -174,22 +178,22 @@ pub fn read_generic_object<R: BufRead>(
                         b.solids.push((lod, geom));
                     }
                 } else if let Some(lod) = lod_suffix(&name, b"MultiSurface") {
-                    // Only `lodNMultiSurface` is unambiguously a surface
-                    // collection. `lodNGeometry` (which may wrap a Solid) is NOT
-                    // flattened here — descending it correctly is deferred.
                     let polys: Vec<Polygon> = geometry::collect_polygons(reader, buf)?
                         .into_iter()
                         .map(|(_, p)| p)
                         .collect();
-                    if !polys.is_empty() {
-                        // Register ided polygons so a sibling solid may xlink to
-                        // them, then keep the list as this object's geometry.
-                        for poly in &polys {
-                            if let Some(id) = &poly.id {
-                                b.polygons.insert(id.clone(), poly.clone());
+                    b.add_plain_surfaces(lod, polys);
+                } else if let Some(lod) = lod_suffix(&name, b"Geometry") {
+                    // `lodNGeometry` may wrap a Solid OR a surface collection —
+                    // dispatch on the inner gml type (CG-5).
+                    match read_lod_geometry(reader, buf, name)? {
+                        Some(LodGeom::Solid(geom)) => {
+                            if !b.solids.iter().any(|(l, _)| *l == lod) {
+                                b.solids.push((lod, geom));
                             }
                         }
-                        b.plain_surfaces.push((lod, polys));
+                        Some(LodGeom::Surfaces(polys)) => b.add_plain_surfaces(lod, polys),
+                        None => {}
                     }
                 } else if let (true, Some(ty)) =
                     (ns_is(&rr, NS_GEN), attributes::generic_attr(&name))
@@ -237,6 +241,7 @@ fn read_abstract_building<R: BufRead>(
     id: Option<String>,
     end_name: &[u8],
     depth: usize,
+    object_type: &str,
 ) -> Result<RawBuilding> {
     if depth > MAX_PART_DEPTH {
         return Err(CityParquetError::Schema(format!(
@@ -245,7 +250,7 @@ fn read_abstract_building<R: BufRead>(
     }
     let mut b = RawBuilding {
         id,
-        object_type: "Building".to_string(),
+        object_type: object_type.to_string(),
         plain_surfaces: Vec::new(),
         solids: Vec::new(),
         polygons: HashMap::new(),
@@ -286,6 +291,11 @@ fn read_abstract_building<R: BufRead>(
                     read_bounded_by(reader, buf, &mut b)?;
                 } else if bldg && name == b"consistsOfBuildingPart" {
                     read_consists_of_part(reader, buf, &mut b, depth)?;
+                } else if bldg
+                    && (name == b"outerBuildingInstallation"
+                        || name == b"interiorBuildingInstallation")
+                {
+                    read_installation(reader, buf, &mut b, &name)?;
                 } else if ns_is(&rr, NS_APP) && name == b"appearance" {
                     let app = super::appearance::read_appearance(reader, buf, b"appearance")?;
                     b.appearance.materials.extend(app.materials);
@@ -325,6 +335,48 @@ fn read_abstract_building<R: BufRead>(
 /// the property's `End`. An empty or `xlink:href`-only property (which
 /// `expand_empty_elements` delivers as `Start`+`End` with no child) yields no
 /// part.
+/// Read a `bldg:{outer,interior}BuildingInstallation` property (positioned
+/// after its `Start`, ending at `End(prop_name)`): its inner
+/// `bldg:BuildingInstallation` becomes a 2nd-level child object of `b` (CG-5),
+/// read like a generic object (lodN geometry + attributes). Installation parts
+/// / appearance are out of scope.
+fn read_installation<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    b: &mut RawBuilding,
+    prop_name: &[u8],
+) -> Result<()> {
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        match ev {
+            Event::Start(e) => {
+                if ns_is(&rr, NS_BLDG) && e.local_name().as_ref() == b"BuildingInstallation" {
+                    let id = gml_id(&e);
+                    let inst = read_generic_object(
+                        reader,
+                        buf,
+                        "BuildingInstallation",
+                        id,
+                        b"BuildingInstallation",
+                    )?;
+                    b.parts.push(inst);
+                } else {
+                    skip_element(reader, buf)?;
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == prop_name => break,
+            Event::Eof => {
+                return Err(CityParquetError::Schema(
+                    "unexpected end of document inside a BuildingInstallation property".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn read_consists_of_part<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
@@ -338,7 +390,14 @@ fn read_consists_of_part<R: BufRead>(
             Event::Start(e) => {
                 if ns_is(&rr, NS_BLDG) && e.local_name().as_ref() == b"BuildingPart" {
                     let id = gml_id(&e);
-                    let part = read_abstract_building(reader, buf, id, b"BuildingPart", depth + 1)?;
+                    let part = read_abstract_building(
+                        reader,
+                        buf,
+                        id,
+                        b"BuildingPart",
+                        depth + 1,
+                        "BuildingPart",
+                    )?;
                     b.parts.push(part);
                 } else {
                     skip_element(reader, buf)?;
@@ -366,6 +425,72 @@ fn lod_suffix(local: &[u8], suffix: &[u8]) -> Option<String> {
     } else {
         None
     }
+}
+
+/// The geometry a `lodN{Geometry}` container wraps (CG-5): a Solid family, or a
+/// flat surface list (`gml:MultiSurface`/`CompositeSurface`/`Polygon`).
+enum LodGeom {
+    Solid(SolidGeom),
+    Surfaces(Vec<Polygon>),
+}
+
+/// Inside a `lodN{Geometry}` container (positioned after its `Start`, ending at
+/// `End(end)`): dispatch on the wrapped `gml:_Geometry` — a `gml:Solid`/
+/// `CompositeSolid` becomes a [`LodGeom::Solid`], a `gml:MultiSurface`/
+/// `CompositeSurface`/`Polygon` a [`LodGeom::Surfaces`]. Point/curve geometries
+/// are unsupported (skipped) → `None`. Avoids blindly flattening a Solid into a
+/// surface soup (gpt-5.6-sol CG-7 finding).
+fn read_lod_geometry<R: BufRead>(
+    reader: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    end: Vec<u8>,
+) -> Result<Option<LodGeom>> {
+    let mut solid: Option<SolidGeom> = None;
+    let mut polys: Vec<Polygon> = Vec::new();
+    loop {
+        buf.clear();
+        let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
+        let gml = ns_is(&rr, NS_GML);
+        match ev {
+            Event::Start(e) => {
+                let local = e.local_name();
+                match (gml, local.as_ref()) {
+                    (true, b"Solid") => {
+                        solid = Some(SolidGeom::Solid(geometry::read_solid(reader, buf)?))
+                    }
+                    (true, b"CompositeSolid") => {
+                        solid = Some(SolidGeom::Composite(geometry::read_composite_solid(
+                            reader, buf,
+                        )?))
+                    }
+                    (true, b"MultiSurface") | (true, b"CompositeSurface") => {
+                        polys.extend(
+                            geometry::collect_polygons(reader, buf)?
+                                .into_iter()
+                                .map(|(_, p)| p),
+                        );
+                    }
+                    (true, b"Polygon") => {
+                        let id = gml_id(&e);
+                        let mut poly = geometry::read_polygon(reader, buf)?;
+                        poly.id = id;
+                        polys.push(poly);
+                    }
+                    _ => skip_element(reader, buf)?,
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == end.as_slice() => break,
+            Event::Eof => {
+                return Err(CityParquetError::Schema(
+                    "unexpected end of document inside a lodNGeometry".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(solid
+        .map(LodGeom::Solid)
+        .or_else(|| (!polys.is_empty()).then_some(LodGeom::Surfaces(polys))))
 }
 
 /// Inside a `bldg:lodNSolid`: read the wrapped `gml:Solid` or
@@ -542,6 +667,21 @@ fn read_semantic_surface<R: BufRead>(
 }
 
 impl RawBuilding {
+    /// Record a non-building object's standalone surface geometry at `lod`
+    /// (CG-7/CG-5): register ided polygons (so a sibling solid may xlink to
+    /// them) and keep the non-empty list as a plain MultiSurface.
+    fn add_plain_surfaces(&mut self, lod: String, polys: Vec<Polygon>) {
+        if polys.is_empty() {
+            return;
+        }
+        for poly in &polys {
+            if let Some(id) = &poly.id {
+                self.polygons.insert(id.clone(), poly.clone());
+            }
+        }
+        self.plain_surfaces.push((lod, polys));
+    }
+
     /// Resolve xlinks and emit a `CityJSONFeature` with its own local vertex
     /// pool, quantised against `scale`/`translate`. `index` names the building
     /// when it has no `gml:id`.
@@ -795,14 +935,7 @@ impl RawBuilding {
             .collect();
 
         let mut co_obj = serde_json::Map::new();
-        co_obj.insert(
-            "type".to_string(),
-            json!(if parent_id.is_none() {
-                self.object_type.as_str()
-            } else {
-                "BuildingPart"
-            }),
-        );
+        co_obj.insert("type".to_string(), json!(self.object_type.as_str()));
         co_obj.insert("geometry".to_string(), Value::Array(geoms_json));
         if !self.attributes.is_empty() {
             co_obj.insert(

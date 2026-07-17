@@ -885,3 +885,38 @@ fn citygml2_reads_non_building_city_objects() {
     assert_eq!(lg.lod.as_deref(), Some("1"));
     assert_eq!(lg.boundaries.as_array().unwrap().len(), 2, "two surfaces");
 }
+
+/// CG-5: a Building's outerBuildingInstallation is read as a 2nd-level
+/// BuildingInstallation child (parents=[Building]) with its own lod2Geometry.
+#[test]
+fn citygml2_reads_building_installation_child() {
+    let src = Source::open(&data_fixture("building_with_installation.gml")).unwrap();
+    let feats: Vec<_> = src
+        .features()
+        .unwrap()
+        .collect::<cityparquet::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(feats.len(), 1, "one Building assembly feature");
+    let f = &feats[0];
+
+    let bi = f.city_objects.get("BI").expect("Building BI");
+    assert_eq!(bi.thetype.as_str(), "Building");
+    assert!(
+        bi.children.as_ref().unwrap().contains(&"inst1".to_string()),
+        "Building lists inst1 as a child"
+    );
+
+    let inst = f.city_objects.get("inst1").expect("installation inst1");
+    assert_eq!(inst.thetype.as_str(), "BuildingInstallation");
+    assert_eq!(inst.parents.as_ref().unwrap(), &vec!["BI".to_string()]);
+    let ig = &inst.geometry.as_ref().expect("installation geometry")[0];
+    assert!(matches!(
+        ig.thetype,
+        cityparquet::cjseq::GeometryType::MultiSurface
+    ));
+    assert_eq!(ig.lod.as_deref(), Some("2"));
+    assert_eq!(
+        inst.attributes.as_ref().unwrap()["function"],
+        serde_json::json!("balcony")
+    );
+}
