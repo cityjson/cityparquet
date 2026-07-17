@@ -1,9 +1,12 @@
 //! Streaming feature reader: one `cjseq::CityJSONFeature` per top-level
-//! `bldg:Building`.
+//! CityObject — a `bldg:Building` (with its parts) or a mapped 1st-level
+//! non-building object (WaterBody, LandUse, CityFurniture, … — CG-7).
 //!
-//! Buffers exactly one building subtree at a time (memory is O(largest single
-//! building)); everything else — the CityModel wrapper, `cityObjectMember`s,
-//! and non-building city objects — is walked past without buffering.
+//! Buffers exactly one object subtree at a time (memory is O(largest single
+//! object)); the CityModel wrapper and `cityObjectMember`s are walked past
+//! without buffering. Non-building objects read their `lodN` solid/surface
+//! geometry + generic attributes; semantic surfaces, parts, and appearance on
+//! non-building objects are out of scope for this milestone.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -15,8 +18,31 @@ use quick_xml::events::Event;
 use quick_xml::reader::NsReader;
 
 use super::appearance::{ModelAppearance, ReadAppearance, read_appearance};
-use super::building::read_building;
+use super::building::{read_building, read_generic_object};
 use super::xml::{NS_APP, NS_BLDG, gml_id, ns_is, skip_element, xml_err};
+
+/// Map a CityGML 1st-level NON-building element local name to its CityJSON
+/// CityObject type (CG-7). Matched by local name (unique across CityGML module
+/// namespaces); `Building`/`BuildingPart` are handled separately. Returns
+/// `None` for containers and unmapped/2nd-level elements.
+fn citygml_object_type(local: &[u8]) -> Option<&'static str> {
+    Some(match local {
+        b"WaterBody" => "WaterBody",
+        b"LandUse" => "LandUse",
+        b"CityFurniture" => "CityFurniture",
+        b"SolitaryVegetationObject" => "SolitaryVegetationObject",
+        b"PlantCover" => "PlantCover",
+        b"Bridge" => "Bridge",
+        b"Tunnel" => "Tunnel",
+        b"ReliefFeature" => "TINRelief",
+        b"GenericCityObject" => "GenericCityObject",
+        b"CityObjectGroup" => "CityObjectGroup",
+        b"Road" => "Road",
+        b"Railway" => "Railway",
+        b"Square" => "TransportSquare",
+        _ => return None,
+    })
+}
 
 pub struct FeatureReader {
     reader: NsReader<BufReader<File>>,
@@ -100,7 +126,14 @@ impl FeatureReader {
                 .map_err(xml_err)?;
             match ev {
                 Event::Start(e) => {
-                    let is_building = ns_is(&rr, NS_BLDG) && e.local_name().as_ref() == b"Building";
+                    let local = e.local_name();
+                    let is_building = ns_is(&rr, NS_BLDG) && local.as_ref() == b"Building";
+                    // A 1st-level non-building object (WaterBody, LandUse, …).
+                    let generic_type = if is_building {
+                        None
+                    } else {
+                        citygml_object_type(local.as_ref())
+                    };
                     if is_building {
                         let id = gml_id(&e);
                         // Borrows of `e`/`rr` end here (NLL) before we re-borrow.
@@ -113,12 +146,24 @@ impl FeatureReader {
                             &self.model_appearance,
                         )?;
                         return Ok(Some(feature));
+                    } else if let Some(ty) = generic_type {
+                        let id = gml_id(&e);
+                        let end = local.as_ref().to_vec();
+                        let raw =
+                            read_generic_object(&mut self.reader, &mut self.buf, ty, id, &end)?;
+                        self.index += 1;
+                        let feature = raw.into_feature(
+                            &self.scale,
+                            &self.translate,
+                            self.index,
+                            &self.model_appearance,
+                        )?;
+                        return Ok(Some(feature));
                     }
-                    // Non-building start: descend. Containers (CityModel,
-                    // cityObjectMember) hold the buildings we want, and a
-                    // `BuildingPart` local name is not `Building`, so it is not
-                    // matched here (handled within its parent in a later
-                    // milestone). Nothing to do — the next read descends.
+                    // Otherwise descend. Containers (CityModel, cityObjectMember)
+                    // hold the objects we want; a `BuildingPart` is handled
+                    // within its parent Building. Nothing to do — next read
+                    // descends.
                 }
                 Event::Eof => {
                     self.done = true;
