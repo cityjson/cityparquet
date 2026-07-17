@@ -122,19 +122,6 @@ fn resolve_bbox(
     descendant_bbox(co, feature, pool, &mut visited)
 }
 
-/// `solid_shell_counts` + `solid_shell_faces` payload, only meaningful for
-/// Solid/MultiSolid/CompositeSolid (what the WKB `PolyhedralSurfaceZ`
-/// flattening loses): the former is the number of shells per solid, the
-/// latter the number of faces per shell — enough for a reader to
-/// re-partition a flattened `PolyhedralSurfaceZ` back into shells.
-struct SolidShellInfo {
-    /// `solid_shell_counts`: number of shells per solid.
-    counts: Vec<usize>,
-    /// `solid_shell_faces`: `[n_faces_shell0, ...]` for `Solid`, or one such
-    /// array per solid (nested) for `MultiSolid`/`CompositeSolid`.
-    faces: Value,
-}
-
 /// Count how many writer-dropped flat face positions fall inside one
 /// shell's `[pos, pos + n)` range, advancing `pos` past the shell.
 fn dropped_in_shell(dropped: &[usize], pos: &mut usize, n: usize) -> usize {
@@ -146,11 +133,16 @@ fn dropped_in_shell(dropped: &[usize], pos: &mut usize, n: usize) -> usize {
         .count()
 }
 
-/// `dropped` are the writer-reported flat face positions removed from the
-/// WKB; the per-shell face counts must describe the STORED geometry, so
-/// each shell's count is reduced by the drops that fell inside it (the sum
-/// must equal the WKB `PolyhedralSurfaceZ` face count).
-fn solid_shell_info(geom: &Geometry, dropped: &[usize]) -> Result<Option<SolidShellInfo>> {
+/// The `shells` payload of `geometry_properties` (§8): the STORED (post-drop)
+/// face count of each shell, so a reader can re-partition the flattened
+/// `PolyhedralSurfaceZ` back into shells. Flat `[n0, n1, …]` for `Solid`;
+/// nested `[[…], […]]`, one list per solid in WKB member order, for
+/// `MultiSolid`/`CompositeSolid` (a flat array cannot be partitioned back once
+/// a shell drops to zero faces). `None` for the non-solid types. `dropped`
+/// are the writer-reported flat face positions removed from the WKB; each
+/// shell's count is reduced by the drops inside it, so the total equals the
+/// WKB face count.
+fn solid_shells(geom: &Geometry, dropped: &[usize]) -> Result<Option<Value>> {
     match geom.thetype {
         GeometryType::Solid => {
             let shells: Vec<Vec<Vec<Vec<usize>>>> =
@@ -160,15 +152,11 @@ fn solid_shell_info(geom: &Geometry, dropped: &[usize]) -> Result<Option<SolidSh
                 .iter()
                 .map(|shell| shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()))
                 .collect();
-            Ok(Some(SolidShellInfo {
-                counts: vec![shells.len()],
-                faces: serde_json::to_value(faces)?,
-            }))
+            Ok(Some(serde_json::to_value(faces)?))
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
             let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
                 serde_json::from_value(geom.boundaries.clone())?;
-            let counts = solids.iter().map(|s| s.len()).collect();
             let mut pos = 0;
             let faces: Vec<Vec<usize>> = solids
                 .iter()
@@ -179,12 +167,58 @@ fn solid_shell_info(geom: &Geometry, dropped: &[usize]) -> Result<Option<SolidSh
                         .collect()
                 })
                 .collect();
-            Ok(Some(SolidShellInfo {
-                counts,
-                faces: serde_json::to_value(faces)?,
-            }))
+            Ok(Some(serde_json::to_value(faces)?))
         }
         _ => Ok(None),
+    }
+}
+
+/// Number of leaf faces beneath a boundary subtree that sits `depth`
+/// array-levels above the face list (a "face" is a list of rings). Used to
+/// size CityJSON's null shorthand in `semantics.values` when flattening.
+fn count_boundary_faces(boundaries: &Value, depth: usize) -> usize {
+    match boundaries {
+        Value::Array(arr) if depth == 0 => arr.len(),
+        Value::Array(arr) => arr.iter().map(|b| count_boundary_faces(b, depth - 1)).sum(),
+        _ => 0,
+    }
+}
+
+/// `semantics.values` nesting above the flat per-face list: 0 for the
+/// surface-list types (`MultiSurface`/`CompositeSurface`, already flat), 1 for
+/// `Solid` (shells → faces), 2 for `MultiSolid`/`CompositeSolid`.
+fn values_nesting_depth(thetype: &GeometryType) -> usize {
+    solid_face_nesting_depth(thetype).unwrap_or(0)
+}
+
+/// Flatten `semantics.values` into a per-face `face_semantics` list (§8) in
+/// depth-first WKB face order, expanding CityJSON's null shorthand — a single
+/// `null` standing for a whole shell/solid — into one `null` per face of that
+/// part (using `boundaries` to size it). Entries are kept verbatim (a surface
+/// index or `null`). The result covers the ORIGINAL faces, before the
+/// degenerate-drop filter the caller then applies.
+fn flatten_values(values: &Value, boundaries: &Value, depth: usize, out: &mut Vec<Value>) {
+    match (values, depth) {
+        // A whole subtree with no semantics: one null per face beneath it.
+        (Value::Null, _) => {
+            out.extend(std::iter::repeat_n(
+                Value::Null,
+                count_boundary_faces(boundaries, depth),
+            ));
+        }
+        // Flat per-face entries (index or null) — kept verbatim.
+        (Value::Array(varr), 0) => out.extend(varr.iter().cloned()),
+        // A nesting level: recurse into each child alongside its boundary.
+        (Value::Array(varr), _) => {
+            let barr = boundaries.as_array();
+            for (i, v) in varr.iter().enumerate() {
+                let b = barr.and_then(|b| b.get(i)).unwrap_or(&Value::Null);
+                flatten_values(v, b, depth - 1, out);
+            }
+        }
+        // Malformed non-array/non-null at a nesting level: nothing to add
+        // (the caller pads any shortfall to the face count with null).
+        _ => {}
     }
 }
 
@@ -298,12 +332,20 @@ fn realign_nested_appearance_themes(appearance: &mut Value, depth: usize, droppe
     }
 }
 
-/// `geometry_properties_lod*` JSON: `{"type", "semantics"?,
-/// "solid_shell_counts"?, "solid_shell_faces"?, "dropped_degenerate"?}`.
-/// `dropped_surfaces` are the writer-reported original surface positions;
-/// for the surface-list types the semantics `values` array is realigned to
-/// match the stored WKB, and any drop is recorded under
-/// `dropped_degenerate` so downstream can trace it back to the source.
+/// `geometry_properties_lod*` JSON in the normative flattened, face-aligned
+/// form (§8): `{"type", "surfaces"?, "face_semantics"?, "shells"?,
+/// "dropped_degenerate"?}`.
+///
+/// - `surfaces` is the CityJSON `surfaces` array **verbatim** (order and
+///   content preserved — `parent`/`children` indices must stay valid).
+/// - `face_semantics` is a flat array with one entry per EMITTED WKB face, in
+///   WKB face order: the face's surface index, or `null`. CityJSON's nested
+///   `values` are flattened (null shorthand expanded, §8) and the
+///   writer-dropped face positions removed, so its length equals the WKB face
+///   count.
+/// - `shells` (solids only) is the per-shell stored face count (§8, [`solid_shells`]).
+/// - `dropped_degenerate` records what the writer removed (non-normative
+///   provenance), so a drop can be traced back to the source.
 pub(crate) fn geometry_properties_json(
     geom: &Geometry,
     dropped_rings: usize,
@@ -312,26 +354,31 @@ pub(crate) fn geometry_properties_json(
     let mut map = serde_json::Map::new();
     map.insert("type".to_string(), serde_json::to_value(&geom.thetype)?);
     if let Some(semantics) = &geom.semantics {
-        let mut semantics = semantics.clone();
-        if !dropped_surfaces.is_empty() {
-            if drops_align_with_surface_arrays(&geom.thetype) {
-                if let Some(values) = semantics.get_mut("values").and_then(Value::as_array_mut) {
-                    remove_dropped_entries(values, dropped_surfaces);
-                }
-            } else if let Some(depth) = solid_face_nesting_depth(&geom.thetype)
-                && let Some(values) = semantics.get_mut("values")
-            {
-                realign_nested_values(values, depth, dropped_surfaces);
-            }
+        if let Some(surfaces) = semantics.get("surfaces") {
+            map.insert("surfaces".to_string(), surfaces.clone());
         }
-        map.insert("semantics".to_string(), semantics);
+        let depth = values_nesting_depth(&geom.thetype);
+        let mut flat = Vec::new();
+        if let Some(values) = semantics.get("values") {
+            flatten_values(values, &geom.boundaries, depth, &mut flat);
+        }
+        // Force exactly one entry per ORIGINAL face: pad a source `values`
+        // shorter than the face count with `null` rather than erroring (§8,
+        // "defensive on source"), and truncate a malformed longer one. After
+        // the drop-filter below this yields exactly the WKB face count.
+        let original_faces = count_boundary_faces(&geom.boundaries, depth);
+        flat.resize(original_faces, Value::Null);
+        // Align to the EMITTED faces: drop the writer-removed positions.
+        let dropped: std::collections::HashSet<usize> = dropped_surfaces.iter().copied().collect();
+        let face_semantics: Vec<Value> = flat
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, v)| (!dropped.contains(&i)).then_some(v))
+            .collect();
+        map.insert("face_semantics".to_string(), Value::Array(face_semantics));
     }
-    if let Some(info) = solid_shell_info(geom, dropped_surfaces)? {
-        map.insert(
-            "solid_shell_counts".to_string(),
-            serde_json::to_value(info.counts)?,
-        );
-        map.insert("solid_shell_faces".to_string(), info.faces);
+    if let Some(shells) = solid_shells(geom, dropped_surfaces)? {
+        map.insert("shells".to_string(), shells);
     }
     if dropped_rings > 0 || !dropped_surfaces.is_empty() {
         map.insert(
@@ -1289,13 +1336,12 @@ pub fn encode_buffered<'a>(
 mod tests {
     use super::*;
 
-    /// No fixture carries MultiSolid/CompositeSolid, so the nested
-    /// `solid_shell_faces` branch gets direct coverage here: 2 solids —
-    /// first with shells of (1, 2) faces, second with one 1-face shell.
-    /// Nesting is the real 5-level MultiSolid shape:
-    /// solids → shells → surfaces → rings → indices.
+    /// No fixture carries MultiSolid/CompositeSolid, so the nested `shells`
+    /// branch gets direct coverage here: 2 solids — first with shells of
+    /// (1, 2) faces, second with one 1-face shell. Nesting is the real
+    /// 5-level MultiSolid shape: solids → shells → surfaces → rings → indices.
     #[test]
-    fn multisolid_shell_faces_nest_per_solid() {
+    fn multisolid_shells_nest_per_solid() {
         let geom = Geometry {
             thetype: GeometryType::MultiSolid,
             lod: Some("2".into()),
@@ -1309,25 +1355,25 @@ mod tests {
             template: None,
             transformation_matrix: None,
         };
-        let info = solid_shell_info(&geom, &[])
-            .unwrap()
-            .expect("MultiSolid info");
-        assert_eq!(info.counts, vec![2, 1]);
-        assert_eq!(info.faces, serde_json::json!([[1, 2], [1]]));
+        // `shells` nests one list per solid (§8), no separate counts key.
+        assert_eq!(
+            solid_shells(&geom, &[]).unwrap(),
+            Some(serde_json::json!([[1, 2], [1]]))
+        );
 
         let props: Value =
             serde_json::from_str(&geometry_properties_json(&geom, 0, &[]).unwrap()).unwrap();
-        assert_eq!(props["solid_shell_counts"], serde_json::json!([2, 1]));
-        assert_eq!(props["solid_shell_faces"], serde_json::json!([[1, 2], [1]]));
+        assert!(props.get("solid_shell_counts").is_none());
+        assert_eq!(props["shells"], serde_json::json!([[1, 2], [1]]));
 
-        // With writer-dropped flat face positions, the per-shell face counts
-        // must describe the STORED geometry: positions 1 and 2 are the two
-        // faces of the first solid's second shell; position 3 is the second
-        // solid's only face.
-        let info = solid_shell_info(&geom, &[1, 3])
-            .unwrap()
-            .expect("MultiSolid info");
-        assert_eq!(info.faces, serde_json::json!([[1, 1], [0]]));
+        // With writer-dropped flat face positions, each shell's count must
+        // describe the STORED geometry: positions 1 and 2 are the two faces of
+        // the first solid's second shell; position 3 is the second solid's
+        // only face.
+        assert_eq!(
+            solid_shells(&geom, &[1, 3]).unwrap(),
+            Some(serde_json::json!([[1, 1], [0]]))
+        );
     }
 
     /// When the writer drops a degenerate surface, the encoder must remove
@@ -1411,14 +1457,18 @@ mod tests {
             serde_json::json!({"rings": 1, "surfaces": [0]})
         );
         assert_eq!(
-            props["semantics"]["values"],
+            props["face_semantics"],
             serde_json::json!([1]),
-            "semantics values must lose the dropped surface's entry"
+            "face_semantics must lose the dropped face's entry"
         );
         assert_eq!(
-            props["semantics"]["surfaces"],
+            props["surfaces"],
             serde_json::json!([{"type": "WallSurface"}, {"type": "RoofSurface"}]),
-            "the surfaces lookup table itself is untouched (values index into it)"
+            "the surfaces lookup table is stored verbatim (face_semantics indexes into it)"
+        );
+        assert!(
+            props.get("semantics").is_none(),
+            "the nested `semantics` object is replaced by flat surfaces/face_semantics"
         );
 
         // Surface 0 (material index 5, texture index 0) was dropped; only
@@ -1530,19 +1580,19 @@ mod tests {
             serde_json::json!({"rings": 1, "surfaces": [1]})
         );
         assert_eq!(
-            props["solid_shell_faces"],
+            props["shells"],
             serde_json::json!([2]),
             "the single shell drops from 3 to 2 faces"
         );
         assert_eq!(
-            props["semantics"]["values"],
-            serde_json::json!([[0, 2]]),
-            "semantics values must lose face 1's entry but keep the shell nesting"
+            props["face_semantics"],
+            serde_json::json!([0, 2]),
+            "face_semantics is flat (one entry per emitted face) and loses face 1"
         );
         assert_eq!(
-            props["semantics"]["surfaces"],
+            props["surfaces"],
             serde_json::json!([{"type": "A"}, {"type": "B"}, {"type": "C"}]),
-            "the surfaces lookup table itself is untouched (values index into it)"
+            "the surfaces lookup table is stored verbatim (face_semantics indexes into it)"
         );
 
         // Face 1 (material index 2, texture index 1) was dropped; faces 0
@@ -1657,14 +1707,14 @@ mod tests {
             serde_json::json!({"rings": 2, "surfaces": [2, 4]})
         );
         assert_eq!(
-            props["solid_shell_faces"],
+            props["shells"],
             serde_json::json!([[2, 0], [1]]),
             "solid0's shells drop to (2, 0) faces, solid1's shell drops to 1"
         );
         assert_eq!(
-            props["semantics"]["values"],
-            serde_json::json!([[[10, 11], []], [[13]]]),
-            "semantics values must lose exactly positions 2 and 4, across the solid/shell nesting"
+            props["face_semantics"],
+            serde_json::json!([10, 11, 13]),
+            "face_semantics is flat across all solids/shells, losing positions 2 and 4"
         );
 
         // Flat positions 2 (material 3, texture 2) and 4 (material 5,

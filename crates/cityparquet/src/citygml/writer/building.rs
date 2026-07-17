@@ -643,7 +643,7 @@ mod tests {
     }
 
     fn composite_props() -> Value {
-        serde_json::json!({ "type": "CompositeSolid", "solid_shell_faces": [[1]] })
+        serde_json::json!({ "type": "CompositeSolid", "shells": [[1]] })
     }
 
     fn composite_geom() -> DecodedGeometry {
@@ -683,8 +683,8 @@ mod tests {
     #[test]
     fn solid_with_semantics_emits_boundedby() {
         let props = serde_json::json!({
-            "type": "Solid", "solid_shell_faces": [1],
-            "semantics": { "surfaces": [{"type": "WallSurface"}], "values": [[0]] }
+            "type": "Solid", "shells": [1],
+            "surfaces": [{"type": "WallSurface"}], "face_semantics": [0]
         });
         let b = BuildingSolids {
             id: "S1".into(),
@@ -712,7 +712,7 @@ mod tests {
         };
         let props = serde_json::json!({
             "type": "MultiSurface",
-            "semantics": { "surfaces": [{"type": "RoofSurface"}], "values": [0] }
+            "surfaces": [{"type": "RoofSurface"}], "face_semantics": [0]
         });
         let b = BuildingSolids {
             id: "M1".into(),
@@ -755,8 +755,8 @@ mod tests {
 
     fn sem_solid_props(value: serde_json::Value) -> Value {
         serde_json::json!({
-            "type": "Solid", "solid_shell_faces": [1],
-            "semantics": { "surfaces": [{"type": "WallSurface"}], "values": [[value]] }
+            "type": "Solid", "shells": [1],
+            "surfaces": [{"type": "WallSurface"}], "face_semantics": [value]
         })
     }
 
@@ -870,8 +870,8 @@ mod tests {
     fn semantics_resolution_error_falls_back_to_plain_solid() {
         // 1 face but values claims 2 -> resolution error -> geometry-only fallback.
         let props = serde_json::json!({
-            "type": "Solid", "solid_shell_faces": [1],
-            "semantics": { "surfaces": [{"type": "WallSurface"}], "values": [[0, 1]] }
+            "type": "Solid", "shells": [1],
+            "surfaces": [{"type": "WallSurface"}], "face_semantics": [0, 1]
         });
         let b = BuildingSolids {
             id: "S2".into(),
@@ -1219,7 +1219,7 @@ mod tests {
         };
         let props = serde_json::json!({
             "type": "MultiSurface",
-            "semantics": { "surfaces": [{"type": "WallSurface"}], "values": [0, 1] } // 2 values
+            "surfaces": [{"type": "WallSurface"}], "face_semantics": [0, 1]
         });
         let content_by_id = HashMap::from([(
             "P".to_string(),
@@ -1366,7 +1366,7 @@ mod tests {
                 vec![vec![6, 7, 8]],
             ]),
         };
-        let props = serde_json::json!({ "type": "Solid", "solid_shell_faces": [3] });
+        let props = serde_json::json!({ "type": "Solid", "shells": [3] });
         let material = serde_json::json!({ "visual": { "values": [[0, 0, 1]] } });
         let table = vec![
             serde_json::json!({ "name": "red", "diffuseColor": [1.0, 0.0, 0.0] }),
@@ -1433,7 +1433,7 @@ mod tests {
             coords,
             kind: DecodedKind::PolyhedralSurface(vec![vec![vec![0, 1, 2]]]),
         };
-        let props = serde_json::json!({ "type": "Solid", "solid_shell_faces": [1] });
+        let props = serde_json::json!({ "type": "Solid", "shells": [1] });
         // Face 0 has 1 ring, but the texture gives it 2 ring leaves.
         let texture = serde_json::json!({
             "visual": { "values": [[[0, [0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], [null]]] }

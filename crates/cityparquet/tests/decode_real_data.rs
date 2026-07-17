@@ -191,8 +191,10 @@ fn railway_decodes_templates_and_semantics() {
     let mut semantics_found = 0usize;
     for obj in &objects {
         for (_lod, _decoded, props) in &obj.geometries {
+            // G7: semantics are the flattened top-level `surfaces` +
+            // `face_semantics` (§8), no nested `semantics` object.
             if let Some(props) = props
-                && props.get("semantics").is_some()
+                && props.get("surfaces").is_some()
             {
                 semantics_found += 1;
             }

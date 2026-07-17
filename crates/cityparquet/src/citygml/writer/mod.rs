@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn multi_solid_is_routed_to_skip() {
-        let props = Some(json!({ "type": "MultiSolid", "solid_shell_faces": [[1]] }));
+        let props = Some(json!({ "type": "MultiSolid", "shells": [[1]] }));
         let route = route_geometry(
             Some(Lod::parse("2").unwrap()),
             solid(geometry_collection()),
@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn composite_solid_is_routed_to_emit() {
-        let props = Some(json!({ "type": "CompositeSolid", "solid_shell_faces": [[1]] }));
+        let props = Some(json!({ "type": "CompositeSolid", "shells": [[1]] }));
         let route = route_geometry(
             Some(Lod::parse("2").unwrap()),
             solid(geometry_collection()),
