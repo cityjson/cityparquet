@@ -176,7 +176,7 @@ fn solid_shells(geom: &Geometry, dropped: &[usize]) -> Result<Option<Value>> {
 /// Number of leaf faces beneath a boundary subtree that sits `depth`
 /// array-levels above the face list (a "face" is a list of rings). Used to
 /// size CityJSON's null shorthand in `semantics.values` when flattening.
-fn count_boundary_faces(boundaries: &Value, depth: usize) -> usize {
+pub(crate) fn count_boundary_faces(boundaries: &Value, depth: usize) -> usize {
     match boundaries {
         Value::Array(arr) if depth == 0 => arr.len(),
         Value::Array(arr) => arr.iter().map(|b| count_boundary_faces(b, depth - 1)).sum(),
@@ -187,7 +187,7 @@ fn count_boundary_faces(boundaries: &Value, depth: usize) -> usize {
 /// `semantics.values` nesting above the flat per-face list: 0 for the
 /// surface-list types (`MultiSurface`/`CompositeSurface`, already flat), 1 for
 /// `Solid` (shells → faces), 2 for `MultiSolid`/`CompositeSolid`.
-fn values_nesting_depth(thetype: &GeometryType) -> usize {
+pub(crate) fn values_nesting_depth(thetype: &GeometryType) -> usize {
     solid_face_nesting_depth(thetype).unwrap_or(0)
 }
 
@@ -197,7 +197,12 @@ fn values_nesting_depth(thetype: &GeometryType) -> usize {
 /// part (using `boundaries` to size it). Entries are kept verbatim (a surface
 /// index or `null`). The result covers the ORIGINAL faces, before the
 /// degenerate-drop filter the caller then applies.
-fn flatten_values(values: &Value, boundaries: &Value, depth: usize, out: &mut Vec<Value>) {
+pub(crate) fn flatten_values(
+    values: &Value,
+    boundaries: &Value,
+    depth: usize,
+    out: &mut Vec<Value>,
+) {
     match (values, depth) {
         // A whole subtree with no semantics: one null per face beneath it.
         (Value::Null, _) => {
@@ -206,19 +211,32 @@ fn flatten_values(values: &Value, boundaries: &Value, depth: usize, out: &mut Ve
                 count_boundary_faces(boundaries, depth),
             ));
         }
-        // Flat per-face entries (index or null) — kept verbatim.
-        (Value::Array(varr), 0) => out.extend(varr.iter().cloned()),
-        // A nesting level: recurse into each child alongside its boundary.
+        // Flat per-face entries. Size EXACTLY to this boundary's face count —
+        // pad a short list with null, ignore a long one's overflow — so a
+        // malformed shell/solid can never shift a later part's entries onto the
+        // wrong faces (each part stays aligned to its own boundary).
+        (Value::Array(varr), 0) => {
+            for i in 0..count_boundary_faces(boundaries, 0) {
+                out.push(varr.get(i).cloned().unwrap_or(Value::Null));
+            }
+        }
+        // A nesting level: recurse per BOUNDARY child (not per values child),
+        // so a missing values child expands to nulls and an extra one is
+        // ignored — again keeping every part aligned to its boundary.
         (Value::Array(varr), _) => {
             let barr = boundaries.as_array();
-            for (i, v) in varr.iter().enumerate() {
+            for i in 0..barr.map_or(0, Vec::len) {
+                let v = varr.get(i).unwrap_or(&Value::Null);
                 let b = barr.and_then(|b| b.get(i)).unwrap_or(&Value::Null);
                 flatten_values(v, b, depth - 1, out);
             }
         }
-        // Malformed non-array/non-null at a nesting level: nothing to add
-        // (the caller pads any shortfall to the face count with null).
-        _ => {}
+        // Malformed non-array where a nested value was expected: fill the whole
+        // subtree with null so the face alignment is preserved.
+        _ => out.extend(std::iter::repeat_n(
+            Value::Null,
+            count_boundary_faces(boundaries, depth),
+        )),
     }
 }
 
@@ -1339,6 +1357,25 @@ mod tests {
     /// No fixture carries MultiSolid/CompositeSolid, so the nested `shells`
     /// branch gets direct coverage here: 2 solids — first with shells of
     /// (1, 2) faces, second with one 1-face shell. Nesting is the real
+    /// G7 sol-review Finding 1: a malformed `semantics.values` with a shell
+    /// SHORTER than its boundary must not shift the next shell's entries onto
+    /// the wrong faces. A Solid with two 2-face shells and values
+    /// `[[0], [1, 1]]` must flatten to `[0, null, 1, 1]` (shell 0 padded), not
+    /// `[0, 1, 1, null]` (which a global pad would produce).
+    #[test]
+    fn flatten_sizes_each_shell_to_its_boundary() {
+        // Two shells, each two faces (each face a single triangular ring).
+        let boundaries =
+            serde_json::json!([[[[0, 1, 2]], [[0, 1, 3]]], [[[0, 2, 3]], [[1, 2, 3]]]]);
+        let mut out = Vec::new();
+        flatten_values(&serde_json::json!([[0], [1, 1]]), &boundaries, 1, &mut out);
+        assert_eq!(
+            Value::Array(out),
+            serde_json::json!([0, null, 1, 1]),
+            "the short first shell must be padded to its two faces before the second shell"
+        );
+    }
+
     /// 5-level MultiSolid shape: solids → shells → surfaces → rings → indices.
     #[test]
     fn multisolid_shells_nest_per_solid() {

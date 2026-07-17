@@ -443,23 +443,46 @@ fn rebuild_semantics(props: Option<&Value>, gtype: &GeometryType) -> Result<Opti
             let counts = shell_faces_flat(Some(props))?;
             match counts {
                 Some(counts) => Value::Array(partition_face_semantics(&face_semantics, &counts)?),
-                None => Value::Array(face_semantics),
+                // No `shells`: mirror `reconstruct_boundaries`, which puts every
+                // face in one shell (§8). A Solid's `values` must be nested, so
+                // wrap the flat list in a single shell rather than emit it flat.
+                None => Value::Array(vec![Value::Array(face_semantics)]),
             }
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
-            let nested = shell_faces_nested(Some(props))?.unwrap_or_default();
+            // `shells` is required to split the flat list per solid; without it
+            // the partition is ambiguous, so reject rather than silently drop.
+            let nested = shell_faces_nested(Some(props))?.ok_or_else(|| {
+                err("MultiSolid/CompositeSolid geometry_properties is missing `shells`".to_string())
+            })?;
             let mut solids = Vec::with_capacity(nested.len());
-            let mut offset = 0;
+            let mut offset: usize = 0;
             for shell_counts in &nested {
-                let n: usize = shell_counts.iter().sum();
-                let slice = face_semantics.get(offset..offset + n).ok_or_else(|| {
+                let mut n: usize = 0;
+                for &c in shell_counts {
+                    n = n
+                        .checked_add(c)
+                        .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
+                }
+                let end = offset
+                    .checked_add(n)
+                    .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
+                let slice = face_semantics.get(offset..end).ok_or_else(|| {
                     err(format!(
                         "shells describes more faces than face_semantics has ({} entries)",
                         face_semantics.len()
                     ))
                 })?;
                 solids.push(Value::Array(partition_face_semantics(slice, shell_counts)?));
-                offset += n;
+                offset = end;
+            }
+            // Every face_semantics entry must be consumed — trailing entries
+            // mean `shells` under-counts the faces, a corrupt package.
+            if offset != face_semantics.len() {
+                return Err(err(format!(
+                    "shells account for {offset} faces but face_semantics has {} entries",
+                    face_semantics.len()
+                )));
             }
             Value::Array(solids)
         }

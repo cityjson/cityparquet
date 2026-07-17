@@ -301,14 +301,38 @@ fn parse_boundaries<T: DeserializeOwned>(geom: &Geometry) -> Result<T> {
     })
 }
 
-fn realign_semantics(semantics: &Option<Value>, dropped_surfaces: &[usize]) -> Option<Value> {
-    let mut semantics = semantics.clone()?;
-    if !dropped_surfaces.is_empty()
-        && let Some(values) = semantics.get_mut("values").and_then(Value::as_array_mut)
-    {
-        remove_dropped_entries(values, dropped_surfaces);
+/// Canonicalise a source geometry's `semantics` to `{surfaces, face_semantics}`
+/// — the flat, face-aligned form the stored column uses (§8) — so BOTH sides of
+/// a comparison are reduced to the same representation. This flattens the
+/// nested CityJSON `values` (expanding the null shorthand via `boundaries`) and
+/// removes the writer-dropped face positions, so a source that used the null
+/// shorthand (`values: [null]`) compares EQUAL to the exporter's expanded
+/// per-face form (spec §17's up-to-canonicalisation round-trip). Reuses the
+/// exact flatten the encoder uses, so the two never diverge.
+fn canonical_semantics(
+    semantics: &Option<Value>,
+    boundaries: &Value,
+    thetype: &GeometryType,
+    dropped: &[usize],
+) -> Option<Value> {
+    let semantics = semantics.as_ref()?;
+    let surfaces = semantics.get("surfaces")?.clone();
+    let depth = crate::encode::values_nesting_depth(thetype);
+    let mut flat = Vec::new();
+    if let Some(values) = semantics.get("values") {
+        crate::encode::flatten_values(values, boundaries, depth, &mut flat);
     }
-    Some(semantics)
+    flat.resize(
+        crate::encode::count_boundary_faces(boundaries, depth),
+        Value::Null,
+    );
+    let drop_set: std::collections::HashSet<usize> = dropped.iter().copied().collect();
+    let face_semantics: Vec<Value> = flat
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, v)| (!drop_set.contains(&i)).then_some(v))
+        .collect();
+    Some(serde_json::json!({ "surfaces": surfaces, "face_semantics": face_semantics }))
 }
 
 /// Number of shell/solid nesting levels above the per-face entries in a
@@ -366,22 +390,6 @@ fn realign_nested_values(values: &mut Value, depth: usize, dropped: &[usize]) {
     }
     let mut flat = 0usize;
     walk(values, depth, &mut flat, dropped);
-}
-
-/// Realign a Solid-family `semantics` value `depth` shell/solid levels deep
-/// — the nested counterpart of `realign_semantics`.
-fn realign_nested_semantics(
-    semantics: &Option<Value>,
-    depth: usize,
-    dropped: &[usize],
-) -> Option<Value> {
-    let mut semantics = semantics.clone()?;
-    if !dropped.is_empty()
-        && let Some(values) = semantics.get_mut("values")
-    {
-        realign_nested_values(values, depth, dropped);
-    }
-    Some(semantics)
 }
 
 /// Feature-scoped `material`/`texture`/`vertices-texture` DEFINITIONS a
@@ -807,7 +815,12 @@ fn normalise_geometry(
             let idxs: Vec<usize> = parse_boundaries(geom)?;
             Ok(NormalisedGeometry {
                 tree: points_node(pool, &idxs)?,
-                semantics: geom.semantics.clone(),
+                semantics: canonical_semantics(
+                    &geom.semantics,
+                    &geom.boundaries,
+                    &geom.thetype,
+                    &[],
+                ),
                 material: realigned_material(&geom.material, &[], defs)?,
                 texture: realigned_texture(&geom.texture, &[], defs)?,
                 dropped_rings: 0,
@@ -818,7 +831,12 @@ fn normalise_geometry(
             let lines: Vec<Vec<usize>> = parse_boundaries(geom)?;
             Ok(NormalisedGeometry {
                 tree: ring_list_node(pool, &lines)?,
-                semantics: geom.semantics.clone(),
+                semantics: canonical_semantics(
+                    &geom.semantics,
+                    &geom.boundaries,
+                    &geom.thetype,
+                    &[],
+                ),
                 material: realigned_material(&geom.material, &[], defs)?,
                 texture: realigned_texture(&geom.texture, &[], defs)?,
                 dropped_rings: 0,
@@ -838,7 +856,12 @@ fn normalise_geometry(
             }
             Ok(NormalisedGeometry {
                 tree: surface_list_node(pool, &kept)?,
-                semantics: realign_semantics(&geom.semantics, &dropped_positions),
+                semantics: canonical_semantics(
+                    &geom.semantics,
+                    &geom.boundaries,
+                    &geom.thetype,
+                    &dropped_positions,
+                ),
                 material: realigned_material(&geom.material, &dropped_positions, defs)?,
                 texture: realigned_texture(&geom.texture, &dropped_positions, defs)?,
                 dropped_rings,
@@ -875,7 +898,12 @@ fn normalise_geometry(
             let depth = solid_face_nesting_depth(&geom.thetype).expect("Solid has a depth");
             Ok(NormalisedGeometry {
                 tree,
-                semantics: realign_nested_semantics(&geom.semantics, depth, &dropped_positions),
+                semantics: canonical_semantics(
+                    &geom.semantics,
+                    &geom.boundaries,
+                    &geom.thetype,
+                    &dropped_positions,
+                ),
                 material: realigned_nested_material(
                     &geom.material,
                     depth,
@@ -927,7 +955,12 @@ fn normalise_geometry(
             let depth = solid_face_nesting_depth(&geom.thetype).expect("MultiSolid has a depth");
             Ok(NormalisedGeometry {
                 tree,
-                semantics: realign_nested_semantics(&geom.semantics, depth, &dropped_positions),
+                semantics: canonical_semantics(
+                    &geom.semantics,
+                    &geom.boundaries,
+                    &geom.thetype,
+                    &dropped_positions,
+                ),
                 material: realigned_nested_material(
                     &geom.material,
                     depth,
@@ -2459,11 +2492,15 @@ mod tests {
         let normalised = normalise_geometry(&geom, &pool, Some(&AppearanceDefs::empty())).unwrap();
         assert_eq!(normalised.dropped_rings, 2);
         assert_eq!(normalised.dropped_surfaces, 2);
+        // Semantics are canonicalised to the flat face_semantics form (§8), so
+        // the solid/shell nesting collapses to one entry per emitted face.
         assert_eq!(
-            normalised.semantics.unwrap()["values"],
-            serde_json::json!([[[10, 11], []], [[13]]]),
-            "semantics must realign across the solid/shell nesting"
+            normalised.semantics.unwrap()["face_semantics"],
+            serde_json::json!([10, 11, 13]),
+            "semantics canonicalise to a flat per-face list, dropping positions 2 and 4"
         );
+        // Material still uses the nested CityJSON theme values (§11.1), realigned
+        // across the solid/shell nesting.
         assert_eq!(
             normalised.material.unwrap()["visual"]["values"],
             serde_json::json!([[[1, 2], []], [[4]]]),
