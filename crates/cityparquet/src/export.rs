@@ -1474,12 +1474,12 @@ mod tests {
             transform: None,
             extensions: None,
             attribute_columns: vec![],
-            reserved_columns: vec![],
             default_geometry: "geometry".to_string(),
             bbox_column: "bbox".to_string(),
             sidecar_files: vec![],
             source_metadata: None,
             appearance_defaults: None,
+            other: None,
         };
         let err = build_header(&meta).unwrap_err();
         assert!(

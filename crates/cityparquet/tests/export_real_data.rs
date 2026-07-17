@@ -1511,8 +1511,8 @@ fn export_rejects_a_second_table_with_a_renamed_attribute_column() {
 
     let attr_kv = kvs
         .iter()
-        .find(|kv| kv.key == "attribute_columns")
-        .expect("delft's metadata must carry an attribute_columns entry");
+        .find(|kv| kv.key == "attributes")
+        .expect("delft's metadata must carry an attributes entry (§13.1)");
     let mut attrs: Vec<String> = serde_json::from_str(
         attr_kv
             .value
@@ -1531,9 +1531,9 @@ fn export_rejects_a_second_table_with_a_renamed_attribute_column() {
     let new_kvs: Vec<KeyValue> = kvs
         .into_iter()
         .map(|kv| {
-            if kv.key == "attribute_columns" {
+            if kv.key == "attributes" {
                 KeyValue::new(
-                    "attribute_columns".to_string(),
+                    "attributes".to_string(),
                     serde_json::to_string(&attrs).unwrap(),
                 )
             } else {

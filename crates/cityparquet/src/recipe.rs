@@ -231,9 +231,22 @@ impl WriterRecipe {
             .map(|(key, value)| KeyValue::new(key, value))
             .collect();
         if geoarrow {
+            // WKB geometry column names, derived from the schema's LoD set (the
+            // metadata no longer carries a `reserved_columns` list — §13.1).
+            let geometry_columns: Vec<String> = if schema.lods.is_empty() {
+                vec!["geometry".to_string()]
+            } else {
+                schema
+                    .lods
+                    .iter()
+                    .map(|lod| format!("geometry_{}", lod.column_suffix()))
+                    .collect()
+            };
             kvs.push(KeyValue::new(
                 "geo".to_string(),
-                metadata.geoparquet_geo_value()?.to_string(),
+                metadata
+                    .geoparquet_geo_value(&geometry_columns)?
+                    .to_string(),
             ));
         }
 
@@ -371,12 +384,12 @@ mod tests {
             transform: None,
             extensions: None,
             attribute_columns: vec!["yoc".to_string()],
-            reserved_columns: vec!["id".to_string(), "object_type".to_string()],
             default_geometry: "geometry_lod2_2".to_string(),
             bbox_column: "bbox".to_string(),
             sidecar_files: vec![],
             source_metadata: None,
             appearance_defaults: None,
+            other: None,
         }
     }
 

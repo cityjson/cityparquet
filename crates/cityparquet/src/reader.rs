@@ -84,13 +84,15 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         // may carry, never trusted wholesale.
         let actual = self.schema();
 
-        // LoDs: derived from the `geometry_<suffix>` names in
-        // `reserved_columns` (never `geometry_properties_<suffix>`, which
-        // also starts with `geometry_` but does not parse as a LoD suffix).
-        let mut lods: Vec<Lod> = meta
-            .reserved_columns
+        // LoDs: derived from the `geometry_<suffix>` names in the file's OWN
+        // schema (never `geometry_properties_<suffix>`, which also starts with
+        // `geometry_` but does not parse as a LoD suffix). The metadata no
+        // longer carries a `reserved_columns` list — §13.1: reserved names are
+        // fixed by the spec, so they are read straight off the schema.
+        let mut lods: Vec<Lod> = actual
+            .fields()
             .iter()
-            .filter_map(|name| name.strip_prefix("geometry_"))
+            .filter_map(|f| f.name().strip_prefix("geometry_"))
             .filter_map(Lod::from_column_suffix)
             .collect();
         lods.sort();

@@ -226,7 +226,9 @@ impl ScanResult {
     /// `lods` is empty), and `sidecars` are the compatibility-profile sidecar
     /// file names to record (empty for the core profile).
     pub fn metadata(&self, sidecars: &[String]) -> Result<CityParquetMetadata> {
-        let (reserved_columns, attribute_columns) = self.schema.column_lists()?;
+        // Only the attribute list is stored (§13.1): a reader recovers the
+        // reserved columns as "everything not listed here".
+        let (_reserved_columns, attribute_columns) = self.schema.column_lists()?;
 
         let default_geometry = match self.lods.last() {
             Some(highest) => format!("geometry_{}", highest.column_suffix()),
@@ -241,12 +243,12 @@ impl ScanResult {
             transform: Some(self.transform.clone()),
             extensions: self.extensions.clone(),
             attribute_columns,
-            reserved_columns,
             default_geometry,
             bbox_column: "bbox".to_string(),
             sidecar_files: sidecars.to_vec(),
             source_metadata: self.source_metadata.clone(),
             appearance_defaults: self.appearance_defaults.clone(),
+            other: None,
         })
     }
 }

@@ -33,8 +33,13 @@ pub struct CityParquetMetadata {
     /// CityJSON extension declarations.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub extensions: Option<Value>,
+    /// Inferred source attribute columns (§6). Serialised under the §13.1 key
+    /// `attributes`. A reader distinguishes reserved from attribute columns
+    /// with this list alone: any column NOT named here is a reserved
+    /// structural column whose name is fixed by the spec (§5.1, §13.1) — so
+    /// no separate `reserved_columns` key is written.
+    #[serde(rename = "attributes")]
     pub attribute_columns: Vec<String>,
-    pub reserved_columns: Vec<String>,
     pub default_geometry: String,
     pub bbox_column: String,
     /// Sidecar table files actually present alongside the main table.
@@ -60,6 +65,12 @@ pub struct CityParquetMetadata {
     /// when the header set neither.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub appearance_defaults: Option<Value>,
+    /// Free-form producer/user metadata not covered by the keys above (§13.1):
+    /// e.g. the source CityJSON `transform` once it stops being a structural
+    /// key (G18). **Informational only** — a reader MUST NOT need it to decode
+    /// the file. Absent (`None`) is the common case today.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub other: Option<Value>,
 }
 
 impl CityParquetMetadata {
@@ -124,17 +135,9 @@ impl CityParquetMetadata {
     /// scan currently fills in — are therefore left out of the `geo` key;
     /// they remain recorded verbatim in CityParquet's own top-level `crs`
     /// key-value entry. Full PROJJSON support is future work.
-    pub fn geoparquet_geo_value(&self) -> Result<Value> {
+    pub fn geoparquet_geo_value(&self, geometry_columns: &[String]) -> Result<Value> {
         let mut columns = serde_json::Map::new();
-        for name in &self.reserved_columns {
-            // A WKB geometry column is named "geometry" or "geometry_<suffix>",
-            // but NOT "geometry_properties"/"geometry_properties_<suffix>" —
-            // those hold JSON semantics, not WKB, and must not appear here.
-            let is_geometry_column = name == "geometry"
-                || (name.starts_with("geometry_") && !name.starts_with("geometry_properties"));
-            if !is_geometry_column {
-                continue;
-            }
+        for name in geometry_columns {
             let mut column = serde_json::Map::new();
             column.insert("encoding".to_string(), Value::String("WKB".to_string()));
             column.insert("geometry_types".to_string(), Value::Array(vec![]));
@@ -165,19 +168,41 @@ mod tests {
             transform: Some(json!({"scale": [0.001, 0.001, 0.001], "translate": [0.0, 0.0, 0.0]})),
             extensions: None,
             attribute_columns: vec!["yoc".to_string(), "height".to_string()],
-            reserved_columns: vec![
-                "id".to_string(),
-                "object_type".to_string(),
-                "bbox".to_string(),
-                "geometry_lod2_2".to_string(),
-                "geometry_properties_lod2_2".to_string(),
-            ],
             default_geometry: "geometry_lod2_2".to_string(),
             bbox_column: "bbox".to_string(),
             sidecar_files: vec![],
             source_metadata: Some(json!({"title": "x", "referenceDate": "2020-01-01"})),
             appearance_defaults: Some(json!({"default-theme-material": "t"})),
+            other: None,
         }
+    }
+
+    /// The WKB geometry column names a writer passes to `geoparquet_geo_value`
+    /// (derived from the schema's LoDs), matching `sample()`'s single LoD 2.2.
+    fn sample_geometry_columns() -> Vec<String> {
+        vec!["geometry_lod2_2".to_string()]
+    }
+
+    /// RED (G8): footer key names must match §13.1 — `attributes` (not
+    /// `attribute_columns`), and no `reserved_columns` key (§13.1: reserved
+    /// names are fixed by the spec, so any column not in `attributes` is
+    /// reserved — no separate list is needed).
+    #[test]
+    fn footer_keys_match_spec_13_1() {
+        let kvs = sample().to_key_values().unwrap();
+        let keys: Vec<&str> = kvs.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(
+            keys.contains(&"attributes"),
+            "spec §13.1 names the key `attributes`, got {keys:?}"
+        );
+        assert!(
+            !keys.contains(&"attribute_columns"),
+            "the legacy `attribute_columns` key must be gone"
+        );
+        assert!(
+            !keys.contains(&"reserved_columns"),
+            "§13.1 defines no `reserved_columns` key"
+        );
     }
 
     #[test]
@@ -218,7 +243,9 @@ mod tests {
 
     #[test]
     fn geo_key_names_primary_column_and_wkb() {
-        let geo = sample().geoparquet_geo_value().unwrap();
+        let geo = sample()
+            .geoparquet_geo_value(&sample_geometry_columns())
+            .unwrap();
         assert_eq!(geo["version"], "1.1.0");
         assert_eq!(geo["primary_column"], "geometry_lod2_2");
         assert_eq!(geo["columns"]["geometry_lod2_2"]["encoding"], "WKB");
@@ -232,17 +259,12 @@ mod tests {
     #[test]
     fn geo_key_lists_every_geometry_column_not_just_the_default() {
         let mut meta = sample();
-        meta.reserved_columns = vec![
-            "id".to_string(),
-            "object_type".to_string(),
-            "bbox".to_string(),
-            "geometry_lod1".to_string(),
-            "geometry_properties_lod1".to_string(),
-            "geometry_lod2_2".to_string(),
-            "geometry_properties_lod2_2".to_string(),
-        ];
         meta.default_geometry = "geometry_lod2_2".to_string();
-        let geo = meta.geoparquet_geo_value().unwrap();
+        // The writer passes one entry per WKB geometry column; only these are
+        // listed (never `geometry_properties_*`, which the writer never puts
+        // in the list).
+        let geometry_columns = vec!["geometry_lod1".to_string(), "geometry_lod2_2".to_string()];
+        let geo = meta.geoparquet_geo_value(&geometry_columns).unwrap();
         let columns = geo["columns"].as_object().unwrap();
         assert_eq!(columns["geometry_lod1"]["encoding"], "WKB");
         assert_eq!(columns["geometry_lod2_2"]["encoding"], "WKB");
@@ -263,7 +285,9 @@ mod tests {
         meta.crs = Some(Value::String(
             "https://www.opengis.net/def/crs/EPSG/0/7415".to_string(),
         ));
-        let geo = meta.geoparquet_geo_value().unwrap();
+        let geo = meta
+            .geoparquet_geo_value(&sample_geometry_columns())
+            .unwrap();
         assert!(
             !geo["columns"]["geometry_lod2_2"]
                 .as_object()
@@ -276,7 +300,9 @@ mod tests {
     #[test]
     fn geo_key_propagates_crs_when_projjson_object() {
         // Unchanged behaviour: a PROJJSON object is still copied verbatim.
-        let geo = sample().geoparquet_geo_value().unwrap();
+        let geo = sample()
+            .geoparquet_geo_value(&sample_geometry_columns())
+            .unwrap();
         assert!(
             geo["columns"]["geometry_lod2_2"]
                 .as_object()

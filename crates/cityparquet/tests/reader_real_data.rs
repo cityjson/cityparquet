@@ -62,7 +62,6 @@ fn cityparquet_metadata_matches_the_writer_side_scan() {
         writer_meta.attribute_columns.len()
     );
     assert_eq!(read_meta.bbox_column, writer_meta.bbox_column);
-    assert_eq!(read_meta.reserved_columns, writer_meta.reserved_columns);
     assert_eq!(
         read_meta.cityparquet_version,
         writer_meta.cityparquet_version
