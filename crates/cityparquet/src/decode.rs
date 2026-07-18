@@ -88,6 +88,12 @@ fn merge_other_members(json: &mut Map<String, Value>, cell: Option<&str>, id: &s
         )));
     };
     for (key, value) in members {
+        // Attributes diverted here because their name collides with a column
+        // (§5.2, G12) are merged back into `attributes`, not the top level.
+        if key == crate::encode::DIVERTED_ATTRS_KEY {
+            merge_diverted_attributes(json, value, id)?;
+            continue;
+        }
         if crate::encode::OTHER_RESERVED_MEMBERS.contains(&key.as_str()) {
             return Err(err(format!(
                 "object '{id}': 'other' column carries reserved member '{key}'"
@@ -104,6 +110,37 @@ fn merge_other_members(json: &mut Map<String, Value>, cell: Option<&str>, id: &s
             )));
         }
         json.insert(key, value);
+    }
+    Ok(())
+}
+
+/// Merge diverted attributes (the `other` cell's `cityparquet:diverted_attributes`
+/// value, §5.2/G12) back into the object's `attributes`, creating that object if
+/// the row had no column attributes. Errors if the value is not an object, or if
+/// a diverted name duplicates a decoded column attribute — both mean a corrupt
+/// or foreign file, and silently dropping either would mask it.
+fn merge_diverted_attributes(json: &mut Map<String, Value>, value: Value, id: &str) -> Result<()> {
+    let Value::Object(diverted) = value else {
+        return Err(err(format!(
+            "object '{id}': '{}' must be a JSON object",
+            crate::encode::DIVERTED_ATTRS_KEY
+        )));
+    };
+    let attrs = json
+        .entry("attributes")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Value::Object(attrs_map) = attrs else {
+        return Err(err(format!(
+            "object '{id}': 'attributes' is not a JSON object"
+        )));
+    };
+    for (key, value) in diverted {
+        if attrs_map.contains_key(&key) {
+            return Err(err(format!(
+                "object '{id}': diverted attribute '{key}' duplicates a column attribute"
+            )));
+        }
+        attrs_map.insert(key, value);
     }
     Ok(())
 }
@@ -463,6 +500,51 @@ mod tests {
         assert!(
             merge_other_members(&mut json, Some("not json"), "obj-1").is_err(),
             "a malformed `other` cell must be an error, not a panic"
+        );
+    }
+
+    #[test]
+    fn merge_diverted_attributes_restores_into_attributes() {
+        // G12: the diverted map merges into `attributes` (creating it if the
+        // row had no column attributes), never the top level.
+        let mut json = Map::new();
+        merge_other_members(
+            &mut json,
+            Some(r#"{"cityparquet:diverted_attributes":{"bbox":"x","id":42}}"#),
+            "o",
+        )
+        .unwrap();
+        assert_eq!(json["attributes"], json!({"bbox": "x", "id": 42}));
+        assert!(
+            !json.contains_key("bbox"),
+            "diverted attrs must not land at the top level"
+        );
+    }
+
+    #[test]
+    fn merge_diverted_attributes_guards() {
+        // Non-object value → error.
+        let mut json = Map::new();
+        assert!(
+            merge_other_members(
+                &mut json,
+                Some(r#"{"cityparquet:diverted_attributes":"nope"}"#),
+                "o"
+            )
+            .is_err(),
+            "a non-object diverted value must error"
+        );
+        // A diverted name duplicating a decoded column attribute → error.
+        let mut json = Map::new();
+        json.insert("attributes".to_string(), json!({"bbox": "from-column"}));
+        assert!(
+            merge_other_members(
+                &mut json,
+                Some(r#"{"cityparquet:diverted_attributes":{"bbox":"x"}}"#),
+                "o"
+            )
+            .is_err(),
+            "a diverted attr colliding with a column attr must error"
         );
     }
 

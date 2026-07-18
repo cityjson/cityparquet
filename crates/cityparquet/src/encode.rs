@@ -59,6 +59,56 @@ pub(crate) fn unmapped_object_members(co: &CityObject) -> Result<serde_json::Map
     Ok(map)
 }
 
+/// Reserved key of the `other` cell holding attributes diverted there because
+/// their name collides with a realised column name (§5.2, G12). Its value is an
+/// object `{ "<attrName>": <value> }`; the decoder merges it back into the
+/// object's `attributes`, never the top level. The `cityparquet:` prefix (as in
+/// `cityparquet:orientation`) is unforgeable from valid CityJSON, whose member
+/// names never contain a colon and whose Extension members start with `+`.
+pub(crate) const DIVERTED_ATTRS_KEY: &str = "cityparquet:diverted_attributes";
+
+/// Collect an object's diverted attributes (those whose name is in `diverted`)
+/// into `unmapped` under [`DIVERTED_ATTRS_KEY`] (§5.2, G12), returning how many
+/// were diverted. Null values are skipped — the column path drops them and the
+/// comparator treats null as absent, so keeping them would make the diverted
+/// path spuriously non-null and inconsistent. Errors if `unmapped` already
+/// carries the key (a foreign object with a literal `cityparquet:diverted_attributes`
+/// flatten member) — overwriting it would be silent data loss.
+fn collect_diverted_attributes(
+    co: &CityObject,
+    diverted: &[String],
+    unmapped: &mut serde_json::Map<String, Value>,
+    id: &str,
+) -> Result<usize> {
+    if diverted.is_empty() {
+        return Ok(0);
+    }
+    let Some(attrs) = co.attributes.as_ref().and_then(Value::as_object) else {
+        return Ok(0);
+    };
+    let mut map = serde_json::Map::new();
+    for name in diverted {
+        match attrs.get(name) {
+            Some(v) if !v.is_null() => {
+                map.insert(name.clone(), v.clone());
+            }
+            _ => {}
+        }
+    }
+    if map.is_empty() {
+        return Ok(0);
+    }
+    if unmapped.contains_key(DIVERTED_ATTRS_KEY) {
+        return Err(CityParquetError::Schema(format!(
+            "object {id}: source carries a reserved member '{DIVERTED_ATTRS_KEY}'; \
+             cannot divert colliding attributes without overwriting it"
+        )));
+    }
+    let count = map.len();
+    unmapped.insert(DIVERTED_ATTRS_KEY.to_string(), Value::Object(map));
+    Ok(count)
+}
+
 /// Drop `address[].location` from an `other` payload before it is stored (§5.2,
 /// G9), returning how many were dropped. A CityJSON `address.location` is a
 /// `MultiPoint` whose boundaries index the source vertex pool; CityParquet
@@ -102,6 +152,12 @@ pub struct EncodeStats {
     /// discards, so keeping them would emit a dangling/out-of-range vertex
     /// reference — invalid CityJSON. Textual address fields are unaffected.
     pub address_locations_dropped: usize,
+    /// Attribute values diverted into the `other` column because their name
+    /// collides with a reserved/geometry column name (§5.2, G12). Counted over
+    /// all objects: a diverted attribute is preserved but is not a queryable
+    /// column, so the conversion report surfaces it (see
+    /// [`ScanResult::diverted_attribute_names`] for the names).
+    pub diverted_attribute_values: usize,
 }
 
 /// Expand `acc` to also cover `bbox` (same union rule as [`crate::scan`]'s).
@@ -886,6 +942,10 @@ struct RowWriter {
     template_nulls: NullBufferBuilder,
     other: StringBuilder,
     attributes: Vec<(String, AttrBuilder)>,
+    /// Attribute names diverted into `other` because they collide with a
+    /// reserved/geometry column name (§5.2, G12). Sorted, so the diverted map
+    /// each row emits is deterministic.
+    diverted_attributes: Vec<String>,
     len: usize,
 }
 
@@ -930,6 +990,7 @@ impl RowWriter {
             template_nulls: NullBufferBuilder::new(0),
             other: StringBuilder::new(),
             attributes,
+            diverted_attributes: scan.diverted_attribute_names.iter().cloned().collect(),
             len: 0,
         }
     }
@@ -1051,6 +1112,11 @@ impl RowWriter {
         // when the object has no such members (so a null count = rows carrying
         // unmapped members).
         let mut unmapped = unmapped_object_members(co)?;
+        // Diverted colliding attributes go in BEFORE the emptiness check, so a
+        // row whose only unmapped content is diverted attributes still stores
+        // an `other` cell rather than null (§5.2, G12).
+        stats.diverted_attribute_values +=
+            collect_diverted_attributes(co, &self.diverted_attributes, &mut unmapped, id)?;
         stats.address_locations_dropped += strip_address_locations(&mut unmapped);
         if unmapped.is_empty() {
             self.other.append_null();
@@ -1423,6 +1489,52 @@ pub fn encode_buffered<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // G12: a colliding attribute is collected into `other` under the reserved
+    // diverted key, skipping nulls; a source object that already carries that
+    // reserved member is a hard error (no silent overwrite).
+    #[test]
+    fn collect_diverted_attributes_diverts_present_non_null_values() {
+        let co: CityObject = serde_json::from_value(serde_json::json!({
+            "type": "Building",
+            "attributes": {"bbox": "sentinel", "id": null, "keep": 1}
+        }))
+        .unwrap();
+        let mut unmapped = serde_json::Map::new();
+        let n = collect_diverted_attributes(
+            &co,
+            &["bbox".to_string(), "id".to_string()],
+            &mut unmapped,
+            "obj-1",
+        )
+        .unwrap();
+        assert_eq!(
+            n, 1,
+            "only the non-null `bbox` is diverted; null `id` skipped"
+        );
+        assert_eq!(
+            unmapped[DIVERTED_ATTRS_KEY],
+            serde_json::json!({"bbox": "sentinel"})
+        );
+    }
+
+    #[test]
+    fn collect_diverted_attributes_errors_on_a_preexisting_reserved_member() {
+        let co: CityObject = serde_json::from_value(serde_json::json!({
+            "type": "Building",
+            "attributes": {"bbox": "sentinel"}
+        }))
+        .unwrap();
+        // A foreign object already carrying the reserved diverted key would be
+        // silently overwritten — must error instead.
+        let mut unmapped = serde_json::Map::new();
+        unmapped.insert(DIVERTED_ATTRS_KEY.to_string(), serde_json::json!({"x": 1}));
+        assert!(
+            collect_diverted_attributes(&co, &["bbox".to_string()], &mut unmapped, "obj-1")
+                .is_err(),
+            "a pre-existing reserved diverted key must be a hard error"
+        );
+    }
 
     // G9 sol-review Finding 1: `address[].location` (a vertex-indexed
     // MultiPoint) is dropped from the stored `other` so export never emits a

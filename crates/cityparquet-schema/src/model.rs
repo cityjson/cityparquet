@@ -97,31 +97,39 @@ const RESERVED_COLUMN_NAMES: &[&str] = &[
     "other",
 ];
 
-impl CityParquetSchema {
-    /// The reserved + per-LoD geometry column names for this schema instance,
-    /// i.e. every name an attribute column must not collide with.
-    fn reserved_and_geometry_column_names(&self) -> HashSet<String> {
-        let mut names: HashSet<String> = RESERVED_COLUMN_NAMES
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        if self.lods.is_empty() {
-            names.insert("geometry".to_string());
-            names.insert("geometry_properties".to_string());
-            names.insert("material".to_string());
-            names.insert("texture".to_string());
-        } else {
-            for lod in &self.lods {
-                let suffix = lod.column_suffix();
-                names.insert(format!("geometry_{suffix}"));
-                names.insert(format!("geometry_properties_{suffix}"));
-                names.insert(format!("material_{suffix}"));
-                names.insert(format!("texture_{suffix}"));
-            }
+/// Every column name an attribute column must not collide with, for a schema
+/// with these `lods`: the fixed reserved names plus the geometry/appearance
+/// column names the LoDs realise. **Schema-relative** — in the per-LoD case
+/// only the suffixed forms (`geometry_lod2`, …) are reserved, so an attribute
+/// literally named `geometry` is a legal column; in the zero-analysis-geometry
+/// case (empty `lods`) the bare `geometry`/`geometry_properties`/`material`/
+/// `texture` names are reserved instead. This is the single source of truth
+/// shared by [`CityParquetSchema::validate`] (which errors on a collision) and
+/// the scan-time diversion of colliding attributes into `other` (§5.2, G12), so
+/// the two can never diverge on what "reserved" means.
+pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
+    let mut names: HashSet<String> = RESERVED_COLUMN_NAMES
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    if lods.is_empty() {
+        names.insert("geometry".to_string());
+        names.insert("geometry_properties".to_string());
+        names.insert("material".to_string());
+        names.insert("texture".to_string());
+    } else {
+        for lod in lods {
+            let suffix = lod.column_suffix();
+            names.insert(format!("geometry_{suffix}"));
+            names.insert(format!("geometry_properties_{suffix}"));
+            names.insert(format!("material_{suffix}"));
+            names.insert(format!("texture_{suffix}"));
         }
-        names
     }
+    names
+}
 
+impl CityParquetSchema {
     /// Reject schemas that can't be rendered unambiguously: duplicate LoDs, or
     /// an attribute name colliding with a reserved or geometry column name.
     fn validate(&self) -> Result<()> {
@@ -134,7 +142,7 @@ impl CityParquetSchema {
             }
         }
 
-        let reserved = self.reserved_and_geometry_column_names();
+        let reserved = reserved_and_geometry_column_names(&self.lods);
         for (name, _) in &self.attributes {
             if reserved.contains(name) {
                 return Err(CityParquetError::Schema(format!(

@@ -6,6 +6,8 @@
 //! columns and metadata does this dataset need?" so pass 2 (the writer) can
 //! allocate the right Arrow arrays up front.
 
+use std::collections::BTreeSet;
+
 use cityparquet_schema::{
     AttributeInferer, CITYPARQUET_VERSION, CityParquetError, CityParquetMetadata,
     CityParquetSchema, Lod, Result, SourceFormat as SchemaSourceFormat, normalise_attribute_name,
@@ -51,6 +53,12 @@ pub struct ScanResult {
     /// the header's `appearance` default-theme members, `None` if neither is
     /// set.
     pub appearance_defaults: Option<serde_json::Value>,
+    /// Source attribute names whose (normalised) name collides with a realised
+    /// reserved/geometry column name (§5.2, G12). These get **no** attribute
+    /// column; the writer diverts each object's value into the `other` column
+    /// under `cityparquet:diverted_attributes` instead of aborting the whole
+    /// conversion. Sorted for a deterministic diverted map.
+    pub diverted_attribute_names: std::collections::BTreeSet<String>,
     /// The GeoParquet-legal geometry columns and their geometry types (§13.3,
     /// G1): one entry per LoD whose every geometry encodes to a WKB type in
     /// GeoParquet's `[1001,1007]` subset, ascending by LoD. A LoD with any
@@ -254,9 +262,26 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         .map(cityparquet_schema::crs::resolve_to_projjson)
         .transpose()?;
 
+    // Divert an attribute whose (normalised) name collides with a realised
+    // reserved/geometry column name into `other` rather than aborting the whole
+    // conversion (§5.2, G12). Divertedness is schema-relative — it depends on
+    // the final `lods` — so this runs only after the LoDs are settled.
+    // `CityParquetSchema::validate` stays strict; scan simply never hands it a
+    // colliding attribute (the two share one reserved-name definition).
+    let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&lods);
+    let mut attributes = Vec::new();
+    let mut diverted_attribute_names = BTreeSet::new();
+    for (name, ty) in inferer.finish() {
+        if reserved.contains(&name) {
+            diverted_attribute_names.insert(name);
+        } else {
+            attributes.push((name, ty));
+        }
+    }
+
     let schema = CityParquetSchema {
         lods: lods.clone(),
-        attributes: inferer.finish(),
+        attributes,
         crs: crs.clone(),
     };
 
@@ -271,6 +296,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         extensions: header.extensions.clone(),
         source_metadata,
         appearance_defaults,
+        diverted_attribute_names,
         geoparquet_columns,
         source_format: to_schema_source_format(source.format()),
         source_version: header.version.clone(),
