@@ -744,3 +744,55 @@ fn null_shorthand_semantics_round_trips() {
         report.differences
     );
 }
+
+/// G9 (§5.1): unmapped source members — a Building's `address` and its
+/// per-object `geographicalExtent`, neither of which has a dedicated column —
+/// must survive the round-trip via the `other` column. Fixture is a real
+/// subset of the Helsinki dataset (the only fixture carrying `address`); its
+/// addresses have no `location` MultiPoint, so the vertex-index landmine
+/// (documented as a known limitation) is not exercised here.
+#[test]
+fn helsinki_unmapped_members_round_trip() {
+    let (exported, _package_dir, _export_dir) = convert_and_export("helsinki_address.city.jsonl");
+    let report = compare_datasets(
+        &fixture("helsinki_address.city.jsonl"),
+        &exported,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "unmapped members (address, geographicalExtent) must round-trip; differences: {:#?}",
+        report.differences
+    );
+
+    // Direct proof the members actually survive with their content, not merely
+    // that the comparator is satisfied.
+    let read_addresses = |path: &std::path::Path| -> Vec<(String, serde_json::Value)> {
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut out = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let doc: serde_json::Value = serde_json::from_str(line).unwrap();
+            let Some(cos) = doc.get("CityObjects").and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (id, co) in cos {
+                if let Some(addr) = co.get("address") {
+                    out.push((id.clone(), addr.clone()));
+                }
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    };
+    let source_addr = read_addresses(&fixture("helsinki_address.city.jsonl"));
+    let export_addr = read_addresses(&exported);
+    assert!(
+        !source_addr.is_empty(),
+        "fixture must actually carry address members"
+    );
+    assert_eq!(
+        source_addr, export_addr,
+        "every source address must reappear verbatim after export"
+    );
+}

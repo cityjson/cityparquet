@@ -1126,6 +1126,12 @@ struct ObjectData {
     /// (§5.1). Keyed by child rather than compared positionally so it is, like
     /// `children`, independent of the order the round-trip lists children in.
     children_roles: HashMap<String, String>,
+    /// The source object's unmapped members (the `other` column, §5.1/G9): a
+    /// Building's `address`, a per-object `geographicalExtent`, Extension
+    /// `+members` — anything with no dedicated column. Compared verbatim so a
+    /// silently-dropped member registers as a difference. Same extraction the
+    /// encoder uses, so the two sides never diverge on definition.
+    other: Value,
     geometries: HashMap<Option<String>, NormGeometry>,
 }
 
@@ -1480,6 +1486,7 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
                     parents,
                     children,
                     children_roles: children_roles_map(co),
+                    other: Value::Object(crate::encode::unmapped_object_members(co)?),
                     geometries,
                 },
             );
@@ -1587,6 +1594,12 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
         out.push(format!(
             "object {id}: attributes differ: {} vs {}",
             a.attributes, b.attributes
+        ));
+    }
+    if !values_equal(&a.other, &b.other) {
+        out.push(format!(
+            "object {id}: unmapped members (other) differ: {} vs {}",
+            a.other, b.other
         ));
     }
 

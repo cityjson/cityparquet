@@ -63,6 +63,41 @@ fn err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Metadata(msg.into())
 }
 
+/// Merge the `other` column's unmapped members into the JSON that rebuilds a
+/// CityObject (§5.1, G9): members with no dedicated column — a Building's
+/// `address`, a per-object `geographicalExtent`, Extension `+members`. Typed
+/// fields route home; the rest ride cjseq's private flatten and re-serialise on
+/// export. A `None`/empty-`{}` cell contributes nothing.
+///
+/// Errors on a non-object cell or one carrying a reserved member. A well-formed
+/// encoder strips the reserved keys (they have their own columns), so their
+/// presence means a corrupt or foreign file — and on a losslessness-critical
+/// path, silently dropping either side would mask that corruption.
+fn merge_other_members(json: &mut Map<String, Value>, cell: Option<&str>, id: &str) -> Result<()> {
+    let Some(cell) = cell else {
+        return Ok(());
+    };
+    let Value::Object(members) = serde_json::from_str::<Value>(cell).map_err(|e| {
+        err(format!(
+            "object '{id}': 'other' column is not valid JSON: {e}"
+        ))
+    })?
+    else {
+        return Err(err(format!(
+            "object '{id}': 'other' column must be a JSON object, got: {cell}"
+        )));
+    };
+    for (key, value) in members {
+        if crate::encode::OTHER_RESERVED_MEMBERS.contains(&key.as_str()) {
+            return Err(err(format!(
+                "object '{id}': 'other' column carries reserved member '{key}'"
+            )));
+        }
+        json.insert(key, value);
+    }
+    Ok(())
+}
+
 fn get_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a arrow_array::ArrayRef> {
     batch
         .column_by_name(name)
@@ -235,6 +270,7 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
         get_column(batch, "children_roles")?.as_ref(),
         "children_roles",
     )?;
+    let other_col = downcast::<StringArray>(get_column(batch, "other")?.as_ref(), "other")?;
 
     let template_col =
         downcast::<StructArray>(get_column(batch, "template")?.as_ref(), "template")?;
@@ -302,6 +338,8 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
                 Value::Array(children_roles.into_iter().map(Value::String).collect()),
             );
         }
+        let other_cell = (!other_col.is_null(row)).then(|| other_col.value(row));
+        merge_other_members(&mut json, other_cell, &id)?;
         let object: cjseq::CityObject = serde_json::from_value(Value::Object(json))?;
 
         let mut geometries = Vec::with_capacity(geometry_arrays.len());
@@ -343,4 +381,70 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // G9 decode guard: the `other`-column merge is a losslessness-critical,
+    // corruption-sensitive path, so it is unit-tested directly (building a full
+    // reserved-column RecordBatch just to reach it would be disproportionate).
+
+    #[test]
+    fn merge_other_members_injects_unmapped_members() {
+        let mut json = Map::new();
+        json.insert("type".to_string(), json!("Building"));
+        merge_other_members(
+            &mut json,
+            Some(r#"{"address":[{"Locality":"Helsinki"}],"geographicalExtent":[0,0,0,1,1,1]}"#),
+            "obj-1",
+        )
+        .unwrap();
+        assert_eq!(json["address"], json!([{"Locality": "Helsinki"}]));
+        assert_eq!(json["geographicalExtent"], json!([0, 0, 0, 1, 1, 1]));
+        assert_eq!(
+            json["type"],
+            json!("Building"),
+            "must not disturb typed members"
+        );
+    }
+
+    #[test]
+    fn merge_other_members_null_and_empty_are_no_ops() {
+        let mut json = Map::new();
+        merge_other_members(&mut json, None, "obj-1").unwrap();
+        assert!(json.is_empty(), "a null `other` cell contributes nothing");
+        // A foreign writer may emit `{}` instead of null — identical effect.
+        merge_other_members(&mut json, Some("{}"), "obj-1").unwrap();
+        assert!(json.is_empty(), "an empty `{{}}` cell contributes nothing");
+    }
+
+    #[test]
+    fn merge_other_members_rejects_a_reserved_member() {
+        // A rogue `geometry` in `other` must NOT reach the typed field — decode's
+        // assembled JSON never sets `geometry`, so a `contains_key` guard would
+        // miss it; the static reserved-set guard catches it.
+        let mut json = Map::new();
+        let err = merge_other_members(&mut json, Some(r#"{"geometry":[]}"#), "obj-1")
+            .expect_err("a reserved member in `other` must be an error");
+        assert!(
+            format!("{err:?}").contains("reserved member 'geometry'"),
+            "error must name the offending member, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn merge_other_members_rejects_a_non_object_cell() {
+        let mut json = Map::new();
+        assert!(
+            merge_other_members(&mut json, Some("[1,2,3]"), "obj-1").is_err(),
+            "a non-object `other` cell must be an error, not a panic"
+        );
+        assert!(
+            merge_other_members(&mut json, Some("not json"), "obj-1").is_err(),
+            "a malformed `other` cell must be an error, not a panic"
+        );
+    }
 }

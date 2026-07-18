@@ -29,6 +29,36 @@ use crate::scan::ScanResult;
 use crate::source::{FeatureIter, Source};
 use crate::wkb_write::{VertexPool, WkbOutcome, geometry_to_wkb, point_to_wkb};
 
+/// CityObject members carried by a dedicated column, and therefore stripped
+/// from the catch-all `other` column (§5.1, G9). `children_roles` has its own
+/// column (G5); the rest are cjseq's typed fields — **except**
+/// `geographicalExtent`, which cjseq types but the encoder never stores
+/// (`bbox` is derived from the geometry union, not from the source extent), so
+/// a per-object `geographicalExtent` legitimately rides `other` and
+/// round-trips straight back into the typed field on decode. This same set is
+/// the decode-time guard: an `other` cell may never carry any of these keys.
+pub(crate) const OTHER_RESERVED_MEMBERS: [&str; 6] = [
+    "type",
+    "attributes",
+    "geometry",
+    "children",
+    "parents",
+    "children_roles",
+];
+
+/// The source object's unmapped members — every member not carried by a
+/// dedicated column — as the `other` payload (§5.1, G9). Empty when the object
+/// has none; cjseq skips `None` typed fields, so no null members appear.
+pub(crate) fn unmapped_object_members(co: &CityObject) -> Result<serde_json::Map<String, Value>> {
+    let Value::Object(mut map) = serde_json::to_value(co)? else {
+        return Ok(serde_json::Map::new());
+    };
+    for key in OTHER_RESERVED_MEMBERS {
+        map.remove(key);
+    }
+    Ok(map)
+}
+
 /// Counters for the row-population edge cases the binding rules ask us to
 /// track rather than surface as errors.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -987,7 +1017,18 @@ impl RowWriter {
         Self::push_string_list(&mut self.children, co.children.as_deref());
         let children_roles = Self::children_roles(co, id)?;
         Self::push_string_list(&mut self.children_roles, children_roles.as_deref());
-        self.other.append_null(); // M2 limitation: always null
+        // `other`: the source object's members that have no dedicated column
+        // (§5.1, G9) — a Building's `address`, a per-object `geographicalExtent`,
+        // Extension `+members`. Stored verbatim as a JSON object string; null
+        // when the object has no such members (so a null count = rows carrying
+        // unmapped members).
+        let unmapped = unmapped_object_members(co)?;
+        if unmapped.is_empty() {
+            self.other.append_null();
+        } else {
+            self.other
+                .append_value(serde_json::to_string(&Value::Object(unmapped))?);
+        }
 
         let mut acc = GeometryAccumulator::default();
         let defs = LocalDefs {
