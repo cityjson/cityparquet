@@ -93,8 +93,6 @@ const RESERVED_COLUMN_NAMES: &[&str] = &[
     "children",
     "children_roles",
     "bbox",
-    "material",
-    "texture",
     "template",
     "other",
 ];
@@ -110,11 +108,15 @@ impl CityParquetSchema {
         if self.lods.is_empty() {
             names.insert("geometry".to_string());
             names.insert("geometry_properties".to_string());
+            names.insert("material".to_string());
+            names.insert("texture".to_string());
         } else {
             for lod in &self.lods {
                 let suffix = lod.column_suffix();
                 names.insert(format!("geometry_{suffix}"));
                 names.insert(format!("geometry_properties_{suffix}"));
+                names.insert(format!("material_{suffix}"));
+                names.insert(format!("texture_{suffix}"));
             }
         }
         names
@@ -169,7 +171,14 @@ impl CityParquetSchema {
 
         let mut fields: Vec<Field> = vec![
             reserved(Field::new("id", DataType::Utf8, false)),
-            reserved(Field::new("feature_id", DataType::Utf8, true)),
+            // Non-null per spec §5.1: `feature_id` is the key a consumer
+            // groups a feature family by, so a null orphans the row from its
+            // own family. The encoder has always satisfied this (it appends
+            // the source feature's non-optional id for every row); only the
+            // declaration lagged. Readers stay tolerant of nulls — see
+            // `cityparquet::decode` — since a foreign or pre-G4 file may
+            // still carry them.
+            reserved(Field::new("feature_id", DataType::Utf8, false)),
             reserved(Field::new(
                 "object_type",
                 DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
@@ -187,7 +196,21 @@ impl CityParquetSchema {
                 json_field("geometry_properties", true).as_ref().clone(),
                 &[(ROLE_KEY, ROLE_RESERVED)],
             ));
+            // Appearance parallels geometry (§11.1): the un-suffixed pair for
+            // the zero-analysis-geometry fallback (a dataset with only
+            // GeometryInstances, or none — §9). A lod-less non-instance
+            // geometry never reaches here; scan rejects it (§9, G3).
+            for name in ["material", "texture"] {
+                fields.push(with_meta(
+                    json_field(name, true).as_ref().clone(),
+                    &[(ROLE_KEY, ROLE_RESERVED)],
+                ));
+            }
         } else {
+            // Per-LoD columns, grouped so each LoD's geometry, semantics and
+            // appearance sit adjacent: geometry_lodX, geometry_properties_lodX,
+            // material_lodX, texture_lodX (§9, §11.1). Appearance pairs to the
+            // geometry it decorates by column name, not by a JSON LoD key.
             for lod in &self.lods {
                 let suffix = lod.column_suffix();
                 fields.push(self.geometry_field(
@@ -201,14 +224,15 @@ impl CityParquetSchema {
                         .clone(),
                     &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
                 ));
+                for prefix in ["material", "texture"] {
+                    fields.push(with_meta(
+                        json_field(&format!("{prefix}_{suffix}"), true)
+                            .as_ref()
+                            .clone(),
+                        &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
+                    ));
+                }
             }
-        }
-
-        for name in ["material", "texture"] {
-            fields.push(with_meta(
-                json_field(name, true).as_ref().clone(),
-                &[(ROLE_KEY, ROLE_RESERVED)],
-            ));
         }
         fields.push(reserved(Field::new("template", template_data_type(), true)));
         fields.push(with_meta(
@@ -293,15 +317,48 @@ mod tests {
                 "bbox",
                 "geometry_lod1",
                 "geometry_properties_lod1",
+                "material_lod1",
+                "texture_lod1",
                 "geometry_lod2_2",
                 "geometry_properties_lod2_2",
-                "material",
-                "texture",
+                "material_lod2_2",
+                "texture_lod2_2",
                 "template",
                 "other",
                 "yoc",
                 "ex_height",
             ]
+        );
+    }
+
+    /// RED (G20): spec §11.1 makes appearance per-LoD columns
+    /// (`material_lod*` / `texture_lod*`), one pair per `geometry_lod*`,
+    /// so the LoD-to-appearance pairing rides on the column name rather than
+    /// a JSON key. No bare `material` / `texture` column exists.
+    #[test]
+    fn appearance_columns_are_per_lod() {
+        let schema = sample().to_arrow_schema().unwrap();
+        for lod_suffix in ["lod1", "lod2_2"] {
+            assert!(
+                schema
+                    .field_with_name(&format!("material_{lod_suffix}"))
+                    .is_ok(),
+                "expected a material_{lod_suffix} column"
+            );
+            assert!(
+                schema
+                    .field_with_name(&format!("texture_{lod_suffix}"))
+                    .is_ok(),
+                "expected a texture_{lod_suffix} column"
+            );
+        }
+        assert!(
+            schema.field_with_name("material").is_err(),
+            "the bare `material` column must not exist (§11.1)"
+        );
+        assert!(
+            schema.field_with_name("texture").is_err(),
+            "the bare `texture` column must not exist (§11.1)"
         );
     }
 
@@ -327,6 +384,22 @@ mod tests {
                 .data_type(),
             &DataType::Binary
         );
+    }
+
+    /// RED (G4): spec §5.1 marks `feature_id` required and non-null on every
+    /// row — it is the key a consumer groups a feature family by (§5.1's
+    /// `feature_id` rule), so a null would silently orphan a row from its own
+    /// family. The encoder already never writes one (it always appends the
+    /// source feature's non-optional id), so only the declaration is wrong.
+    #[test]
+    fn required_columns_are_non_nullable() {
+        let schema = sample().to_arrow_schema().unwrap();
+        for name in ["id", "feature_id", "object_type"] {
+            assert!(
+                !schema.field_with_name(name).unwrap().is_nullable(),
+                "spec §5.1 requires '{name}' to be non-null on every row"
+            );
+        }
     }
 
     #[test]
@@ -410,7 +483,12 @@ mod tests {
     #[test]
     fn json_columns_carry_arrow_json_extension() {
         let schema = sample().to_arrow_schema().unwrap();
-        for name in ["geometry_properties_lod1", "material", "texture", "other"] {
+        for name in [
+            "geometry_properties_lod1",
+            "material_lod1",
+            "texture_lod2_2",
+            "other",
+        ] {
             let field = schema.field_with_name(name).unwrap();
             assert_eq!(
                 field

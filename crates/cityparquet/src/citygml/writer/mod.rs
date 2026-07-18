@@ -26,7 +26,7 @@ use self::document::{Bounds, write_city_model_close, write_city_model_open};
 use crate::Result;
 use crate::citygml::crs::srs_name_for;
 use crate::decode::decode_batch;
-use crate::export::{first_schema_mismatch, row_json_object};
+use crate::export::{appearance_columns, first_schema_mismatch, read_lod_keyed_appearance};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use crate::sidecar::{read_materials, read_textures};
 use crate::wkb_read::{DecodedGeometry, DecodedKind};
@@ -250,6 +250,8 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
 
         for batch in reader {
             let batch = batch?;
+            let material_cols = appearance_columns(&batch, "material");
+            let texture_cols = appearance_columns(&batch, "texture");
             let objects = decode_batch(&batch, &meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
                 let ty = obj.object.thetype.clone();
@@ -259,10 +261,12 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     report.non_building_skipped += 1;
                     continue;
                 }
-                // This row's per-LoD material/texture maps (`{"<lod>": {...}}`),
-                // keyed out per geometry below. `decode_batch` excludes them.
-                let material_col = row_json_object(&batch, "material", row)?;
-                let texture_col = row_json_object(&batch, "texture", row)?;
+                // This row's appearance, rebuilt from the per-LoD
+                // `material_lod*` / `texture_lod*` columns into a
+                // `{"<canonical-lod>": {...}}` map and keyed out per geometry
+                // below. `decode_batch` excludes these columns.
+                let material_col = read_lod_keyed_appearance(&batch, &material_cols, row)?;
+                let texture_col = read_lod_keyed_appearance(&batch, &texture_cols, row)?;
                 let mut solids = Vec::new();
                 for (lod, decoded, props) in obj.geometries {
                     // Real semantics on a geometry we are about to skip are
@@ -411,7 +415,7 @@ mod tests {
 
     #[test]
     fn multi_solid_is_routed_to_skip() {
-        let props = Some(json!({ "type": "MultiSolid", "solid_shell_faces": [[1]] }));
+        let props = Some(json!({ "type": "MultiSolid", "shells": [[1]] }));
         let route = route_geometry(
             Some(Lod::parse("2").unwrap()),
             solid(geometry_collection()),
@@ -422,7 +426,7 @@ mod tests {
 
     #[test]
     fn composite_solid_is_routed_to_emit() {
-        let props = Some(json!({ "type": "CompositeSolid", "solid_shell_faces": [[1]] }));
+        let props = Some(json!({ "type": "CompositeSolid", "shells": [[1]] }));
         let route = route_geometry(
             Some(Lod::parse("2").unwrap()),
             solid(geometry_collection()),

@@ -2,6 +2,7 @@
 //! Pure schema/metadata layer — no buffers, no parquet.
 
 pub mod attributes;
+pub mod crs;
 pub mod error;
 pub mod metadata;
 pub mod model;

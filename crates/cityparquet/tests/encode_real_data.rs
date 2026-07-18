@@ -71,7 +71,7 @@ fn railway_realigns_material_values_for_dropped_surfaces() {
             .downcast_ref::<StringArray>()
             .unwrap();
         let materials = batch
-            .column_by_name("material")
+            .column_by_name("material_lod3")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()
@@ -108,7 +108,7 @@ fn railway_realigns_material_values_for_dropped_surfaces() {
             if id != "UUID_d96effed-08fe-4f74-b134-05b194aa3cff" {
                 let material: serde_json::Value =
                     serde_json::from_str(materials.value(row)).unwrap();
-                let values = material["3"]["visual"]["values"]
+                let values = material["visual"]["values"]
                     .as_array()
                     .expect("per-surface material values array");
                 assert_eq!(
@@ -127,7 +127,7 @@ fn delft_records_per_shell_face_partition_for_solids() {
     // delft.city.jsonl carries plain `Solid` geometry (no MultiSolid /
     // CompositeSolid), so its WKB is a single top-level PolyhedralSurfaceZ:
     // the face count sits at bytes 5..9 of the geometry_lod* bytes for the
-    // SAME row, letting us check `solid_shell_faces` against ground truth
+    // SAME row, letting us check `shells` against ground truth
     // without re-deriving it from the CityJSON boundaries.
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let s = scan(&src).unwrap();
@@ -166,19 +166,17 @@ fn delft_records_per_shell_face_partition_for_solids() {
                 }
 
                 let faces = json
-                    .get("solid_shell_faces")
-                    .unwrap_or_else(|| {
-                        panic!("solid_shell_faces missing for Solid row {row} in {name}")
-                    })
+                    .get("shells")
+                    .unwrap_or_else(|| panic!("shells missing for Solid row {row} in {name}"))
                     .as_array()
-                    .expect("solid_shell_faces must be a JSON array");
-                assert!(!faces.is_empty(), "solid_shell_faces must be non-empty");
+                    .expect("shells must be a JSON array");
+                assert!(!faces.is_empty(), "shells must be non-empty");
                 let mut sum: u64 = 0;
                 for f in faces {
                     let n = f
                         .as_u64()
-                        .expect("solid_shell_faces entries must be positive integers");
-                    assert!(n > 0, "solid_shell_faces entries must be positive");
+                        .expect("shells entries must be positive integers");
+                    assert!(n > 0, "shells entries must be positive");
                     sum += n;
                 }
 
@@ -188,7 +186,7 @@ fn delft_records_per_shell_face_partition_for_solids() {
                 let face_count = u32::from_le_bytes(wkb[5..9].try_into().unwrap()) as u64;
                 assert_eq!(
                     sum, face_count,
-                    "sum of solid_shell_faces must equal the WKB PolyhedralSurfaceZ face count"
+                    "sum of shells must equal the WKB PolyhedralSurfaceZ face count"
                 );
 
                 checked += 1;
@@ -310,31 +308,31 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
             "exactly face 2's ring/surface must be recorded as dropped"
         );
         assert_eq!(
-            props["solid_shell_faces"],
+            props["shells"],
             serde_json::json!([5]),
             "the single shell drops from 6 to 5 faces"
         );
         assert_eq!(
-            props["semantics"]["values"][0],
+            props["face_semantics"],
             serde_json::json!([0, 2, 2, 2, 1]),
-            "semantics values must lose face 2's entry, in order, within the shell nesting"
+            "face_semantics is the flat per-face list, losing face 2's entry"
         );
 
         let material = batch
-            .column_by_name("material")
+            .column_by_name("material_lod1_2")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
         let material: serde_json::Value = serde_json::from_str(material.value(row)).unwrap();
         assert_eq!(
-            material["1.2"]["visual"]["values"][0],
+            material["visual"]["values"][0],
             serde_json::json!([0, 1, 1, 0, 1]),
             "material values must be realigned within the shell nesting"
         );
 
         let texture = batch
-            .column_by_name("texture")
+            .column_by_name("texture_lod1_2")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()
@@ -346,7 +344,7 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
         // pool (see the comment where `vertices_texture` is built above).
         let uv = |i: usize| vertices_texture[i].clone();
         assert_eq!(
-            texture["1.2"]["visual"]["values"][0],
+            texture["visual"]["values"][0],
             serde_json::json!([
                 [[0, uv(0), uv(1), uv(2), uv(3)]],
                 [[0, uv(4), uv(5), uv(6), uv(7)]],

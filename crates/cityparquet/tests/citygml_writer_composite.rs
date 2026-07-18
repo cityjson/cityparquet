@@ -134,8 +134,18 @@ fn semantics_map(pkg: &Path) -> SemanticsMap {
                     else {
                         continue;
                     };
-                    if let Some(sem) = props.as_ref().and_then(|p| p.get("semantics")) {
-                        map.insert((obj.id.clone(), major), sem.clone());
+                    // G7: semantics are the flattened top-level `surfaces` +
+                    // `face_semantics` (§8), not a nested `semantics` object.
+                    let surfaces = props.as_ref().and_then(|p| p.get("surfaces"));
+                    let face_semantics = props.as_ref().and_then(|p| p.get("face_semantics"));
+                    if surfaces.is_some() || face_semantics.is_some() {
+                        map.insert(
+                            (obj.id.clone(), major),
+                            serde_json::json!({
+                                "surfaces": surfaces,
+                                "face_semantics": face_semantics,
+                            }),
+                        );
                     }
                 }
             }

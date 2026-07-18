@@ -54,7 +54,8 @@ use arrow_schema::Schema;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
-use cityparquet_schema::{CityParquetError, CityParquetMetadata, Lod, PackageManifest, Result};
+use cityparquet_schema::model::{LOD_KEY, ROLE_KEY, ROLE_RESERVED};
+use cityparquet_schema::{CityParquetError, CityParquetMetadata, PackageManifest, Result};
 use cjseq::{
     Appearance, CityJSON, CityJSONFeature, Geometry, GeometryTemplates, GeometryType, Material,
     Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
@@ -92,22 +93,6 @@ pub struct ExportReport {
     /// (M4 sidecar data), so exporting them would leave dangling references
     /// — invalid CityJSON, same reasoning as the GeometryInstance drop.
     pub appearance_refs_dropped: usize,
-    /// Geometries on the SIDECAR-PRESENT restore path (`LocalAppearance` is
-    /// available, i.e. `materials.parquet`/`textures.parquet` were loaded)
-    /// whose object-level per-LoD `material`/`texture` map carries a RAW key
-    /// that `Lod::parse`s to this geometry's own canonical lod yet
-    /// string-mismatches it — the encoder keyed the entry by a non-canonical
-    /// source `lod` string (e.g. `"03"`, which `Lod::parse` normalises to
-    /// `"3"`) while export looks the entry up by the canonical string,
-    /// silently missing it. This is a distinct failure mode from
-    /// [`Self::appearance_refs_dropped`] (which only ever applies to the
-    /// NO-sidecar path, where the whole map is deliberately dropped
-    /// regardless of key). Deliberately does NOT fire merely because the map
-    /// has entries for OTHER lods and none for this one — an object with
-    /// several geometries at different lods, appearance defined on only
-    /// some of them, is legitimate CityJSON, not a restore failure. `0` for
-    /// both shipped fixtures, which use only canonical lod strings.
-    pub appearance_lod_misses: usize,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -278,18 +263,18 @@ pub(crate) fn partition_shells(
 ) -> Result<Vec<Vec<Vec<Vec<usize>>>>> {
     match counts {
         Some(counts) => {
-            // Checked sum: `solid_shell_faces` can come from untrusted package
+            // Checked sum: `shells` can come from untrusted package
             // data, so a sum that overflows `usize` must be a clean error, not
             // a debug panic / release wraparound that then mis-partitions.
             let mut total: usize = 0;
             for &n in counts {
                 total = total
                     .checked_add(n)
-                    .ok_or_else(|| err("solid_shell_faces counts overflow usize".to_string()))?;
+                    .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
             }
             if total != faces.len() {
                 return Err(err(format!(
-                    "solid_shell_faces counts sum to {total} but the stored geometry has {} faces",
+                    "shells counts sum to {total} but the stored geometry has {} faces",
                     faces.len()
                 )));
             }
@@ -310,20 +295,19 @@ fn geom_shape_err(gtype: &GeometryType, kind: &DecodedKind) -> CityParquetError 
     ))
 }
 
-/// `solid_shell_faces` from `geometry_properties`, shaped for a single
-/// `Solid` (flat per-shell face counts).
+/// The `shells` per-shell face counts from `geometry_properties` (§8), shaped
+/// for a single `Solid` (a flat array).
 pub(crate) fn shell_faces_flat(props: Option<&Value>) -> Result<Option<Vec<usize>>> {
-    let Some(v) = props.and_then(|p| p.get("solid_shell_faces")) else {
+    let Some(v) = props.and_then(|p| p.get("shells")) else {
         return Ok(None);
     };
     Ok(Some(serde_json::from_value(v.clone())?))
 }
 
-/// `solid_shell_faces` from `geometry_properties`, shaped for
-/// `MultiSolid`/`CompositeSolid` (one flat per-shell face-count list per
-/// solid).
+/// The `shells` per-shell face counts from `geometry_properties` (§8), shaped
+/// for `MultiSolid`/`CompositeSolid` (one per-shell face-count list per solid).
 pub(crate) fn shell_faces_nested(props: Option<&Value>) -> Result<Option<Vec<Vec<usize>>>> {
-    let Some(v) = props.and_then(|p| p.get("solid_shell_faces")) else {
+    let Some(v) = props.and_then(|p| p.get("shells")) else {
         return Ok(None);
     };
     Ok(Some(serde_json::from_value(v.clone())?))
@@ -383,7 +367,7 @@ fn reconstruct_boundaries(
                         c.get(m)
                             .ok_or_else(|| {
                                 err(format!(
-                                    "solid_shell_faces lists {} solids but the stored \
+                                    "shells lists {} solids but the stored \
                                      GeometryCollection has {} members",
                                     c.len(),
                                     members.len()
@@ -403,6 +387,110 @@ fn reconstruct_boundaries(
         // error, not a crash.
         GeometryType::GeometryInstance => Err(geom_shape_err(gtype, kind)),
     }
+}
+
+/// Split a flat `face_semantics` slice into consecutive groups of `counts`
+/// lengths — the inverse of the encoder's flatten. A count sum that does not
+/// match the slice length is a corrupt/hand-rolled package, an error.
+fn partition_face_semantics(face_semantics: &[Value], counts: &[usize]) -> Result<Vec<Value>> {
+    let mut total: usize = 0;
+    for &n in counts {
+        total = total
+            .checked_add(n)
+            .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
+    }
+    if total != face_semantics.len() {
+        return Err(err(format!(
+            "shells counts sum to {total} but face_semantics has {} entries",
+            face_semantics.len()
+        )));
+    }
+    let mut out = Vec::with_capacity(counts.len());
+    let mut offset = 0;
+    for &n in counts {
+        out.push(Value::Array(face_semantics[offset..offset + n].to_vec()));
+        offset += n;
+    }
+    Ok(out)
+}
+
+/// Rebuild a geometry's CityJSON `semantics` (`{surfaces, values}`) from the
+/// flattened `geometry_properties` (§8): `surfaces` verbatim, and the nested
+/// `values` re-derived from the flat `face_semantics` using `shells` (which
+/// gives the per-shell face partition). The exporter emits the expanded
+/// per-face form; a source that used the null shorthand round-trips up to that
+/// canonicalisation (§17). `None` when the geometry carried no semantics.
+fn rebuild_semantics(props: Option<&Value>, gtype: &GeometryType) -> Result<Option<Value>> {
+    let Some(props) = props else {
+        return Ok(None);
+    };
+    // No `surfaces` key ⇒ the geometry had no semantics at all.
+    let Some(surfaces) = props.get("surfaces") else {
+        return Ok(None);
+    };
+    let face_semantics: Vec<Value> = props
+        .get("face_semantics")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let values = match gtype {
+        GeometryType::MultiPoint
+        | GeometryType::MultiLineString
+        | GeometryType::MultiSurface
+        | GeometryType::CompositeSurface => Value::Array(face_semantics),
+        GeometryType::Solid => {
+            let counts = shell_faces_flat(Some(props))?;
+            match counts {
+                Some(counts) => Value::Array(partition_face_semantics(&face_semantics, &counts)?),
+                // No `shells`: mirror `reconstruct_boundaries`, which puts every
+                // face in one shell (§8). A Solid's `values` must be nested, so
+                // wrap the flat list in a single shell rather than emit it flat.
+                None => Value::Array(vec![Value::Array(face_semantics)]),
+            }
+        }
+        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
+            // `shells` is required to split the flat list per solid; without it
+            // the partition is ambiguous, so reject rather than silently drop.
+            let nested = shell_faces_nested(Some(props))?.ok_or_else(|| {
+                err("MultiSolid/CompositeSolid geometry_properties is missing `shells`".to_string())
+            })?;
+            let mut solids = Vec::with_capacity(nested.len());
+            let mut offset: usize = 0;
+            for shell_counts in &nested {
+                let mut n: usize = 0;
+                for &c in shell_counts {
+                    n = n
+                        .checked_add(c)
+                        .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
+                }
+                let end = offset
+                    .checked_add(n)
+                    .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
+                let slice = face_semantics.get(offset..end).ok_or_else(|| {
+                    err(format!(
+                        "shells describes more faces than face_semantics has ({} entries)",
+                        face_semantics.len()
+                    ))
+                })?;
+                solids.push(Value::Array(partition_face_semantics(slice, shell_counts)?));
+                offset = end;
+            }
+            // Every face_semantics entry must be consumed — trailing entries
+            // mean `shells` under-counts the faces, a corrupt package.
+            if offset != face_semantics.len() {
+                return Err(err(format!(
+                    "shells account for {offset} faces but face_semantics has {} entries",
+                    face_semantics.len()
+                )));
+            }
+            Value::Array(solids)
+        }
+        GeometryType::GeometryInstance => return Ok(None),
+    };
+    Ok(Some(
+        serde_json::json!({ "surfaces": surfaces, "values": values }),
+    ))
 }
 
 /// Groups items by a string key, preserving first-appearance order.
@@ -449,20 +537,52 @@ impl<T> OrderedGroups<T> {
     }
 }
 
-/// The header `CityJSON`'s `metadata.referenceSystem`, built from the
-/// dataset's `crs` KV entry (an OGC CRS URL string) when present.
+/// The header `CityJSON`'s `metadata.referenceSystem`, built from the dataset's
+/// `crs` KV entry. As of G1 that entry is **PROJJSON**, so the OGC CRS URL is
+/// rebuilt from its `id.{authority, code}` (e.g. `EPSG` + `7415` ->
+/// `https://www.opengis.net/def/crs/EPSG/0/7415`). A legacy raw-URL-string
+/// entry is still accepted. A CRS with no usable `id` yields no header field.
 fn reference_system(meta: &CityParquetMetadata) -> Result<Option<ReferenceSystem>> {
     let Some(crs) = &meta.crs else {
         return Ok(None);
     };
-    let Some(url) = crs.as_str() else {
-        // Only the plain OGC CRS URL string form is supported (M2/M3 scope
-        // cut); a PROJJSON object CRS has no equivalent header field here.
-        return Ok(None);
+    // Legacy: a raw OGC CRS URL string.
+    if let Some(url) = crs.as_str() {
+        let rs = ReferenceSystem::from_url(url)
+            .map_err(|e| err(format!("invalid referenceSystem URL {url:?}: {e}")))?;
+        return Ok(Some(rs));
+    }
+    // PROJJSON: rebuild the OGC EPSG URL from the `id`.
+    let id = &crs["id"];
+    let authority = id["authority"].as_str();
+    let code = match &id["code"] {
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::String(s) => Some(s.clone()),
+        _ => None,
     };
-    let rs = ReferenceSystem::from_url(url)
-        .map_err(|e| err(format!("invalid referenceSystem URL {url:?}: {e}")))?;
-    Ok(Some(rs))
+    match (authority, code.as_deref()) {
+        (Some("EPSG"), Some(code)) => Ok(Some(crate::citygml::crs::reference_system(code))),
+        // OGC:CRS84 / CRS84h are the only non-EPSG CRSs in the vendored table;
+        // rebuild their registered OGC CRS URLs (versions per the OGC
+        // definitions server) so a lon/lat package without source_metadata
+        // still exports its referenceSystem rather than silently dropping it
+        // (sol-review G1).
+        (Some("OGC"), Some(code @ "CRS84")) => Ok(Some(ReferenceSystem::new(
+            None,
+            "OGC".to_string(),
+            "1.3".to_string(),
+            code.to_string(),
+        ))),
+        (Some("OGC"), Some(code @ "CRS84h")) => Ok(Some(ReferenceSystem::new(
+            None,
+            "OGC".to_string(),
+            "0".to_string(),
+            code.to_string(),
+        ))),
+        // Any other non-EPSG PROJJSON CRS has no CityJSON referenceSystem URL
+        // form here.
+        _ => Ok(None),
+    }
 }
 
 /// Reconstructs the header `CityJSON` (empty `CityObjects`/`vertices`) from
@@ -499,31 +619,83 @@ fn build_header(meta: &CityParquetMetadata) -> Result<CityJSON> {
     Ok(header)
 }
 
-/// One row's `material`/`texture` JSON (the encoder's `{"<lod>": {...}}`
-/// per-object map), parsed once per batch alongside `decode_batch`'s own
-/// pass — `decode_batch` deliberately excludes these (see its module docs),
-/// so export reads them straight off the batch.
-pub(crate) fn row_json_object(
-    batch: &RecordBatch,
-    name: &str,
-    row: usize,
-) -> Result<Option<Value>> {
-    let Some(col) = batch.column_by_name(name) else {
-        return Ok(None);
-    };
-    if col.is_null(row) {
-        return Ok(None);
-    }
-    let arr = col
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| err(format!("column '{name}' is not a Utf8 array")))?;
-    Ok(Some(serde_json::from_str(arr.value(row))?))
+/// The reserved appearance columns for one theme prefix (`"material"` /
+/// `"texture"`) in a batch, resolved ONCE per batch so the per-row reader need
+/// not rescan the schema. Each entry pairs the column's array index with the
+/// canonical LoD key it maps to — taken from the field's `cityparquet:lod`
+/// metadata, or `""` for the transitional bare lod-less column.
+///
+/// A column qualifies only if it carries the reserved role (§5.1). This is
+/// load-bearing: with per-LoD appearance columns the bare `material` /
+/// `texture` names are no longer reserved, so a source ATTRIBUTE may legally
+/// be named `material`, or `material_lod03` (which canonicalises to LoD 3 and
+/// would otherwise collide with the real `material_lod3`). Classifying by the
+/// reserved-role metadata rather than the name alone keeps such attributes out.
+pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usize, String)> {
+    batch
+        .schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| {
+            if field.metadata().get(ROLE_KEY).map(String::as_str) != Some(ROLE_RESERVED) {
+                return None;
+            }
+            if field.name() == prefix {
+                return Some((index, String::new()));
+            }
+            if field
+                .name()
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with("_lod"))
+            {
+                // A reserved per-LoD appearance field always carries its
+                // canonical LoD in `cityparquet:lod` (set by the schema), so
+                // trust that rather than re-parsing a possibly non-canonical
+                // suffix out of the column name.
+                return field
+                    .metadata()
+                    .get(LOD_KEY)
+                    .map(|lod| (index, lod.clone()));
+            }
+            None
+        })
+        .collect()
 }
 
-/// Whether the object-level `{"<lod>": {...}}` appearance map (the encoder's
-/// per-LoD keying of `material`/`texture`) has an entry for the geometry at
-/// `lod_key`. Used only on the Core-profile path (no `materials.parquet`/
+/// Rebuild an object row's appearance into an in-memory `{"<lod>": <theme
+/// map>}` object from the pre-resolved appearance `columns` (see
+/// [`appearance_columns`]), keyed by each column's canonical LoD. This is the
+/// inverse of the encoder's per-LoD column layout: the downstream restore loop
+/// looks appearance up by a geometry's canonical LoD (`lod.to_string()`), and
+/// because both sides now derive that key from the same §9 column suffix, the
+/// raw-vs-canonical key mismatch the single-column layout had to detect (the
+/// former `appearance_lod_misses`) cannot arise. Returns `None` when the row
+/// carries no appearance at all.
+pub(crate) fn read_lod_keyed_appearance(
+    batch: &RecordBatch,
+    columns: &[(usize, String)],
+    row: usize,
+) -> Result<Option<Value>> {
+    let mut map = serde_json::Map::new();
+    for (index, lod_key) in columns {
+        let col = batch.column(*index);
+        if col.is_null(row) {
+            continue;
+        }
+        let arr = col.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+            err(format!(
+                "appearance column at index {index} is not a Utf8 array"
+            ))
+        })?;
+        map.insert(lod_key.clone(), serde_json::from_str(arr.value(row))?);
+    }
+    Ok((!map.is_empty()).then_some(Value::Object(map)))
+}
+
+/// Whether the rebuilt `{"<lod>": {...}}` appearance map (see
+/// [`read_lod_keyed_appearance`]) has an entry for the geometry at `lod_key`.
+/// Used only on the Core-profile path (no `materials.parquet`/
 /// `textures.parquet` sidecars listed in the manifest): the appearance
 /// DEFINITIONS these maps index are not stored anywhere in that kind of
 /// package, so export only ever CHECKS for the entry (to count the drop) and
@@ -532,35 +704,6 @@ pub(crate) fn row_json_object(
 /// the actual re-attachment instead and this function is not consulted.
 fn has_appearance_for_lod(map: &Option<Value>, lod_key: &str) -> bool {
     map.as_ref().is_some_and(|m| m.get(lod_key).is_some())
-}
-
-/// The PRECISE `appearance_lod_misses` detector (see
-/// [`ExportReport::appearance_lod_misses`]): true only when the canonical
-/// lookup for this geometry's own lod missed (`hit == false`) AND the
-/// per-object `{"<raw-lod>": {...}}` map carries some RAW key that
-/// `Lod::parse`s to this geometry's own canonical `lod` yet differs from it
-/// as a string (`canonical_key`) — i.e. the non-canonical-key encoding bug
-/// this counter exists to catch. A map that simply has no entry for this
-/// geometry's lod (because appearance was only ever defined for a DIFFERENT
-/// lod of this object — legitimate CityJSON) does NOT count: no key in the
-/// map parses to THIS lod at all, canonical or otherwise. `lod: None`
-/// (no canonical lod to match against) never counts.
-fn map_has_noncanonical_lod_match(
-    map: &Option<Value>,
-    hit: bool,
-    lod: Option<Lod>,
-    canonical_key: &str,
-) -> bool {
-    if hit {
-        return false;
-    }
-    let Some(lod) = lod else {
-        return false;
-    };
-    map.as_ref().and_then(Value::as_object).is_some_and(|o| {
-        o.keys()
-            .any(|k| k != canonical_key && Lod::parse(k).is_ok_and(|parsed| parsed == lod))
-    })
 }
 
 /// A *ring* is the innermost texture-map array. Pre-rewrite/pre-localisation
@@ -909,7 +1052,7 @@ fn rebuild_templates(
             .and_then(Value::as_str)
             .map(str::to_string);
         let boundaries = reconstruct_boundaries(&decoded.kind, &gtype, props, &vmap)?;
-        let semantics = props.and_then(|p| p.get("semantics")).cloned();
+        let semantics = rebuild_semantics(props, &gtype)?;
 
         let material = row
             .material
@@ -1139,10 +1282,12 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         };
         for batch in reader {
             let batch = batch?;
+            let material_cols = appearance_columns(&batch, "material");
+            let texture_cols = appearance_columns(&batch, "texture");
             let objects = decode_batch(&batch, &meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
-                let material = row_json_object(&batch, "material", row)?;
-                let texture = row_json_object(&batch, "texture", row)?;
+                let material = read_lod_keyed_appearance(&batch, &material_cols, row)?;
+                let texture = read_lod_keyed_appearance(&batch, &texture_cols, row)?;
                 let key = obj.feature_id.clone().unwrap_or_else(|| obj.id.clone());
                 object_count += 1;
                 groups.push(key, (obj, material, texture));
@@ -1152,7 +1297,6 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
 
     let mut instance_geometries_dropped = 0usize;
     let mut appearance_refs_dropped = 0usize;
-    let mut appearance_lod_misses = 0usize;
     let mut features: Vec<CityJSONFeature> = Vec::with_capacity(groups.items.len());
     for (feature_id, entries) in groups.into_ordered() {
         let mut feature = CityJSONFeature::new();
@@ -1181,18 +1325,13 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 let vmap = vertex_map(&decoded.coords, scale, translate, &mut interner);
                 let boundaries =
                     reconstruct_boundaries(&decoded.kind, &gtype, props.as_ref(), &vmap)?;
-                let semantics = props.as_ref().and_then(|p| p.get("semantics")).cloned();
+                let semantics = rebuild_semantics(props.as_ref(), &gtype)?;
 
-                // Keyed by the CANONICAL Lod string. The encoder
-                // (`crate::encode::accumulate_geometry`) keys the per-object
-                // appearance map by the RAW source lod string
-                // (`geom.lod.clone().unwrap_or_default()`), so a
-                // non-canonical source LoD (e.g. "03", which `Lod::parse`
-                // normalises to "3") does not match this canonical lookup
-                // key — a real restore miss, counted below in
-                // `appearance_lod_misses` on the sidecar-present path (both
-                // real fixtures use canonical strings only, so this stays 0
-                // for them).
+                // Look appearance up by this geometry's CANONICAL LoD. Both
+                // this key and the map's keys (see `read_lod_keyed_appearance`)
+                // derive from the same §9 column suffix, so the lookup is exact
+                // — the raw-vs-canonical mismatch the single-column layout had
+                // to detect (G20) is gone with the per-LoD columns.
                 let lod_key = lod.map(|l| l.to_string()).unwrap_or_default();
                 let mut geom_material: Option<HashMap<String, Material>> = None;
                 let mut geom_texture: Option<HashMap<String, Texture>> = None;
@@ -1217,28 +1356,6 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                                 ))
                             })?;
                             geom_texture = Some(serde_json::from_value(localised)?);
-                        }
-                        // The sidecar IS present (defs are restorable in
-                        // principle): a raw map key that parses to this
-                        // geometry's own canonical lod but string-mismatches
-                        // it is a real miss, distinct from
-                        // `appearance_refs_dropped` below (which only ever
-                        // fires on the no-sidecar path). A map that simply
-                        // has no entry for THIS lod (appearance defined only
-                        // for a different lod of this object) is NOT a miss
-                        // — see `map_has_noncanonical_lod_match`'s docs.
-                        if map_has_noncanonical_lod_match(
-                            material,
-                            material_hit.is_some(),
-                            *lod,
-                            &lod_key,
-                        ) || map_has_noncanonical_lod_match(
-                            texture,
-                            texture_hit.is_some(),
-                            *lod,
-                            &lod_key,
-                        ) {
-                            appearance_lod_misses += 1;
                         }
                     }
                     None => {
@@ -1322,7 +1439,6 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         object_count,
         instance_geometries_dropped,
         appearance_refs_dropped,
-        appearance_lod_misses,
     })
 }
 
@@ -1391,7 +1507,7 @@ mod tests {
     /// A hand-built MultiSolid (no fixture carries one): 2 solids — the
     /// first with 2 single-face shells, the second with 1 — written through
     /// the real WKB writer, read back through the real WKB reader, and
-    /// reconstructed with the nested `solid_shell_faces`. Vertices are used
+    /// reconstructed with the nested `shells`. Vertices are used
     /// in ascending first-appearance order so both the WKB reader's interner
     /// and export's `VertexInterner` assign identity indices, making the
     /// reconstructed boundary tree comparable to the source verbatim.
@@ -1427,8 +1543,7 @@ mod tests {
         let vmap = vertex_map(&decoded.coords, [1.0; 3], [0.0; 3], &mut interner);
         let props = serde_json::json!({
             "type": "MultiSolid",
-            "solid_shell_counts": [2, 1],
-            "solid_shell_faces": [[1, 1], [1]],
+            "shells": [[1, 1], [1]],
         });
         let rebuilt = reconstruct_boundaries(
             &decoded.kind,
@@ -1450,11 +1565,11 @@ mod tests {
 
     #[test]
     fn multisolid_with_too_few_nested_counts_is_an_error_not_a_panic() {
-        // GeometryCollection of 2 members but solid_shell_faces lists only 1
+        // GeometryCollection of 2 members but shells lists only 1
         // solid: must be a Schema error, not an index-out-of-bounds panic.
         let member = DecodedKind::PolyhedralSurface(vec![vec![vec![0, 1, 2]]]);
         let kind = DecodedKind::GeometryCollection(vec![member.clone(), member]);
-        let props = serde_json::json!({"type": "MultiSolid", "solid_shell_faces": [[1]]});
+        let props = serde_json::json!({"type": "MultiSolid", "shells": [[1]]});
         let err =
             reconstruct_boundaries(&kind, &GeometryType::MultiSolid, Some(&props), &[0, 1, 2])
                 .unwrap_err();
@@ -1493,18 +1608,48 @@ mod tests {
             transform: None,
             extensions: None,
             attribute_columns: vec![],
-            reserved_columns: vec![],
             default_geometry: "geometry".to_string(),
             bbox_column: "bbox".to_string(),
             sidecar_files: vec![],
             source_metadata: None,
             appearance_defaults: None,
+            other: None,
         };
         let err = build_header(&meta).unwrap_err();
         assert!(
             matches!(err, CityParquetError::Metadata(_)),
             "a package without a transform cannot be re-quantised: expected Metadata error, got {err:?}"
         );
+    }
+
+    #[test]
+    fn reference_system_rebuilds_the_ogc_crs84_url() {
+        // sol-review G1: metadata `crs` is now PROJJSON. A package whose CRS is
+        // OGC:CRS84 (a lon/lat dataset) with no source_metadata must still
+        // export a `referenceSystem`, not silently drop it.
+        let meta = CityParquetMetadata {
+            cityparquet_version: "0.1.0".to_string(),
+            source_format: cityparquet_schema::SourceFormat::CityJsonSeq,
+            source_version: None,
+            crs: Some(serde_json::json!({
+                "type": "GeographicCRS",
+                "name": "WGS 84 (CRS84)",
+                "id": { "authority": "OGC", "code": "CRS84" }
+            })),
+            transform: None,
+            extensions: None,
+            attribute_columns: vec![],
+            default_geometry: "geometry".to_string(),
+            bbox_column: "bbox".to_string(),
+            sidecar_files: vec![],
+            source_metadata: None,
+            appearance_defaults: None,
+            other: None,
+        };
+        let rs = reference_system(&meta)
+            .expect("resolution must not error")
+            .expect("OGC:CRS84 must yield a referenceSystem");
+        assert_eq!(rs.to_url(), "https://www.opengis.net/def/crs/OGC/1.3/CRS84");
     }
 
     /// M4 final-review Fix 4: a legal `[null, [u, v], ...]` texture ring —

@@ -1,10 +1,12 @@
-//! Parse `geometry_properties.semantics` and resolve each WKB face to its
-//! surface index, in the face-walk order the solid/multisurface emitter uses.
+//! Parse the flattened `geometry_properties` (§8) and resolve each WKB face to
+//! its surface index, in the face-walk order the solid/multisurface emitter
+//! uses.
 //!
-//! `surfaces` is a flat list of surface type strings; `values` maps faces to
-//! surface indices, nested by geometry: Solid `[shell][face]`, CompositeSolid
-//! `[solid][shell][face]`, MultiSurface flat `[position]`. A `null` value means
-//! the face has no semantic surface.
+//! `surfaces` is the CityJSON surface array (its `type` strings are taken here);
+//! `face_semantics` is already a FLAT per-face list (one entry per WKB face, in
+//! WKB order) — a surface index, or `null` for a face with no semantic surface.
+//! This module therefore only validates and, for a CompositeSolid, splits that
+//! flat list per member; the old nested-`values` walking is gone with G7.
 
 use std::io::Write;
 
@@ -90,8 +92,9 @@ pub fn has_nonnull_value(values: &Value) -> bool {
     }
 }
 
-/// Parsed `geometry_properties.semantics`: a flat list of surface type strings
-/// and the raw (nested) `values` array.
+/// Parsed geometry_properties semantics (§8): the surface type strings and the
+/// FLAT `face_semantics` array (`values` holds it verbatim, one entry per WKB
+/// face — a surface index or `null`).
 pub struct Semantics {
     pub surfaces: Vec<String>,
     pub values: Value,
@@ -101,11 +104,12 @@ fn err(m: impl Into<String>) -> CityParquetError {
     CityParquetError::Geometry(m.into())
 }
 
-/// Extract `{surfaces, values}` from a geometry's `geometry_properties`, or
-/// `None` when there is no (well-formed) semantics object.
+/// Extract the surface types and flat `face_semantics` from a geometry's
+/// `geometry_properties` (§8), or `None` when there is no semantics
+/// (`surfaces`/`face_semantics` absent).
 pub fn parse_semantics(props: Option<&Value>) -> Option<Semantics> {
-    let sem = props?.get("semantics")?;
-    let surfaces = sem.get("surfaces")?.as_array()?;
+    let props = props?;
+    let surfaces = props.get("surfaces")?.as_array()?;
     let surfaces: Vec<String> = surfaces
         .iter()
         .map(|s| {
@@ -115,7 +119,7 @@ pub fn parse_semantics(props: Option<&Value>) -> Option<Semantics> {
                 .to_string()
         })
         .collect();
-    let values = sem.get("values")?.clone();
+    let values = props.get("face_semantics")?.clone();
     Some(Semantics { surfaces, values })
 }
 
@@ -157,83 +161,64 @@ fn face_index(v: &Value, nsurfaces: usize) -> Result<Option<usize>> {
     }
 }
 
-/// Resolve a Solid's `[shell][face]` values to a flat per-face surface index, in
-/// shell-concatenation order (the order the emitter walks faces).
+/// Validate the flat `face_semantics` list against `nfaces` and `nsurfaces`,
+/// returning it as `FaceSurfaces`. Under G7 the stored form is already flat in
+/// WKB face order (§8), so this is a length + range check — no shell walking.
+fn flat_face_surfaces(values: &Value, nfaces: usize, nsurfaces: usize) -> Result<FaceSurfaces> {
+    let vs = values
+        .as_array()
+        .ok_or_else(|| err("face_semantics must be an array"))?;
+    if vs.len() != nfaces {
+        return Err(err(format!(
+            "face_semantics has {} entries but the geometry has {nfaces} faces",
+            vs.len()
+        )));
+    }
+    vs.iter().map(|v| face_index(v, nsurfaces)).collect()
+}
+
+/// Resolve a Solid's flat `face_semantics` to a per-face surface index. The
+/// total face count comes from the geometry's `shells` partition.
 pub fn solid_face_surfaces(
     values: &Value,
     shells: &[Vec<Face>],
     nsurfaces: usize,
 ) -> Result<FaceSurfaces> {
-    let vshells = values
-        .as_array()
-        .ok_or_else(|| err("solid semantics values must be an array of shells"))?;
-    if vshells.len() != shells.len() {
-        return Err(err(format!(
-            "semantics has {} shells but geometry has {}",
-            vshells.len(),
-            shells.len()
-        )));
-    }
-    let mut out = Vec::new();
-    for (vs, shell) in vshells.iter().zip(shells) {
-        let vfaces = vs
-            .as_array()
-            .ok_or_else(|| err("shell values must be an array"))?;
-        if vfaces.len() != shell.len() {
-            return Err(err(format!(
-                "semantics shell has {} faces but geometry has {}",
-                vfaces.len(),
-                shell.len()
-            )));
-        }
-        for v in vfaces {
-            out.push(face_index(v, nsurfaces)?);
-        }
-    }
-    Ok(out)
+    let nfaces: usize = shells.iter().map(Vec::len).sum();
+    flat_face_surfaces(values, nfaces, nsurfaces)
 }
 
-/// Resolve a CompositeSolid's `[solid][shell][face]` values, one flat per-face
-/// vec per member.
+/// Resolve a CompositeSolid's flat `face_semantics`, split into one per-face
+/// vec per member using each member's shell partition — the flat list runs in
+/// member-then-shell-then-face order (the same order the WKB flattens).
 pub fn composite_face_surfaces(
     values: &Value,
     members: &[Shells],
     nsurfaces: usize,
 ) -> Result<Vec<FaceSurfaces>> {
-    let vmembers = values
-        .as_array()
-        .ok_or_else(|| err("composite semantics values must be an array of solids"))?;
-    if vmembers.len() != members.len() {
-        return Err(err(format!(
-            "semantics has {} solids but geometry has {}",
-            vmembers.len(),
-            members.len()
-        )));
-    }
+    let total: usize = members
+        .iter()
+        .flat_map(|shells| shells.iter())
+        .map(Vec::len)
+        .sum();
+    let flat = flat_face_surfaces(values, total, nsurfaces)?;
     let mut out = Vec::with_capacity(members.len());
-    for (vm, shells) in vmembers.iter().zip(members) {
-        out.push(solid_face_surfaces(vm, shells, nsurfaces)?);
+    let mut offset = 0;
+    for shells in members {
+        let n: usize = shells.iter().map(Vec::len).sum();
+        out.push(flat[offset..offset + n].to_vec());
+        offset += n;
     }
     Ok(out)
 }
 
-/// Resolve a MultiSurface's flat `[position]` values.
+/// Resolve a MultiSurface's flat `face_semantics`.
 pub fn multisurface_face_surfaces(
     values: &Value,
     nfaces: usize,
     nsurfaces: usize,
 ) -> Result<Vec<Option<usize>>> {
-    let vs = values
-        .as_array()
-        .ok_or_else(|| err("multisurface semantics values must be an array"))?;
-    if vs.len() != nfaces {
-        return Err(err(format!(
-            "semantics has {} values but geometry has {} faces",
-            vs.len(),
-            nfaces
-        )));
-    }
-    vs.iter().map(|v| face_index(v, nsurfaces)).collect()
+    flat_face_surfaces(values, nfaces, nsurfaces)
 }
 
 /// How one face of a semantic solid is emitted inside the `gml:Solid`:
@@ -399,7 +384,7 @@ pub fn write_solid_with_semantics<W: Write>(
                 && c.len() != gc.len()
             {
                 return Err(err(format!(
-                    "solid_shell_faces lists {} solids but the CompositeSolid has {}",
+                    "shells lists {} solids but the CompositeSolid has {}",
                     c.len(),
                     gc.len()
                 )));
@@ -540,9 +525,9 @@ mod tests {
 
     #[test]
     fn parse_extracts_surfaces_and_values() {
-        let props = json!({"type":"Solid","semantics":{
+        let props = json!({"type":"Solid",
             "surfaces":[{"type":"WallSurface"},{"type":"RoofSurface"}],
-            "values":[[0,1]]}});
+            "face_semantics":[0,1],"shells":[2]});
         let s = parse_semantics(Some(&props)).unwrap();
         assert_eq!(s.surfaces, vec!["WallSurface", "RoofSurface"]);
         assert!(surfaces_emittable(&s));
@@ -558,7 +543,7 @@ mod tests {
     fn extension_type_is_not_emittable() {
         let s = Semantics {
             surfaces: vec!["+Custom".into()],
-            values: json!([[0]]),
+            values: json!([0]),
         };
         assert!(!surfaces_emittable(&s));
     }
@@ -566,27 +551,27 @@ mod tests {
     #[test]
     fn solid_values_map_faces_to_surfaces_with_null() {
         let shells = vec![vec![f(), f()], vec![f()]];
-        let out = solid_face_surfaces(&json!([[0, null], [1]]), &shells, 2).unwrap();
+        let out = solid_face_surfaces(&json!([0, null, 1]), &shells, 2).unwrap();
         assert_eq!(out, vec![Some(0), None, Some(1)]);
     }
 
     #[test]
     fn solid_nesting_mismatch_errors() {
         let shells = vec![vec![f(), f()]];
-        assert!(solid_face_surfaces(&json!([[0]]), &shells, 2).is_err()); // 1 value, 2 faces
+        assert!(solid_face_surfaces(&json!([0]), &shells, 2).is_err()); // 1 value, 2 faces
     }
 
     #[test]
     fn solid_index_out_of_range_errors() {
         let shells = vec![vec![f()]];
-        assert!(solid_face_surfaces(&json!([[5]]), &shells, 2).is_err());
+        assert!(solid_face_surfaces(&json!([5]), &shells, 2).is_err());
     }
 
     #[test]
     fn composite_values_per_member() {
         let m = vec![vec![f()]];
         let members = vec![m.clone(), m];
-        let out = composite_face_surfaces(&json!([[[0]], [[null]]]), &members, 1).unwrap();
+        let out = composite_face_surfaces(&json!([0, null]), &members, 1).unwrap();
         assert_eq!(out, vec![vec![Some(0)], vec![None]]);
     }
 
@@ -654,10 +639,10 @@ mod tests {
             vec![vec![3, 4, 5]],
             vec![vec![6, 7, 8]],
         ]);
-        let props = json!({ "type": "Solid", "solid_shell_faces": [3] });
+        let props = json!({ "type": "Solid", "shells": [3] });
         let sem = Semantics {
             surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
-            values: json!([[0, null, 1]]),
+            values: json!([0, null, 1]),
         };
         let xml = emit_solid_sem(&coords, &kind, &props, &sem);
         // Solid comes first, with xlink members for faces 0 & 2 and inline for face 1.
@@ -695,10 +680,10 @@ mod tests {
         // 1 face -> surface 0; surface 1 (Roof) has no faces.
         let coords = semantic_coords();
         let kind = tri(0, 1, 2);
-        let props = json!({ "type": "Solid", "solid_shell_faces": [1] });
+        let props = json!({ "type": "Solid", "shells": [1] });
         let sem = Semantics {
             surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
-            values: json!([[0]]),
+            values: json!([0]),
         };
         let xml = emit_solid_sem(&coords, &kind, &props, &sem);
         assert!(
@@ -786,10 +771,10 @@ mod tests {
             DecodedKind::PolyhedralSurface(vec![vec![vec![0, 1, 2]]]),
             DecodedKind::PolyhedralSurface(vec![vec![vec![3, 4, 5]]]),
         ]);
-        let props = json!({ "type": "CompositeSolid", "solid_shell_faces": [[1], [1]] });
+        let props = json!({ "type": "CompositeSolid", "shells": [[1], [1]] });
         let sem = Semantics {
             surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
-            values: json!([[[0]], [[1]]]),
+            values: json!([0, 1]),
         };
         let xml = emit_solid_sem(&coords, &kind, &props, &sem);
         assert!(xml.contains("<gml:CompositeSolid>"), "{xml}");

@@ -50,14 +50,70 @@ pub struct DecodedObject {
     pub object: cjseq::CityObject,
     /// `(lod, decoded WKB geometry, geometry_properties)`, one entry per
     /// non-null geometry cell on this row, ascending by LoD. `None` LoD means
-    /// the dataset's single unsuffixed `geometry` column (the lodless binding
-    /// rule; see [`cityparquet_schema::model`]'s lods-empty branch).
+    /// the dataset's single unsuffixed `geometry` column — the
+    /// zero-analysis-geometry fallback (a dataset with only GeometryInstances,
+    /// or none; see [`cityparquet_schema::model`]'s lods-empty branch). In
+    /// that dataset the column is all-null, so this variant does not arise in
+    /// practice.
     pub geometries: Vec<(Option<Lod>, DecodedGeometry, Option<Value>)>,
     pub template: Option<TemplateInstance>,
 }
 
 fn err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Metadata(msg.into())
+}
+
+/// Merge the `other` column's unmapped members into the JSON that rebuilds a
+/// CityObject (§5.1, G9): members with no dedicated column — a Building's
+/// `address`, a per-object `geographicalExtent`, Extension `+members`. Typed
+/// fields route home; the rest ride cjseq's private flatten and re-serialise on
+/// export. A `None`/empty-`{}` cell contributes nothing.
+///
+/// Errors on a non-object cell or one carrying a reserved member. A well-formed
+/// encoder strips the reserved keys (they have their own columns), so their
+/// presence means a corrupt or foreign file — and on a losslessness-critical
+/// path, silently dropping either side would mask that corruption.
+fn merge_other_members(json: &mut Map<String, Value>, cell: Option<&str>, id: &str) -> Result<()> {
+    let Some(cell) = cell else {
+        return Ok(());
+    };
+    let Value::Object(members) = serde_json::from_str::<Value>(cell).map_err(|e| {
+        err(format!(
+            "object '{id}': 'other' column is not valid JSON: {e}"
+        ))
+    })?
+    else {
+        return Err(err(format!(
+            "object '{id}': 'other' column must be a JSON object, got: {cell}"
+        )));
+    };
+    for (key, value) in members {
+        if crate::encode::OTHER_RESERVED_MEMBERS.contains(&key.as_str()) {
+            return Err(err(format!(
+                "object '{id}': 'other' column carries reserved member '{key}'"
+            )));
+        }
+        // `geographicalExtent` routes into cjseq's typed `Vec<f64>`, so a
+        // corrupt cell (wrong length, null, non-numbers) would decode and then
+        // export as invalid CityJSON. CityJSON 2.0.1 §2 fixes it at exactly six
+        // numbers.
+        if key == "geographicalExtent" && !is_geographical_extent(&value) {
+            return Err(err(format!(
+                "object '{id}': 'other' geographicalExtent must be an array of exactly six \
+                 numbers, got: {value}"
+            )));
+        }
+        json.insert(key, value);
+    }
+    Ok(())
+}
+
+/// A CityJSON `geographicalExtent`: exactly six finite numbers
+/// `[minx, miny, minz, maxx, maxy, maxz]` (CityJSON 2.0.1 §2).
+fn is_geographical_extent(value: &Value) -> bool {
+    value
+        .as_array()
+        .is_some_and(|a| a.len() == 6 && a.iter().all(|n| n.as_f64().is_some_and(f64::is_finite)))
 }
 
 fn get_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a arrow_array::ArrayRef> {
@@ -82,8 +138,8 @@ fn downcast<'a, T: 'static>(array: &'a dyn Array, name: &str) -> Result<&'a T> {
 /// `CityParquetReaderBuilder::cityparquet_arrow_schema`'s LoD derivation:
 /// only `geometry_lod*` names parse as a LoD suffix — `geometry_properties_lod*`
 /// also starts with `geometry_` but is excluded because `"properties_lod1"`
-/// does not parse as one. A lodless dataset instead has the single unsuffixed
-/// `geometry`/`geometry_properties` pair ([`cityparquet_schema::model`]'s
+/// does not parse as one. A zero-analysis-geometry dataset instead has the
+/// single unsuffixed `geometry`/`geometry_properties` pair ([`cityparquet_schema::model`]'s
 /// lods-empty branch), returned as a `None`-LoD entry; the two shapes are
 /// mutually exclusive by construction, but both are checked unconditionally
 /// so a file carrying both would still decode every geometry column.
@@ -228,6 +284,11 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
 
     let parents_col = downcast::<ListArray>(get_column(batch, "parents")?.as_ref(), "parents")?;
     let children_col = downcast::<ListArray>(get_column(batch, "children")?.as_ref(), "children")?;
+    let children_roles_col = downcast::<ListArray>(
+        get_column(batch, "children_roles")?.as_ref(),
+        "children_roles",
+    )?;
+    let other_col = downcast::<StringArray>(get_column(batch, "other")?.as_ref(), "other")?;
 
     let template_col =
         downcast::<StructArray>(get_column(batch, "template")?.as_ref(), "template")?;
@@ -286,6 +347,17 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
                 Value::Array(children.into_iter().map(Value::String).collect()),
             );
         }
+        // `children_roles` has no typed cjseq field; placing it in the JSON
+        // that builds the CityObject lets it survive in the struct's private
+        // `#[serde(flatten)]` member and re-serialise on export (§5.1, G5).
+        if let Some(children_roles) = string_list_value(children_roles_col, row)? {
+            json.insert(
+                "children_roles".to_string(),
+                Value::Array(children_roles.into_iter().map(Value::String).collect()),
+            );
+        }
+        let other_cell = (!other_col.is_null(row)).then(|| other_col.value(row));
+        merge_other_members(&mut json, other_cell, &id)?;
         let object: cjseq::CityObject = serde_json::from_value(Value::Object(json))?;
 
         let mut geometries = Vec::with_capacity(geometry_arrays.len());
@@ -327,4 +399,95 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // G9 decode guard: the `other`-column merge is a losslessness-critical,
+    // corruption-sensitive path, so it is unit-tested directly (building a full
+    // reserved-column RecordBatch just to reach it would be disproportionate).
+
+    #[test]
+    fn merge_other_members_injects_unmapped_members() {
+        let mut json = Map::new();
+        json.insert("type".to_string(), json!("Building"));
+        merge_other_members(
+            &mut json,
+            Some(r#"{"address":[{"Locality":"Helsinki"}],"geographicalExtent":[0,0,0,1,1,1]}"#),
+            "obj-1",
+        )
+        .unwrap();
+        assert_eq!(json["address"], json!([{"Locality": "Helsinki"}]));
+        assert_eq!(json["geographicalExtent"], json!([0, 0, 0, 1, 1, 1]));
+        assert_eq!(
+            json["type"],
+            json!("Building"),
+            "must not disturb typed members"
+        );
+    }
+
+    #[test]
+    fn merge_other_members_null_and_empty_are_no_ops() {
+        let mut json = Map::new();
+        merge_other_members(&mut json, None, "obj-1").unwrap();
+        assert!(json.is_empty(), "a null `other` cell contributes nothing");
+        // A foreign writer may emit `{}` instead of null — identical effect.
+        merge_other_members(&mut json, Some("{}"), "obj-1").unwrap();
+        assert!(json.is_empty(), "an empty `{{}}` cell contributes nothing");
+    }
+
+    #[test]
+    fn merge_other_members_rejects_a_reserved_member() {
+        // A rogue `geometry` in `other` must NOT reach the typed field — decode's
+        // assembled JSON never sets `geometry`, so a `contains_key` guard would
+        // miss it; the static reserved-set guard catches it.
+        let mut json = Map::new();
+        let err = merge_other_members(&mut json, Some(r#"{"geometry":[]}"#), "obj-1")
+            .expect_err("a reserved member in `other` must be an error");
+        assert!(
+            format!("{err:?}").contains("reserved member 'geometry'"),
+            "error must name the offending member, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn merge_other_members_rejects_a_non_object_cell() {
+        let mut json = Map::new();
+        assert!(
+            merge_other_members(&mut json, Some("[1,2,3]"), "obj-1").is_err(),
+            "a non-object `other` cell must be an error, not a panic"
+        );
+        assert!(
+            merge_other_members(&mut json, Some("not json"), "obj-1").is_err(),
+            "a malformed `other` cell must be an error, not a panic"
+        );
+    }
+
+    #[test]
+    fn merge_other_members_validates_geographical_extent_shape() {
+        // G9 sol-review Finding 3: a corrupt `geographicalExtent` in `other`
+        // routes into cjseq's typed `Vec<f64>` and would export as invalid
+        // CityJSON, so it must be rejected before merging.
+        let mut json = Map::new();
+        assert!(
+            merge_other_members(&mut json, Some(r#"{"geographicalExtent":[0]}"#), "o").is_err(),
+            "fewer than six numbers must be rejected"
+        );
+        assert!(
+            merge_other_members(&mut json, Some(r#"{"geographicalExtent":null}"#), "o").is_err(),
+            "a null extent must be rejected, not silently dropped"
+        );
+        // A valid six-number extent passes.
+        let mut json = Map::new();
+        merge_other_members(
+            &mut json,
+            Some(r#"{"geographicalExtent":[0,0,0,1,1,1]}"#),
+            "o",
+        )
+        .unwrap();
+        assert_eq!(json["geographicalExtent"], json!([0, 0, 0, 1, 1, 1]));
+    }
 }

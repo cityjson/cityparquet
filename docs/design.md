@@ -97,7 +97,7 @@ appearance/template references, then the inferred attribute columns.
 | `object_type` | `Dictionary<Int32, Utf8>` (non-null) | dictionary-encoded — few distinct values over many rows |
 | `parents` | `List<Utf8>` | parent ids |
 | `children` | `List<Utf8>` | child ids |
-| `children_roles` | `List<Utf8>` | currently always null |
+| `children_roles` | `List<Utf8>` | one role per child, from CityJSON `children_roles` |
 | `bbox` | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>` | see below |
 | `geometry` *or* `geometry_lod<k>` | `Binary` (WKB) | one column per LoD |
 | `geometry_properties` *or* `geometry_properties_lod<k>` | JSON | semantics WKB can't carry |
@@ -223,9 +223,11 @@ point (WKB `PointZ`) and `transformationMatrix` in its `template` column.
 Dataset-level metadata is written both to the Parquet file's key/value
 metadata and to `metadata.json` for package-level discovery. Keys include
 `cityparquet_version`, `source_format`/`source_version`, `crs` (PROJJSON),
-`transform`, `extensions`, `attribute_columns`, `reserved_columns`,
-`default_geometry`, `bbox_column`, `sidecar_files`, `source_metadata` (the
-source header `metadata`, verbatim), and `appearance_defaults`. A GeoParquet
+`transform`, `extensions`, `attributes` (the inferred attribute-column list;
+any column not named here is a reserved structural column, so no separate
+`reserved_columns` key is written), `default_geometry`, `bbox_column`,
+`sidecar_files`, `source_metadata` (the source header `metadata`, verbatim),
+`appearance_defaults`, and `other` (free-form producer metadata). A GeoParquet
 `geo` key is derived so GeoParquet readers recognise the geometry columns.
 
 `metadata.json` (the `PackageManifest`) is the **authoritative** description
@@ -260,8 +262,8 @@ Documented exclusions:
 - **Coordinate-degenerate rings** — rings whose indices are distinct but all
   dequantise to the same coordinate (a real 3DBAG occurrence) are likewise
   dropped on both sides.
-- `children_roles` and unknown per-object members (outside the round-tripped
-  data model).
+- Unknown per-object members outside the round-tripped data model (`children_roles`
+  IS now round-tripped and compared, G5).
 - Under **Core only**: appearance definitions, per-geometry material/texture
   refs, and geometry-template definitions/instances — dropped on export and
   counted (they are present under Compatibility).
@@ -279,4 +281,4 @@ benchmark suite). Current limitations:
   readers that consult it assume `OGC:CRS84` while coordinates are actually in
   the source CRS (which *is* recorded, as an OGC CRS URL, in the `crs` KV
   entry).
-- `children_roles` and `other` columns are currently always null.
+- The `other` column is currently always null (`children_roles` is now populated, G5).

@@ -11,6 +11,8 @@ use cityparquet_schema::{
     CityParquetSchema, Lod, Result, SourceFormat as SchemaSourceFormat, normalise_attribute_name,
 };
 
+use cjseq::GeometryType;
+
 use crate::source::{Source, SourceFormat};
 use crate::wkb_write::{VertexPool, geometry_to_wkb};
 
@@ -20,16 +22,22 @@ use crate::wkb_write::{VertexPool, geometry_to_wkb};
 #[derive(Debug, Clone)]
 pub struct ScanResult {
     pub schema: CityParquetSchema,
-    /// LoDs present, ascending; empty means every kept geometry goes in a
-    /// single un-suffixed `geometry` column.
+    /// LoDs present, ascending; empty means the dataset has no analysis
+    /// geometry (only `GeometryInstance`s, or no geometry at all) and uses the
+    /// un-suffixed `geometry` column. Every non-instance source geometry has a
+    /// lod — [`scan`] rejects any that does not (§9, CityJSON 2.0 §3).
     pub lods: Vec<Lod>,
     pub object_count: usize,
-    /// Union of every kept geometry's bbox (see `lodless_geometries` for what
-    /// "kept" excludes), `None` if no geometry contributed one.
+    /// Union of every analysis geometry's bbox, `None` if none contributed one
+    /// (`GeometryInstance`s produce no WKB, so they contribute nothing here).
     pub dataset_bbox: Option<[f64; 6]>,
     /// The dataset's reference system as the raw OGC CRS URL string (from
-    /// CityJSON header metadata), not yet resolved to full PROJJSON.
+    /// CityJSON header metadata), before PROJJSON resolution.
     pub crs_url: Option<String>,
+    /// The dataset CRS resolved to **PROJJSON** (§13.3, G1), `None` when the
+    /// source declared no CRS. This is what the `geo` metadata and the
+    /// top-level `crs` mirror carry.
+    pub crs: Option<serde_json::Value>,
     /// The CityJSON header's `transform`, kept for the writer's requantisation.
     pub transform: serde_json::Value,
     /// The CityJSON header's `extensions` declarations, verbatim (absent
@@ -43,14 +51,33 @@ pub struct ScanResult {
     /// the header's `appearance` default-theme members, `None` if neither is
     /// set.
     pub appearance_defaults: Option<serde_json::Value>,
-    /// Count of geometries with no `lod` string, on a dataset that also has
-    /// LoD-bearing geometries. These are skipped from `lods` and
-    /// `dataset_bbox` because there is no per-LoD column to place them in;
-    /// see the module docs on the "mixed" binding rule for why a dataset
-    /// that is *uniformly* LoD-less does not skip anything.
-    pub lodless_geometries: usize,
+    /// The GeoParquet-legal geometry columns and their geometry types (§13.3,
+    /// G1): one entry per LoD whose every geometry encodes to a WKB type in
+    /// GeoParquet's `[1001,1007]` subset, ascending by LoD. A LoD with any
+    /// `Solid`-family geometry (encoded as `PolyhedralSurfaceZ`, which
+    /// GeoParquet cannot express) is CityParquet-only and is **absent** here,
+    /// so it is never declared in `geo.columns` — declaring it would make the
+    /// whole file unreadable to GeoParquet tools (§1.3). The `Vec<String>` is
+    /// the GeoParquet `geometry_types` for that column (e.g. `["MultiPolygon Z"]`).
+    pub geoparquet_columns: Vec<(Lod, Vec<String>)>,
     source_format: SchemaSourceFormat,
     source_version: String,
+}
+
+/// The GeoParquet `geometry_types` string for a source geometry type, or `None`
+/// when it has no GeoParquet-legal WKB encoding. `Solid`/`MultiSolid`/
+/// `CompositeSolid` encode as `PolyhedralSurfaceZ` (1015) — or a
+/// `GeometryCollectionZ` of them — which is outside GeoParquet's `[1001,1007]`
+/// subset, so a column containing one is not a GeoParquet column (§7.2, §13.3).
+fn geoparquet_geometry_type(thetype: &GeometryType) -> Option<&'static str> {
+    match thetype {
+        GeometryType::MultiPoint => Some("MultiPoint Z"),
+        GeometryType::MultiLineString => Some("MultiLineString Z"),
+        GeometryType::MultiSurface | GeometryType::CompositeSurface => Some("MultiPolygon Z"),
+        GeometryType::Solid | GeometryType::MultiSolid | GeometryType::CompositeSolid => None,
+        // A GeometryInstance produces no geometry column at all.
+        GeometryType::GeometryInstance => None,
+    }
 }
 
 fn to_schema_source_format(format: SourceFormat) -> SchemaSourceFormat {
@@ -82,13 +109,12 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
     let mut inferer = AttributeInferer::default();
     let mut lod_strings: Vec<String> = Vec::new();
     let mut object_count = 0usize;
-    // Kept separately because whether the lod-less bucket is "skipped" (mixed
-    // dataset) or "the whole dataset" (uniformly lod-less) is only knowable
-    // after the full scan.
     let mut bbox_with_lod: Option<[f64; 6]> = None;
-    let mut bbox_lodless: Option<[f64; 6]> = None;
     let mut geometries_with_lod = 0usize;
-    let mut geometries_without_lod = 0usize;
+    // Per-LoD GeoParquet legality: the set of GeoParquet geometry types seen,
+    // and whether any geometry at that LoD is illegal (Solid-family).
+    let mut lod_geo: std::collections::BTreeMap<Lod, (std::collections::BTreeSet<String>, bool)> =
+        std::collections::BTreeMap::new();
 
     for feature in source.features()? {
         let feature = feature?;
@@ -110,21 +136,41 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
                 let bbox = geometry_to_wkb(geom, &pool)?.map(|outcome| outcome.bbox);
                 match &geom.lod {
                     Some(lod) => {
-                        Lod::parse(lod).map_err(|_| {
+                        let parsed = Lod::parse(lod).map_err(|_| {
                             CityParquetError::Lod(format!("object {id}: invalid lod {lod:?}"))
                         })?;
                         if !lod_strings.contains(lod) {
                             lod_strings.push(lod.clone());
                         }
                         geometries_with_lod += 1;
+                        // Record this LoD's GeoParquet legality (§13.3, G1).
+                        let entry = lod_geo.entry(parsed).or_default();
+                        match geoparquet_geometry_type(&geom.thetype) {
+                            Some(t) => {
+                                entry.0.insert(t.to_string());
+                            }
+                            None => entry.1 = true,
+                        }
                         if let Some(bbox) = bbox {
                             union_bbox(&mut bbox_with_lod, bbox);
                         }
                     }
                     None => {
-                        geometries_without_lod += 1;
-                        if let Some(bbox) = bbox {
-                            union_bbox(&mut bbox_lodless, bbox);
+                        // A `GeometryInstance` is lod-less by design — its
+                        // referenced template carries the lod (§12) and it
+                        // routes to the `template` column, not a geometry
+                        // column. Any OTHER lod-less geometry is invalid
+                        // CityJSON 2.0 (§3 requires `lod` on every
+                        // non-instance geometry) and MUST be rejected here,
+                        // not silently dropped (in a mixed dataset) nor kept
+                        // in an un-suffixed column (in a uniformly lod-less
+                        // one) — the two behaviours the old code chose
+                        // between depending on the rest of the dataset.
+                        if geom.thetype != GeometryType::GeometryInstance {
+                            return Err(CityParquetError::Lod(format!(
+                                "object {id}: geometry has no \"lod\" (CityJSON 2.0 §3 \
+                                 requires it on every non-GeometryInstance geometry)"
+                            )));
                         }
                     }
                 }
@@ -132,22 +178,31 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         }
     }
 
-    // Binding rule: a dataset with at least one LoD-bearing geometry uses
-    // per-LoD columns, and any lod-less geometry is skipped (counted) since
-    // it has no column to go in. A dataset with none at all (uniformly
-    // lod-less, including the no-geometry-at-all case) uses the plain
-    // un-suffixed `geometry` column and keeps every geometry.
-    let (lods, dataset_bbox, lodless_geometries) = if geometries_with_lod > 0 {
+    // A dataset with at least one LoD-bearing geometry uses per-LoD columns
+    // (every non-instance geometry now has a lod — the loop above rejected any
+    // that did not). A dataset with none — only `GeometryInstance`s, or an
+    // attributes-only dataset with no geometry at all — has no analysis
+    // geometry, hence no LoDs and no dataset bbox; it uses the un-suffixed
+    // geometry columns (the zero-analysis-geometry case, §9 / Appendix B).
+    let (lods, dataset_bbox) = if geometries_with_lod > 0 {
         let mut lods: Vec<Lod> = lod_strings
             .iter()
             .map(|s| Lod::parse(s).expect("already validated above"))
             .collect();
         lods.sort();
         lods.dedup();
-        (lods, bbox_with_lod, geometries_without_lod)
+        (lods, bbox_with_lod)
     } else {
-        (Vec::new(), bbox_lodless, 0)
+        (Vec::new(), None)
     };
+
+    // The GeoParquet-legal columns: a LoD with any illegal (Solid-family)
+    // geometry is excluded entirely (§13.3, G1), ascending by LoD.
+    let geoparquet_columns: Vec<(Lod, Vec<String>)> = lod_geo
+        .into_iter()
+        .filter(|(_, (_, has_illegal))| !has_illegal)
+        .map(|(lod, (types, _))| (lod, types.into_iter().collect()))
+        .collect();
 
     let crs_url = header
         .metadata
@@ -191,10 +246,18 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         Some(serde_json::Value::Object(map))
     });
 
+    // Resolve the source CRS to PROJJSON once (§13.3, G1) — used for both the
+    // per-column `geo` CRS and the geoarrow.wkb field extension. An
+    // unresolvable CRS is a hard error, never a silent omission.
+    let crs = crs_url
+        .as_deref()
+        .map(cityparquet_schema::crs::resolve_to_projjson)
+        .transpose()?;
+
     let schema = CityParquetSchema {
         lods: lods.clone(),
         attributes: inferer.finish(),
-        crs: None,
+        crs: crs.clone(),
     };
 
     Ok(ScanResult {
@@ -203,17 +266,28 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         object_count,
         dataset_bbox,
         crs_url,
+        crs,
         transform,
         extensions: header.extensions.clone(),
         source_metadata,
         appearance_defaults,
-        lodless_geometries,
+        geoparquet_columns,
         source_format: to_schema_source_format(source.format()),
         source_version: header.version.clone(),
     })
 }
 
 impl ScanResult {
+    /// The GeoParquet-legal geometry columns as `(column name, geometry_types)`
+    /// pairs, ascending by LoD (§13.3, G1) — the writer declares exactly these
+    /// in `geo.columns`, and the highest-LoD one is the `primary_column`.
+    pub fn geoparquet_geo_columns(&self) -> Vec<(String, Vec<String>)> {
+        self.geoparquet_columns
+            .iter()
+            .map(|(lod, types)| (format!("geometry_{}", lod.column_suffix()), types.clone()))
+            .collect()
+    }
+
     /// Build the full `CityParquetMetadata` for this scan, filling every
     /// spec key: attribute/reserved column lists come from the schema's own
     /// rendered Arrow schema (never hand-duplicated), the default geometry
@@ -221,7 +295,9 @@ impl ScanResult {
     /// `lods` is empty), and `sidecars` are the compatibility-profile sidecar
     /// file names to record (empty for the core profile).
     pub fn metadata(&self, sidecars: &[String]) -> Result<CityParquetMetadata> {
-        let (reserved_columns, attribute_columns) = self.schema.column_lists()?;
+        // Only the attribute list is stored (§13.1): a reader recovers the
+        // reserved columns as "everything not listed here".
+        let (_reserved_columns, attribute_columns) = self.schema.column_lists()?;
 
         let default_geometry = match self.lods.last() {
             Some(highest) => format!("geometry_{}", highest.column_suffix()),
@@ -232,16 +308,16 @@ impl ScanResult {
             cityparquet_version: CITYPARQUET_VERSION.to_string(),
             source_format: self.source_format,
             source_version: Some(self.source_version.clone()),
-            crs: self.crs_url.clone().map(serde_json::Value::String),
+            crs: self.crs.clone(),
             transform: Some(self.transform.clone()),
             extensions: self.extensions.clone(),
             attribute_columns,
-            reserved_columns,
             default_geometry,
             bbox_column: "bbox".to_string(),
             sidecar_files: sidecars.to_vec(),
             source_metadata: self.source_metadata.clone(),
             appearance_defaults: self.appearance_defaults.clone(),
+            other: None,
         })
     }
 }

@@ -1006,9 +1006,13 @@ pub(crate) fn convert_source_impl(
     // and it must use the SAME `opts.geoarrow` flag `encode`/`encode_buffered`
     // feed their batch schema, or Arrow rejects the batches at write time.
     let arrow_schema = Arc::new(scan_result.schema.to_arrow_schema_tagged(opts.geoarrow)?);
-    let props = opts
-        .recipe
-        .writer_properties(&scan_result.schema, &metadata, opts.geoarrow)?;
+    // `opts.geoarrow` still gates only the `geoarrow.wkb` FIELD extension above;
+    // the `geo` KEY is always written for the GeoParquet-legal columns (§13.3).
+    let props = opts.recipe.writer_properties(
+        &scan_result.schema,
+        &metadata,
+        &scan_result.geoparquet_geo_columns(),
+    )?;
 
     // Everything above is fallible but never touches `opts.output_dir` at
     // all, so none of it needs any cleanup. From here on, every new file

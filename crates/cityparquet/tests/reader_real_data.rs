@@ -41,6 +41,65 @@ fn convert_delft_small_row_groups() -> tempfile::TempDir {
     out
 }
 
+/// RED (G8 sol-review Finding 1): a source ATTRIBUTE named like a geometry
+/// column for a LoD the dataset does not otherwise use (e.g. `geometry_lod3`
+/// in a LoD-2-only dataset) is legal — only geometry columns for the dataset's
+/// ACTUAL LoDs are reserved. The reader must not mistake that attribute for a
+/// geometry column when it derives the LoD set from the file's own schema
+/// (§13.1: a column listed in `attributes` is an attribute, not reserved).
+/// Derived from delft by injecting the attribute; reading the package back
+/// must not error.
+#[test]
+fn attribute_named_like_a_geometry_column_does_not_break_the_reader() {
+    let mut doc: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(fixture("delft.city.jsonl"))
+            .unwrap()
+            .lines()
+            .nth(1)
+            .expect("delft has feature lines"),
+    )
+    .unwrap();
+    for (_, co) in doc["CityObjects"].as_object_mut().unwrap() {
+        co.as_object_mut()
+            .unwrap()
+            .entry("attributes")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .unwrap()
+            .insert("geometry_lod3".to_string(), serde_json::json!("sneaky"));
+    }
+    let src_dir = tempfile::tempdir().unwrap();
+    let path = src_dir.path().join("delft_attr_collide.city.jsonl");
+    let header = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n{}",
+            header.lines().next().unwrap(),
+            serde_json::to_string(&doc).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(path, out.path().to_path_buf())).unwrap();
+
+    // Reading the package back must reconstruct the schema without mistaking
+    // the `geometry_lod3` ATTRIBUTE for a geometry LoD (which would collide).
+    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let schema = builder
+        .cityparquet_arrow_schema()
+        .expect("reader must not mis-infer the geometry_lod3 attribute as a geometry column");
+    // `geometry_lod3` is present exactly once, as an attribute (role=attribute).
+    let field = schema.field_with_name("geometry_lod3").unwrap();
+    assert_eq!(
+        field.metadata().get(ROLE_KEY).map(String::as_str),
+        Some("attribute"),
+        "geometry_lod3 must remain an attribute column, not become a reserved geometry column"
+    );
+}
+
 #[test]
 fn cityparquet_metadata_matches_the_writer_side_scan() {
     let out = convert_delft_small_row_groups();
@@ -62,7 +121,6 @@ fn cityparquet_metadata_matches_the_writer_side_scan() {
         writer_meta.attribute_columns.len()
     );
     assert_eq!(read_meta.bbox_column, writer_meta.bbox_column);
-    assert_eq!(read_meta.reserved_columns, writer_meta.reserved_columns);
     assert_eq!(
         read_meta.cityparquet_version,
         writer_meta.cityparquet_version

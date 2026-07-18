@@ -400,47 +400,23 @@ fn railway_compatibility_export_restores_appearance_feature_local() {
     );
 }
 
-/// M5 debt item 3: the encoder keys a Compatibility-profile object's
-/// per-LoD `material`/`texture` map by the geometry's RAW source `lod`
-/// string (`geom.lod.clone().unwrap_or_default()` in
-/// `crate::encode::accumulate_geometry`), while export looks the entry up
-/// by the CANONICAL `Lod` string (`lod.map(|l| l.to_string())`, `Lod`
-/// having already normalised e.g. `"03"` to `"3"`). A non-canonical source
-/// LoD string therefore silently loses its appearance restoration: the
-/// per-object map IS non-empty (it has an entry keyed `"03"`) but the
-/// canonical lookup key `"3"` never matches it. Derived from a copy of the
-/// railway fixture: object `UUID_bd865e62-18de-40ff-85da-883709a86f0f`'s
-/// only (non-instance) geometry — a `lod: "3"` `MultiSurface` carrying a
-/// `texture` block — has its `lod` rewritten to `"03"` (parses to the same
-/// canonical LoD 3, so it still lands in the SAME `geometry_lod3` column,
-/// but the map key mismatches). `appearance_lod_misses` must count exactly
-/// this one miss; pristine railway (no rewrite) must count zero.
+/// G20 regression: a non-canonical source `lod` string must NOT lose its
+/// appearance on round-trip. Under the old single-column layout the encoder
+/// keyed the per-object appearance map by the raw `lod` (`"03"`) while export
+/// looked it up by the canonical `"3"`, so the texture was silently dropped
+/// (the old `appearance_lod_misses` counter existed only to notice this).
+/// With per-LoD `texture_lod*` columns the appearance is paired to its
+/// geometry by the shared `lod3` column suffix, so `"03"` restores exactly.
+/// Derived from the railway fixture: object
+/// `UUID_bd865e62-18de-40ff-85da-883709a86f0f`'s only (non-instance)
+/// geometry — a `lod: "3"` `MultiSurface` carrying a `texture` block — has
+/// its `lod` rewritten to `"03"` (same canonical LoD 3, so still the
+/// `geometry_lod3` / `texture_lod3` columns). The derived document must
+/// round-trip losslessly.
 #[test]
-fn railway_compatibility_export_counts_a_non_canonical_lod_restore_miss() {
+fn railway_export_restores_appearance_under_a_non_canonical_lod() {
     const TARGET_OBJECT_ID: &str = "UUID_bd865e62-18de-40ff-85da-883709a86f0f";
 
-    // Pristine railway: no non-canonical LoD strings anywhere, so no misses.
-    let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        package_dir.path().to_path_buf(),
-    );
-    opts.profile = Profile::Compatibility;
-    convert(&opts).unwrap();
-    let export_dir = tempfile::tempdir().unwrap();
-    let report = export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: export_dir.path().join("export.city.jsonl"),
-    })
-    .unwrap();
-    assert_eq!(
-        report.appearance_lod_misses, 0,
-        "pristine railway uses only canonical lod strings"
-    );
-
-    // Derived: rewrite the target object's only non-instance geometry's
-    // `lod` from the canonical "3" to the non-canonical "03" (same
-    // canonical LoD, different raw string).
     let mut doc: Value =
         serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
             .unwrap();
@@ -480,39 +456,93 @@ fn railway_compatibility_export_counts_a_non_canonical_lod_restore_miss() {
     let input_path = input_dir.path().join("railway_noncanonical_lod.city.json");
     std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
 
-    let derived_package_dir = tempfile::tempdir().unwrap();
-    let mut derived_opts =
-        ConvertOptions::new(input_path, derived_package_dir.path().to_path_buf());
-    derived_opts.profile = Profile::Compatibility;
-    convert(&derived_opts).unwrap();
-
-    let derived_export_dir = tempfile::tempdir().unwrap();
-    let derived_report = export(&ExportOptions {
-        package_dir: derived_package_dir.path().to_path_buf(),
-        output: derived_export_dir.path().join("export.city.jsonl"),
+    // Baseline: pristine railway (canonical "3") exports with its texture.
+    let pristine_pkg = tempfile::tempdir().unwrap();
+    let mut pristine_opts = ConvertOptions::new(
+        fixture("lod3_railway.city.json"),
+        pristine_pkg.path().to_path_buf(),
+    );
+    pristine_opts.profile = Profile::Compatibility;
+    convert(&pristine_opts).unwrap();
+    let pristine_export = tempfile::tempdir().unwrap();
+    let pristine_out = pristine_export.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: pristine_pkg.path().to_path_buf(),
+        output: pristine_out.clone(),
     })
     .unwrap();
+    let (_, pristine_textures) = count_geometry_appearance_keys(&pristine_out);
+
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(input_path, package_dir.path().to_path_buf());
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let export_path = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: export_path.clone(),
+    })
+    .unwrap();
+
+    // Global count: the derived export carries the SAME number of texture
+    // blocks as pristine railway. Under the old single-column layout this
+    // geometry's texture was silently dropped (raw "03" key vs canonical "3"
+    // lookup), so the count would be one lower.
+    let (_, derived_textures) = count_geometry_appearance_keys(&export_path);
     assert_eq!(
-        derived_report.appearance_lod_misses, 1,
-        "exactly the one rewritten geometry's per-LoD restore must miss"
+        derived_textures, pristine_textures,
+        "the non-canonical-lod geometry's texture must survive export, not be dropped"
+    );
+    assert!(
+        derived_textures > 0,
+        "precondition: railway export must carry at least one texture block"
+    );
+
+    // Targeted: the specific rewritten object's own LoD-3 geometry must carry a
+    // texture in the export (a global count alone could mask a lost target
+    // texture offset by a duplicate elsewhere).
+    let target_texture = |path: &std::path::Path| -> Value {
+        let text = std::fs::read_to_string(path).unwrap();
+        for line in text.lines().skip(1) {
+            let feature: Value = serde_json::from_str(line).unwrap();
+            let Some(co) = feature["CityObjects"].get(TARGET_OBJECT_ID) else {
+                continue;
+            };
+            for geom in co["geometry"].as_array().unwrap() {
+                if geom.get("type").and_then(Value::as_str) == Some("GeometryInstance") {
+                    continue;
+                }
+                return geom.get("texture").cloned().unwrap_or(Value::Null);
+            }
+        }
+        Value::Null
+    };
+    let derived_target = target_texture(&export_path);
+    assert!(
+        derived_target.is_object(),
+        "the rewritten object's own LoD-3 geometry must keep its texture, got: {derived_target:?}"
+    );
+    // And it must be the SAME texture the pristine object exports.
+    assert_eq!(
+        derived_target,
+        target_texture(&pristine_out),
+        "the rewritten object's texture must match pristine railway's"
     );
 }
 
-/// M5 final-review fix: an object with geometries at SEVERAL lods, where
-/// appearance is defined for only SOME of them, is legitimate CityJSON — it
-/// must NOT be counted as an `appearance_lod_misses` restore failure. The
-/// old detector fired for ANY geometry whose canonical lod key was absent
-/// from a non-empty per-object map, which over-counts exactly this case.
-/// Derived from a copy of the railway fixture: object
+/// An object with geometries at SEVERAL lods, where appearance is defined for
+/// only SOME of them, is legitimate CityJSON and must round-trip exactly: the
+/// LoD that has a texture keeps it, the LoD that has none stays bare. With
+/// per-LoD appearance columns (G20) this is structural — `texture_lod3` is
+/// non-null, `texture_lod2` is null — so no cross-LoD confusion is possible.
+/// Derived from the railway fixture: object
 /// `UUID_bd865e62-18de-40ff-85da-883709a86f0f`'s only (non-instance)
-/// geometry (`lod: "3"`, carrying a `texture` block) gains a SECOND
-/// geometry at a DIFFERENT lod (`"2"`, same boundaries — content does not
-/// matter here) that carries no material/texture of its own. The object's
-/// per-object appearance map therefore has an entry only for `"3"`; the
-/// `"2"` geometry's canonical lookup at `"2"` correctly misses, but that is
-/// not a restore failure (there was never anything to restore for `"2"`).
+/// geometry (`lod: "3"`, carrying a `texture` block) gains a SECOND geometry
+/// at lod `"2"` (same boundaries) that carries no material/texture.
 #[test]
-fn multi_lod_object_with_single_lod_appearance_is_not_counted_as_a_restore_miss() {
+fn multi_lod_object_with_single_lod_appearance_round_trips() {
     const TARGET_OBJECT_ID: &str = "UUID_bd865e62-18de-40ff-85da-883709a86f0f";
 
     let mut doc: Value =
@@ -555,19 +585,204 @@ fn multi_lod_object_with_single_lod_appearance_is_not_counted_as_a_restore_miss(
     std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
 
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(input_path, package_dir.path().to_path_buf());
+    let mut opts = ConvertOptions::new(input_path.clone(), package_dir.path().to_path_buf());
     opts.profile = Profile::Compatibility;
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
-    let report = export(&ExportOptions {
+    let export_path = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
         package_dir: package_dir.path().to_path_buf(),
-        output: export_dir.path().join("export.city.jsonl"),
+        output: export_path.clone(),
     })
     .unwrap();
-    assert_eq!(
-        report.appearance_lod_misses, 0,
-        "a legitimate single-lod appearance on a multi-lod object must not be counted as a restore miss"
+
+    let report = compare_datasets(&input_path, &export_path, &CompareOptions::default()).unwrap();
+    assert!(
+        report.equal,
+        "a multi-lod object with single-lod appearance must round-trip; differences: {:#?}",
+        report.differences
+    );
+}
+
+/// G20 sol-review Finding 1: with per-LoD appearance columns the bare
+/// `material` / `texture` names are no longer reserved, so a source attribute
+/// may legally be named `material` (a plain `VARCHAR`) or `material_lod03`
+/// (canonicalises to LoD 3, colliding with the real `material_lod3`). Export
+/// must classify appearance columns by their reserved-role metadata, not by
+/// name, so those attributes are never read as appearance — otherwise export
+/// would try to parse the `VARCHAR` `"brick"` as JSON (a hard error) or let
+/// `material_lod03` overwrite the genuine `material_lod3` restore.
+/// Derived from the railway fixture by injecting the two lookalike attributes.
+#[test]
+fn attributes_named_like_appearance_columns_do_not_corrupt_export() {
+    const TARGET_OBJECT_ID: &str = "UUID_bd865e62-18de-40ff-85da-883709a86f0f";
+
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    {
+        let co = doc["CityObjects"][TARGET_OBJECT_ID]
+            .as_object_mut()
+            .expect("precondition: target object must exist");
+        let attrs = co
+            .entry("attributes")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()))
+            .as_object_mut()
+            .unwrap();
+        // A plain string (invalid JSON) named exactly like the bare appearance
+        // prefix, and a non-canonical-suffix lookalike of material_lod3.
+        attrs.insert("material".to_string(), serde_json::json!("brick"));
+        attrs.insert(
+            "material_lod03".to_string(),
+            serde_json::json!("also brick"),
+        );
+    }
+
+    let input_dir = tempfile::tempdir().unwrap();
+    let input_path = input_dir.path().join("railway_lookalike_attrs.city.json");
+    std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(input_path.clone(), package_dir.path().to_path_buf());
+    opts.profile = Profile::Compatibility;
+    convert(&opts).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let export_path = export_dir.path().join("export.city.jsonl");
+    // Must not error: the lookalike attributes must be skipped by the
+    // reserved-role filter, never parsed as appearance JSON.
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: export_path.clone(),
+    })
+    .expect("export must not misread lookalike attributes as appearance");
+
+    // The target object's real LoD-3 texture must still round-trip, and the
+    // lookalike string attributes must survive as attributes.
+    let text = std::fs::read_to_string(&export_path).unwrap();
+    let mut checked = false;
+    for line in text.lines().skip(1) {
+        let feature: Value = serde_json::from_str(line).unwrap();
+        let Some(co) = feature["CityObjects"].get(TARGET_OBJECT_ID) else {
+            continue;
+        };
+        assert_eq!(
+            co["attributes"]["material"].as_str(),
+            Some("brick"),
+            "the `material` string attribute must round-trip as an attribute"
+        );
+        let has_texture = co["geometry"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g.get("texture").is_some());
+        assert!(has_texture, "the real LoD-3 texture must survive");
+        checked = true;
+    }
+    assert!(checked, "target object must be present in the export");
+}
+
+/// RED (G5): a CityObjectGroup's `children_roles` (CityJSON 2.0.1 §2.5, one role per
+/// child) must round-trip. It lives in cjseq's private flatten, so the
+/// encoder previously left the column null and the exporter dropped it.
+/// Derived from railway: give a parent object one role per child, then
+/// convert → export and require the roles back verbatim on that object.
+#[test]
+fn children_roles_round_trip() {
+    const TARGET_OBJECT_ID: &str = "UUID_f488e8ce-b953-4b35-a3fe-a394fb203868";
+
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    let roles: Vec<String> = {
+        let co = doc["CityObjects"][TARGET_OBJECT_ID]
+            .as_object_mut()
+            .unwrap();
+        let n = co["children"].as_array().unwrap().len();
+        assert!(n > 0, "precondition: target object must have children");
+        let roles: Vec<String> = (0..n).map(|i| format!("role{i}")).collect();
+        co.insert("children_roles".to_string(), serde_json::json!(roles));
+        roles
+    };
+
+    let input_dir = tempfile::tempdir().unwrap();
+    let input_path = input_dir.path().join("railway_children_roles.city.json");
+    std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let package_dir = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        input_path,
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let export_path = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: export_path.clone(),
+    })
+    .unwrap();
+
+    let text = std::fs::read_to_string(&export_path).unwrap();
+    let mut checked = false;
+    for line in text.lines().skip(1) {
+        let feature: Value = serde_json::from_str(line).unwrap();
+        let Some(co) = feature["CityObjects"].get(TARGET_OBJECT_ID) else {
+            continue;
+        };
+        assert_eq!(
+            co["children_roles"],
+            serde_json::json!(roles),
+            "children_roles must round-trip verbatim on {TARGET_OBJECT_ID}"
+        );
+        // The children list must survive too, and in the same order the roles
+        // are aligned to (a role is meaningless without its child).
+        assert_eq!(
+            co["children"].as_array().map(Vec::len),
+            Some(roles.len()),
+            "the children list must round-trip with one entry per role"
+        );
+        checked = true;
+    }
+    assert!(checked, "target object must be present in the export");
+}
+
+/// G5 sol-review Finding 1: a malformed `children_roles` (here, more roles
+/// than children) is invalid CityJSON 2.0.1 (§2.5 requires one role per child)
+/// and must be REJECTED at convert, not silently truncated or coerced.
+/// Derived from railway's CityObjectGroup.
+#[test]
+fn mismatched_children_roles_is_rejected() {
+    const TARGET_OBJECT_ID: &str = "UUID_f488e8ce-b953-4b35-a3fe-a394fb203868";
+
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    {
+        let co = doc["CityObjects"][TARGET_OBJECT_ID]
+            .as_object_mut()
+            .unwrap();
+        let n = co["children"].as_array().unwrap().len();
+        // One MORE role than children — invalid.
+        let roles: Vec<String> = (0..n + 1).map(|i| format!("role{i}")).collect();
+        co.insert("children_roles".to_string(), serde_json::json!(roles));
+    }
+    let input_dir = tempfile::tempdir().unwrap();
+    let input_path = input_dir.path().join("railway_bad_roles.city.json");
+    std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let package_dir = tempfile::tempdir().unwrap();
+    let err = convert(&ConvertOptions::new(
+        input_path,
+        package_dir.path().to_path_buf(),
+    ))
+    .expect_err("a children_roles length mismatch must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains(TARGET_OBJECT_ID) && msg.contains("children_roles"),
+        "error must name the object and cite children_roles, got: {msg}"
     );
 }
 
@@ -1399,13 +1614,13 @@ fn export_rejects_a_second_table_with_a_renamed_attribute_column() {
 
     let attr_kv = kvs
         .iter()
-        .find(|kv| kv.key == "attribute_columns")
-        .expect("delft's metadata must carry an attribute_columns entry");
+        .find(|kv| kv.key == "attributes")
+        .expect("delft's metadata must carry an attributes entry (§13.1)");
     let mut attrs: Vec<String> = serde_json::from_str(
         attr_kv
             .value
             .as_deref()
-            .expect("attribute_columns KV must carry a value"),
+            .expect("the `attributes` KV must carry a value"),
     )
     .unwrap();
     assert!(
@@ -1419,9 +1634,9 @@ fn export_rejects_a_second_table_with_a_renamed_attribute_column() {
     let new_kvs: Vec<KeyValue> = kvs
         .into_iter()
         .map(|kv| {
-            if kv.key == "attribute_columns" {
+            if kv.key == "attributes" {
                 KeyValue::new(
-                    "attribute_columns".to_string(),
+                    "attributes".to_string(),
                     serde_json::to_string(&attrs).unwrap(),
                 )
             } else {

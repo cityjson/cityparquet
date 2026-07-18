@@ -490,12 +490,11 @@ fn main() -> std::process::ExitCode {
                 match export(&opts) {
                     Ok(report) => {
                         println!(
-                            "{} {} {} {} {}",
+                            "{} {} {} {}",
                             report.feature_count,
                             report.object_count,
                             report.instance_geometries_dropped,
-                            report.appearance_refs_dropped,
-                            report.appearance_lod_misses
+                            report.appearance_refs_dropped
                         );
                         std::process::ExitCode::SUCCESS
                     }

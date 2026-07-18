@@ -8,11 +8,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
+use arrow_array::RecordBatch;
 use arrow_array::{Array, StringArray};
 use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet::schema::Lod;
 use cityparquet::schema::PackageManifest;
 use cityparquet::schema::Profile;
 use cityparquet::sidecar::{read_materials, read_textures};
@@ -101,6 +103,37 @@ fn texture_faces(v: &Value, out: &mut Vec<Vec<Value>>) {
 /// independent.
 type FaceMaterials = BTreeMap<(String, String, String), Vec<(String, Option<String>)>>;
 
+/// Rebuild the old `{"<lod>": {"<theme>": …}}` per-object appearance map from
+/// the per-LoD `material_lod*` / `texture_lod*` columns (§11.1, G20), so these
+/// face-level assertions keep their LoD-keyed view. `None` when the row has
+/// no appearance for `prefix`.
+fn lod_keyed_appearance(batch: &RecordBatch, prefix: &str, row: usize) -> Option<Value> {
+    let mut map = serde_json::Map::new();
+    for (i, field) in batch.schema().fields().iter().enumerate() {
+        let Some(suffix) = field
+            .name()
+            .strip_prefix(prefix)
+            .and_then(|r| r.strip_prefix('_'))
+        else {
+            continue;
+        };
+        let Some(lod) = Lod::from_column_suffix(suffix) else {
+            continue;
+        };
+        let Some(col) = batch.column(i).as_any().downcast_ref::<StringArray>() else {
+            continue;
+        };
+        if col.is_null(row) {
+            continue;
+        }
+        map.insert(
+            lod.to_string(),
+            serde_json::from_str(col.value(row)).unwrap(),
+        );
+    }
+    (!map.is_empty()).then_some(Value::Object(map))
+}
+
 fn face_materials(pkg: &Path) -> FaceMaterials {
     let manifest: PackageManifest =
         serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
@@ -120,15 +153,11 @@ fn face_materials(pkg: &Path) -> FaceMaterials {
             .unwrap();
         for batch in reader {
             let batch = batch.unwrap();
-            let material_col = batch
-                .column_by_name("material")
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
             let objs = decode_batch(&batch, &meta).unwrap();
             for (row, obj) in objs.iter().enumerate() {
-                let Some(col) = material_col else { continue };
-                if col.is_null(row) {
+                let Some(mat) = lod_keyed_appearance(&batch, "material", row) else {
                     continue;
-                }
+                };
                 // Per-LoD geometry faces (canonical), to key materials by face.
                 let faces_by_lod: BTreeMap<String, Vec<Vec<String>>> = obj
                     .geometries
@@ -140,7 +169,6 @@ fn face_materials(pkg: &Path) -> FaceMaterials {
                         )
                     })
                     .collect();
-                let mat: Value = serde_json::from_str(col.value(row)).unwrap();
                 for (lod, themes) in mat.as_object().unwrap() {
                     let faces = faces_by_lod.get(lod).cloned().unwrap_or_default();
                     for (theme, inner) in themes.as_object().unwrap() {
@@ -233,15 +261,11 @@ fn face_textures(pkg: &Path) -> FaceTextures {
             .unwrap();
         for batch in reader {
             let batch = batch.unwrap();
-            let texture_col = batch
-                .column_by_name("texture")
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
             let objs = decode_batch(&batch, &meta).unwrap();
             for (row, obj) in objs.iter().enumerate() {
-                let Some(col) = texture_col else { continue };
-                if col.is_null(row) {
+                let Some(tex) = lod_keyed_appearance(&batch, "texture", row) else {
                     continue;
-                }
+                };
                 let faces_by_lod: BTreeMap<String, Vec<Vec<String>>> = obj
                     .geometries
                     .iter()
@@ -252,7 +276,6 @@ fn face_textures(pkg: &Path) -> FaceTextures {
                         )
                     })
                     .collect();
-                let tex: Value = serde_json::from_str(col.value(row)).unwrap();
                 for (lod, themes) in tex.as_object().unwrap() {
                     let faces = faces_by_lod.get(lod).cloned().unwrap_or_default();
                     for (theme, inner) in themes.as_object().unwrap() {

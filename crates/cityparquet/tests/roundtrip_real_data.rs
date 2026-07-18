@@ -680,3 +680,119 @@ fn delft_hilbert_and_by_type_compose_and_round_trip_losslessly() {
         report.excluded
     );
 }
+
+/// G7 (null-shorthand canonicalisation): CityJSON permits a single `null` in
+/// `semantics.values` to stand for a whole shell/solid with no per-face
+/// semantics. G7 stores the expanded per-face form, so export yields expanded
+/// nulls rather than the source shorthand — semantically equal, and §17's
+/// round-trip is defined up to that canonicalisation. The comparator must
+/// therefore treat the two as equal. Derived from delft by rewriting a Solid's
+/// `semantics.values` to the shorthand form.
+#[test]
+fn null_shorthand_semantics_round_trips() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let header = text.lines().next().unwrap();
+    let mut rewrote = false;
+    let mut feature: serde_json::Value =
+        serde_json::from_str(text.lines().nth(1).expect("delft has feature lines")).unwrap();
+    for (_, co) in feature["CityObjects"].as_object_mut().unwrap() {
+        for g in co
+            .get_mut("geometry")
+            .and_then(|g| g.as_array_mut())
+            .into_iter()
+            .flatten()
+        {
+            let is_solid_with_semantics = g.get("type").and_then(|t| t.as_str()) == Some("Solid")
+                && g.get("semantics").is_some();
+            if is_solid_with_semantics {
+                // One `null` per shell (the whole shell carries no semantics).
+                let nshells = g["boundaries"].as_array().map_or(0, Vec::len);
+                g["semantics"]["values"] =
+                    serde_json::json!(vec![serde_json::Value::Null; nshells]);
+                rewrote = true;
+            }
+        }
+    }
+    assert!(rewrote, "delft feature must carry a Solid with semantics");
+
+    let src_dir = tempfile::tempdir().unwrap();
+    let src = src_dir.path().join("delft_shorthand.city.jsonl");
+    std::fs::write(
+        &src,
+        format!("{header}\n{}", serde_json::to_string(&feature).unwrap()),
+    )
+    .unwrap();
+
+    let package = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        src.clone(),
+        package.path().to_path_buf(),
+    ))
+    .unwrap();
+    let export_dir = tempfile::tempdir().unwrap();
+    let exported = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package.path().to_path_buf(),
+        output: exported.clone(),
+    })
+    .unwrap();
+
+    let report = compare_datasets(&src, &exported, &CompareOptions::default()).unwrap();
+    assert!(
+        report.equal,
+        "null-shorthand semantics must round-trip up to canonicalisation; differences: {:#?}",
+        report.differences
+    );
+}
+
+/// G9 (§5.1): unmapped source members — a Building's `address` and its
+/// per-object `geographicalExtent`, neither of which has a dedicated column —
+/// must survive the round-trip via the `other` column. Fixture is a real
+/// subset of the Helsinki dataset (the only fixture carrying `address`); its
+/// addresses have no `location` MultiPoint, so the vertex-index landmine
+/// (documented as a known limitation) is not exercised here.
+#[test]
+fn helsinki_unmapped_members_round_trip() {
+    let (exported, _package_dir, _export_dir) = convert_and_export("helsinki_address.city.jsonl");
+    let report = compare_datasets(
+        &fixture("helsinki_address.city.jsonl"),
+        &exported,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "unmapped members (address, geographicalExtent) must round-trip; differences: {:#?}",
+        report.differences
+    );
+
+    // Direct proof the members actually survive with their content, not merely
+    // that the comparator is satisfied.
+    let read_addresses = |path: &std::path::Path| -> Vec<(String, serde_json::Value)> {
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut out = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let doc: serde_json::Value = serde_json::from_str(line).unwrap();
+            let Some(cos) = doc.get("CityObjects").and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (id, co) in cos {
+                if let Some(addr) = co.get("address") {
+                    out.push((id.clone(), addr.clone()));
+                }
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    };
+    let source_addr = read_addresses(&fixture("helsinki_address.city.jsonl"));
+    let export_addr = read_addresses(&exported);
+    assert!(
+        !source_addr.is_empty(),
+        "fixture must actually carry address members"
+    );
+    assert_eq!(
+        source_addr, export_addr,
+        "every source address must reappear verbatim after export"
+    );
+}
