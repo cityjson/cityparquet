@@ -40,6 +40,23 @@ impl Lod {
         let rest = suffix.strip_prefix("lod")?;
         Self::parse(&rest.replace('_', ".")).ok()
     }
+
+    /// Whether this LoD occupies the un-suffixed `geometry` column — the
+    /// GeoParquet-legal primary footprint slot. Only bare `0` qualifies;
+    /// refined `0.x` LoDs keep their suffix (deferred).
+    pub fn is_footprint(&self) -> bool {
+        self.major == 0 && self.minor.is_none()
+    }
+}
+
+/// Column name for a reserved geometry/appearance `prefix` at `lod`: the bare
+/// `prefix` for the footprint LoD (`0`), else `prefix_lod<suffix>` (§9).
+pub fn geometry_column_name(prefix: &str, lod: &Lod) -> String {
+    if lod.is_footprint() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}_{}", lod.column_suffix())
+    }
 }
 
 impl std::fmt::Display for Lod {
@@ -351,6 +368,33 @@ mod lod_tests {
             Some(Lod::parse("1").unwrap())
         );
         assert_eq!(Lod::from_column_suffix("geometry"), None);
+    }
+
+    #[test]
+    fn lod0_is_footprint_and_maps_to_bare_names() {
+        let lod0 = Lod::parse("0").unwrap();
+        assert!(lod0.is_footprint());
+        assert_eq!(geometry_column_name("geometry", &lod0), "geometry");
+        assert_eq!(
+            geometry_column_name("geometry_properties", &lod0),
+            "geometry_properties"
+        );
+        assert_eq!(geometry_column_name("material", &lod0), "material");
+    }
+
+    #[test]
+    fn refined_and_higher_lods_keep_suffix() {
+        // 0.x is NOT the footprint slot (deferred); only bare `0` is.
+        assert!(!Lod::parse("0.2").unwrap().is_footprint());
+        assert!(!Lod::parse("2.2").unwrap().is_footprint());
+        assert_eq!(
+            geometry_column_name("geometry", &Lod::parse("2.2").unwrap()),
+            "geometry_lod2_2"
+        );
+        assert_eq!(
+            geometry_column_name("geometry", &Lod::parse("0.2").unwrap()),
+            "geometry_lod0_2"
+        );
     }
 
     #[test]
