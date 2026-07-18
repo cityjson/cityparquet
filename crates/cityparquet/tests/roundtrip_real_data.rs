@@ -796,3 +796,55 @@ fn helsinki_unmapped_members_round_trip() {
         "every source address must reappear verbatim after export"
     );
 }
+
+/// G12 (§5.2): a source attribute whose name collides with a reserved column
+/// name (here `bbox`) is diverted into `other` under
+/// `cityparquet:diverted_attributes` and restored on export — rather than
+/// aborting the whole conversion, which is what this fixture did before G12.
+/// Fixture is real Helsinki objects with one injected `bbox` attribute
+/// alongside 27 genuine (non-colliding) attributes.
+#[test]
+fn colliding_attribute_is_diverted_and_round_trips() {
+    let (exported, _package_dir, _export_dir) = convert_and_export("collision_attr.city.jsonl");
+    let report = compare_datasets(
+        &fixture("collision_attr.city.jsonl"),
+        &exported,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "a colliding attribute must round-trip via `other`; differences: {:#?}",
+        report.differences
+    );
+
+    // The diverted attribute is restored into `attributes` on export (not left
+    // as a top-level member), with its value intact; the non-colliding
+    // attributes are unaffected.
+    let text = std::fs::read_to_string(&exported).unwrap();
+    let mut checked = 0;
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let doc: serde_json::Value = serde_json::from_str(line).unwrap();
+        let Some(cos) = doc.get("CityObjects").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        for co in cos.values() {
+            let attrs = co.get("attributes").and_then(|v| v.as_object()).unwrap();
+            assert_eq!(
+                attrs.get("bbox"),
+                Some(&serde_json::json!("diverted-sentinel")),
+                "the diverted `bbox` attribute must be restored with its value"
+            );
+            assert!(
+                attrs.contains_key("measuredHeight"),
+                "genuine attributes must still round-trip alongside the diverted one"
+            );
+            assert!(
+                co.get("bbox").is_none(),
+                "`bbox` must be an attribute, not promoted to a top-level member"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 2, "fixture has two objects, both must be checked");
+}
