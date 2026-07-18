@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 arrow-schema = { workspace = true }
 chrono = { workspace = true }
+flate2 = { workspace = true }
 geoarrow-schema = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

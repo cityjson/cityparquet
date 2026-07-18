@@ -1185,12 +1185,14 @@ fn by_type_convert_of_railway_writes_ten_family_tables() {
     );
 }
 
-/// `ConvertOptions::geoarrow` defaults to `false` (`ConvertOptions::new`):
-/// DuckDB reads geometry columns as plain BLOB with zero setup. Neither the
-/// file-level GeoParquet `geo` key nor the `geoarrow.wkb` field extension is
-/// written unless a caller opts in.
+/// G1: a default convert (no `--geoarrow`) still writes the GeoParquet `geo`
+/// key — declaring ONLY the GeoParquet-legal columns — while the geometry
+/// fields stay plain BLOB (no `geoarrow.wkb` field extension) so DuckDB reads
+/// them with zero setup. delft's `geometry_lod0` is a `MultiPolygon Z`
+/// footprint (legal); its `lod1.2/1.3/2.2` are `Solid`s (PolyhedralSurfaceZ,
+/// illegal) and must NOT appear in `geo.columns`.
 #[test]
-fn default_convert_writes_plain_blob_geometry_no_geoarrow_no_geo_key() {
+fn default_convert_writes_geo_key_for_legal_columns_only() {
     let out = tempfile::tempdir().unwrap();
     let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
     opts.layout = TableLayout::Single; // isolate this test from the layout change
@@ -1200,23 +1202,43 @@ fn default_convert_writes_plain_blob_geometry_no_geoarrow_no_geo_key() {
     let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
 
-    // (a) No file-level GeoParquet `geo` key.
+    // (a) The GeoParquet `geo` key IS present, listing only the legal LoD0
+    // footprint column (never the Solid LoD columns).
     let kvs = builder
         .metadata()
         .file_metadata()
         .key_value_metadata()
         .unwrap();
+    let geo_kv = kvs
+        .iter()
+        .find(|kv| kv.key == "geo")
+        .expect("default output must carry the GeoParquet `geo` key (G1)");
+    let geo: serde_json::Value = serde_json::from_str(geo_kv.value.as_deref().unwrap()).unwrap();
+    let columns = geo["columns"].as_object().unwrap();
     assert!(
-        !kvs.iter().any(|kv| kv.key == "geo"),
-        "default (no --geoarrow) output must not carry the GeoParquet `geo` key"
+        columns.contains_key("geometry_lod0"),
+        "the legal LoD0 MultiPolygon column must be declared"
     );
+    assert_eq!(
+        columns["geometry_lod0"]["geometry_types"],
+        serde_json::json!(["MultiPolygon Z"])
+    );
+    assert_eq!(geo["primary_column"], "geometry_lod0");
+    for solid_lod in ["geometry_lod1_2", "geometry_lod1_3", "geometry_lod2_2"] {
+        assert!(
+            !columns.contains_key(solid_lod),
+            "Solid column {solid_lod} (PolyhedralSurfaceZ) must NOT be in geo.columns"
+        );
+    }
+    // The CRS is PROJJSON (resolved from delft's OGC URL to EPSG:7415).
+    assert_eq!(columns["geometry_lod0"]["crs"]["id"]["code"], 7415);
 
-    // (b) Geometry field is plain Binary with no geoarrow extension.
+    // (b) Geometry field is plain Binary with no geoarrow extension (default).
     let field = builder
         .schema()
         .fields()
         .iter()
-        .find(|f| f.name().starts_with("geometry_"))
+        .find(|f| f.name().starts_with("geometry_lod"))
         .expect("a geometry_<lod> column exists");
     assert!(
         !field.metadata().contains_key("ARROW:extension:name"),

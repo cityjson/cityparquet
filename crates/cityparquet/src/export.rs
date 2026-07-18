@@ -537,20 +537,34 @@ impl<T> OrderedGroups<T> {
     }
 }
 
-/// The header `CityJSON`'s `metadata.referenceSystem`, built from the
-/// dataset's `crs` KV entry (an OGC CRS URL string) when present.
+/// The header `CityJSON`'s `metadata.referenceSystem`, built from the dataset's
+/// `crs` KV entry. As of G1 that entry is **PROJJSON**, so the OGC CRS URL is
+/// rebuilt from its `id.{authority, code}` (e.g. `EPSG` + `7415` ->
+/// `https://www.opengis.net/def/crs/EPSG/0/7415`). A legacy raw-URL-string
+/// entry is still accepted. A CRS with no usable `id` yields no header field.
 fn reference_system(meta: &CityParquetMetadata) -> Result<Option<ReferenceSystem>> {
     let Some(crs) = &meta.crs else {
         return Ok(None);
     };
-    let Some(url) = crs.as_str() else {
-        // Only the plain OGC CRS URL string form is supported (M2/M3 scope
-        // cut); a PROJJSON object CRS has no equivalent header field here.
-        return Ok(None);
+    // Legacy: a raw OGC CRS URL string.
+    if let Some(url) = crs.as_str() {
+        let rs = ReferenceSystem::from_url(url)
+            .map_err(|e| err(format!("invalid referenceSystem URL {url:?}: {e}")))?;
+        return Ok(Some(rs));
+    }
+    // PROJJSON: rebuild the OGC EPSG URL from the `id`.
+    let id = &crs["id"];
+    let authority = id["authority"].as_str();
+    let code = match &id["code"] {
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::String(s) => Some(s.clone()),
+        _ => None,
     };
-    let rs = ReferenceSystem::from_url(url)
-        .map_err(|e| err(format!("invalid referenceSystem URL {url:?}: {e}")))?;
-    Ok(Some(rs))
+    match (authority, code) {
+        (Some("EPSG"), Some(code)) => Ok(Some(crate::citygml::crs::reference_system(&code))),
+        // A non-EPSG PROJJSON CRS has no CityJSON referenceSystem URL form here.
+        _ => Ok(None),
+    }
 }
 
 /// Reconstructs the header `CityJSON` (empty `CityObjects`/`vertices`) from
