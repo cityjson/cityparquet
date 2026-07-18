@@ -560,9 +560,27 @@ fn reference_system(meta: &CityParquetMetadata) -> Result<Option<ReferenceSystem
         serde_json::Value::String(s) => Some(s.clone()),
         _ => None,
     };
-    match (authority, code) {
-        (Some("EPSG"), Some(code)) => Ok(Some(crate::citygml::crs::reference_system(&code))),
-        // A non-EPSG PROJJSON CRS has no CityJSON referenceSystem URL form here.
+    match (authority, code.as_deref()) {
+        (Some("EPSG"), Some(code)) => Ok(Some(crate::citygml::crs::reference_system(code))),
+        // OGC:CRS84 / CRS84h are the only non-EPSG CRSs in the vendored table;
+        // rebuild their registered OGC CRS URLs (versions per the OGC
+        // definitions server) so a lon/lat package without source_metadata
+        // still exports its referenceSystem rather than silently dropping it
+        // (sol-review G1).
+        (Some("OGC"), Some(code @ "CRS84")) => Ok(Some(ReferenceSystem::new(
+            None,
+            "OGC".to_string(),
+            "1.3".to_string(),
+            code.to_string(),
+        ))),
+        (Some("OGC"), Some(code @ "CRS84h")) => Ok(Some(ReferenceSystem::new(
+            None,
+            "OGC".to_string(),
+            "0".to_string(),
+            code.to_string(),
+        ))),
+        // Any other non-EPSG PROJJSON CRS has no CityJSON referenceSystem URL
+        // form here.
         _ => Ok(None),
     }
 }
@@ -1602,6 +1620,36 @@ mod tests {
             matches!(err, CityParquetError::Metadata(_)),
             "a package without a transform cannot be re-quantised: expected Metadata error, got {err:?}"
         );
+    }
+
+    #[test]
+    fn reference_system_rebuilds_the_ogc_crs84_url() {
+        // sol-review G1: metadata `crs` is now PROJJSON. A package whose CRS is
+        // OGC:CRS84 (a lon/lat dataset) with no source_metadata must still
+        // export a `referenceSystem`, not silently drop it.
+        let meta = CityParquetMetadata {
+            cityparquet_version: "0.1.0".to_string(),
+            source_format: cityparquet_schema::SourceFormat::CityJsonSeq,
+            source_version: None,
+            crs: Some(serde_json::json!({
+                "type": "GeographicCRS",
+                "name": "WGS 84 (CRS84)",
+                "id": { "authority": "OGC", "code": "CRS84" }
+            })),
+            transform: None,
+            extensions: None,
+            attribute_columns: vec![],
+            default_geometry: "geometry".to_string(),
+            bbox_column: "bbox".to_string(),
+            sidecar_files: vec![],
+            source_metadata: None,
+            appearance_defaults: None,
+            other: None,
+        };
+        let rs = reference_system(&meta)
+            .expect("resolution must not error")
+            .expect("OGC:CRS84 must yield a referenceSystem");
+        assert_eq!(rs.to_url(), "https://www.opengis.net/def/crs/OGC/1.3/CRS84");
     }
 
     /// M4 final-review Fix 4: a legal `[null, [u, v], ...]` texture ring —

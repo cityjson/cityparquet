@@ -46,22 +46,55 @@ fn lookup_key(source: &str) -> Option<String> {
     if s.is_empty() {
         return None;
     }
+    // A bare numeric code is taken as EPSG (the common convenience form).
     if s.chars().all(|c| c.is_ascii_digit()) {
         return Some(s.to_string());
     }
+    // `EPSG:7415` shorthand.
+    if let Some(code) = s.strip_prefix("EPSG:") {
+        let code = code.trim();
+        return (!code.is_empty() && code.chars().all(|c| c.is_ascii_digit()))
+            .then(|| code.to_string());
+    }
+    // `OGC:CRS84` / `OGC:CRS84h` shorthand.
     if let Some(rest) = s.strip_prefix("OGC:") {
-        return Some(format!("OGC:{rest}"));
+        return matches!(rest, "CRS84" | "CRS84h").then(|| format!("OGC:{rest}"));
     }
-    // The last `/`- or `:`-delimited segment: the code for EPSG URLs/urns, or
-    // `CRS84`/`CRS84h` for the OGC CRS84 URLs.
-    let tail = s.rsplit(['/', ':']).next()?.trim();
-    if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
-        return Some(tail.to_string());
+    // urn / OGC-URL forms. Tokenise on `:`/`/` and require the *explicit*
+    // authority token, so a numeric code under a non-EPSG authority
+    // (e.g. `.../def/crs/IGNF/0/7415`) is NOT mis-read as EPSG (sol-review G1).
+    // Authority tokens are matched case-sensitively: the real CRS84 URN carries
+    // an uppercase `OGC` authority token, distinct from the lowercase `ogc` URN
+    // scheme token that every `urn:ogc:def:crs:*` shares.
+    let tokens: Vec<&str> = s.split([':', '/']).filter(|t| !t.is_empty()).collect();
+    if tokens.contains(&"EPSG")
+        && let Some(code) = tokens
+            .iter()
+            .rev()
+            .find(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))
+    {
+        return Some((*code).to_string());
     }
-    if tail == "CRS84" || tail == "CRS84h" {
-        return Some(format!("OGC:{tail}"));
+    if tokens.contains(&"OGC")
+        && let Some(crs) = tokens
+            .iter()
+            .rev()
+            .find(|t| matches!(**t, "CRS84" | "CRS84h"))
+    {
+        return Some(format!("OGC:{crs}"));
     }
     None
+}
+
+/// A PROJJSON CRS object always carries a `type` naming a CRS variant
+/// (`GeographicCRS`, `ProjectedCRS`, `CompoundCRS`, `BoundCRS`, …) — every one
+/// ends in `CRS`. Used to tell an already-PROJJSON input apart from an
+/// identifier string or an unrelated JSON object.
+fn is_projjson_crs(value: &Value) -> bool {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|t| t.ends_with("CRS"))
 }
 
 /// Resolve a source CRS identifier to its PROJJSON from the vendored EPSG
@@ -70,9 +103,12 @@ fn lookup_key(source: &str) -> Option<String> {
 /// `crs` is taken to mean OGC:CRS84, silently mis-georeferencing a projected
 /// national CRS).
 pub fn resolve_to_projjson(source: &str) -> Result<Value> {
-    // Already PROJJSON? (a CityGML source may hand one straight through.)
+    // Already PROJJSON? (a CityGML source may hand one straight through.) Only
+    // a real PROJJSON CRS object — one whose `type` names a CRS variant — may
+    // short-circuit; an arbitrary object must not be emitted verbatim as an
+    // (invalid) GeoParquet `crs` (sol-review G1).
     if let Ok(value) = serde_json::from_str::<Value>(source)
-        && value.is_object()
+        && is_projjson_crs(&value)
     {
         return Ok(value);
     }
@@ -133,5 +169,32 @@ mod tests {
     fn unknown_code_is_an_error_not_a_silent_omission() {
         assert!(resolve_to_projjson("EPSG:999999999").is_err());
         assert!(resolve_to_projjson("garbage").is_err());
+    }
+
+    #[test]
+    fn rejects_non_epsg_authority_even_with_a_numeric_code() {
+        // sol-review G1: a numeric code under a NON-EPSG authority must not be
+        // mis-read as EPSG (which would georeference under the wrong system).
+        assert_eq!(
+            lookup_key("https://www.opengis.net/def/crs/IGNF/0/7415"),
+            None
+        );
+        assert!(resolve_to_projjson("https://www.opengis.net/def/crs/IGNF/0/7415").is_err());
+        assert!(resolve_to_projjson("urn:ogc:def:crs:ESRI::102100").is_err());
+    }
+
+    #[test]
+    fn passthrough_requires_a_projjson_crs_shape() {
+        // sol-review G1: only a real PROJJSON CRS object (a `type` naming a CRS
+        // variant) may short-circuit; an arbitrary object must not be emitted
+        // verbatim as an (invalid) GeoParquet `crs`.
+        assert!(resolve_to_projjson("{}").is_err());
+        assert!(resolve_to_projjson(r#"{"type":"Feature"}"#).is_err());
+        let projjson =
+            r#"{"type":"GeographicCRS","name":"WGS 84","id":{"authority":"EPSG","code":4326}}"#;
+        assert_eq!(
+            resolve_to_projjson(projjson).unwrap()["type"],
+            "GeographicCRS"
+        );
     }
 }
