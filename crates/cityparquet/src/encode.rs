@@ -80,6 +80,18 @@ fn collect_diverted_attributes(
     unmapped: &mut serde_json::Map<String, Value>,
     id: &str,
 ) -> Result<usize> {
+    // The transport key is reserved in source data unconditionally — whether or
+    // not this dataset diverts anything (sol-review G12). A source object that
+    // already carries it (an adversarial/foreign flatten member; colons are
+    // illegal in CityJSON member names) must error, never be reinterpreted as
+    // transport data on decode. This guard therefore runs before every other
+    // early return.
+    if unmapped.contains_key(DIVERTED_ATTRS_KEY) {
+        return Err(CityParquetError::Schema(format!(
+            "object {id}: source carries a member '{DIVERTED_ATTRS_KEY}', which is \
+             reserved for diverted-attribute transport (§5.2)"
+        )));
+    }
     if diverted.is_empty() {
         return Ok(0);
     }
@@ -97,12 +109,6 @@ fn collect_diverted_attributes(
     }
     if map.is_empty() {
         return Ok(0);
-    }
-    if unmapped.contains_key(DIVERTED_ATTRS_KEY) {
-        return Err(CityParquetError::Schema(format!(
-            "object {id}: source carries a reserved member '{DIVERTED_ATTRS_KEY}'; \
-             cannot divert colliding attributes without overwriting it"
-        )));
     }
     let count = map.len();
     unmapped.insert(DIVERTED_ATTRS_KEY.to_string(), Value::Object(map));
@@ -1533,6 +1539,25 @@ mod tests {
             collect_diverted_attributes(&co, &["bbox".to_string()], &mut unmapped, "obj-1")
                 .is_err(),
             "a pre-existing reserved diverted key must be a hard error"
+        );
+    }
+
+    #[test]
+    fn collect_diverted_attributes_guards_reserved_member_even_without_diversions() {
+        // sol-review G12: the reserved transport key is illegal in source data
+        // regardless of whether THIS dataset diverts anything. The guard must
+        // run even when there are no diverted names (else a foreign flatten
+        // member `cityparquet:diverted_attributes` reaches `other` and decode
+        // reinterprets it as transport data).
+        let co: CityObject = serde_json::from_value(serde_json::json!({
+            "type": "Building"
+        }))
+        .unwrap();
+        let mut unmapped = serde_json::Map::new();
+        unmapped.insert(DIVERTED_ATTRS_KEY.to_string(), serde_json::json!({"x": 1}));
+        assert!(
+            collect_diverted_attributes(&co, &[], &mut unmapped, "obj-1").is_err(),
+            "the reserved key must be rejected even with no diverted names"
         );
     }
 
