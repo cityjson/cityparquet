@@ -1596,7 +1596,11 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
             a.attributes, b.attributes
         ));
     }
-    if !values_equal(&a.other, &b.other) {
+    // Exact structural equality, NOT `values_equal`: `other` must round-trip
+    // verbatim, so the attribute-oriented tolerances (numeric/date fuzz, and
+    // treating a null-valued member as absent) would hide a real loss here.
+    // serde_json object equality is already key-order-independent.
+    if a.other != b.other {
         out.push(format!(
             "object {id}: unmapped members (other) differ: {} vs {}",
             a.other, b.other

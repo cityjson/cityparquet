@@ -59,6 +59,29 @@ pub(crate) fn unmapped_object_members(co: &CityObject) -> Result<serde_json::Map
     Ok(map)
 }
 
+/// Drop `address[].location` from an `other` payload before it is stored (§5.2,
+/// G9), returning how many were dropped. A CityJSON `address.location` is a
+/// `MultiPoint` whose boundaries index the source vertex pool; CityParquet
+/// discards that pool and regenerates vertices on export, so a stored index
+/// would dangle. Dropping it keeps the exported CityJSON valid — textual
+/// address fields still round-trip — which is preferable to silently emitting
+/// an out-of-range vertex reference. Only the encoder's stored copy is stripped;
+/// the comparator sees the source's `location` and therefore reports the drop.
+fn strip_address_locations(members: &mut serde_json::Map<String, Value>) -> usize {
+    let Some(Value::Array(addresses)) = members.get_mut("address") else {
+        return 0;
+    };
+    let mut dropped = 0;
+    for entry in addresses {
+        if let Value::Object(addr) = entry
+            && addr.remove("location").is_some()
+        {
+            dropped += 1;
+        }
+    }
+    dropped
+}
+
 /// Counters for the row-population edge cases the binding rules ask us to
 /// track rather than surface as errors.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -74,6 +97,11 @@ pub struct EncodeStats {
     /// Surfaces the writer dropped because their exterior ring was
     /// degenerate, counted over STORED geometries.
     pub degenerate_surfaces_dropped: usize,
+    /// `address[].location` MultiPoints dropped from the `other` column (§5.2,
+    /// G9): their boundaries index the source vertex pool, which export
+    /// discards, so keeping them would emit a dangling/out-of-range vertex
+    /// reference — invalid CityJSON. Textual address fields are unaffected.
+    pub address_locations_dropped: usize,
 }
 
 /// Expand `acc` to also cover `bbox` (same union rule as [`crate::scan`]'s).
@@ -1022,7 +1050,8 @@ impl RowWriter {
         // Extension `+members`. Stored verbatim as a JSON object string; null
         // when the object has no such members (so a null count = rows carrying
         // unmapped members).
-        let unmapped = unmapped_object_members(co)?;
+        let mut unmapped = unmapped_object_members(co)?;
+        stats.address_locations_dropped += strip_address_locations(&mut unmapped);
         if unmapped.is_empty() {
             self.other.append_null();
         } else {
@@ -1394,6 +1423,38 @@ pub fn encode_buffered<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // G9 sol-review Finding 1: `address[].location` (a vertex-indexed
+    // MultiPoint) is dropped from the stored `other` so export never emits a
+    // dangling vertex reference; textual address fields survive.
+    #[test]
+    fn strip_address_locations_drops_only_the_location() {
+        let mut members: serde_json::Map<String, Value> = serde_json::from_value(serde_json::json!({
+            "address": [
+                {"Locality": "Helsinki", "location": {"type": "MultiPoint", "boundaries": [20]}},
+                {"Locality": "Espoo"}
+            ],
+            "geographicalExtent": [0, 0, 0, 1, 1, 1]
+        }))
+        .unwrap();
+        let dropped = strip_address_locations(&mut members);
+        assert_eq!(dropped, 1, "exactly one entry carried a location");
+        assert_eq!(
+            members["address"],
+            serde_json::json!([{"Locality": "Helsinki"}, {"Locality": "Espoo"}]),
+            "textual fields kept, location removed"
+        );
+        assert_eq!(
+            members["geographicalExtent"],
+            serde_json::json!([0, 0, 0, 1, 1, 1]),
+            "unrelated members untouched"
+        );
+        assert_eq!(
+            strip_address_locations(&mut members),
+            0,
+            "no locations left to drop the second time"
+        );
+    }
 
     /// No fixture carries MultiSolid/CompositeSolid, so the nested `shells`
     /// branch gets direct coverage here: 2 solids — first with shells of
