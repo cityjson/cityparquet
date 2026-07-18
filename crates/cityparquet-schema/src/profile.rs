@@ -55,7 +55,7 @@ pub fn materials_schema() -> Schema {
 pub fn textures_schema() -> Schema {
     Schema::new(vec![
         Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
+        // No `name`: a CityJSON `Texture` has no `name` member (§11.3, G16).
         Field::new("image_uri", DataType::Utf8, true),
         Field::new("image_data", DataType::Binary, true),
         Field::new("mime_type", DataType::Utf8, true),
@@ -133,7 +133,6 @@ mod tests {
         let t = textures_schema();
         for col in [
             "id",
-            "name",
             "image_uri",
             "image_data",
             "mime_type",
@@ -144,6 +143,11 @@ mod tests {
         ] {
             assert!(t.field_with_name(col).is_ok(), "textures missing {col}");
         }
+        // §11.3/G16: a CityJSON Texture has no `name` member, so no `name` column.
+        assert!(
+            t.field_with_name("name").is_err(),
+            "textures schema must not carry a `name` column (§11.3)"
+        );
         assert!(
             t.field_with_name("vertices_texture").is_err(),
             "textures schema must not carry vertices_texture: UV coordinates are \

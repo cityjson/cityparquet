@@ -242,7 +242,6 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
     let schema = Arc::new(profile::textures_schema());
 
     let mut id = Int64Builder::with_capacity(defs.len());
-    let mut name = StringBuilder::new();
     let mut image_uri = StringBuilder::new();
     let mut mime_type = StringBuilder::new();
     let mut wrap_mode = StringBuilder::new();
@@ -255,7 +254,6 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
             .as_object()
             .ok_or_else(|| schema_err(format!("texture def {idx} is not a JSON object")))?;
         id.append_value(idx as i64);
-        name.append_null(); // see TEXTURE_KNOWN_FIELDS doc: never populated
         push_opt_str(&mut image_uri, obj.get("image"), "image")?;
         push_opt_str(&mut mime_type, obj.get("type"), "type")?;
         push_opt_str(&mut wrap_mode, obj.get("wrapMode"), "wrapMode")?;
@@ -277,7 +275,6 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
 
     let arrays: Vec<ArrayRef> = vec![
         Arc::new(id.finish()),
-        Arc::new(name.finish()),
         Arc::new(image_uri.finish()),
         Arc::new(image_data.finish()),
         Arc::new(mime_type.finish()),
@@ -606,7 +603,13 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
     for batch in reader {
         let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
         let id: &Int64Array = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
-        let name: &StringArray = downcast(get_column(&batch, "name")?.as_ref(), "name")?;
+        // This crate no longer writes a `name` column (§11.3, G16), but a
+        // third-party file may still carry one; read it only when present so a
+        // populated foreign `name` is still restored (M4 tolerance).
+        let name: Option<&StringArray> = match batch.schema().field_with_name("name") {
+            Ok(_) => Some(downcast(get_column(&batch, "name")?.as_ref(), "name")?),
+            Err(_) => None,
+        };
         let image_uri: &StringArray =
             downcast(get_column(&batch, "image_uri")?.as_ref(), "image_uri")?;
         let image_data: &BinaryArray =
@@ -656,10 +659,10 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
             if let Some(v) = opt_json(border_color, row)? {
                 map.insert("borderColor".to_string(), v);
             }
-            // Our own writer never populates this column (see
-            // `write_textures`'s doc), but a third-party file might: restore
-            // it as a plain extra member rather than discard it silently.
-            if let Some(v) = opt_str(name, row) {
+            // Our own writer no longer emits this column (§11.3, G16), but a
+            // third-party file might carry a populated one: restore it as a
+            // plain extra member rather than discard it silently.
+            if let Some(v) = name.and_then(|n| opt_str(n, row)) {
                 map.insert("name".to_string(), Value::String(v));
             }
             merge_other(&mut map, opt_json(other, row)?)?;
@@ -759,6 +762,13 @@ mod tests {
             .unwrap();
         assert_eq!(mime_type.value(0), "JPG");
         assert_eq!(image_uri.value(0), "appearances/Vegetation_Juniper2.jpg");
+
+        // G16 (§11.3): a CityJSON `Texture` has no `name` member, so
+        // `textures.parquet` carries no `name` column.
+        assert!(
+            batch.schema().field_with_name("name").is_err(),
+            "textures.parquet must not declare a `name` column (§11.3)"
+        );
     }
 
     #[test]
@@ -1031,7 +1041,19 @@ mod tests {
     /// so a hand-built batch is the only way to exercise a third-party file
     /// that does — sanctioned per the M4 Codex-review brief for Finding 4).
     fn write_one_texture_row(path: &Path, name: Option<&str>, image_data: Option<&[u8]>) {
-        let schema = Arc::new(profile::textures_schema());
+        // A foreign file that carries a `name` column (this crate no longer
+        // writes one, §11.3/G16): the real schema plus a `name` field after
+        // `id`, matching the array order below.
+        let mut fields: Vec<arrow_schema::Field> = profile::textures_schema()
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        fields.insert(
+            1,
+            arrow_schema::Field::new("name", arrow_schema::DataType::Utf8, true),
+        );
+        let schema = Arc::new(Schema::new(fields));
         let mut id = Int64Builder::new();
         let mut name_b = StringBuilder::new();
         let mut image_uri = StringBuilder::new();
