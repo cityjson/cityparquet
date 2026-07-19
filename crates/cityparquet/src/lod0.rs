@@ -130,6 +130,53 @@ pub(crate) fn newell_normal(ring: &[Point]) -> Option<[f64; 3]> {
     Some(n)
 }
 
+/// The unit normal of a face's exterior ring (its winding decides direction);
+/// `None` for a degenerate ring.
+pub(crate) fn face_normal_unit(face: &Face) -> Option<[f64; 3]> {
+    let n = newell_normal(face.exterior())?;
+    let mag = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    Some([n[0] / mag, n[1] / mag, n[2] / mag])
+}
+
+/// Whether the face's (as-wound) normal points **downward** within a `theta_deg`
+/// cone of `-Z` — the primary ground classifier (§9). Sign of the normal, not
+/// height: on an outward-oriented solid this excludes flat roofs for free, so
+/// `theta_deg` can be generous. A degenerate face is never downward.
+pub(crate) fn is_downward(face: &Face, theta_deg: f64) -> bool {
+    match face_normal_unit(face) {
+        // angle(n, -Z) <= theta  <=>  -n_z >= cos(theta)  <=>  n_z <= -cos(theta)
+        Some(n) => n[2] <= -theta_deg.to_radians().cos(),
+        None => false,
+    }
+}
+
+/// Signed volume enclosed by a set of faces via the divergence theorem
+/// (fan-triangulated exterior rings, tetrahedra from the origin). For a closed
+/// solid with **outward** normals this is positive; a negative result means the
+/// shell is wound inward and its normals should be flipped before ground
+/// classification.
+pub(crate) fn signed_volume(faces: &[Face]) -> f64 {
+    let mut v = 0.0;
+    for face in faces {
+        let ring = face.exterior();
+        if ring.len() < 3 {
+            continue;
+        }
+        let a = ring[0];
+        for i in 1..ring.len() - 1 {
+            let b = ring[i];
+            let c = ring[i + 1];
+            let cross = [
+                b[1] * c[2] - b[2] * c[1],
+                b[2] * c[0] - b[0] * c[2],
+                b[0] * c[1] - b[1] * c[0],
+            ];
+            v += (a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2]) / 6.0;
+        }
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +207,64 @@ mod tests {
         assert!(newell_normal(&[[0., 0., 0.], [1., 1., 1.], [2., 2., 2.]]).is_none());
         // Too few vertices.
         assert!(newell_normal(&[[0., 0., 0.], [1., 0., 0.]]).is_none());
+    }
+
+    /// A unit cube `[0,1]^3` with each face wound so its Newell normal points
+    /// OUTWARD (verified below via `signed_volume` == +1).
+    fn unit_cube() -> Vec<Face> {
+        vec![
+            // bottom z=0, outward -Z
+            Face::from_exterior(vec![[0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]]),
+            // top z=1, outward +Z
+            Face::from_exterior(vec![[0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]]),
+            // front y=0, outward -Y
+            Face::from_exterior(vec![[0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [0., 0., 1.]]),
+            // back y=1, outward +Y
+            Face::from_exterior(vec![[0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]]),
+            // left x=0, outward -X
+            Face::from_exterior(vec![[0., 0., 0.], [0., 0., 1.], [0., 1., 1.], [0., 1., 0.]]),
+            // right x=1, outward +X
+            Face::from_exterior(vec![[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]]),
+        ]
+    }
+
+    #[test]
+    fn downward_classifies_ground_not_roof_or_steep_walls() {
+        let theta = 20.0;
+        // Flat roof: CCW horizontal ring, normal +Z -> not downward.
+        let roof = Face::from_exterior(vec![[0., 0., 3.], [4., 0., 3.], [4., 4., 3.], [0., 4., 3.]]);
+        assert!(!is_downward(&roof, theta));
+        // Ground: CW horizontal ring, normal -Z -> downward.
+        let ground =
+            Face::from_exterior(vec![[0., 0., 0.], [0., 4., 0.], [4., 4., 0.], [4., 0., 0.]]);
+        assert!(is_downward(&ground, theta));
+        // A vertical wall (normal horizontal) -> not downward.
+        let wall = Face::from_exterior(vec![[0., 0., 0.], [4., 0., 0.], [4., 0., 3.], [0., 0., 3.]]);
+        assert!(!is_downward(&wall, theta));
+        // A face tilted 25 deg from horizontal (normal 25 deg from -Z) is
+        // outside the 20 deg cone -> not downward.
+        let a = 25.0_f64.to_radians();
+        let tilt = Face::from_exterior(vec![
+            [0., 0., 0.],
+            [0., 4., 0.],
+            [4., 4., 4.0 * a.tan()],
+            [4., 0., 4.0 * a.tan()],
+        ]);
+        assert!(!is_downward(&tilt, theta), "25deg tilt must be excluded at theta=20");
+    }
+
+    #[test]
+    fn signed_volume_of_outward_cube_is_plus_one_and_flips_when_reversed() {
+        let cube = unit_cube();
+        assert!((signed_volume(&cube) - 1.0).abs() < 1e-9);
+        // Reverse every ring: normals flip inward, volume negates.
+        let reversed: Vec<Face> = cube
+            .iter()
+            .map(|f| Face {
+                rings: f.rings.iter().map(|r| r.iter().rev().copied().collect()).collect(),
+            })
+            .collect();
+        assert!((signed_volume(&reversed) + 1.0).abs() < 1e-9);
     }
 
     #[test]
