@@ -177,6 +177,119 @@ pub(crate) fn signed_volume(faces: &[Face]) -> f64 {
     v
 }
 
+/// Snap a point to the `snap` grid, as integer cell coordinates — the identity
+/// used for shared-edge adjacency (tessellated faces share exact vertices up to
+/// quantisation).
+fn snap_key(p: Point, snap: f64) -> (i64, i64, i64) {
+    (
+        (p[0] / snap).round() as i64,
+        (p[1] / snap).round() as i64,
+        (p[2] / snap).round() as i64,
+    )
+}
+
+/// Select the indices of `faces` that form the object's **ground**, assuming the
+/// faces are outward-oriented (the caller flips an inward-wound solid first, via
+/// [`signed_volume`]). Downward faces (§9) are the candidates; the lowest
+/// edge-connected component seeds the ground, and further downward components
+/// are accepted while their minimum Z stays within `h_step` of the accepted
+/// ground (so terraces join but balcony soffits, ~one storey up, do not).
+/// Returned indices are ascending.
+pub(crate) fn select_ground_faces(faces: &[Face], opts: &Lod0Options) -> Vec<usize> {
+    use std::collections::{HashMap, HashSet};
+
+    let candidates: Vec<usize> = (0..faces.len())
+        .filter(|&i| is_downward(&faces[i], opts.theta_deg))
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let cand_set: HashSet<usize> = candidates.iter().copied().collect();
+
+    // Shared-edge adjacency among candidates (two consecutive shared vertices).
+    let mut edge_faces: HashMap<((i64, i64, i64), (i64, i64, i64)), Vec<usize>> = HashMap::new();
+    for &fi in &candidates {
+        let ring = faces[fi].exterior();
+        for k in 0..ring.len() {
+            let a = snap_key(ring[k], opts.snap);
+            let b = snap_key(ring[(k + 1) % ring.len()], opts.snap);
+            let key = if a <= b { (a, b) } else { (b, a) };
+            edge_faces.entry(key).or_default().push(fi);
+        }
+    }
+    let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
+    for fs in edge_faces.values() {
+        for i in 0..fs.len() {
+            for j in (i + 1)..fs.len() {
+                if fs[i] != fs[j] {
+                    adj.entry(fs[i]).or_default().push(fs[j]);
+                    adj.entry(fs[j]).or_default().push(fs[i]);
+                }
+            }
+        }
+    }
+
+    // Connected components of candidate faces.
+    let mut visited: HashSet<usize> = HashSet::new();
+    let mut components: Vec<Vec<usize>> = Vec::new();
+    for &start in &candidates {
+        if visited.contains(&start) {
+            continue;
+        }
+        let mut comp = Vec::new();
+        let mut stack = vec![start];
+        while let Some(x) = stack.pop() {
+            if !visited.insert(x) {
+                continue;
+            }
+            comp.push(x);
+            if let Some(ns) = adj.get(&x) {
+                for &n in ns {
+                    if cand_set.contains(&n) && !visited.contains(&n) {
+                        stack.push(n);
+                    }
+                }
+            }
+        }
+        components.push(comp);
+    }
+
+    let z_range = |comp: &[usize]| -> (f64, f64) {
+        let mut zmin = f64::INFINITY;
+        let mut zmax = f64::NEG_INFINITY;
+        for &fi in comp {
+            for r in &faces[fi].rings {
+                for p in r {
+                    zmin = zmin.min(p[2]);
+                    zmax = zmax.max(p[2]);
+                }
+            }
+        }
+        (zmin, zmax)
+    };
+
+    // Lowest component seeds; accept further components as a rising staircase.
+    let mut comps: Vec<(Vec<usize>, f64, f64)> = components
+        .into_iter()
+        .map(|c| {
+            let (lo, hi) = z_range(&c);
+            (c, lo, hi)
+        })
+        .collect();
+    comps.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut accepted: Vec<usize> = Vec::new();
+    let mut max_z = f64::NEG_INFINITY;
+    for (idx, (comp, cmin, cmax)) in comps.iter().enumerate() {
+        if idx == 0 || *cmin <= max_z + opts.h_step {
+            accepted.extend(comp.iter().copied());
+            max_z = max_z.max(*cmax);
+        }
+    }
+    accepted.sort_unstable();
+    accepted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +378,67 @@ mod tests {
             })
             .collect();
         assert!((signed_volume(&reversed) + 1.0).abs() < 1e-9);
+    }
+
+    /// A horizontal, downward-wound (normal -Z) square at height `z`, offset by
+    /// `(dx, dy)`, side 2.
+    fn ground_square(dx: f64, dy: f64, z: f64) -> Face {
+        Face::from_exterior(vec![
+            [dx, dy, z],
+            [dx, dy + 2., z],
+            [dx + 2., dy + 2., z],
+            [dx + 2., dy, z],
+        ])
+    }
+
+    #[test]
+    fn sloped_ground_grows_across_the_shared_edge() {
+        // Two downward faces sharing the edge x=2 (y in [0,2]); B ramps up to
+        // z=0.3 over 2 m (~8.5deg, inside the cone). Both are ground.
+        let a = ground_square(0., 0., 0.); // shares edge (2,0,0)-(2,2,0)
+        let b = Face::from_exterior(vec![
+            [2., 0., 0.],
+            [2., 2., 0.],
+            [4., 2., 0.3],
+            [4., 0., 0.3],
+        ]);
+        let sel = select_ground_faces(&[a, b], &Lod0Options::default());
+        assert_eq!(sel, vec![0, 1]);
+    }
+
+    #[test]
+    fn terrace_within_h_step_is_accepted_beyond_it_is_not() {
+        let opts = Lod0Options::default(); // h_step = 1.5
+        // Two disconnected ground components: base at z=0, terrace at z=1.0.
+        let near = select_ground_faces(
+            &[ground_square(0., 0., 0.), ground_square(5., 0., 1.0)],
+            &opts,
+        );
+        assert_eq!(near, vec![0, 1], "terrace 1.0 m up is within h_step");
+        // Terrace at z=2.0 is beyond h_step -> only the base.
+        let far = select_ground_faces(
+            &[ground_square(0., 0., 0.), ground_square(5., 0., 2.0)],
+            &opts,
+        );
+        assert_eq!(far, vec![0], "terrace 2.0 m up is beyond h_step");
+    }
+
+    #[test]
+    fn balcony_soffit_one_storey_up_is_rejected() {
+        // A downward, horizontal soffit 2.7 m up, not edge-connected to ground.
+        let ground = ground_square(0., 0., 0.);
+        let soffit = ground_square(0., 3., 2.7);
+        let sel = select_ground_faces(&[ground, soffit], &Lod0Options::default());
+        assert_eq!(sel, vec![0], "a cantilever soffit is not ground");
+    }
+
+    #[test]
+    fn flat_roof_is_never_selected() {
+        // Roof: CCW horizontal ring -> normal +Z -> not a candidate.
+        let roof = Face::from_exterior(vec![[0., 0., 3.], [4., 0., 3.], [4., 4., 3.], [0., 4., 3.]]);
+        let ground = ground_square(0., 0., 0.);
+        let sel = select_ground_faces(&[roof, ground], &Lod0Options::default());
+        assert_eq!(sel, vec![1], "only the ground face, never the roof");
     }
 
     #[test]
