@@ -140,7 +140,9 @@ fn synthesis_is_idempotent_through_a_round_trip() {
     })
     .unwrap();
     assert!(
-        std::fs::read_to_string(&export1).unwrap().contains("\"lod\":\"0\""),
+        std::fs::read_to_string(&export1)
+            .unwrap()
+            .contains("\"lod\":\"0\""),
         "synthesised LoD0 is exported as a real lod 0 geometry"
     );
 

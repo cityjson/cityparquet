@@ -452,9 +452,10 @@ pub fn faces_from_geometry(
     // members must not be flipped by one combined-volume decision. A
     // MultiSurface is one non-solid group (orientation is meaningless there).
     let (solids, is_solid): (Vec<Vec<Vec<Vec<usize>>>>, bool) = match geom.thetype {
-        GeometryType::MultiSurface | GeometryType::CompositeSurface => {
-            (vec![serde_json::from_value(geom.boundaries.clone())?], false)
-        }
+        GeometryType::MultiSurface | GeometryType::CompositeSurface => (
+            vec![serde_json::from_value(geom.boundaries.clone())?],
+            false,
+        ),
         GeometryType::Solid => {
             let shells: Vec<Vec<Vec<Vec<usize>>>> =
                 serde_json::from_value(geom.boundaries.clone())?;
@@ -480,8 +481,7 @@ pub fn faces_from_geometry(
         for surf in surfs {
             let mut rings = Vec::with_capacity(surf.len());
             for ring in surf {
-                let pts: crate::Result<Vec<Point>> =
-                    ring.iter().map(|&i| pool.coord(i)).collect();
+                let pts: crate::Result<Vec<Point>> = ring.iter().map(|&i| pool.coord(i)).collect();
                 rings.push(pts?);
             }
             group.push(Face { rings });
@@ -736,9 +736,7 @@ pub(crate) fn assemble_footprint(ground: &[&Face], opts: &Lod0Options) -> Option
                 } else {
                     zmap.get(&((c.x / snap).round() as i64, (c.y / snap).round() as i64))
                         .copied()
-                        .unwrap_or_else(|| {
-                            plane.map_or(z_min, |[a, b, c0]| a * c.x + b * c.y + c0)
-                        })
+                        .unwrap_or_else(|| plane.map_or(z_min, |[a, b, c0]| a * c.x + b * c.y + c0))
                 };
                 [c.x + ox, c.y + oy, z]
             })
@@ -827,7 +825,10 @@ mod tests {
         assert_eq!(ground.len(), 2, "one downward ground face per cube");
         for &fi in &ground {
             for p in faces[fi].exterior() {
-                assert!(p[2].abs() < 1e-9, "ground faces sit at z=0, not a flipped roof");
+                assert!(
+                    p[2].abs() < 1e-9,
+                    "ground faces sit at z=0, not a flipped roof"
+                );
             }
         }
     }
@@ -866,7 +867,12 @@ mod tests {
     fn plane_reject_excludes_a_nonplanar_downward_face() {
         // A saddle: its average normal is downward, but it is 0.05 m off any
         // plane, so a badly non-planar "ground" must be rejected (§9).
-        let saddle = Face::from_exterior(vec![[0., 0., 0.], [0., 4., 0.1], [4., 4., 0.], [4., 0., 0.1]]);
+        let saddle = Face::from_exterior(vec![
+            [0., 0., 0.],
+            [0., 4., 0.1],
+            [4., 4., 0.],
+            [4., 0., 0.1],
+        ]);
         assert!(is_downward(&saddle, 20.0));
         assert!(max_plane_deviation(&saddle) > 0.02);
         assert_eq!(
@@ -901,13 +907,19 @@ mod tests {
             flatten: Some(FlattenMode::Percentile5),
             ..Lod0Options::default()
         };
-        let out = assemble_footprint(&[&ground_square(0., 0., 0.), &ground_square(5., 0., 1.0)], &opts)
-            .unwrap();
+        let out = assemble_footprint(
+            &[&ground_square(0., 0., 0.), &ground_square(5., 0., 1.0)],
+            &opts,
+        )
+        .unwrap();
         let zs: Vec<f64> = out
             .iter()
             .flat_map(|f| f.rings.iter().flatten().map(|p| p[2]))
             .collect();
-        assert!(zs.iter().all(|&z| (z - zs[0]).abs() < 1e-9), "flatten -> one Z");
+        assert!(
+            zs.iter().all(|&z| (z - zs[0]).abs() < 1e-9),
+            "flatten -> one Z"
+        );
     }
 
     #[test]
@@ -974,7 +986,10 @@ mod tests {
         let ext = vec![[0., 0., 1.], [0., 10., 1.], [10., 10., 1.], [10., 0., 1.]];
         let solid = Face::from_exterior(ext.clone());
         let holed = Face {
-            rings: vec![ext, vec![[3., 3., 1.], [7., 3., 1.], [7., 7., 1.], [3., 7., 1.]]],
+            rings: vec![
+                ext,
+                vec![[3., 3., 1.], [7., 3., 1.], [7., 7., 1.], [3., 7., 1.]],
+            ],
         };
         assert!(signed_volume(&[holed]).abs() < signed_volume(&[solid]).abs());
     }

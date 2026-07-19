@@ -1262,13 +1262,15 @@ impl RowWriter {
         // is LoD0's column suffix (`lod0`), the same key `accumulate_geometry`
         // would use for a real LoD0.
         if let Some(opts) = &self.synthesize_lod0 {
-            let key = Lod::parse("0").expect("literal 0 is a valid LoD").column_suffix();
-            if !acc.slots.contains_key(&key) {
-                if let Some((data, bbox)) = synthesize_footprint(co, &pool, opts)? {
-                    union_bbox(&mut acc.own_bbox, bbox);
-                    acc.slots.insert(key, data);
-                    stats.synthesized_lod0_footprints += 1;
-                }
+            let key = Lod::parse("0")
+                .expect("literal 0 is a valid LoD")
+                .column_suffix();
+            if !acc.slots.contains_key(&key)
+                && let Some((data, bbox)) = synthesize_footprint(co, &pool, opts)?
+            {
+                union_bbox(&mut acc.own_bbox, bbox);
+                acc.slots.insert(key, data);
+                stats.synthesized_lod0_footprints += 1;
             }
         }
 
