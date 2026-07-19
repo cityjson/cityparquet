@@ -290,6 +290,62 @@ pub(crate) fn select_ground_faces(faces: &[Face], opts: &Lod0Options) -> Vec<usi
     accepted
 }
 
+/// Synthesise an LoD0 footprint from a set of **outward-oriented** faces (the
+/// caller flips an inward-wound solid first — see the cjseq adapter). Order:
+/// **GroundSurface semantics → geometric fallback → `None`**. `semantic_ground`,
+/// when given, is a mask parallel to `faces` marking `GroundSurface` faces; if
+/// any is set and those faces assemble, that footprint wins. Otherwise the
+/// geometric [`select_ground_faces`] path runs. Returns `None` when neither
+/// yields ground, unless `opts.fallback` opts into a projected silhouette
+/// (a roofprint, flagged by the caller). Never fabricates a convex hull.
+pub fn synthesize_lod0(
+    faces: &[Face],
+    semantic_ground: Option<&[bool]>,
+    opts: &Lod0Options,
+) -> Option<Footprint> {
+    // Semantics-first.
+    if let Some(mask) = semantic_ground {
+        let ground: Vec<&Face> = faces
+            .iter()
+            .zip(mask.iter())
+            .filter_map(|(f, &g)| g.then_some(f))
+            .collect();
+        if !ground.is_empty() {
+            if let Some(surfaces) = assemble_footprint(&ground, opts) {
+                return Some(Footprint {
+                    surfaces,
+                    source: Lod0Source::GroundSemantics,
+                });
+            }
+        }
+    }
+
+    // Geometric fallback.
+    let sel = select_ground_faces(faces, opts);
+    if !sel.is_empty() {
+        let ground: Vec<&Face> = sel.iter().map(|&i| &faces[i]).collect();
+        if let Some(surfaces) = assemble_footprint(&ground, opts) {
+            return Some(Footprint {
+                surfaces,
+                source: Lod0Source::Geometric,
+            });
+        }
+    }
+
+    // Opt-in last resort: the 2D silhouette of ALL faces (a roofprint).
+    if opts.fallback == Some(Fallback::ProjectedSilhouette) {
+        let all: Vec<&Face> = faces.iter().collect();
+        if let Some(surfaces) = assemble_footprint(&all, opts) {
+            return Some(Footprint {
+                surfaces,
+                source: Lod0Source::Geometric,
+            });
+        }
+    }
+
+    None
+}
+
 /// Snap-grid integer cell of a coordinate relative to a local origin.
 fn tcell(v: f64, origin: f64, snap: f64) -> i64 {
     ((v - origin) / snap).round() as i64
@@ -613,6 +669,60 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A CCW (upward-normal) horizontal square at height `z` — a roof.
+    fn roof_square(z: f64) -> Face {
+        Face::from_exterior(vec![[0., 0., z], [2., 0., z], [2., 2., z], [0., 2., z]])
+    }
+
+    /// A vertical wall face (normal horizontal) — never ground.
+    fn wall(dx: f64) -> Face {
+        Face::from_exterior(vec![
+            [dx, 0., 0.],
+            [dx + 2., 0., 0.],
+            [dx + 2., 0., 3.],
+            [dx, 0., 3.],
+        ])
+    }
+
+    #[test]
+    fn synthesize_prefers_ground_semantics() {
+        let faces = vec![ground_square(0., 0., 0.), roof_square(3.)];
+        let mask = [true, false];
+        let fp = synthesize_lod0(&faces, Some(&mask), &Lod0Options::default()).unwrap();
+        assert_eq!(fp.source, Lod0Source::GroundSemantics);
+        assert_eq!(fp.surfaces.len(), 1);
+        assert!((signed_area_xy(&fp.surfaces[0].rings[0]).abs() - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn synthesize_falls_back_to_geometric_without_semantics() {
+        let faces = vec![ground_square(0., 0., 0.), roof_square(3.)];
+        let fp = synthesize_lod0(&faces, None, &Lod0Options::default()).unwrap();
+        assert_eq!(fp.source, Lod0Source::Geometric);
+        assert!((signed_area_xy(&fp.surfaces[0].rings[0]).abs() - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn synthesize_returns_none_when_no_ground() {
+        // Only vertical walls: no downward face, no semantics -> None.
+        let faces = vec![wall(0.), wall(5.)];
+        assert!(synthesize_lod0(&faces, None, &Lod0Options::default()).is_none());
+    }
+
+    #[test]
+    fn projected_silhouette_fallback_is_opt_in() {
+        // A lone roof has no downward ground; default -> None.
+        let faces = vec![roof_square(3.)];
+        assert!(synthesize_lod0(&faces, None, &Lod0Options::default()).is_none());
+        // With the silhouette fallback, its outline is returned (a roofprint).
+        let opts = Lod0Options {
+            fallback: Some(Fallback::ProjectedSilhouette),
+            ..Lod0Options::default()
+        };
+        let fp = synthesize_lod0(&faces, None, &opts).unwrap();
+        assert!((signed_area_xy(&fp.surfaces[0].rings[0]).abs() - 4.0).abs() < 1e-6);
     }
 
     #[test]
