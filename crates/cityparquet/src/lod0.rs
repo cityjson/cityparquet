@@ -13,7 +13,6 @@
 //! from CityJSON/WKB; thin adapters bridge `cjseq::Geometry` at the edges.
 
 use cjseq::{Geometry, GeometryType};
-use serde_json::Value;
 
 use crate::wkb_write::VertexPool;
 
@@ -163,23 +162,56 @@ pub(crate) fn is_downward(face: &Face, theta_deg: f64) -> bool {
 pub(crate) fn signed_volume(faces: &[Face]) -> f64 {
     let mut v = 0.0;
     for face in faces {
-        let ring = face.exterior();
-        if ring.len() < 3 {
-            continue;
-        }
-        let a = ring[0];
-        for i in 1..ring.len() - 1 {
-            let b = ring[i];
-            let c = ring[i + 1];
-            let cross = [
-                b[1] * c[2] - b[2] * c[1],
-                b[2] * c[0] - b[0] * c[2],
-                b[0] * c[1] - b[1] * c[0],
-            ];
-            v += (a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2]) / 6.0;
+        // Every ring contributes: an interior ring (hole) is wound opposite to
+        // the exterior, so its fan subtracts the hole's volume — keeping the sum
+        // faithful to the closed boundary of a solid with through-holes.
+        for ring in &face.rings {
+            if ring.len() < 3 {
+                continue;
+            }
+            let a = ring[0];
+            for i in 1..ring.len() - 1 {
+                let b = ring[i];
+                let c = ring[i + 1];
+                let cross = [
+                    b[1] * c[2] - b[2] * c[1],
+                    b[2] * c[0] - b[0] * c[2],
+                    b[0] * c[1] - b[1] * c[0],
+                ];
+                v += (a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2]) / 6.0;
+            }
         }
     }
     v
+}
+
+/// Maximum distance from a face's vertices to the best-fit plane through its
+/// exterior ring (Newell normal + centroid). `0.0` for a degenerate face.
+/// Used as a planarity sanity guard (§9): a face far from planar is not ground.
+pub(crate) fn max_plane_deviation(face: &Face) -> f64 {
+    let Some(n) = face_normal_unit(face) else {
+        return 0.0;
+    };
+    let ext = face.exterior();
+    let mut c = [0.0; 3];
+    for p in ext {
+        for k in 0..3 {
+            c[k] += p[k];
+        }
+    }
+    let inv = 1.0 / ext.len() as f64;
+    let centroid = [c[0] * inv, c[1] * inv, c[2] * inv];
+    let mut max = 0.0f64;
+    for ring in &face.rings {
+        for p in ring {
+            let d = ((p[0] - centroid[0]) * n[0]
+                + (p[1] - centroid[1]) * n[1]
+                + (p[2] - centroid[2]) * n[2])
+                .abs();
+            max = max.max(d);
+        }
+    }
+    max
 }
 
 /// A point snapped to integer grid cells (the vertex identity for adjacency).
@@ -208,8 +240,13 @@ fn snap_key(p: Point, snap: f64) -> Cell {
 pub(crate) fn select_ground_faces(faces: &[Face], opts: &Lod0Options) -> Vec<usize> {
     use std::collections::{HashMap, HashSet};
 
+    // Candidates: downward-facing AND acceptably planar (a badly non-planar
+    // face — e.g. a saddle — has a meaningless "ground" plane, §9).
     let candidates: Vec<usize> = (0..faces.len())
-        .filter(|&i| is_downward(&faces[i], opts.theta_deg))
+        .filter(|&i| {
+            is_downward(&faces[i], opts.theta_deg)
+                && max_plane_deviation(&faces[i]) <= opts.plane_reject
+        })
         .collect();
     if candidates.is_empty() {
         return Vec::new();
@@ -288,10 +325,13 @@ pub(crate) fn select_ground_faces(faces: &[Face], opts: &Lod0Options) -> Vec<usi
         .collect();
     comps.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
+    // The lowest component and any within `eps_z` of it all seed the ground;
+    // then a rising staircase joins further components within `h_step`.
+    let lowest = comps.first().map(|c| c.1).unwrap_or(f64::INFINITY);
     let mut accepted: Vec<usize> = Vec::new();
     let mut max_z = f64::NEG_INFINITY;
     for (idx, (comp, cmin, cmax)) in comps.iter().enumerate() {
-        if idx == 0 || *cmin <= max_z + opts.h_step {
+        if idx == 0 || *cmin <= lowest + opts.eps_z || *cmin <= max_z + opts.h_step {
             accepted.extend(comp.iter().copied());
             max_z = max_z.max(*cmax);
         }
@@ -370,34 +410,23 @@ fn flip_faces(faces: &[Face]) -> Vec<Face> {
         .collect()
 }
 
-/// Depth-first collect the integer (or null) leaves of a CityJSON `values`
-/// tree, in document order — this matches the surface order the boundaries are
-/// flattened into, so leaf `k` is the semantic surface index of face `k`.
-fn collect_semantic_leaves(v: &Value, out: &mut Vec<Option<usize>>) {
-    match v {
-        Value::Array(a) => {
-            for x in a {
-                collect_semantic_leaves(x, out);
-            }
-        }
-        Value::Number(n) => out.push(n.as_u64().map(|u| u as usize)),
-        Value::Null => out.push(None),
-        _ => {}
-    }
-}
-
 /// A per-face `GroundSurface` mask from a geometry's semantics, aligned to the
-/// flattened face order; `None` when there are no ground-labelled faces.
+/// flattened face order; `None` when there are no ground-labelled faces. Uses
+/// the encoder's boundary-aware [`crate::encode::flatten_values`] so a `null`
+/// shorthand for a whole shell/solid expands to one entry per face beneath it —
+/// a naive leaf-collect would shift later labels onto the wrong faces.
 fn ground_mask(geom: &Geometry, face_count: usize) -> Option<Vec<bool>> {
     let sem = geom.semantics.as_ref()?;
     let surfaces = sem.get("surfaces")?.as_array()?;
-    let mut leaves = Vec::new();
-    collect_semantic_leaves(sem.get("values")?, &mut leaves);
+    let values = sem.get("values")?;
+    let depth = crate::encode::values_nesting_depth(&geom.thetype);
+    let mut flat = Vec::new();
+    crate::encode::flatten_values(values, &geom.boundaries, depth, &mut flat);
     let mut mask = vec![false; face_count];
-    for (k, leaf) in leaves.iter().enumerate().take(face_count) {
-        if let Some(si) = leaf
+    for (k, v) in flat.iter().enumerate().take(face_count) {
+        if let Some(si) = v.as_u64()
             && surfaces
-                .get(*si)
+                .get(si as usize)
                 .and_then(|s| s.get("type"))
                 .and_then(|t| t.as_str())
                 == Some("GroundSurface")
@@ -418,39 +447,54 @@ pub fn faces_from_geometry(
     geom: &Geometry,
     pool: &VertexPool,
 ) -> crate::Result<(Vec<Face>, Option<Vec<bool>>)> {
-    // Surfaces in document order (shells/solids flattened), and whether the
-    // source is a closed solid (so orientation is meaningful).
-    let (surfaces, is_solid): (Vec<Vec<Vec<usize>>>, bool) = match geom.thetype {
+    // Group surfaces by SOLID (document order), so each closed solid is
+    // oriented INDEPENDENTLY — a MultiSolid mixing outward- and inward-wound
+    // members must not be flipped by one combined-volume decision. A
+    // MultiSurface is one non-solid group (orientation is meaningless there).
+    let (solids, is_solid): (Vec<Vec<Vec<Vec<usize>>>>, bool) = match geom.thetype {
         GeometryType::MultiSurface | GeometryType::CompositeSurface => {
-            (serde_json::from_value(geom.boundaries.clone())?, false)
+            (vec![serde_json::from_value(geom.boundaries.clone())?], false)
         }
         GeometryType::Solid => {
             let shells: Vec<Vec<Vec<Vec<usize>>>> =
                 serde_json::from_value(geom.boundaries.clone())?;
-            (shells.into_iter().flatten().collect(), true)
+            (vec![shells.into_iter().flatten().collect()], true)
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
             let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
                 serde_json::from_value(geom.boundaries.clone())?;
-            (solids.into_iter().flatten().flatten().collect(), true)
+            (
+                solids
+                    .into_iter()
+                    .map(|s| s.into_iter().flatten().collect())
+                    .collect(),
+                true,
+            )
         }
         _ => return Ok((Vec::new(), None)),
     };
 
-    let mut faces = Vec::with_capacity(surfaces.len());
-    for surf in &surfaces {
-        let mut rings = Vec::with_capacity(surf.len());
-        for ring in surf {
-            let pts: crate::Result<Vec<Point>> = ring.iter().map(|&i| pool.coord(i)).collect();
-            rings.push(pts?);
+    let mut faces = Vec::new();
+    for surfs in &solids {
+        let mut group = Vec::with_capacity(surfs.len());
+        for surf in surfs {
+            let mut rings = Vec::with_capacity(surf.len());
+            for ring in surf {
+                let pts: crate::Result<Vec<Point>> =
+                    ring.iter().map(|&i| pool.coord(i)).collect();
+                rings.push(pts?);
+            }
+            group.push(Face { rings });
         }
-        faces.push(Face { rings });
+        if is_solid && signed_volume(&group) < 0.0 {
+            group = flip_faces(&group);
+        }
+        faces.extend(group);
     }
 
+    // The mask is aligned to the pooled face order (same document order the
+    // groups were concatenated in), which flipping winding does not disturb.
     let mask = ground_mask(geom, faces.len());
-    if is_solid && signed_volume(&faces) < 0.0 {
-        faces = flip_faces(&faces);
-    }
     Ok((faces, mask))
 }
 
@@ -473,16 +517,36 @@ pub fn footprint_to_geometry(fp: &Footprint) -> (Vec<Vec<f64>>, Geometry) {
             verts.len() - 1
         })
     };
-    let surfaces: Vec<Vec<Vec<usize>>> = fp
-        .surfaces
-        .iter()
-        .map(|face| {
-            face.rings
-                .iter()
-                .map(|ring| ring.iter().map(|&p| push(p)).collect())
-                .collect()
-        })
-        .collect();
+    // De-dup snaps distinct-but-near vertices to one index; drop the
+    // consecutive duplicate indices that creates (and wrap-around), then drop a
+    // ring left with < 3 vertices and a face left with no exterior ring, so the
+    // emitted geometry never carries a degenerate ring (an interior ring that
+    // collapses is simply dropped; a collapsed exterior drops the whole face).
+    let mut surfaces: Vec<Vec<Vec<usize>>> = Vec::with_capacity(fp.surfaces.len());
+    for face in &fp.surfaces {
+        let mut rings: Vec<Vec<usize>> = Vec::with_capacity(face.rings.len());
+        for ring in &face.rings {
+            let mut idx: Vec<usize> = Vec::with_capacity(ring.len());
+            for &p in ring {
+                let i = push(p);
+                if idx.last() != Some(&i) {
+                    idx.push(i);
+                }
+            }
+            while idx.len() >= 2 && idx.first() == idx.last() {
+                idx.pop();
+            }
+            if idx.len() >= 3 {
+                rings.push(idx);
+            } else if rings.is_empty() {
+                // The exterior ring collapsed — this face contributes nothing.
+                break;
+            }
+        }
+        if !rings.is_empty() {
+            surfaces.push(rings);
+        }
+    }
     let geom = Geometry {
         thetype: GeometryType::MultiSurface,
         lod: Some("0".to_string()),
@@ -499,6 +563,67 @@ pub fn footprint_to_geometry(fp: &Footprint) -> (Vec<Vec<f64>>, Geometry) {
 /// Snap-grid integer cell of a coordinate relative to a local origin.
 fn tcell(v: f64, origin: f64, snap: f64) -> i64 {
     ((v - origin) / snap).round() as i64
+}
+
+/// Solve a 3x3 linear system by Cramer's rule; `None` when near-singular.
+fn solve3(m: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
+    let det = |a: [[f64; 3]; 3]| {
+        a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+            - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+            + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+    };
+    let d = det(m);
+    if d.abs() < 1e-12 {
+        return None;
+    }
+    let col = |m: [[f64; 3]; 3], c: usize, b: [f64; 3]| {
+        let mut r = m;
+        for (i, bi) in b.iter().enumerate() {
+            r[i][c] = *bi;
+        }
+        r
+    };
+    Some([
+        det(col(m, 0, b)) / d,
+        det(col(m, 1, b)) / d,
+        det(col(m, 2, b)) / d,
+    ])
+}
+
+/// Least-squares plane `z ≈ a·x + b·y + c` through `pts`; `None` when the points
+/// are too few or degenerate (collinear / single XY) for a unique plane. Used to
+/// give a union-created footprint vertex a sensible Z (exact for coplanar
+/// ground, a good approximation for sloped ground).
+fn fit_plane(pts: &[(f64, f64, f64)]) -> Option<[f64; 3]> {
+    if pts.len() < 3 {
+        return None;
+    }
+    let n = pts.len() as f64;
+    let (mut sxx, mut sxy, mut sx) = (0.0, 0.0, 0.0);
+    let (mut syy, mut sy) = (0.0, 0.0);
+    let (mut sxz, mut syz, mut sz) = (0.0, 0.0, 0.0);
+    for &(x, y, z) in pts {
+        sxx += x * x;
+        sxy += x * y;
+        sx += x;
+        syy += y * y;
+        sy += y;
+        sxz += x * z;
+        syz += y * z;
+        sz += z;
+    }
+    solve3(
+        [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, n]],
+        [sxz, syz, sz],
+    )
+}
+
+/// The 5th-percentile of `zs` (a robust minimum), for `FlattenMode::Percentile5`.
+fn percentile5(zs: &[f64]) -> f64 {
+    let mut v: Vec<f64> = zs.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = (((v.len().max(1) - 1) as f64) * 0.05).round() as usize;
+    v[idx.min(v.len() - 1)]
 }
 
 /// Assemble ground faces into a valid, GeoParquet-legal footprint: 2D-union the
@@ -534,16 +659,27 @@ pub(crate) fn assemble_footprint(ground: &[&Face], opts: &Lod0Options) -> Option
         return None;
     }
 
-    // Pass 1: XY snap-cell -> source Z, for re-draping after the union.
+    // Pass 1: XY snap-cell -> source Z (re-draping after the union), plus the
+    // translated (x, y, z) points for the best-fit ground plane.
     let mut zmap: HashMap<(i64, i64), f64> = HashMap::new();
+    let mut plane_pts: Vec<(f64, f64, f64)> = Vec::new();
     for f in ground {
         for r in &f.rings {
             for p in r {
                 zmap.insert((tcell(p[0], ox, snap), tcell(p[1], oy, snap)), p[2]);
+                plane_pts.push((p[0] - ox, p[1] - oy, p[2]));
             }
         }
     }
-    let z_fallback = zmap.values().copied().fold(f64::INFINITY, f64::min);
+    let z_min = zmap.values().copied().fold(f64::INFINITY, f64::min);
+    // Fallback Z for a union-created vertex: the fitted ground plane (exact when
+    // coplanar), else the lowest ground Z.
+    let plane = fit_plane(&plane_pts);
+    // `FlattenMode::Percentile5`: a single robust-minimum ground plane.
+    let flat_z = opts.flatten.map(|FlattenMode::Percentile5| {
+        let zs: Vec<f64> = plane_pts.iter().map(|p| p.2).collect();
+        percentile5(&zs)
+    });
 
     // Pass 2: build translated, snapped, CLOSED geo rings.
     let build_ring = |ring: &[Point]| -> LineString<f64> {
@@ -595,10 +731,15 @@ pub(crate) fn assemble_footprint(ground: &[&Face], opts: &Lod0Options) -> Option
         (0..n)
             .map(|i| {
                 let c = coords[i];
-                let z = zmap
-                    .get(&((c.x / snap).round() as i64, (c.y / snap).round() as i64))
-                    .copied()
-                    .unwrap_or(z_fallback);
+                let z = if let Some(fz) = flat_z {
+                    fz
+                } else {
+                    zmap.get(&((c.x / snap).round() as i64, (c.y / snap).round() as i64))
+                        .copied()
+                        .unwrap_or_else(|| {
+                            plane.map_or(z_min, |[a, b, c0]| a * c.x + b * c.y + c0)
+                        })
+                };
                 [c.x + ox, c.y + oy, z]
             })
             .collect()
@@ -618,6 +759,225 @@ pub(crate) fn assemble_footprint(ground: &[&Face], opts: &Lod0Options) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- sol-review regression tests ----
+
+    /// A box's 8 corners scaled by `s`, offset by `ox` in X (bottom 0..3, top 4..7).
+    fn box_verts(ox: f64, s: f64) -> Vec<Vec<f64>> {
+        vec![
+            vec![ox, 0., 0.],
+            vec![ox + s, 0., 0.],
+            vec![ox + s, s, 0.],
+            vec![ox, s, 0.],
+            vec![ox, 0., s],
+            vec![ox + s, 0., s],
+            vec![ox + s, s, s],
+            vec![ox, s, s],
+        ]
+    }
+
+    /// The 6 outward-wound faces of a box whose corners start at `base` (matching
+    /// `unit_cube`'s winding, verified +volume). `reversed` flips to inward.
+    fn box_faces(base: usize, reversed: bool) -> Vec<Vec<Vec<usize>>> {
+        let mut faces: Vec<Vec<usize>> = vec![
+            vec![0, 3, 2, 1], // bottom -Z
+            vec![4, 5, 6, 7], // top +Z
+            vec![0, 1, 5, 4], // front -Y
+            vec![3, 7, 6, 2], // back +Y
+            vec![0, 4, 7, 3], // left -X
+            vec![1, 2, 6, 5], // right +X
+        ];
+        for f in &mut faces {
+            for i in f.iter_mut() {
+                *i += base;
+            }
+            if reversed {
+                f.reverse();
+            }
+        }
+        faces.into_iter().map(|ring| vec![ring]).collect()
+    }
+
+    #[test]
+    fn faces_from_geometry_orients_each_solid_of_a_multisolid_independently() {
+        // sol finding 2: an outward unit cube + an inward 2x2x2 cube. The
+        // combined signed volume is negative, so a global flip would wrongly
+        // invert the unit cube. Per-solid orientation keeps exactly one downward
+        // ground face (the bottom, z=0) per cube.
+        let mut verts = box_verts(0., 1.);
+        verts.extend(box_verts(10., 2.));
+        let boundaries = serde_json::json!([
+            [box_faces(0, false)], // solid 0: outward unit cube (one shell)
+            [box_faces(8, true)],  // solid 1: inward 2x2x2 cube
+        ]);
+        let geom = Geometry {
+            thetype: GeometryType::MultiSolid,
+            lod: Some("2".to_string()),
+            boundaries,
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        let pool = VertexPool::raw(&verts);
+        let (faces, _mask) = faces_from_geometry(&geom, &pool).unwrap();
+        assert_eq!(faces.len(), 12);
+        let ground: Vec<usize> = select_ground_faces(&faces, &Lod0Options::default());
+        assert_eq!(ground.len(), 2, "one downward ground face per cube");
+        for &fi in &ground {
+            for p in faces[fi].exterior() {
+                assert!(p[2].abs() < 1e-9, "ground faces sit at z=0, not a flipped roof");
+            }
+        }
+    }
+
+    #[test]
+    fn ground_mask_expands_a_null_shell_shorthand_per_face() {
+        // sol finding 1: a Solid with two shells; shell 0 (2 faces) has null
+        // semantics, shell 1 (1 face) is GroundSurface via values [0]. The null
+        // must expand to 2 entries, so ONLY the third face is ground.
+        let verts: Vec<Vec<f64>> = (0..12)
+            .map(|i| vec![i as f64, 0., (i / 4) as f64])
+            .collect();
+        let boundaries = serde_json::json!([
+            [[[0, 1, 2, 3]], [[4, 5, 6, 7]]], // shell 0: two faces
+            [[[8, 9, 10, 11]]],               // shell 1: one face
+        ]);
+        let geom = Geometry {
+            thetype: GeometryType::Solid,
+            lod: Some("2".to_string()),
+            boundaries,
+            semantics: Some(serde_json::json!({
+                "surfaces": [{"type": "GroundSurface"}],
+                "values": [null, [0]],
+            })),
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        let pool = VertexPool::raw(&verts);
+        let (_faces, mask) = faces_from_geometry(&geom, &pool).unwrap();
+        assert_eq!(mask, Some(vec![false, false, true]));
+    }
+
+    #[test]
+    fn plane_reject_excludes_a_nonplanar_downward_face() {
+        // A saddle: its average normal is downward, but it is 0.05 m off any
+        // plane, so a badly non-planar "ground" must be rejected (§9).
+        let saddle = Face::from_exterior(vec![[0., 0., 0.], [0., 4., 0.1], [4., 4., 0.], [4., 0., 0.1]]);
+        assert!(is_downward(&saddle, 20.0));
+        assert!(max_plane_deviation(&saddle) > 0.02);
+        assert_eq!(
+            select_ground_faces(std::slice::from_ref(&saddle), &Lod0Options::default()),
+            vec![0]
+        );
+        let strict = Lod0Options {
+            plane_reject: 0.01,
+            ..Lod0Options::default()
+        };
+        assert!(select_ground_faces(&[saddle], &strict).is_empty());
+    }
+
+    #[test]
+    fn eps_z_seeds_pads_at_nearly_the_same_height() {
+        // Two disconnected pads 5 mm apart, h_step forced to 0: only eps_z lets
+        // the second pad seed alongside the lowest.
+        let opts = Lod0Options {
+            h_step: 0.0,
+            ..Lod0Options::default()
+        };
+        let sel = select_ground_faces(
+            &[ground_square(0., 0., 0.), ground_square(5., 0., 0.005)],
+            &opts,
+        );
+        assert_eq!(sel, vec![0, 1]);
+    }
+
+    #[test]
+    fn flatten_percentile5_makes_footprint_z_uniform() {
+        let opts = Lod0Options {
+            flatten: Some(FlattenMode::Percentile5),
+            ..Lod0Options::default()
+        };
+        let out = assemble_footprint(&[&ground_square(0., 0., 0.), &ground_square(5., 0., 1.0)], &opts)
+            .unwrap();
+        let zs: Vec<f64> = out
+            .iter()
+            .flat_map(|f| f.rings.iter().flatten().map(|p| p[2]))
+            .collect();
+        assert!(zs.iter().all(|&z| (z - zs[0]).abs() < 1e-9), "flatten -> one Z");
+    }
+
+    #[test]
+    fn dedup_never_emits_a_degenerate_ring() {
+        // Two vertices within 1 mm collapse to one index; the ring must not end
+        // with a repeated consecutive index or fewer than 3 vertices.
+        let fp = Footprint {
+            surfaces: vec![Face::from_exterior(vec![
+                [0., 0., 0.],
+                [0.0004, 0., 0.],
+                [4., 0., 0.],
+                [4., 4., 0.],
+                [0., 4., 0.],
+            ])],
+            source: Lod0Source::Geometric,
+        };
+        let (_v, geom) = footprint_to_geometry(&fp);
+        let b: Vec<Vec<Vec<usize>>> = serde_json::from_value(geom.boundaries).unwrap();
+        for surf in &b {
+            for ring in surf {
+                assert!(ring.len() >= 3, "no degenerate ring");
+                for i in 0..ring.len() {
+                    assert_ne!(ring[i], ring[(i + 1) % ring.len()], "no repeated index");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn union_vertices_follow_the_ground_plane_not_the_minimum() {
+        // Two overlapping downward faces on the sloped plane z = 0.1x. Union
+        // creates new vertices whose Z must follow the plane (fit is exact for
+        // coplanar ground), never the global-minimum fallback.
+        let pz = |x: f64| 0.1 * x;
+        let a = Face::from_exterior(vec![
+            [0., 0., pz(0.)],
+            [0., 2., pz(0.)],
+            [2., 2., pz(2.)],
+            [2., 0., pz(2.)],
+        ]);
+        let b = Face::from_exterior(vec![
+            [1., -1., pz(1.)],
+            [1., 1., pz(1.)],
+            [3., 1., pz(3.)],
+            [3., -1., pz(3.)],
+        ]);
+        let out = assemble_footprint(&[&a, &b], &Lod0Options::default()).unwrap();
+        for f in &out {
+            for ring in &f.rings {
+                for p in ring {
+                    assert!(
+                        (p[2] - 0.1 * p[0]).abs() < 1e-6,
+                        "vertex {p:?} draped off the ground plane"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn signed_volume_includes_interior_rings() {
+        // A downward face with a hole: the interior ring (opposite winding)
+        // subtracts, so |contribution| is smaller than the hole-free face.
+        let ext = vec![[0., 0., 1.], [0., 10., 1.], [10., 10., 1.], [10., 0., 1.]];
+        let solid = Face::from_exterior(ext.clone());
+        let holed = Face {
+            rings: vec![ext, vec![[3., 3., 1.], [7., 3., 1.], [7., 7., 1.], [3., 7., 1.]]],
+        };
+        assert!(signed_volume(&[holed]).abs() < signed_volume(&[solid]).abs());
+    }
 
     #[test]
     fn newell_normal_of_ccw_horizontal_ring_points_up() {
