@@ -12,6 +12,11 @@
 //! the core is a pure, deterministic, heavily unit-tested function decoupled
 //! from CityJSON/WKB; thin adapters bridge `cjseq::Geometry` at the edges.
 
+use cjseq::{Geometry, GeometryType};
+use serde_json::Value;
+
+use crate::wkb_write::VertexPool;
+
 /// A 3D point `[x, y, z]` in world coordinates (metres, projected CRS).
 pub type Point = [f64; 3];
 
@@ -344,6 +349,140 @@ pub fn synthesize_lod0(
     }
 
     None
+}
+
+/// Reverse every ring of every face (flips winding / normal direction).
+fn flip_faces(faces: &[Face]) -> Vec<Face> {
+    faces
+        .iter()
+        .map(|f| Face {
+            rings: f
+                .rings
+                .iter()
+                .map(|r| r.iter().rev().copied().collect())
+                .collect(),
+        })
+        .collect()
+}
+
+/// Depth-first collect the integer (or null) leaves of a CityJSON `values`
+/// tree, in document order — this matches the surface order the boundaries are
+/// flattened into, so leaf `k` is the semantic surface index of face `k`.
+fn collect_semantic_leaves(v: &Value, out: &mut Vec<Option<usize>>) {
+    match v {
+        Value::Array(a) => {
+            for x in a {
+                collect_semantic_leaves(x, out);
+            }
+        }
+        Value::Number(n) => out.push(n.as_u64().map(|u| u as usize)),
+        Value::Null => out.push(None),
+        _ => {}
+    }
+}
+
+/// A per-face `GroundSurface` mask from a geometry's semantics, aligned to the
+/// flattened face order; `None` when there are no ground-labelled faces.
+fn ground_mask(geom: &Geometry, face_count: usize) -> Option<Vec<bool>> {
+    let sem = geom.semantics.as_ref()?;
+    let surfaces = sem.get("surfaces")?.as_array()?;
+    let mut leaves = Vec::new();
+    collect_semantic_leaves(sem.get("values")?, &mut leaves);
+    let mut mask = vec![false; face_count];
+    for (k, leaf) in leaves.iter().enumerate().take(face_count) {
+        if let Some(si) = leaf {
+            if surfaces.get(*si).and_then(|s| s.get("type")).and_then(|t| t.as_str())
+                == Some("GroundSurface")
+            {
+                mask[k] = true;
+            }
+        }
+    }
+    mask.iter().any(|&b| b).then_some(mask)
+}
+
+/// Decode a CityJSON boundary geometry (`Solid` / `MultiSurface` /
+/// `MultiSolid` / their composites) into outward-oriented [`Face`]s plus an
+/// optional `GroundSurface` mask, resolving vertex indices through `pool`.
+/// A closed solid is flipped outward when its signed volume is negative (real
+/// data often violates the outward-normal rule). Point/line/instance geometries
+/// yield no faces.
+pub fn faces_from_geometry(geom: &Geometry, pool: &VertexPool) -> crate::Result<(Vec<Face>, Option<Vec<bool>>)> {
+    // Surfaces in document order (shells/solids flattened), and whether the
+    // source is a closed solid (so orientation is meaningful).
+    let (surfaces, is_solid): (Vec<Vec<Vec<usize>>>, bool) = match geom.thetype {
+        GeometryType::MultiSurface | GeometryType::CompositeSurface => {
+            (serde_json::from_value(geom.boundaries.clone())?, false)
+        }
+        GeometryType::Solid => {
+            let shells: Vec<Vec<Vec<Vec<usize>>>> = serde_json::from_value(geom.boundaries.clone())?;
+            (shells.into_iter().flatten().collect(), true)
+        }
+        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
+            let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
+                serde_json::from_value(geom.boundaries.clone())?;
+            (solids.into_iter().flatten().flatten().collect(), true)
+        }
+        _ => return Ok((Vec::new(), None)),
+    };
+
+    let mut faces = Vec::with_capacity(surfaces.len());
+    for surf in &surfaces {
+        let mut rings = Vec::with_capacity(surf.len());
+        for ring in surf {
+            let pts: crate::Result<Vec<Point>> = ring.iter().map(|&i| pool.coord(i)).collect();
+            rings.push(pts?);
+        }
+        faces.push(Face { rings });
+    }
+
+    let mask = ground_mask(geom, faces.len());
+    if is_solid && signed_volume(&faces) < 0.0 {
+        faces = flip_faces(&faces);
+    }
+    Ok((faces, mask))
+}
+
+/// Convert a synthesised [`Footprint`] into a raw vertex list and a
+/// `MultiSurface` `cjseq::Geometry` (LoD `"0"`) indexing it — ready to feed the
+/// existing WKB writer via [`VertexPool::raw`]. Vertices are de-duplicated on a
+/// 1 mm grid. The provenance marker is attached by the encoder, not here.
+pub fn footprint_to_geometry(fp: &Footprint) -> (Vec<Vec<f64>>, Geometry) {
+    use std::collections::HashMap;
+    let mut verts: Vec<Vec<f64>> = Vec::new();
+    let mut index_of: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    let mut push = |p: Point| -> usize {
+        let key = (
+            (p[0] * 1000.0).round() as i64,
+            (p[1] * 1000.0).round() as i64,
+            (p[2] * 1000.0).round() as i64,
+        );
+        *index_of.entry(key).or_insert_with(|| {
+            verts.push(vec![p[0], p[1], p[2]]);
+            verts.len() - 1
+        })
+    };
+    let surfaces: Vec<Vec<Vec<usize>>> = fp
+        .surfaces
+        .iter()
+        .map(|face| {
+            face.rings
+                .iter()
+                .map(|ring| ring.iter().map(|&p| push(p)).collect())
+                .collect()
+        })
+        .collect();
+    let geom = Geometry {
+        thetype: GeometryType::MultiSurface,
+        lod: Some("0".to_string()),
+        boundaries: serde_json::to_value(surfaces).expect("index arrays serialise"),
+        semantics: None,
+        material: None,
+        texture: None,
+        template: None,
+        transformation_matrix: None,
+    };
+    (verts, geom)
 }
 
 /// Snap-grid integer cell of a coordinate relative to a local origin.
