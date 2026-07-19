@@ -182,10 +182,15 @@ pub(crate) fn signed_volume(faces: &[Face]) -> f64 {
     v
 }
 
+/// A point snapped to integer grid cells (the vertex identity for adjacency).
+type Cell = (i64, i64, i64);
+/// An undirected edge as an ordered pair of snapped vertex cells.
+type Edge = (Cell, Cell);
+
 /// Snap a point to the `snap` grid, as integer cell coordinates — the identity
 /// used for shared-edge adjacency (tessellated faces share exact vertices up to
 /// quantisation).
-fn snap_key(p: Point, snap: f64) -> (i64, i64, i64) {
+fn snap_key(p: Point, snap: f64) -> Cell {
     (
         (p[0] / snap).round() as i64,
         (p[1] / snap).round() as i64,
@@ -212,7 +217,7 @@ pub(crate) fn select_ground_faces(faces: &[Face], opts: &Lod0Options) -> Vec<usi
     let cand_set: HashSet<usize> = candidates.iter().copied().collect();
 
     // Shared-edge adjacency among candidates (two consecutive shared vertices).
-    let mut edge_faces: HashMap<((i64, i64, i64), (i64, i64, i64)), Vec<usize>> = HashMap::new();
+    let mut edge_faces: HashMap<Edge, Vec<usize>> = HashMap::new();
     for &fi in &candidates {
         let ring = faces[fi].exterior();
         for k in 0..ring.len() {
@@ -315,13 +320,13 @@ pub fn synthesize_lod0(
             .zip(mask.iter())
             .filter_map(|(f, &g)| g.then_some(f))
             .collect();
-        if !ground.is_empty() {
-            if let Some(surfaces) = assemble_footprint(&ground, opts) {
-                return Some(Footprint {
-                    surfaces,
-                    source: Lod0Source::GroundSemantics,
-                });
-            }
+        if !ground.is_empty()
+            && let Some(surfaces) = assemble_footprint(&ground, opts)
+        {
+            return Some(Footprint {
+                surfaces,
+                source: Lod0Source::GroundSemantics,
+            });
         }
     }
 
@@ -390,12 +395,14 @@ fn ground_mask(geom: &Geometry, face_count: usize) -> Option<Vec<bool>> {
     collect_semantic_leaves(sem.get("values")?, &mut leaves);
     let mut mask = vec![false; face_count];
     for (k, leaf) in leaves.iter().enumerate().take(face_count) {
-        if let Some(si) = leaf {
-            if surfaces.get(*si).and_then(|s| s.get("type")).and_then(|t| t.as_str())
+        if let Some(si) = leaf
+            && surfaces
+                .get(*si)
+                .and_then(|s| s.get("type"))
+                .and_then(|t| t.as_str())
                 == Some("GroundSurface")
-            {
-                mask[k] = true;
-            }
+        {
+            mask[k] = true;
         }
     }
     mask.iter().any(|&b| b).then_some(mask)
@@ -407,7 +414,10 @@ fn ground_mask(geom: &Geometry, face_count: usize) -> Option<Vec<bool>> {
 /// A closed solid is flipped outward when its signed volume is negative (real
 /// data often violates the outward-normal rule). Point/line/instance geometries
 /// yield no faces.
-pub fn faces_from_geometry(geom: &Geometry, pool: &VertexPool) -> crate::Result<(Vec<Face>, Option<Vec<bool>>)> {
+pub fn faces_from_geometry(
+    geom: &Geometry,
+    pool: &VertexPool,
+) -> crate::Result<(Vec<Face>, Option<Vec<bool>>)> {
     // Surfaces in document order (shells/solids flattened), and whether the
     // source is a closed solid (so orientation is meaningful).
     let (surfaces, is_solid): (Vec<Vec<Vec<usize>>>, bool) = match geom.thetype {
@@ -415,7 +425,8 @@ pub fn faces_from_geometry(geom: &Geometry, pool: &VertexPool) -> crate::Result<
             (serde_json::from_value(geom.boundaries.clone())?, false)
         }
         GeometryType::Solid => {
-            let shells: Vec<Vec<Vec<Vec<usize>>>> = serde_json::from_value(geom.boundaries.clone())?;
+            let shells: Vec<Vec<Vec<Vec<usize>>>> =
+                serde_json::from_value(geom.boundaries.clone())?;
             (shells.into_iter().flatten().collect(), true)
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
@@ -543,10 +554,10 @@ pub(crate) fn assemble_footprint(ground: &[&Face], opts: &Lod0Options) -> Option
                 y: ((p[1] - oy) / snap).round() * snap,
             })
             .collect();
-        if let Some(&first) = coords.first() {
-            if coords.last() != Some(&first) {
-                coords.push(first);
-            }
+        if let Some(&first) = coords.first()
+            && coords.last() != Some(&first)
+        {
+            coords.push(first);
         }
         LineString::new(coords)
     };
@@ -556,8 +567,7 @@ pub(crate) fn assemble_footprint(ground: &[&Face], opts: &Lod0Options) -> Option
         if ext.len() < 3 {
             continue;
         }
-        let interiors: Vec<LineString<f64>> =
-            f.rings[1..].iter().map(|r| build_ring(r)).collect();
+        let interiors: Vec<LineString<f64>> = f.rings[1..].iter().map(|r| build_ring(r)).collect();
         polys.push(Polygon::new(build_ring(ext), interiors));
     }
     if polys.is_empty() {
@@ -660,14 +670,16 @@ mod tests {
     fn downward_classifies_ground_not_roof_or_steep_walls() {
         let theta = 20.0;
         // Flat roof: CCW horizontal ring, normal +Z -> not downward.
-        let roof = Face::from_exterior(vec![[0., 0., 3.], [4., 0., 3.], [4., 4., 3.], [0., 4., 3.]]);
+        let roof =
+            Face::from_exterior(vec![[0., 0., 3.], [4., 0., 3.], [4., 4., 3.], [0., 4., 3.]]);
         assert!(!is_downward(&roof, theta));
         // Ground: CW horizontal ring, normal -Z -> downward.
         let ground =
             Face::from_exterior(vec![[0., 0., 0.], [0., 4., 0.], [4., 4., 0.], [4., 0., 0.]]);
         assert!(is_downward(&ground, theta));
         // A vertical wall (normal horizontal) -> not downward.
-        let wall = Face::from_exterior(vec![[0., 0., 0.], [4., 0., 0.], [4., 0., 3.], [0., 0., 3.]]);
+        let wall =
+            Face::from_exterior(vec![[0., 0., 0.], [4., 0., 0.], [4., 0., 3.], [0., 0., 3.]]);
         assert!(!is_downward(&wall, theta));
         // A face tilted 25 deg from horizontal (normal 25 deg from -Z) is
         // outside the 20 deg cone -> not downward.
@@ -678,7 +690,10 @@ mod tests {
             [4., 4., 4.0 * a.tan()],
             [4., 0., 4.0 * a.tan()],
         ]);
-        assert!(!is_downward(&tilt, theta), "25deg tilt must be excluded at theta=20");
+        assert!(
+            !is_downward(&tilt, theta),
+            "25deg tilt must be excluded at theta=20"
+        );
     }
 
     #[test]
@@ -689,7 +704,11 @@ mod tests {
         let reversed: Vec<Face> = cube
             .iter()
             .map(|f| Face {
-                rings: f.rings.iter().map(|r| r.iter().rev().copied().collect()).collect(),
+                rings: f
+                    .rings
+                    .iter()
+                    .map(|r| r.iter().rev().copied().collect())
+                    .collect(),
             })
             .collect();
         assert!((signed_volume(&reversed) + 1.0).abs() < 1e-9);
@@ -750,7 +769,8 @@ mod tests {
     #[test]
     fn flat_roof_is_never_selected() {
         // Roof: CCW horizontal ring -> normal +Z -> not a candidate.
-        let roof = Face::from_exterior(vec![[0., 0., 3.], [4., 0., 3.], [4., 4., 3.], [0., 4., 3.]]);
+        let roof =
+            Face::from_exterior(vec![[0., 0., 3.], [4., 0., 3.], [4., 4., 3.], [0., 4., 3.]]);
         let ground = ground_square(0., 0., 0.);
         let sel = select_ground_faces(&[roof, ground], &Lod0Options::default());
         assert_eq!(sel, vec![1], "only the ground face, never the roof");
@@ -772,10 +792,17 @@ mod tests {
         let a = ground_square(0., 0., 0.); // [0,2] x [0,2]
         let b = ground_square(2., 0., 0.); // [2,4] x [0,2], shares edge x=2
         let out = assemble_footprint(&[&a, &b], &Lod0Options::default()).unwrap();
-        assert_eq!(out.len(), 1, "edge-sharing squares dissolve into one polygon");
+        assert_eq!(
+            out.len(),
+            1,
+            "edge-sharing squares dissolve into one polygon"
+        );
         assert_eq!(out[0].rings.len(), 1, "no interior rings");
         let area = signed_area_xy(&out[0].rings[0]);
-        assert!((area - 8.0).abs() < 1e-6, "unioned area is 4x2 = 8, got {area}");
+        assert!(
+            (area - 8.0).abs() < 1e-6,
+            "unioned area is 4x2 = 8, got {area}"
+        );
         assert!(area > 0.0, "exterior must be CCW after orientation");
     }
 

@@ -1509,14 +1509,20 @@ mod tests {
         // must pair with the geometry's recovered LoD "0" — not the "" fallback,
         // which would silently drop LoD0 appearance on export.
         let batch = bare_material_schema(Some("0"));
-        assert_eq!(appearance_columns(&batch, "material"), vec![(0, "0".to_string())]);
+        assert_eq!(
+            appearance_columns(&batch, "material"),
+            vec![(0, "0".to_string())]
+        );
     }
 
     #[test]
     fn appearance_columns_maps_untagged_bare_material_to_empty_key() {
         // The zero-analysis-geometry fallback bare column carries no lod tag.
         let batch = bare_material_schema(None);
-        assert_eq!(appearance_columns(&batch, "material"), vec![(0, String::new())]);
+        assert_eq!(
+            appearance_columns(&batch, "material"),
+            vec![(0, String::new())]
+        );
     }
 
     #[test]

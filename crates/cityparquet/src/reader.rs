@@ -114,16 +114,16 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         // columns exist alongside the bare one, so the rebuilt schema still
         // matches the file's column set. (A zero-analysis-geometry file's lone,
         // untagged `geometry` column reconstructs the same fields either way.)
-        if !attribute_names.contains("geometry") {
-            if let Ok(field) = actual.field_with_name("geometry") {
-                let tagged_lod0 = field
-                    .metadata()
-                    .get(cityparquet_schema::model::LOD_KEY)
-                    .map(String::as_str)
-                    == Some("0");
-                if tagged_lod0 || !lods.is_empty() {
-                    lods.push(Lod::parse("0").expect("literal 0 is a valid LoD"));
-                }
+        if !attribute_names.contains("geometry")
+            && let Ok(field) = actual.field_with_name("geometry")
+        {
+            let tagged_lod0 = field
+                .metadata()
+                .get(cityparquet_schema::model::LOD_KEY)
+                .map(String::as_str)
+                == Some("0");
+            if tagged_lod0 || !lods.is_empty() {
+                lods.push(Lod::parse("0").expect("literal 0 is a valid LoD"));
             }
         }
         lods.sort();

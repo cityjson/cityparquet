@@ -53,7 +53,10 @@ fn delft_solids_synthesise_valid_multipolygon_footprints() {
                 let Some(fp) = synthesize_lod0(&faces, mask.as_deref(), &opts) else {
                     continue;
                 };
-                assert!(!fp.surfaces.is_empty(), "a footprint has at least one surface");
+                assert!(
+                    !fp.surfaces.is_empty(),
+                    "a footprint has at least one surface"
+                );
 
                 let (verts, ms) = footprint_to_geometry(&fp);
                 let raw = VertexPool::raw(&verts);
@@ -61,8 +64,8 @@ fn delft_solids_synthesise_valid_multipolygon_footprints() {
                     .unwrap()
                     .expect("a non-empty footprint yields WKB");
                 assert_eq!(outcome.bytes[0], 0x01, "little-endian WKB marker");
-                let parsed = wkb::reader::read_wkb(&outcome.bytes)
-                    .expect("the footprint WKB must parse");
+                let parsed =
+                    wkb::reader::read_wkb(&outcome.bytes).expect("the footprint WKB must parse");
                 assert!(
                     matches!(parsed.as_type(), GtGeometryType::MultiPolygon(_)),
                     "a synthesised footprint must be a MultiPolygon (GeoParquet-legal)"
