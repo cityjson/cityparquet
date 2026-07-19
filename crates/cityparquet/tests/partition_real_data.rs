@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use cityparquet::package::{ConvertOptions, TableLayout};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::source::Source;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -181,4 +182,42 @@ fn non_empty_parent_without_overwrite_errors() {
         convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(2), &opts).is_err(),
         "re-run into a parent with partitions needs overwrite"
     );
+}
+
+/// A synthesised LoD0 footprint must be declared as the GeoParquet primary in
+/// EVERY partition's `geo` metadata — the whole-dataset (canonical) legal
+/// column set, not each partition's local set (railway partitions have no
+/// GeoParquet-legal LoD locally, so without canonicalisation they would omit
+/// the synthesised footprint and disagree with `default_geometry`).
+#[test]
+fn partitioned_synthesis_declares_the_footprint_as_primary_in_every_partition() {
+    let out = tempfile::tempdir().unwrap();
+    let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    opts.layout = TableLayout::Single;
+    opts.generate_lod0 = true;
+    let rep =
+        convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(2), &opts).unwrap();
+    assert!(!rep.partitions.is_empty());
+    for (label, _) in &rep.partitions {
+        let file = std::fs::File::open(out.path().join(label).join("cityobjects.parquet")).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let kvs = builder
+            .metadata()
+            .file_metadata()
+            .key_value_metadata()
+            .unwrap();
+        let geo = kvs.iter().find(|kv| kv.key == "geo").unwrap_or_else(|| {
+            panic!("{label} must carry a geo key for the synthesised footprint")
+        });
+        let geo: serde_json::Value = serde_json::from_str(geo.value.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            geo["primary_column"], "geometry",
+            "{label}: synthesised footprint must be the GeoParquet primary_column"
+        );
+        assert!(
+            geo["columns"].get("geometry").is_some(),
+            "{label}: the geometry column must be declared in geo.columns"
+        );
+    }
 }

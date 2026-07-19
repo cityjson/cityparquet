@@ -962,6 +962,12 @@ pub struct CanonicalSchema {
     /// local set: a partition lacking LoD0 would otherwise treat `geometry` as
     /// a legal attribute the canonical schema has no column for, and drop it.
     pub diverted_attribute_names: std::collections::BTreeSet<String>,
+    /// The whole-dataset GeoParquet-legal geometry columns (§13.3), including a
+    /// synthesised LoD0. Each partition must declare THIS set in its `geo`
+    /// metadata, not its own local set: a partition lacking a legal LoD locally
+    /// would otherwise omit the synthesised footprint from `geo` and disagree
+    /// with its `default_geometry`.
+    pub geoparquet_columns: Vec<(Lod, Vec<String>)>,
 }
 
 /// Convert an already-open `source` into a package at `opts.output_dir` —
@@ -1015,6 +1021,11 @@ pub(crate) fn convert_source_impl(
         // attribute the canonical schema diverted, and the encoder would neither
         // column it nor route it to `other`, losing the value (§5.2, G12).
         scan_result.diverted_attribute_names = canon.diverted_attribute_names.clone();
+        // Likewise the GeoParquet-legal column set (§13.3): every partition must
+        // declare the whole-dataset set (incl. a synthesised LoD0) so their `geo`
+        // metadata agrees on `primary_column`/`columns` and matches
+        // `default_geometry`.
+        scan_result.geoparquet_columns = canon.geoparquet_columns.clone();
     } else if opts.generate_lod0 {
         // Non-partitioned convert: reserve the synthesised LoD0 column here (a
         // partitioned run does this once on the whole-dataset scan, so the

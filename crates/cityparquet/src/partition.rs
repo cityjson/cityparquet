@@ -206,6 +206,7 @@ pub fn convert_partitioned(
         schema: full_scan.schema.clone(),
         lods: full_scan.lods.clone(),
         diverted_attribute_names: full_scan.diverted_attribute_names.clone(),
+        geoparquet_columns: full_scan.geoparquet_columns.clone(),
     };
     drop(full);
 
