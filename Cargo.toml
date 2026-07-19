@@ -26,6 +26,7 @@ clap = { version = "4", features = ["derive"] }
 glob = "0.3"
 wkb = "0.9"
 geo-traits = "0.3"
+geo = "0.30"
 tempfile = "3"
 fcb_core = "0.7"
 peak_alloc = "0.3.0"

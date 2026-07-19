@@ -290,6 +290,126 @@ pub(crate) fn select_ground_faces(faces: &[Face], opts: &Lod0Options) -> Vec<usi
     accepted
 }
 
+/// Snap-grid integer cell of a coordinate relative to a local origin.
+fn tcell(v: f64, origin: f64, snap: f64) -> i64 {
+    ((v - origin) / snap).round() as i64
+}
+
+/// Assemble ground faces into a valid, GeoParquet-legal footprint: 2D-union the
+/// faces (edge-sharing polygons must be dissolved — a `MultiPolygon`'s members
+/// may touch only at points), then re-drape the ground Z and enforce CCW
+/// exterior / CW interior winding. Returns `None` if the union is empty.
+///
+/// Coordinates are translated to a local origin (world coordinates at
+/// 10^5..10^6 m eat f64 precision) and snapped before the union; each output
+/// vertex's Z is looked up from the pre-union ground vertices (a union-created
+/// intersection vertex, rare, falls back to the lowest ground Z).
+pub(crate) fn assemble_footprint(ground: &[&Face], opts: &Lod0Options) -> Option<Vec<Face>> {
+    use geo::BooleanOps;
+    use geo::algorithm::orient::{Direction, Orient};
+    use geo::{Coord, LineString, MultiPolygon, Polygon};
+    use std::collections::HashMap;
+
+    if ground.is_empty() {
+        return None;
+    }
+    let snap = opts.snap;
+    let mut ox = f64::INFINITY;
+    let mut oy = f64::INFINITY;
+    for f in ground {
+        for r in &f.rings {
+            for p in r {
+                ox = ox.min(p[0]);
+                oy = oy.min(p[1]);
+            }
+        }
+    }
+    if !ox.is_finite() || !oy.is_finite() {
+        return None;
+    }
+
+    // Pass 1: XY snap-cell -> source Z, for re-draping after the union.
+    let mut zmap: HashMap<(i64, i64), f64> = HashMap::new();
+    for f in ground {
+        for r in &f.rings {
+            for p in r {
+                zmap.insert((tcell(p[0], ox, snap), tcell(p[1], oy, snap)), p[2]);
+            }
+        }
+    }
+    let z_fallback = zmap.values().copied().fold(f64::INFINITY, f64::min);
+
+    // Pass 2: build translated, snapped, CLOSED geo rings.
+    let build_ring = |ring: &[Point]| -> LineString<f64> {
+        let mut coords: Vec<Coord<f64>> = ring
+            .iter()
+            .map(|p| Coord {
+                x: ((p[0] - ox) / snap).round() * snap,
+                y: ((p[1] - oy) / snap).round() * snap,
+            })
+            .collect();
+        if let Some(&first) = coords.first() {
+            if coords.last() != Some(&first) {
+                coords.push(first);
+            }
+        }
+        LineString::new(coords)
+    };
+    let mut polys: Vec<Polygon<f64>> = Vec::new();
+    for f in ground {
+        let ext = f.exterior();
+        if ext.len() < 3 {
+            continue;
+        }
+        let interiors: Vec<LineString<f64>> =
+            f.rings[1..].iter().map(|r| build_ring(r)).collect();
+        polys.push(Polygon::new(build_ring(ext), interiors));
+    }
+    if polys.is_empty() {
+        return None;
+    }
+
+    // 2D union (i_overlay-backed), then canonical winding.
+    let mut acc = MultiPolygon::new(vec![polys[0].clone()]);
+    for p in &polys[1..] {
+        acc = acc.union(p);
+    }
+    let acc = acc.orient(Direction::Default);
+    if acc.0.is_empty() {
+        return None;
+    }
+
+    // Re-drape Z and translate back; geo rings are closed, so emit OPEN rings.
+    let drape = |ls: &LineString<f64>| -> Vec<Point> {
+        let coords = &ls.0;
+        let n = if coords.len() >= 2 && coords.first() == coords.last() {
+            coords.len() - 1
+        } else {
+            coords.len()
+        };
+        (0..n)
+            .map(|i| {
+                let c = coords[i];
+                let z = zmap
+                    .get(&((c.x / snap).round() as i64, (c.y / snap).round() as i64))
+                    .copied()
+                    .unwrap_or(z_fallback);
+                [c.x + ox, c.y + oy, z]
+            })
+            .collect()
+    };
+
+    let mut out = Vec::new();
+    for poly in &acc.0 {
+        let mut rings = vec![drape(poly.exterior())];
+        for interior in poly.interiors() {
+            rings.push(drape(interior));
+        }
+        out.push(Face { rings });
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +559,60 @@ mod tests {
         let ground = ground_square(0., 0., 0.);
         let sel = select_ground_faces(&[roof, ground], &Lod0Options::default());
         assert_eq!(sel, vec![1], "only the ground face, never the roof");
+    }
+
+    /// Shoelace signed area of an open ring in XY (positive == CCW).
+    fn signed_area_xy(ring: &[Point]) -> f64 {
+        let mut a = 0.0;
+        for i in 0..ring.len() {
+            let p = ring[i];
+            let q = ring[(i + 1) % ring.len()];
+            a += p[0] * q[1] - q[0] * p[1];
+        }
+        a / 2.0
+    }
+
+    #[test]
+    fn two_edge_sharing_squares_union_to_one_ccw_surface() {
+        let a = ground_square(0., 0., 0.); // [0,2] x [0,2]
+        let b = ground_square(2., 0., 0.); // [2,4] x [0,2], shares edge x=2
+        let out = assemble_footprint(&[&a, &b], &Lod0Options::default()).unwrap();
+        assert_eq!(out.len(), 1, "edge-sharing squares dissolve into one polygon");
+        assert_eq!(out[0].rings.len(), 1, "no interior rings");
+        let area = signed_area_xy(&out[0].rings[0]);
+        assert!((area - 8.0).abs() < 1e-6, "unioned area is 4x2 = 8, got {area}");
+        assert!(area > 0.0, "exterior must be CCW after orientation");
+    }
+
+    #[test]
+    fn face_with_hole_keeps_exterior_ccw_and_interior_cw() {
+        // 10x10 ground with a 4x4 courtyard hole.
+        let outer = vec![[0., 0., 5.], [0., 10., 5.], [10., 10., 5.], [10., 0., 5.]];
+        let hole = vec![[3., 3., 5.], [7., 3., 5.], [7., 7., 5.], [3., 7., 5.]];
+        let face = Face {
+            rings: vec![outer, hole],
+        };
+        let out = assemble_footprint(&[&face], &Lod0Options::default()).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rings.len(), 2, "exterior + one courtyard ring");
+        assert!(signed_area_xy(&out[0].rings[0]) > 0.0, "exterior CCW");
+        assert!(signed_area_xy(&out[0].rings[1]) < 0.0, "interior CW");
+        assert!((signed_area_xy(&out[0].rings[0]).abs() - 100.0).abs() < 1e-6);
+        assert!((signed_area_xy(&out[0].rings[1]).abs() - 16.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn assembled_vertices_keep_the_source_ground_z() {
+        let a = ground_square(0., 0., 5.);
+        let b = ground_square(2., 0., 5.);
+        let out = assemble_footprint(&[&a, &b], &Lod0Options::default()).unwrap();
+        for face in &out {
+            for ring in &face.rings {
+                for p in ring {
+                    assert!((p[2] - 5.0).abs() < 1e-9, "Z draped from source (5)");
+                }
+            }
+        }
     }
 
     #[test]

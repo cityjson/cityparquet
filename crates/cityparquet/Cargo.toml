@@ -23,4 +23,5 @@ serde_json = { workspace = true }
 [dev-dependencies]
 wkb = { workspace = true }
 geo-traits = { workspace = true }
+geo = { workspace = true }
 tempfile = { workspace = true }
