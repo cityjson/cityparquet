@@ -940,6 +940,13 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
 pub struct CanonicalSchema {
     pub schema: CityParquetSchema,
     pub lods: Vec<Lod>,
+    /// The attribute names the whole-dataset scan diverts into `other` (§5.2,
+    /// G12). Divertedness is schema-relative (it depends on the canonical
+    /// `lods` — e.g. an attribute named `geometry` is reserved once the dataset
+    /// has an LoD0), so a partition MUST divert exactly this set, not its own
+    /// local set: a partition lacking LoD0 would otherwise treat `geometry` as
+    /// a legal attribute the canonical schema has no column for, and drop it.
+    pub diverted_attribute_names: std::collections::BTreeSet<String>,
 }
 
 /// Convert an already-open `source` into a package at `opts.output_dir` —
@@ -988,6 +995,11 @@ pub(crate) fn convert_source_impl(
     if let Some(canon) = schema_override {
         scan_result.schema = canon.schema.clone();
         scan_result.lods = canon.lods.clone();
+        // Divert the canonical set, not this partition's local one — otherwise a
+        // partition whose local LoDs differ (e.g. no LoD0) would keep an
+        // attribute the canonical schema diverted, and the encoder would neither
+        // column it nor route it to `other`, losing the value (§5.2, G12).
+        scan_result.diverted_attribute_names = canon.diverted_attribute_names.clone();
     }
 
     // `sidecar_files` is intentionally EXCLUDED from this pre-encode

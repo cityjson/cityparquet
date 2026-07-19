@@ -199,6 +199,7 @@ pub fn convert_partitioned(
     let canonical = CanonicalSchema {
         schema: full_scan.schema.clone(),
         lods: full_scan.lods.clone(),
+        diverted_attribute_names: full_scan.diverted_attribute_names.clone(),
     };
     drop(full);
 

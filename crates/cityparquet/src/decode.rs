@@ -408,16 +408,13 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
             } else {
                 Some(serde_json::from_str::<Value>(props_arr.value(row))?)
             };
-            // The un-suffixed `geometry` column carries no LoD in its name, so a
-            // real LoD0 footprint records its LoD in `geometry_properties.lod`
-            // (§9/§12). Recover it per cell so export restores `lod:"0"`.
-            let effective_lod = (*lod).or_else(|| {
-                props
-                    .as_ref()
-                    .and_then(|p| p.get("lod"))
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| Lod::parse(s).ok())
-            });
+            // The un-suffixed `geometry` column carries no LoD in its name. By
+            // §9 a NON-NULL cell there is always the LoD0 footprint (the
+            // zero-analysis-geometry fallback column is all-null, and null cells
+            // are skipped above), so assign LoD0 directly — export then restores
+            // exactly `lod:"0"` (§16), regardless of any foreign
+            // `geometry_properties.lod`. Suffixed columns keep their own LoD.
+            let effective_lod = (*lod).or_else(|| Lod::parse("0").ok());
             geometries.push((effective_lod, decoded, props));
         }
 
