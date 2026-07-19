@@ -527,6 +527,17 @@ pub(crate) fn geometry_properties_json(
     Ok(serde_json::to_string(&Value::Object(map))?)
 }
 
+/// Insert `"lod"` into a `geometry_properties` JSON object. Used only for the
+/// un-suffixed LoD0 `geometry` column, whose bare column name cannot carry the
+/// LoD — §12's additional-keys mechanism, mirroring geometry templates.
+fn inject_lod_into_properties(props: &str, lod: &Lod) -> Result<String> {
+    let mut v: Value = serde_json::from_str(props)?;
+    if let Value::Object(map) = &mut v {
+        map.insert("lod".to_string(), Value::String(lod.to_string()));
+    }
+    Ok(serde_json::to_string(&v)?)
+}
+
 /// `(template id, WKB point, transformationMatrix JSON)` — one resolved
 /// `template` column's worth of data.
 type TemplateFields = (String, Vec<u8>, Option<String>);
@@ -739,8 +750,8 @@ fn accumulate_geometry(
         // independent scan; a Seq file is also reopened between the scan and
         // encode passes). Reject rather than silently drop or misplace the
         // geometry.
-        let slot_key = match geom.lod.as_deref().and_then(|s| Lod::parse(s).ok()) {
-            Some(lod) if per_lod => lod.column_suffix(),
+        let lod = match geom.lod.as_deref().and_then(|s| Lod::parse(s).ok()) {
+            Some(lod) if per_lod => lod,
             _ => {
                 return Err(CityParquetError::Lod(format!(
                     "object {id}: geometry has no valid lod for a per-LoD column \
@@ -748,6 +759,7 @@ fn accumulate_geometry(
                 )));
             }
         };
+        let slot_key = lod.column_suffix();
 
         if acc.slots.contains_key(&slot_key) {
             stats.skipped_same_lod_geometries += 1;
@@ -765,8 +777,16 @@ fn accumulate_geometry(
         // indices are rewritten to dataset-global ids — both handled by the
         // shared pipeline in `rewrite_geometry_appearance` (also used by the
         // geometry-templates sidecar, see its doc comment).
-        let (material, texture, props) =
+        let (material, texture, mut props) =
             rewrite_geometry_appearance(geom, &outcome, interner, defs, &format!("object {id}"))?;
+
+        // The un-suffixed `geometry` column (the LoD0 footprint) carries no LoD
+        // in its column name, so — like a geometry template (§12) — its LoD
+        // rides in `geometry_properties` under `"lod"`, letting decode/export
+        // recover it. Suffixed columns encode the LoD in the name already.
+        if lod.is_footprint() {
+            props = inject_lod_into_properties(&props, &lod)?;
+        }
 
         acc.slots.insert(
             slot_key,
