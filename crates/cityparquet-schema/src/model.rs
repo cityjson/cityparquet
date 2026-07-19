@@ -11,7 +11,7 @@ use geoarrow_schema::{Crs, Metadata as GeoMetadata, WkbType};
 
 use crate::attributes::AttributeType;
 use crate::error::{CityParquetError, Result};
-use crate::types::{geometry_column_name, Lod};
+use crate::types::{Lod, geometry_column_name};
 
 pub const ROLE_KEY: &str = "cityparquet:role";
 pub const LOD_KEY: &str = "cityparquet:lod";
@@ -99,11 +99,12 @@ const RESERVED_COLUMN_NAMES: &[&str] = &[
 
 /// Every column name an attribute column must not collide with, for a schema
 /// with these `lods`: the fixed reserved names plus the geometry/appearance
-/// column names the LoDs realise. **Schema-relative** — in the per-LoD case
-/// only the suffixed forms (`geometry_lod2`, …) are reserved, so an attribute
-/// literally named `geometry` is a legal column; in the zero-analysis-geometry
-/// case (empty `lods`) the bare `geometry`/`geometry_properties`/`material`/
-/// `texture` names are reserved instead. This is the single source of truth
+/// column names the LoDs realise. **Schema-relative**, per §9 — LoD `0` reserves
+/// the bare `geometry`/`geometry_properties`/`material`/`texture` names, every
+/// other LoD reserves its suffixed forms (`geometry_lod2`, …), and the
+/// zero-analysis-geometry case (empty `lods`) reserves the bare names too. So an
+/// attribute literally named `geometry` is a legal column only when the dataset
+/// has neither an LoD0 nor the empty-lods fallback. This is the single source of truth
 /// shared by [`CityParquetSchema::validate`] (which errors on a collision) and
 /// the scan-time diversion of colliding attributes into `other` (§5.2, G12), so
 /// the two can never diverge on what "reserved" means.
@@ -293,7 +294,7 @@ impl CityParquetSchema {
 mod tests {
     use super::*;
     use crate::attributes::AttributeType;
-    use crate::types::{geometry_column_name, Lod};
+    use crate::types::{Lod, geometry_column_name};
     use arrow_schema::DataType;
 
     fn sample() -> CityParquetSchema {
@@ -366,8 +367,10 @@ mod tests {
         assert!(names.contains("texture"));
         assert!(!names.contains("geometry_lod0"));
         // A mixed schema reserves the bare LoD0 names and the suffixed rest.
-        let mixed =
-            reserved_and_geometry_column_names(&[Lod::parse("0").unwrap(), Lod::parse("2").unwrap()]);
+        let mixed = reserved_and_geometry_column_names(&[
+            Lod::parse("0").unwrap(),
+            Lod::parse("2").unwrap(),
+        ]);
         assert!(mixed.contains("geometry"));
         assert!(mixed.contains("geometry_lod2"));
     }

@@ -1273,7 +1273,11 @@ fn geoarrow_opt_in_restores_tag_and_geo_key() {
 
     // The LoD0 footprint is the un-suffixed primary `geometry` column; under
     // --geoarrow it advertises the geoarrow.wkb extension.
-    let field = builder.schema().field_with_name("geometry").unwrap().clone();
+    let field = builder
+        .schema()
+        .field_with_name("geometry")
+        .unwrap()
+        .clone();
     assert_eq!(
         field
             .metadata()
