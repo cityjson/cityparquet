@@ -105,6 +105,18 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             .filter_map(|f| f.name().strip_prefix("geometry_"))
             .filter_map(Lod::from_column_suffix)
             .collect();
+        // The LoD0 footprint lives in the un-suffixed `geometry` column (§9),
+        // which has no `geometry_` prefix to parse. When the file also carries
+        // suffixed geometry columns, that bare column is a real LoD0 and must be
+        // recovered so the rebuilt schema matches the file's column set. (A
+        // zero-analysis-geometry file's lone `geometry` column reconstructs the
+        // same fields whether or not LoD0 is listed, so it needs no special case.)
+        if !lods.is_empty()
+            && !attribute_names.contains("geometry")
+            && actual.field_with_name("geometry").is_ok()
+        {
+            lods.push(Lod::parse("0").expect("literal 0 is a valid LoD"));
+        }
         lods.sort();
         lods.dedup();
 

@@ -406,9 +406,19 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
             let props = if props_arr.is_null(row) {
                 None
             } else {
-                Some(serde_json::from_str(props_arr.value(row))?)
+                Some(serde_json::from_str::<Value>(props_arr.value(row))?)
             };
-            geometries.push((*lod, decoded, props));
+            // The un-suffixed `geometry` column carries no LoD in its name, so a
+            // real LoD0 footprint records its LoD in `geometry_properties.lod`
+            // (§9/§12). Recover it per cell so export restores `lod:"0"`.
+            let effective_lod = (*lod).or_else(|| {
+                props
+                    .as_ref()
+                    .and_then(|p| p.get("lod"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Lod::parse(s).ok())
+            });
+            geometries.push((effective_lod, decoded, props));
         }
 
         let template = if template_col.is_null(row) {

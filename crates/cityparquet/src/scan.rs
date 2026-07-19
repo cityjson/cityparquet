@@ -10,7 +10,8 @@ use std::collections::BTreeSet;
 
 use cityparquet_schema::{
     AttributeInferer, CITYPARQUET_VERSION, CityParquetError, CityParquetMetadata,
-    CityParquetSchema, Lod, Result, SourceFormat as SchemaSourceFormat, normalise_attribute_name,
+    CityParquetSchema, Lod, Result, SourceFormat as SchemaSourceFormat, geometry_column_name,
+    normalise_attribute_name,
 };
 
 use cjseq::GeometryType;
@@ -310,7 +311,7 @@ impl ScanResult {
     pub fn geoparquet_geo_columns(&self) -> Vec<(String, Vec<String>)> {
         self.geoparquet_columns
             .iter()
-            .map(|(lod, types)| (format!("geometry_{}", lod.column_suffix()), types.clone()))
+            .map(|(lod, types)| (geometry_column_name("geometry", lod), types.clone()))
             .collect()
     }
 
@@ -325,9 +326,16 @@ impl ScanResult {
         // reserved columns as "everything not listed here".
         let (_reserved_columns, attribute_columns) = self.schema.column_lists()?;
 
-        let default_geometry = match self.lods.last() {
-            Some(highest) => format!("geometry_{}", highest.column_suffix()),
-            None => "geometry".to_string(),
+        // Prefer the un-suffixed `geometry` (LoD0 footprint) as the default;
+        // else the highest LoD present; else the plain `geometry` fallback
+        // (zero-analysis-geometry case, §9).
+        let default_geometry = if self.lods.iter().any(Lod::is_footprint) {
+            "geometry".to_string()
+        } else {
+            match self.lods.last() {
+                Some(highest) => geometry_column_name("geometry", highest),
+                None => "geometry".to_string(),
+            }
         };
 
         Ok(CityParquetMetadata {
