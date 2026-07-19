@@ -757,6 +757,12 @@ fn convert_synthesises_lod0_by_default_and_no_lod0_suppresses_it() {
             .contains("\"lod\":\"0\"")
     };
 
-    assert!(export_lod0_present(false), "default convert must synthesise LoD0");
-    assert!(!export_lod0_present(true), "--no-lod0 must suppress synthesis");
+    assert!(
+        export_lod0_present(false),
+        "default convert must synthesise LoD0"
+    );
+    assert!(
+        !export_lod0_present(true),
+        "--no-lod0 must suppress synthesis"
+    );
 }
