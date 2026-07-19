@@ -145,10 +145,13 @@ pub struct ConvertOptions {
     /// GeoPandas/QGIS/GDAL interop.
     pub geoarrow: bool,
     /// Synthesise an LoD0 footprint into the primary `geometry` column when an
-    /// object has no source LoD0 (§9 "LoD0 synthesis"). ON by default so the
-    /// GeoParquet primary column is populated for 2D consumers; a synthesised
-    /// footprint is marked in `geometry_properties` and exported as a real
-    /// `lod:"0"` geometry.
+    /// object has no source LoD0 (§9 "LoD0 synthesis"). A synthesised footprint
+    /// is marked in `geometry_properties` and exported as a real `lod:"0"`
+    /// geometry. The reference **CLI enables this by default** (the writer's
+    /// convenience for 2D consumers; `--no-lod0` disables it), but
+    /// [`ConvertOptions::new`] leaves it **off** so a library round trip is
+    /// source-faithful unless the caller opts in — synthesis is an additive
+    /// enrichment, not part of losslessness.
     pub generate_lod0: bool,
     /// Thresholds for LoD0 synthesis (used only when `generate_lod0`).
     pub lod0: Lod0Options,
@@ -170,7 +173,8 @@ impl ConvertOptions {
             ordering: RowOrder::default(),
             layout: TableLayout::default(),
             geoarrow: false,
-            generate_lod0: true,
+            // Off here (source-faithful library default); the CLI turns it on.
+            generate_lod0: false,
             lod0: Lod0Options::default(),
         }
     }
@@ -1011,6 +1015,14 @@ pub(crate) fn convert_source_impl(
         // attribute the canonical schema diverted, and the encoder would neither
         // column it nor route it to `other`, losing the value (§5.2, G12).
         scan_result.diverted_attribute_names = canon.diverted_attribute_names.clone();
+    } else if opts.generate_lod0 {
+        // Non-partitioned convert: reserve the synthesised LoD0 column here (a
+        // partitioned run does this once on the whole-dataset scan, so the
+        // canonical schema already carries it).
+        scan_result.add_synthesized_lod0_column();
+    }
+    if opts.generate_lod0 {
+        scan_result.synthesize_lod0 = Some(opts.lod0);
     }
 
     // `sidecar_files` is intentionally EXCLUDED from this pre-encode

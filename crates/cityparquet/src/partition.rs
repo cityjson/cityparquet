@@ -195,7 +195,13 @@ pub fn convert_partitioned(
         merged.doc_appearance.clone(),
         SourceFormat::CityJsonSeq,
     );
-    let full_scan = scan(&full)?;
+    let mut full_scan = scan(&full)?;
+    if opts.generate_lod0 {
+        // Reserve the synthesised LoD0 column on the whole-dataset scan so every
+        // partition shares it (§9); per-partition synthesis is switched on via
+        // `synthesize_lod0` in `convert_source_impl`.
+        full_scan.add_synthesized_lod0_column();
+    }
     let canonical = CanonicalSchema {
         schema: full_scan.schema.clone(),
         lods: full_scan.lods.clone(),

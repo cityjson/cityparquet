@@ -69,6 +69,11 @@ pub struct ScanResult {
     /// whole file unreadable to GeoParquet tools (§1.3). The `Vec<String>` is
     /// the GeoParquet `geometry_types` for that column (e.g. `["MultiPolygon Z"]`).
     pub geoparquet_columns: Vec<(Lod, Vec<String>)>,
+    /// When `Some`, the encoder synthesises an LoD0 footprint into the primary
+    /// `geometry` column for any object lacking a source LoD0 (§9 "LoD0
+    /// synthesis"), using these thresholds. Set by `convert` from
+    /// `ConvertOptions::generate_lod0`; `scan` always leaves it `None`.
+    pub synthesize_lod0: Option<crate::lod0::Lod0Options>,
     source_format: SchemaSourceFormat,
     source_version: String,
 }
@@ -299,6 +304,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         appearance_defaults,
         diverted_attribute_names,
         geoparquet_columns,
+        synthesize_lod0: None,
         source_format: to_schema_source_format(source.format()),
         source_version: header.version.clone(),
     })
@@ -313,6 +319,41 @@ impl ScanResult {
             .iter()
             .map(|(lod, types)| (geometry_column_name("geometry", lod), types.clone()))
             .collect()
+    }
+
+    /// Reserve a synthesised LoD0 footprint column (§9 "LoD0 synthesis"): add
+    /// LoD0 to `lods`/`schema` so the un-suffixed `geometry` column exists, and
+    /// declare it GeoParquet-legal (`MultiPolygon Z`). No-op when the dataset has
+    /// no analysis geometry (nothing to synthesise from) or already carries an
+    /// LoD0 column. Because the bare `geometry`/`material`/… names become
+    /// reserved once LoD0 is present (§5.2, G12), any attribute that now collides
+    /// is diverted into `other` here, mirroring `scan`'s own diversion.
+    pub fn add_synthesized_lod0_column(&mut self) {
+        if self.lods.is_empty() || self.lods.iter().any(Lod::is_footprint) {
+            return;
+        }
+        let lod0 = Lod::parse("0").expect("literal 0 is a valid LoD");
+        self.lods.push(lod0);
+        self.lods.sort();
+        self.lods.dedup();
+        self.schema.lods = self.lods.clone();
+
+        // Divert attributes that collide with the now-reserved bare names.
+        let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&self.lods);
+        let mut kept = Vec::with_capacity(self.schema.attributes.len());
+        for (name, ty) in std::mem::take(&mut self.schema.attributes) {
+            if reserved.contains(&name) {
+                self.diverted_attribute_names.insert(name);
+            } else {
+                kept.push((name, ty));
+            }
+        }
+        self.schema.attributes = kept;
+
+        // Declare the LoD0 footprint column as GeoParquet-legal, ascending.
+        self.geoparquet_columns
+            .push((lod0, vec!["MultiPolygon Z".to_string()]));
+        self.geoparquet_columns.sort_by_key(|(lod, _)| *lod);
     }
 
     /// Build the full `CityParquetMetadata` for this scan, filling every

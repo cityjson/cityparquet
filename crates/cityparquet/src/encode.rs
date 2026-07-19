@@ -164,6 +164,9 @@ pub struct EncodeStats {
     /// column, so the conversion report surfaces it (see
     /// [`ScanResult::diverted_attribute_names`] for the names).
     pub diverted_attribute_values: usize,
+    /// LoD0 footprints synthesised into the primary `geometry` column for
+    /// objects lacking a source LoD0 (§9 "LoD0 synthesis").
+    pub synthesized_lod0_footprints: usize,
 }
 
 /// Expand `acc` to also cover `bbox` (same union rule as [`crate::scan`]'s).
@@ -801,6 +804,88 @@ fn accumulate_geometry(
     Ok(())
 }
 
+/// Synthesise an LoD0 footprint slot for `co` from its lowest higher-LoD
+/// boundary geometry (§9 "LoD0 synthesis"). Returns the `geometry` slot payload
+/// (WKB `MultiPolygonZ` + `geometry_properties` carrying `lod:"0"` and the
+/// `cityparquet:lod0_source` provenance) and the footprint bbox, or `None` when
+/// the object has no footprint-able geometry or no acceptable ground is found.
+fn synthesize_footprint(
+    co: &CityObject,
+    pool: &VertexPool,
+    opts: &crate::lod0::Lod0Options,
+) -> Result<Option<(GeometrySlotData, [f64; 6])>> {
+    use crate::lod0::{Lod0Source, faces_from_geometry, footprint_to_geometry, synthesize_lod0};
+
+    let Some(geoms) = &co.geometry else {
+        return Ok(None);
+    };
+    // Lowest-LoD footprint-able source geometry (prefer LoD1's extrusion base).
+    let mut best: Option<(Lod, &Geometry)> = None;
+    for geom in geoms {
+        if !matches!(
+            geom.thetype,
+            GeometryType::Solid
+                | GeometryType::MultiSolid
+                | GeometryType::CompositeSolid
+                | GeometryType::MultiSurface
+                | GeometryType::CompositeSurface
+        ) {
+            continue;
+        }
+        let Some(lod) = geom.lod.as_deref().and_then(|s| Lod::parse(s).ok()) else {
+            continue;
+        };
+        if lod.is_footprint() {
+            continue; // an existing LoD0 means we would not be synthesising
+        }
+        if best.as_ref().is_none_or(|(bl, _)| lod < *bl) {
+            best = Some((lod, geom));
+        }
+    }
+    let Some((_, geom)) = best else {
+        return Ok(None);
+    };
+
+    let (faces, mask) = faces_from_geometry(geom, pool)?;
+    if faces.is_empty() {
+        return Ok(None);
+    }
+    let Some(fp) = synthesize_lod0(&faces, mask.as_deref(), opts) else {
+        return Ok(None);
+    };
+    let (verts, ms) = footprint_to_geometry(&fp);
+    let raw = VertexPool::raw(&verts);
+    let Some(outcome) = geometry_to_wkb(&ms, &raw)? else {
+        return Ok(None);
+    };
+
+    let mut props: Value = serde_json::from_str(&geometry_properties_json(
+        &ms,
+        outcome.dropped_rings,
+        &outcome.dropped_surfaces,
+    )?)?;
+    if let Value::Object(m) = &mut props {
+        m.insert("lod".to_string(), Value::String("0".to_string()));
+        m.insert(
+            "cityparquet:lod0_source".to_string(),
+            Value::String(
+                match fp.source {
+                    Lod0Source::GroundSemantics => "ground-semantics",
+                    Lod0Source::Geometric => "geometric",
+                }
+                .to_string(),
+            ),
+        );
+    }
+    let data = GeometrySlotData {
+        bytes: outcome.bytes,
+        properties: serde_json::to_string(&props)?,
+        material: None,
+        texture: None,
+    };
+    Ok(Some((data, outcome.bbox)))
+}
+
 /// One typed builder per inferred attribute column.
 enum AttrBuilder {
     Boolean(BooleanBuilder),
@@ -972,6 +1057,9 @@ struct RowWriter {
     /// reserved/geometry column name (§5.2, G12). Sorted, so the diverted map
     /// each row emits is deterministic.
     diverted_attributes: Vec<String>,
+    /// When `Some`, synthesise an LoD0 footprint into the un-suffixed `geometry`
+    /// slot for any object lacking a source LoD0 (§9). Carries the thresholds.
+    synthesize_lod0: Option<crate::lod0::Lod0Options>,
     len: usize,
 }
 
@@ -1017,6 +1105,7 @@ impl RowWriter {
             other: StringBuilder::new(),
             attributes,
             diverted_attributes: scan.diverted_attribute_names.iter().cloned().collect(),
+            synthesize_lod0: scan.synthesize_lod0,
             len: 0,
         }
     }
@@ -1167,6 +1256,21 @@ impl RowWriter {
             &defs,
             id,
         )?;
+
+        // Synthesise an LoD0 footprint into the un-suffixed `geometry` slot when
+        // enabled and the object has no source LoD0 (§9). The footprint slot key
+        // is LoD0's column suffix (`lod0`), the same key `accumulate_geometry`
+        // would use for a real LoD0.
+        if let Some(opts) = &self.synthesize_lod0 {
+            let key = Lod::parse("0").expect("literal 0 is a valid LoD").column_suffix();
+            if !acc.slots.contains_key(&key) {
+                if let Some((data, bbox)) = synthesize_footprint(co, &pool, opts)? {
+                    union_bbox(&mut acc.own_bbox, bbox);
+                    acc.slots.insert(key, data);
+                    stats.synthesized_lod0_footprints += 1;
+                }
+            }
+        }
 
         for slot in &mut self.geometry_slots {
             match acc.slots.get(&slot.key) {
