@@ -105,24 +105,26 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             .filter_map(|f| f.name().strip_prefix("geometry_"))
             .filter_map(Lod::from_column_suffix)
             .collect();
-        // The LoD0 footprint lives in the un-suffixed `geometry` column (§9),
-        // which has no `geometry_` prefix to parse. Recover LoD0 when that
-        // reserved column carries the lod tag (`cityparquet:lod = "0"`, set by
-        // the writer for a real LoD0) — this covers a footprints-only file too,
-        // where no suffixed LoD exists. As a fallback for a file whose field
-        // metadata was stripped, also recover LoD0 when suffixed geometry
-        // columns exist alongside the bare one, so the rebuilt schema still
-        // matches the file's column set. (A zero-analysis-geometry file's lone,
-        // untagged `geometry` column reconstructs the same fields either way.)
+        // The footprint LoD (the highest 0.* present, §9) lives in the
+        // un-suffixed `geometry` column, which has no `geometry_` prefix to
+        // parse. Recover the exact 0.* LoD from that reserved column's lod tag
+        // (`cityparquet:lod`, set by the writer) — this covers a footprints-only
+        // file too. As a fallback for a file whose field metadata was stripped,
+        // recover a bare `0` when suffixed geometry columns exist alongside the
+        // bare one, so the rebuilt schema still matches the file's column set (a
+        // zero-analysis-geometry file's lone, untagged `geometry` column
+        // reconstructs the same fields either way).
         if !attribute_names.contains("geometry")
             && let Ok(field) = actual.field_with_name("geometry")
         {
-            let tagged_lod0 = field
+            let tagged = field
                 .metadata()
                 .get(cityparquet_schema::model::LOD_KEY)
-                .map(String::as_str)
-                == Some("0");
-            if tagged_lod0 || !lods.is_empty() {
+                .and_then(|t| Lod::parse(t).ok())
+                .filter(|l| l.major() == 0);
+            if let Some(l) = tagged {
+                lods.push(l);
+            } else if !lods.is_empty() {
                 lods.push(Lod::parse("0").expect("literal 0 is a valid LoD"));
             }
         }

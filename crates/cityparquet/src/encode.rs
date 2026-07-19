@@ -719,6 +719,7 @@ fn accumulate_geometry(
     co: &CityObject,
     pool: &VertexPool,
     per_lod: bool,
+    footprint: Option<Lod>,
     stats: &mut EncodeStats,
     interner: &mut AppearanceInterner,
     defs: &LocalDefs,
@@ -783,11 +784,12 @@ fn accumulate_geometry(
         let (material, texture, mut props) =
             rewrite_geometry_appearance(geom, &outcome, interner, defs, &format!("object {id}"))?;
 
-        // The un-suffixed `geometry` column (the LoD0 footprint) carries no LoD
-        // in its column name, so — like a geometry template (§12) — its LoD
-        // rides in `geometry_properties` under `"lod"`, letting decode/export
-        // recover it. Suffixed columns encode the LoD in the name already.
-        if lod.is_footprint() {
+        // The un-suffixed `geometry` column (the footprint — the highest 0.*
+        // LoD) carries no LoD in its column name, so — like a geometry template
+        // (§12) — its LoD rides in `geometry_properties` under `"lod"`, letting
+        // decode/export recover it (which 0.* it was). Suffixed columns encode
+        // the LoD in the name already.
+        if Some(lod) == footprint {
             props = inject_lod_into_properties(&props, &lod)?;
         }
 
@@ -835,8 +837,8 @@ fn synthesize_footprint(
         let Some(lod) = geom.lod.as_deref().and_then(|s| Lod::parse(s).ok()) else {
             continue;
         };
-        if lod.is_footprint() {
-            continue; // an existing LoD0 means we would not be synthesising
+        if lod.major() == 0 {
+            continue; // an existing 0.* footprint means we would not synthesise
         }
         if best.as_ref().is_none_or(|(bl, _)| lod < *bl) {
             best = Some((lod, geom));
@@ -1060,6 +1062,9 @@ struct RowWriter {
     /// When `Some`, synthesise an LoD0 footprint into the un-suffixed `geometry`
     /// slot for any object lacking a source LoD0 (§9). Carries the thresholds.
     synthesize_lod0: Option<crate::lod0::Lod0Options>,
+    /// The LoD that occupies the un-suffixed `geometry` column (the highest 0.*
+    /// present, §9); its `geometry_properties` carries the `"lod"` member.
+    footprint: Option<Lod>,
     len: usize,
 }
 
@@ -1106,6 +1111,7 @@ impl RowWriter {
             attributes,
             diverted_attributes: scan.diverted_attribute_names.iter().cloned().collect(),
             synthesize_lod0: scan.synthesize_lod0,
+            footprint: cityparquet_schema::footprint_lod(&scan.lods),
             len: 0,
         }
     }
@@ -1251,6 +1257,7 @@ impl RowWriter {
             co,
             &pool,
             self.per_lod,
+            self.footprint,
             stats,
             interner,
             &defs,
@@ -1842,6 +1849,7 @@ mod tests {
             &co,
             &pool,
             true,
+            None,
             &mut stats,
             &mut interner,
             &defs,
@@ -1965,6 +1973,7 @@ mod tests {
             &co,
             &pool,
             true,
+            None,
             &mut stats,
             &mut interner,
             &defs,
@@ -2092,6 +2101,7 @@ mod tests {
             &co,
             &pool,
             true,
+            None,
             &mut stats,
             &mut interner,
             &defs,

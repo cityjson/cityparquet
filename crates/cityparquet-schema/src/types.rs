@@ -40,19 +40,21 @@ impl Lod {
         let rest = suffix.strip_prefix("lod")?;
         Self::parse(&rest.replace('_', ".")).ok()
     }
-
-    /// Whether this LoD occupies the un-suffixed `geometry` column — the
-    /// GeoParquet-legal primary footprint slot. Only bare `0` qualifies;
-    /// refined `0.x` LoDs keep their suffix (deferred).
-    pub fn is_footprint(&self) -> bool {
-        self.major == 0 && self.minor.is_none()
-    }
 }
 
-/// Column name for a reserved geometry/appearance `prefix` at `lod`: the bare
-/// `prefix` for the footprint LoD (`0`), else `prefix_lod<suffix>` (§9).
-pub fn geometry_column_name(prefix: &str, lod: &Lod) -> String {
-    if lod.is_footprint() {
+/// The LoD that occupies the un-suffixed `geometry` column (§9): the **highest**
+/// LoD of the `0.*` family present (`0`, `0.0`, `0.1`, `0.2`, `0.3`), or `None`
+/// when the dataset has no `0.*` LoD. Derived `Ord` on `(major, minor)` makes
+/// `max` pick the finest refinement (bare `0` sorts below `0.0`).
+pub fn footprint_lod(lods: &[Lod]) -> Option<Lod> {
+    lods.iter().copied().filter(|l| l.major() == 0).max()
+}
+
+/// Column name for a reserved geometry/appearance `prefix` at `lod`, given the
+/// dataset's `footprint` LoD (see [`footprint_lod`]): the bare `prefix` for the
+/// footprint LoD, else `prefix_lod<suffix>` (§9).
+pub fn geometry_column_name(prefix: &str, lod: &Lod, footprint: Option<Lod>) -> String {
+    if footprint == Some(*lod) {
         prefix.to_string()
     } else {
         format!("{prefix}_{}", lod.column_suffix())
@@ -371,29 +373,40 @@ mod lod_tests {
     }
 
     #[test]
-    fn lod0_is_footprint_and_maps_to_bare_names() {
-        let lod0 = Lod::parse("0").unwrap();
-        assert!(lod0.is_footprint());
-        assert_eq!(geometry_column_name("geometry", &lod0), "geometry");
+    fn footprint_lod_is_the_highest_zero_family_lod() {
+        let p = |s: &str| Lod::parse(s).unwrap();
+        // Highest 0.* wins.
         assert_eq!(
-            geometry_column_name("geometry_properties", &lod0),
-            "geometry_properties"
+            footprint_lod(&[p("0.1"), p("0.3"), p("2.2")]),
+            Some(p("0.3"))
         );
-        assert_eq!(geometry_column_name("material", &lod0), "material");
+        // Bare 0 when it is the only 0.* LoD.
+        assert_eq!(footprint_lod(&[p("0"), p("2.2")]), Some(p("0")));
+        assert_eq!(footprint_lod(&[p("0.2")]), Some(p("0.2")));
+        // No 0.* LoD at all.
+        assert_eq!(footprint_lod(&[p("1.2"), p("2.2")]), None);
     }
 
     #[test]
-    fn refined_and_higher_lods_keep_suffix() {
-        // 0.x is NOT the footprint slot (deferred); only bare `0` is.
-        assert!(!Lod::parse("0.2").unwrap().is_footprint());
-        assert!(!Lod::parse("2.2").unwrap().is_footprint());
+    fn footprint_lod_maps_to_bare_names_others_keep_suffix() {
+        let p = |s: &str| Lod::parse(s).unwrap();
+        let lods = [p("0.1"), p("0.3"), p("2.2")];
+        let fp = footprint_lod(&lods);
+        // The highest 0.* (0.3) is the un-suffixed geometry column.
+        assert_eq!(geometry_column_name("geometry", &p("0.3"), fp), "geometry");
         assert_eq!(
-            geometry_column_name("geometry", &Lod::parse("2.2").unwrap()),
-            "geometry_lod2_2"
+            geometry_column_name("geometry_properties", &p("0.3"), fp),
+            "geometry_properties"
         );
+        // A lower 0.* keeps its suffix.
         assert_eq!(
-            geometry_column_name("geometry", &Lod::parse("0.2").unwrap()),
-            "geometry_lod0_2"
+            geometry_column_name("geometry", &p("0.1"), fp),
+            "geometry_lod0_1"
+        );
+        // A non-zero LoD keeps its suffix.
+        assert_eq!(
+            geometry_column_name("geometry", &p("2.2"), fp),
+            "geometry_lod2_2"
         );
     }
 

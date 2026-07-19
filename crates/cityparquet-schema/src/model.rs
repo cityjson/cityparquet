@@ -11,7 +11,7 @@ use geoarrow_schema::{Crs, Metadata as GeoMetadata, WkbType};
 
 use crate::attributes::AttributeType;
 use crate::error::{CityParquetError, Result};
-use crate::types::{Lod, geometry_column_name};
+use crate::types::{Lod, footprint_lod, geometry_column_name};
 
 pub const ROLE_KEY: &str = "cityparquet:role";
 pub const LOD_KEY: &str = "cityparquet:lod";
@@ -119,11 +119,12 @@ pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
         names.insert("material".to_string());
         names.insert("texture".to_string());
     } else {
+        let fp = footprint_lod(lods);
         for lod in lods {
-            names.insert(geometry_column_name("geometry", lod));
-            names.insert(geometry_column_name("geometry_properties", lod));
-            names.insert(geometry_column_name("material", lod));
-            names.insert(geometry_column_name("texture", lod));
+            names.insert(geometry_column_name("geometry", lod, fp));
+            names.insert(geometry_column_name("geometry_properties", lod, fp));
+            names.insert(geometry_column_name("material", lod, fp));
+            names.insert(geometry_column_name("texture", lod, fp));
         }
     }
     names
@@ -219,21 +220,22 @@ impl CityParquetSchema {
             // appearance sit adjacent: geometry_lodX, geometry_properties_lodX,
             // material_lodX, texture_lodX (§9, §11.1). Appearance pairs to the
             // geometry it decorates by column name, not by a JSON LoD key.
+            let fp = footprint_lod(&self.lods);
             for lod in &self.lods {
                 fields.push(self.geometry_field(
-                    &geometry_column_name("geometry", lod),
+                    &geometry_column_name("geometry", lod, fp),
                     Some(lod),
                     geoarrow,
                 ));
                 fields.push(with_meta(
-                    json_field(&geometry_column_name("geometry_properties", lod), true)
+                    json_field(&geometry_column_name("geometry_properties", lod, fp), true)
                         .as_ref()
                         .clone(),
                     &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
                 ));
                 for prefix in ["material", "texture"] {
                     fields.push(with_meta(
-                        json_field(&geometry_column_name(prefix, lod), true)
+                        json_field(&geometry_column_name(prefix, lod, fp), true)
                             .as_ref()
                             .clone(),
                         &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
@@ -294,7 +296,7 @@ impl CityParquetSchema {
 mod tests {
     use super::*;
     use crate::attributes::AttributeType;
-    use crate::types::{Lod, geometry_column_name};
+    use crate::types::{Lod, footprint_lod, geometry_column_name};
     use arrow_schema::DataType;
 
     fn sample() -> CityParquetSchema {
@@ -377,10 +379,37 @@ mod tests {
 
     #[test]
     fn geometry_column_name_helper_is_wired() {
+        let lod0 = Lod::parse("0").unwrap();
         assert_eq!(
-            geometry_column_name("geometry", &Lod::parse("0").unwrap()),
+            geometry_column_name("geometry", &lod0, footprint_lod(&[lod0])),
             "geometry"
         );
+    }
+
+    #[test]
+    fn highest_zero_family_lod_realises_the_bare_geometry_column() {
+        // A dataset with LoD 0.1, 0.3, and 2.2: the highest 0.* (0.3) is the
+        // un-suffixed `geometry`, the lower 0.* keeps its suffix.
+        let schema = CityParquetSchema {
+            lods: vec![
+                Lod::parse("0.1").unwrap(),
+                Lod::parse("0.3").unwrap(),
+                Lod::parse("2.2").unwrap(),
+            ],
+            attributes: vec![],
+            crs: None,
+        };
+        let arrow = schema.to_arrow_schema().unwrap();
+        assert!(arrow.field_with_name("geometry").is_ok());
+        assert!(arrow.field_with_name("geometry_lod0_1").is_ok());
+        assert!(
+            arrow.field_with_name("geometry_lod0_3").is_err(),
+            "the highest 0.* is the bare geometry, not a suffixed column"
+        );
+        assert!(arrow.field_with_name("geometry_lod2_2").is_ok());
+        // The bare column carries the footprint LoD (0.3) in its metadata.
+        let f = arrow.field_with_name("geometry").unwrap();
+        assert_eq!(f.metadata().get(LOD_KEY).map(String::as_str), Some("0.3"));
     }
 
     /// RED (G20): spec §11.1 makes appearance per-LoD columns
