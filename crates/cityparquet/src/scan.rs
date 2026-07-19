@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 
 use cityparquet_schema::{
     AttributeInferer, CITYPARQUET_VERSION, CityParquetError, CityParquetMetadata,
-    CityParquetSchema, Lod, Result, SourceFormat as SchemaSourceFormat, geometry_column_name,
-    normalise_attribute_name,
+    CityParquetSchema, Lod, Result, SourceFormat as SchemaSourceFormat, footprint_lod,
+    geometry_column_name, normalise_attribute_name,
 };
 
 use cjseq::GeometryType;
@@ -315,9 +315,10 @@ impl ScanResult {
     /// pairs, ascending by LoD (§13.3, G1) — the writer declares exactly these
     /// in `geo.columns`, and the highest-LoD one is the `primary_column`.
     pub fn geoparquet_geo_columns(&self) -> Vec<(String, Vec<String>)> {
+        let fp = footprint_lod(&self.lods);
         self.geoparquet_columns
             .iter()
-            .map(|(lod, types)| (geometry_column_name("geometry", lod), types.clone()))
+            .map(|(lod, types)| (geometry_column_name("geometry", lod, fp), types.clone()))
             .collect()
     }
 
@@ -329,7 +330,9 @@ impl ScanResult {
     /// reserved once LoD0 is present (§5.2, G12), any attribute that now collides
     /// is diverted into `other` here, mirroring `scan`'s own diversion.
     pub fn add_synthesized_lod0_column(&mut self) {
-        if self.lods.is_empty() || self.lods.iter().any(Lod::is_footprint) {
+        // No-op when there is nothing to synthesise from, or the dataset already
+        // has a footprint (any `0.*` LoD — we use the highest, §9).
+        if self.lods.is_empty() || footprint_lod(&self.lods).is_some() {
             return;
         }
         let lod0 = Lod::parse("0").expect("literal 0 is a valid LoD");
@@ -367,14 +370,15 @@ impl ScanResult {
         // reserved columns as "everything not listed here".
         let (_reserved_columns, attribute_columns) = self.schema.column_lists()?;
 
-        // Prefer the un-suffixed `geometry` (LoD0 footprint) as the default;
-        // else the highest LoD present; else the plain `geometry` fallback
-        // (zero-analysis-geometry case, §9).
-        let default_geometry = if self.lods.iter().any(Lod::is_footprint) {
+        // Prefer the un-suffixed `geometry` (the highest 0.* footprint) as the
+        // default; else the highest LoD present; else the plain `geometry`
+        // fallback (zero-analysis-geometry case, §9).
+        let fp = footprint_lod(&self.lods);
+        let default_geometry = if fp.is_some() {
             "geometry".to_string()
         } else {
             match self.lods.last() {
-                Some(highest) => geometry_column_name("geometry", highest),
+                Some(highest) => geometry_column_name("geometry", highest, fp),
                 None => "geometry".to_string(),
             }
         };
