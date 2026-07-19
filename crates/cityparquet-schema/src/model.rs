@@ -11,7 +11,7 @@ use geoarrow_schema::{Crs, Metadata as GeoMetadata, WkbType};
 
 use crate::attributes::AttributeType;
 use crate::error::{CityParquetError, Result};
-use crate::types::Lod;
+use crate::types::{geometry_column_name, Lod};
 
 pub const ROLE_KEY: &str = "cityparquet:role";
 pub const LOD_KEY: &str = "cityparquet:lod";
@@ -119,11 +119,10 @@ pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
         names.insert("texture".to_string());
     } else {
         for lod in lods {
-            let suffix = lod.column_suffix();
-            names.insert(format!("geometry_{suffix}"));
-            names.insert(format!("geometry_properties_{suffix}"));
-            names.insert(format!("material_{suffix}"));
-            names.insert(format!("texture_{suffix}"));
+            names.insert(geometry_column_name("geometry", lod));
+            names.insert(geometry_column_name("geometry_properties", lod));
+            names.insert(geometry_column_name("material", lod));
+            names.insert(geometry_column_name("texture", lod));
         }
     }
     names
@@ -220,21 +219,20 @@ impl CityParquetSchema {
             // material_lodX, texture_lodX (§9, §11.1). Appearance pairs to the
             // geometry it decorates by column name, not by a JSON LoD key.
             for lod in &self.lods {
-                let suffix = lod.column_suffix();
                 fields.push(self.geometry_field(
-                    &format!("geometry_{suffix}"),
+                    &geometry_column_name("geometry", lod),
                     Some(lod),
                     geoarrow,
                 ));
                 fields.push(with_meta(
-                    json_field(&format!("geometry_properties_{suffix}"), true)
+                    json_field(&geometry_column_name("geometry_properties", lod), true)
                         .as_ref()
                         .clone(),
                     &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
                 ));
                 for prefix in ["material", "texture"] {
                     fields.push(with_meta(
-                        json_field(&format!("{prefix}_{suffix}"), true)
+                        json_field(&geometry_column_name(prefix, lod), true)
                             .as_ref()
                             .clone(),
                         &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
@@ -295,7 +293,7 @@ impl CityParquetSchema {
 mod tests {
     use super::*;
     use crate::attributes::AttributeType;
-    use crate::types::Lod;
+    use crate::types::{geometry_column_name, Lod};
     use arrow_schema::DataType;
 
     fn sample() -> CityParquetSchema {
@@ -336,6 +334,49 @@ mod tests {
                 "yoc",
                 "ex_height",
             ]
+        );
+    }
+
+    #[test]
+    fn lod0_realises_bare_geometry_columns() {
+        let schema = CityParquetSchema {
+            lods: vec![Lod::parse("0").unwrap(), Lod::parse("2.2").unwrap()],
+            attributes: vec![],
+            crs: None,
+        };
+        let arrow = schema.to_arrow_schema().unwrap();
+        assert!(arrow.field_with_name("geometry").is_ok());
+        assert!(arrow.field_with_name("geometry_properties").is_ok());
+        assert!(arrow.field_with_name("material").is_ok());
+        assert!(arrow.field_with_name("texture").is_ok());
+        assert!(arrow.field_with_name("geometry_lod2_2").is_ok());
+        // LoD0 renamed away from the suffixed form.
+        assert!(arrow.field_with_name("geometry_lod0").is_err());
+        // The bare LoD0 geometry field still carries its lod metadata.
+        let f = arrow.field_with_name("geometry").unwrap();
+        assert_eq!(f.metadata().get(LOD_KEY).map(String::as_str), Some("0"));
+    }
+
+    #[test]
+    fn reserved_names_include_bare_geometry_for_lod0() {
+        let names = reserved_and_geometry_column_names(&[Lod::parse("0").unwrap()]);
+        assert!(names.contains("geometry"));
+        assert!(names.contains("geometry_properties"));
+        assert!(names.contains("material"));
+        assert!(names.contains("texture"));
+        assert!(!names.contains("geometry_lod0"));
+        // A mixed schema reserves the bare LoD0 names and the suffixed rest.
+        let mixed =
+            reserved_and_geometry_column_names(&[Lod::parse("0").unwrap(), Lod::parse("2").unwrap()]);
+        assert!(mixed.contains("geometry"));
+        assert!(mixed.contains("geometry_lod2"));
+    }
+
+    #[test]
+    fn geometry_column_name_helper_is_wired() {
+        assert_eq!(
+            geometry_column_name("geometry", &Lod::parse("0").unwrap()),
+            "geometry"
         );
     }
 
