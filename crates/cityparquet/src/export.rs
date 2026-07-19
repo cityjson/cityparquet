@@ -642,7 +642,12 @@ pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usiz
                 return None;
             }
             if field.name() == prefix {
-                return Some((index, String::new()));
+                // The bare appearance column is the LoD0 footprint's when it
+                // carries a lod tag (`cityparquet:lod = "0"`, set by the schema
+                // for LoD0), matching the geometry's recovered LoD; it is the
+                // transitional lod-less fallback (key `""`) only when untagged.
+                let key = field.metadata().get(LOD_KEY).cloned().unwrap_or_default();
+                return Some((index, key));
             }
             if field
                 .name()
@@ -1481,6 +1486,43 @@ mod tests {
 
     fn triangle_faces(n: usize) -> Vec<Vec<Vec<usize>>> {
         (0..n).map(|i| vec![vec![i, i + 1, i + 2]]).collect()
+    }
+
+    fn bare_material_schema(lod_tag: Option<&str>) -> RecordBatch {
+        use arrow_array::ArrayRef;
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(ROLE_KEY.to_string(), ROLE_RESERVED.to_string());
+        if let Some(l) = lod_tag {
+            meta.insert(LOD_KEY.to_string(), l.to_string());
+        }
+        let field = Field::new("material", DataType::Utf8, true).with_metadata(meta);
+        let schema = Arc::new(Schema::new(vec![field]));
+        let col: ArrayRef = Arc::new(StringArray::from(vec![None::<&str>]));
+        RecordBatch::try_new(schema, vec![col]).unwrap()
+    }
+
+    #[test]
+    fn appearance_columns_maps_bare_lod0_material_to_key_zero() {
+        // The LoD0 footprint's bare `material` column is tagged lod "0", so it
+        // must pair with the geometry's recovered LoD "0" — not the "" fallback,
+        // which would silently drop LoD0 appearance on export.
+        let batch = bare_material_schema(Some("0"));
+        assert_eq!(
+            appearance_columns(&batch, "material"),
+            vec![(0, "0".to_string())]
+        );
+    }
+
+    #[test]
+    fn appearance_columns_maps_untagged_bare_material_to_empty_key() {
+        // The zero-analysis-geometry fallback bare column carries no lod tag.
+        let batch = bare_material_schema(None);
+        assert_eq!(
+            appearance_columns(&batch, "material"),
+            vec![(0, String::new())]
+        );
     }
 
     #[test]

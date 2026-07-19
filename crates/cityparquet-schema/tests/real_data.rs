@@ -109,7 +109,9 @@ fn delft_jsonl_types_lods_and_attributes_are_representable() {
     .to_arrow_schema()
     .unwrap();
     for lod in &lods {
-        let col = format!("geometry_{}", lod.column_suffix());
+        // LoD0 occupies the un-suffixed `geometry` column (§9), every other LoD
+        // its suffixed form.
+        let col = cityparquet_schema::geometry_column_name("geometry", lod);
         assert!(schema.field_with_name(&col).is_ok(), "missing {col}");
     }
 }

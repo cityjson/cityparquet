@@ -159,9 +159,20 @@ structure all live in the sibling `geometry_properties` / `material` /
 
 **LoD is expressed by column layout**: a dataset with LoD 1 and LoD 2.2 gets
 `geometry_lod1` + `geometry_properties_lod1` and `geometry_lod2_2` +
-`geometry_properties_lod2_2`. A dataset with no LoD labels at all gets a
-single un-suffixed `geometry` column instead. A second geometry for the same
-`(object, LoD)` is skipped and counted.
+`geometry_properties_lod2_2`. **LoD 0 is the exception — it occupies the
+un-suffixed `geometry` / `geometry_properties` pair** (the GeoParquet-legal
+primary column, spec §9), carrying its LoD in `geometry_properties.lod` the way
+a template does. A dataset with no LoD labels at all also uses that un-suffixed
+pair (all-null). A second geometry for the same `(object, LoD)` is skipped and
+counted.
+
+**LoD0 synthesis** (`src/lod0.rs`): when an object has no source LoD0, the
+writer can synthesise a footprint from its lowest higher LoD — semantics-first
+(`GroundSurface` faces), else a geometric fallback (downward-facing faces →
+2D union → Z re-drape → `MultiPolygonZ`), marked with
+`cityparquet:lod0_source` and exported as a real `lod:"0"` geometry. The CLI
+enables it by default (`--no-lod0` to disable); the library `ConvertOptions` is
+source-faithful unless `generate_lod0` is set.
 
 ### Bounding box & spatial ordering
 

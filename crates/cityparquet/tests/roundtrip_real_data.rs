@@ -141,6 +141,21 @@ fn every_recipe_preset_round_trips_delft_losslessly() {
     }
 }
 
+/// delft's LoD0 footprint is stored in the un-suffixed `geometry` column, with
+/// its LoD recorded in `geometry_properties.lod` (§9/§12). Export must recover
+/// that LoD so the round-tripped CityJSON carries a genuine `lod:"0"` geometry
+/// (not a lod-less one). This is the narrow behavioural pin behind the fuller
+/// `delft_round_trips_losslessly` semantic-equality gate below.
+#[test]
+fn delft_lod0_footprint_round_trips_with_lod_restored() {
+    let (exported, _package_dir, _export_dir) = convert_and_export("delft.city.jsonl");
+    let text = std::fs::read_to_string(&exported).unwrap();
+    assert!(
+        text.contains("\"lod\":\"0\""),
+        "exported delft must restore LoD0 geometry with lod \"0\""
+    );
+}
+
 #[test]
 fn delft_round_trips_losslessly() {
     let (exported, _package_dir, _export_dir) = convert_and_export("delft.city.jsonl");

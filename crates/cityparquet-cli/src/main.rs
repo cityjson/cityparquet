@@ -110,6 +110,14 @@ enum Commands {
         /// GDAL interop.
         #[arg(long, default_value_t = false)]
         geoarrow: bool,
+
+        /// Do NOT synthesise an LoD0 footprint into the primary `geometry`
+        /// column for objects lacking a source LoD0. By default a footprint is
+        /// derived from the lowest higher LoD (§9 "LoD0 synthesis") so the
+        /// GeoParquet primary column is populated; pass this to keep the output
+        /// strictly source-faithful.
+        #[arg(long, default_value_t = false)]
+        no_lod0: bool,
     },
 
     /// Export CityParquet package back to CityJSON/CityJSONSeq
@@ -283,6 +291,7 @@ fn main() -> std::process::ExitCode {
             ordering,
             layout,
             geoarrow,
+            no_lod0,
         } => {
             // Parse the profile string
             let profile = match profile.as_str() {
@@ -368,6 +377,8 @@ fn main() -> std::process::ExitCode {
                 ordering,
                 layout,
                 geoarrow,
+                generate_lod0: !no_lod0,
+                lod0: cityparquet::lod0::Lod0Options::default(),
             };
 
             // A sizing flag only makes sense with --partition.

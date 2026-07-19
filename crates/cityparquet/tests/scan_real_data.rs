@@ -138,11 +138,14 @@ fn delft_scan_matches_known_content() {
     // attribute names, not the 47 in the original brief.
     assert_eq!(s.schema.attributes.len(), 50);
     let meta = s.metadata(&[]).unwrap();
-    assert_eq!(meta.default_geometry, "geometry_lod2_2");
+    // delft carries LoD0, so the default geometry is the un-suffixed footprint
+    // column (§9/§13.2), not the highest LoD.
+    assert_eq!(meta.default_geometry, "geometry");
     assert_eq!(meta.bbox_column, "bbox");
     assert!(meta.crs.is_some());
     let arrow = s.schema.to_arrow_schema().unwrap();
-    assert!(arrow.field_with_name("geometry_lod0").is_ok());
+    assert!(arrow.field_with_name("geometry").is_ok());
+    assert!(arrow.field_with_name("geometry_lod0").is_err());
 }
 
 #[test]

@@ -36,6 +36,40 @@ fn delft_encodes_all_objects_in_batches() {
     assert!(bbox.null_count() < b.num_rows());
 }
 
+/// delft carries a real LoD `0` footprint. It must land in the un-suffixed
+/// `geometry` column (the GeoParquet-legal primary slot, §9), and — because a
+/// bare column name cannot encode the LoD — its `geometry_properties` must
+/// carry `"lod":"0"` (§12's additional-keys mechanism), so decode/export can
+/// recover the LoD.
+#[test]
+fn delft_lod0_lands_in_bare_geometry_with_lod_in_properties() {
+    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let s = scan(&src).unwrap();
+    let batches: Vec<_> = encode(&src, &s, 4096, false)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let b = &batches[0];
+    let geom = b
+        .column_by_name("geometry")
+        .expect("bare geometry column exists for LoD0");
+    assert!(
+        geom.null_count() < b.num_rows(),
+        "some LoD0 geometry present in the bare column"
+    );
+    let props = b
+        .column_by_name("geometry_properties")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    let first = (0..b.num_rows())
+        .find(|&i| props.is_valid(i))
+        .expect("at least one non-null geometry_properties");
+    let v: serde_json::Value = serde_json::from_str(props.value(first)).unwrap();
+    assert_eq!(v["lod"], "0", "footprint properties must carry lod 0");
+}
+
 #[test]
 fn railway_encodes_with_semantics_and_templates() {
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();

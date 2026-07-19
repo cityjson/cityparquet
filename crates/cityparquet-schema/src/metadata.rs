@@ -134,12 +134,19 @@ impl CityParquetMetadata {
     /// column carries `encoding: "WKB"`, its `geometry_types` (with the `" Z"`
     /// 3D suffix), the dataset `crs` as PROJJSON (§13.3 resolves it at import),
     /// `edges: "planar"`, and the CityParquet extension `cityparquet:orientation`
-    /// (3D right-hand winding, §7.1). `primary_column` is the highest-LoD legal
+    /// (3D right-hand winding, §7.1). `primary_column` is the un-suffixed
+    /// `geometry` (LoD0 footprint) when present, else the highest-LoD legal
     /// column. Returns `None` when no column is GeoParquet-legal (e.g. a
     /// Solid-only dataset) — the caller then writes no `geo` key, and the file
     /// is simply not a GeoParquet file (still a valid CityParquet table).
     pub fn geoparquet_geo_value(&self, columns: &[(String, Vec<String>)]) -> Option<Value> {
-        let (primary, _) = columns.last()?;
+        // Prefer the un-suffixed `geometry` column (the LoD0 footprint) as the
+        // primary; otherwise the highest-LoD legal column (last, ascending).
+        let primary = columns
+            .iter()
+            .find(|(name, _)| name == "geometry")
+            .or_else(|| columns.last())
+            .map(|(name, _)| name.clone())?;
         let mut cols = serde_json::Map::new();
         for (name, geometry_types) in columns {
             let mut column = serde_json::Map::new();
@@ -291,6 +298,32 @@ mod tests {
         assert_eq!(cols["geometry_lod2_2"]["encoding"], "WKB");
         assert!(!cols.contains_key("geometry_properties_lod0"));
         // Highest LoD (last in the ascending list) is the primary column.
+        assert_eq!(geo["primary_column"], "geometry_lod2_2");
+    }
+
+    #[test]
+    fn primary_column_is_bare_geometry_when_lod0_present() {
+        // Real data maps LoD0 to the un-suffixed `geometry` column, which is the
+        // GeoParquet-legal primary footprint (§13.3).
+        let columns = vec![
+            ("geometry".to_string(), vec!["MultiPolygon Z".to_string()]),
+            (
+                "geometry_lod2_2".to_string(),
+                vec!["MultiPolygon Z".to_string()],
+            ),
+        ];
+        let geo = sample().geoparquet_geo_value(&columns).unwrap();
+        assert_eq!(geo["primary_column"], "geometry");
+        assert!(geo["columns"].get("geometry").is_some());
+    }
+
+    #[test]
+    fn primary_column_stays_highest_lod_without_lod0() {
+        let columns = vec![(
+            "geometry_lod2_2".to_string(),
+            vec!["MultiPolygon Z".to_string()],
+        )];
+        let geo = sample().geoparquet_geo_value(&columns).unwrap();
         assert_eq!(geo["primary_column"], "geometry_lod2_2");
     }
 

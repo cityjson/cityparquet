@@ -1188,7 +1188,7 @@ fn by_type_convert_of_railway_writes_ten_family_tables() {
 /// G1: a default convert (no `--geoarrow`) still writes the GeoParquet `geo`
 /// key — declaring ONLY the GeoParquet-legal columns — while the geometry
 /// fields stay plain BLOB (no `geoarrow.wkb` field extension) so DuckDB reads
-/// them with zero setup. delft's `geometry_lod0` is a `MultiPolygon Z`
+/// them with zero setup. delft's LoD0 `geometry` is a `MultiPolygon Z`
 /// footprint (legal); its `lod1.2/1.3/2.2` are `Solid`s (PolyhedralSurfaceZ,
 /// illegal) and must NOT appear in `geo.columns`.
 #[test]
@@ -1216,14 +1216,14 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
     let geo: serde_json::Value = serde_json::from_str(geo_kv.value.as_deref().unwrap()).unwrap();
     let columns = geo["columns"].as_object().unwrap();
     assert!(
-        columns.contains_key("geometry_lod0"),
-        "the legal LoD0 MultiPolygon column must be declared"
+        columns.contains_key("geometry"),
+        "the legal LoD0 MultiPolygon footprint must be declared in the un-suffixed geometry column"
     );
     assert_eq!(
-        columns["geometry_lod0"]["geometry_types"],
+        columns["geometry"]["geometry_types"],
         serde_json::json!(["MultiPolygon Z"])
     );
-    assert_eq!(geo["primary_column"], "geometry_lod0");
+    assert_eq!(geo["primary_column"], "geometry");
     for solid_lod in ["geometry_lod1_2", "geometry_lod1_3", "geometry_lod2_2"] {
         assert!(
             !columns.contains_key(solid_lod),
@@ -1231,7 +1231,7 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
         );
     }
     // The CRS is PROJJSON (resolved from delft's OGC URL to EPSG:7415).
-    assert_eq!(columns["geometry_lod0"]["crs"]["id"]["code"], 7415);
+    assert_eq!(columns["geometry"]["crs"]["id"]["code"], 7415);
 
     // (b) Geometry field is plain Binary with no geoarrow extension (default).
     let field = builder
@@ -1271,12 +1271,13 @@ fn geoarrow_opt_in_restores_tag_and_geo_key() {
         "--geoarrow must write the `geo` key"
     );
 
+    // The LoD0 footprint is the un-suffixed primary `geometry` column; under
+    // --geoarrow it advertises the geoarrow.wkb extension.
     let field = builder
         .schema()
-        .fields()
-        .iter()
-        .find(|f| f.name().starts_with("geometry_"))
-        .unwrap();
+        .field_with_name("geometry")
+        .unwrap()
+        .clone();
     assert_eq!(
         field
             .metadata()
