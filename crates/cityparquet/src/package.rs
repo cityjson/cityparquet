@@ -28,6 +28,7 @@ use cjseq::CityJSONFeature;
 
 use crate::appearance::AppearanceInterner;
 use crate::encode::{LocalDefs, encode, encode_buffered, rewrite_geometry_appearance};
+use crate::lod0::Lod0Options;
 use crate::order::feature_hilbert_key;
 use crate::recipe::WriterRecipe;
 use crate::scan::{ScanResult, scan};
@@ -143,6 +144,14 @@ pub struct ConvertOptions {
     /// `three_d` extension's `ST_3DFromWKB(BLOB)` with zero setup); ON for
     /// GeoPandas/QGIS/GDAL interop.
     pub geoarrow: bool,
+    /// Synthesise an LoD0 footprint into the primary `geometry` column when an
+    /// object has no source LoD0 (§9 "LoD0 synthesis"). ON by default so the
+    /// GeoParquet primary column is populated for 2D consumers; a synthesised
+    /// footprint is marked in `geometry_properties` and exported as a real
+    /// `lod:"0"` geometry.
+    pub generate_lod0: bool,
+    /// Thresholds for LoD0 synthesis (used only when `generate_lod0`).
+    pub lod0: Lod0Options,
 }
 
 impl ConvertOptions {
@@ -161,6 +170,8 @@ impl ConvertOptions {
             ordering: RowOrder::default(),
             layout: TableLayout::default(),
             geoarrow: false,
+            generate_lod0: true,
+            lod0: Lod0Options::default(),
         }
     }
 }
