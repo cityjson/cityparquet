@@ -8,3 +8,4 @@
 //! by any conformant writer can be described, not just this crate's own.
 
 pub mod attribute_type;
+pub mod properties;
