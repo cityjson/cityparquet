@@ -146,15 +146,30 @@ pub fn build_item(tables: &PackageTables, opts: &ItemOptions) -> Result<Item> {
     }
 
     // The first table also goes through `data_asset`, purely because that is
-    // what declares the STAC File extension — but the asset it inserts is
-    // keyed `"data"` with roles `["data"]`, so it is then *replaced* by a
-    // properly keyed and roled one.
+    // the only `StacItemBuilder` method that flips on the STAC File
+    // extension (`uses_file_extension` is a private field it alone sets) —
+    // but the asset it inserts is keyed `"data"` with roles `["data"]`, and
+    // it is *not* replaced by the properly keyed and roled one below: the
+    // two live under different keys (`"data"` vs. the filename-derived key)
+    // in the builder's asset map, so both coexist in the built Item.
     //
-    // Without that replacement the primary object table would be the one asset
-    // a reader cannot map back to a file by key, and the only table missing
-    // the `cityparquet-objects` role — which is exactly the role Plan 2b binds
-    // `export` to when it drops the manifest's `sidecar_files` list. Iterating
-    // that role would have silently skipped the first table.
+    // Without the filename-keyed asset the primary object table would be the
+    // one asset a reader cannot map back to a file by key, and the only
+    // table missing the `cityparquet-objects` role — which is exactly the
+    // role Plan 2b binds `export` to when it drops the manifest's
+    // `sidecar_files` list. Iterating that role would have silently skipped
+    // the first table.
+    //
+    // Known interop wart: a generic STAC consumer enumerating `assets` sees
+    // the first object table listed twice (once as `"data"`, once by
+    // filename) with the same `href`. This crate's own `open()` is
+    // unaffected — it filters by role and skips the `"data"`-only asset — so
+    // the wart is cosmetic for this codebase, but it is real for other STAC
+    // clients. It is not fixed here: `city3d_stac_types::StacItemBuilder`
+    // exposes no way to declare the File extension without inserting a
+    // `"data"`-keyed asset (no asset-removal method, no public
+    // `uses_file_extension` setter), and that builder lives in the separate
+    // `city3d-stac-tool` repo, not this one.
     let mut declared_file_extension = false;
     for path in &tables.tables {
         let (size, checksum) = assets::file_facts(path);
@@ -257,31 +272,46 @@ fn package_cityparquet_version(tables: &PackageTables) -> Result<String> {
 
 /// Resolve `properties.datetime` for a built Item.
 ///
-/// Order: `explicit` wins when given; otherwise `source_metadata`'s
-/// `referenceDate` (a CityJSON header field, `YYYY-MM-DD` or already an RFC
-/// 3339 datetime) when the footer preserved one; otherwise the current UTC
-/// time at build time, as RFC 3339.
+/// Order: `explicit` wins when given *and it parses as RFC 3339*; otherwise
+/// `source_metadata`'s `referenceDate` (a CityJSON header field, `YYYY-MM-DD`
+/// or already an RFC 3339 datetime) when the footer preserved one *and the
+/// normalised result parses*; otherwise the current UTC time at build time,
+/// as RFC 3339.
 ///
 /// STAC requires every Item to carry a non-null `datetime` (or an explicit
-/// start/end pair, which this crate never writes) to be schema-valid.
+/// start/end pair, which this crate never writes) to be schema-valid. A
+/// malformed candidate — a caller-supplied `explicit` that isn't RFC 3339, or
+/// a source `referenceDate` too broken to normalise (e.g. `"2026-99-99"`) —
+/// must not be returned as-is: [`StacItemBuilder::datetime`] silently turns
+/// an unparsable string into a `null` `properties.datetime`, which is exactly
+/// the schema-invalid Item this function exists to rule out. Each candidate
+/// is therefore validated with [`chrono::DateTime::parse_from_rfc3339`]
+/// before being returned; a candidate that fails validation is skipped in
+/// favour of the next one, never returned.
+///
 /// Design decision of 2026-07-21, superseding 2026-07-20's "the CLI stamps,
 /// the library does not": almost no real CityJSON carries `referenceDate`,
 /// so leaving `datetime` unset would make most derived Items schema-invalid
 /// on their own — the timestamp fallback applies uniformly here, in the one
 /// place the whole policy lives, rather than per-caller.
 fn resolve_datetime(explicit: Option<&str>, source_metadata: Option<&Value>) -> String {
-    if let Some(dt) = explicit {
+    if let Some(dt) = explicit
+        && chrono::DateTime::parse_from_rfc3339(dt).is_ok()
+    {
         return dt.to_string();
     }
     if let Some(reference_date) = source_metadata
         .and_then(|m| m.get("referenceDate"))
         .and_then(|v| v.as_str())
     {
-        return if reference_date.contains('T') {
+        let normalised = if reference_date.contains('T') {
             reference_date.to_string()
         } else {
             format!("{reference_date}T00:00:00Z")
         };
+        if chrono::DateTime::parse_from_rfc3339(&normalised).is_ok() {
+            return normalised;
+        }
     }
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
@@ -485,5 +515,39 @@ mod tests {
             resolved.parse::<DateTime<Utc>>().is_ok(),
             "must still fall back to a valid RFC 3339 timestamp: {resolved}"
         );
+    }
+
+    /// A malformed `referenceDate` (not a valid calendar date, so it cannot
+    /// be normalised into anything RFC 3339 parses) must not be returned
+    /// as-is — `StacItemBuilder::datetime` would silently turn it into a
+    /// null `properties.datetime`. It falls through to the timestamp
+    /// fallback instead.
+    #[test]
+    fn malformed_reference_date_falls_through_to_timestamp() {
+        let source = json!({"referenceDate": "2026-99-99"});
+        let resolved = resolve_datetime(None, Some(&source));
+        assert!(
+            resolved.parse::<DateTime<Utc>>().is_ok(),
+            "malformed referenceDate must fall through to a valid RFC 3339 timestamp: {resolved}"
+        );
+    }
+
+    /// A well-formed `referenceDate` still resolves exactly as before —
+    /// the validation added for the malformed case must not change the
+    /// happy path.
+    #[test]
+    fn well_formed_reference_date_still_resolves_normally() {
+        let source = json!({"referenceDate": "2019-06-01"});
+        let resolved = resolve_datetime(None, Some(&source));
+        assert_eq!(resolved, "2019-06-01T00:00:00Z");
+    }
+
+    /// A malformed explicit value must not be returned as-is either; it
+    /// falls through to `source_metadata`'s `referenceDate`.
+    #[test]
+    fn malformed_explicit_falls_through_to_reference_date() {
+        let source = json!({"referenceDate": "2019-06-01"});
+        let resolved = resolve_datetime(Some("not-a-datetime"), Some(&source));
+        assert_eq!(resolved, "2019-06-01T00:00:00Z");
     }
 }

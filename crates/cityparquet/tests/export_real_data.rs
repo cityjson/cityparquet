@@ -1347,9 +1347,9 @@ fn write_item(package_dir: &std::path::Path, item: &Item) {
 /// authoritative locator per `PackageTables::open`'s doc comment, not the
 /// asset's map key) resolves to `name`.
 fn has_asset_with_role(item: &Item, role: &str, name: &str) -> bool {
-    item.assets.values().any(|a| {
-        a.roles.iter().any(|r| r == role) && a.href.trim_start_matches("./") == name
-    })
+    item.assets
+        .values()
+        .any(|a| a.roles.iter().any(|r| r == role) && a.href.trim_start_matches("./") == name)
 }
 
 /// A `cityparquet-objects`/`cityparquet-sidecar` asset pointing at `./{name}`,
