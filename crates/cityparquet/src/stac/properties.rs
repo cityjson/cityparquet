@@ -11,6 +11,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use arrow_array::cast::AsArray;
+use arrow_array::{Array, ArrayRef, StringArray};
 use arrow_schema::{Schema, extension::EXTENSION_TYPE_NAME_KEY};
 use city3d_stac_types::metadata::AttributeDefinition;
 use city3d_stac_types::stac::{City3dProperties, CityObjectsCount};
@@ -32,6 +34,9 @@ use crate::stac::attribute_type::to_city3d;
 /// attribute is *stored* as Utf8, so the raw Arrow type alone cannot
 /// distinguish it from a plain string column.
 const ARROW_JSON_EXTENSION: &str = "arrow.json";
+
+/// The reserved column carrying each row's CityObject type (§5.1).
+const OBJECT_TYPE_COLUMN: &str = "object_type";
 
 /// The object tables of a package, resolved once and reused.
 pub struct PackageTables {
@@ -252,6 +257,104 @@ fn any_prefixed_column_populated(
     Ok(if any_known { Some(false) } else { None })
 }
 
+/// The distinct CityObject types a package carries.
+///
+/// **Filenames cannot answer this, even under the by-type layout.** Spec §4.3
+/// requires a 2nd-level type to be written into its 1st-level parent's table:
+/// `building.parquet` carries `Building`, `BuildingPart`,
+/// `BuildingInstallation` and the rest, and its name mentions only the first.
+/// A filename-derived answer therefore systematically under-reports what is
+/// present, so the `object_type` column is read in every case — one code path
+/// for both layouts.
+///
+/// The column is dictionary-encoded (§5.1), so the distinct values come from
+/// the dictionary rather than a per-row scan, and only that column is
+/// projected.
+///
+/// Returned sorted and deduplicated, so a derived Item is byte-stable.
+pub fn derive_co_types(tables: &PackageTables) -> Result<Vec<String>> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+
+    for path in &tables.tables {
+        let file = fs::File::open(path)
+            .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+            CityParquetError::Parquet(format!("cannot open {}: {e}", path.display()))
+        })?;
+
+        let descr = builder.parquet_schema();
+        let Some(root) = (0..descr.num_columns()).find(|&i| {
+            descr.column(i).path().parts().first().map(String::as_str) == Some(OBJECT_TYPE_COLUMN)
+        }) else {
+            return Err(CityParquetError::Metadata(format!(
+                "{} has no {OBJECT_TYPE_COLUMN} column",
+                path.display()
+            )));
+        };
+        let mask = ProjectionMask::leaves(descr, [root]);
+
+        let reader = builder
+            .with_projection(mask)
+            .build()
+            .map_err(|e| CityParquetError::Parquet(format!("cannot build reader: {e}")))?;
+
+        for batch in reader {
+            let batch = batch
+                .map_err(|e| CityParquetError::Parquet(format!("read {}: {e}", path.display())))?;
+            if batch.num_columns() == 0 {
+                continue;
+            }
+            collect_string_values(batch.column(0), &mut seen)?;
+        }
+    }
+
+    Ok(seen.into_iter().collect())
+}
+
+/// Collect the distinct non-null string values of `array` into `seen`.
+///
+/// `object_type` is dictionary-encoded, so the fast path reads the dictionary
+/// values directly. A plain string array is also accepted, so a
+/// CityParquet-conformant file from a writer that chose not to dictionary-encode
+/// the column still works — this crate reads other writers' packages too.
+fn collect_string_values(array: &ArrayRef, seen: &mut BTreeSet<String>) -> Result<()> {
+    if let Some(dict) = array.as_any_dictionary_opt() {
+        let values = dict
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                CityParquetError::Metadata(format!(
+                    "{OBJECT_TYPE_COLUMN} dictionary values are not Utf8"
+                ))
+            })?;
+        // The dictionary may carry entries no row references; that is
+        // harmless here, since a CityParquet writer builds it from the values
+        // it actually wrote.
+        for i in 0..values.len() {
+            if values.is_valid(i) {
+                seen.insert(values.value(i).to_string());
+            }
+        }
+        return Ok(());
+    }
+
+    let values = array
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| {
+            CityParquetError::Metadata(format!(
+                "{OBJECT_TYPE_COLUMN} is neither dictionary-encoded nor Utf8"
+            ))
+        })?;
+    for i in 0..values.len() {
+        if values.is_valid(i) {
+            seen.insert(values.value(i).to_string());
+        }
+    }
+    Ok(())
+}
+
 /// Derive the footer- and schema-only `city3d:*` fields.
 ///
 /// `co_types` and `semantic_surfaces` need further column work and are left
@@ -259,11 +362,12 @@ fn any_prefixed_column_populated(
 pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
     let mut props = City3dProperties::new();
     let mut total_rows: u64 = 0;
-    // Appearance presence is a property of the DATA, so it is judged across
-    // every object table, not just the first — a by-type package may carry
-    // textures on one type and none on another.
+    // Appearance and semantics presence are properties of the DATA, so they
+    // are judged across every object table, not just the first — a by-type
+    // package may carry textures on one type and none on another.
     let mut textures: Option<bool> = None;
     let mut materials: Option<bool> = None;
+    let mut semantics: Option<bool> = None;
 
     for (idx, path) in tables.tables.iter().enumerate() {
         let file = fs::File::open(path)
@@ -297,6 +401,12 @@ pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
             materials,
             any_prefixed_column_populated(path, &file_meta, &schema, "material_lod")?,
         );
+        // Semantic surfaces live in the `geometry_properties*` columns (§8).
+        // Same JSON-column caveat as appearance: no statistics, so this reads.
+        semantics = merge_presence(
+            semantics,
+            any_prefixed_column_populated(path, &file_meta, &schema, "geometry_properties")?,
+        );
     }
 
     // A declared appearance sidecar is a positive signal in its own right:
@@ -315,6 +425,8 @@ pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
 
     props.textures = textures;
     props.materials = materials;
+    props.semantic_surfaces = semantics;
+    props.co_types = derive_co_types(tables)?;
     props.city_objects = Some(CityObjectsCount::Integer(total_rows));
     Ok(props)
 }
