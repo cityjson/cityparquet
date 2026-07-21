@@ -3,7 +3,7 @@
 //! Every input here is a real CityJSON file converted by this crate — no
 //! inline artificial CityJSON, per this repo's testing discipline.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use city3d_stac_types::metadata::AttributeType;
 use city3d_stac_types::stac::CityObjectsCount;
@@ -20,10 +20,25 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
-/// Convert a real fixture into a temp package and hand back its directory.
+/// A committed, in-tree fixture under `crates/cityparquet/tests/data/` (small
+/// hand-derived inputs with no public download URL — see `roundtrip_real_data`).
+fn data_fixture(name: &str) -> PathBuf {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(name);
+    assert!(p.exists(), "missing committed fixture {name} in tests/data");
+    p
+}
+
+/// Convert a fetched `tests/fixtures/` input into a temp package.
 fn convert_fixture(name: &str, dir: &tempfile::TempDir) -> PathBuf {
+    convert_fixture_path(&fixture(name), dir)
+}
+
+/// Convert a resolved path (so a committed [`data_fixture`] can be passed).
+fn convert_fixture_path(input: &Path, dir: &tempfile::TempDir) -> PathBuf {
     let out = dir.path().join("pkg");
-    convert(&ConvertOptions::new(fixture(name), out.clone())).expect("convert fixture");
+    convert(&ConvertOptions::new(input.to_path_buf(), out.clone())).expect("convert fixture");
     out
 }
 
@@ -326,7 +341,7 @@ fn derived_item_assets_exist_and_bbox_is_wgs84() {
 #[test]
 fn json_attributes_are_reported_as_object_not_string() {
     let dir = tempfile::tempdir().unwrap();
-    let pkg = convert_fixture("helsinki_address.city.jsonl", &dir);
+    let pkg = convert_fixture_path(&data_fixture("helsinki_address.city.jsonl"), &dir);
 
     let tables = PackageTables::open(&pkg).expect("resolve tables");
     let props = derive_from_footer(&tables).expect("derive");
