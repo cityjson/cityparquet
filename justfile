@@ -22,6 +22,13 @@ fixtures:
     # b1_lod2_cs_w_sem = lod2 Solid + boundedBy Wall/Roof/Ground via xlink (semantics).
     curl -sSfo tests/fixtures/b1_lod2_s.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_s.gml
     curl -sSfo tests/fixtures/b1_lod2_cs_w_sem.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_cs_w_sem.gml
+    # Zero-object CityJSONSeq fixture (synthetic, no network fetch needed):
+    # a single CityJSON header line, empty CityObjects/vertices, no feature
+    # lines — the minimal input that scans to zero city-object rows. Used by
+    # `zero_object_input_is_rejected` (crates/cityparquet/tests/bytype_layout.rs)
+    # to prove a zero-object conversion is rejected rather than silently
+    # producing an empty package.
+    printf '%s\n' '{"type":"CityJSON","version":"2.0","transform":{"scale":[0.001,0.001,0.001],"translate":[0.0,0.0,0.0]},"CityObjects":{},"vertices":[]}' > tests/fixtures/empty.city.jsonl
 
 interop:
     ./scripts/interop.sh

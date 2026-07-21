@@ -1007,20 +1007,23 @@ fn by_type_convert_of_delft_survives_many_small_batches() {
     );
 }
 
-/// M5 Codex review (Important finding 1): `TableWriters` for
+/// M5 Codex review (Important finding 1) originally flagged that
 /// `TableLayout::ByType` opens a per-type writer LAZILY, on that type's
-/// first row (see `by_type_table_index`) — so an input that encodes to
-/// ZERO rows opens no writer at all, and `finish` returns an empty table
-/// list. Written straight into `metadata.json`, that used to produce a
-/// `tables: []` package `export` rejects outright. Derived fixture
-/// (sanctioned): delft's own CityJSONSeq HEADER line only, every feature
-/// line stripped — a genuine zero-feature stream, not a hand-rolled
-/// artificial CityJSON. Ruling: ByType must fall back to writing the same
-/// single, standard, empty `cityobjects.parquet` Single always writes for
-/// an empty input — asserted here on BOTH layouts, so ByType is proven to
-/// match Single exactly (parity), not merely "not crash".
+/// first row (see `by_type_table_index`) — so an input that encodes to ZERO
+/// rows opens no writer at all, and `finish` returns an empty table list,
+/// which used to be papered over with a `cityobjects.parquet` fallback that
+/// `TableLayout::Single` matched by always keeping its own (always-opened)
+/// table around even when empty. Derived fixture (sanctioned): delft's own
+/// CityJSONSeq HEADER line only, every feature line stripped — a genuine
+/// zero-feature stream, not a hand-rolled artificial CityJSON.
+///
+/// Plan decision (2026-07-21, mandatory-by-type-layout): that fallback is
+/// gone. `write_package` now rejects a zero-object conversion outright
+/// (`scan_result.object_count == 0`, layout-agnostic — see `package.rs`),
+/// asserted here on BOTH layouts so neither one silently produces an empty
+/// package anymore.
 #[test]
-fn empty_input_writes_the_standard_empty_single_table_under_both_layouts() {
+fn empty_input_is_rejected_under_both_layouts() {
     let src = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
     let header_only = format!(
         "{}\n",
@@ -1036,43 +1039,16 @@ fn empty_input_writes_the_standard_empty_single_table_under_both_layouts() {
         let out = tempfile::tempdir().unwrap();
         let mut opts = ConvertOptions::new(empty_input.clone(), out.path().to_path_buf());
         opts.layout = layout;
-        let report = convert(&opts).unwrap_or_else(|e| {
-            panic!("layout {layout:?}: convert of a zero-feature input must succeed, got: {e}")
-        });
-        assert_eq!(
-            report.object_count, 0,
-            "layout {layout:?}: expected 0 objects from a header-only input"
-        );
-
-        let manifest: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(out.path().join("metadata.json")).unwrap(),
-        )
-        .unwrap();
-        let tables: Vec<String> = serde_json::from_value(manifest["tables"].clone()).unwrap();
-        assert_eq!(
-            tables,
-            vec!["cityobjects.parquet".to_string()],
-            "layout {layout:?}: an empty conversion must fall back to exactly the standard \
-             single empty table, got: {tables:?}"
+        let err = convert(&opts).expect_err(&format!(
+            "layout {layout:?}: a zero-object conversion must fail, not succeed"
+        ));
+        assert!(
+            format!("{err}").contains("no city objects"),
+            "layout {layout:?}: expected a clear 'no city objects' error, got: {err}"
         );
         assert!(
-            out.path().join("cityobjects.parquet").exists(),
-            "layout {layout:?}: the fallback table must actually exist on disk"
-        );
-
-        // Parity with Single, not just "export doesn't reject it": the
-        // package must actually round-trip through export like any other.
-        let export_dir = tempfile::tempdir().unwrap();
-        let export_report = export(&ExportOptions {
-            package_dir: out.path().to_path_buf(),
-            output: export_dir.path().join("export.city.jsonl"),
-        })
-        .unwrap_or_else(|e| {
-            panic!("layout {layout:?}: export of the empty package must succeed, got: {e}")
-        });
-        assert_eq!(
-            export_report.object_count, 0,
-            "layout {layout:?}: export of the empty package must report 0 objects"
+            !out.path().join("metadata.json").exists(),
+            "layout {layout:?}: a rejected conversion must leave no package behind"
         );
     }
 }

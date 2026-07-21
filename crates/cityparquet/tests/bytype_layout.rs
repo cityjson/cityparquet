@@ -62,3 +62,27 @@ fn railway_by_type_writes_one_file_per_first_level_family() {
          parent's file"
     );
 }
+
+/// `tests/fixtures/empty.city.jsonl` is a single CityJSONSeq header line
+/// (`CityObjects: {}`, no feature lines follow) — the minimal input that
+/// scans to zero city-object rows (`scan_result.object_count == 0`).
+/// `write_package` used to paper over a zero-row `TableLayout::ByType` run by
+/// writing a standalone, empty `cityobjects.parquet` fallback table (its
+/// writers open lazily per-family, so zero rows means zero writers ever
+/// open); per plan decision (2026-07-21) that fallback is gone and this must
+/// be a hard error instead, checked layout-agnostically off
+/// `scan_result.object_count` — see `crates/cityparquet/tests/convert_real_data.rs`'s
+/// `empty_input_is_rejected_under_both_layouts` for the same assertion made
+/// explicitly under both `TableLayout::ByType` and `TableLayout::Single`.
+/// This test uses `ConvertOptions`' default layout (currently `Single`).
+#[test]
+fn zero_object_input_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("pkg");
+    let opts = ConvertOptions::new(fixture("empty.city.jsonl"), out);
+    let err = convert(&opts).unwrap_err();
+    assert!(
+        format!("{err}").contains("no city objects"),
+        "a zero-object conversion must fail clearly, got: {err}"
+    );
+}
