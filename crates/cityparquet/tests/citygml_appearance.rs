@@ -5,7 +5,7 @@
 //! legitimately permutes on re-intern). Materials: `building_with_materials.gml`.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use arrow_array::RecordBatch;
@@ -15,9 +15,9 @@ use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Lod;
-use cityparquet::schema::PackageManifest;
 use cityparquet::schema::Profile;
 use cityparquet::sidecar::{read_materials, read_textures};
+use cityparquet::stac::properties::PackageTables;
 use cityparquet::wkb_read::{DecodedGeometry, DecodedKind};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
@@ -135,19 +135,16 @@ fn lod_keyed_appearance(batch: &RecordBatch, prefix: &str, row: usize) -> Option
 }
 
 fn face_materials(pkg: &Path) -> FaceMaterials {
-    let manifest: PackageManifest =
-        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
-    let meta = ParquetRecordBatchReaderBuilder::try_new(
-        File::open(pkg.join(&manifest.tables[0])).unwrap(),
-    )
-    .unwrap()
-    .cityparquet_metadata()
-    .unwrap();
+    let tables = PackageTables::open(pkg).unwrap();
+    let meta = ParquetRecordBatchReaderBuilder::try_new(File::open(&tables.tables[0]).unwrap())
+        .unwrap()
+        .cityparquet_metadata()
+        .unwrap();
     let table = read_materials(&pkg.join("materials.parquet")).unwrap();
 
     let mut out = BTreeMap::new();
-    for name in &manifest.tables {
-        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(pkg.join(name)).unwrap())
+    for path in &tables.tables {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path).unwrap())
             .unwrap()
             .build()
             .unwrap();
@@ -243,19 +240,16 @@ type FaceTextures = BTreeMap<(String, String, String), Vec<(String, usize, Strin
 /// dereferenced ring leaf)` — the texture def + inlined UVs of each textured ring,
 /// keyed by its face geometry so the comparison is order- and index-independent.
 fn face_textures(pkg: &Path) -> FaceTextures {
-    let manifest: PackageManifest =
-        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
-    let meta = ParquetRecordBatchReaderBuilder::try_new(
-        File::open(pkg.join(&manifest.tables[0])).unwrap(),
-    )
-    .unwrap()
-    .cityparquet_metadata()
-    .unwrap();
+    let tables = PackageTables::open(pkg).unwrap();
+    let meta = ParquetRecordBatchReaderBuilder::try_new(File::open(&tables.tables[0]).unwrap())
+        .unwrap()
+        .cityparquet_metadata()
+        .unwrap();
     let table = read_textures(&pkg.join("textures.parquet")).unwrap();
 
     let mut out = BTreeMap::new();
-    for name in &manifest.tables {
-        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(pkg.join(name)).unwrap())
+    for path in &tables.tables {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path).unwrap())
             .unwrap()
             .build()
             .unwrap();

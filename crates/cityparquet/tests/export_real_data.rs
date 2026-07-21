@@ -6,14 +6,16 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Schema};
+use city3d_stac_types::stac::types::{Asset, Item};
 use cityparquet::CityParquetError;
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet::schema::{PackageManifest, Profile};
+use cityparquet::schema::Profile;
 use cityparquet::sidecar::{read_materials, read_templates, write_materials, write_templates};
 use cityparquet::source::{Source, SourceFormat};
+use cityparquet::stac::assets::{PARQUET_MEDIA_TYPE, ROLE_OBJECT_TABLE, ROLE_SIDECAR};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::metadata::KeyValue;
@@ -1328,14 +1330,37 @@ fn delft_also_exports_as_a_single_whole_city_json_document() {
     assert_eq!(doc.number_of_city_objects(), 1115, "top-level objects only");
 }
 
-fn read_manifest(package_dir: &std::path::Path) -> PackageManifest {
+/// Read `metadata.json` back as the STAC Item it now is (Plan 2b) — the
+/// counterpart to [`write_item`] the adversarial tests below use to inspect
+/// and mutate a package's asset inventory.
+fn read_item(package_dir: &std::path::Path) -> Item {
     let text = std::fs::read_to_string(package_dir.join("metadata.json")).unwrap();
     serde_json::from_str(&text).unwrap()
 }
 
-fn write_manifest(package_dir: &std::path::Path, manifest: &PackageManifest) {
-    let text = serde_json::to_string_pretty(manifest).unwrap();
+fn write_item(package_dir: &std::path::Path, item: &Item) {
+    let text = serde_json::to_string_pretty(item).unwrap();
     std::fs::write(package_dir.join("metadata.json"), text).unwrap();
+}
+
+/// Whether `item` carries an asset with `role`, whose `href` (the
+/// authoritative locator per `PackageTables::open`'s doc comment, not the
+/// asset's map key) resolves to `name`.
+fn has_asset_with_role(item: &Item, role: &str, name: &str) -> bool {
+    item.assets.values().any(|a| {
+        a.roles.iter().any(|r| r == role) && a.href.trim_start_matches("./") == name
+    })
+}
+
+/// A `cityparquet-objects`/`cityparquet-sidecar` asset pointing at `./{name}`,
+/// built the same way [`cityparquet::stac::mod::package_asset`] builds one —
+/// media type plus the `data` + role-specific roles pair — so the adversarial
+/// Items constructed below exercise exactly the shape `PackageTables::open`
+/// expects, not a hand-simplified stand-in for it.
+fn table_asset(name: &str, role: &str) -> Asset {
+    Asset::new(format!("./{name}"))
+        .with_media_type(PARQUET_MEDIA_TYPE)
+        .with_roles(["data".to_string(), role.to_string()])
 }
 
 /// M4 Codex-review Finding 1(a): the package manifest is authoritative for
@@ -1357,13 +1382,11 @@ fn export_errors_when_manifest_lists_templates_but_the_sidecar_file_is_missing()
     opts.profile = Profile::Compatibility;
     convert(&opts).unwrap();
 
-    let manifest = read_manifest(package_dir.path());
+    let item = read_item(package_dir.path());
     assert!(
-        manifest
-            .sidecar_files
-            .iter()
-            .any(|f| f == "geometry_templates.parquet"),
-        "precondition: the Compatibility manifest lists geometry_templates.parquet"
+        has_asset_with_role(&item, ROLE_SIDECAR, "geometry_templates.parquet"),
+        "precondition: the Compatibility Item carries a cityparquet-sidecar asset for \
+         geometry_templates.parquet"
     );
 
     let templates_path = package_dir.path().join("geometry_templates.parquet");
@@ -1405,17 +1428,18 @@ fn export_ignores_an_unlisted_geometry_templates_file_left_on_disk() {
     opts.profile = Profile::Compatibility;
     convert(&opts).unwrap();
 
-    let mut manifest = read_manifest(package_dir.path());
-    let before = manifest.sidecar_files.len();
-    manifest
-        .sidecar_files
-        .retain(|f| f != "geometry_templates.parquet");
+    let mut item = read_item(package_dir.path());
+    let before = item.assets.len();
+    item.assets.retain(|_, a| {
+        !(a.roles.iter().any(|r| r == ROLE_SIDECAR)
+            && a.href.trim_start_matches("./") == "geometry_templates.parquet")
+    });
     assert_eq!(
-        manifest.sidecar_files.len(),
+        item.assets.len(),
         before - 1,
-        "precondition: geometry_templates.parquet must actually have been removed from the list"
+        "precondition: the geometry_templates.parquet asset must actually have been removed"
     );
-    write_manifest(package_dir.path(), &manifest);
+    write_item(package_dir.path(), &item);
 
     // The sidecar file itself is left on disk, untouched.
     assert!(
@@ -1458,10 +1482,22 @@ fn export_rejects_a_manifest_listing_the_same_table_twice() {
 
     // delft is a single 1st-level family, so by-type conversion writes
     // exactly one main table: building.parquet.
-    let mut manifest = read_manifest(package_dir.path());
-    assert_eq!(manifest.tables, vec!["building.parquet".to_string()]);
-    manifest.tables.push(manifest.tables[0].clone());
-    write_manifest(package_dir.path(), &manifest);
+    let mut item = read_item(package_dir.path());
+    let object_table_hrefs: Vec<String> = item
+        .assets
+        .values()
+        .filter(|a| a.roles.iter().any(|r| r == ROLE_OBJECT_TABLE))
+        .map(|a| a.href.clone())
+        .collect();
+    assert_eq!(object_table_hrefs, vec!["./building.parquet".to_string()]);
+    // A second asset, under a distinct map key, whose `href` resolves to the
+    // SAME file — `PackageTables::open` dedups on the href-derived name, not
+    // the map key, so this is what actually reaches its duplicate check.
+    item.assets.insert(
+        "building-duplicate.parquet".to_string(),
+        table_asset("building.parquet", ROLE_OBJECT_TABLE),
+    );
+    write_item(package_dir.path(), &item);
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
@@ -1541,9 +1577,18 @@ fn export_reads_every_table_a_manifest_lists_not_just_the_first() {
     .unwrap();
 
     let (name_a, name_b) = split_main_table_into_two_files(package_dir.path());
-    let mut manifest = read_manifest(package_dir.path());
-    manifest.tables = vec![name_a, name_b];
-    write_manifest(package_dir.path(), &manifest);
+    let mut item = read_item(package_dir.path());
+    // The original single `building.parquet` object-table asset now names a
+    // file that no longer exists (it was split and removed above); replace
+    // it with assets for the two physical files that replaced it, in the
+    // order the original manifest-based test listed them.
+    item.assets
+        .retain(|_, a| !a.roles.iter().any(|r| r == ROLE_OBJECT_TABLE));
+    for name in [&name_a, &name_b] {
+        item.assets
+            .insert(name.clone(), table_asset(name, ROLE_OBJECT_TABLE));
+    }
+    write_item(package_dir.path(), &item);
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
@@ -1679,9 +1724,14 @@ fn export_rejects_a_second_table_with_a_renamed_attribute_column() {
     writer.write(&renamed_batch).unwrap();
     writer.close().unwrap();
 
-    let mut manifest = read_manifest(package_dir.path());
-    manifest.tables = vec![name_a, name_b.clone()];
-    write_manifest(package_dir.path(), &manifest);
+    let mut item = read_item(package_dir.path());
+    item.assets
+        .retain(|_, a| !a.roles.iter().any(|r| r == ROLE_OBJECT_TABLE));
+    for name in [&name_a, &name_b] {
+        item.assets
+            .insert(name.clone(), table_asset(name, ROLE_OBJECT_TABLE));
+    }
+    write_item(package_dir.path(), &item);
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");

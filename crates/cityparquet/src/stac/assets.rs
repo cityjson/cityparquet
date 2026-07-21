@@ -11,11 +11,18 @@ use city3d_stac_types::checksum::file_checksum;
 /// IANA media type for Parquet.
 pub const PARQUET_MEDIA_TYPE: &str = "application/vnd.apache.parquet";
 
+/// STAC asset role identifying an object table (§5). This is the role
+/// [`crate::stac::properties::PackageTables::open`] scans for to rebuild
+/// `tables` — the binding that replaced the manifest's `tables` list.
+pub const ROLE_OBJECT_TABLE: &str = "cityparquet-objects";
+/// STAC asset role identifying a sidecar: materials, textures or geometry
+/// templates (§11, §12). Scanned for by
+/// [`crate::stac::properties::PackageTables::open`] to rebuild
+/// `sidecar_files` — the binding that replaced the manifest's
+/// `sidecar_files` list.
+pub const ROLE_SIDECAR: &str = "cityparquet-sidecar";
+
 /// What a package file is, for STAC asset roles.
-///
-/// Plan 2b turns these into the binding `export` uses to find its sidecars,
-/// replacing the manifest's `sidecar_files` list. They are introduced here
-/// only as descriptive roles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetKind {
     /// An object table (§5).
@@ -32,8 +39,8 @@ impl AssetKind {
     /// filenames.
     pub fn roles(self) -> Vec<String> {
         let specific = match self {
-            AssetKind::ObjectTable => "cityparquet-objects",
-            AssetKind::Sidecar => "cityparquet-sidecar",
+            AssetKind::ObjectTable => ROLE_OBJECT_TABLE,
+            AssetKind::Sidecar => ROLE_SIDECAR,
         };
         vec!["data".to_string(), specific.to_string()]
     }

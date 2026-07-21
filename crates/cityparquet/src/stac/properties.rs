@@ -15,17 +15,17 @@ use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, StringArray};
 use arrow_schema::{Schema, extension::EXTENSION_TYPE_NAME_KEY};
 use city3d_stac_types::metadata::AttributeDefinition;
+use city3d_stac_types::stac::types::Item;
 use city3d_stac_types::stac::{City3dProperties, CityObjectsCount};
 use cityparquet_schema::model::LOD_KEY;
 use cityparquet_schema::types::Lod;
-use cityparquet_schema::{
-    AttributeType, CityParquetError, CityParquetMetadata, PackageManifest, Result,
-};
+use cityparquet_schema::{AttributeType, CityParquetError, CityParquetMetadata, Result};
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
 use crate::reader::CityParquetReaderBuilder;
+use crate::stac::assets::{ROLE_OBJECT_TABLE, ROLE_SIDECAR};
 use crate::stac::attribute_type::to_city3d;
 
 /// Extension type name tagging a Utf8 column whose values are JSON text.
@@ -50,39 +50,62 @@ pub struct PackageTables {
 impl PackageTables {
     /// Resolve a package's object tables and declared sidecars.
     ///
-    /// TEMPORARY: reads the `tables` and `sidecar_files` lists from the
-    /// package's `metadata.json` manifest, exactly as [`crate::export`] does.
-    /// Plan 2b replaces `metadata.json` with a STAC Item and rebinds this to
-    /// STAC asset roles. The binding — not the parsing — is the interesting
-    /// part of that change, so it is deliberately not anticipated here, and
-    /// no directory-scanning heuristic is invented in the meantime.
+    /// Reads `metadata.json` as a STAC Item and collects assets by role:
+    /// [`ROLE_OBJECT_TABLE`] assets become `tables`, in the Item's asset
+    /// order (an `IndexMap` preserves insertion order — the order
+    /// [`crate::stac::build_item`]'s writer-facing caller inserted them in,
+    /// which is itself first-appearance table order — see
+    /// `package::TableWriters::finish`); [`ROLE_SIDECAR`] assets become
+    /// `sidecar_files`. An asset's `href` (always `"./<name>"` for a package
+    /// this crate writes) is the authoritative locator, not its map key —
+    /// the STAC spec makes `href` the file reference, and deriving the path
+    /// from it keeps `open` correct for a foreign writer that keys its
+    /// assets differently.
     pub fn open(dir: &Path) -> Result<Self> {
         let manifest_path = dir.join("metadata.json");
         let text = fs::read_to_string(&manifest_path).map_err(|e| {
             CityParquetError::Io(format!("cannot read {}: {e}", manifest_path.display()))
         })?;
-        let manifest: PackageManifest = serde_json::from_str(&text)?;
-        if manifest.tables.is_empty() {
-            return Err(CityParquetError::Metadata(
-                "package manifest lists no tables".to_string(),
-            ));
-        }
-        // A manifest naming the same file twice is a corrupt package: every
+        let item: Item = serde_json::from_str(&text)?;
+
+        let mut tables = Vec::new();
+        let mut sidecar_files = Vec::new();
+        // A package naming the same object table twice is corrupt: every
         // object in it would be counted twice. `crate::export` rejects this
         // for the same reason, and a describing pass must not be more
         // permissive than the pass that consumes the description.
-        let mut seen = BTreeSet::new();
-        for name in &manifest.tables {
-            if !seen.insert(name.as_str()) {
-                return Err(CityParquetError::Metadata(format!(
-                    "package manifest lists duplicate table '{name}'"
-                )));
+        let mut seen_tables = BTreeSet::new();
+
+        for asset in item.assets.values() {
+            let is_object_table = asset.roles.iter().any(|r| r == ROLE_OBJECT_TABLE);
+            let is_sidecar = asset.roles.iter().any(|r| r == ROLE_SIDECAR);
+            if !is_object_table && !is_sidecar {
+                continue;
+            }
+            let name = asset.href.trim_start_matches("./").to_string();
+            if is_object_table {
+                if !seen_tables.insert(name.clone()) {
+                    return Err(CityParquetError::Metadata(format!(
+                        "package lists duplicate object table '{name}'"
+                    )));
+                }
+                tables.push(dir.join(&name));
+            } else {
+                sidecar_files.push(name);
             }
         }
+
+        if tables.is_empty() {
+            return Err(CityParquetError::Metadata(
+                "package lists no object tables (no asset carries the cityparquet-objects role)"
+                    .to_string(),
+            ));
+        }
+
         Ok(Self {
             dir: dir.to_path_buf(),
-            tables: manifest.tables.iter().map(|t| dir.join(t)).collect(),
-            sidecar_files: manifest.sidecar_files.clone(),
+            tables,
+            sidecar_files,
         })
     }
 

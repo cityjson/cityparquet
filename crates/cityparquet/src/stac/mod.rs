@@ -14,10 +14,11 @@ pub mod properties;
 use std::fs;
 use std::path::Path;
 
+use chrono::{SecondsFormat, Utc};
 use city3d_stac_types::metadata::{BBox3D, CRS};
 use city3d_stac_types::stac::StacItemBuilder;
 use city3d_stac_types::stac::types::{Asset, Item};
-use cityparquet_schema::{CityParquetError, Result};
+use cityparquet_schema::{CityParquetError, Profile, Result};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::metadata::RowGroupMetaData;
 use parquet::file::statistics::Statistics;
@@ -35,34 +36,63 @@ pub struct ItemOptions {
     /// RFC 3339 timestamp for `properties.datetime`, overriding whatever the
     /// package itself carries.
     ///
-    /// When this is `None`, the source CityJSON header's `referenceDate` is
-    /// used if the footer preserved one (`source_metadata`) — deriving from
-    /// the package rather than inventing, which is this module's whole premise.
+    /// Resolution order (see [`resolve_datetime`]): this explicit value wins;
+    /// otherwise the source CityJSON header's `referenceDate` is used if the
+    /// footer preserved one (`source_metadata`) — deriving from the package
+    /// rather than inventing; otherwise the current UTC time at build time.
     ///
-    /// **There is no fallback beyond that.** Almost no real CityJSON carries
-    /// temporal metadata — none of this repo's fixtures does — so a synthetic
-    /// fallback would govern nearly every package rather than an edge case.
-    /// Per the design decision of 2026-07-20 the CLI stamps the conversion
-    /// time and the *library* does not; this is the library, so `datetime`
-    /// simply stays unset.
+    /// **Design decision of 2026-07-21, superseding 2026-07-20's "the CLI
+    /// stamps, the library does not":** almost no real CityJSON carries
+    /// `referenceDate` — none of this repo's fixtures does — and STAC
+    /// requires every Item to carry a `datetime`, so leaving it unset would
+    /// make most derived Items schema-invalid on their own. The timestamp
+    /// fallback therefore now applies uniformly, library included.
     pub datetime: Option<String>,
+    /// Declares `cityparquet:profile` in the built Item's properties.
+    ///
+    /// Only a writer that just wrote the package knows this for certain — no
+    /// package-level footer field records the profile the way
+    /// `cityparquet:version` does, and "no appearance sidecars" is ambiguous
+    /// between the Core profile and a Compatibility package with no
+    /// appearance to store. [`item_for_package`] therefore leaves this
+    /// `None` when deriving from an arbitrary directory, and the property is
+    /// simply omitted rather than guessed — consistent with this module's
+    /// "never guess" rule (see [`package_crs`]).
+    pub profile: Option<Profile>,
 }
 
 /// Build a STAC Item describing a written CityParquet package.
 ///
 /// Reads the package back rather than relying on anything remembered from
-/// conversion, so the Item cannot drift from the files it describes.
+/// conversion, so the Item cannot drift from the files it describes. Thin
+/// wrapper around [`build_item`] for the common case of a package already on
+/// disk; [`crate::package`]'s writer calls `build_item` directly with a
+/// [`PackageTables`] built from the file list it is ABOUT to write (see
+/// [`PackageTables::from_lists`]), before `metadata.json` itself exists for
+/// `open` to read back.
 ///
-/// Fails rather than guessing when the extent cannot be expressed in WGS84:
-/// STAC requires `bbox`/`geometry` in WGS84, and a silently wrong extent is
-/// worse than a failed conversion.
+/// Never guesses a `bbox`/`geometry`: when the package extent cannot be
+/// expressed in WGS84 (no CRS, or one this crate cannot reproject), the Item
+/// simply carries neither — both are optional STAC fields, and an "unlocated"
+/// Item is honest where a wrong extent would not be. This is deliberate, not
+/// merely tolerated: `build_item` also runs on every [`crate::package::convert`]
+/// call, and a CRS is optional in CityJSON, so failing conversion itself over
+/// a derived, discovery-only field would be a worse outcome.
 pub fn item_for_package(dir: &Path, opts: &ItemOptions) -> Result<Item> {
-    let tables = PackageTables::open(dir)?;
-    let props = properties::derive_from_footer(&tables)?;
-    let crs = package_crs(&tables)?;
+    build_item(&PackageTables::open(dir)?, opts)
+}
+
+/// Build a STAC Item describing `tables`' object tables and sidecars.
+///
+/// See [`item_for_package`] for the package-on-disk entry point this backs.
+pub fn build_item(tables: &PackageTables, opts: &ItemOptions) -> Result<Item> {
+    let props = properties::derive_from_footer(tables)?;
+    let crs = package_crs(tables)?;
 
     let id = opts.id.clone().unwrap_or_else(|| {
-        dir.file_name()
+        tables
+            .dir
+            .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "cityparquet".to_string())
     });
@@ -71,28 +101,47 @@ pub fn item_for_package(dir: &Path, opts: &ItemOptions) -> Result<Item> {
         .city3d(props)
         .map_err(|e| CityParquetError::Metadata(format!("cannot build STAC item: {e}")))?;
 
-    // An explicit value wins; otherwise fall back to the source header's
-    // `referenceDate`, which the footer preserves verbatim in
-    // `source_metadata`. Deriving it from the package is the same principle
-    // the rest of this module follows.
-    builder = match &opts.datetime {
-        Some(dt) => builder.datetime(Some(dt.clone())),
-        None => builder.datetime_from_reference_date(source_metadata(&tables)?.as_ref()),
-    };
+    let datetime = resolve_datetime(opts.datetime.as_deref(), source_metadata(tables)?.as_ref());
+    builder = builder.datetime(Some(datetime));
+
+    // `cityparquet:version` is footer-derived like everything else in this
+    // module (any conformant package carries it); `cityparquet:profile` is
+    // not recoverable from the footer at all, so it is only ever written
+    // when the caller supplies it (see `ItemOptions::profile`).
+    builder = builder.property(
+        "cityparquet:version".to_string(),
+        Value::String(package_cityparquet_version(tables)?),
+    );
+    if let Some(profile) = opts.profile {
+        builder = builder.property(
+            "cityparquet:profile".to_string(),
+            Value::String(
+                match profile {
+                    Profile::Core => "core",
+                    Profile::Compatibility => "compatibility",
+                }
+                .to_string(),
+            ),
+        );
+    }
 
     if let Some(crs) = &crs {
         builder = builder.crs(crs);
     }
 
-    // STAC requires WGS84; the package extent is in the source CRS.
-    if let Some(bbox) = package_bbox(&tables)? {
-        let wgs84 = bbox
-            .to_wgs84(crs.as_ref().unwrap_or(&CRS::unknown()))
-            .map_err(|e| {
-                CityParquetError::Metadata(format!(
-                    "cannot express the package extent in WGS84, which STAC requires: {e}"
-                ))
-            })?;
+    // STAC requires WGS84; the package extent is in the source CRS. When it
+    // cannot be expressed in WGS84 (no CRS at all, or one this crate cannot
+    // reproject), the Item simply carries no `bbox`/`geometry` rather than a
+    // wrong one — both are optional STAC fields, and this is an honest "no
+    // WGS84 extent available", not a guess (the same "None over guessing"
+    // discipline `package_crs`/`package_bbox` already apply themselves).
+    // This function is now on `write_package`'s mandatory path (Task 4), and
+    // a CRS is optional in CityJSON (`helsinki_address.city.jsonl` has none)
+    // — failing the WHOLE conversion over a derived, discovery-only field
+    // would be a worse outcome than an unlocated Item.
+    if let Some(bbox) = package_bbox(tables)?
+        && let Ok(wgs84) = bbox.to_wgs84(crs.as_ref().unwrap_or(&CRS::unknown()))
+    {
         builder = builder.bbox(wgs84).geometry_from_bbox();
     }
 
@@ -126,14 +175,14 @@ pub fn item_for_package(dir: &Path, opts: &ItemOptions) -> Result<Item> {
         );
     }
     for name in &tables.sidecar_files {
-        let path = dir.join(name);
-        // A manifest promise the package cannot keep is corruption, not
-        // something to describe: an Item claiming an asset that is not on disk
-        // is worse than a failed derivation. `crate::export` treats a
-        // listed-but-missing sidecar the same way.
+        let path = tables.dir.join(name);
+        // A promise the package cannot keep is corruption, not something to
+        // describe: an Item claiming an asset that is not on disk is worse
+        // than a failed derivation. `crate::export` treats a listed-but-
+        // missing sidecar the same way.
         if !path.exists() {
             return Err(CityParquetError::Io(format!(
-                "package manifest lists sidecar '{name}' but {} is not on disk",
+                "package lists sidecar '{name}' but {} is not on disk",
                 path.display()
             )));
         }
@@ -192,12 +241,62 @@ fn source_metadata(tables: &PackageTables) -> Result<Option<Value>> {
     Ok(builder.cityparquet_metadata()?.source_metadata)
 }
 
+/// The CityParquet spec/encoding version the package's footer declares
+/// (`cityparquet_version`, §13.1) — e.g. `"0.1.0"`. Distinct from
+/// `city3d:version`, which is the *source* CityJSON version.
+fn package_cityparquet_version(tables: &PackageTables) -> Result<String> {
+    let path = tables.tables.first().ok_or_else(|| {
+        CityParquetError::Metadata("package has no object tables to read a version from".into())
+    })?;
+    let file = fs::File::open(path)
+        .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| CityParquetError::Parquet(format!("cannot open {}: {e}", path.display())))?;
+    Ok(builder.cityparquet_metadata()?.cityparquet_version)
+}
+
+/// Resolve `properties.datetime` for a built Item.
+///
+/// Order: `explicit` wins when given; otherwise `source_metadata`'s
+/// `referenceDate` (a CityJSON header field, `YYYY-MM-DD` or already an RFC
+/// 3339 datetime) when the footer preserved one; otherwise the current UTC
+/// time at build time, as RFC 3339.
+///
+/// STAC requires every Item to carry a non-null `datetime` (or an explicit
+/// start/end pair, which this crate never writes) to be schema-valid.
+/// Design decision of 2026-07-21, superseding 2026-07-20's "the CLI stamps,
+/// the library does not": almost no real CityJSON carries `referenceDate`,
+/// so leaving `datetime` unset would make most derived Items schema-invalid
+/// on their own — the timestamp fallback applies uniformly here, in the one
+/// place the whole policy lives, rather than per-caller.
+fn resolve_datetime(explicit: Option<&str>, source_metadata: Option<&Value>) -> String {
+    if let Some(dt) = explicit {
+        return dt.to_string();
+    }
+    if let Some(reference_date) = source_metadata
+        .and_then(|m| m.get("referenceDate"))
+        .and_then(|v| v.as_str())
+    {
+        return if reference_date.contains('T') {
+            reference_date.to_string()
+        } else {
+            format!("{reference_date}T00:00:00Z")
+        };
+    }
+    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
 /// The package's CRS, as an EPSG code lifted out of the stored PROJJSON.
 ///
 /// The footer stores the dataset CRS as PROJJSON (§13.3). `CRS` here is
 /// EPSG-based, so the authority code is read from the PROJJSON `id`. A package
-/// with no CRS yields `None`, and the caller must then either find its
-/// coordinates already in WGS84 range or fail — never assume.
+/// with no CRS — or one this crate cannot resolve to an EPSG code (a non-EPSG
+/// authority, or a code that doesn't fit) — yields `None`, never a guess: the
+/// PROJJSON itself is untouched in the footer regardless (§13.2 authority),
+/// this is only what the discovery-only Item can additionally express. `None`
+/// here is also on [`crate::package::convert`]'s mandatory path (Task 4), so
+/// it must never be an `Err` — a CRS this crate cannot resolve to EPSG is not
+/// a corrupt package, just one `build_item` can describe less precisely.
 fn package_crs(tables: &PackageTables) -> Result<Option<CRS>> {
     let Some(path) = tables.tables.first() else {
         return Ok(None);
@@ -212,17 +311,11 @@ fn package_crs(tables: &PackageTables) -> Result<Option<CRS>> {
         return Ok(None);
     };
 
-    // The authority must actually be EPSG. `CRS` here is EPSG-based, so
-    // labelling an OGC or IAU code as EPSG would produce a confidently wrong
-    // reprojection rather than an honest failure.
-    match id.get("authority").and_then(|a| a.as_str()) {
-        Some("EPSG") => {}
-        Some(other) => {
-            return Err(CityParquetError::Metadata(format!(
-                "package CRS authority is {other}, not EPSG; cannot resolve to an EPSG code"
-            )));
-        }
-        None => return Ok(None),
+    // The authority must actually be EPSG — labelling an OGC or IAU code as
+    // EPSG would produce a confidently WRONG reprojection, which is worse
+    // than reporting no CRS at all.
+    if id.get("authority").and_then(|a| a.as_str()) != Some("EPSG") {
+        return Ok(None);
     }
 
     // PROJJSON permits the code as a number or a digit string.
@@ -230,12 +323,9 @@ fn package_crs(tables: &PackageTables) -> Result<Option<CRS>> {
         code.as_u64()
             .or_else(|| code.as_str().and_then(|s| s.parse::<u64>().ok()))
     });
-    let Some(code) = code else {
+    let Some(code) = code.and_then(|c| u32::try_from(c).ok()) else {
         return Ok(None);
     };
-    let code = u32::try_from(code).map_err(|_| {
-        CityParquetError::Metadata(format!("package CRS code {code} is not a valid EPSG code"))
-    })?;
     Ok(Some(CRS::from_epsg(code)))
 }
 
@@ -327,5 +417,73 @@ fn bbox_leaf_bounds(rg: &RowGroupMetaData, leaf: &str) -> Option<(f64, f64)> {
     match stats {
         Statistics::Double(s) => Some((*s.min_opt()?, *s.max_opt()?)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_datetime;
+    use chrono::{DateTime, Utc};
+    use serde_json::json;
+
+    /// An explicit value wins over everything else, including a source
+    /// `referenceDate` that is also present.
+    #[test]
+    fn explicit_datetime_wins_over_source_reference_date() {
+        let source = json!({"referenceDate": "2019-06-01"});
+        let resolved = resolve_datetime(Some("2024-01-15T12:00:00Z"), Some(&source));
+        assert_eq!(resolved, "2024-01-15T12:00:00Z");
+    }
+
+    /// A date-only `referenceDate` (CityJSON's usual `YYYY-MM-DD` form) is
+    /// normalised to midnight UTC so it parses as RFC 3339.
+    #[test]
+    fn date_only_reference_date_is_normalised_to_midnight_utc() {
+        let source = json!({"referenceDate": "2019-06-01"});
+        let resolved = resolve_datetime(None, Some(&source));
+        assert_eq!(resolved, "2019-06-01T00:00:00Z");
+        assert!(
+            resolved.parse::<DateTime<Utc>>().is_ok(),
+            "must be valid RFC 3339: {resolved}"
+        );
+    }
+
+    /// A `referenceDate` that is already a full datetime is passed through
+    /// unchanged rather than double-stamped with a midnight time.
+    #[test]
+    fn full_datetime_reference_date_passes_through() {
+        let source = json!({"referenceDate": "2019-06-01T08:30:00Z"});
+        let resolved = resolve_datetime(None, Some(&source));
+        assert_eq!(resolved, "2019-06-01T08:30:00Z");
+    }
+
+    /// With neither an explicit value nor a source `referenceDate`, the
+    /// fallback is the current UTC time — design decision of 2026-07-21: a
+    /// package must never end up with a null `datetime`.
+    #[test]
+    fn falls_back_to_a_recent_utc_timestamp_when_nothing_else_is_available() {
+        let before = Utc::now();
+        let resolved = resolve_datetime(None, None);
+        let after = Utc::now();
+
+        let parsed: DateTime<Utc> = resolved
+            .parse()
+            .unwrap_or_else(|e| panic!("fallback datetime {resolved} is not RFC 3339: {e}"));
+        assert!(
+            parsed >= before - chrono::Duration::seconds(1) && parsed <= after,
+            "fallback {parsed} must be close to conversion time ({before} .. {after})"
+        );
+    }
+
+    /// A source `metadata` object with no `referenceDate` member behaves the
+    /// same as no source metadata at all: falls back to the timestamp.
+    #[test]
+    fn source_metadata_without_reference_date_still_falls_back() {
+        let source = json!({"title": "no reference date here"});
+        let resolved = resolve_datetime(None, Some(&source));
+        assert!(
+            resolved.parse::<DateTime<Utc>>().is_ok(),
+            "must still fall back to a valid RFC 3339 timestamp: {resolved}"
+        );
     }
 }

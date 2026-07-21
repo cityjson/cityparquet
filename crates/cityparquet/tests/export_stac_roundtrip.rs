@@ -1,13 +1,14 @@
-//! Plan 2b task 2: characterisation safety net, taken BEFORE `metadata.json`
-//! is swapped from a flat `PackageManifest` to a STAC Item (Plan 2b's whole
-//! point). These tests pin what `export` reconstructs TODAY, on both
-//! profiles, while `metadata.json` is still a manifest — so once later tasks
-//! rebind export to resolve tables/sidecars from STAC asset roles instead,
-//! re-running this same file proves the swap changed nothing observable.
+//! Plan 2b task 2: characterisation safety net, written BEFORE `metadata.json`
+//! was swapped from a flat package manifest to a STAC Item (Plan 2b's whole
+//! point). These tests pin what `export` reconstructs, on both profiles, now
+//! that `export` resolves tables/sidecars from STAC asset roles instead of a
+//! manifest — re-running this same file after the swap proves it changed
+//! nothing observable.
 //!
-//! They are expected to PASS on first run: that is the correct outcome for a
-//! characterisation test (it pins current behaviour, it doesn't assert a not-
-//! yet-built one). The helper bodies below are copied from
+//! They passed before the swap and must keep passing after it: that is the
+//! correct outcome for a characterisation test (it pins observable behaviour
+//! across a refactor, it doesn't assert a not-yet-built one). The helper
+//! bodies below are copied from
 //! `roundtrip_real_data.rs` — integration test files are separate binaries
 //! and cannot import each other's `fn`s, so the small, already-established
 //! `fixture` / `convert_and_export` / `convert_and_export_with_profile`

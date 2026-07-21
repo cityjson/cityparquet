@@ -9,6 +9,7 @@ use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::recipe::RecipePreset;
 use cityparquet::schema::Profile;
+use cityparquet::stac::properties::PackageTables;
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -607,9 +608,7 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
         Profile::Compatibility,
         RowOrder::Source,
     );
-    let manifest_text = std::fs::read_to_string(package_dir.path().join("metadata.json")).unwrap();
-    let manifest: serde_json::Value = serde_json::from_str(&manifest_text).unwrap();
-    let tables = manifest["tables"].as_array().unwrap();
+    let tables = PackageTables::open(package_dir.path()).unwrap().tables;
     assert_eq!(
         tables.len(),
         10,

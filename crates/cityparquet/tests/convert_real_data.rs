@@ -10,6 +10,7 @@ use cityparquet::order::hilbert_index;
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Profile;
+use cityparquet::stac::properties::PackageTables;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Encoding;
 use serde_json::Value;
@@ -22,14 +23,18 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
-/// `metadata.json`'s `tables` list for the package at `dir` — by-type is the
-/// only, mandatory table layout, so this is 1..N main-table file names, one
-/// per 1st-level CityObject family actually present, never a single
+/// `metadata.json`'s object-table file names for the package at `dir`
+/// (`PackageTables::open`'s `cityparquet-objects`-role assets) — by-type is
+/// the only, mandatory table layout, so this is 1..N main-table file names,
+/// one per 1st-level CityObject family actually present, never a single
 /// hardcoded main-table name.
 fn manifest_tables(dir: &std::path::Path) -> Vec<String> {
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("metadata.json")).unwrap()).unwrap();
-    serde_json::from_value(manifest["tables"].clone()).unwrap()
+    PackageTables::open(dir)
+        .unwrap()
+        .tables
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
 }
 
 /// `convert_source` (the seam the merge/partition pipeline drives) must
@@ -154,7 +159,7 @@ fn delft_full_convert_round_trips_through_parquet() {
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
             .unwrap();
-    assert_eq!(manifest["profile"], "core");
+    assert_eq!(manifest["properties"]["cityparquet:profile"], "core");
 }
 
 #[test]
@@ -299,14 +304,18 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     let manifest: Value =
         serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
             .unwrap();
-    assert_eq!(manifest["profile"], "compatibility");
     assert_eq!(
-        manifest["sidecar_files"],
-        serde_json::json!([
-            "materials.parquet",
-            "textures.parquet",
-            "geometry_templates.parquet"
-        ])
+        manifest["properties"]["cityparquet:profile"],
+        "compatibility"
+    );
+    assert_eq!(
+        PackageTables::open(out.path()).unwrap().sidecar_files,
+        vec![
+            "materials.parquet".to_string(),
+            "textures.parquet".to_string(),
+            "geometry_templates.parquet".to_string()
+        ],
+        "metadata.json's cityparquet-sidecar assets must list exactly the sidecars written"
     );
     assert_eq!(
         footer_sidecar_files(out.path()),
@@ -356,8 +365,15 @@ fn delft_compatibility_convert_writes_no_sidecars() {
     let manifest: Value =
         serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
             .unwrap();
-    assert_eq!(manifest["profile"], "compatibility");
-    assert_eq!(manifest["sidecar_files"], serde_json::json!([]));
+    assert_eq!(
+        manifest["properties"]["cityparquet:profile"],
+        "compatibility"
+    );
+    assert_eq!(
+        PackageTables::open(out.path()).unwrap().sidecar_files,
+        Vec::<String>::new(),
+        "metadata.json must list no cityparquet-sidecar assets"
+    );
     assert_eq!(
         footer_sidecar_files(out.path()),
         Vec::<String>::new(),
@@ -413,11 +429,11 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
     let manifest: Value =
         serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
             .unwrap();
-    assert_eq!(manifest["profile"], "core");
+    assert_eq!(manifest["properties"]["cityparquet:profile"], "core");
     assert_eq!(
-        manifest["sidecar_files"],
-        serde_json::json!([]),
-        "the second run's own manifest must say no sidecars, and none must be left on disk"
+        PackageTables::open(out.path()).unwrap().sidecar_files,
+        Vec::<String>::new(),
+        "the second run's own metadata.json must say no sidecars, and none must be left on disk"
     );
 
     let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();

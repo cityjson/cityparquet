@@ -8,14 +8,14 @@
 //! emitted (not dropped), and that the re-read package still carries semantics.
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::File;
 use std::path::Path;
 
 use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet::schema::PackageManifest;
+use cityparquet::stac::properties::PackageTables;
 use cityparquet::wkb_read::DecodedKind;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
@@ -45,28 +45,24 @@ fn canonical_ring(ring: &[usize], coords: &[[f64; 3]]) -> Ring {
     rot
 }
 
-fn open_meta(pkg: &Path) -> (PackageManifest, cityparquet::schema::CityParquetMetadata) {
-    let manifest: PackageManifest =
-        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
-    let meta = ParquetRecordBatchReaderBuilder::try_new(
-        fs::File::open(pkg.join(&manifest.tables[0])).unwrap(),
-    )
-    .unwrap()
-    .cityparquet_metadata()
-    .unwrap();
-    (manifest, meta)
+fn open_meta(pkg: &Path) -> (PackageTables, cityparquet::schema::CityParquetMetadata) {
+    let tables = PackageTables::open(pkg).unwrap();
+    let meta = ParquetRecordBatchReaderBuilder::try_new(File::open(&tables.tables[0]).unwrap())
+        .unwrap()
+        .cityparquet_metadata()
+        .unwrap();
+    (tables, meta)
 }
 
 /// The structural decomposition of every CompositeSolid, keyed by `(id, major)`.
 fn composite_structure(pkg: &Path) -> Structure {
-    let (manifest, meta) = open_meta(pkg);
+    let (tables, meta) = open_meta(pkg);
     let mut map = Structure::new();
-    for name in &manifest.tables {
-        let reader =
-            ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
-                .unwrap()
-                .build()
-                .unwrap();
+    for path in &tables.tables {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {
@@ -109,14 +105,13 @@ fn composite_structure(pkg: &Path) -> Structure {
 /// The stored `geometry_properties.semantics` of every CompositeSolid, keyed by
 /// `(id, major)`.
 fn semantics_map(pkg: &Path) -> SemanticsMap {
-    let (manifest, meta) = open_meta(pkg);
+    let (tables, meta) = open_meta(pkg);
     let mut map = SemanticsMap::new();
-    for name in &manifest.tables {
-        let reader =
-            ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
-                .unwrap()
-                .build()
-                .unwrap();
+    for path in &tables.tables {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {

@@ -285,6 +285,7 @@ fn derived_item_validates_against_the_city3d_schema() {
         &ItemOptions {
             id: Some("delft-test".to_string()),
             datetime: Some("2024-01-15T12:00:00Z".to_string()),
+            ..Default::default()
         },
     )
     .expect("build item");
@@ -332,6 +333,128 @@ fn derived_item_assets_exist_and_bbox_is_wgs84() {
 
     // Defaulted id comes from the package directory name.
     assert_eq!(item.id, "pkg");
+}
+
+/// Plan 2b Task 4 step 2: `cityparquet:version`/`cityparquet:profile` must
+/// land in the Item's properties — `version` footer-derived like everything
+/// else in `stac::mod`, `profile` only when the caller supplies it (a
+/// writer knows its own profile; a bare directory read cannot recover it).
+/// Distinct from `city3d:version`, which is the SOURCE CityJSON version, not
+/// CityParquet's own.
+#[test]
+fn cityparquet_version_and_profile_properties_are_present() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("pkg");
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.clone());
+    opts.profile = Profile::Compatibility;
+    convert(&opts).expect("convert delft (Compatibility)");
+
+    let item = item_for_package(
+        &out,
+        &cityparquet::stac::ItemOptions {
+            profile: Some(Profile::Compatibility),
+            ..Default::default()
+        },
+    )
+    .expect("build item");
+
+    assert_eq!(
+        item.properties
+            .additional_fields
+            .get("cityparquet:version")
+            .and_then(|v| v.as_str()),
+        Some(cityparquet::schema::CITYPARQUET_VERSION),
+        "cityparquet:version must be the footer-derived CityParquet format version"
+    );
+    assert_eq!(
+        item.properties
+            .additional_fields
+            .get("cityparquet:profile")
+            .and_then(|v| v.as_str()),
+        Some("compatibility"),
+        "cityparquet:profile must reflect the profile the caller declared"
+    );
+
+    // `item_for_package` with no `profile` in `ItemOptions` must omit the
+    // property rather than guess it.
+    let item_no_profile = item_for_package(&out, &ItemOptions::default()).expect("build item");
+    assert!(
+        !item_no_profile
+            .properties
+            .additional_fields
+            .contains_key("cityparquet:profile"),
+        "cityparquet:profile must be omitted, not guessed, when ItemOptions doesn't supply it"
+    );
+}
+
+/// Plan 2b Task 4 step 3 (design decision 2026-07-21): a package with no
+/// explicit `datetime` and no source `referenceDate` must still end up with
+/// a non-null RFC 3339 `datetime` — the conversion-timestamp fallback, which
+/// now applies uniformly rather than only from the CLI. delft carries no
+/// `referenceDate` (see `stac::ItemOptions`'s doc comment), so this exercises
+/// the fallback with a real fixture rather than an inline one.
+#[test]
+fn datetime_falls_back_to_a_conversion_timestamp_when_nothing_else_is_available() {
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = convert_fixture("delft.city.jsonl", &dir);
+
+    let before = chrono::Utc::now();
+    let item = item_for_package(&pkg, &ItemOptions::default()).expect("build item");
+    let after = chrono::Utc::now();
+
+    let datetime = item
+        .properties
+        .datetime
+        .expect("datetime must not be null when neither explicit nor source referenceDate exist");
+    assert!(
+        datetime >= before - chrono::Duration::seconds(1) && datetime <= after,
+        "fallback datetime {datetime} must be close to the conversion time \
+         ({before} .. {after})"
+    );
+}
+
+/// `helsinki_address` has no `referenceSystem` in its CityJSON header at all
+/// (a CRS is optional in CityJSON) — real, not synthetic: this is a committed
+/// fixture. `write_package` now builds a STAC Item for every conversion
+/// (Task 4), and building that Item must not fail just because the extent
+/// cannot be expressed in WGS84 without a CRS: `convert` itself must still
+/// succeed, and the written `metadata.json` must be an "unlocated" Item
+/// (`geometry: null`, no `bbox` key) that still validates against the city3d
+/// schema — not a wrong extent, and not a failed conversion either.
+#[test]
+fn a_package_with_no_crs_converts_to_an_unlocated_but_schema_valid_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("pkg");
+    convert(&ConvertOptions::new(
+        data_fixture("helsinki_address.city.jsonl"),
+        out.clone(),
+    ))
+    .expect("convert must succeed even though the source has no CRS");
+
+    let text = std::fs::read_to_string(out.join("metadata.json")).unwrap();
+    let instance: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        instance.get("geometry").is_some_and(|g| g.is_null()),
+        "an unlocated Item still carries the (null) geometry key: {instance}"
+    );
+    assert!(
+        instance.get("bbox").is_none(),
+        "an unlocated Item must not carry a bbox key at all: {instance}"
+    );
+
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("data/stac-city3d-v0.2.0.json")).unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("compile schema");
+    let errors: Vec<String> = validator
+        .iter_errors(&instance)
+        .map(|e| format!("{e} at {}", e.instance_path))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the unlocated Item violates the city3d schema:\n{}\n\ninstance:\n{}",
+        errors.join("\n"),
+        serde_json::to_string_pretty(&instance).unwrap()
+    );
 }
 
 /// `helsinki_address` carries a nested `address` object, which the encoder
