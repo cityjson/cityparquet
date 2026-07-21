@@ -9,14 +9,14 @@
 //! parts) → package → `.gml` → package: the independent-authoring anchor.
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet::schema::PackageManifest;
+use cityparquet::stac::properties::PackageTables;
 use cityparquet::wkb_read::DecodedKind;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -75,22 +75,18 @@ struct ObjInfo {
 }
 
 fn objects(pkg: &Path) -> BTreeMap<String, ObjInfo> {
-    let manifest: PackageManifest =
-        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
-    let meta = ParquetRecordBatchReaderBuilder::try_new(
-        fs::File::open(pkg.join(&manifest.tables[0])).unwrap(),
-    )
-    .unwrap()
-    .cityparquet_metadata()
-    .unwrap();
+    let tables = PackageTables::open(pkg).unwrap();
+    let meta = ParquetRecordBatchReaderBuilder::try_new(File::open(&tables.tables[0]).unwrap())
+        .unwrap()
+        .cityparquet_metadata()
+        .unwrap();
 
     let mut map = BTreeMap::new();
-    for name in &manifest.tables {
-        let reader =
-            ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
-                .unwrap()
-                .build()
-                .unwrap();
+    for path in &tables.tables {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {

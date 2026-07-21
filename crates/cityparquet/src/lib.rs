@@ -18,6 +18,7 @@ pub mod recipe;
 pub mod scan;
 pub mod sidecar;
 pub mod source;
+pub mod stac;
 pub mod wkb_read;
 pub mod wkb_write;
 

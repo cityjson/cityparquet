@@ -10,6 +10,7 @@ use cityparquet::export::{ExportOptions, export};
 use cityparquet::lod0::{Lod0Options, faces_from_geometry, footprint_to_geometry, synthesize_lod0};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::source::Source;
+use cityparquet::stac::properties::PackageTables;
 use cityparquet::wkb_write::{VertexPool, geometry_to_wkb};
 use cjseq::GeometryType;
 use geo_traits::{GeometryTrait, GeometryType as GtGeometryType};
@@ -23,13 +24,17 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
-/// `metadata.json`'s `tables` list for the package at `dir` — by-type is the
-/// only, mandatory table layout, so this is 1..N main-table file names, one
-/// per 1st-level CityObject family actually present.
+/// `metadata.json`'s object-table file names for the package at `dir`
+/// (`PackageTables::open`'s `cityparquet-objects`-role assets) — by-type is
+/// the only, mandatory table layout, so this is 1..N main-table file names,
+/// one per 1st-level CityObject family actually present.
 fn manifest_tables(dir: &std::path::Path) -> Vec<String> {
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("metadata.json")).unwrap()).unwrap();
-    serde_json::from_value(manifest["tables"].clone()).unwrap()
+    PackageTables::open(dir)
+        .unwrap()
+        .tables
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Every synthesised footprint, fed back through the hand-rolled WKB writer,

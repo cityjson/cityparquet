@@ -21,9 +21,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
-use cityparquet_schema::{
-    CITYPARQUET_VERSION, CityParquetError, CityParquetSchema, Lod, PackageManifest, Profile, Result,
-};
+use cityparquet_schema::{CityParquetError, CityParquetSchema, Lod, Profile, Result};
 use cjseq::CityJSONFeature;
 
 use crate::appearance::AppearanceInterner;
@@ -34,6 +32,8 @@ use crate::recipe::WriterRecipe;
 use crate::scan::{ScanResult, scan};
 use crate::sidecar::{TemplateRow, write_materials, write_templates, write_textures};
 use crate::source::Source;
+use crate::stac::properties::PackageTables;
+use crate::stac::{ItemOptions, build_item};
 use crate::wkb_write::{VertexPool, geometry_to_wkb};
 
 /// Compatibility-profile sidecar tables.
@@ -547,9 +547,10 @@ fn distinct_types_in_batch(batch: &RecordBatch) -> Result<Vec<String>> {
 /// [`Self::write_batch`]). Every table shares the identical `schema`/`props`
 /// this was constructed with — only which rows land in which file differs.
 /// `order`/`index` together track FIRST-APPEARANCE order across the whole
-/// call (not just within one batch), which becomes [`PackageManifest::tables`]
-/// verbatim once [`Self::finish`] is called — unaffected by [`RowOrder`],
-/// which only reorders FEATURES before encoding; partitioning by family
+/// call (not just within one batch), which becomes `table_names` (passed to
+/// [`PackageTables::from_lists`], then the built Item's `cityparquet-objects`
+/// asset order) verbatim once [`Self::finish`] is called — unaffected by
+/// [`RowOrder`], which only reorders FEATURES before encoding; partitioning by family
 /// happens strictly after.
 struct TableWriters {
     tmp_dir: PathBuf,
@@ -657,8 +658,8 @@ impl TableWriters {
     /// this run produced (see `crate::export`'s multi-table read loop) sees
     /// the same `sidecar_files` list regardless of which one it opens first,
     /// then closes every writer. Returns [`Self::order`]: the bare file
-    /// names in first-appearance order, ready to become
-    /// [`PackageManifest::tables`] verbatim.
+    /// names in first-appearance order, ready to become `table_names` —
+    /// [`PackageTables::from_lists`]' `tables` argument — verbatim.
     fn finish(mut self, sidecar_files: &[String]) -> Result<Vec<String>> {
         let kv = serde_json::to_string(sidecar_files)?;
         for writer in &mut self.writers {
@@ -800,15 +801,32 @@ fn write_package(
     let mut file_names = table_names.clone();
     file_names.extend(sidecar_files_written.iter().cloned());
 
-    let manifest = PackageManifest {
-        cityparquet_version: CITYPARQUET_VERSION.to_string(),
-        profile: opts.profile,
-        lods: scan_result.lods.iter().map(|lod| lod.to_string()).collect(),
-        tables: table_names,
-        sidecar_files: sidecar_files_written,
-    };
+    // `metadata.json` is a STAC Item (Plan 2b), built from the exact file
+    // list this run just wrote — `PackageTables::from_lists` is the pure,
+    // disk-free constructor for that, mirroring `PackageTables::open`'s
+    // shape without reading anything back (the files exist now, but nothing
+    // here needs to re-derive `tables`/`sidecar_files` from them). `id`
+    // comes from `opts.output_dir`'s name, not `tmp_dir`'s — `tmp_dir` is the
+    // hidden crash-safe scratch directory (see `TMP_DIR_NAME`), never the
+    // package's real name. `datetime` is left `None` so `build_item`'s
+    // resolution order (explicit -> source `referenceDate` -> conversion
+    // timestamp) decides it; this writer has no explicit value to offer.
+    let item_id = opts
+        .output_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "cityparquet".to_string());
+    let item_tables = PackageTables::from_lists(tmp_dir, &table_names, &sidecar_files_written);
+    let item = build_item(
+        &item_tables,
+        &ItemOptions {
+            id: Some(item_id),
+            datetime: None,
+            profile: Some(opts.profile),
+        },
+    )?;
     let metadata_path = tmp_dir.join("metadata.json");
-    fs::write(&metadata_path, serde_json::to_string_pretty(&manifest)?)
+    fs::write(&metadata_path, serde_json::to_string_pretty(&item)?)
         .map_err(|e| io_err(format!("cannot write {}: {e}", metadata_path.display())))?;
     file_names.push("metadata.json".to_string());
 

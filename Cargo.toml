@@ -31,3 +31,5 @@ tempfile = "3"
 fcb_core = "0.7"
 peak_alloc = "0.3.0"
 cityparquet-schema = { path = "crates/cityparquet-schema" }
+city3d-stac-types = { git = "https://github.com/cityjson/city3d-stac-tool", rev = "743199c9b9ff566ec42c4023ce0968e9ac6af485" }
+jsonschema = "0.26"

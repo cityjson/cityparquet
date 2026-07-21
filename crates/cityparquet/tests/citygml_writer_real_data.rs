@@ -9,14 +9,14 @@
 //! surfaces are intentionally NOT compared — W-M1 emits geometry only.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::File;
 use std::path::Path;
 
 use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet::schema::PackageManifest;
+use cityparquet::stac::properties::PackageTables;
 use cityparquet::wkb_read::DecodedKind;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -38,22 +38,18 @@ fn mm(v: f64) -> i64 {
 type CoordsByBuildingLod = BTreeMap<(String, u8), BTreeSet<(i64, i64, i64)>>;
 
 fn solid_coords(pkg: &Path) -> CoordsByBuildingLod {
-    let manifest: PackageManifest =
-        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
-    let meta = ParquetRecordBatchReaderBuilder::try_new(
-        fs::File::open(pkg.join(&manifest.tables[0])).unwrap(),
-    )
-    .unwrap()
-    .cityparquet_metadata()
-    .unwrap();
+    let tables = PackageTables::open(pkg).unwrap();
+    let meta = ParquetRecordBatchReaderBuilder::try_new(File::open(&tables.tables[0]).unwrap())
+        .unwrap()
+        .cityparquet_metadata()
+        .unwrap();
 
     let mut map: CoordsByBuildingLod = BTreeMap::new();
-    for name in &manifest.tables {
-        let reader =
-            ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
-                .unwrap()
-                .build()
-                .unwrap();
+    for path in &tables.tables {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {
@@ -87,22 +83,18 @@ type AttrsByBuilding = BTreeMap<String, serde_json::Map<String, serde_json::Valu
 
 /// Per Building `id`, its decoded attribute map, for round-trip comparison.
 fn building_attributes(pkg: &Path) -> AttrsByBuilding {
-    let manifest: PackageManifest =
-        serde_json::from_str(&fs::read_to_string(pkg.join("metadata.json")).unwrap()).unwrap();
-    let meta = ParquetRecordBatchReaderBuilder::try_new(
-        fs::File::open(pkg.join(&manifest.tables[0])).unwrap(),
-    )
-    .unwrap()
-    .cityparquet_metadata()
-    .unwrap();
+    let tables = PackageTables::open(pkg).unwrap();
+    let meta = ParquetRecordBatchReaderBuilder::try_new(File::open(&tables.tables[0]).unwrap())
+        .unwrap()
+        .cityparquet_metadata()
+        .unwrap();
 
     let mut map = AttrsByBuilding::new();
-    for name in &manifest.tables {
-        let reader =
-            ParquetRecordBatchReaderBuilder::try_new(fs::File::open(pkg.join(name)).unwrap())
-                .unwrap()
-                .build()
-                .unwrap();
+    for path in &tables.tables {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
         for batch in reader {
             let batch = batch.unwrap();
             for obj in decode_batch(&batch, &meta).unwrap() {

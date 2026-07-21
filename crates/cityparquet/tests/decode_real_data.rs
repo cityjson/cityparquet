@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
+use cityparquet::stac::properties::PackageTables;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 fn fixture(name: &str) -> PathBuf {
@@ -17,13 +18,17 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
-/// `metadata.json`'s `tables` list for the package at `dir` — by-type is the
-/// only, mandatory table layout, so this is 1..N main-table file names, one
-/// per 1st-level CityObject family actually present.
+/// `metadata.json`'s object-table file names for the package at `dir`
+/// (`PackageTables::open`'s `cityparquet-objects`-role assets) — by-type is
+/// the only, mandatory table layout, so this is 1..N main-table file names,
+/// one per 1st-level CityObject family actually present.
 fn manifest_tables(dir: &std::path::Path) -> Vec<String> {
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("metadata.json")).unwrap()).unwrap();
-    serde_json::from_value(manifest["tables"].clone()).unwrap()
+    PackageTables::open(dir)
+        .unwrap()
+        .tables
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Convert `input` into a fresh tempdir and decode every row across every

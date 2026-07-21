@@ -1,5 +1,6 @@
-//! CityParquet profiles (core vs compatibility), sidecar table schemas,
-//! and the `metadata.json` package manifest.
+//! CityParquet profiles (core vs compatibility) and sidecar table schemas.
+//! `metadata.json` itself is a STAC Item, built by `cityparquet::stac` — not
+//! a type defined in this crate.
 
 use arrow_schema::{DataType, Field, Schema};
 use serde::{Deserialize, Serialize};
@@ -76,17 +77,6 @@ pub fn geometry_templates_schema() -> Schema {
         json_col("texture"),
         json_col("other"),
     ])
-}
-
-/// Contents of the package-level `metadata.json`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PackageManifest {
-    pub cityparquet_version: String,
-    pub profile: Profile,
-    pub lods: Vec<String>,
-    pub tables: Vec<String>,
-    #[serde(default)]
-    pub sidecar_files: Vec<String>,
 }
 
 #[cfg(test)]
@@ -177,20 +167,5 @@ mod tests {
             g.field_with_name("geometry").unwrap().data_type(),
             &DataType::Binary
         );
-    }
-
-    #[test]
-    fn manifest_serialises_to_metadata_json() {
-        let manifest = PackageManifest {
-            cityparquet_version: crate::metadata::CITYPARQUET_VERSION.to_string(),
-            profile: Profile::Compatibility,
-            lods: vec!["1".to_string(), "2.2".to_string()],
-            tables: vec!["building.parquet".to_string()],
-            sidecar_files: vec!["materials.parquet".to_string()],
-        };
-        let text = serde_json::to_string_pretty(&manifest).unwrap();
-        let back: PackageManifest = serde_json::from_str(&text).unwrap();
-        assert_eq!(back, manifest);
-        assert!(text.contains("\"profile\": \"compatibility\""));
     }
 }

@@ -43,7 +43,7 @@
 //! dropped instead (counted in [`ExportReport::appearance_refs_dropped`]):
 //! exporting them would leave dangling references — invalid CityJSON.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -55,7 +55,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
 use cityparquet_schema::model::{LOD_KEY, ROLE_KEY, ROLE_RESERVED};
-use cityparquet_schema::{CityParquetError, CityParquetMetadata, PackageManifest, Result};
+use cityparquet_schema::{CityParquetError, CityParquetMetadata, Result};
 use cjseq::{
     Appearance, CityJSON, CityJSONFeature, Geometry, GeometryTemplates, GeometryType, Material,
     Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
@@ -64,6 +64,7 @@ use cjseq::{
 use crate::decode::{DecodedObject, decode_batch};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use crate::sidecar::{TemplateRow, read_materials, read_templates, read_textures};
+use crate::stac::properties::PackageTables;
 use crate::wkb_read::{DecodedKind, wkb_to_geometry};
 
 /// Options controlling one package -> CityJSON/CityJSONSeq export.
@@ -101,6 +102,16 @@ fn err(msg: String) -> CityParquetError {
 
 fn io_err(msg: String) -> CityParquetError {
     CityParquetError::Io(msg)
+}
+
+/// Short file name for a table path, for user-facing messages — `tables`
+/// entries are absolute paths (see `PackageTables`), and echoing the whole
+/// path (e.g. a tempdir prefix in tests/benches) leaks environment detail
+/// that isn't part of the package's own naming.
+pub(crate) fn table_display_name(path: &std::path::Path) -> &str {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("<table>")
 }
 
 /// Compares `other`'s CityParquet-rendered Arrow schema against `first`'s,
@@ -1117,35 +1128,20 @@ fn rebuild_templates(
 pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     let format = output_format(&opts.output)?;
 
-    let manifest_path = opts.package_dir.join("metadata.json");
-    let manifest_text = fs::read_to_string(&manifest_path)
-        .map_err(|e| io_err(format!("cannot read {}: {e}", manifest_path.display())))?;
-    let manifest: PackageManifest = serde_json::from_str(&manifest_text)?;
-    if manifest.tables.is_empty() {
-        return Err(err("package manifest lists no tables".to_string()));
-    }
-    // A by-type (or any hand-rolled multi-table) package lists
-    // one file per table; a manifest naming the same file twice is a corrupt
-    // package (every object in it would be decoded twice), never silently
-    // tolerated by reading only the first occurrence.
-    let mut seen_tables = HashSet::with_capacity(manifest.tables.len());
-    for name in &manifest.tables {
-        if !seen_tables.insert(name.as_str()) {
-            return Err(err(format!(
-                "package manifest lists duplicate table '{name}'"
-            )));
-        }
-    }
+    // `PackageTables::open` reads the manifest's `tables`/`sidecar_files`
+    // lists and already rejects an empty or duplicate-naming manifest — see
+    // its doc comment — so this is the SOLE place `export` learns the
+    // package's file inventory from.
+    let tables = PackageTables::open(&opts.package_dir)?;
 
     // The FIRST table is authoritative for the package's KV metadata and
     // rendered Arrow schema (`crate::package`'s by-type writer writes the
     // IDENTICAL schema to every table, so any one of them would do);
     // every other table is read via the SAME `schema` below and only
     // light-checked for a matching `cityparquet_version`, not fully
-    // re-derived.
-    let first_table_name = &manifest.tables[0];
-    let first_table_path = opts.package_dir.join(first_table_name);
-    let first_file = fs::File::open(&first_table_path)
+    // re-derived. `tables.tables` entries are already absolute paths.
+    let first_table_path = &tables.tables[0];
+    let first_file = fs::File::open(first_table_path)
         .map_err(|e| io_err(format!("cannot open {}: {e}", first_table_path.display())))?;
     let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file)
         .map_err(|e| CityParquetError::Parquet(format!("cannot open parquet reader: {e}")))?;
@@ -1174,7 +1170,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     // `read_materials`/`read_textures` already read as empty when the
     // corresponding file is absent, matching a package that only wrote one
     // of the two sidecars.
-    let restore_appearance = manifest
+    let restore_appearance = tables
         .sidecar_files
         .iter()
         .any(|f| f == "materials.parquet" || f == "textures.parquet");
@@ -1201,7 +1197,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     // a manifest promise the package can't keep is a corrupt/truncated
     // package, not a silent 0-templates fallback.
     let templates_path = opts.package_dir.join("geometry_templates.parquet");
-    let templates_listed = manifest
+    let templates_listed = tables
         .sidecar_files
         .iter()
         .any(|f| f == "geometry_templates.parquet");
@@ -1239,14 +1235,13 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     // first: decode order follows manifest order, and the feature grouping
     // above already tolerates one feature's objects arriving split across
     // batches (or, here, across whole tables) — see `OrderedGroups`.
-    for (idx, name) in manifest.tables.iter().enumerate() {
+    for (idx, table_path) in tables.tables.iter().enumerate() {
         let reader = if idx == 0 {
             first_reader
                 .take()
                 .expect("the first table's reader is only ever consumed once")
         } else {
-            let table_path = opts.package_dir.join(name);
-            let file = fs::File::open(&table_path)
+            let file = fs::File::open(table_path)
                 .map_err(|e| io_err(format!("cannot open {}: {e}", table_path.display())))?;
             let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
                 CityParquetError::Parquet(format!("cannot open parquet reader: {e}"))
@@ -1256,9 +1251,12 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             let table_meta = builder.cityparquet_metadata()?;
             if table_meta.cityparquet_version != meta.cityparquet_version {
                 return Err(err(format!(
-                    "table '{name}' has cityparquet_version {:?}, expected {:?} \
-                     (matching table '{first_table_name}')",
-                    table_meta.cityparquet_version, meta.cityparquet_version
+                    "table '{}' has cityparquet_version {:?}, expected {:?} \
+                     (matching table '{}')",
+                    table_display_name(table_path),
+                    table_meta.cityparquet_version,
+                    meta.cityparquet_version,
+                    table_display_name(first_table_path)
                 )));
             }
             // ...and (M5 Codex review, Important finding 2) its own
@@ -1277,7 +1275,9 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             let table_schema = builder.cityparquet_arrow_schema()?;
             if let Some(mismatch) = first_schema_mismatch(&schema, &table_schema) {
                 return Err(err(format!(
-                    "table '{name}' {mismatch} (matching table '{first_table_name}')"
+                    "table '{}' {mismatch} (matching table '{}')",
+                    table_display_name(table_path),
+                    table_display_name(first_table_path)
                 )));
             }
             let parquet_reader = builder.build().map_err(|e| {
