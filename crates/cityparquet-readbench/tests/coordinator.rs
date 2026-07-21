@@ -1,7 +1,7 @@
 //! RED (readbench Task 11, Commit B): the COORDINATOR — `cityparquet-readbench
 //! run ...` — exercised only through the BUILT binary (never calling into
 //! `coordinator`'s internals directly), against a real prepared package
-//! built from `lod3_railway.city.json` (never inline artificial CityJSON).
+//! built from `delft.city.jsonl` (never inline artificial CityJSON).
 //!
 //! Prepares its own tiny "prepared dir" by converting the real fixture with
 //! `cityparquet::package::convert` directly (rather than shelling to
@@ -9,6 +9,18 @@
 //! external-tool-independent) — exactly the `<x>.parquet` naming convention
 //! the real prep script uses (`readbench_prepare.sh`'s own doc comment), so
 //! the coordinator's artefact-location logic is exercised unmodified.
+//!
+//! Uses `delft.city.jsonl` rather than `lod3_railway.city.json` (2026-07-21,
+//! mandatory-by-type-layout): the single-file table layout is gone, so `convert()`
+//! now always writes one table per 1st-level CityObject family, and delft
+//! (Building + BuildingPart, both mapping to the "Building" family) is the
+//! only committed fixture that still by-type-converts to exactly ONE main
+//! table — which every test below except
+//! `attr_filter_selectivity_uses_the_shared_cityparquet_object_total_as_denominator`
+//! (already delft-based) relies on for a single, whole-dataset-queryable
+//! `cityparquet` artefact. Nothing asserted below is railway-specific: the
+//! CSV contract, `--repeat` validation, and the missing-artefact skip are
+//! all generic over which fixture is converted.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -81,14 +93,14 @@ time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes";
 #[test]
 fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from_real_data() {
     let prepared = tempfile::tempdir().unwrap();
-    let input = fixture("lod3_railway.city.json");
+    let input = fixture("delft.city.jsonl");
 
     // The "prepared" cityparquet package, at the exact path/name convention
     // `scripts/readbench_prepare.sh` produces: `<prepared_dir>/<base>.parquet`
-    // where `<base>` strips `.city.json`.
-    let package_dir = prepared.path().join("lod3_railway.parquet");
+    // where `<base>` strips `.city.jsonl`.
+    let package_dir = prepared.path().join("delft.parquet");
     let report = convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
-    assert_eq!(report.object_count, 121);
+    assert_eq!(report.object_count, 2231);
 
     let out_csv = prepared.path().join("out.csv");
 
@@ -126,7 +138,7 @@ fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from
     );
 
     for row in &rows {
-        assert_eq!(row.field("dataset"), "lod3_railway.city.json");
+        assert_eq!(row.field("dataset"), "delft.city.jsonl");
         assert!(
             ["cityparquet", "cityjsonseq"].contains(&row.field("format")),
             "unexpected format in row: {row_fields:?}",
@@ -177,10 +189,16 @@ fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from
                     row.field("selectivity")
                 )
             });
+            // `[0, 1]`, not `(0, 1]`: delft's real, unpadded geographic bbox
+            // means the SMALL lower-left-anchored windows (1pct especially)
+            // can legitimately touch zero buildings — a valid selectivity of
+            // 0, not a bug in selectivity computation. What this test
+            // actually pins is that every row parses as a well-formed
+            // fraction in range, never a NaN/negative/>1 value.
             assert!(
-                selectivity > 0.0 && selectivity <= 1.0,
-                "bbox-query selectivity must be in (0, 1] for this fixture/window set, got \
-                 {selectivity} (row: {row_fields:?})",
+                (0.0..=1.0).contains(&selectivity),
+                "bbox-query selectivity must be in [0, 1], got {selectivity} \
+                 (row: {row_fields:?})",
                 row_fields = row.fields
             );
         }
@@ -227,8 +245,8 @@ fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from
 #[test]
 fn run_requires_repeat_at_least_one() {
     let prepared = tempfile::tempdir().unwrap();
-    let input = fixture("lod3_railway.city.json");
-    let package_dir = prepared.path().join("lod3_railway.parquet");
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
     convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
     let out_csv = prepared.path().join("out.csv");
 
@@ -260,8 +278,8 @@ fn run_requires_repeat_at_least_one() {
 #[test]
 fn run_skips_a_format_with_no_prepared_artefact_and_still_produces_the_other() {
     let prepared = tempfile::tempdir().unwrap();
-    let input = fixture("lod3_railway.city.json");
-    let package_dir = prepared.path().join("lod3_railway.parquet");
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
     convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
     let out_csv = prepared.path().join("out.csv");
 

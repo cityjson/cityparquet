@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
-use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
+use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::recipe::RecipePreset;
 use cityparquet::schema::Profile;
 
@@ -494,19 +494,17 @@ fn delft_derived_solid_face_drop_round_trips_and_comparator_agrees_with_the_writ
 }
 
 /// Like [`convert_and_export_with_profile`] but also lets the caller pick
-/// `ordering` and `layout` — needed for the M5 task 5 `TableLayout::ByType`
-/// round-trip gates below (and their Hilbert-composed variant).
+/// `ordering` — needed for the M5 task 5 by-type round-trip gates below
+/// (and their Hilbert-composed variant).
 fn convert_and_export_with(
     input: &str,
     profile: Profile,
     ordering: RowOrder,
-    layout: TableLayout,
 ) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
     let package_dir = tempfile::tempdir().unwrap();
     let mut opts = ConvertOptions::new(fixture(input), package_dir.path().to_path_buf());
     opts.profile = profile;
     opts.ordering = ordering;
-    opts.layout = layout;
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -520,22 +518,18 @@ fn convert_and_export_with(
     (output, package_dir, export_dir)
 }
 
-/// M5 task 5 (Step 3): delft under `TableLayout::ByType` (Core profile) must
-/// round-trip exactly as losslessly as `TableLayout::Single` does in
-/// `delft_round_trips_losslessly` above — the table layout is purely a
-/// physical-file concern, never a semantic one. Per the family-grouping rule,
-/// delft's Building + BuildingPart share the single `building.parquet` file
-/// (see `by_type_convert_of_delft_writes_exactly_one_family_table` in
+/// M5 task 5 (Step 3): delft under by-type (Core profile) must round-trip
+/// exactly as losslessly as `delft_round_trips_losslessly` above — the
+/// table layout is purely a physical-file concern, never a semantic one.
+/// Per the family-grouping rule, delft's Building + BuildingPart share the
+/// single `building.parquet` file (see
+/// `by_type_convert_of_delft_writes_exactly_one_family_table` in
 /// `convert_real_data.rs`), so `export` must still read the whole dataset
 /// back from that one table.
 #[test]
 fn delft_by_type_round_trips_losslessly() {
-    let (exported, package_dir, _export_dir) = convert_and_export_with(
-        "delft.city.jsonl",
-        Profile::Core,
-        RowOrder::Source,
-        TableLayout::ByType,
-    );
+    let (exported, package_dir, _export_dir) =
+        convert_and_export_with("delft.city.jsonl", Profile::Core, RowOrder::Source);
     assert!(
         package_dir.path().join("building.parquet").exists(),
         "sanity: this must actually be a split-by-type package"
@@ -580,13 +574,12 @@ fn delft_by_type_round_trips_losslessly() {
     );
 }
 
-/// M5 task 5 (Step 3): railway under `TableLayout::ByType` (Compatibility
-/// profile) — the M4 headline round-trip gate
+/// M5 task 5 (Step 3): railway under by-type (Compatibility profile) — the
+/// M4 headline round-trip gate
 /// (`railway_compatibility_round_trips_losslessly_with_no_exclusions` above)
-/// held with `TableLayout::Single`; it must hold identically under
-/// `TableLayout::ByType`, across all 10 pinned family tables (railway's 14
-/// distinct `object_type` values collapse to 10 distinct 1st-level families —
-/// see `by_type_convert_of_railway_writes_ten_family_tables` in
+/// must hold across all 10 pinned family tables (railway's 14 distinct
+/// `object_type` values collapse to 10 distinct 1st-level families — see
+/// `by_type_convert_of_railway_writes_ten_family_tables` in
 /// `convert_real_data.rs` for the exact family membership).
 #[test]
 fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
@@ -594,7 +587,6 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
         "lod3_railway.city.json",
         Profile::Compatibility,
         RowOrder::Source,
-        TableLayout::ByType,
     );
     let manifest_text = std::fs::read_to_string(package_dir.path().join("metadata.json")).unwrap();
     let manifest: serde_json::Value = serde_json::from_str(&manifest_text).unwrap();
@@ -613,8 +605,8 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
     .unwrap();
     assert!(
         report.equal,
-        "ByType-layout railway must round-trip losslessly with NO exclusions under the \
-         Compatibility profile, exactly like TableLayout::Single; differences: {:#?}",
+        "By-type railway must round-trip losslessly with NO exclusions under the \
+         Compatibility profile; differences: {:#?}",
         report.differences
     );
     assert!(report.differences.is_empty());
@@ -642,19 +634,15 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
     );
 }
 
-/// M5 task 5 (Step 3, the composed smoke gate): `RowOrder::Hilbert` and
-/// `TableLayout::ByType` compose independently (Hilbert reorders FEATURES
-/// before encode; ByType partitions ENCODED ROWS after — see
-/// `TableLayout`'s doc comment) — one assertion proving delft still
-/// round-trips losslessly with BOTH turned on at once.
+/// M5 task 5 (Step 3, the composed smoke gate): `RowOrder::Hilbert` and the
+/// by-type writer compose independently (Hilbert reorders FEATURES before
+/// encode; by-type partitions ENCODED ROWS after — see `TableWriters`'s doc
+/// comment) — one assertion proving delft still round-trips losslessly with
+/// Hilbert ordering turned on.
 #[test]
 fn delft_hilbert_and_by_type_compose_and_round_trip_losslessly() {
-    let (exported, package_dir, _export_dir) = convert_and_export_with(
-        "delft.city.jsonl",
-        Profile::Core,
-        RowOrder::Hilbert,
-        TableLayout::ByType,
-    );
+    let (exported, package_dir, _export_dir) =
+        convert_and_export_with("delft.city.jsonl", Profile::Core, RowOrder::Hilbert);
     assert!(
         package_dir.path().join("building.parquet").exists(),
         "sanity: this must actually be a split-by-type package"

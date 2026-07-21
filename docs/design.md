@@ -57,17 +57,18 @@ A CityParquet dataset is a **directory**, not a single file:
 ```text
 mydataset/
   metadata.json              # package manifest (profile, LoDs, tables, sidecars)
-  cityobjects.parquet        # the main object table (Single layout)
+  building.parquet            # one main object table per 1st-level CityObject
+  bridge.parquet               # family actually present in the dataset
   materials.parquet          # Compatibility only, when present
   textures.parquet           # Compatibility only, when present
   geometry_templates.parquet # Compatibility only, when present
 ```
 
-Under the **by-type** table layout (the CLI default) the single
-`cityobjects.parquet` is split into one table per **1st-level** (top-level)
-CityObject type — `building.parquet`, `bridge.parquet`, `tunnel.parquet`,
-`cityfurniture.parquet`, and so on — for schema clarity and type-selective
-queries. Per the CityJSON 2.0.1 spec's 1st-level vs 2nd-level city object
+The main object table is split **by type**, unconditionally: one table per
+**1st-level** (top-level) CityObject type — `building.parquet`,
+`bridge.parquet`, `tunnel.parquet`, `cityfurniture.parquet`, and so on — for
+schema clarity and type-selective queries. Per the CityJSON 2.0.1 spec's
+1st-level vs 2nd-level city object
 distinction, a 2nd-level object type (`BuildingPart`,
 `BuildingInstallation`, `BuildingConstructiveElement`, `BuildingFurniture`,
 `BuildingStorey`, `BuildingRoom`, `BuildingUnit`; the equivalent `Bridge*`

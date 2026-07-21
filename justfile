@@ -104,16 +104,33 @@ bench FOLDER OUT='bench/read_results':
             --repeat 7
 
         pkg="bench/data/readbench/${name}.parquet"
-        numeric_col="$(duckdb -csv -noheader -c "
-            SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${pkg}/cityobjects.parquet'))
-            WHERE column_type IN ('BIGINT', 'DOUBLE')
-              AND column_name NOT IN ('id', 'feature_id', 'object_type', 'parents',
-                'children', 'children_roles', 'bbox', 'material', 'texture',
-                'template', 'other')
-              AND column_name NOT LIKE 'geometry_lod%'
-              AND column_name NOT LIKE 'geometry_properties_lod%'
-            ORDER BY column_name LIMIT 1;
-        " 2>/dev/null || true)"
+        # By-type is the only, mandatory table layout: resolve the package's
+        # single main table from its own metadata.json manifest rather than
+        # assuming the pre-by-type "cityobjects.parquet" name (only true for
+        # a single-family dataset; `readbench_duckdb.sh` below still hard-
+        # fails clearly for a multi-family/multi-table package).
+        main_table="$(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        tables = json.load(fh).get('tables', [])
+    print(tables[0] if len(tables) == 1 else '')
+except OSError:
+    print('')
+" "${pkg}/metadata.json")"
+        numeric_col=""
+        if [[ -n "$main_table" ]]; then
+            numeric_col="$(duckdb -csv -noheader -c "
+                SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${pkg}/${main_table}'))
+                WHERE column_type IN ('BIGINT', 'DOUBLE')
+                  AND column_name NOT IN ('id', 'feature_id', 'object_type', 'parents',
+                    'children', 'children_roles', 'bbox', 'material', 'texture',
+                    'template', 'other')
+                  AND column_name NOT LIKE 'geometry_lod%'
+                  AND column_name NOT LIKE 'geometry_properties_lod%'
+                ORDER BY column_name LIMIT 1;
+            " 2>/dev/null || true)"
+        fi
 
         if [[ -n "$numeric_col" ]]; then
             echo "-- numeric attribute column for attr-stats: ${numeric_col}"

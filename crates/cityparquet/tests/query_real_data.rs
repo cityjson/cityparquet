@@ -88,7 +88,7 @@ fn full_read_and_count_over_a_converted_delft_package() {
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 2231);
 
-    let main_table = out.path().join("cityobjects.parquet");
+    let main_table = out.path().join("building.parquet");
 
     // `meta` is read independently of `full_read`, exactly as a real caller
     // (e.g. the readbench harness) would: open once for metadata, then hand
@@ -114,7 +114,7 @@ fn bbox_query_returns_the_exact_matching_ids_for_a_lower_left_window() {
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 2231);
 
-    let main_table = out.path().join("cityobjects.parquet");
+    let main_table = out.path().join("building.parquet");
 
     // Query window: the lower-left 25% of the dataset bbox's x/y extent,
     // full z range — derived independently of `bbox_query` via `dataset_bbox`
@@ -215,7 +215,7 @@ fn convert_and_decode(
     .unwrap();
     assert_eq!(report.object_count, 2231);
 
-    let main_table = out.path().join("cityobjects.parquet");
+    let main_table = out.path().join("building.parquet");
     let file = std::fs::File::open(&main_table).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let meta = builder.cityparquet_metadata().unwrap();

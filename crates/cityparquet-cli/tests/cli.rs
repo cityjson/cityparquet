@@ -18,13 +18,13 @@ fn convert_delft_to_tempdir_succeeds() {
         .arg(fixture("delft.city.jsonl"))
         .arg("-o")
         .arg(out.path())
-        .arg("--layout")
-        .arg("single")
         .output()
         .expect("failed to run convert");
 
     assert!(output.status.success(), "convert command failed");
-    assert!(out.path().join("cityobjects.parquet").exists());
+    // delft is a single 1st-level family, so by-type conversion (the only,
+    // mandatory layout) writes exactly one main table: building.parquet.
+    assert!(out.path().join("building.parquet").exists());
     assert!(out.path().join("metadata.json").exists());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -50,8 +50,6 @@ fn convert_two_inputs_merges_into_one_package() {
         .arg(&copy)
         .arg("-o")
         .arg(out.path())
-        .arg("--layout")
-        .arg("single")
         .output()
         .expect("failed to run convert");
 
@@ -65,7 +63,9 @@ fn convert_two_inputs_merges_into_one_package() {
         stdout.split_whitespace().next() == Some("4462"),
         "merged object count should be 2231*2=4462, got: {stdout}"
     );
-    assert!(out.path().join("cityobjects.parquet").exists());
+    // Both merged inputs are delft (same single 1st-level family), so
+    // by-type conversion still writes exactly one main table.
+    assert!(out.path().join("building.parquet").exists());
 }
 
 /// `--partition count --number 3` writes 3 self-contained package subdirs.
@@ -82,8 +82,6 @@ fn partition_count_writes_n_package_dirs() {
         .arg("count")
         .arg("--number")
         .arg("3")
-        .arg("--layout")
-        .arg("single")
         .output()
         .expect("run");
     assert!(
@@ -91,11 +89,13 @@ fn partition_count_writes_n_package_dirs() {
         "partition convert failed: {}",
         String::from_utf8_lossy(&o.stderr)
     );
+    // delft is a single 1st-level family, so every partition's by-type
+    // conversion writes exactly one main table: building.parquet.
     for i in 0..3 {
         assert!(
             out.path()
                 .join(format!("count-{i:05}"))
-                .join("cityobjects.parquet")
+                .join("building.parquet")
                 .exists(),
             "missing partition count-{i:05}"
         );
@@ -217,8 +217,6 @@ fn convert_with_overwrite_succeeds() {
         .arg(fixture("delft.city.jsonl"))
         .arg("-o")
         .arg(out.path())
-        .arg("--layout")
-        .arg("single")
         .status()
         .expect("failed to run first convert");
     assert!(status.success());
@@ -230,13 +228,13 @@ fn convert_with_overwrite_succeeds() {
         .arg("-o")
         .arg(out.path())
         .arg("--overwrite")
-        .arg("--layout")
-        .arg("single")
         .status()
         .expect("failed to run second convert");
 
     assert!(status.success(), "convert with --overwrite should succeed");
-    assert!(out.path().join("cityobjects.parquet").exists());
+    // delft is a single 1st-level family, so by-type conversion writes
+    // exactly one main table: building.parquet.
+    assert!(out.path().join("building.parquet").exists());
     assert!(out.path().join("metadata.json").exists());
 }
 
@@ -462,13 +460,15 @@ fn export_and_compare_railway_with_exclusions() {
     );
 }
 
-/// M5 task 5 (Step 4): `--layout by-type` writes delft's single pinned
-/// family table instead of the single `cityobjects.parquet`. Per the
-/// CityJSON 2.0.1 1st-level/2nd-level distinction, delft's `BuildingPart`
-/// rows (2nd-level) share `building.parquet` with the `Building` rows
-/// (1st-level) rather than getting their own `buildingpart.parquet`.
+/// By-type is the sole, mandatory table layout (the CLI's layout flag was
+/// removed 2026-07-21): a plain `convert` with no layout flag at all writes
+/// delft's single pinned family table (delft contains Building/BuildingPart
+/// objects → `building.parquet`). Per the CityJSON 2.0.1 1st-level/2nd-level
+/// distinction, delft's `BuildingPart` rows (2nd-level) share
+/// `building.parquet` with the `Building` rows (1st-level) rather than
+/// getting their own `buildingpart.parquet`.
 #[test]
-fn convert_with_by_type_layout_writes_family_tables() {
+fn convert_writes_by_type_family_tables_named_without_prefix() {
     let out = tempfile::tempdir().unwrap();
     let binary = env!("CARGO_BIN_EXE_cityparquet");
     let output = Command::new(binary)
@@ -476,17 +476,14 @@ fn convert_with_by_type_layout_writes_family_tables() {
         .arg(fixture("delft.city.jsonl"))
         .arg("-o")
         .arg(out.path())
-        .arg("--layout")
-        .arg("by-type")
         .output()
         .expect("failed to run convert");
 
     assert!(
         output.status.success(),
-        "convert --layout by-type failed: {}",
+        "convert failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!out.path().join("cityobjects.parquet").exists());
     assert!(out.path().join("building.parquet").exists());
     assert!(
         !out.path().join("buildingpart.parquet").exists(),
@@ -500,65 +497,11 @@ fn convert_with_by_type_layout_writes_family_tables() {
     );
 }
 
-/// An unrecognised `--layout` value must fail with a clear error, exactly
-/// like an unrecognised `--ordering`/`--profile` value already does.
-#[test]
-fn convert_with_an_invalid_layout_fails() {
-    let out = tempfile::tempdir().unwrap();
-    let binary = env!("CARGO_BIN_EXE_cityparquet");
-    let output = Command::new(binary)
-        .arg("convert")
-        .arg(fixture("delft.city.jsonl"))
-        .arg("-o")
-        .arg(out.path())
-        .arg("--layout")
-        .arg("bogus")
-        .output()
-        .expect("failed to run convert");
-
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("invalid layout"),
-        "expected an invalid-layout error, got: {stderr}"
-    );
-}
-
-/// M5 task 5: the CLI's `--layout` default flips to `by-type`, so a plain
-/// `convert` with no `--layout` flag now writes delft's per-type tables
-/// (delft contains Building objects → building.parquet) and must not emit
-/// the single `cityobjects.parquet`.
-#[test]
-fn convert_defaults_to_by_type_layout_named_without_prefix() {
-    let out = tempfile::tempdir().unwrap();
-    let binary = env!("CARGO_BIN_EXE_cityparquet");
-    let output = Command::new(binary)
-        .arg("convert")
-        .arg(fixture("delft.city.jsonl"))
-        .arg("-o")
-        .arg(out.path())
-        .output()
-        .expect("failed to run convert");
-
-    assert!(
-        output.status.success(),
-        "convert command failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        out.path().join("building.parquet").exists(),
-        "default layout is by-type"
-    );
-    assert!(
-        !out.path().join("cityobjects.parquet").exists(),
-        "by-type default must not emit the single cityobjects.parquet"
-    );
-}
-
 /// `--compression` overrides the recipe's default codec: converting the same
 /// fixture with `gzip` vs `zstd` both succeed, both round-trip losslessly,
 /// and — proving the codec actually took effect — the two runs produce
-/// DIFFERENT `cityobjects.parquet` sizes.
+/// DIFFERENT `building.parquet` sizes (delft is a single 1st-level family,
+/// so by-type conversion writes exactly one main table).
 #[test]
 fn convert_with_compression_override_changes_output_size_and_round_trips() {
     let binary = env!("CARGO_BIN_EXE_cityparquet");
@@ -571,17 +514,15 @@ fn convert_with_compression_override_changes_output_size_and_round_trips() {
             .arg(fixture("delft.city.jsonl"))
             .arg("-o")
             .arg(out.path())
-            .arg("--layout")
-            .arg("single")
             .arg("--compression")
             .arg(codec)
             .status()
             .expect("failed to run convert");
         assert!(status.success(), "convert --compression {codec} failed");
 
-        let cityobjects = out.path().join("cityobjects.parquet");
-        assert!(cityobjects.exists());
-        let size = std::fs::metadata(&cityobjects).unwrap().len();
+        let building = out.path().join("building.parquet");
+        assert!(building.exists());
+        let size = std::fs::metadata(&building).unwrap().len();
 
         let export_dir = tempfile::tempdir().unwrap();
         let export_path = export_dir.path().join("exported.city.jsonl");
@@ -616,7 +557,7 @@ fn convert_with_compression_override_changes_output_size_and_round_trips() {
 
     assert_ne!(
         gzip_size, zstd_size,
-        "gzip and zstd should produce differently-sized cityobjects.parquet, both got {gzip_size} bytes"
+        "gzip and zstd should produce differently-sized building.parquet, both got {gzip_size} bytes"
     );
 }
 
@@ -643,30 +584,6 @@ fn convert_with_an_invalid_compression_fails() {
     );
 }
 
-/// Passing `--layout single` explicitly still opts back into the single
-/// `cityobjects.parquet` table.
-#[test]
-fn convert_layout_single_still_emits_cityobjects_parquet() {
-    let out = tempfile::tempdir().unwrap();
-    let binary = env!("CARGO_BIN_EXE_cityparquet");
-    let output = Command::new(binary)
-        .arg("convert")
-        .arg(fixture("delft.city.jsonl"))
-        .arg("-o")
-        .arg(out.path())
-        .arg("--layout")
-        .arg("single")
-        .output()
-        .expect("failed to run convert");
-
-    assert!(
-        output.status.success(),
-        "convert --layout single failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(out.path().join("cityobjects.parquet").exists());
-}
-
 #[test]
 fn export_package_to_gml_writes_citygml() {
     let tmp = tempfile::tempdir().unwrap();
@@ -683,8 +600,6 @@ fn export_package_to_gml_writes_citygml() {
         .arg(&ingolstadt)
         .arg("-o")
         .arg(&pkg)
-        .arg("--layout")
-        .arg("single")
         .output()
         .expect("failed to run convert");
     assert!(

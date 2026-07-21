@@ -58,7 +58,8 @@ GZ_OUT="$OUTDIR/${BASE}.jsonl.gz"
 
 # Non-empty directory: at least one file inside (a CityParquet package is
 # always a directory of one or more Parquet files + metadata.json; the
-# exact member set depends on --layout, so this doesn't hardcode filenames).
+# exact member set depends on how many 1st-level CityObject families INPUT
+# has, so this doesn't hardcode filenames).
 dir_is_valid() {
   [[ -d "$1" ]] && [[ -n "$(find "$1" -type f -print -quit)" ]]
 }
@@ -85,11 +86,14 @@ if dir_is_valid "$PARQUET_OUT"; then
   echo "skip $PARQUET_OUT (already present)"
 else
   echo "-- convert -> $PARQUET_OUT"
-  # --layout single: the read-benchmark's CityParquetRunner locates a single
-  # `cityobjects.parquet` main table and rejects by-type packages, so the
-  # prep must pin single-table layout (by-type became the convert default in
-  # the geoarrow-toggle change).
-  "$CITYPARQUET" convert "$INPUT" "$PARQUET_OUT" --layout single --overwrite
+  # By-type is the only, mandatory table layout (2026-07-21): one
+  # `<snake>.parquet` table per 1st-level CityObject family. The
+  # read-benchmark's CityParquetRunner only supports a package whose
+  # manifest lists exactly one table, so INPUT for this script must be a
+  # single-family dataset (e.g. a Building-only 3D BAG tile) — a
+  # multi-family INPUT prepares fine here but the read-benchmark itself
+  # rejects it later with a clear error.
+  "$CITYPARQUET" convert "$INPUT" -o "$PARQUET_OUT" --overwrite
 fi
 
 # 2. Hilbert-ordered CityParquet package.
@@ -97,7 +101,7 @@ if dir_is_valid "$HILBERT_OUT"; then
   echo "skip $HILBERT_OUT (already present)"
 else
   echo "-- convert --ordering hilbert -> $HILBERT_OUT"
-  "$CITYPARQUET" convert "$INPUT" "$HILBERT_OUT" --ordering hilbert --layout single --overwrite
+  "$CITYPARQUET" convert "$INPUT" -o "$HILBERT_OUT" --ordering hilbert --overwrite
 fi
 
 # 3. FlatCityBuf, spatial index (default-on) + all-attribute B+Tree index.

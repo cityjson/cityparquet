@@ -201,7 +201,9 @@ fn delft_source_metadata_reaches_kv_metadata_and_the_exported_header() {
     ))
     .unwrap();
 
-    let file = std::fs::File::open(package_dir.path().join("cityobjects.parquet")).unwrap();
+    // delft is a single 1st-level family, so by-type conversion writes
+    // exactly one main table: building.parquet.
+    let file = std::fs::File::open(package_dir.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let meta = builder.cityparquet_metadata().unwrap();
     let source_metadata = meta
@@ -1454,8 +1456,10 @@ fn export_rejects_a_manifest_listing_the_same_table_twice() {
     ))
     .unwrap();
 
+    // delft is a single 1st-level family, so by-type conversion writes
+    // exactly one main table: building.parquet.
     let mut manifest = read_manifest(package_dir.path());
-    assert_eq!(manifest.tables, vec!["cityobjects.parquet".to_string()]);
+    assert_eq!(manifest.tables, vec!["building.parquet".to_string()]);
     manifest.tables.push(manifest.tables[0].clone());
     write_manifest(package_dir.path(), &manifest);
 
@@ -1468,22 +1472,24 @@ fn export_rejects_a_manifest_listing_the_same_table_twice() {
     .unwrap_err();
     let msg = error.to_string();
     assert!(
-        msg.contains("duplicate") && msg.contains("cityobjects.parquet"),
+        msg.contains("duplicate") && msg.contains("building.parquet"),
         "expected an error naming the duplicated table, got: {msg}"
     );
 }
 
-/// Splits `package_dir`'s single `cityobjects.parquet` main table into two
-/// physically separate parquet files inside `package_dir` (`cityobjects_a.parquet`
-/// / `cityobjects_b.parquet`, first half of rows / second half), each
-/// carrying the identical Arrow schema and KV footer metadata as the
-/// original file, then removes the original. A hand-rolled stand-in for a
-/// `TableLayout::ByType` package, used to exercise export's multi-table read
-/// loop (M5 task 5, Step 1) independently of the `ByType` writer path
-/// itself. Returns the two bare file names, in the order the caller should
-/// list them in a rewritten manifest.
+/// Splits `package_dir`'s single `building.parquet` main table (delft is a
+/// single 1st-level family, so by-type conversion writes exactly one) into
+/// two physically separate parquet files inside `package_dir`
+/// (`building_a.parquet` / `building_b.parquet`, first half of rows /
+/// second half), each carrying the identical Arrow schema and KV footer
+/// metadata as the original file, then removes the original. A hand-rolled
+/// stand-in for a MULTI-family by-type package (e.g. railway's 10 tables),
+/// used to exercise export's multi-table read loop (M5 task 5, Step 1)
+/// independently of the by-type writer path itself. Returns the two bare
+/// file names, in the order the caller should list them in a rewritten
+/// manifest.
 fn split_main_table_into_two_files(package_dir: &std::path::Path) -> (String, String) {
-    let source_path = package_dir.join("cityobjects.parquet");
+    let source_path = package_dir.join("building.parquet");
     let file = std::fs::File::open(&source_path).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let kvs = builder
@@ -1508,8 +1514,8 @@ fn split_main_table_into_two_files(package_dir: &std::path::Path) -> (String, St
     let props = WriterProperties::builder()
         .set_key_value_metadata(Some(kvs))
         .build();
-    let name_a = "cityobjects_a.parquet".to_string();
-    let name_b = "cityobjects_b.parquet".to_string();
+    let name_a = "building_a.parquet".to_string();
+    let name_b = "building_b.parquet".to_string();
     for (name, batch) in [(&name_a, &first), (&name_b, &second)] {
         let out_file = std::fs::File::create(package_dir.join(name)).unwrap();
         let mut writer =

@@ -1,11 +1,9 @@
 //! Task 1 (mandatory-by-type-layout plan): characterization safety net.
 //!
-//! Pins the exact by-type object-table set the `TableLayout::ByType` layout
-//! produces TODAY, while `TableLayout::Single` still exists. A later task
-//! in this plan deletes `TableLayout::Single` (and the `opts.layout = ...`
-//! line below, since by-type becomes unconditional); this test must stay
-//! green across that removal, proving the deletion did not perturb by-type
-//! output by a single byte.
+//! Pins the exact by-type object-table set the by-type layout produces —
+//! this test stayed green across Task 3's removal of the single-file table
+//! layout (by-type is now unconditional), proving the deletion did not
+//! perturb by-type output by a single byte.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -33,11 +31,7 @@ fn table_files(dir: &std::path::Path) -> BTreeSet<String> {
 fn railway_by_type_writes_one_file_per_first_level_family() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("pkg");
-    // NOTE: while Single still exists, set layout explicitly; after the
-    // later task removing TableLayout::Single, the field is gone and this
-    // line is deleted (by-type is unconditional).
-    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.clone());
-    opts.layout = cityparquet::package::TableLayout::ByType;
+    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.clone());
     convert(&opts).expect("convert railway");
 
     let expected: BTreeSet<String> = [
@@ -66,15 +60,13 @@ fn railway_by_type_writes_one_file_per_first_level_family() {
 /// `tests/fixtures/empty.city.jsonl` is a single CityJSONSeq header line
 /// (`CityObjects: {}`, no feature lines follow) — the minimal input that
 /// scans to zero city-object rows (`scan_result.object_count == 0`).
-/// `write_package` used to paper over a zero-row `TableLayout::ByType` run by
-/// writing a standalone, empty `cityobjects.parquet` fallback table (its
-/// writers open lazily per-family, so zero rows means zero writers ever
-/// open); per plan decision (2026-07-21) that fallback is gone and this must
-/// be a hard error instead, checked layout-agnostically off
-/// `scan_result.object_count` — see `crates/cityparquet/tests/convert_real_data.rs`'s
-/// `empty_input_is_rejected_under_both_layouts` for the same assertion made
-/// explicitly under both `TableLayout::ByType` and `TableLayout::Single`.
-/// This test uses `ConvertOptions`' default layout (currently `Single`).
+/// `write_package` used to paper over a zero-row by-type run by writing a
+/// standalone, empty reserved-name fallback table (the by-type writer opens
+/// tables lazily per-family, so zero rows means zero writers ever open);
+/// per plan decision (2026-07-21) that fallback is gone and this must be a
+/// hard error instead, off `scan_result.object_count` — see
+/// `crates/cityparquet/tests/convert_real_data.rs`'s
+/// `empty_input_is_rejected` for the same assertion.
 #[test]
 fn zero_object_input_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
