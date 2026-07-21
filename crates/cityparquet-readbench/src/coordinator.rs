@@ -451,16 +451,27 @@ fn locate_cityparquet_table(prepared_dir: &Path, base: &str) -> Result<PathBuf> 
     // "exactly one object table" requirement below is this coordinator's
     // own — its `QueryParams` derivation is single-file, out of scope for a
     // multi-family by-type package (see this fn's doc comment).
-    let tables = cityparquet::stac::properties::PackageTables::open(&package_dir)
-        .with_context(|| format!("cannot derive QueryParams: reading {}", package_dir.display()))?;
+    let tables =
+        cityparquet::stac::properties::PackageTables::open(&package_dir).with_context(|| {
+            format!(
+                "cannot derive QueryParams: reading {}",
+                package_dir.display()
+            )
+        })?;
     match tables.tables.as_slice() {
         [only] => Ok(only.clone()),
-        many => bail!(
-            "cannot derive QueryParams: {} has {} tables ({many:?}); only single-table \
-             (single-family) packages are supported here, not multi-table by-type packages",
-            package_dir.display(),
-            many.len(),
-        ),
+        many => {
+            let names: Vec<&str> = many
+                .iter()
+                .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+                .collect();
+            bail!(
+                "cannot derive QueryParams: {} has {} tables ({names:?}); only single-table \
+                 (single-family) packages are supported here, not multi-table by-type packages",
+                package_dir.display(),
+                many.len(),
+            )
+        }
     }
 }
 

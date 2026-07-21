@@ -71,13 +71,19 @@ fn locate_main_table(input: &Path) -> Result<PathBuf> {
 
     match tables.tables.as_slice() {
         [only] => Ok(only.clone()),
-        many => bail!(
-            "package at {} has {} tables ({many:?}); the read-benchmark only \
-             supports single-table (single-family) packages, not multi-table \
-             by-type packages",
-            input.display(),
-            many.len(),
-        ),
+        many => {
+            let names: Vec<&str> = many
+                .iter()
+                .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+                .collect();
+            bail!(
+                "package at {} has {} tables ({names:?}); the read-benchmark only \
+                 supports single-table (single-family) packages, not multi-table \
+                 by-type packages",
+                input.display(),
+                many.len(),
+            )
+        }
     }
 }
 

@@ -26,7 +26,9 @@ use self::document::{Bounds, write_city_model_close, write_city_model_open};
 use crate::Result;
 use crate::citygml::crs::srs_name_for;
 use crate::decode::decode_batch;
-use crate::export::{appearance_columns, first_schema_mismatch, read_lod_keyed_appearance};
+use crate::export::{
+    appearance_columns, first_schema_mismatch, read_lod_keyed_appearance, table_display_name,
+};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use crate::sidecar::{read_materials, read_textures};
 use crate::stac::properties::PackageTables;
@@ -219,18 +221,18 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
             if table_meta.cityparquet_version != meta.cityparquet_version {
                 return Err(CityParquetError::Metadata(format!(
                     "table '{}' has cityparquet_version {:?}, expected {:?} (matching '{}')",
-                    path.display(),
+                    table_display_name(path),
                     table_meta.cityparquet_version,
                     meta.cityparquet_version,
-                    first_path.display()
+                    table_display_name(first_path)
                 )));
             }
             let table_schema = builder.cityparquet_arrow_schema()?;
             if let Some(mismatch) = first_schema_mismatch(&schema, &table_schema) {
                 return Err(CityParquetError::Metadata(format!(
                     "table '{}' {mismatch} (matching '{}')",
-                    path.display(),
-                    first_path.display()
+                    table_display_name(path),
+                    table_display_name(first_path)
                 )));
             }
             let pr = builder.build().map_err(|e| {

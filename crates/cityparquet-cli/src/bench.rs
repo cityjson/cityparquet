@@ -208,6 +208,17 @@ fn io_err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Io(msg.into())
 }
 
+/// Short file names for a package's table paths, for user-facing messages —
+/// `PackageTables::tables` entries are absolute paths (e.g. under a bench
+/// tempdir), and echoing the whole path leaks environment detail that isn't
+/// part of the package's own naming.
+fn table_display_names(tables: &[PathBuf]) -> Vec<&str> {
+    tables
+        .iter()
+        .map(|p| p.file_name().and_then(|n| n.to_str()).unwrap_or("<table>"))
+        .collect()
+}
+
 fn parquet_err(msg: impl std::fmt::Display) -> CityParquetError {
     CityParquetError::Parquet(msg.to_string())
 }
@@ -450,14 +461,15 @@ fn run_variant(
         return Err(CityParquetError::Schema(format!(
             "variant {variant_id}: full scan read {total_rows} rows across {:?}, but convert \
              reported object_count {}",
-            tables.tables, report.object_count
+            table_display_names(&tables.tables),
+            report.object_count
         )));
     }
 
     let dataset_bbox = dataset_bbox.ok_or_else(|| {
         CityParquetError::Schema(format!(
             "variant {variant_id}: no row in {:?} has a bbox — cannot derive a window query",
-            tables.tables
+            table_display_names(&tables.tables)
         ))
     })?;
 

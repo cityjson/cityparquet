@@ -104,6 +104,16 @@ fn io_err(msg: String) -> CityParquetError {
     CityParquetError::Io(msg)
 }
 
+/// Short file name for a table path, for user-facing messages — `tables`
+/// entries are absolute paths (see `PackageTables`), and echoing the whole
+/// path (e.g. a tempdir prefix in tests/benches) leaks environment detail
+/// that isn't part of the package's own naming.
+pub(crate) fn table_display_name(path: &std::path::Path) -> &str {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("<table>")
+}
+
 /// Compares `other`'s CityParquet-rendered Arrow schema against `first`'s,
 /// field by field, in order — name and data type both must match. Returns a
 /// description of the FIRST mismatch found (field count, a renamed column,
@@ -1243,10 +1253,10 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 return Err(err(format!(
                     "table '{}' has cityparquet_version {:?}, expected {:?} \
                      (matching table '{}')",
-                    table_path.display(),
+                    table_display_name(table_path),
                     table_meta.cityparquet_version,
                     meta.cityparquet_version,
-                    first_table_path.display()
+                    table_display_name(first_table_path)
                 )));
             }
             // ...and (M5 Codex review, Important finding 2) its own
@@ -1266,8 +1276,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             if let Some(mismatch) = first_schema_mismatch(&schema, &table_schema) {
                 return Err(err(format!(
                     "table '{}' {mismatch} (matching table '{}')",
-                    table_path.display(),
-                    first_table_path.display()
+                    table_display_name(table_path),
+                    table_display_name(first_table_path)
                 )));
             }
             let parquet_reader = builder.build().map_err(|e| {
