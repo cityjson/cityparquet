@@ -2,7 +2,7 @@
 //! convert the real fixture into a package, export it back to CityJSON/Seq,
 //! and prove the two are semantically equal via `compare::compare_datasets`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
@@ -18,13 +18,32 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// A committed, in-tree fixture under `crates/cityparquet/tests/data/`, as
+/// opposed to the large datasets `fixture()` fetches into the gitignored
+/// `tests/fixtures/`. Used for small, hand-derived fixtures that have no public
+/// download URL, so they must live in the repo to be reproducible on a fresh
+/// clone / in CI (mirrors the `data_fixture` helper in the CityGML test files).
+fn data_fixture(name: &str) -> PathBuf {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(name);
+    assert!(p.exists(), "missing committed fixture {name} in tests/data");
+    p
+}
+
 /// Converts `input` into a fresh tempdir package, exports it back to
 /// `.city.jsonl`, and returns the export's path alongside the tempdirs that
 /// back both (kept alive so the caller can still read the file).
 fn convert_and_export(input: &str) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
+    convert_and_export_path(&fixture(input))
+}
+
+/// Like [`convert_and_export`] but takes a resolved path, so a caller can hand
+/// it a [`data_fixture`] (committed, in-tree) rather than a fetched one.
+fn convert_and_export_path(input: &Path) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
     let package_dir = tempfile::tempdir().unwrap();
     convert(&ConvertOptions::new(
-        fixture(input),
+        input.to_path_buf(),
         package_dir.path().to_path_buf(),
     ))
     .unwrap();
@@ -754,11 +773,16 @@ fn null_shorthand_semantics_round_trips() {
 /// subset of the Helsinki dataset (the only fixture carrying `address`); its
 /// addresses have no `location` MultiPoint, so the vertex-index landmine
 /// (documented as a known limitation) is not exercised here.
+///
+/// The fixture is a small hand-derived subset of the City of Helsinki open 3D
+/// city model. It has no public download URL, so it is committed in-tree under
+/// `tests/data/` (via [`data_fixture`]) rather than fetched by `just fixtures`.
 #[test]
 fn helsinki_unmapped_members_round_trip() {
-    let (exported, _package_dir, _export_dir) = convert_and_export("helsinki_address.city.jsonl");
+    let (exported, _package_dir, _export_dir) =
+        convert_and_export_path(&data_fixture("helsinki_address.city.jsonl"));
     let report = compare_datasets(
-        &fixture("helsinki_address.city.jsonl"),
+        &data_fixture("helsinki_address.city.jsonl"),
         &exported,
         &CompareOptions::default(),
     )
@@ -788,7 +812,7 @@ fn helsinki_unmapped_members_round_trip() {
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     };
-    let source_addr = read_addresses(&fixture("helsinki_address.city.jsonl"));
+    let source_addr = read_addresses(&data_fixture("helsinki_address.city.jsonl"));
     let export_addr = read_addresses(&exported);
     assert!(
         !source_addr.is_empty(),
@@ -806,11 +830,16 @@ fn helsinki_unmapped_members_round_trip() {
 /// aborting the whole conversion, which is what this fixture did before G12.
 /// Fixture is real Helsinki objects with one injected `bbox` attribute
 /// alongside 27 genuine (non-colliding) attributes.
+///
+/// Hand-derived from the City of Helsinki open 3D city model (an injected
+/// colliding attribute on real objects); no public URL, so committed in-tree
+/// under `tests/data/` (via [`data_fixture`]) rather than fetched.
 #[test]
 fn colliding_attribute_is_diverted_and_round_trips() {
-    let (exported, _package_dir, _export_dir) = convert_and_export("collision_attr.city.jsonl");
+    let (exported, _package_dir, _export_dir) =
+        convert_and_export_path(&data_fixture("collision_attr.city.jsonl"));
     let report = compare_datasets(
-        &fixture("collision_attr.city.jsonl"),
+        &data_fixture("collision_attr.city.jsonl"),
         &exported,
         &CompareOptions::default(),
     )
