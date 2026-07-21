@@ -160,9 +160,9 @@ enum Commands {
         repeat: usize,
 
         /// Comma-separated variant identifiers
-        /// (`<preset>[+hilbert][+by-type][+rg<N>][+<codec>]`, e.g.
+        /// (`<preset>[+hilbert][+rg<N>][+<codec>]`, e.g.
         /// `cityparquet+hilbert`, `cityparquet+rg512`,
-        /// `cityparquet+gzip+rg512`); omit for the default 10-variant set
+        /// `cityparquet+gzip+rg512`); omit for the default 9-variant set
         #[arg(long)]
         variants: Option<String>,
 

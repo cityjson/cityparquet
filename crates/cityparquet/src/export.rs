@@ -1156,8 +1156,9 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         .map_err(|e| CityParquetError::Parquet(format!("cannot build parquet reader: {e}")))?;
     // Wrapped in `Option` so the objects-decode loop below can `.take()` it
     // for the `idx == 0` table without re-opening the file it already holds
-    // open — the Single-layout path (still the overwhelming common case)
-    // therefore never pays for a second `File::open`/`ParquetRecordBatchReaderBuilder`.
+    // open — the first object table's already-open reader is reused for
+    // `idx == 0`, so it never pays for a second `File::open`/
+    // `ParquetRecordBatchReaderBuilder`.
     let mut first_reader = Some(CityParquetRecordBatchReader::new(
         first_parquet_reader,
         Arc::clone(&schema),

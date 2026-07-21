@@ -780,13 +780,16 @@ fn write_package(
     // reserved-name fallback table so the package wasn't empty. Plan
     // decision (2026-07-21, mandatory-by-type-layout): a conversion that
     // encodes zero city objects is a hard error instead — there is no
-    // reserved fallback table name now that the single-file layout is gone,
-    // and a silently-valid empty package hid what is almost always a mistake
-    // in the input. `scan_result.object_count` (every `CityObject` across
-    // every feature, see `crate::scan::scan`) is the signal: it is `0`
-    // exactly when no writer could have received a row, which is equivalent
-    // to `table_names.is_empty()`.
-    if scan_result.object_count == 0 {
+    // reserved fallback table name now that the single-file layout is gone.
+    // We gate on the actual encoded table set (`table_names.is_empty()`)
+    // rather than `scan_result.object_count`: `table_names` is what `export`
+    // requires to be non-empty (a committed package must have at least one
+    // object table), and conversion runs two passes over the source — an
+    // initial scan, then a separate encode that reopens the file (see the
+    // `convert_source_impl` docstring and `source.rs`). Gating on the actual
+    // encode result stays correct even if the source is mutated between
+    // those two passes, whereas the scan count would not.
+    if table_names.is_empty() {
         return Err(err(
             "input contains no city objects to convert; a CityParquet package must have at \
              least one object table"

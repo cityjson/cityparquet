@@ -114,8 +114,8 @@ cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 ```
 
 Appends one CSV row per variant. `--variants` takes a comma-separated list in
-the grammar `<preset>[+hilbert][+by-type][+rg<N>]` (omit for the default
-10-variant set); `--repeat` (default 5) reports the median; `--window-frac`
+the grammar `<preset>[+hilbert][+rg<N>]` (omit for the default
+9-variant set); `--repeat` (default 5) reports the median; `--window-frac`
 (default 0.05) sizes the spatial window query; `--skip-roundtrip` skips the
 export+compare check. See [bench/README.md](bench/README.md).
 
