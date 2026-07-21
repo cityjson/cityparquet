@@ -424,10 +424,19 @@ fn resolve_format_artefact(
     }
 }
 
-/// The cityparquet package's main table (`<x>.parquet/cityobjects.parquet`)
-/// — required for QueryParams derivation regardless of `--formats` (see this
-/// module's own doc comment). Errors clearly, pointing at
-/// `just readbench-prepare`, rather than failing deep inside a later scan.
+/// The cityparquet package's main table — required for QueryParams
+/// derivation regardless of `--formats` (see this module's own doc
+/// comment). Errors clearly, pointing at `just readbench-prepare`, rather
+/// than failing deep inside a later scan.
+///
+/// Reads `metadata.json` and requires exactly one listed table: every
+/// by-type package from a single-family dataset (e.g. delft) lists exactly
+/// one, which this uses regardless of its derived name; a multi-family
+/// by-type package (several family tables, no single file holding the whole
+/// dataset) is rejected outright, since this coordinator's `QueryParams`
+/// derivation (bbox, attribute predicate, target id — see this module's own
+/// doc comment) is single-file — out of scope here rather than silently
+/// deriving params from only one family's rows.
 fn locate_cityparquet_table(prepared_dir: &Path, base: &str) -> Result<PathBuf> {
     let package_dir = prepared_dir.join(format!("{base}.parquet"));
     if !package_dir.is_dir() {
@@ -437,15 +446,33 @@ fn locate_cityparquet_table(prepared_dir: &Path, base: &str) -> Result<PathBuf> 
             package_dir.display()
         );
     }
-    let table = package_dir.join("cityobjects.parquet");
-    if !table.is_file() {
-        bail!(
-            "cannot derive QueryParams: {} exists but has no cityobjects.parquet main table \
-             (only TableLayout::Single packages are supported here)",
-            package_dir.display()
-        );
+    let manifest_path = package_dir.join("metadata.json");
+    let manifest_text = fs::read_to_string(&manifest_path).with_context(|| {
+        format!(
+            "cannot derive QueryParams: reading {}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: cityparquet_schema::PackageManifest = serde_json::from_str(&manifest_text)
+        .with_context(|| {
+            format!(
+                "cannot derive QueryParams: parsing {}",
+                manifest_path.display()
+            )
+        })?;
+    match manifest.tables.as_slice() {
+        [] => bail!(
+            "cannot derive QueryParams: {} lists no tables",
+            manifest_path.display()
+        ),
+        [only] => Ok(package_dir.join(only)),
+        many => bail!(
+            "cannot derive QueryParams: {} has {} tables ({many:?}); only single-table \
+             (single-family) packages are supported here, not multi-table by-type packages",
+            package_dir.display(),
+            many.len(),
+        ),
     }
-    Ok(table)
 }
 
 fn open_metadata(table: &Path) -> Result<CityParquetMetadata> {

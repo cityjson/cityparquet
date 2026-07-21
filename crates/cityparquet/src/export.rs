@@ -1124,7 +1124,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     if manifest.tables.is_empty() {
         return Err(err("package manifest lists no tables".to_string()));
     }
-    // A `TableLayout::ByType` (or any hand-rolled multi-table) package lists
+    // A by-type (or any hand-rolled multi-table) package lists
     // one file per table; a manifest naming the same file twice is a corrupt
     // package (every object in it would be decoded twice), never silently
     // tolerated by reading only the first occurrence.
@@ -1138,8 +1138,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     }
 
     // The FIRST table is authoritative for the package's KV metadata and
-    // rendered Arrow schema (`crate::package`'s `TableLayout::ByType` writes
-    // the IDENTICAL schema to every table, so any one of them would do);
+    // rendered Arrow schema (`crate::package`'s by-type writer writes the
+    // IDENTICAL schema to every table, so any one of them would do);
     // every other table is read via the SAME `schema` below and only
     // light-checked for a matching `cityparquet_version`, not fully
     // re-derived.
@@ -1156,8 +1156,9 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         .map_err(|e| CityParquetError::Parquet(format!("cannot build parquet reader: {e}")))?;
     // Wrapped in `Option` so the objects-decode loop below can `.take()` it
     // for the `idx == 0` table without re-opening the file it already holds
-    // open — the Single-layout path (still the overwhelming common case)
-    // therefore never pays for a second `File::open`/`ParquetRecordBatchReaderBuilder`.
+    // open — the first object table's already-open reader is reused for
+    // `idx == 0`, so it never pays for a second `File::open`/
+    // `ParquetRecordBatchReaderBuilder`.
     let mut first_reader = Some(CityParquetRecordBatchReader::new(
         first_parquet_reader,
         Arc::clone(&schema),
@@ -1271,9 +1272,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             // `CityParquetRecordBatchReader::new(_, Arc::clone(&schema))`)
             // would silently relabel or misdecode its data rather than
             // reject the package. This is a real risk for any package NOT
-            // produced by this crate's own `TableLayout::ByType` writer
-            // (which is trusted to emit identical schemas), and for a
-            // corrupted one that was.
+            // produced by this crate's own by-type writer (which is trusted
+            // to emit identical schemas), and for a corrupted one that was.
             let table_schema = builder.cityparquet_arrow_schema()?;
             if let Some(mismatch) = first_schema_mismatch(&schema, &table_schema) {
                 return Err(err(format!(

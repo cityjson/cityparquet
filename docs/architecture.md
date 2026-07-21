@@ -54,7 +54,7 @@ Source (CityJSON doc or CityJSONSeq stream)
                 │
                 ├─ recipe ─────► per-column WriterProperties (the benchmark variable)
                 │
-                └─ write ──────► cityobjects.parquet + sidecars + metadata.json
+                └─ write ──────► one <snake>.parquet per family + sidecars + metadata.json
 ```
 
 - **`source`** — `Source` unifies whole-document CityJSON and streaming
@@ -86,8 +86,9 @@ failure mid-write leaves the existing package intact and the temp dir behind
 for inspection.
 
 `ConvertOptions` bundles the knobs: `profile`, `overwrite`, `batch_size`,
-`recipe` (`WriterRecipe`), `ordering` (`RowOrder::{Source, Hilbert}`), and
-`layout` (`TableLayout::{Single, ByType}`).
+`recipe` (`WriterRecipe`), and `ordering` (`RowOrder::{Source, Hilbert}`).
+The table layout itself is not a knob: by-type (one `<snake>.parquet` table
+per 1st-level CityObject family) is the sole, mandatory layout.
 
 ## Reader
 

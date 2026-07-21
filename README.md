@@ -59,7 +59,8 @@ realistic timing). Four subcommands:
 cargo run -p cityparquet-cli -- convert INPUT OUTPUT_DIR --overwrite
 ```
 
-Writes `OUTPUT_DIR/` containing `cityobjects.parquet` + `metadata.json`,
+Writes `OUTPUT_DIR/` containing one `<snake>.parquet` table per 1st-level
+CityObject family (e.g. `building.parquet`, `bridge.parquet`) + `metadata.json`,
 readable by any Parquet reader (DuckDB, pyarrow, …).
 
 | Flag | Default | Meaning |
@@ -68,7 +69,6 @@ readable by any Parquet reader (DuckDB, pyarrow, …).
 | `--overwrite` | off | purge an existing package in the target dir first |
 | `--recipe` | `cityparquet` | writer preset: `cityparquet`, `parquet-defaults`, `no-dictionary`, `no-bss`, `no-delta`, `snappy` |
 | `--ordering` | `source` | `source` or `hilbert` (spatial row ordering for better bbox pruning) |
-| `--layout` | `single` | `single` (one table) or `by-type` (one table per object type) |
 | `--row-group-size` | `65536` | Parquet row-group size |
 | `--zstd-level` | `3` | zstd level (ignored by `--recipe snappy`) |
 | `--batch-size` | `4096` | encode batch size |
@@ -114,8 +114,8 @@ cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 ```
 
 Appends one CSV row per variant. `--variants` takes a comma-separated list in
-the grammar `<preset>[+hilbert][+by-type][+rg<N>]` (omit for the default
-10-variant set); `--repeat` (default 5) reports the median; `--window-frac`
+the grammar `<preset>[+hilbert][+rg<N>]` (omit for the default
+9-variant set); `--repeat` (default 5) reports the median; `--window-frac`
 (default 0.05) sizes the spatial window query; `--skip-roundtrip` skips the
 export+compare check. See [bench/README.md](bench/README.md).
 

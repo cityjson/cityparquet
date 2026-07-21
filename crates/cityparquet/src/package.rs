@@ -4,8 +4,8 @@
 //! Wires the three passes already shipped by this crate — [`crate::scan`]
 //! (schema + dataset metadata), [`crate::encode`] (the `RecordBatch` stream),
 //! and [`crate::recipe`] (per-column `WriterProperties`) — into a single
-//! [`convert`] call that writes `cityobjects.parquet` plus the package-level
-//! `metadata.json` manifest.
+//! [`convert`] call that writes one `<snake>.parquet` table per 1st-level
+//! CityObject family plus the package-level `metadata.json` manifest.
 
 use std::collections::HashMap;
 use std::fs;
@@ -36,20 +36,17 @@ use crate::sidecar::{TemplateRow, write_materials, write_templates, write_textur
 use crate::source::Source;
 use crate::wkb_write::{VertexPool, geometry_to_wkb};
 
-/// The one data table every profile writes.
-const CITYOBJECTS_TABLE: &str = "cityobjects.parquet";
 /// Compatibility-profile sidecar tables.
 const MATERIALS_TABLE: &str = "materials.parquet";
 const TEXTURES_TABLE: &str = "textures.parquet";
 const TEMPLATES_TABLE: &str = "geometry_templates.parquet";
 /// Files a by-type object table's derived name must never collide with —
-/// the single-layout table plus every package sidecar/metadata file. Since
-/// `table_name_for_type` no longer namespaces object tables under a
-/// `cityobjects_` prefix (Task 4), this guard is the invariant that keeps a
-/// pathological object type from shadowing a reserved file — enforced at
+/// every package sidecar/metadata file. Since `table_name_for_type` no
+/// longer namespaces object tables under a `cityobjects_` prefix (Task 4),
+/// this guard is the invariant that keeps a pathological object type from
+/// shadowing a reserved file — enforced at
 /// [`TableWriters::by_type_table_index`].
 const RESERVED_PACKAGE_FILES: &[&str] = &[
-    CITYOBJECTS_TABLE,
     MATERIALS_TABLE,
     TEXTURES_TABLE,
     TEMPLATES_TABLE,
@@ -63,7 +60,7 @@ const RESERVED_PACKAGE_FILES: &[&str] = &[
 /// never mistake it for package output.
 const TMP_DIR_NAME: &str = ".cityparquet-tmp";
 
-/// Row-emission order for the main `cityobjects.parquet` table.
+/// Row-emission order for the main CityObject data tables.
 ///
 /// `Source` streams features exactly as `Source::features()` yields them
 /// (lexicographic for a whole CityJSON document — see `Source::open` —
@@ -88,44 +85,6 @@ pub enum RowOrder {
     Hilbert,
 }
 
-/// Table layout for the main CityObject data (M5 task 5): [`Self::Single`]
-/// writes every object into the one [`CITYOBJECTS_TABLE`], exactly as every
-/// milestone before M5 did. [`Self::ByType`] instead writes one table PER
-/// DISTINCT 1st-level (top-level) CityObject FAMILY the dataset contains —
-/// per the CityJSON 2.0.1 spec's 1st-level vs 2nd-level city object
-/// distinction, a 2nd-level `object_type` (e.g. `BuildingPart`,
-/// `BuildingInstallation`, `BridgeConstructiveElement`, `TunnelHollowSpace`)
-/// is NOT given its own table: it is routed into its 1st-level parent
-/// family's table (`Building`, `Bridge`, `Tunnel` respectively — see
-/// [`cityparquet_schema::first_level_type`]), while every other, already
-/// top-level type keeps its own file. File name `<snake>.parquet` (Task 4
-/// dropped the `cityobjects_` prefix these used to carry), `<snake>` being
-/// the family lower-cased with every non-alphanumeric character replaced by
-/// `_`, and a leading `+` (CityJSON extension object types) rewritten to the
-/// prefix `ext_` rather than folded into an ugly leading underscore (e.g.
-/// `+Foo` becomes `ext_foo.parquet`, never `_foo.parquet`) — see
-/// [`table_name_for_type`]. A derived name that would collide with a package
-/// sidecar/metadata file (see [`RESERVED_PACKAGE_FILES`]) is rejected as an
-/// error rather than silently overwriting that file. Every table this
-/// produces shares the IDENTICAL Arrow schema (no per-type column pruning —
-/// a different, out-of-scope experiment): only which ROWS land in which file
-/// differs, decided by each row's own `object_type` mapped through
-/// [`cityparquet_schema::first_level_type`] — the `object_type` column
-/// itself (dictionary-encoded, unchanged by this routing) is preserved on
-/// every row, so a family's table can still distinguish e.g. `Building` rows
-/// from `BuildingPart` rows within `building.parquet`.
-/// [`PackageManifest::tables`] lists every file [`TableWriters`] actually
-/// opened, in first-appearance order (the order distinct FAMILY values are
-/// first encountered in the encoded row stream) — this is unaffected by
-/// [`RowOrder`], which only reorders FEATURES before encoding; partitioning
-/// by family happens strictly after.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TableLayout {
-    #[default]
-    Single,
-    ByType,
-}
-
 /// Options controlling one end-to-end CityJSON/CityJSONSeq -> CityParquet
 /// package conversion.
 #[derive(Debug, Clone)]
@@ -137,7 +96,6 @@ pub struct ConvertOptions {
     pub batch_size: usize,
     pub recipe: WriterRecipe,
     pub ordering: RowOrder,
-    pub layout: TableLayout,
     /// Write GeoParquet/GeoArrow self-description (the `geoarrow.wkb` field
     /// extension + the file-level `geo` key). OFF by default so DuckDB reads
     /// geometry columns as plain BLOB (works with `SELECT *` and the
@@ -159,9 +117,9 @@ pub struct ConvertOptions {
 
 impl ConvertOptions {
     /// Core profile, 4096-row batches, the default [`WriterRecipe`],
-    /// [`RowOrder::Source`] emission order, [`TableLayout::Single`], no
-    /// overwrite, and no GeoParquet/GeoArrow self-description — the sensible
-    /// defaults for a first conversion of `input` into `output_dir`.
+    /// [`RowOrder::Source`] emission order, no overwrite, and no
+    /// GeoParquet/GeoArrow self-description — the sensible defaults for a
+    /// first conversion of `input` into `output_dir`.
     pub fn new(input: PathBuf, output_dir: PathBuf) -> Self {
         Self {
             input,
@@ -171,7 +129,6 @@ impl ConvertOptions {
             batch_size: 4096,
             recipe: WriterRecipe::default(),
             ordering: RowOrder::default(),
-            layout: TableLayout::default(),
             geoarrow: false,
             // Off here (source-faithful library default); the CLI turns it on.
             generate_lod0: false,
@@ -472,14 +429,16 @@ fn hilbert_ordered_features(
     Ok(keyed.into_iter().map(|(_, f)| f).collect())
 }
 
-/// The `<snake>.parquet` file name [`TableLayout::ByType`] writes for a
-/// FAMILY value (`object_type` mapped through
-/// [`cityparquet_schema::first_level_type`] — always a 1st-level type) — see
-/// [`TableLayout::ByType`]'s own doc comment for the exact rule (lower-case,
-/// non-alphanumeric -> `_`, a leading `+` becomes the prefix `ext_` rather
-/// than folding into the snake-cased body). Task 4 dropped the
-/// `cityobjects_` prefix this used to carry; callers that open a writer for
-/// the result MUST check it against [`RESERVED_PACKAGE_FILES`] first (see
+/// The `<snake>.parquet` file name the by-type writer uses for a FAMILY
+/// value (`object_type` mapped through
+/// [`cityparquet_schema::first_level_type`] — always a 1st-level type):
+/// `<snake>` is the family lower-cased with every non-alphanumeric character
+/// replaced by `_`, and a leading `+` (CityJSON extension object types) is
+/// rewritten to the prefix `ext_` rather than folded into an ugly leading
+/// underscore (e.g. `+Foo` becomes `ext_foo.parquet`, never `_foo.parquet`).
+/// Task 4 dropped the `cityobjects_` prefix this used to carry; callers that
+/// open a writer for the result MUST check it against
+/// [`RESERVED_PACKAGE_FILES`] first (see
 /// [`TableWriters::by_type_table_index`]), since the dropped prefix removed
 /// the namespace that previously made a collision with a sidecar/metadata
 /// file impossible. Named `..._for_type` rather than `..._for_family` since
@@ -581,18 +540,18 @@ fn distinct_types_in_batch(batch: &RecordBatch) -> Result<Vec<String>> {
     Ok(order)
 }
 
-/// The main CityObject data table(s) a `convert` run writes: [`TableLayout::Single`]
-/// opens exactly one writer up front for [`CITYOBJECTS_TABLE`];
-/// [`TableLayout::ByType`] opens one writer per distinct FAMILY (`object_type`
-/// mapped through [`cityparquet_schema::first_level_type`] — 2nd-level types
-/// share their 1st-level parent's writer), LAZILY on that family's first row
-/// (see [`Self::write_batch`]). Every table shares the identical
-/// `schema`/`props` this was constructed with — only which rows land in
-/// which file differs. `order`/`index` together track FIRST-APPEARANCE
-/// order across the whole call (not just within one batch), which becomes
-/// [`PackageManifest::tables`] verbatim once [`Self::finish`] is called.
+/// The main CityObject data tables a `convert` run writes: one writer per
+/// distinct FAMILY (`object_type` mapped through
+/// [`cityparquet_schema::first_level_type`] — 2nd-level types share their
+/// 1st-level parent's writer), opened LAZILY on that family's first row (see
+/// [`Self::write_batch`]). Every table shares the identical `schema`/`props`
+/// this was constructed with — only which rows land in which file differs.
+/// `order`/`index` together track FIRST-APPEARANCE order across the whole
+/// call (not just within one batch), which becomes [`PackageManifest::tables`]
+/// verbatim once [`Self::finish`] is called — unaffected by [`RowOrder`],
+/// which only reorders FEATURES before encoding; partitioning by family
+/// happens strictly after.
 struct TableWriters {
-    layout: TableLayout,
     tmp_dir: PathBuf,
     schema: Arc<Schema>,
     props: WriterProperties,
@@ -611,19 +570,10 @@ struct TableWriters {
 }
 
 impl TableWriters {
-    /// For [`TableLayout::Single`], opens [`CITYOBJECTS_TABLE`] immediately
-    /// (matching every layout's writer being open-and-ready before the
-    /// first `write_batch` call, pre-M5 behaviour preserved exactly). For
-    /// [`TableLayout::ByType`], opens nothing yet — tables are created lazily
-    /// as new FAMILY values are encountered.
-    fn new(
-        layout: TableLayout,
-        tmp_dir: &Path,
-        schema: Arc<Schema>,
-        props: WriterProperties,
-    ) -> Result<Self> {
-        let mut this = Self {
-            layout,
+    /// Opens nothing yet — tables are created lazily as new FAMILY values
+    /// are encountered (see [`Self::by_type_table_index`]).
+    fn new(tmp_dir: &Path, schema: Arc<Schema>, props: WriterProperties) -> Result<Self> {
+        Ok(Self {
             tmp_dir: tmp_dir.to_path_buf(),
             schema,
             props,
@@ -631,11 +581,7 @@ impl TableWriters {
             index: HashMap::new(),
             claimed_by: HashMap::new(),
             writers: Vec::new(),
-        };
-        if layout == TableLayout::Single {
-            this.open_table(CITYOBJECTS_TABLE)?;
-        }
-        Ok(this)
+        })
     }
 
     fn open_table(&mut self, name: &str) -> Result<usize> {
@@ -651,7 +597,7 @@ impl TableWriters {
         Ok(idx)
     }
 
-    /// The writer index for `family`'s ByType table, opening it lazily on
+    /// The writer index for `family`'s by-type table, opening it lazily on
     /// the family's first row and recording the family's CLAIM on the
     /// derived file name. Because [`table_name_for_type`] is lossy, a
     /// DIFFERENT family deriving an already-claimed name is a hard `Schema`
@@ -670,7 +616,7 @@ impl TableWriters {
         if RESERVED_PACKAGE_FILES.contains(&name.as_str()) {
             return Err(err(format!(
                 "object type {family:?} maps to reserved package file {name:?}; \
-                 rename the type or use --layout single"
+                 rename the type"
             )));
         }
         match self.claimed_by.get(&name) {
@@ -687,32 +633,23 @@ impl TableWriters {
         }
     }
 
-    /// Writes one encoded batch: handed straight to the (single, already
-    /// open) writer under [`TableLayout::Single`], or partitioned by FAMILY
-    /// (`object_type` mapped through
-    /// [`cityparquet_schema::first_level_type`]) — one `filter_record_batch`
-    /// call per distinct family present, each sub-batch going to that
-    /// family's own (lazily opened) writer — under [`TableLayout::ByType`].
-    /// A 2nd-level row's own `object_type` value is untouched by this: only
+    /// Writes one encoded batch, partitioned by FAMILY (`object_type`
+    /// mapped through [`cityparquet_schema::first_level_type`]) — one
+    /// `filter_record_batch` call per distinct family present, each
+    /// sub-batch going to that family's own (lazily opened) writer. A
+    /// 2nd-level row's own `object_type` value is untouched by this: only
     /// which FILE it lands in is decided by its family, the `object_type`
     /// column itself still carries the row's real, literal type.
     fn write_batch(&mut self, batch: &RecordBatch) -> Result<()> {
-        match self.layout {
-            TableLayout::Single => self.writers[0]
-                .write(batch)
-                .map_err(|e| parquet_err(format!("parquet write error: {e}"))),
-            TableLayout::ByType => {
-                for family in distinct_types_in_batch(batch)? {
-                    let idx = self.by_type_table_index(&family)?;
-                    let mask = object_type_mask(batch, &family)?;
-                    let filtered = filter_record_batch(batch, &mask)?;
-                    self.writers[idx]
-                        .write(&filtered)
-                        .map_err(|e| parquet_err(format!("parquet write error: {e}")))?;
-                }
-                Ok(())
-            }
+        for family in distinct_types_in_batch(batch)? {
+            let idx = self.by_type_table_index(&family)?;
+            let mask = object_type_mask(batch, &family)?;
+            let filtered = filter_record_batch(batch, &mask)?;
+            self.writers[idx]
+                .write(&filtered)
+                .map_err(|e| parquet_err(format!("parquet write error: {e}")))?;
         }
+        Ok(())
     }
 
     /// Appends the (now-known-final) `sidecar_files` key-value entry to
@@ -737,31 +674,6 @@ impl TableWriters {
     }
 }
 
-/// Writes a single, empty [`CITYOBJECTS_TABLE`] (zero rows, `schema`'s
-/// columns, `props`'s writer properties, `sidecar_files`'s KV entry) into
-/// `tmp_dir` — the [`TableLayout::ByType`] zero-row fallback (see the
-/// `table_names.is_empty()` check in [`write_package`]). Returns
-/// `vec![CITYOBJECTS_TABLE]`, ready to become [`PackageManifest::tables`]
-/// exactly as [`TableWriters::finish`] would for a non-empty run.
-fn write_empty_fallback_table(
-    tmp_dir: &Path,
-    schema: &Arc<Schema>,
-    props: &WriterProperties,
-    sidecar_files: &[String],
-) -> Result<Vec<String>> {
-    let path = tmp_dir.join(CITYOBJECTS_TABLE);
-    let file = fs::File::create(&path)
-        .map_err(|e| io_err(format!("cannot create {}: {e}", path.display())))?;
-    let mut writer = ArrowWriter::try_new(file, Arc::clone(schema), Some(props.clone()))
-        .map_err(|e| parquet_err(format!("cannot open parquet writer: {e}")))?;
-    let kv = serde_json::to_string(sidecar_files)?;
-    writer.append_key_value_metadata(KeyValue::new("sidecar_files".to_string(), kv));
-    writer
-        .close()
-        .map_err(|e| parquet_err(format!("cannot finalise parquet file: {e}")))?;
-    Ok(vec![CITYOBJECTS_TABLE.to_string()])
-}
-
 /// Writes one full package (main table, Compatibility-profile sidecars,
 /// `metadata.json` manifest) into `tmp_dir` — this is the entire body that
 /// used to run directly against `opts.output_dir` before the M5 crash-safe-
@@ -776,20 +688,14 @@ fn write_package(
     props: WriterProperties,
     tmp_dir: &Path,
 ) -> Result<WrittenPackage> {
-    // Cloned BEFORE `TableWriters::new` takes ownership below: the zero-row
-    // ByType fallback (see the `table_names.is_empty()` check past the
-    // encode loop) needs its own schema/props to open a fallback writer
-    // with, once `writers` itself has already been consumed by `finish`.
-    let fallback_schema = Arc::clone(&arrow_schema);
-    let fallback_props = props.clone();
-    let mut writers = TableWriters::new(opts.layout, tmp_dir, arrow_schema, props)?;
+    let mut writers = TableWriters::new(tmp_dir, arrow_schema, props)?;
 
     // `RowOrder::Hilbert` buffers every feature and re-sorts it BEFORE
     // handing it to `encode_buffered` (which shares `BatchIter`'s whole
     // batching loop with the `RowOrder::Source` path below — see
     // `crate::encode::FeatureStream`'s doc comment); `RowOrder::Source`
     // keeps the plain streaming `encode` entry point, unchanged. `TableWriters`
-    // partitions strictly AFTER encode (see `TableLayout`'s doc comment), so
+    // partitions strictly AFTER encode (see `TableWriters`'s doc comment), so
     // this composes with either ordering unchanged.
     let mut batches = match opts.ordering {
         RowOrder::Source => encode(source, scan_result, opts.batch_size, opts.geoarrow)?,
@@ -860,34 +766,36 @@ fn write_package(
     // the props entries in the footer and `CityParquetMetadata::from_key_values`
     // is last-wins), then close every writer — see `TableWriters::finish`.
     // `table_names` is every main-table file this run actually opened, in
-    // first-appearance order: `[CITYOBJECTS_TABLE]` under `TableLayout::Single`,
-    // one `<type>.parquet` per distinct `object_type` under
-    // `TableLayout::ByType`.
+    // first-appearance order: one `<type>.parquet` per distinct family.
     let table_names = writers.finish(&sidecar_files_written)?;
-    // M5 Codex review (Important finding 1): `TableLayout::ByType` opens
-    // writers LAZILY, on a type's first row (see `TableWriters::new`/
+    // M5 Codex review (Important finding 1): the by-type writer opens tables
+    // LAZILY, on a family's first row (see `TableWriters::new`/
     // `by_type_table_index`) — an input that encodes to zero rows therefore
     // never opens ANY writer, and `finish` returns an empty `Vec`. Writing
     // that straight into `metadata.json` would produce a package with
     // `tables: []`, which `export` rejects outright
-    // (`manifest.tables.is_empty()`). `TableLayout::Single` never hits this:
-    // it always opens `CITYOBJECTS_TABLE` up front, empty input or not.
-    // Ruling: fall back to writing the SAME single, standard, empty
-    // `CITYOBJECTS_TABLE` Single always produces, so an empty ByType
-    // conversion is byte-for-byte parity with an empty Single conversion —
-    // a valid, round-trippable zero-object package either way — rather than
-    // a layout-specific special case `export` would otherwise have to know
-    // about.
-    let table_names = if table_names.is_empty() {
-        write_empty_fallback_table(
-            tmp_dir,
-            &fallback_schema,
-            &fallback_props,
-            &sidecar_files_written,
-        )?
-    } else {
-        table_names
-    };
+    // (`manifest.tables.is_empty()`).
+    //
+    // This used to paper over that by writing a standalone, empty, single
+    // reserved-name fallback table so the package wasn't empty. Plan
+    // decision (2026-07-21, mandatory-by-type-layout): a conversion that
+    // encodes zero city objects is a hard error instead — there is no
+    // reserved fallback table name now that the single-file layout is gone.
+    // We gate on the actual encoded table set (`table_names.is_empty()`)
+    // rather than `scan_result.object_count`: `table_names` is what `export`
+    // requires to be non-empty (a committed package must have at least one
+    // object table), and conversion runs two passes over the source — an
+    // initial scan, then a separate encode that reopens the file (see the
+    // `convert_source_impl` docstring and `source.rs`). Gating on the actual
+    // encode result stays correct even if the source is mutated between
+    // those two passes, whereas the scan count would not.
+    if table_names.is_empty() {
+        return Err(err(
+            "input contains no city objects to convert; a CityParquet package must have at \
+             least one object table"
+                .to_string(),
+        ));
+    }
 
     let mut file_names = table_names.clone();
     file_names.extend(sidecar_files_written.iter().cloned());
@@ -1163,13 +1071,8 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let batch = object_type_only_batch(&["Ext_A", "+A"]);
-        let mut writers = TableWriters::new(
-            TableLayout::ByType,
-            tmp.path(),
-            batch.schema(),
-            WriterProperties::default(),
-        )
-        .unwrap();
+        let mut writers =
+            TableWriters::new(tmp.path(), batch.schema(), WriterProperties::default()).unwrap();
 
         let e = writers.write_batch(&batch).unwrap_err();
         assert!(
@@ -1184,13 +1087,8 @@ mod tests {
 
         // The SAME type re-appearing (across batches) is not a collision:
         // its claim matches, so writing proceeds.
-        let mut ok_writers = TableWriters::new(
-            TableLayout::ByType,
-            tmp.path(),
-            batch.schema(),
-            WriterProperties::default(),
-        )
-        .unwrap();
+        let mut ok_writers =
+            TableWriters::new(tmp.path(), batch.schema(), WriterProperties::default()).unwrap();
         ok_writers
             .write_batch(&object_type_only_batch(&["+A"]))
             .unwrap();
@@ -1222,13 +1120,8 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let batch = object_type_only_batch(&["Materials"]);
-        let mut writers = TableWriters::new(
-            TableLayout::ByType,
-            tmp.path(),
-            batch.schema(),
-            WriterProperties::default(),
-        )
-        .unwrap();
+        let mut writers =
+            TableWriters::new(tmp.path(), batch.schema(), WriterProperties::default()).unwrap();
 
         let e = writers.write_batch(&batch).unwrap_err();
         assert!(
@@ -1294,10 +1187,9 @@ mod tests {
 
     /// Task 4: dropping the `cityobjects_` prefix removes the namespace that
     /// previously made a by-type file name colliding with a package
-    /// sidecar/metadata file (or the single-layout `cityobjects.parquet`)
-    /// impossible. No core object type actually snakes to a reserved name,
-    /// but this proves the invariant holds for the derived name so a future
-    /// reserved file can't silently regress it.
+    /// sidecar/metadata file impossible. No core object type actually
+    /// snakes to a reserved name, but this proves the invariant holds for
+    /// the derived name so a future reserved file can't silently regress it.
     #[test]
     fn by_type_table_name_never_collides_with_reserved_package_files() {
         for reserved in RESERVED_PACKAGE_FILES {

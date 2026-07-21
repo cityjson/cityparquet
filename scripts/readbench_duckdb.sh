@@ -15,7 +15,7 @@
 # package declares) and a typed `bbox` STRUCT(xmin, ymin, zmin, xmax, ymax,
 # zmax) column, DuckDB-verified via `DESCRIBE` against a real converted
 # package:
-#   duckdb -c "DESCRIBE SELECT * FROM read_parquet('<pkg>/cityobjects.parquet');"
+#   duckdb -c "DESCRIBE SELECT * FROM read_parquet('<pkg>/<main-table>.parquet');"
 # -> bbox  struct(xmin double, ymin double, zmin double, xmax double, ymax
 #    double, zmax double)
 # So the `cityjson`-extension geometry-coverage/COPY caveats in
@@ -58,7 +58,8 @@
 # them; it is applied uniformly for simplicity and to avoid this exact trap
 # resurfacing on some other dataset's geometry shape.
 #
-# Scenarios (SQL over the main table `<pkg>/cityobjects.parquet`), each
+# Scenarios (SQL over the package's single main table, resolved from its
+# `metadata.json` manifest — see the `TABLE` resolution below), each
 # timed via a shell-measured `duckdb -c "..."` (median of `--repeat`, default
 # 5, 6-decimal `time_s`/`time_mad_s`):
 #   count        SELECT count(*)                                    (selectivity empty)
@@ -125,7 +126,9 @@ CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,p
 usage() {
   cat >&2 <<EOF
 usage: $0 PARQUET_PKG OUT_CSV [--numeric-column COL] [--repeat N]
-  PARQUET_PKG        a CityParquet package directory (contains cityobjects.parquet)
+  PARQUET_PKG        a CityParquet package directory whose metadata.json
+                      manifest lists exactly one main table (a single-family
+                      by-type package, e.g. delft)
   OUT_CSV            the read-benchmark result CSV to append duckdb-parquet rows to
   --numeric-column   a real numeric (Int64/Float64/Double) attribute column;
                       enables the attr-stats scenario (skipped without it)
@@ -170,11 +173,31 @@ if ! [[ "$REPEAT" =~ ^[0-9]+$ ]] || [[ "$REPEAT" -lt 1 ]]; then
   exit 1
 fi
 
-TABLE="$PARQUET_PKG/cityobjects.parquet"
-if [[ ! -f "$TABLE" ]]; then
-  echo "error: no main table at $TABLE (expected a TableLayout::Single CityParquet package)" >&2
+# By-type is the only, mandatory table layout: a package's `metadata.json`
+# manifest must list exactly one main table for this script's single-table
+# SQL (every scenario below queries `$TABLE` directly) to be meaningful —
+# true for a single-family dataset (e.g. delft, all Building/BuildingPart),
+# never for a multi-family one (e.g. lod3_railway's 10 family tables).
+MANIFEST="$PARQUET_PKG/metadata.json"
+if [[ ! -f "$MANIFEST" ]]; then
+  echo "error: no metadata.json manifest at $PARQUET_PKG (not a CityParquet package)" >&2
   exit 1
 fi
+MAIN_TABLE_NAME="$(python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    manifest = json.load(f)
+tables = manifest.get('tables', [])
+if len(tables) != 1:
+    print(
+        f'error: {sys.argv[1]} lists {len(tables)} tables ({tables}); this script only '
+        'supports single-table (single-family) packages, not multi-table by-type packages',
+        file=sys.stderr,
+    )
+    sys.exit(1)
+print(tables[0])
+" "$MANIFEST")"
+TABLE="$PARQUET_PKG/$MAIN_TABLE_NAME"
 
 # Derive `dataset` from the package directory's own name (see this script's
 # header for why it cannot recover the coordinator's original-extension
