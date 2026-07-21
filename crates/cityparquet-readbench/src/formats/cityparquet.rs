@@ -14,7 +14,7 @@
 //! alongside the numbers, never silently normalising one format's count to
 //! match another's.
 
-use std::fs::{self, File};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -22,7 +22,8 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use cityparquet::query::{self, AttrPredicate};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet_schema::{CityParquetMetadata, PackageManifest};
+use cityparquet::stac::properties::PackageTables;
+use cityparquet_schema::CityParquetMetadata;
 
 use super::FormatRunner;
 use crate::scenario::{AttrPred, QueryParams, Scenario};
@@ -60,14 +61,16 @@ fn locate_main_table(input: &Path) -> Result<PathBuf> {
         );
     }
 
-    let manifest_text = fs::read_to_string(&manifest_path)
+    // `PackageTables::open` is the sole reader of `metadata.json` here; it
+    // already rejects an empty or duplicate-naming manifest. The
+    // "exactly one object table" requirement below is this runner's own —
+    // it only ever queries a single Parquet file (see this fn's doc
+    // comment).
+    let tables = PackageTables::open(input)
         .with_context(|| format!("reading {}", manifest_path.display()))?;
-    let manifest: PackageManifest = serde_json::from_str(&manifest_text)
-        .with_context(|| format!("parsing {}", manifest_path.display()))?;
 
-    match manifest.tables.as_slice() {
-        [] => bail!("{} lists no tables", manifest_path.display()),
-        [only] => Ok(input.join(only)),
+    match tables.tables.as_slice() {
+        [only] => Ok(only.clone()),
         many => bail!(
             "package at {} has {} tables ({many:?}); the read-benchmark only \
              supports single-table (single-family) packages, not multi-table \

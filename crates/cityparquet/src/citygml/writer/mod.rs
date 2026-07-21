@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use cityparquet_schema::{CityParquetError, Lod, PackageManifest};
+use cityparquet_schema::{CityParquetError, Lod};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use quick_xml::Writer;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
@@ -29,6 +29,7 @@ use crate::decode::decode_batch;
 use crate::export::{appearance_columns, first_schema_mismatch, read_lod_keyed_appearance};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use crate::sidecar::{read_materials, read_textures};
+use crate::stac::properties::PackageTables;
 use crate::wkb_read::{DecodedGeometry, DecodedKind};
 
 /// Options for one CityParquet package -> CityGML 2.0 `.gml` conversion.
@@ -152,30 +153,16 @@ fn route_geometry(
 /// `bldg:lod<major>Solid` directly. The first table's footer metadata + Arrow
 /// schema are authoritative; later tables must match (same as `export`).
 pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
-    let manifest_path = opts.package_dir.join("metadata.json");
-    let manifest_text = fs::read_to_string(&manifest_path).map_err(|e| {
-        CityParquetError::Io(format!("cannot read {}: {e}", manifest_path.display()))
-    })?;
-    let manifest: PackageManifest = serde_json::from_str(&manifest_text)?;
-    if manifest.tables.is_empty() {
-        return Err(CityParquetError::Metadata(
-            "package manifest lists no tables".to_string(),
-        ));
-    }
-    let mut seen_tables = HashSet::with_capacity(manifest.tables.len());
-    for name in &manifest.tables {
-        if !seen_tables.insert(name) {
-            return Err(CityParquetError::Metadata(format!(
-                "package manifest lists duplicate table '{name}'"
-            )));
-        }
-    }
+    // `PackageTables::open` reads the manifest's `tables`/`sidecar_files`
+    // lists and already rejects an empty or duplicate-naming manifest, the
+    // same as `crate::export` relies on.
+    let tables = PackageTables::open(&opts.package_dir)?;
 
     // First table's footer metadata + rendered schema are authoritative.
-    let first_name = &manifest.tables[0];
-    let first_path = opts.package_dir.join(first_name);
+    // `tables.tables` entries are already absolute paths.
+    let first_path = &tables.tables[0];
     let first_builder =
-        ParquetRecordBatchReaderBuilder::try_new(fs::File::open(&first_path).map_err(|e| {
+        ParquetRecordBatchReaderBuilder::try_new(fs::File::open(first_path).map_err(|e| {
             CityParquetError::Io(format!("cannot open {}: {e}", first_path.display()))
         })?)
         .map_err(|e| CityParquetError::Parquet(format!("cannot open parquet reader: {e}")))?;
@@ -188,13 +175,13 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     // Global materials table (Compatibility profile): appearance definitions the
     // per-geometry material maps' global ids resolve against. Absent on a Core
     // package (no materials.parquet listed) — appearance is then skipped.
-    let global_materials: Option<Vec<serde_json::Value>> = manifest
+    let global_materials: Option<Vec<serde_json::Value>> = tables
         .sidecar_files
         .iter()
         .any(|f| f == "materials.parquet")
         .then(|| read_materials(&opts.package_dir.join("materials.parquet")))
         .transpose()?;
-    let global_textures: Option<Vec<serde_json::Value>> = manifest
+    let global_textures: Option<Vec<serde_json::Value>> = tables
         .sidecar_files
         .iter()
         .any(|f| f == "textures.parquet")
@@ -213,7 +200,7 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     let mut root_ids: Vec<String> = Vec::new();
 
     let mut first_builder = Some(first_builder);
-    for (idx, name) in manifest.tables.iter().enumerate() {
+    for (idx, path) in tables.tables.iter().enumerate() {
         let reader = if idx == 0 {
             let builder = first_builder.take().expect("first builder taken once");
             let pr = builder.build().map_err(|e| {
@@ -221,9 +208,8 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
             })?;
             CityParquetRecordBatchReader::new(pr, Arc::clone(&schema))
         } else {
-            let path = opts.package_dir.join(name);
             let builder =
-                ParquetRecordBatchReaderBuilder::try_new(fs::File::open(&path).map_err(|e| {
+                ParquetRecordBatchReaderBuilder::try_new(fs::File::open(path).map_err(|e| {
                     CityParquetError::Io(format!("cannot open {}: {e}", path.display()))
                 })?)
                 .map_err(|e| {
@@ -232,14 +218,19 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
             let table_meta = builder.cityparquet_metadata()?;
             if table_meta.cityparquet_version != meta.cityparquet_version {
                 return Err(CityParquetError::Metadata(format!(
-                    "table '{name}' has cityparquet_version {:?}, expected {:?} (matching '{first_name}')",
-                    table_meta.cityparquet_version, meta.cityparquet_version
+                    "table '{}' has cityparquet_version {:?}, expected {:?} (matching '{}')",
+                    path.display(),
+                    table_meta.cityparquet_version,
+                    meta.cityparquet_version,
+                    first_path.display()
                 )));
             }
             let table_schema = builder.cityparquet_arrow_schema()?;
             if let Some(mismatch) = first_schema_mismatch(&schema, &table_schema) {
                 return Err(CityParquetError::Metadata(format!(
-                    "table '{name}' {mismatch} (matching '{first_name}')"
+                    "table '{}' {mismatch} (matching '{}')",
+                    path.display(),
+                    first_path.display()
                 )));
             }
             let pr = builder.build().map_err(|e| {

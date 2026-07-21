@@ -35,7 +35,8 @@ use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::reader::{CityParquetReaderBuilder, row_group_intersects};
 use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
-use cityparquet::schema::{PackageManifest, Profile};
+use cityparquet::schema::Profile;
+use cityparquet::stac::properties::PackageTables;
 use cityparquet::{CityParquetError, Result};
 
 /// The exact CSV header `run` writes (and the smoke test asserts against).
@@ -331,6 +332,14 @@ fn file_size(dir: &std::path::Path, name: &str) -> Result<u64> {
         .map_err(|e| io_err(format!("cannot stat {}: {e}", dir.join(name).display())))
 }
 
+/// The on-disk byte size of an already-absolute path (`PackageTables::tables`
+/// entries), as opposed to [`file_size`]'s `dir`+bare-name join.
+fn path_size(path: &std::path::Path) -> Result<u64> {
+    fs::metadata(path)
+        .map(|m| m.len())
+        .map_err(|e| io_err(format!("cannot stat {}: {e}", path.display())))
+}
+
 /// Runs one variant end to end (convert, full scan, window query, round
 /// trip) and returns its CSV row.
 fn run_variant(
@@ -384,23 +393,19 @@ fn run_variant(
     convert_opts.overwrite = false;
     let report = convert(&convert_opts)?;
 
-    // --- Package sizes, from the manifest `convert` just wrote.
-    let manifest_text = fs::read_to_string(out_dir.path().join("metadata.json")).map_err(|e| {
-        io_err(format!(
-            "cannot read {}: {e}",
-            out_dir.path().join("metadata.json").display()
-        ))
-    })?;
-    let manifest: PackageManifest = serde_json::from_str(&manifest_text)?;
+    // --- Package sizes, from the table/sidecar inventory `convert` just
+    // wrote. `PackageTables::open` is the sole reader of `metadata.json`
+    // here.
+    let tables = PackageTables::open(out_dir.path())?;
 
-    let cityobjects_bytes = manifest
+    let cityobjects_bytes = tables
         .tables
         .iter()
-        .map(|name| file_size(out_dir.path(), name))
+        .map(|path| path_size(path))
         .collect::<Result<Vec<u64>>>()?
         .into_iter()
         .sum();
-    let sidecar_bytes = manifest
+    let sidecar_bytes = tables
         .sidecar_files
         .iter()
         .map(|name| file_size(out_dir.path(), name))
@@ -425,8 +430,8 @@ fn run_variant(
         let start = Instant::now();
         let mut rows_this_run = 0usize;
         let mut bbox_this_run: Option<[f64; 6]> = None;
-        for table in &manifest.tables {
-            let file = File::open(out_dir.path().join(table)).map_err(|e| io_err(e.to_string()))?;
+        for path in &tables.tables {
+            let file = File::open(path).map_err(|e| io_err(e.to_string()))?;
             let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
             let reader = builder.build().map_err(parquet_err)?;
             for batch in reader {
@@ -445,14 +450,14 @@ fn run_variant(
         return Err(CityParquetError::Schema(format!(
             "variant {variant_id}: full scan read {total_rows} rows across {:?}, but convert \
              reported object_count {}",
-            manifest.tables, report.object_count
+            tables.tables, report.object_count
         )));
     }
 
     let dataset_bbox = dataset_bbox.ok_or_else(|| {
         CityParquetError::Schema(format!(
             "variant {variant_id}: no row in {:?} has a bbox — cannot derive a window query",
-            manifest.tables
+            tables.tables
         ))
     })?;
 
@@ -473,8 +478,8 @@ fn run_variant(
     let mut window_query_times = Vec::with_capacity(opts.repeat);
     for _ in 0..opts.repeat {
         let start = Instant::now();
-        for table in &manifest.tables {
-            let file = File::open(out_dir.path().join(table)).map_err(|e| io_err(e.to_string()))?;
+        for path in &tables.tables {
+            let file = File::open(path).map_err(|e| io_err(e.to_string()))?;
             let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
             let pruned = builder.with_bbox_row_groups(window_bbox)?;
             let reader = pruned.build().map_err(parquet_err)?;
@@ -491,8 +496,8 @@ fn run_variant(
     // part of the timed query above).
     let mut row_groups_total = 0usize;
     let mut row_groups_touched = 0usize;
-    for table in &manifest.tables {
-        let file = File::open(out_dir.path().join(table)).map_err(|e| io_err(e.to_string()))?;
+    for path in &tables.tables {
+        let file = File::open(path).map_err(|e| io_err(e.to_string()))?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
         let metadata = builder.metadata().clone();
         row_groups_total += metadata.num_row_groups();

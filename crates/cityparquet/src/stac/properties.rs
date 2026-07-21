@@ -85,6 +85,22 @@ impl PackageTables {
             sidecar_files: manifest.sidecar_files.clone(),
         })
     }
+
+    /// Build a [`PackageTables`] directly from already-known table/sidecar
+    /// names, without touching disk.
+    ///
+    /// Pure: `tables` are joined onto `dir` the same way [`Self::open`] joins
+    /// the manifest's `tables` list, and `sidecars` are stored verbatim. No
+    /// existence/duplicate/empty check is performed here — a writer calls
+    /// this with the list it is ABOUT to write, before the files exist, so
+    /// there is nothing on disk yet to validate against.
+    pub fn from_lists(dir: &Path, tables: &[String], sidecars: &[String]) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+            tables: tables.iter().map(|t| dir.join(t)).collect(),
+            sidecar_files: sidecars.to_vec(),
+        }
+    }
 }
 
 /// The LoDs a package carries, as the LoD strings the writer used.
@@ -428,7 +444,30 @@ fn merge_presence(a: Option<bool>, b: Option<bool>) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::cell_has_semantics;
+    use std::path::Path;
+
+    use super::{PackageTables, cell_has_semantics};
+
+    /// `from_lists` is a pure path-join — it must round-trip a table/sidecar
+    /// list without reading anything from disk (the directory it is given
+    /// here does not even exist), which is exactly what Task 4's writer
+    /// needs: build the inventory it is ABOUT to write, before any file
+    /// exists for `PackageTables::open` to read back.
+    #[test]
+    fn from_lists_joins_dir_without_touching_disk() {
+        let dir = Path::new("/does/not/exist/on/this/machine");
+        let tables = vec!["building.parquet".to_string(), "road.parquet".to_string()];
+        let sidecars = vec!["materials.parquet".to_string()];
+
+        let resolved = PackageTables::from_lists(dir, &tables, &sidecars);
+
+        assert_eq!(resolved.dir, dir);
+        assert_eq!(
+            resolved.tables,
+            vec![dir.join("building.parquet"), dir.join("road.parquet")]
+        );
+        assert_eq!(resolved.sidecar_files, sidecars);
+    }
 
     /// Every stored geometry gets a `geometry_properties` cell carrying at
     /// least `{"type": ...}` (`crate::encode::geometry_properties_json`), so a

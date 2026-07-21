@@ -446,26 +446,15 @@ fn locate_cityparquet_table(prepared_dir: &Path, base: &str) -> Result<PathBuf> 
             package_dir.display()
         );
     }
-    let manifest_path = package_dir.join("metadata.json");
-    let manifest_text = fs::read_to_string(&manifest_path).with_context(|| {
-        format!(
-            "cannot derive QueryParams: reading {}",
-            manifest_path.display()
-        )
-    })?;
-    let manifest: cityparquet_schema::PackageManifest = serde_json::from_str(&manifest_text)
-        .with_context(|| {
-            format!(
-                "cannot derive QueryParams: parsing {}",
-                manifest_path.display()
-            )
-        })?;
-    match manifest.tables.as_slice() {
-        [] => bail!(
-            "cannot derive QueryParams: {} lists no tables",
-            manifest_path.display()
-        ),
-        [only] => Ok(package_dir.join(only)),
+    // `PackageTables::open` is the sole reader of `metadata.json` here; it
+    // already rejects an empty or duplicate-naming manifest. The
+    // "exactly one object table" requirement below is this coordinator's
+    // own — its `QueryParams` derivation is single-file, out of scope for a
+    // multi-family by-type package (see this fn's doc comment).
+    let tables = cityparquet::stac::properties::PackageTables::open(&package_dir)
+        .with_context(|| format!("cannot derive QueryParams: reading {}", package_dir.display()))?;
+    match tables.tables.as_slice() {
+        [only] => Ok(only.clone()),
         many => bail!(
             "cannot derive QueryParams: {} has {} tables ({many:?}); only single-table \
              (single-family) packages are supported here, not multi-table by-type packages",
