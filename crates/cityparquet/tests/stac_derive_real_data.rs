@@ -83,11 +83,27 @@ fn lods_are_reported_as_lod_strings() {
             "a LoD string must start with a digit, got {lod}"
         );
     }
-    // Sorted and deduplicated, so a derived Item is byte-stable run to run.
-    let mut sorted = props.lods.clone();
-    sorted.sort();
-    sorted.dedup();
-    assert_eq!(props.lods, sorted, "lods must be sorted and deduplicated");
+    // Deduplicated, and ordered by LoD rather than lexicographically. delft's
+    // own set (0, 1.2, 1.3, 2.2) sorts the same either way, so comparing
+    // against a lexicographic sort of itself would be vacuous — instead assert
+    // the property directly by parsing each LoD's numeric value.
+    let mut deduped = props.lods.clone();
+    deduped.dedup();
+    assert_eq!(props.lods, deduped, "lods must be deduplicated");
+
+    let numeric: Vec<f64> = props
+        .lods
+        .iter()
+        .map(|l| {
+            l.parse::<f64>()
+                .unwrap_or_else(|_| panic!("LoD {l} is not numeric"))
+        })
+        .collect();
+    assert!(
+        numeric.windows(2).all(|w| w[0] < w[1]),
+        "lods must ascend by LoD value, got {:?}",
+        props.lods
+    );
 }
 
 /// delft is `Building` + `BuildingPart`. Under the by-type layout both share
@@ -283,18 +299,34 @@ fn json_attributes_are_reported_as_object_not_string() {
     let tables = PackageTables::open(&pkg).expect("resolve tables");
     let props = derive_from_footer(&tables).expect("derive");
 
-    let json_typed: Vec<_> = props
+    // Name the attribute rather than merely counting Object-typed ones: a
+    // check for "at least one Object" would also pass if EVERY attribute were
+    // mistyped as Object.
+    let address = props
         .attributes
         .iter()
-        .filter(|a| a.attr_type == AttributeType::Object)
-        .collect();
+        .find(|a| a.name == "Integrate_LoD[1]")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected an `Integrate_LoD[1]` attribute; got {:?}",
+                props
+                    .attributes
+                    .iter()
+                    .map(|a| (&a.name, a.attr_type))
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        address.attr_type,
+        AttributeType::Object,
+        "a nested JSON attribute must be Object, not String"
+    );
+    // And the other attributes must NOT all have collapsed to Object.
     assert!(
-        !json_typed.is_empty(),
-        "expected at least one Object-typed attribute from a JSON column; got {:?}",
         props
             .attributes
             .iter()
-            .map(|a| (&a.name, a.attr_type))
-            .collect::<Vec<_>>()
+            .any(|a| a.attr_type != AttributeType::Object),
+        "not every attribute is JSON-typed; a blanket Object would be wrong"
     );
 }

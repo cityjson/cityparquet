@@ -25,6 +25,7 @@ use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::metadata::ParquetMetaData;
 use parquet::schema::types::ColumnPath;
+use serde_json::Value;
 
 use crate::reader::CityParquetReaderBuilder;
 use crate::stac::attribute_type::to_city3d;
@@ -67,6 +68,18 @@ impl PackageTables {
             return Err(CityParquetError::Metadata(
                 "package manifest lists no tables".to_string(),
             ));
+        }
+        // A manifest naming the same file twice is a corrupt package: every
+        // object in it would be counted twice. `crate::export` rejects this
+        // for the same reason, and a describing pass must not be more
+        // permissive than the pass that consumes the description.
+        let mut seen = BTreeSet::new();
+        for name in &manifest.tables {
+            if !seen.insert(name.as_str()) {
+                return Err(CityParquetError::Metadata(format!(
+                    "package manifest lists duplicate table '{name}'"
+                )));
+            }
         }
         Ok(Self {
             dir: dir.to_path_buf(),
@@ -165,24 +178,30 @@ fn attributes_from_schema(
 /// appearance at all still has those columns, entirely null.
 pub(crate) fn column_has_any_non_null(metadata: &ParquetMetaData, name: &str) -> Option<bool> {
     let path = ColumnPath::new(vec![name.to_string()]);
-    let mut saw_statistics = false;
+    // "Every row group answered." A single unanswerable row group makes a
+    // negative verdict unsound: the column could be populated only there.
+    let mut all_answered = true;
 
     for rg in metadata.row_groups() {
         let Some(chunk) = rg.columns().iter().find(|c| c.column_path() == &path) else {
             // No such column in this file at all.
             return Some(false);
         };
-        let Some(stats) = chunk.statistics() else {
-            continue;
-        };
-        saw_statistics = true;
-        let nulls = stats.null_count_opt().unwrap_or(0);
-        if nulls < rg.num_rows().max(0) as u64 {
-            return Some(true);
+        // A chunk with no statistics, or with statistics that omit the null
+        // count, cannot be judged. Substituting zero would declare an
+        // all-null column populated.
+        let answered = chunk
+            .statistics()
+            .and_then(|s| s.null_count_opt())
+            .map(|nulls| nulls < rg.num_rows().max(0) as u64);
+        match answered {
+            Some(true) => return Some(true),
+            Some(false) => {}
+            None => all_answered = false,
         }
     }
 
-    if saw_statistics { Some(false) } else { None }
+    if all_answered { Some(false) } else { None }
 }
 
 /// Whether a column holds a non-null value, reading the column when the
@@ -236,7 +255,84 @@ pub(crate) fn column_populated(
     Ok(Some(false))
 }
 
-/// Whether any column named `<prefix>*` holds a non-null value in this file.
+/// Whether one `geometry_properties` cell describes semantic surfaces.
+///
+/// **Non-null is not the question.** `crate::encode`'s
+/// `geometry_properties_json` always writes at least `{"type": ...}` for every
+/// stored geometry, and adds `surfaces` / `face_semantics` only when the
+/// source geometry actually carried semantics (§8). So a null-count test
+/// answers "does this package have geometry", which is true of essentially
+/// every package — the cell's content has to be inspected.
+fn cell_has_semantics(cell: &str) -> bool {
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(cell) else {
+        return false;
+    };
+    // Either member alone is enough: `surfaces` carries the semantic-surface
+    // definitions, `face_semantics` the per-face indices into them.
+    map.contains_key("surfaces") || map.contains_key("face_semantics")
+}
+
+/// Whether any `geometry_properties*` column in this file describes semantic
+/// surfaces.
+///
+/// Always reads: these are JSON columns, and no footer statistic can
+/// distinguish `{"type":"Solid"}` from a cell that also carries `surfaces`.
+/// Only the `geometry_properties*` columns are projected.
+fn file_has_semantic_surfaces(path: &Path, schema: &Schema) -> Result<bool> {
+    for field in schema.fields() {
+        if !is_reserved_column_for(field.name(), "geometry_properties") {
+            continue;
+        }
+        let file = fs::File::open(path)
+            .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+            CityParquetError::Parquet(format!("cannot open {}: {e}", path.display()))
+        })?;
+        let descr = builder.parquet_schema();
+        let Some(root) = (0..descr.num_columns())
+            .find(|&i| descr.column(i).path().parts().first() == Some(field.name()))
+        else {
+            continue;
+        };
+        let mask = ProjectionMask::leaves(descr, [root]);
+        let reader = builder
+            .with_projection(mask)
+            .build()
+            .map_err(|e| CityParquetError::Parquet(format!("cannot build reader: {e}")))?;
+
+        for batch in reader {
+            let batch = batch
+                .map_err(|e| CityParquetError::Parquet(format!("read {}: {e}", path.display())))?;
+            if batch.num_columns() == 0 {
+                continue;
+            }
+            let Some(values) = batch.column(0).as_any().downcast_ref::<StringArray>() else {
+                continue;
+            };
+            for i in 0..values.len() {
+                if values.is_valid(i) && cell_has_semantics(values.value(i)) {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Whether a field is one of the reserved columns for `base`, across every LoD.
+///
+/// **The footprint LoD's column has no suffix.** `geometry_column_name`
+/// (`cityparquet_schema::types`) drops the suffix for the footprint LoD, and
+/// the zero-analysis-geometry branch of `model.rs` emits a bare pair too — so
+/// the columns are literally `material` and `texture`, not `material_lod0`.
+/// Matching only `material_lod*` would make appearance carried on the
+/// footprint LoD invisible, and the CLI enables LoD0 synthesis by default, so
+/// those columns exist in essentially every CLI-written package.
+fn is_reserved_column_for(name: &str, base: &str) -> bool {
+    name == base || name.starts_with(&format!("{base}_lod"))
+}
+
+/// Whether any reserved column for `base` holds a non-null value in this file.
 fn any_prefixed_column_populated(
     path: &Path,
     metadata: &ParquetMetaData,
@@ -245,7 +341,7 @@ fn any_prefixed_column_populated(
 ) -> Result<Option<bool>> {
     let mut any_known = false;
     for field in schema.fields() {
-        if !field.name().starts_with(prefix) {
+        if !is_reserved_column_for(field.name(), prefix) {
             continue;
         }
         match column_populated(path, metadata, field.name())? {
@@ -328,12 +424,21 @@ fn collect_string_values(array: &ArrayRef, seen: &mut BTreeSet<String>) -> Resul
                     "{OBJECT_TYPE_COLUMN} dictionary values are not Utf8"
                 ))
             })?;
-        // The dictionary may carry entries no row references; that is
-        // harmless here, since a CityParquet writer builds it from the values
-        // it actually wrote.
-        for i in 0..values.len() {
-            if values.is_valid(i) {
-                seen.insert(values.value(i).to_string());
+        // Collect only values a row actually REFERENCES. A Parquet/Arrow
+        // dictionary may legally carry entries no row uses, and reading the
+        // dictionary wholesale would invent a `city3d:co_types` value that is
+        // not in the data — which matters precisely because this crate aims to
+        // describe packages from other conformant writers too.
+        let keys = dict.keys();
+        for i in 0..keys.len() {
+            if !keys.is_valid(i) {
+                continue;
+            }
+            let Some(idx) = dict.normalized_keys().get(i).copied() else {
+                continue;
+            };
+            if idx < values.len() && values.is_valid(idx) {
+                seen.insert(values.value(idx).to_string());
             }
         }
         return Ok(());
@@ -377,7 +482,15 @@ pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
         })?;
 
         let file_meta = builder.metadata().clone();
-        total_rows += file_meta.file_metadata().num_rows().max(0) as u64;
+        // A negative row count is a corrupt footer, not something to normalise
+        // away; an overflowing total likewise means the package is not what it
+        // claims. Both are reported rather than silently absorbed.
+        let rows = u64::try_from(file_meta.file_metadata().num_rows()).map_err(|_| {
+            CityParquetError::Metadata(format!("{} declares a negative row count", path.display()))
+        })?;
+        total_rows = total_rows.checked_add(rows).ok_or_else(|| {
+            CityParquetError::Metadata("package row count overflows u64".to_string())
+        })?;
         let schema = builder.cityparquet_arrow_schema()?;
 
         // Every object table in a package carries the identical schema and KV
@@ -395,18 +508,16 @@ pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
 
         textures = merge_presence(
             textures,
-            any_prefixed_column_populated(path, &file_meta, &schema, "texture_lod")?,
+            any_prefixed_column_populated(path, &file_meta, &schema, "texture")?,
         );
         materials = merge_presence(
             materials,
-            any_prefixed_column_populated(path, &file_meta, &schema, "material_lod")?,
+            any_prefixed_column_populated(path, &file_meta, &schema, "material")?,
         );
-        // Semantic surfaces live in the `geometry_properties*` columns (§8).
-        // Same JSON-column caveat as appearance: no statistics, so this reads.
-        semantics = merge_presence(
-            semantics,
-            any_prefixed_column_populated(path, &file_meta, &schema, "geometry_properties")?,
-        );
+        // Semantic surfaces live in the `geometry_properties*` columns (§8),
+        // but a null-count test would answer the wrong question — see
+        // `cell_has_semantics`.
+        semantics = merge_presence(semantics, Some(file_has_semantic_surfaces(path, &schema)?));
     }
 
     // A declared appearance sidecar is a positive signal in its own right:
@@ -438,5 +549,43 @@ fn merge_presence(a: Option<bool>, b: Option<bool>) -> Option<bool> {
         (Some(true), _) | (_, Some(true)) => Some(true),
         (Some(false), _) | (_, Some(false)) => Some(false),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cell_has_semantics;
+
+    /// Every stored geometry gets a `geometry_properties` cell carrying at
+    /// least `{"type": ...}` (`crate::encode::geometry_properties_json`), so a
+    /// non-null test would report semantic surfaces for any package that has
+    /// geometry at all. These cases are the exact shapes that function emits,
+    /// pinning the distinction the integration tests cannot: every fixture in
+    /// this repo carries some semantics, so the negative case has no real
+    /// dataset to come from.
+    #[test]
+    fn a_type_only_cell_is_not_semantics() {
+        assert!(!cell_has_semantics(r#"{"type":"Solid"}"#));
+        assert!(!cell_has_semantics(r#"{"type":"MultiSurface"}"#));
+        assert!(!cell_has_semantics(
+            r#"{"type":"Solid","shells":[[6]],"dropped_degenerate":{"rings":0}}"#
+        ));
+    }
+
+    #[test]
+    fn surfaces_or_face_semantics_is_semantics() {
+        assert!(cell_has_semantics(
+            r#"{"type":"MultiSurface","surfaces":[{"type":"RoofSurface"}]}"#
+        ));
+        assert!(cell_has_semantics(
+            r#"{"type":"MultiSurface","face_semantics":[0,0,1]}"#
+        ));
+    }
+
+    #[test]
+    fn a_malformed_or_non_object_cell_is_not_semantics() {
+        assert!(!cell_has_semantics("not json"));
+        assert!(!cell_has_semantics("[1,2,3]"));
+        assert!(!cell_has_semantics("null"));
     }
 }

@@ -32,14 +32,19 @@ use crate::stac::properties::PackageTables;
 pub struct ItemOptions {
     /// Item id. Defaults to the package directory's name.
     pub id: Option<String>,
-    /// RFC 3339 timestamp for `properties.datetime`.
+    /// RFC 3339 timestamp for `properties.datetime`, overriding whatever the
+    /// package itself carries.
     ///
-    /// **There is no fallback here.** A CityJSON source rarely carries
-    /// temporal metadata — none of this repo's fixtures does — so a fallback
-    /// would govern almost every package rather than an edge case. Per the
-    /// design decision of 2026-07-20, the CLI stamps the conversion time and
-    /// the *library* requires an explicit value; this is the library, so an
-    /// absent value simply leaves `datetime` unset rather than inventing one.
+    /// When this is `None`, the source CityJSON header's `referenceDate` is
+    /// used if the footer preserved one (`source_metadata`) — deriving from
+    /// the package rather than inventing, which is this module's whole premise.
+    ///
+    /// **There is no fallback beyond that.** Almost no real CityJSON carries
+    /// temporal metadata — none of this repo's fixtures does — so a synthetic
+    /// fallback would govern nearly every package rather than an edge case.
+    /// Per the design decision of 2026-07-20 the CLI stamps the conversion
+    /// time and the *library* does not; this is the library, so `datetime`
+    /// simply stays unset.
     pub datetime: Option<String>,
 }
 
@@ -63,9 +68,17 @@ pub fn item_for_package(dir: &Path, opts: &ItemOptions) -> Result<Item> {
     });
 
     let mut builder = StacItemBuilder::new(id)
-        .datetime(opts.datetime.clone())
         .city3d(props)
         .map_err(|e| CityParquetError::Metadata(format!("cannot build STAC item: {e}")))?;
+
+    // An explicit value wins; otherwise fall back to the source header's
+    // `referenceDate`, which the footer preserves verbatim in
+    // `source_metadata`. Deriving it from the package is the same principle
+    // the rest of this module follows.
+    builder = match &opts.datetime {
+        Some(dt) => builder.datetime(Some(dt.clone())),
+        None => builder.datetime_from_reference_date(source_metadata(&tables)?.as_ref()),
+    };
 
     if let Some(crs) = &crs {
         builder = builder.crs(crs);
@@ -83,24 +96,47 @@ pub fn item_for_package(dir: &Path, opts: &ItemOptions) -> Result<Item> {
         builder = builder.bbox(wgs84).geometry_from_bbox();
     }
 
-    // The primary object table goes through `data_asset`, which is also what
-    // declares the STAC File extension; every other file is added by name.
-    let mut first = true;
+    // The first table also goes through `data_asset`, purely because that is
+    // what declares the STAC File extension — but the asset it inserts is
+    // keyed `"data"` with roles `["data"]`, so it is then *replaced* by a
+    // properly keyed and roled one.
+    //
+    // Without that replacement the primary object table would be the one asset
+    // a reader cannot map back to a file by key, and the only table missing
+    // the `cityparquet-objects` role — which is exactly the role Plan 2b binds
+    // `export` to when it drops the manifest's `sidecar_files` list. Iterating
+    // that role would have silently skipped the first table.
+    let mut declared_file_extension = false;
     for path in &tables.tables {
         let (size, checksum) = assets::file_facts(path);
-        let href = format!("./{}", assets::asset_key(path));
-        if first {
-            builder = builder.data_asset(href, assets::PARQUET_MEDIA_TYPE, size, checksum);
-            first = false;
-        } else {
-            builder = builder.asset(
-                assets::asset_key(path),
-                package_asset(&href, size, checksum, assets::AssetKind::ObjectTable),
+        let key = assets::asset_key(path);
+        let href = format!("./{key}");
+        if !declared_file_extension {
+            builder = builder.data_asset(
+                href.clone(),
+                assets::PARQUET_MEDIA_TYPE,
+                size,
+                checksum.clone(),
             );
+            declared_file_extension = true;
         }
+        builder = builder.asset(
+            key,
+            package_asset(&href, size, checksum, assets::AssetKind::ObjectTable),
+        );
     }
     for name in &tables.sidecar_files {
         let path = dir.join(name);
+        // A manifest promise the package cannot keep is corruption, not
+        // something to describe: an Item claiming an asset that is not on disk
+        // is worse than a failed derivation. `crate::export` treats a
+        // listed-but-missing sidecar the same way.
+        if !path.exists() {
+            return Err(CityParquetError::Io(format!(
+                "package manifest lists sidecar '{name}' but {} is not on disk",
+                path.display()
+            )));
+        }
         let (size, checksum) = assets::file_facts(&path);
         builder = builder.asset(
             name.clone(),
@@ -141,6 +177,21 @@ fn package_asset(
     asset
 }
 
+/// The source CityJSON header's `metadata` object, as the footer preserved it.
+///
+/// Carries `referenceDate` when the source had one, which is the only honest
+/// source of a `datetime` for a package.
+fn source_metadata(tables: &PackageTables) -> Result<Option<Value>> {
+    let Some(path) = tables.tables.first() else {
+        return Ok(None);
+    };
+    let file = fs::File::open(path)
+        .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| CityParquetError::Parquet(format!("cannot open {}: {e}", path.display())))?;
+    Ok(builder.cityparquet_metadata()?.source_metadata)
+}
+
 /// The package's CRS, as an EPSG code lifted out of the stored PROJJSON.
 ///
 /// The footer stores the dataset CRS as PROJJSON (§13.3). `CRS` here is
@@ -157,13 +208,35 @@ fn package_crs(tables: &PackageTables) -> Result<Option<CRS>> {
         .map_err(|e| CityParquetError::Parquet(format!("cannot open {}: {e}", path.display())))?;
     let meta = builder.cityparquet_metadata()?;
 
-    Ok(meta
-        .crs
-        .as_ref()
-        .and_then(|c| c.get("id"))
-        .and_then(|id| id.get("code"))
-        .and_then(|code| code.as_u64())
-        .map(|code| CRS::from_epsg(code as u32)))
+    let Some(id) = meta.crs.as_ref().and_then(|c| c.get("id")) else {
+        return Ok(None);
+    };
+
+    // The authority must actually be EPSG. `CRS` here is EPSG-based, so
+    // labelling an OGC or IAU code as EPSG would produce a confidently wrong
+    // reprojection rather than an honest failure.
+    match id.get("authority").and_then(|a| a.as_str()) {
+        Some("EPSG") => {}
+        Some(other) => {
+            return Err(CityParquetError::Metadata(format!(
+                "package CRS authority is {other}, not EPSG; cannot resolve to an EPSG code"
+            )));
+        }
+        None => return Ok(None),
+    }
+
+    // PROJJSON permits the code as a number or a digit string.
+    let code = id.get("code").and_then(|code| {
+        code.as_u64()
+            .or_else(|| code.as_str().and_then(|s| s.parse::<u64>().ok()))
+    });
+    let Some(code) = code else {
+        return Ok(None);
+    };
+    let code = u32::try_from(code).map_err(|_| {
+        CityParquetError::Metadata(format!("package CRS code {code} is not a valid EPSG code"))
+    })?;
+    Ok(Some(CRS::from_epsg(code)))
 }
 
 /// The `bbox` struct's six leaf columns, in the order [`BBox3D`] uses.
@@ -199,7 +272,13 @@ pub fn package_bbox(tables: &PackageTables) -> Result<Option<BBox3D>> {
         for rg in builder.metadata().row_groups() {
             for (i, leaf) in BBOX_LEAVES.iter().enumerate() {
                 let Some((lo, hi)) = bbox_leaf_bounds(rg, leaf) else {
-                    continue;
+                    // A row group that cannot report a leaf may hold geometry
+                    // outside everything observed so far. Continuing would
+                    // yield a bbox that is smaller than the data — the one
+                    // failure mode a spatial extent must never have, because a
+                    // too-small bbox causes false-negative pruning. Give up on
+                    // the whole extent rather than emit an under-bound.
+                    return Ok(None);
                 };
                 acc[i] = Some(match acc[i] {
                     Some((min, max)) => (min.min(lo), max.max(hi)),
