@@ -23,8 +23,6 @@ use cityparquet_schema::{
 };
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::file::metadata::ParquetMetaData;
-use parquet::schema::types::ColumnPath;
 use serde_json::Value;
 
 use crate::reader::CityParquetReaderBuilder;
@@ -164,97 +162,6 @@ fn attributes_from_schema(
     (defs, skipped)
 }
 
-/// Whether a top-level column holds at least one non-null value, judged from
-/// Parquet column-chunk statistics alone.
-///
-/// `None` means "cannot tell": the column exists but no chunk carries
-/// statistics, so answering would require reading the data. Callers report
-/// that as an absent field rather than guessing — an absent `city3d:` flag is
-/// honest, a wrong one is not.
-///
-/// This exists because **column presence proves nothing about content**: the
-/// writer emits a `material_lod*` and `texture_lod*` column for every LoD
-/// unconditionally (see `cityparquet_schema::model`), so a package with no
-/// appearance at all still has those columns, entirely null.
-pub(crate) fn column_has_any_non_null(metadata: &ParquetMetaData, name: &str) -> Option<bool> {
-    let path = ColumnPath::new(vec![name.to_string()]);
-    // "Every row group answered." A single unanswerable row group makes a
-    // negative verdict unsound: the column could be populated only there.
-    let mut all_answered = true;
-
-    for rg in metadata.row_groups() {
-        let Some(chunk) = rg.columns().iter().find(|c| c.column_path() == &path) else {
-            // No such column in this file at all.
-            return Some(false);
-        };
-        // A chunk with no statistics, or with statistics that omit the null
-        // count, cannot be judged. Substituting zero would declare an
-        // all-null column populated.
-        let answered = chunk
-            .statistics()
-            .and_then(|s| s.null_count_opt())
-            .map(|nulls| nulls < rg.num_rows().max(0) as u64);
-        match answered {
-            Some(true) => return Some(true),
-            Some(false) => {}
-            None => all_answered = false,
-        }
-    }
-
-    if all_answered { Some(false) } else { None }
-}
-
-/// Whether a column holds a non-null value, reading the column when the
-/// footer cannot say.
-///
-/// **Why a read is needed at all.** `crate::recipe` sets `statistics_for_json`
-/// to `false` by default (statistics over serialised JSON blobs are not useful
-/// for querying), and `material_lod*`, `texture_lod*` and
-/// `geometry_properties*` are all JSON columns. So for exactly the columns
-/// these `city3d:` flags depend on, the footer carries no statistics and the
-/// data must be consulted. Only the single column is projected, so this reads
-/// one column rather than the table.
-pub(crate) fn column_populated(
-    path: &Path,
-    metadata: &ParquetMetaData,
-    column: &str,
-) -> Result<Option<bool>> {
-    if let Some(known) = column_has_any_non_null(metadata, column) {
-        return Ok(Some(known));
-    }
-
-    let file = fs::File::open(path)
-        .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|e| CityParquetError::Parquet(format!("cannot open {}: {e}", path.display())))?;
-
-    let descr = builder.parquet_schema();
-    let Some(root) = (0..descr.num_columns())
-        .find(|&i| descr.column(i).path().parts().first().map(String::as_str) == Some(column))
-    else {
-        return Ok(Some(false));
-    };
-    let mask = ProjectionMask::leaves(descr, [root]);
-
-    let reader = builder
-        .with_projection(mask)
-        .build()
-        .map_err(|e| CityParquetError::Parquet(format!("cannot build reader: {e}")))?;
-
-    for batch in reader {
-        let batch = batch
-            .map_err(|e| CityParquetError::Parquet(format!("read {}: {e}", path.display())))?;
-        if batch.num_columns() == 0 {
-            continue;
-        }
-        let col = batch.column(0);
-        if col.null_count() < col.len() {
-            return Ok(Some(true));
-        }
-    }
-    Ok(Some(false))
-}
-
 /// Whether one `geometry_properties` cell describes semantic surfaces.
 ///
 /// **Non-null is not the question.** `crate::encode`'s
@@ -322,35 +229,13 @@ fn file_has_semantic_surfaces(path: &Path, schema: &Schema) -> Result<bool> {
 /// Whether a field is one of the reserved columns for `base`, across every LoD.
 ///
 /// **The footprint LoD's column has no suffix.** `geometry_column_name`
-/// (`cityparquet_schema::types`) drops the suffix for the footprint LoD, and
-/// the zero-analysis-geometry branch of `model.rs` emits a bare pair too — so
-/// the columns are literally `material` and `texture`, not `material_lod0`.
-/// Matching only `material_lod*` would make appearance carried on the
+/// (`cityparquet_schema::types`) drops the suffix for the footprint LoD, so the
+/// column is literally `geometry_properties`, not `geometry_properties_lod0`.
+/// Matching only `geometry_properties_lod*` would make semantic surfaces on the
 /// footprint LoD invisible, and the CLI enables LoD0 synthesis by default, so
-/// those columns exist in essentially every CLI-written package.
+/// that column exists in essentially every CLI-written package.
 fn is_reserved_column_for(name: &str, base: &str) -> bool {
     name == base || name.starts_with(&format!("{base}_lod"))
-}
-
-/// Whether any reserved column for `base` holds a non-null value in this file.
-fn any_prefixed_column_populated(
-    path: &Path,
-    metadata: &ParquetMetaData,
-    schema: &Schema,
-    prefix: &str,
-) -> Result<Option<bool>> {
-    let mut any_known = false;
-    for field in schema.fields() {
-        if !is_reserved_column_for(field.name(), prefix) {
-            continue;
-        }
-        match column_populated(path, metadata, field.name())? {
-            Some(true) => return Ok(Some(true)),
-            Some(false) => any_known = true,
-            None => {}
-        }
-    }
-    Ok(if any_known { Some(false) } else { None })
 }
 
 /// The distinct CityObject types a package carries.
@@ -460,18 +345,18 @@ fn collect_string_values(array: &ArrayRef, seen: &mut BTreeSet<String>) -> Resul
     Ok(())
 }
 
-/// Derive the footer- and schema-only `city3d:*` fields.
+/// Derive every `city3d:*` field a written package can supply.
 ///
-/// `co_types` and `semantic_surfaces` need further column work and are left
-/// unset here; later tasks fill them.
+/// Most come from the footer and Arrow schema of the first object table.
+/// `co_types` and `semantic_surfaces` additionally read one projected column;
+/// `textures`/`materials` are the presence of the appearance sidecars.
 pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
     let mut props = City3dProperties::new();
     let mut total_rows: u64 = 0;
-    // Appearance and semantics presence are properties of the DATA, so they
-    // are judged across every object table, not just the first — a by-type
-    // package may carry textures on one type and none on another.
-    let mut textures: Option<bool> = None;
-    let mut materials: Option<bool> = None;
+    // Semantic-surface presence is a property of the DATA, judged across every
+    // object table, not just the first — a by-type package may carry semantics
+    // on one type and none on another. Appearance is judged separately, from the
+    // presence of the definition sidecars (after the loop).
     let mut semantics: Option<bool> = None;
 
     for (idx, path) in tables.tables.iter().enumerate() {
@@ -481,11 +366,10 @@ pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
             CityParquetError::Parquet(format!("cannot open {}: {e}", path.display()))
         })?;
 
-        let file_meta = builder.metadata().clone();
         // A negative row count is a corrupt footer, not something to normalise
         // away; an overflowing total likewise means the package is not what it
         // claims. Both are reported rather than silently absorbed.
-        let rows = u64::try_from(file_meta.file_metadata().num_rows()).map_err(|_| {
+        let rows = u64::try_from(builder.metadata().file_metadata().num_rows()).map_err(|_| {
             CityParquetError::Metadata(format!("{} declares a negative row count", path.display()))
         })?;
         total_rows = total_rows.checked_add(rows).ok_or_else(|| {
@@ -506,36 +390,26 @@ pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
             props.attributes = attributes;
         }
 
-        textures = merge_presence(
-            textures,
-            any_prefixed_column_populated(path, &file_meta, &schema, "texture")?,
-        );
-        materials = merge_presence(
-            materials,
-            any_prefixed_column_populated(path, &file_meta, &schema, "material")?,
-        );
         // Semantic surfaces live in the `geometry_properties*` columns (§8),
         // but a null-count test would answer the wrong question — see
         // `cell_has_semantics`.
         semantics = merge_presence(semantics, Some(file_has_semantic_surfaces(path, &schema)?));
     }
 
-    // A declared appearance sidecar is a positive signal in its own right:
-    // the Compatibility profile only writes one when the dataset has that
-    // appearance kind to store.
-    if tables.sidecar_files.iter().any(|f| f == "textures.parquet") {
-        textures = Some(true);
-    }
-    if tables
-        .sidecar_files
-        .iter()
-        .any(|f| f == "materials.parquet")
-    {
-        materials = Some(true);
-    }
-
-    props.textures = textures;
-    props.materials = materials;
+    // Appearance presence IS the presence of its definition sidecar. The
+    // Compatibility profile writes `textures.parquet` / `materials.parquet` only
+    // when the dataset has that appearance kind to store; the Core profile
+    // writes neither. A package whose columns carry appearance INDICES but ships
+    // no sidecar cannot render appearance, so it is reported `false`: the flag
+    // means "usable from this package", not "existed upstream". Always a
+    // definite boolean — an absent sidecar is a known negative, not "unknown".
+    props.textures = Some(tables.sidecar_files.iter().any(|f| f == "textures.parquet"));
+    props.materials = Some(
+        tables
+            .sidecar_files
+            .iter()
+            .any(|f| f == "materials.parquet"),
+    );
     props.semantic_surfaces = semantics;
     props.co_types = derive_co_types(tables)?;
     props.city_objects = Some(CityObjectsCount::Integer(total_rows));

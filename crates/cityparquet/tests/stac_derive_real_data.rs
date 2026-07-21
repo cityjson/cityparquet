@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use city3d_stac_types::metadata::AttributeType;
 use city3d_stac_types::stac::CityObjectsCount;
 use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::schema::Profile;
 use cityparquet::stac::properties::{PackageTables, derive_co_types, derive_from_footer};
 use cityparquet::stac::{ItemOptions, item_for_package, package_bbox};
 
@@ -53,8 +54,9 @@ fn footer_properties_from_delft() {
         !props.attributes.is_empty(),
         "delft carries source attributes; they must be derived from the schema"
     );
-    // The default Core profile writes no appearance sidecars, and delft has
-    // no per-LoD appearance columns.
+    // The Core profile writes no appearance sidecars, so both flags are a
+    // definite `false`: the derivation keys off sidecar presence, not the
+    // per-geometry appearance columns (which a Core package still carries).
     assert_eq!(props.textures, Some(false));
     assert_eq!(props.materials, Some(false));
     assert_eq!(
@@ -194,6 +196,36 @@ fn semantic_surfaces_true_for_delft() {
         props.semantic_surfaces,
         Some(true),
         "delft has semantic surfaces; the flag must not be absent or false"
+    );
+}
+
+/// The Compatibility profile writes `textures.parquet` and `materials.parquet`
+/// for a dataset that carries appearance, so `textures`/`materials` must both
+/// be `true`. This is the ONLY case that tells a working appearance derivation
+/// apart from one hard-wired to `false`: every Core package (and every fixture
+/// converted by default) ships no sidecar and reads `false`. A package that
+/// carries appearance INDEX columns but no definition sidecar — the Core
+/// profile — still reads `false`, which is the "not renderable here" semantics.
+#[test]
+fn appearance_flags_true_only_with_compatibility_sidecars() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("pkg");
+    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.clone());
+    opts.profile = Profile::Compatibility;
+    convert(&opts).expect("convert lod3_railway (Compatibility)");
+
+    let tables = PackageTables::open(&out).expect("resolve tables");
+    let props = derive_from_footer(&tables).expect("derive");
+
+    assert_eq!(
+        props.textures,
+        Some(true),
+        "lod3_railway carries textures; the Compatibility sidecar must set the flag"
+    );
+    assert_eq!(
+        props.materials,
+        Some(true),
+        "lod3_railway carries materials; the Compatibility sidecar must set the flag"
     );
 }
 
