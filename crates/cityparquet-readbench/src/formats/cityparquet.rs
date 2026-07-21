@@ -29,18 +29,18 @@ use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// Locates the main CityObject table inside a CityParquet package:
 ///
-/// - If `input` is itself a file, it IS the table (callers may point
-///   straight at `cityobjects.parquet`).
-/// - If `input` is a directory without a `metadata.json` manifest, defaults
-///   to `<input>/cityobjects.parquet`.
-/// - If `input` is a directory WITH a manifest, prefers the table literally
-///   named `cityobjects.parquet`; if that name is absent but the manifest
-///   lists exactly one table, uses that one; a manifest listing more than
-///   one table with no `cityobjects.parquet` among them (a
-///   `TableLayout::ByType` package) is rejected — the read-benchmark's
-///   `readbench_prepare.sh` always converts with the default
-///   `TableLayout::Single` layout, so this case is out of scope rather than
-///   silently reading only the first table.
+/// - If `input` is itself a file, it IS the table.
+/// - If `input` is a directory without a `metadata.json` manifest, this is
+///   not a package this crate produced — an error rather than a guess.
+/// - If `input` is a directory WITH a manifest listing exactly one table,
+///   uses that one (every by-type package that came from a single-family
+///   dataset — e.g. delft, all Building/BuildingPart — lists exactly one).
+///   A manifest listing more than one table (a multi-family by-type
+///   package, e.g. the 10-family `lod3_railway` fixture) is rejected: this
+///   runner only ever queries a single Parquet file, so a package split
+///   across several family tables has no single file that holds the whole
+///   dataset — out of scope here rather than silently reading only one
+///   family's rows.
 fn locate_main_table(input: &Path) -> Result<PathBuf> {
     if input.is_file() {
         return Ok(input.to_path_buf());
@@ -54,7 +54,10 @@ fn locate_main_table(input: &Path) -> Result<PathBuf> {
 
     let manifest_path = input.join("metadata.json");
     if !manifest_path.exists() {
-        return Ok(input.join("cityobjects.parquet"));
+        bail!(
+            "no metadata.json manifest at {}; not a CityParquet package",
+            input.display()
+        );
     }
 
     let manifest_text = fs::read_to_string(&manifest_path)
@@ -62,16 +65,13 @@ fn locate_main_table(input: &Path) -> Result<PathBuf> {
     let manifest: PackageManifest = serde_json::from_str(&manifest_text)
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
 
-    if manifest.tables.iter().any(|t| t == "cityobjects.parquet") {
-        return Ok(input.join("cityobjects.parquet"));
-    }
     match manifest.tables.as_slice() {
         [] => bail!("{} lists no tables", manifest_path.display()),
         [only] => Ok(input.join(only)),
         many => bail!(
-            "package at {} has {} tables ({many:?}) and none is named \
-             'cityobjects.parquet'; the read-benchmark only supports \
-             TableLayout::Single packages",
+            "package at {} has {} tables ({many:?}); the read-benchmark only \
+             supports single-table (single-family) packages, not multi-table \
+             by-type packages",
             input.display(),
             many.len(),
         ),

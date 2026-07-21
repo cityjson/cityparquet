@@ -185,7 +185,7 @@ mod tests {
             cityparquet_version: crate::metadata::CITYPARQUET_VERSION.to_string(),
             profile: Profile::Compatibility,
             lods: vec!["1".to_string(), "2.2".to_string()],
-            tables: vec!["cityobjects.parquet".to_string()],
+            tables: vec!["building.parquet".to_string()],
             sidecar_files: vec!["materials.parquet".to_string()],
         };
         let text = serde_json::to_string_pretty(&manifest).unwrap();

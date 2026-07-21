@@ -32,7 +32,7 @@ impl Row {
 }
 
 #[test]
-fn bench_run_produces_the_default_ten_variant_matrix_for_delft() {
+fn bench_run_produces_the_default_nine_variant_matrix_for_delft() {
     let out_dir = tempfile::tempdir().unwrap();
     let out_csv = out_dir.path().join("bench.csv");
 
@@ -66,9 +66,11 @@ fn bench_run_produces_the_default_ten_variant_matrix_for_delft() {
         .collect();
     assert_eq!(
         rows.len(),
-        10,
-        "the default variant set must produce exactly 10 rows (M5 Codex-review fix 4 added \
-         `cityparquet+rg512` / `cityparquet+hilbert+rg512` to the prior 8), got: {csv_text}"
+        9,
+        "the default variant set must produce exactly 9 rows (M5 Codex-review fix 4 added \
+         `cityparquet+rg512` / `cityparquet+hilbert+rg512` to the prior 8, whose \
+         `cityparquet+by-type` was retired 2026-07-21 when by-type became the sole, mandatory \
+         layout), got: {csv_text}"
     );
 
     let mut by_variant = std::collections::HashMap::new();
@@ -160,7 +162,7 @@ fn bench_run_rejects_an_unknown_variant_with_the_grammar_in_the_message() {
         "error should name the offending variant, got: {msg}"
     );
     assert!(
-        msg.contains("<preset>[+hilbert][+by-type]"),
+        msg.contains("<preset>[+hilbert][+rg<N>]"),
         "error should show the variant grammar, got: {msg}"
     );
 }
@@ -252,15 +254,13 @@ fn bench_run_rejects_an_invalid_window_frac() {
 }
 
 /// M5 Codex review (Minor finding): the variant parser must reject a
-/// duplicated suffix (e.g. `+hilbert` or `+by-type` or `+rg<N>` appearing
-/// twice) rather than silently accepting it as a distinct-looking label for
-/// the same — or, for two conflicting `+rg<N>`s, an ambiguous — writer
-/// configuration.
+/// duplicated suffix (e.g. `+hilbert` or `+rg<N>` appearing twice) rather
+/// than silently accepting it as a distinct-looking label for the same —
+/// or, for two conflicting `+rg<N>`s, an ambiguous — writer configuration.
 #[test]
 fn bench_run_rejects_duplicate_variant_suffixes() {
     for variant in [
         "cityparquet+hilbert+hilbert",
-        "cityparquet+by-type+by-type",
         "cityparquet+rg4096+rg8192",
         "cityparquet+gzip+zstd",
     ] {

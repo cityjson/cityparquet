@@ -17,8 +17,19 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
-/// Convert `input` into a fresh tempdir and decode every row of
-/// `cityobjects.parquet` back into `DecodedObject`s.
+/// `metadata.json`'s `tables` list for the package at `dir` — by-type is the
+/// only, mandatory table layout, so this is 1..N main-table file names, one
+/// per 1st-level CityObject family actually present.
+fn manifest_tables(dir: &std::path::Path) -> Vec<String> {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("metadata.json")).unwrap()).unwrap();
+    serde_json::from_value(manifest["tables"].clone()).unwrap()
+}
+
+/// Convert `input` into a fresh tempdir and decode every row across every
+/// main table back into `DecodedObject`s (by-type may split `input` into
+/// several family tables — see `manifest_tables` — so every one of them
+/// must be read, never a single hardcoded main-table name).
 fn convert_and_decode(input: &str) -> Vec<cityparquet::decode::DecodedObject> {
     let out = tempfile::tempdir().unwrap();
     let report = convert(&ConvertOptions::new(
@@ -28,17 +39,19 @@ fn convert_and_decode(input: &str) -> Vec<cityparquet::decode::DecodedObject> {
     .unwrap();
     eprintln!("{input}: converted {} objects", report.object_count);
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    let meta = builder.cityparquet_metadata().unwrap();
-    let schema = builder.cityparquet_arrow_schema().unwrap();
-    let parquet_reader = builder.build().unwrap();
-    let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
-
     let mut all = Vec::new();
-    for batch in reader {
-        let batch = batch.unwrap();
-        all.extend(decode_batch(&batch, &meta).unwrap());
+    for table in manifest_tables(out.path()) {
+        let file = std::fs::File::open(out.path().join(&table)).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let meta = builder.cityparquet_metadata().unwrap();
+        let schema = builder.cityparquet_arrow_schema().unwrap();
+        let parquet_reader = builder.build().unwrap();
+        let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
+
+        for batch in reader {
+            let batch = batch.unwrap();
+            all.extend(decode_batch(&batch, &meta).unwrap());
+        }
     }
     all
 }
@@ -92,7 +105,9 @@ fn delft_decodes_every_object_with_correct_types_and_attributes() {
         out.path().to_path_buf(),
     ))
     .unwrap();
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    // delft is a single 1st-level family, so by-type conversion writes
+    // exactly one main table: building.parquet.
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let schema = builder.cityparquet_arrow_schema().unwrap();
     let geom_cols: Vec<String> = schema
@@ -245,10 +260,16 @@ fn instances_only_dataset_uses_the_unsuffixed_geometry_column() {
     let report = convert(&ConvertOptions::new(path, out.path().to_path_buf())).unwrap();
     assert_eq!(report.object_count, 121);
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    let meta = builder.cityparquet_metadata().unwrap();
-    let schema = builder.cityparquet_arrow_schema().unwrap();
+    // Stripping geometry (not object_type) leaves railway's same 10
+    // 1st-level families, so by-type conversion still writes 10 main
+    // tables — every one of them must be read, never a single hardcoded
+    // main-table name. Every table shares the IDENTICAL schema (the by-type
+    // writer partitions strictly after encode), so the schema-level checks
+    // below only need the first table.
+    let tables = manifest_tables(out.path());
+    let first_file = std::fs::File::open(out.path().join(&tables[0])).unwrap();
+    let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file).unwrap();
+    let schema = first_builder.cityparquet_arrow_schema().unwrap();
 
     // No LoD-bearing geometry: the un-suffixed geometry column, no per-LoD ones.
     assert!(
@@ -263,16 +284,21 @@ fn instances_only_dataset_uses_the_unsuffixed_geometry_column() {
         "a zero-analysis-geometry dataset must have no geometry_lod* columns"
     );
 
-    let parquet_reader = builder.build().unwrap();
-    let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
-
     let mut objects = Vec::new();
     let mut non_null_cells = 0usize;
-    for batch in reader {
-        let batch = batch.unwrap();
-        let col = batch.column_by_name("geometry").unwrap();
-        non_null_cells += col.len() - col.null_count();
-        objects.extend(decode_batch(&batch, &meta).unwrap());
+    for table in &tables {
+        let file = std::fs::File::open(out.path().join(table)).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let meta = builder.cityparquet_metadata().unwrap();
+        let table_schema = builder.cityparquet_arrow_schema().unwrap();
+        let parquet_reader = builder.build().unwrap();
+        let reader = CityParquetRecordBatchReader::new(parquet_reader, table_schema);
+        for batch in reader {
+            let batch = batch.unwrap();
+            let col = batch.column_by_name("geometry").unwrap();
+            non_null_cells += col.len() - col.null_count();
+            objects.extend(decode_batch(&batch, &meta).unwrap());
+        }
     }
     assert_eq!(objects.len(), 121);
     assert_eq!(

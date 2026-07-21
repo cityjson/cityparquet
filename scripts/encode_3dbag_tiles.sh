@@ -29,7 +29,7 @@
 #                      before START are not counted toward COUNT/LIMIT
 #   KEEP_JSON=1        keep the decompressed .city.json alongside the package
 #   CONVERT_ARGS="..." extra flags passed through to `cityparquet convert`
-#                      (e.g. CONVERT_ARGS="--ordering hilbert --layout single")
+#                      (e.g. CONVERT_ARGS="--ordering hilbert")
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

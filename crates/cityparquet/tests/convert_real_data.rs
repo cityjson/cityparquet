@@ -7,7 +7,7 @@ use cityparquet::CityParquetError;
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::order::hilbert_index;
-use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert};
+use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Profile;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -20,6 +20,16 @@ fn fixture(name: &str) -> PathBuf {
         .join(name);
     assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
     p
+}
+
+/// `metadata.json`'s `tables` list for the package at `dir` — by-type is the
+/// only, mandatory table layout, so this is 1..N main-table file names, one
+/// per 1st-level CityObject family actually present, never a single
+/// hardcoded main-table name.
+fn manifest_tables(dir: &std::path::Path) -> Vec<String> {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("metadata.json")).unwrap()).unwrap();
+    serde_json::from_value(manifest["tables"].clone()).unwrap()
 }
 
 /// `convert_source` (the seam the merge/partition pipeline drives) must
@@ -106,7 +116,9 @@ fn delft_full_convert_round_trips_through_parquet() {
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 2231);
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    // delft is a single 1st-level family (Building, BuildingPart folded in),
+    // so by-type conversion writes exactly one main table: building.parquet.
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let pq_meta = builder.metadata().file_metadata();
     let kvs = pq_meta.key_value_metadata().unwrap();
@@ -154,7 +166,15 @@ fn railway_full_convert_succeeds() {
     ))
     .unwrap();
     assert_eq!(report.object_count, 121);
-    assert!(out.path().join("cityobjects.parquet").exists());
+    // railway has 10 1st-level families (see
+    // `by_type_convert_of_railway_writes_ten_family_tables` below), so
+    // by-type conversion writes 10 main tables, never one — every table the
+    // manifest lists must exist.
+    let tables = manifest_tables(out.path());
+    assert_eq!(tables.len(), 10);
+    for name in &tables {
+        assert!(out.path().join(name).exists(), "missing {name}");
+    }
 }
 
 /// Core-profile convert of railway: the main table's `material`/`texture`
@@ -173,12 +193,6 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
     ))
     .unwrap();
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    let reader = builder.build().unwrap();
-
-    let mut checked_material = false;
-    let mut checked_texture = false;
     // Per-LoD appearance columns (§11.1, G20): each `material_lod*` /
     // `texture_lod*` cell holds the plain `{"<theme>": …}` shape. The index
     // checks are structure-agnostic (they recurse for integer leaves), so
@@ -197,25 +211,37 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
             .map(|(i, _)| i)
             .collect()
     };
-    for batch in reader {
-        let batch = batch.unwrap();
-        let material_idx = per_lod_cols(&batch, "material");
-        let texture_idx = per_lod_cols(&batch, "texture");
-        for row in 0..batch.num_rows() {
-            for &i in &material_idx {
-                let col: &StringArray = batch.column(i).as_any().downcast_ref().unwrap();
-                if !col.is_null(row) {
-                    let map: Value = serde_json::from_str(col.value(row)).unwrap();
-                    assert_every_material_index_below(&map, 83);
-                    checked_material = true;
+
+    let mut checked_material = false;
+    let mut checked_texture = false;
+    // railway has 10 1st-level families, so by-type conversion writes 10
+    // main tables — walk every one of them (never a single hardcoded
+    // main-table name).
+    for table in manifest_tables(out.path()) {
+        let file = std::fs::File::open(out.path().join(&table)).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let reader = builder.build().unwrap();
+
+        for batch in reader {
+            let batch = batch.unwrap();
+            let material_idx = per_lod_cols(&batch, "material");
+            let texture_idx = per_lod_cols(&batch, "texture");
+            for row in 0..batch.num_rows() {
+                for &i in &material_idx {
+                    let col: &StringArray = batch.column(i).as_any().downcast_ref().unwrap();
+                    if !col.is_null(row) {
+                        let map: Value = serde_json::from_str(col.value(row)).unwrap();
+                        assert_every_material_index_below(&map, 83);
+                        checked_material = true;
+                    }
                 }
-            }
-            for &i in &texture_idx {
-                let col: &StringArray = batch.column(i).as_any().downcast_ref().unwrap();
-                if !col.is_null(row) {
-                    let map: Value = serde_json::from_str(col.value(row)).unwrap();
-                    assert_every_texture_ring_valid(&map, 33);
-                    checked_texture = true;
+                for &i in &texture_idx {
+                    let col: &StringArray = batch.column(i).as_any().downcast_ref().unwrap();
+                    if !col.is_null(row) {
+                        let map: Value = serde_json::from_str(col.value(row)).unwrap();
+                        assert_every_texture_ring_valid(&map, 33);
+                        checked_texture = true;
+                    }
                 }
             }
         }
@@ -232,9 +258,17 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
 
 /// The `sidecar_files` list recorded in the parquet footer's own key-value
 /// metadata (appended post-encode via `ArrowWriter::append_key_value_metadata`,
-/// so it reflects the files ACTUALLY written, matching `metadata.json`).
+/// so it reflects the files ACTUALLY written, matching `metadata.json`). The
+/// by-type writer appends this to EVERY main table's footer (see
+/// `TableWriters::finish`'s own doc comment), so reading it off the FIRST
+/// table the manifest lists is representative regardless of how many
+/// families the dataset has.
 fn footer_sidecar_files(dir: &std::path::Path) -> Vec<String> {
-    let file = std::fs::File::open(dir.join("cityobjects.parquet")).unwrap();
+    let first_table = manifest_tables(dir)
+        .into_iter()
+        .next()
+        .expect("manifest must list at least one table");
+    let file = std::fs::File::open(dir.join(first_table)).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     builder.cityparquet_metadata().unwrap().sidecar_files
 }
@@ -334,7 +368,7 @@ fn delft_compatibility_convert_writes_no_sidecars() {
 /// M4 task 11 (Step 1/2): the overwrite-purge hazard the `TODO(M4)` comment
 /// named. A Compatibility convert of railway into a fresh directory writes
 /// `materials.parquet`/`textures.parquet`/`geometry_templates.parquet`
-/// alongside `cityobjects.parquet`; overwriting that SAME directory with a
+/// alongside its main object tables; overwriting that SAME directory with a
 /// Core convert of an unrelated dataset (delft, no appearance/templates of
 /// its own) must not leave any of the first run's sidecars behind — a
 /// consumer reading the directory afterwards must see exactly what the
@@ -372,7 +406,9 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
         !out.path().join("geometry_templates.parquet").exists(),
         "stale geometry_templates.parquet from the first (Compatibility) convert must be purged"
     );
-    assert!(out.path().join("cityobjects.parquet").exists());
+    // delft is a single 1st-level family, so the second (delft) convert
+    // writes exactly one main table: building.parquet.
+    assert!(out.path().join("building.parquet").exists());
 
     let manifest: Value =
         serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
@@ -384,7 +420,7 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
         "the second run's own manifest must say no sidecars, and none must be left on disk"
     );
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let rows: usize = builder
         .build()
@@ -414,7 +450,13 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
     assert!(out.path().join("geometry_templates.parquet").exists());
-    assert!(out.path().join("cityobjects.parquet").exists());
+    // railway has 10 1st-level families, so this convert wrote 10 main
+    // tables, never one.
+    let tables = manifest_tables(out.path());
+    assert_eq!(tables.len(), 10);
+    for name in &tables {
+        assert!(out.path().join(name).exists(), "missing {name}");
+    }
     assert!(out.path().join("metadata.json").exists());
 
     let mut bad = ConvertOptions::new(
@@ -429,7 +471,7 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
     );
 
     // The first (valid) package must survive completely untouched: none of
-    // its files were purged, and the main table still has all its rows.
+    // its files were purged, and every main table still has all its rows.
     assert!(
         out.path().join("materials.parquet").exists(),
         "a failed overwrite must not purge the existing package's materials.parquet"
@@ -442,25 +484,35 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
         out.path().join("geometry_templates.parquet").exists(),
         "a failed overwrite must not purge the existing package's geometry_templates.parquet"
     );
-    assert!(
-        out.path().join("cityobjects.parquet").exists(),
-        "a failed overwrite must not purge the existing package's cityobjects.parquet"
+    assert_eq!(
+        manifest_tables(out.path()),
+        tables,
+        "a failed overwrite must not purge any of the existing package's main tables"
     );
+    for name in &tables {
+        assert!(
+            out.path().join(name).exists(),
+            "a failed overwrite must not purge the existing package's {name}"
+        );
+    }
     assert!(
         out.path().join("metadata.json").exists(),
         "a failed overwrite must not purge the existing package's metadata.json"
     );
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    let rows: usize = builder
-        .build()
-        .unwrap()
-        .map(|b| b.unwrap().num_rows())
-        .sum();
+    let mut rows = 0usize;
+    for name in &tables {
+        let file = std::fs::File::open(out.path().join(name)).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        rows += builder
+            .build()
+            .unwrap()
+            .map(|b| b.unwrap().num_rows())
+            .sum::<usize>();
+    }
     assert_eq!(
         rows, 121,
-        "the surviving package's own main table must still be intact and readable"
+        "the surviving package's own main tables must still be intact and readable"
     );
 }
 
@@ -487,9 +539,10 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
 /// a `Schema` error mentioning "material index", not merely tolerate it.
 /// A small `batch_size` (50, versus delft's 2231 objects) ensures several
 /// `RecordBatch`es — and therefore several `ArrowWriter::write` calls typing
-/// real bytes into the scratch `cityobjects.parquet` — succeed before the
-/// corrupted feature's batch is ever reached, so this is a genuine
-/// mid-encode failure, not merely a same-instant one.
+/// real bytes into the scratch `building.parquet` (delft is a single
+/// 1st-level family) — succeed before the corrupted feature's batch is ever
+/// reached, so this is a genuine mid-encode failure, not merely a
+/// same-instant one.
 #[test]
 fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
     // Pre-existing, valid Compatibility package at `out`.
@@ -502,7 +555,13 @@ fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
     assert!(out.path().join("geometry_templates.parquet").exists());
-    assert!(out.path().join("cityobjects.parquet").exists());
+    // railway has 10 1st-level families, so this convert wrote 10 main
+    // tables, never one.
+    let railway_tables = manifest_tables(out.path());
+    assert_eq!(railway_tables.len(), 10);
+    for name in &railway_tables {
+        assert!(out.path().join(name).exists(), "missing {name}");
+    }
     assert!(out.path().join("metadata.json").exists());
 
     // Derived delft copy: a late feature gains a dangling material
@@ -577,7 +636,14 @@ fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
     assert!(out.path().join("geometry_templates.parquet").exists());
-    assert!(out.path().join("cityobjects.parquet").exists());
+    assert_eq!(
+        manifest_tables(out.path()),
+        railway_tables,
+        "a failed mid-encode overwrite must not purge any of the existing package's main tables"
+    );
+    for name in &railway_tables {
+        assert!(out.path().join(name).exists(), "missing {name}");
+    }
     assert!(out.path().join("metadata.json").exists());
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -677,7 +743,9 @@ fn hilbert_ordering_keeps_features_contiguous_and_visits_them_in_non_decreasing_
         .dataset_bbox
         .expect("delft has geometry, so a dataset bbox");
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    // delft is a single 1st-level family, so by-type conversion writes
+    // exactly one main table: building.parquet.
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let reader = builder.build().unwrap();
 
@@ -883,7 +951,7 @@ fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
 
 /// Every distinct `object_type` string in the main table at `path` (raw
 /// dictionary decode, independent of `crate::decode`), and the file's total
-/// row count — used to assert `TableLayout::ByType`'s per-family grouping
+/// row count — used to assert the by-type writer's per-family grouping
 /// (a family table may legitimately carry MULTIPLE `object_type` values —
 /// its 1st-level type plus any 2nd-level children) and to recombine row
 /// counts across the split tables.
@@ -911,27 +979,22 @@ fn table_object_types_and_count(path: &std::path::Path) -> (HashSet<String>, usi
 /// distinction, delft's only two `object_type` values are
 /// `Building`/`BuildingPart` — a 1st-level type and its 2nd-level child —
 /// which both belong to the SAME family (`Building`, per
-/// `cityparquet_schema::first_level_type`). `TableLayout::ByType` must
+/// `cityparquet_schema::first_level_type`). The by-type writer must
 /// therefore write exactly ONE table, `building.parquet`, containing every
 /// row of BOTH types; `buildingpart.parquet` must never be created.
 #[test]
 fn by_type_convert_of_delft_writes_exactly_one_family_table() {
     let out = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
-    opts.layout = TableLayout::ByType;
+    let opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 2231);
 
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
-            .unwrap();
-    let tables: Vec<String> = serde_json::from_value(manifest["tables"].clone()).unwrap();
+    let tables = manifest_tables(out.path());
     assert_eq!(
         tables,
         vec!["building.parquet".to_string()],
         "expected exactly one family table (Building + BuildingPart share it), got: {tables:?}"
     );
-    assert!(!out.path().join("cityobjects.parquet").exists());
     assert!(
         !out.path().join("buildingpart.parquet").exists(),
         "BuildingPart is a 2nd-level type and must not get its own table"
@@ -980,15 +1043,11 @@ fn by_type_convert_of_delft_writes_exactly_one_family_table() {
 fn by_type_convert_of_delft_survives_many_small_batches() {
     let out = tempfile::tempdir().unwrap();
     let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
-    opts.layout = TableLayout::ByType;
     opts.batch_size = 256;
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 2231);
 
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
-            .unwrap();
-    let tables: Vec<String> = serde_json::from_value(manifest["tables"].clone()).unwrap();
+    let tables = manifest_tables(out.path());
     assert_eq!(
         tables,
         vec!["building.parquet".to_string()],
@@ -1007,20 +1066,21 @@ fn by_type_convert_of_delft_survives_many_small_batches() {
     );
 }
 
-/// M5 Codex review (Important finding 1): `TableWriters` for
-/// `TableLayout::ByType` opens a per-type writer LAZILY, on that type's
-/// first row (see `by_type_table_index`) — so an input that encodes to
-/// ZERO rows opens no writer at all, and `finish` returns an empty table
-/// list. Written straight into `metadata.json`, that used to produce a
-/// `tables: []` package `export` rejects outright. Derived fixture
-/// (sanctioned): delft's own CityJSONSeq HEADER line only, every feature
-/// line stripped — a genuine zero-feature stream, not a hand-rolled
-/// artificial CityJSON. Ruling: ByType must fall back to writing the same
-/// single, standard, empty `cityobjects.parquet` Single always writes for
-/// an empty input — asserted here on BOTH layouts, so ByType is proven to
-/// match Single exactly (parity), not merely "not crash".
+/// M5 Codex review (Important finding 1) originally flagged that the
+/// by-type writer opens a per-type writer LAZILY, on that type's first row
+/// (see `by_type_table_index`) — so an input that encodes to ZERO rows
+/// opens no writer at all, and `finish` returns an empty table list, which
+/// used to be papered over with a standalone, empty reserved-name fallback
+/// table. Derived fixture (sanctioned): delft's own CityJSONSeq HEADER line
+/// only, every feature line stripped — a genuine zero-feature stream, not a
+/// hand-rolled artificial CityJSON.
+///
+/// Plan decision (2026-07-21, mandatory-by-type-layout): that fallback is
+/// gone. `write_package` now rejects a zero-object conversion outright
+/// (`scan_result.object_count == 0` — see `package.rs`); by-type is the
+/// only layout, so there is nothing left to parametrise this test over.
 #[test]
-fn empty_input_writes_the_standard_empty_single_table_under_both_layouts() {
+fn empty_input_is_rejected() {
     let src = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
     let header_only = format!(
         "{}\n",
@@ -1032,53 +1092,21 @@ fn empty_input_writes_the_standard_empty_single_table_under_both_layouts() {
     let empty_input = empty_dir.path().join("empty.city.jsonl");
     std::fs::write(&empty_input, &header_only).unwrap();
 
-    for layout in [TableLayout::ByType, TableLayout::Single] {
-        let out = tempfile::tempdir().unwrap();
-        let mut opts = ConvertOptions::new(empty_input.clone(), out.path().to_path_buf());
-        opts.layout = layout;
-        let report = convert(&opts).unwrap_or_else(|e| {
-            panic!("layout {layout:?}: convert of a zero-feature input must succeed, got: {e}")
-        });
-        assert_eq!(
-            report.object_count, 0,
-            "layout {layout:?}: expected 0 objects from a header-only input"
-        );
-
-        let manifest: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(out.path().join("metadata.json")).unwrap(),
-        )
-        .unwrap();
-        let tables: Vec<String> = serde_json::from_value(manifest["tables"].clone()).unwrap();
-        assert_eq!(
-            tables,
-            vec!["cityobjects.parquet".to_string()],
-            "layout {layout:?}: an empty conversion must fall back to exactly the standard \
-             single empty table, got: {tables:?}"
-        );
-        assert!(
-            out.path().join("cityobjects.parquet").exists(),
-            "layout {layout:?}: the fallback table must actually exist on disk"
-        );
-
-        // Parity with Single, not just "export doesn't reject it": the
-        // package must actually round-trip through export like any other.
-        let export_dir = tempfile::tempdir().unwrap();
-        let export_report = export(&ExportOptions {
-            package_dir: out.path().to_path_buf(),
-            output: export_dir.path().join("export.city.jsonl"),
-        })
-        .unwrap_or_else(|e| {
-            panic!("layout {layout:?}: export of the empty package must succeed, got: {e}")
-        });
-        assert_eq!(
-            export_report.object_count, 0,
-            "layout {layout:?}: export of the empty package must report 0 objects"
-        );
-    }
+    let out = tempfile::tempdir().unwrap();
+    let opts = ConvertOptions::new(empty_input.clone(), out.path().to_path_buf());
+    let err = convert(&opts).expect_err("a zero-object conversion must fail, not succeed");
+    assert!(
+        format!("{err}").contains("no city objects"),
+        "expected a clear 'no city objects' error, got: {err}"
+    );
+    assert!(
+        !out.path().join("metadata.json").exists(),
+        "a rejected conversion must leave no package behind"
+    );
 }
 
 /// M5 task 5 (Step 2/3): railway's 14-distinct-`object_type` fixture fact
-/// (pinned in the milestone brief) round-tripped through `TableLayout::ByType`
+/// (pinned in the milestone brief) round-tripped through the by-type writer
 /// under the family-grouping rule: railway's 14 distinct `object_type`
 /// values collapse to 10 distinct 1st-level FAMILIES — `Bridge`,
 /// `BridgeConstructiveElement`, and `BridgeInstallation` all land in
@@ -1091,15 +1119,11 @@ fn empty_input_writes_the_standard_empty_single_table_under_both_layouts() {
 #[test]
 fn by_type_convert_of_railway_writes_ten_family_tables() {
     let out = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    opts.layout = TableLayout::ByType;
+    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 121);
 
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
-            .unwrap();
-    let tables: Vec<String> = serde_json::from_value(manifest["tables"].clone()).unwrap();
+    let tables = manifest_tables(out.path());
     assert_eq!(
         tables.len(),
         10,
@@ -1195,11 +1219,12 @@ fn by_type_convert_of_railway_writes_ten_family_tables() {
 fn default_convert_writes_geo_key_for_legal_columns_only() {
     let out = tempfile::tempdir().unwrap();
     let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
-    opts.layout = TableLayout::Single; // isolate this test from the layout change
     opts.overwrite = true;
     convert(&opts).unwrap();
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    // delft is a single 1st-level family, so by-type conversion writes
+    // exactly one main table: building.parquet.
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
 
     // (a) The GeoParquet `geo` key IS present, listing only the legal LoD0
@@ -1253,12 +1278,13 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
 fn geoarrow_opt_in_restores_tag_and_geo_key() {
     let out = tempfile::tempdir().unwrap();
     let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
-    opts.layout = TableLayout::Single;
     opts.geoarrow = true;
     opts.overwrite = true;
     convert(&opts).unwrap();
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    // delft is a single 1st-level family, so by-type conversion writes
+    // exactly one main table: building.parquet.
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
 
     let kvs = builder

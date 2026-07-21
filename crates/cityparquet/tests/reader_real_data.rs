@@ -86,7 +86,7 @@ fn attribute_named_like_a_geometry_column_does_not_break_the_reader() {
 
     // Reading the package back must reconstruct the schema without mistaking
     // the `geometry_lod3` ATTRIBUTE for a geometry LoD (which would collide).
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let schema = builder
         .cityparquet_arrow_schema()
@@ -109,7 +109,7 @@ fn cityparquet_metadata_matches_the_writer_side_scan() {
     let scan_result = scan(&src).unwrap();
     let writer_meta = scan_result.metadata(&[]).unwrap();
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let read_meta = builder.cityparquet_metadata().unwrap();
 
@@ -137,7 +137,7 @@ fn cityparquet_arrow_schema_matches_the_writers_rendered_schema() {
     let scan_result = scan(&src).unwrap();
     let writer_schema = scan_result.schema.to_arrow_schema().unwrap();
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let read_schema = builder.cityparquet_arrow_schema().unwrap();
 
@@ -206,7 +206,7 @@ fn cityparquet_arrow_schema_matches_the_writers_rendered_schema() {
 fn record_batch_reader_yields_all_rows_with_schema_metadata_preserved() {
     let out = convert_delft_small_row_groups();
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let rendered_schema = builder.cityparquet_arrow_schema().unwrap();
     let parquet_reader = builder.build().unwrap();
@@ -252,7 +252,7 @@ fn with_bbox_row_groups_prunes_a_tight_corner_query_but_keeps_the_whole_extent()
         .dataset_bbox
         .expect("delft has geometry, so a dataset bbox");
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let num_row_groups = builder.metadata().num_row_groups();
     assert!(
@@ -288,7 +288,7 @@ fn with_bbox_row_groups_prunes_a_tight_corner_query_but_keeps_the_whole_extent()
         "corner bbox query should prune at least one row group, got {corner_rows} rows"
     );
 
-    let file2 = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let file2 = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder2 = ParquetRecordBatchReaderBuilder::try_new(file2).unwrap();
     let whole_builder = builder2.with_bbox_row_groups(dataset_bbox).unwrap();
     let whole_rows: usize = whole_builder
@@ -343,7 +343,7 @@ fn with_bbox_row_groups_selects_a_strict_subset_for_a_partial_band_query() {
     let scan_result = scan(&src).unwrap();
     let dataset_bbox = scan_result.dataset_bbox.unwrap();
 
-    let file = std::fs::File::open(out.path().join("cityobjects.parquet")).unwrap();
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let metadata = builder.metadata().clone();
     let num_row_groups = metadata.num_row_groups();
@@ -422,13 +422,13 @@ fn with_bbox_row_groups_selects_a_strict_subset_for_a_partial_band_query() {
     );
 }
 
-/// Every row group in `dir`'s `cityobjects.parquet` whose `bbox` chunk
+/// Every row group in `dir`'s `building.parquet` whose `bbox` chunk
 /// statistics 3D-intersect `query` — a from-scratch recount straight off
 /// the file's own row-group stats (mirrors `crate::reader`'s private
 /// `row_group_intersects`, which this integration-test crate cannot reach),
 /// used only to COUNT groups touched rather than to build a reader.
 fn row_groups_touching(dir: &std::path::Path, query: [f64; 6]) -> usize {
-    let file = std::fs::File::open(dir.join("cityobjects.parquet")).unwrap();
+    let file = std::fs::File::open(dir.join("building.parquet")).unwrap();
     let metadata = ParquetRecordBatchReaderBuilder::try_new(file)
         .unwrap()
         .metadata()
@@ -452,7 +452,7 @@ fn row_groups_touching(dir: &std::path::Path, query: [f64; 6]) -> usize {
 }
 
 /// The first row with a non-null `bbox` a plain (unfiltered) read of `dir`'s
-/// `cityobjects.parquet` yields, in on-disk order. Used to derive a query
+/// `building.parquet` yields, in on-disk order. Used to derive a query
 /// bbox anchored to a REAL, existing geometry — unlike the corner-bbox in
 /// `with_bbox_row_groups_prunes_a_tight_corner_query_but_keeps_the_whole_extent`
 /// above (which independently takes the dataset bbox's per-axis minima and
@@ -465,7 +465,7 @@ fn row_groups_touching(dir: &std::path::Path, query: [f64; 6]) -> usize {
 /// legitimately prune every group, a tie, not evidence of anything).
 fn first_real_bbox_row(dir: &std::path::Path) -> [f64; 6] {
     use arrow_array::StructArray;
-    let file = std::fs::File::open(dir.join("cityobjects.parquet")).unwrap();
+    let file = std::fs::File::open(dir.join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     for batch in builder.build().unwrap() {
         let batch = batch.unwrap();
@@ -565,12 +565,12 @@ fn hilbert_ordering_prunes_more_row_groups_than_source_ordering_on_a_real_neighb
         centre[2] + pad[2],
     ];
 
-    let source_file = std::fs::File::open(source_out.path().join("cityobjects.parquet")).unwrap();
+    let source_file = std::fs::File::open(source_out.path().join("building.parquet")).unwrap();
     let source_num_row_groups = ParquetRecordBatchReaderBuilder::try_new(source_file)
         .unwrap()
         .metadata()
         .num_row_groups();
-    let hilbert_file = std::fs::File::open(hilbert_out.path().join("cityobjects.parquet")).unwrap();
+    let hilbert_file = std::fs::File::open(hilbert_out.path().join("building.parquet")).unwrap();
     let hilbert_num_row_groups = ParquetRecordBatchReaderBuilder::try_new(hilbert_file)
         .unwrap()
         .metadata()

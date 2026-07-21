@@ -22,6 +22,13 @@ fixtures:
     # b1_lod2_cs_w_sem = lod2 Solid + boundedBy Wall/Roof/Ground via xlink (semantics).
     curl -sSfo tests/fixtures/b1_lod2_s.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_s.gml
     curl -sSfo tests/fixtures/b1_lod2_cs_w_sem.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_cs_w_sem.gml
+    # Zero-object CityJSONSeq fixture (synthetic, no network fetch needed):
+    # a single CityJSON header line, empty CityObjects/vertices, no feature
+    # lines — the minimal input that scans to zero city-object rows. Used by
+    # `zero_object_input_is_rejected` (crates/cityparquet/tests/bytype_layout.rs)
+    # to prove a zero-object conversion is rejected rather than silently
+    # producing an empty package.
+    printf '%s\n' '{"type":"CityJSON","version":"2.0","transform":{"scale":[0.001,0.001,0.001],"translate":[0.0,0.0,0.0]},"CityObjects":{},"vertices":[]}' > tests/fixtures/empty.city.jsonl
 
 interop:
     ./scripts/interop.sh
@@ -97,16 +104,33 @@ bench FOLDER OUT='bench/read_results':
             --repeat 7
 
         pkg="bench/data/readbench/${name}.parquet"
-        numeric_col="$(duckdb -csv -noheader -c "
-            SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${pkg}/cityobjects.parquet'))
-            WHERE column_type IN ('BIGINT', 'DOUBLE')
-              AND column_name NOT IN ('id', 'feature_id', 'object_type', 'parents',
-                'children', 'children_roles', 'bbox', 'material', 'texture',
-                'template', 'other')
-              AND column_name NOT LIKE 'geometry_lod%'
-              AND column_name NOT LIKE 'geometry_properties_lod%'
-            ORDER BY column_name LIMIT 1;
-        " 2>/dev/null || true)"
+        # By-type is the only, mandatory table layout: resolve the package's
+        # single main table from its own metadata.json manifest rather than
+        # assuming the pre-by-type "cityobjects.parquet" name (only true for
+        # a single-family dataset; `readbench_duckdb.sh` below still hard-
+        # fails clearly for a multi-family/multi-table package).
+        main_table="$(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        tables = json.load(fh).get('tables', [])
+    print(tables[0] if len(tables) == 1 else '')
+except OSError:
+    print('')
+" "${pkg}/metadata.json")"
+        numeric_col=""
+        if [[ -n "$main_table" ]]; then
+            numeric_col="$(duckdb -csv -noheader -c "
+                SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${pkg}/${main_table}'))
+                WHERE column_type IN ('BIGINT', 'DOUBLE')
+                  AND column_name NOT IN ('id', 'feature_id', 'object_type', 'parents',
+                    'children', 'children_roles', 'bbox', 'material', 'texture',
+                    'template', 'other')
+                  AND column_name NOT LIKE 'geometry_lod%'
+                  AND column_name NOT LIKE 'geometry_properties_lod%'
+                ORDER BY column_name LIMIT 1;
+            " 2>/dev/null || true)"
+        fi
 
         if [[ -n "$numeric_col" ]]; then
             echo "-- numeric attribute column for attr-stats: ${numeric_col}"

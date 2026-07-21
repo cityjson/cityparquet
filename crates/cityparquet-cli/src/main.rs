@@ -3,7 +3,7 @@ use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::inputs::resolve_inputs;
 use cityparquet::merge::merge_sources;
-use cityparquet::package::{ConvertOptions, RowOrder, TableLayout, convert_source};
+use cityparquet::package::{ConvertOptions, RowOrder, convert_source};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
 use cityparquet::source::{Source, SourceFormat};
@@ -95,14 +95,6 @@ enum Commands {
         #[arg(long, default_value = "source")]
         ordering: String,
 
-        /// Table layout for the main CityObject data: "by-type" (default —
-        /// one file per 1st-level CityObject family, e.g. building.parquet /
-        /// bridge.parquet; 2nd-level types such as BuildingPart share their
-        /// family's file) or "single" (one cityobjects.parquet holding every
-        /// type).
-        #[arg(long, default_value = "by-type")]
-        layout: String,
-
         /// Emit GeoParquet/GeoArrow self-description (the geoarrow.wkb field
         /// extension + the file-level `geo` key). Off by default: default
         /// output is plain-BLOB geometry that DuckDB `SELECT *` and the
@@ -168,9 +160,9 @@ enum Commands {
         repeat: usize,
 
         /// Comma-separated variant identifiers
-        /// (`<preset>[+hilbert][+by-type][+rg<N>][+<codec>]`, e.g.
+        /// (`<preset>[+hilbert][+rg<N>][+<codec>]`, e.g.
         /// `cityparquet+hilbert`, `cityparquet+rg512`,
-        /// `cityparquet+gzip+rg512`); omit for the default 10-variant set
+        /// `cityparquet+gzip+rg512`); omit for the default 9-variant set
         #[arg(long)]
         variants: Option<String>,
 
@@ -289,7 +281,6 @@ fn main() -> std::process::ExitCode {
             recipe,
             compression,
             ordering,
-            layout,
             geoarrow,
             no_lod0,
         } => {
@@ -355,18 +346,6 @@ fn main() -> std::process::ExitCode {
                 }
             };
 
-            let layout = match layout.as_str() {
-                "single" => TableLayout::Single,
-                "by-type" => TableLayout::ByType,
-                _ => {
-                    eprintln!(
-                        "error: invalid layout '{}' (expected 'single' or 'by-type')",
-                        layout
-                    );
-                    return std::process::ExitCode::FAILURE;
-                }
-            };
-
             let opts = ConvertOptions {
                 input: inputs.first().cloned().unwrap_or_default(),
                 output_dir: output,
@@ -375,7 +354,6 @@ fn main() -> std::process::ExitCode {
                 batch_size,
                 recipe,
                 ordering,
-                layout,
                 geoarrow,
                 generate_lod0: !no_lod0,
                 lod0: cityparquet::lod0::Lod0Options::default(),

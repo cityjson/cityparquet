@@ -20,10 +20,15 @@ fn fixture(name: &str) -> PathBuf {
 
 #[test]
 fn child_count_scenario_prints_a_four_field_line_with_the_known_object_count() {
+    // delft (Building + BuildingPart, both mapping to the "Building" family)
+    // rather than lod3_railway: the single-file table layout is gone, so `convert()`
+    // now always writes one table per 1st-level CityObject family, and only
+    // a single-family fixture like delft still by-type-converts to exactly
+    // ONE main table for this child process to point `--input` at.
     let out = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
     let report = convert(&opts).unwrap();
-    assert_eq!(report.object_count, 121);
+    assert_eq!(report.object_count, 2231);
 
     let output = Command::new(env!("CARGO_BIN_EXE_cityparquet-readbench"))
         .args([
@@ -78,8 +83,8 @@ fn child_count_scenario_prints_a_four_field_line_with_the_known_object_count() {
         )
     });
     assert_eq!(
-        result_count, 121,
+        result_count, 2231,
         "CityParquet's `count` scenario counts one row per CityObject (parents \
-         and children); lod3_railway.city.json has 121"
+         and children); delft.city.jsonl has 2231"
     );
 }

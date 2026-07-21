@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use cityparquet::package::{ConvertOptions, TableLayout};
+use cityparquet::package::ConvertOptions;
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::source::Source;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -15,10 +15,17 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// `metadata.json`'s `tables` list for the package at `dir` — by-type is the
+/// only, mandatory table layout, so this is 1..N main-table file names, one
+/// per 1st-level CityObject family actually present.
+fn manifest_tables(dir: &std::path::Path) -> Vec<String> {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("metadata.json")).unwrap()).unwrap();
+    serde_json::from_value(manifest["tables"].clone()).unwrap()
+}
+
 fn delft_opts(out: &std::path::Path) -> ConvertOptions {
-    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.to_path_buf());
-    opts.layout = TableLayout::Single;
-    opts
+    ConvertOptions::new(fixture("delft.city.jsonl"), out.to_path_buf())
 }
 
 #[test]
@@ -40,9 +47,11 @@ fn partitioned_convert_is_lossless_over_delft() {
             out.path().join(label).join("metadata.json").exists(),
             "{label} package missing metadata.json"
         );
+        // delft is a single 1st-level family, so every partition's by-type
+        // conversion writes exactly one main table: building.parquet.
         assert!(
-            out.path().join(label).join("cityobjects.parquet").exists(),
-            "{label} package missing cityobjects.parquet"
+            out.path().join(label).join("building.parquet").exists(),
+            "{label} package missing building.parquet"
         );
     }
 }
@@ -126,8 +135,7 @@ fn box_partitions_each_round_trip_clean() {
         // Reconvert the exported partition and re-export it; the two exports
         // must be semantically identical.
         let pkg2 = out.path().join(format!("{label}_pkg2"));
-        let mut o2 = ConvertOptions::new(export1.clone(), pkg2.clone());
-        o2.layout = TableLayout::Single;
+        let o2 = ConvertOptions::new(export1.clone(), pkg2.clone());
         convert(&o2).unwrap();
         let export2 = out.path().join(format!("{label}_2.city.jsonl"));
         export(&ExportOptions {
@@ -194,30 +202,39 @@ fn partitioned_synthesis_declares_the_footprint_as_primary_in_every_partition() 
     let out = tempfile::tempdir().unwrap();
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
     let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    opts.layout = TableLayout::Single;
     opts.generate_lod0 = true;
     let rep =
         convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(2), &opts).unwrap();
     assert!(!rep.partitions.is_empty());
     for (label, _) in &rep.partitions {
-        let file = std::fs::File::open(out.path().join(label).join("cityobjects.parquet")).unwrap();
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-        let kvs = builder
-            .metadata()
-            .file_metadata()
-            .key_value_metadata()
-            .unwrap();
-        let geo = kvs.iter().find(|kv| kv.key == "geo").unwrap_or_else(|| {
-            panic!("{label} must carry a geo key for the synthesised footprint")
-        });
-        let geo: serde_json::Value = serde_json::from_str(geo.value.as_deref().unwrap()).unwrap();
-        assert_eq!(
-            geo["primary_column"], "geometry",
-            "{label}: synthesised footprint must be the GeoParquet primary_column"
-        );
-        assert!(
-            geo["columns"].get("geometry").is_some(),
-            "{label}: the geometry column must be declared in geo.columns"
-        );
+        // railway has 10 1st-level families, so each partition's by-type
+        // conversion may write several main tables — every one of them must
+        // carry the synthesised footprint as the GeoParquet primary column,
+        // never a single hardcoded main-table name.
+        let partition_dir = out.path().join(label);
+        let tables = manifest_tables(&partition_dir);
+        assert!(!tables.is_empty(), "{label} package lists no main tables");
+        for table in &tables {
+            let file = std::fs::File::open(partition_dir.join(table)).unwrap();
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+            let kvs = builder
+                .metadata()
+                .file_metadata()
+                .key_value_metadata()
+                .unwrap();
+            let geo = kvs.iter().find(|kv| kv.key == "geo").unwrap_or_else(|| {
+                panic!("{label}/{table} must carry a geo key for the synthesised footprint")
+            });
+            let geo: serde_json::Value =
+                serde_json::from_str(geo.value.as_deref().unwrap()).unwrap();
+            assert_eq!(
+                geo["primary_column"], "geometry",
+                "{label}/{table}: synthesised footprint must be the GeoParquet primary_column"
+            );
+            assert!(
+                geo["columns"].get("geometry").is_some(),
+                "{label}/{table}: the geometry column must be declared in geo.columns"
+            );
+        }
     }
 }

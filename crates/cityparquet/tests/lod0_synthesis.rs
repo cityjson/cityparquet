@@ -23,6 +23,15 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// `metadata.json`'s `tables` list for the package at `dir` — by-type is the
+/// only, mandatory table layout, so this is 1..N main-table file names, one
+/// per 1st-level CityObject family actually present.
+fn manifest_tables(dir: &std::path::Path) -> Vec<String> {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("metadata.json")).unwrap()).unwrap();
+    serde_json::from_value(manifest["tables"].clone()).unwrap()
+}
+
 /// Every synthesised footprint, fed back through the hand-rolled WKB writer,
 /// must parse as an ISO `MultiPolygon` (type 1006) — the GeoParquet-legal shape
 /// the `geometry` column needs — with a valid little-endian header.
@@ -100,25 +109,37 @@ fn convert_railway(generate_lod0: bool) -> tempfile::TempDir {
 
 /// Synthesis (opt-in) populates the primary `geometry` column for a Solid-only
 /// dataset that has no source LoD0; disabling it leaves no such column.
+///
+/// railway has 10 1st-level families, so by-type conversion writes 10 main
+/// tables — every table shares the IDENTICAL schema (the by-type writer
+/// partitions strictly after encode), so the schema-level checks below only
+/// need the first table, but the non-null footprint count must be summed
+/// across every table (a synthesised footprint can land in any of them).
 #[test]
 fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
     let with = convert_railway(true);
-    let file = std::fs::File::open(with.path().join("cityobjects.parquet")).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let with_tables = manifest_tables(with.path());
+    let first_file = std::fs::File::open(with.path().join(&with_tables[0])).unwrap();
+    let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file).unwrap();
     assert!(
-        builder.schema().field_with_name("geometry").is_ok(),
+        first_builder.schema().field_with_name("geometry").is_ok(),
         "synthesis reserves the un-suffixed geometry column"
     );
     let mut non_null = 0usize;
-    for batch in builder.build().unwrap() {
-        let batch = batch.unwrap();
-        let g = batch.column_by_name("geometry").unwrap();
-        non_null += batch.num_rows() - g.null_count();
+    for table in &with_tables {
+        let file = std::fs::File::open(with.path().join(table)).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        for batch in builder.build().unwrap() {
+            let batch = batch.unwrap();
+            let g = batch.column_by_name("geometry").unwrap();
+            non_null += batch.num_rows() - g.null_count();
+        }
     }
     assert!(non_null > 0, "at least one synthesised LoD0 footprint");
 
     let without = convert_railway(false);
-    let file = std::fs::File::open(without.path().join("cityobjects.parquet")).unwrap();
+    let without_tables = manifest_tables(without.path());
+    let file = std::fs::File::open(without.path().join(&without_tables[0])).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     assert!(
         builder.schema().field_with_name("geometry").is_err(),
