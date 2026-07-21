@@ -7,19 +7,164 @@
 //! true by construction rather than by discipline, and means a package written
 //! by any conformant writer can be described, not just this crate's own.
 
+pub mod assets;
 pub mod attribute_type;
 pub mod properties;
 
 use std::fs;
+use std::path::Path;
 
-use city3d_stac_types::metadata::BBox3D;
+use city3d_stac_types::metadata::{BBox3D, CRS};
+use city3d_stac_types::stac::StacItemBuilder;
+use city3d_stac_types::stac::types::{Asset, Item};
 use cityparquet_schema::{CityParquetError, Result};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::metadata::RowGroupMetaData;
 use parquet::file::statistics::Statistics;
 use parquet::schema::types::ColumnPath;
+use serde_json::Value;
 
+use crate::reader::CityParquetReaderBuilder;
 use crate::stac::properties::PackageTables;
+
+/// How to fill the parts of an Item that a package cannot supply itself.
+#[derive(Debug, Clone, Default)]
+pub struct ItemOptions {
+    /// Item id. Defaults to the package directory's name.
+    pub id: Option<String>,
+    /// RFC 3339 timestamp for `properties.datetime`.
+    ///
+    /// **There is no fallback here.** A CityJSON source rarely carries
+    /// temporal metadata — none of this repo's fixtures does — so a fallback
+    /// would govern almost every package rather than an edge case. Per the
+    /// design decision of 2026-07-20, the CLI stamps the conversion time and
+    /// the *library* requires an explicit value; this is the library, so an
+    /// absent value simply leaves `datetime` unset rather than inventing one.
+    pub datetime: Option<String>,
+}
+
+/// Build a STAC Item describing a written CityParquet package.
+///
+/// Reads the package back rather than relying on anything remembered from
+/// conversion, so the Item cannot drift from the files it describes.
+///
+/// Fails rather than guessing when the extent cannot be expressed in WGS84:
+/// STAC requires `bbox`/`geometry` in WGS84, and a silently wrong extent is
+/// worse than a failed conversion.
+pub fn item_for_package(dir: &Path, opts: &ItemOptions) -> Result<Item> {
+    let tables = PackageTables::open(dir)?;
+    let props = properties::derive_from_footer(&tables)?;
+    let crs = package_crs(&tables)?;
+
+    let id = opts.id.clone().unwrap_or_else(|| {
+        dir.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "cityparquet".to_string())
+    });
+
+    let mut builder = StacItemBuilder::new(id)
+        .datetime(opts.datetime.clone())
+        .city3d(props)
+        .map_err(|e| CityParquetError::Metadata(format!("cannot build STAC item: {e}")))?;
+
+    if let Some(crs) = &crs {
+        builder = builder.crs(crs);
+    }
+
+    // STAC requires WGS84; the package extent is in the source CRS.
+    if let Some(bbox) = package_bbox(&tables)? {
+        let wgs84 = bbox
+            .to_wgs84(crs.as_ref().unwrap_or(&CRS::unknown()))
+            .map_err(|e| {
+                CityParquetError::Metadata(format!(
+                    "cannot express the package extent in WGS84, which STAC requires: {e}"
+                ))
+            })?;
+        builder = builder.bbox(wgs84).geometry_from_bbox();
+    }
+
+    // The primary object table goes through `data_asset`, which is also what
+    // declares the STAC File extension; every other file is added by name.
+    let mut first = true;
+    for path in &tables.tables {
+        let (size, checksum) = assets::file_facts(path);
+        let href = format!("./{}", assets::asset_key(path));
+        if first {
+            builder = builder.data_asset(href, assets::PARQUET_MEDIA_TYPE, size, checksum);
+            first = false;
+        } else {
+            builder = builder.asset(
+                assets::asset_key(path),
+                package_asset(&href, size, checksum, assets::AssetKind::ObjectTable),
+            );
+        }
+    }
+    for name in &tables.sidecar_files {
+        let path = dir.join(name);
+        let (size, checksum) = assets::file_facts(&path);
+        builder = builder.asset(
+            name.clone(),
+            package_asset(
+                &format!("./{name}"),
+                size,
+                checksum,
+                assets::AssetKind::Sidecar,
+            ),
+        );
+    }
+
+    builder
+        .build()
+        .map_err(|e| CityParquetError::Metadata(format!("cannot build STAC item: {e}")))
+}
+
+/// A STAC asset for one package file.
+fn package_asset(
+    href: &str,
+    size: Option<u64>,
+    checksum: Option<String>,
+    kind: assets::AssetKind,
+) -> Asset {
+    let mut asset = Asset::new(href);
+    asset.media_type = Some(assets::PARQUET_MEDIA_TYPE.to_string());
+    asset.roles = kind.roles();
+    if let Some(size) = size {
+        asset
+            .additional_fields
+            .insert("file:size".to_string(), Value::Number(size.into()));
+    }
+    if let Some(checksum) = checksum {
+        asset
+            .additional_fields
+            .insert("file:checksum".to_string(), Value::String(checksum));
+    }
+    asset
+}
+
+/// The package's CRS, as an EPSG code lifted out of the stored PROJJSON.
+///
+/// The footer stores the dataset CRS as PROJJSON (§13.3). `CRS` here is
+/// EPSG-based, so the authority code is read from the PROJJSON `id`. A package
+/// with no CRS yields `None`, and the caller must then either find its
+/// coordinates already in WGS84 range or fail — never assume.
+fn package_crs(tables: &PackageTables) -> Result<Option<CRS>> {
+    let Some(path) = tables.tables.first() else {
+        return Ok(None);
+    };
+    let file = fs::File::open(path)
+        .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| CityParquetError::Parquet(format!("cannot open {}: {e}", path.display())))?;
+    let meta = builder.cityparquet_metadata()?;
+
+    Ok(meta
+        .crs
+        .as_ref()
+        .and_then(|c| c.get("id"))
+        .and_then(|id| id.get("code"))
+        .and_then(|code| code.as_u64())
+        .map(|code| CRS::from_epsg(code as u32)))
+}
 
 /// The `bbox` struct's six leaf columns, in the order [`BBox3D`] uses.
 /// Mirrors `crate::reader`'s `BBOX_LEAVES` and

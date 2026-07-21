@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use city3d_stac_types::metadata::AttributeType;
 use city3d_stac_types::stac::CityObjectsCount;
 use cityparquet::package::{ConvertOptions, convert};
-use cityparquet::stac::package_bbox;
 use cityparquet::stac::properties::{PackageTables, derive_co_types, derive_from_footer};
+use cityparquet::stac::{ItemOptions, item_for_package, package_bbox};
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -208,6 +208,67 @@ fn package_bbox_is_the_source_crs_extent() {
         "ymin {} is not in the RD New range for Delft",
         bbox.ymin
     );
+}
+
+/// The whole point of the plan: a package on disk yields a STAC Item that the
+/// published `city3d` extension schema accepts.
+#[test]
+fn derived_item_validates_against_the_city3d_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = convert_fixture("delft.city.jsonl", &dir);
+
+    let item = item_for_package(
+        &pkg,
+        &ItemOptions {
+            id: Some("delft-test".to_string()),
+            datetime: Some("2024-01-15T12:00:00Z".to_string()),
+        },
+    )
+    .expect("build item");
+
+    let instance = serde_json::to_value(&item).unwrap();
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("data/stac-city3d-v0.2.0.json")).unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("compile schema");
+    let errors: Vec<String> = validator
+        .iter_errors(&instance)
+        .map(|e| format!("{e} at {}", e.instance_path))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "derived Item violates the city3d schema:\n{}\n\ninstance:\n{}",
+        errors.join("\n"),
+        serde_json::to_string_pretty(&instance).unwrap()
+    );
+}
+
+/// Assets must describe files that are actually present, and the bbox must be
+/// WGS84 — STAC requires it, and delft's source coordinates are RD New metres.
+#[test]
+fn derived_item_assets_exist_and_bbox_is_wgs84() {
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = convert_fixture("delft.city.jsonl", &dir);
+
+    let item = item_for_package(&pkg, &ItemOptions::default()).expect("build item");
+
+    assert!(!item.assets.is_empty(), "a package has files to describe");
+    for (key, asset) in &item.assets {
+        let path = pkg.join(asset.href.trim_start_matches("./"));
+        assert!(
+            path.exists(),
+            "asset {key} points at {} which is not on disk",
+            asset.href
+        );
+    }
+
+    let bbox = item.bbox.as_ref().expect("delft has an extent");
+    assert!(
+        (4.0..5.0).contains(&bbox[0]) && (51.0..53.0).contains(&bbox[1]),
+        "bbox must be reprojected to WGS84 degrees near Delft, got {bbox:?}"
+    );
+
+    // Defaulted id comes from the package directory name.
+    assert_eq!(item.id, "pkg");
 }
 
 /// `helsinki_address` carries a nested `address` object, which the encoder
