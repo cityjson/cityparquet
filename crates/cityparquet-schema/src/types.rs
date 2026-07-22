@@ -1,10 +1,13 @@
 use crate::error::{CityParquetError, Result};
 
-/// A CityJSON Level of Detail such as `1`, `2`, or `2.2` (major, optional minor).
+/// A CityJSON Level of Detail such as `1`, `2`, or `2.2` (major, minor —
+/// defaulting to `0` when the source string carried none, e.g. `"1"` and
+/// `"1.0"` both parse to the same value). This is a canonicalisation of the
+/// LoD *string*, not a value distinction (spec "Levels of detail").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Lod {
     major: u8,
-    minor: Option<u8>,
+    minor: u8,
 }
 
 impl Lod {
@@ -13,9 +16,9 @@ impl Lod {
         let mut parts = s.split('.');
         let major = parts.next().filter(|p| !p.is_empty()).ok_or_else(err)?;
         let major: u8 = major.parse().map_err(|_| err())?;
-        let minor = match parts.next() {
-            Some(m) => Some(m.parse().map_err(|_| err())?),
-            None => None,
+        let minor: u8 = match parts.next() {
+            Some(m) => m.parse().map_err(|_| err())?,
+            None => 0,
         };
         if parts.next().is_some() {
             return Err(err());
@@ -28,45 +31,34 @@ impl Lod {
         self.major
     }
 
-    /// CityParquet geometry column suffix, e.g. `lod2_2` for LoD 2.2.
+    /// CityParquet geometry column suffix, e.g. `lod2_2` for LoD 2.2, always
+    /// with a minor: LoD `1` yields `lod1_0`, never `lod1` (spec "Levels of
+    /// detail" — "a suffix always carries a minor").
     pub fn column_suffix(&self) -> String {
-        match self.minor {
-            Some(minor) => format!("lod{}_{minor}", self.major),
-            None => format!("lod{}", self.major),
-        }
+        format!("lod{}_{}", self.major, self.minor)
     }
 
+    /// Parse a `lod<major>_<minor>` column suffix. `None` for any shape that
+    /// is not exactly `major_minor` — in particular a bare `lod<major>` (no
+    /// minor) no longer parses, since every column name now carries one.
     pub fn from_column_suffix(suffix: &str) -> Option<Self> {
         let rest = suffix.strip_prefix("lod")?;
-        Self::parse(&rest.replace('_', ".")).ok()
+        let (major, minor) = rest.split_once('_')?;
+        Self::parse(&format!("{major}.{minor}")).ok()
     }
 }
 
-/// The LoD that occupies the un-suffixed `geometry` column (§9): the **highest**
-/// LoD of the `0.*` family present (`0`, `0.0`, `0.1`, `0.2`, `0.3`), or `None`
-/// when the dataset has no `0.*` LoD. Derived `Ord` on `(major, minor)` makes
-/// `max` pick the finest refinement (bare `0` sorts below `0.0`).
-pub fn footprint_lod(lods: &[Lod]) -> Option<Lod> {
-    lods.iter().copied().filter(|l| l.major() == 0).max()
-}
-
-/// Column name for a reserved geometry/appearance `prefix` at `lod`, given the
-/// dataset's `footprint` LoD (see [`footprint_lod`]): the bare `prefix` for the
-/// footprint LoD, else `prefix_lod<suffix>` (§9).
-pub fn geometry_column_name(prefix: &str, lod: &Lod, footprint: Option<Lod>) -> String {
-    if footprint == Some(*lod) {
-        prefix.to_string()
-    } else {
-        format!("{prefix}_{}", lod.column_suffix())
-    }
+/// Column name for a reserved geometry/appearance `prefix` at `lod`:
+/// `prefix_lod<suffix>` unconditionally — every geometry column is suffixed,
+/// including LoD0 (spec "Levels of detail": "there is no un-suffixed
+/// `geometry`... column").
+pub fn geometry_column_name(prefix: &str, lod: &Lod) -> String {
+    format!("{prefix}_{}", lod.column_suffix())
 }
 
 impl std::fmt::Display for Lod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.minor {
-            Some(minor) => write!(f, "{}.{minor}", self.major),
-            None => write!(f, "{}", self.major),
-        }
+        write!(f, "{}.{}", self.major, self.minor)
     }
 }
 
@@ -353,7 +345,8 @@ mod lod_tests {
 
     #[test]
     fn parses_and_displays() {
-        assert_eq!(Lod::parse("2").unwrap().to_string(), "2");
+        // Display always carries the minor (canonical export spelling).
+        assert_eq!(Lod::parse("2").unwrap().to_string(), "2.0");
         assert_eq!(Lod::parse("2.2").unwrap().to_string(), "2.2");
         assert!(Lod::parse("").is_err());
         assert!(Lod::parse("2.x").is_err());
@@ -365,47 +358,64 @@ mod lod_tests {
         let lod = Lod::parse("2.2").unwrap();
         assert_eq!(lod.column_suffix(), "lod2_2");
         assert_eq!(Lod::from_column_suffix("lod2_2"), Some(lod));
-        assert_eq!(
-            Lod::from_column_suffix("lod1"),
-            Some(Lod::parse("1").unwrap())
-        );
         assert_eq!(Lod::from_column_suffix("geometry"), None);
     }
 
+    /// spec §"Levels of detail": "A suffix always carries a minor. LoD `1`
+    /// yields `geometry_lod1_0`, never `geometry_lod1`."
     #[test]
-    fn footprint_lod_is_the_highest_zero_family_lod() {
-        let p = |s: &str| Lod::parse(s).unwrap();
-        // Highest 0.* wins.
+    fn column_suffix_always_carries_a_minor() {
+        assert_eq!(Lod::parse("1").unwrap().column_suffix(), "lod1_0");
+        assert_eq!(Lod::parse("0").unwrap().column_suffix(), "lod0_0");
         assert_eq!(
-            footprint_lod(&[p("0.1"), p("0.3"), p("2.2")]),
-            Some(p("0.3"))
+            Lod::from_column_suffix("lod1"),
+            None,
+            "a bare-major suffix with no minor is no longer legal column-name shape"
         );
-        // Bare 0 when it is the only 0.* LoD.
-        assert_eq!(footprint_lod(&[p("0"), p("2.2")]), Some(p("0")));
-        assert_eq!(footprint_lod(&[p("0.2")]), Some(p("0.2")));
-        // No 0.* LoD at all.
-        assert_eq!(footprint_lod(&[p("1.2"), p("2.2")]), None);
     }
 
+    /// spec: "a source `\"1\"` and a source `\"1.0\"` both map to the same
+    /// column `geometry_lod1_0`" — a canonicalisation of the LoD string, not
+    /// its value, so the two must be the identical `Lod`.
     #[test]
-    fn footprint_lod_maps_to_bare_names_others_keep_suffix() {
-        let p = |s: &str| Lod::parse(s).unwrap();
-        let lods = [p("0.1"), p("0.3"), p("2.2")];
-        let fp = footprint_lod(&lods);
-        // The highest 0.* (0.3) is the un-suffixed geometry column.
-        assert_eq!(geometry_column_name("geometry", &p("0.3"), fp), "geometry");
+    fn bare_and_dot_zero_minor_collapse_to_the_same_lod() {
+        assert_eq!(Lod::parse("1").unwrap(), Lod::parse("1.0").unwrap());
+        assert_eq!(Lod::parse("0").unwrap(), Lod::parse("0.0").unwrap());
         assert_eq!(
-            geometry_column_name("geometry_properties", &p("0.3"), fp),
-            "geometry_properties"
+            Lod::parse("1").unwrap().column_suffix(),
+            Lod::parse("1.0").unwrap().column_suffix()
         );
-        // A lower 0.* keeps its suffix.
+    }
+
+    /// spec: `Display` always shows `"{major}.{minor}"`, e.g. `"1.0"`, never
+    /// bare `"1"` — the canonical export spelling.
+    #[test]
+    fn display_always_shows_the_minor() {
+        assert_eq!(Lod::parse("1").unwrap().to_string(), "1.0");
+        assert_eq!(Lod::parse("0").unwrap().to_string(), "0.0");
+        assert_eq!(Lod::parse("2.2").unwrap().to_string(), "2.2");
+    }
+
+    /// spec "Levels of detail": every LoD's geometry column is suffixed,
+    /// including the `0.*` family — there is no picked-out "footprint" LoD
+    /// that goes unsuffixed.
+    #[test]
+    fn geometry_column_name_always_suffixes_every_lod() {
+        let p = |s: &str| Lod::parse(s).unwrap();
         assert_eq!(
-            geometry_column_name("geometry", &p("0.1"), fp),
+            geometry_column_name("geometry", &p("0.3")),
+            "geometry_lod0_3"
+        );
+        assert_eq!(
+            geometry_column_name("geometry_properties", &p("0")),
+            "geometry_properties_lod0_0"
+        );
+        assert_eq!(
+            geometry_column_name("geometry", &p("0.1")),
             "geometry_lod0_1"
         );
-        // A non-zero LoD keeps its suffix.
         assert_eq!(
-            geometry_column_name("geometry", &p("2.2"), fp),
+            geometry_column_name("geometry", &p("2.2")),
             "geometry_lod2_2"
         );
     }
@@ -426,7 +436,7 @@ mod lod_tests {
         ];
         lods.sort();
         let s: Vec<String> = lods.iter().map(|l| l.to_string()).collect();
-        assert_eq!(s, ["1.3", "2", "2.2"]);
+        assert_eq!(s, ["1.3", "2.0", "2.2"]);
     }
 }
 

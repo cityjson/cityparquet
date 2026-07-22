@@ -11,7 +11,7 @@ use geoarrow_schema::{Crs, Metadata as GeoMetadata, WkbType};
 
 use crate::attributes::AttributeType;
 use crate::error::{CityParquetError, Result};
-use crate::types::{Lod, footprint_lod, geometry_column_name};
+use crate::types::{Lod, geometry_column_name};
 
 pub const ROLE_KEY: &str = "cityparquet:role";
 pub const LOD_KEY: &str = "cityparquet:lod";
@@ -99,15 +99,13 @@ const RESERVED_COLUMN_NAMES: &[&str] = &[
 
 /// Every column name an attribute column must not collide with, for a schema
 /// with these `lods`: the fixed reserved names plus the geometry/appearance
-/// column names the LoDs realise. **Schema-relative**, per §9 — LoD `0` reserves
-/// the bare `geometry`/`geometry_properties`/`material`/`texture` names, every
-/// other LoD reserves its suffixed forms (`geometry_lod2`, …), and the
-/// zero-analysis-geometry case (empty `lods`) reserves the bare names too. So an
-/// attribute literally named `geometry` is a legal column only when the dataset
-/// has neither an LoD0 nor the empty-lods fallback. This is the single source of truth
-/// shared by [`CityParquetSchema::validate`] (which errors on a collision) and
-/// the scan-time diversion of colliding attributes into `other` (§5.2, G12), so
-/// the two can never diverge on what "reserved" means.
+/// column names the LoDs realise. **Schema-relative** — every LoD reserves its
+/// suffixed forms (`geometry_lod2_2`, …), and the zero-analysis-geometry case
+/// (empty `lods`) reserves the bare names instead (no LoD to suffix by). This
+/// is the single source of truth shared by [`CityParquetSchema::validate`]
+/// (which errors on a collision) and the scan-time diversion of colliding
+/// attributes into `other` (§5.2, G12), so the two can never diverge on what
+/// "reserved" means.
 pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
     let mut names: HashSet<String> = RESERVED_COLUMN_NAMES
         .iter()
@@ -119,12 +117,11 @@ pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
         names.insert("material".to_string());
         names.insert("texture".to_string());
     } else {
-        let fp = footprint_lod(lods);
         for lod in lods {
-            names.insert(geometry_column_name("geometry", lod, fp));
-            names.insert(geometry_column_name("geometry_properties", lod, fp));
-            names.insert(geometry_column_name("material", lod, fp));
-            names.insert(geometry_column_name("texture", lod, fp));
+            names.insert(geometry_column_name("geometry", lod));
+            names.insert(geometry_column_name("geometry_properties", lod));
+            names.insert(geometry_column_name("material", lod));
+            names.insert(geometry_column_name("texture", lod));
         }
     }
     names
@@ -218,24 +215,25 @@ impl CityParquetSchema {
         } else {
             // Per-LoD columns, grouped so each LoD's geometry, semantics and
             // appearance sit adjacent: geometry_lodX, geometry_properties_lodX,
-            // material_lodX, texture_lodX (§9, §11.1). Appearance pairs to the
+            // material_lodX, texture_lodX (§11.1). Appearance pairs to the
             // geometry it decorates by column name, not by a JSON LoD key.
-            let fp = footprint_lod(&self.lods);
+            // Every LoD — including LoD0 — is suffixed; there is no
+            // un-suffixed "footprint" column (spec "Levels of detail").
             for lod in &self.lods {
                 fields.push(self.geometry_field(
-                    &geometry_column_name("geometry", lod, fp),
+                    &geometry_column_name("geometry", lod),
                     Some(lod),
                     geoarrow,
                 ));
                 fields.push(with_meta(
-                    json_field(&geometry_column_name("geometry_properties", lod, fp), true)
+                    json_field(&geometry_column_name("geometry_properties", lod), true)
                         .as_ref()
                         .clone(),
                     &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
                 ));
                 for prefix in ["material", "texture"] {
                     fields.push(with_meta(
-                        json_field(&geometry_column_name(prefix, lod, fp), true)
+                        json_field(&geometry_column_name(prefix, lod), true)
                             .as_ref()
                             .clone(),
                         &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
@@ -296,7 +294,7 @@ impl CityParquetSchema {
 mod tests {
     use super::*;
     use crate::attributes::AttributeType;
-    use crate::types::{Lod, footprint_lod, geometry_column_name};
+    use crate::types::{Lod, geometry_column_name};
     use arrow_schema::DataType;
 
     fn sample() -> CityParquetSchema {
@@ -324,10 +322,10 @@ mod tests {
                 "children",
                 "children_roles",
                 "bbox",
-                "geometry_lod1",
-                "geometry_properties_lod1",
-                "material_lod1",
-                "texture_lod1",
+                "geometry_lod1_0",
+                "geometry_properties_lod1_0",
+                "material_lod1_0",
+                "texture_lod1_0",
                 "geometry_lod2_2",
                 "geometry_properties_lod2_2",
                 "material_lod2_2",
@@ -340,56 +338,58 @@ mod tests {
         );
     }
 
+    /// spec "Levels of detail": LoD0 is suffixed exactly like any other LoD —
+    /// no bare `geometry`/`geometry_properties`/`material`/`texture` column.
     #[test]
-    fn lod0_realises_bare_geometry_columns() {
+    fn lod0_is_suffixed_like_any_other_lod() {
         let schema = CityParquetSchema {
             lods: vec![Lod::parse("0").unwrap(), Lod::parse("2.2").unwrap()],
             attributes: vec![],
             crs: None,
         };
         let arrow = schema.to_arrow_schema().unwrap();
-        assert!(arrow.field_with_name("geometry").is_ok());
-        assert!(arrow.field_with_name("geometry_properties").is_ok());
-        assert!(arrow.field_with_name("material").is_ok());
-        assert!(arrow.field_with_name("texture").is_ok());
+        assert!(arrow.field_with_name("geometry_lod0_0").is_ok());
+        assert!(arrow.field_with_name("geometry_properties_lod0_0").is_ok());
+        assert!(arrow.field_with_name("material_lod0_0").is_ok());
+        assert!(arrow.field_with_name("texture_lod0_0").is_ok());
         assert!(arrow.field_with_name("geometry_lod2_2").is_ok());
-        // LoD0 renamed away from the suffixed form.
-        assert!(arrow.field_with_name("geometry_lod0").is_err());
-        // The bare LoD0 geometry field still carries its lod metadata.
-        let f = arrow.field_with_name("geometry").unwrap();
-        assert_eq!(f.metadata().get(LOD_KEY).map(String::as_str), Some("0"));
+        // No bare/un-suffixed column ever appears.
+        assert!(arrow.field_with_name("geometry").is_err());
+        assert!(arrow.field_with_name("geometry_properties").is_err());
+        assert!(arrow.field_with_name("material").is_err());
+        assert!(arrow.field_with_name("texture").is_err());
+        let f = arrow.field_with_name("geometry_lod0_0").unwrap();
+        assert_eq!(f.metadata().get(LOD_KEY).map(String::as_str), Some("0.0"));
     }
 
     #[test]
-    fn reserved_names_include_bare_geometry_for_lod0() {
+    fn reserved_names_suffix_every_lod_including_zero() {
         let names = reserved_and_geometry_column_names(&[Lod::parse("0").unwrap()]);
-        assert!(names.contains("geometry"));
-        assert!(names.contains("geometry_properties"));
-        assert!(names.contains("material"));
-        assert!(names.contains("texture"));
-        assert!(!names.contains("geometry_lod0"));
-        // A mixed schema reserves the bare LoD0 names and the suffixed rest.
+        assert!(names.contains("geometry_lod0_0"));
+        assert!(names.contains("geometry_properties_lod0_0"));
+        assert!(names.contains("material_lod0_0"));
+        assert!(names.contains("texture_lod0_0"));
+        assert!(!names.contains("geometry"));
+        // A mixed schema reserves every LoD's suffixed forms.
         let mixed = reserved_and_geometry_column_names(&[
             Lod::parse("0").unwrap(),
             Lod::parse("2").unwrap(),
         ]);
-        assert!(mixed.contains("geometry"));
-        assert!(mixed.contains("geometry_lod2"));
+        assert!(mixed.contains("geometry_lod0_0"));
+        assert!(mixed.contains("geometry_lod2_0"));
     }
 
     #[test]
     fn geometry_column_name_helper_is_wired() {
         let lod0 = Lod::parse("0").unwrap();
-        assert_eq!(
-            geometry_column_name("geometry", &lod0, footprint_lod(&[lod0])),
-            "geometry"
-        );
+        assert_eq!(geometry_column_name("geometry", &lod0), "geometry_lod0_0");
     }
 
+    /// A dataset with LoD 0.1, 0.3, and 2.2: every one of them, including
+    /// both members of the `0.*` family, keeps its own suffixed column — no
+    /// single 0.* LoD is picked out to go unsuffixed.
     #[test]
-    fn highest_zero_family_lod_realises_the_bare_geometry_column() {
-        // A dataset with LoD 0.1, 0.3, and 2.2: the highest 0.* (0.3) is the
-        // un-suffixed `geometry`, the lower 0.* keeps its suffix.
+    fn every_zero_family_lod_keeps_its_own_suffix() {
         let schema = CityParquetSchema {
             lods: vec![
                 Lod::parse("0.1").unwrap(),
@@ -400,16 +400,10 @@ mod tests {
             crs: None,
         };
         let arrow = schema.to_arrow_schema().unwrap();
-        assert!(arrow.field_with_name("geometry").is_ok());
         assert!(arrow.field_with_name("geometry_lod0_1").is_ok());
-        assert!(
-            arrow.field_with_name("geometry_lod0_3").is_err(),
-            "the highest 0.* is the bare geometry, not a suffixed column"
-        );
+        assert!(arrow.field_with_name("geometry_lod0_3").is_ok());
         assert!(arrow.field_with_name("geometry_lod2_2").is_ok());
-        // The bare column carries the footprint LoD (0.3) in its metadata.
-        let f = arrow.field_with_name("geometry").unwrap();
-        assert_eq!(f.metadata().get(LOD_KEY).map(String::as_str), Some("0.3"));
+        assert!(arrow.field_with_name("geometry").is_err());
     }
 
     /// RED (G20): spec §11.1 makes appearance per-LoD columns
@@ -419,7 +413,7 @@ mod tests {
     #[test]
     fn appearance_columns_are_per_lod() {
         let schema = sample().to_arrow_schema().unwrap();
-        for lod_suffix in ["lod1", "lod2_2"] {
+        for lod_suffix in ["lod1_0", "lod2_2"] {
             assert!(
                 schema
                     .field_with_name(&format!("material_{lod_suffix}"))
@@ -556,8 +550,8 @@ mod tests {
         assert_eq!(get("ex_height", ROLE_KEY).as_deref(), Some("extension"));
         assert_eq!(get("geometry_lod2_2", LOD_KEY).as_deref(), Some("2.2"));
         assert_eq!(
-            get("geometry_properties_lod1", LOD_KEY).as_deref(),
-            Some("1")
+            get("geometry_properties_lod1_0", LOD_KEY).as_deref(),
+            Some("1.0")
         );
     }
 
@@ -565,8 +559,8 @@ mod tests {
     fn json_columns_carry_arrow_json_extension() {
         let schema = sample().to_arrow_schema().unwrap();
         for name in [
-            "geometry_properties_lod1",
-            "material_lod1",
+            "geometry_properties_lod1_0",
+            "material_lod1_0",
             "texture_lod2_2",
             "other",
         ] {
