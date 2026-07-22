@@ -420,6 +420,23 @@ fn strip_plus(source_type: &str) -> &str {
     source_type.strip_prefix('+').unwrap_or(source_type)
 }
 
+/// Core-class recognition for [`resolve_module_key`], matching `name`
+/// against **either** a class's CityJSON spelling (`cityjson_type`) or its
+/// CityGML spelling (`citygml_class`) — unlike the public [`class_info`],
+/// which is `cityjson_type`-only. `resolve_module_key` is fed both
+/// spellings by its real callers: encode-time callers hold the CityJSON
+/// source string, while `object_type`'s stored value is the CityGML class
+/// name (spec "object_type vocabulary", gap 15) once a caller reads it back
+/// out of an encoded batch. The two spellings never collide (every
+/// `citygml_class` value is unique, and equals `cityjson_type` for every
+/// class but the 4 documented divergent ones), so matching either is
+/// unambiguous.
+fn class_info_by_any_spelling(name: &str) -> Option<&'static ClassInfo> {
+    TAXONOMY
+        .iter()
+        .find(|c| c.cityjson_type == name || c.citygml_class == name)
+}
+
 /// Resolves `source_type`'s [`ModuleKey`] (spec "extensions" — "The
 /// `ModuleKey`"), given `source_type` **before** any CityJSON `+` is
 /// stripped (stripping happens inside, so callers never need to do it
@@ -452,7 +469,7 @@ fn resolve_module_key_inner(
     extensions: &ExtensionRegistry,
     visiting: &mut Vec<String>,
 ) -> Result<ModuleKey> {
-    if let Some(info) = class_info(type_name) {
+    if let Some(info) = class_info_by_any_spelling(type_name) {
         return Ok(ModuleKey::Core(info.module));
     }
     if visiting.iter().any(|v| v == type_name) {
@@ -891,6 +908,27 @@ mod module_key_tests {
         assert_eq!(
             resolve_module_key("BuildingPart", &extensions).unwrap(),
             ModuleKey::Core(CityGmlModule::Building)
+        );
+    }
+
+    /// A real caller (`cityparquet`'s by-module writer) resolves off the
+    /// STORED `object_type` value, which is the CityGML spelling for the 4
+    /// divergent classes (gap 15) — resolution must recognise a core class
+    /// by either spelling and land on the identical `ModuleKey`.
+    #[test]
+    fn core_class_resolves_identically_by_either_spelling() {
+        let extensions = ExtensionRegistry::new();
+        assert_eq!(
+            resolve_module_key("TransportSquare", &extensions).unwrap(),
+            resolve_module_key("Square", &extensions).unwrap()
+        );
+        assert_eq!(
+            resolve_module_key("GenericCityObject", &extensions).unwrap(),
+            resolve_module_key("GenericOccupiedSpace", &extensions).unwrap()
+        );
+        assert_eq!(
+            resolve_module_key("Square", &extensions).unwrap(),
+            ModuleKey::Core(CityGmlModule::Transportation)
         );
     }
 
