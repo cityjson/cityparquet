@@ -160,7 +160,7 @@ fn co_types_cover_a_many_type_dataset() {
         "BuildingInstallation",
         "CityFurniture",
         "CityObjectGroup",
-        "GenericOccupiedSpace",
+        "GenericCityObject",
         "Railway",
         "SolitaryVegetationObject",
         "TINRelief",

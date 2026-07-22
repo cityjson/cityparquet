@@ -294,6 +294,16 @@ fn is_reserved_column_for(name: &str, base: &str) -> bool {
 /// the dictionary rather than a per-row scan, and only that column is
 /// projected.
 ///
+/// `object_type` stores the CityGML 3.0 class name (spec "object_type
+/// vocabulary"), but `city3d:co_types` is defined over the **source** type
+/// vocabulary (spec "metadata.json — STAC Item": "`city3d:co_types` uses the
+/// source type vocabulary ... not `object_type`'s stripped, CityGML-class
+/// form"). Every collected value is therefore mapped back through
+/// [`cityparquet_schema::cityjson_type_for_citygml_class`] — the same reverse
+/// lookup `crate::decode` uses to restore the CityJSON `type` field — falling
+/// back to the value verbatim when there is no taxonomy entry (an extension
+/// class, which has none).
+///
 /// Returned sorted and deduplicated, so a derived Item is byte-stable.
 pub fn derive_co_types(tables: &PackageTables) -> Result<Vec<String>> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -331,7 +341,15 @@ pub fn derive_co_types(tables: &PackageTables) -> Result<Vec<String>> {
         }
     }
 
-    Ok(seen.into_iter().collect())
+    let source_vocabulary: BTreeSet<String> = seen
+        .into_iter()
+        .map(|stored| {
+            cityparquet_schema::cityjson_type_for_citygml_class(&stored)
+                .map(str::to_string)
+                .unwrap_or(stored)
+        })
+        .collect();
+    Ok(source_vocabulary.into_iter().collect())
 }
 
 /// Collect the distinct non-null string values of `array` into `seen`.
