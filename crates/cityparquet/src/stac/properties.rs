@@ -19,7 +19,7 @@ use city3d_stac_types::stac::types::Item;
 use city3d_stac_types::stac::{City3dProperties, CityObjectsCount};
 use cityparquet_schema::model::LOD_KEY;
 use cityparquet_schema::types::Lod;
-use cityparquet_schema::{AttributeType, CityParquetError, CityParquetMetadata, Result};
+use cityparquet_schema::{AttributeType, CityMetadata, CityParquetError, Result};
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
@@ -175,12 +175,12 @@ fn lods_from_schema(schema: &Schema) -> Vec<String> {
 /// than guessed at; the count is returned so the caller can report it.
 fn attributes_from_schema(
     schema: &Schema,
-    meta: &CityParquetMetadata,
+    meta: &CityMetadata,
 ) -> (Vec<AttributeDefinition>, usize) {
-    let mut defs = Vec::with_capacity(meta.attribute_columns.len());
+    let mut defs = Vec::with_capacity(meta.attributes.len());
     let mut skipped = 0usize;
 
-    for name in &meta.attribute_columns {
+    for name in &meta.attributes {
         let Ok(field) = schema.field_with_name(name) else {
             skipped += 1;
             continue;

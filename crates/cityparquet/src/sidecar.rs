@@ -2,8 +2,8 @@
 //! `textures.parquet`. Each row is one dataset-global appearance definition
 //! (see [`crate::appearance::AppearanceInterner`]), `id` is its row index,
 //! and the well-known CityJSON members are split into typed columns per
-//! [`cityparquet_schema::profile::materials_schema`] /
-//! [`cityparquet_schema::profile::textures_schema`]; anything else on the
+//! [`cityparquet_schema::sidecar_schemas::materials_schema`] /
+//! [`cityparquet_schema::sidecar_schemas::textures_schema`]; anything else on the
 //! definition is preserved verbatim under the `other` JSON column.
 //!
 //! `write_materials`/`write_textures` and `read_materials`/`read_textures`
@@ -38,7 +38,7 @@ use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use serde_json::Value;
 
-use cityparquet_schema::{CityParquetError, Result, profile};
+use cityparquet_schema::{CityMetadata, CityParquetError, Result, sidecar_schemas};
 
 fn schema_err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Schema(msg.into())
@@ -55,12 +55,25 @@ fn parquet_err(msg: impl Into<String>) -> CityParquetError {
 /// zstd level 3, no per-column tuning — sidecars are small, dictionary-poor
 /// tables (a few dozen to a few thousand appearance definitions), unlike the
 /// main table's [`crate::recipe::WriterRecipe`] which is the paper's actual
-/// benchmark variable.
+/// benchmark variable. Carries a minimal `city` footer key (`version` only —
+/// spec "Requirements depend on the file's role": a sidecar carries none of
+/// `source_format`/`attributes`/`primary_column`/`columns`, and this crate's
+/// sidecars hold no CRS-bearing coordinates of their own — materials/textures
+/// carry none at all, and `geometry_templates.parquet`'s own geometry is
+/// template-LOCAL, unplaced coordinates, so `city.crs` is correctly omitted
+/// here too, per the spec's own worked example).
 fn sidecar_writer_properties() -> Result<WriterProperties> {
     let level = ZstdLevel::try_new(3)
         .map_err(|e| schema_err(format!("invalid sidecar zstd level: {e}")))?;
+    let city = CityMetadata::new();
+    let kvs: Vec<parquet::file::metadata::KeyValue> = city
+        .to_key_values(None)?
+        .into_iter()
+        .map(|(k, v)| parquet::file::metadata::KeyValue::new(k, v))
+        .collect();
     Ok(WriterProperties::builder()
         .set_compression(Compression::ZSTD(level))
+        .set_key_value_metadata(Some(kvs))
         .build())
 }
 
@@ -161,7 +174,7 @@ const MATERIAL_KNOWN_FIELDS: [&str; 8] = [
 ];
 
 /// Write one row per `defs[i]` to `path` (`id` = `i` as `Int64`), per
-/// [`cityparquet_schema::profile::materials_schema`]'s column mapping.
+/// [`cityparquet_schema::sidecar_schemas::materials_schema`]'s column mapping.
 /// Writes nothing and returns `0` when `defs` is empty. [`read_materials`]
 /// is the value-exact inverse (numeric scalar columns normalise
 /// integer-literal JSON numbers to float form; see the module docs).
@@ -169,7 +182,7 @@ pub fn write_materials(path: &Path, defs: &[Value]) -> Result<usize> {
     if defs.is_empty() {
         return Ok(0);
     }
-    let schema = Arc::new(profile::materials_schema());
+    let schema = Arc::new(sidecar_schemas::materials_schema());
 
     let mut id = Int64Builder::with_capacity(defs.len());
     let mut name = StringBuilder::new();
@@ -230,7 +243,7 @@ pub fn write_materials(path: &Path, defs: &[Value]) -> Result<usize> {
 const TEXTURE_KNOWN_FIELDS: [&str; 5] = ["type", "image", "wrapMode", "textureType", "borderColor"];
 
 /// Write one row per `defs[i]` to `path` (`id` = `i` as `Int64`), per
-/// [`cityparquet_schema::profile::textures_schema`]'s column mapping.
+/// [`cityparquet_schema::sidecar_schemas::textures_schema`]'s column mapping.
 /// Writes nothing and returns `0` when `defs` is empty. [`read_textures`]
 /// is the value-exact inverse — literally exact for textures, in fact,
 /// since no texture column is numeric (the module docs' float
@@ -239,7 +252,7 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
     if defs.is_empty() {
         return Ok(0);
     }
-    let schema = Arc::new(profile::textures_schema());
+    let schema = Arc::new(sidecar_schemas::textures_schema());
 
     let mut id = Int64Builder::with_capacity(defs.len());
     let mut image_uri = StringBuilder::new();
@@ -308,7 +321,7 @@ pub struct TemplateRow {
 }
 
 /// Write one row per `rows[i]` to `path`, per
-/// [`cityparquet_schema::profile::geometry_templates_schema`]'s column
+/// [`cityparquet_schema::sidecar_schemas::geometry_templates_schema`]'s column
 /// mapping (`id`/`geometry` non-null, everything else an optional JSON
 /// column). Writes nothing and returns `0` when `rows` is empty. `id` is
 /// written verbatim (the caller assigns it — the main-table `template.id`
@@ -319,7 +332,7 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
     if rows.is_empty() {
         return Ok(0);
     }
-    let schema = Arc::new(profile::geometry_templates_schema());
+    let schema = Arc::new(sidecar_schemas::geometry_templates_schema());
 
     let mut id = StringBuilder::new();
     let mut geometry = BinaryBuilder::new();
@@ -846,7 +859,7 @@ mod tests {
         // Precondition: the honest file reads back fine.
         assert_eq!(read_materials(&path).unwrap().len(), materials.len());
 
-        corrupt_id_column_by_shifting(&path, Arc::new(profile::materials_schema()));
+        corrupt_id_column_by_shifting(&path, Arc::new(sidecar_schemas::materials_schema()));
 
         let err = read_materials(&path).unwrap_err();
         assert!(
@@ -877,7 +890,7 @@ mod tests {
 
         assert_eq!(read_textures(&path).unwrap().len(), textures.len());
 
-        corrupt_id_column_by_shifting(&path, Arc::new(profile::textures_schema()));
+        corrupt_id_column_by_shifting(&path, Arc::new(sidecar_schemas::textures_schema()));
 
         let err = read_textures(&path).unwrap_err();
         assert!(
@@ -1044,7 +1057,7 @@ mod tests {
         // A foreign file that carries a `name` column (this crate no longer
         // writes one, §11.3/G16): the real schema plus a `name` field after
         // `id`, matching the array order below.
-        let mut fields: Vec<arrow_schema::Field> = profile::textures_schema()
+        let mut fields: Vec<arrow_schema::Field> = sidecar_schemas::textures_schema()
             .fields()
             .iter()
             .map(|f| f.as_ref().clone())

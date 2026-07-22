@@ -22,8 +22,8 @@ use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
 use cityparquet_schema::{
-    AttributeType, CityParquetError, CityParquetSchema, ExtensionRegistry, Lod, ModuleKey,
-    ModuleKeyResolver, Profile, Result, geometry_column_name,
+    AttributeType, CityMetadata, CityParquetError, CityParquetSchema, ExtensionRegistry, Lod,
+    ModuleKey, ModuleKeyResolver, Result, geometry_column_name,
 };
 use cjseq::CityJSONFeature;
 
@@ -32,7 +32,7 @@ use crate::encode::{LocalDefs, encode, encode_buffered, rewrite_geometry_appeara
 use crate::lod0::Lod0Options;
 use crate::order::feature_hilbert_key;
 use crate::recipe::WriterRecipe;
-use crate::scan::{ScanResult, scan};
+use crate::scan::{ScanResult, city_and_geo_for_file, scan};
 use crate::sidecar::{TemplateRow, write_materials, write_templates, write_textures};
 use crate::source::Source;
 use crate::stac::properties::PackageTables;
@@ -94,7 +94,6 @@ pub enum RowOrder {
 pub struct ConvertOptions {
     pub input: PathBuf,
     pub output_dir: PathBuf,
-    pub profile: Profile,
     pub overwrite: bool,
     pub batch_size: usize,
     pub recipe: WriterRecipe,
@@ -120,15 +119,17 @@ pub struct ConvertOptions {
 }
 
 impl ConvertOptions {
-    /// Core profile, 4096-row batches, the default [`WriterRecipe`],
-    /// [`RowOrder::Source`] emission order, no overwrite, and no
-    /// GeoParquet/GeoArrow self-description — the sensible defaults for a
-    /// first conversion of `input` into `output_dir`.
+    /// 4096-row batches, the default [`WriterRecipe`], [`RowOrder::Source`]
+    /// emission order, no overwrite, and no GeoParquet/GeoArrow
+    /// self-description — the sensible defaults for a first conversion of
+    /// `input` into `output_dir`. Sidecars (`materials.parquet`,
+    /// `textures.parquet`, `geometry_templates.parquet`) are written
+    /// whenever the source has content for them (spec-alignment gap 19
+    /// dropped the `Profile` choice this used to gate on).
     pub fn new(input: PathBuf, output_dir: PathBuf) -> Self {
         Self {
             input,
             output_dir,
-            profile: Profile::Core,
             overwrite: false,
             batch_size: 4096,
             recipe: WriterRecipe::default(),
@@ -466,6 +467,30 @@ fn module_lods_by_file(
         .collect()
 }
 
+/// Every by-module table FILE's own realised `(Lod -> WKB type set)` map,
+/// mirroring [`module_lods_by_file`] but for [`crate::scan::ScanResult::module_geo`]
+/// — unions every [`ModuleKey`]'s own map into its FILE's entry (the same
+/// `Generics`/`CityObjectGroup` fold `module_lods_by_file` already performs),
+/// so [`crate::scan::city_and_geo_for_file`] sees that file's OWN realised
+/// types, never a dataset-wide stamp (spec "The footer describes the file it
+/// lives in — nothing wider").
+fn module_geo_by_file(
+    module_geo: &std::collections::BTreeMap<
+        ModuleKey,
+        std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>,
+    >,
+) -> HashMap<String, std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>> {
+    let mut by_file: HashMap<String, std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>> =
+        HashMap::new();
+    for (key, per_lod) in module_geo {
+        let entry = by_file.entry(table_name_for_module(key)).or_default();
+        for (lod, types) in per_lod {
+            entry.entry(*lod).or_default().extend(types.iter().cloned());
+        }
+    }
+    by_file
+}
+
 /// Column names, in spec order, for a table whose own rows only need
 /// `file_lods`: the fixed reserved names, then this table's own per-LoD
 /// geometry/appearance columns (ascending) — none at all when `file_lods` is
@@ -575,6 +600,18 @@ struct TableWriters {
     /// already resolved a [`ModuleKey`] for, but handled defensively) is
     /// treated as having no LoDs of its own.
     module_lods_by_file: HashMap<String, Vec<Lod>>,
+    /// Each by-module table FILE's own realised WKB type sets, the
+    /// `city_and_geo_for_file` (from `crate::scan`) input for that file — see
+    /// [`module_geo_by_file`]. Consulted post-encode, in [`Self::finish`],
+    /// exactly once per table (spec "The footer describes the file it lives
+    /// in — nothing wider").
+    module_geo_by_file: HashMap<String, std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>>,
+    /// The dataset-wide portion of `city` (`version`/`source_format`/
+    /// `source_version`/`crs`/`extensions`/`appearance_defaults`/
+    /// `attributes`/`other`) — every table's footer starts from a clone of
+    /// this, then [`Self::finish`] fills in `columns`/`primary_column` from
+    /// that table's own realised column set.
+    base_city: CityMetadata,
     /// The dataset's attribute columns (unchanged per module — only the
     /// geometry/appearance columns are pruned, spec "object-table-schema"),
     /// in scan order.
@@ -622,7 +659,9 @@ impl TableWriters {
     /// the source's parsed Extension/ADE declarations (spec "extensions");
     /// an empty [`ExtensionRegistry`] is legitimate for a source with none.
     /// `module_lods_by_file`/`attributes`/`dataset_has_lods` drive the
-    /// per-table column pruning — see the struct's own doc comment.
+    /// per-table column pruning; `module_geo_by_file`/`base_city` drive the
+    /// per-table `city`/`geo` footer [`Self::finish`] builds — see the
+    /// struct's own doc comment.
     #[allow(clippy::too_many_arguments)]
     fn new(
         tmp_dir: &Path,
@@ -630,6 +669,11 @@ impl TableWriters {
         props: WriterProperties,
         extensions: ExtensionRegistry,
         module_lods_by_file: HashMap<String, Vec<Lod>>,
+        module_geo_by_file: HashMap<
+            String,
+            std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>,
+        >,
+        base_city: CityMetadata,
         attributes: Vec<(String, AttributeType)>,
         dataset_has_lods: bool,
     ) -> Result<Self> {
@@ -637,6 +681,8 @@ impl TableWriters {
             tmp_dir: tmp_dir.to_path_buf(),
             wide_schema,
             module_lods_by_file,
+            module_geo_by_file,
+            base_city,
             attributes,
             dataset_has_lods,
             props,
@@ -777,18 +823,28 @@ impl TableWriters {
         Ok(())
     }
 
-    /// Appends the (now-known-final) `sidecar_files` key-value entry to
-    /// EVERY table's footer — not just one — so a reader opening any table
-    /// this run produced (see `crate::export`'s multi-table read loop) sees
-    /// the same `sidecar_files` list regardless of which one it opens first,
-    /// then closes every writer. Returns [`Self::order`]: the bare file
+    /// Builds and appends EACH table's own `city` (and, when it has any
+    /// GeoParquet-legal column, `geo`) footer key-value metadata — genuinely
+    /// per-file, computed here (post-encode) from that table's own realised
+    /// `module_geo_by_file` entry via [`city_and_geo_for_file`], never a
+    /// dataset-wide union stamped identically onto every file (spec "The
+    /// footer describes the file it lives in — nothing wider"). No
+    /// `sidecar_files` key any more (spec-alignment M3 dropped it — a reader
+    /// lists the package directory, or reads the STAC Item's assets).
+    /// Closes every writer afterwards. Returns [`Self::order`]: the bare file
     /// names in first-appearance order, ready to become `table_names` —
     /// [`PackageTables::from_lists`]' `tables` argument — verbatim.
-    fn finish(mut self, sidecar_files: &[String]) -> Result<Vec<String>> {
-        let kv = serde_json::to_string(sidecar_files)?;
-        for writer in &mut self.writers {
-            writer
-                .append_key_value_metadata(KeyValue::new("sidecar_files".to_string(), kv.clone()));
+    fn finish(mut self) -> Result<Vec<String>> {
+        let empty = std::collections::BTreeMap::new();
+        for (name, writer) in self.order.iter().zip(self.writers.iter_mut()) {
+            let per_lod = self.module_geo_by_file.get(name).unwrap_or(&empty);
+            let (columns, primary_column, geo) = city_and_geo_for_file(per_lod);
+            let mut city = self.base_city.clone();
+            city.columns = columns;
+            city.primary_column = primary_column;
+            for (key, value) in city.to_key_values(geo.as_ref())? {
+                writer.append_key_value_metadata(KeyValue::new(key, value));
+            }
         }
         for writer in self.writers {
             writer
@@ -839,6 +895,8 @@ fn write_package(
         props,
         extension_registry(source),
         module_lods_by_file(&scan_result.module_lods),
+        module_geo_by_file(&scan_result.module_geo),
+        scan_result.base_city_metadata()?,
         scan_result.schema.attributes.clone(),
         !scan_result.lods.is_empty(),
     )?;
@@ -875,52 +933,47 @@ fn write_package(
     // Sidecars are written while the main-table writer(s) are still open
     // (they are separate files, so nothing conflicts), because the footer's
     // `sidecar_files` entry below must record what was ACTUALLY written.
+    // Sidecars are written whenever the source has content for them
+    // (spec-alignment gap 19: the `Profile` choice this used to gate on is
+    // gone — a writer no longer declares Core vs Compatibility up front).
     let mut sidecar_files_written: Vec<String> = Vec::new();
-    let mut materials_written = 0usize;
-    let mut textures_written = 0usize;
     let mut templates_written = 0usize;
-    if opts.profile == Profile::Compatibility {
-        // Fold geometry-template appearance into the SAME interner the
-        // encode pass populated BEFORE materials.parquet/textures.parquet
-        // are written, so their totals include definitions reachable ONLY
-        // from a geometry template (see `build_template_rows`).
-        let template_rows = match source.header().geometry_templates.as_ref() {
-            Some(templates) => build_template_rows(templates, source, batches.appearance_mut())?,
-            None => Vec::new(),
-        };
+    // Fold geometry-template appearance into the SAME interner the encode
+    // pass populated BEFORE materials.parquet/textures.parquet are written,
+    // so their totals include definitions reachable ONLY from a geometry
+    // template (see `build_template_rows`).
+    let template_rows = match source.header().geometry_templates.as_ref() {
+        Some(templates) => build_template_rows(templates, source, batches.appearance_mut())?,
+        None => Vec::new(),
+    };
 
-        let appearance = batches.appearance();
+    let appearance = batches.appearance();
 
-        let materials_path = tmp_dir.join(MATERIALS_TABLE);
-        materials_written = write_materials(&materials_path, appearance.materials())?;
-        if materials_written > 0 {
-            sidecar_files_written.push(MATERIALS_TABLE.to_string());
-        }
+    let materials_path = tmp_dir.join(MATERIALS_TABLE);
+    let materials_written = write_materials(&materials_path, appearance.materials())?;
+    if materials_written > 0 {
+        sidecar_files_written.push(MATERIALS_TABLE.to_string());
+    }
 
-        let textures_path = tmp_dir.join(TEXTURES_TABLE);
-        textures_written = write_textures(&textures_path, appearance.textures())?;
-        if textures_written > 0 {
-            sidecar_files_written.push(TEXTURES_TABLE.to_string());
-        }
+    let textures_path = tmp_dir.join(TEXTURES_TABLE);
+    let textures_written = write_textures(&textures_path, appearance.textures())?;
+    if textures_written > 0 {
+        sidecar_files_written.push(TEXTURES_TABLE.to_string());
+    }
 
-        if !template_rows.is_empty() {
-            let templates_path = tmp_dir.join(TEMPLATES_TABLE);
-            templates_written = write_templates(&templates_path, &template_rows)?;
-            if templates_written > 0 {
-                sidecar_files_written.push(TEMPLATES_TABLE.to_string());
-            }
+    if !template_rows.is_empty() {
+        let templates_path = tmp_dir.join(TEMPLATES_TABLE);
+        templates_written = write_templates(&templates_path, &template_rows)?;
+        if templates_written > 0 {
+            sidecar_files_written.push(TEMPLATES_TABLE.to_string());
         }
     }
 
-    // Now that the actual sidecar list is known, record it in EVERY main
-    // table's parquet footer (the pre-encode `WriterProperties` KV set
-    // omitted the key entirely, so this cannot produce a duplicate; and even
-    // against a foreign file that DID carry one, appended entries come after
-    // the props entries in the footer and `CityParquetMetadata::from_key_values`
-    // is last-wins), then close every writer — see `TableWriters::finish`.
-    // `table_names` is every main-table file this run actually opened, in
-    // first-appearance order: one `<type>.parquet` per distinct family.
-    let table_names = writers.finish(&sidecar_files_written)?;
+    // Close every writer, appending each table's own `city`/`geo` footer —
+    // see `TableWriters::finish`. `table_names` is every main-table file
+    // this run actually opened, in first-appearance order: one
+    // `<type>.parquet` per distinct family.
+    let table_names = writers.finish()?;
     // M5 Codex review (Important finding 1): the by-type writer opens tables
     // LAZILY, on a family's first row (see `TableWriters::new`/
     // `by_type_table_index`) — an input that encodes to zero rows therefore
@@ -974,7 +1027,6 @@ fn write_package(
         &ItemOptions {
             id: Some(item_id),
             datetime: None,
-            profile: Some(opts.profile),
         },
     )?;
     let metadata_path = tmp_dir.join("metadata.json");
@@ -1057,6 +1109,15 @@ pub struct CanonicalSchema {
     /// would otherwise omit the synthesised footprint from `geo` and disagree
     /// with its `default_geometry`.
     pub geoparquet_columns: Vec<(Lod, Vec<String>)>,
+    /// The whole-merged-dataset per-[`ModuleKey`] realised WKB type sets (see
+    /// [`crate::scan::ScanResult::module_geo`]), stamped into every
+    /// partition's own `scan_result` the same way `module_lods` already is —
+    /// without this, two partitions could disagree on a shared module's
+    /// `city.columns`/`geo` even though `module_lods` agrees on its LoD set.
+    pub module_geo: std::collections::BTreeMap<
+        ModuleKey,
+        std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>,
+    >,
 }
 
 /// Convert an already-open `source` into a package at `opts.output_dir` —
@@ -1118,6 +1179,10 @@ pub(crate) fn convert_source_impl(
         // metadata agrees on `primary_column`/`columns` and matches
         // `default_geometry`.
         scan_result.geoparquet_columns = canon.geoparquet_columns.clone();
+        // And the per-module realised type sets (spec "The footer describes
+        // the file it lives in"): every partition's shared module must
+        // report the SAME `city.columns`/`geo`, not just the same LoD set.
+        scan_result.module_geo = canon.module_geo.clone();
     } else if opts.generate_lod0 {
         // Non-partitioned convert: reserve the synthesised LoD0 column here (a
         // partitioned run does this once on the whole-dataset scan, so the
@@ -1128,29 +1193,19 @@ pub(crate) fn convert_source_impl(
         scan_result.synthesize_lod0 = Some(opts.lod0);
     }
 
-    // `sidecar_files` is intentionally EXCLUDED from this pre-encode
-    // key-value set (an empty list serialises to no key at all — see
-    // `CityParquetMetadata::sidecar_files`): which sidecar files this run
-    // actually produces (an empty sidecar is skipped, see `crate::sidecar`)
-    // is only known after the encode pass below runs to completion. The
-    // real, actually-written list is appended to the footer via
-    // `ArrowWriter::append_key_value_metadata` after the sidecars are
-    // written and before `writer.close()`, so the parquet footer and
-    // `metadata.json` always agree.
-    let metadata = scan_result.metadata(&[])?;
     // The exact schema the writer is told to expect must be the exact schema
     // the encoded batches conform to (field metadata included) — both come
     // from this one `to_arrow_schema_tagged` call, never hand-duplicated —
     // and it must use the SAME `opts.geoarrow` flag `encode`/`encode_buffered`
     // feed their batch schema, or Arrow rejects the batches at write time.
     let arrow_schema = Arc::new(scan_result.schema.to_arrow_schema_tagged(opts.geoarrow)?);
-    // `opts.geoarrow` still gates only the `geoarrow.wkb` FIELD extension above;
-    // the `geo` KEY is always written for the GeoParquet-legal columns (§13.3).
-    let props = opts.recipe.writer_properties(
-        &scan_result.schema,
-        &metadata,
-        &scan_result.geoparquet_geo_columns(),
-    )?;
+    // `city`/`geo` footer key-value metadata is NOT built here any more
+    // (spec-alignment M3, per-module footer emission): each by-module
+    // table's `columns`/`primary_column`/`geo` can only be known once that
+    // table's own realised column set is settled, post-encode — see
+    // `write_package` -> `TableWriters::finish`. `writer_properties` is now
+    // purely the per-column compression/encoding recipe.
+    let props = opts.recipe.writer_properties(&scan_result.schema)?;
 
     // Everything above is fallible but never touches `opts.output_dir` at
     // all, so none of it needs any cleanup. From here on, every new file
@@ -1257,6 +1312,8 @@ mod tests {
             WriterProperties::default(),
             extensions,
             HashMap::new(),
+            HashMap::new(),
+            CityMetadata::new(),
             Vec::new(),
             false,
         )
@@ -1328,7 +1385,7 @@ mod tests {
         ok_writers
             .write_batch(&object_type_only_batch(&["+A"]))
             .unwrap();
-        let tables = ok_writers.finish(&[]).unwrap();
+        let tables = ok_writers.finish().unwrap();
         assert_eq!(tables, vec!["my_energy.parquet".to_string()]);
     }
 
@@ -1343,7 +1400,7 @@ mod tests {
         let batch = object_type_only_batch(&["CityObjectGroup", "GenericOccupiedSpace"]);
         let mut writers = writers_with(tmp.path(), batch.schema(), ExtensionRegistry::new());
         writers.write_batch(&batch).unwrap();
-        let tables = writers.finish(&[]).unwrap();
+        let tables = writers.finish().unwrap();
         assert_eq!(tables, vec!["generics.parquet".to_string()]);
     }
 
@@ -1484,7 +1541,7 @@ mod tests {
         let batch = object_type_only_batch(&["Road", "Railway", "Waterway", "Square"]);
         let mut writers = writers_with(tmp.path(), batch.schema(), ExtensionRegistry::new());
         writers.write_batch(&batch).unwrap();
-        let tables = writers.finish(&[]).unwrap();
+        let tables = writers.finish().unwrap();
         assert_eq!(tables, vec!["transportation.parquet".to_string()]);
     }
 
@@ -1499,7 +1556,7 @@ mod tests {
         let mut writers = writers_with(tmp.path(), batch.schema(), ExtensionRegistry::new());
         writers.write_batch(&batch).unwrap();
         let tables: std::collections::HashSet<String> =
-            writers.finish(&[]).unwrap().into_iter().collect();
+            writers.finish().unwrap().into_iter().collect();
         assert_eq!(
             tables,
             std::collections::HashSet::from([

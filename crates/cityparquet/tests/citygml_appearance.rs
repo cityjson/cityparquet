@@ -15,7 +15,6 @@ use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Lod;
-use cityparquet::schema::Profile;
 use cityparquet::sidecar::{read_materials, read_textures};
 use cityparquet::stac::properties::PackageTables;
 use cityparquet::wkb_read::{DecodedGeometry, DecodedKind};
@@ -307,8 +306,7 @@ fn materials_round_trip() {
     let out_gml = tmp.path().join("out.gml");
     let pkg2 = tmp.path().join("pkg2");
 
-    let mut opts = ConvertOptions::new(data_fixture("building_with_materials.gml"), pkg.clone());
-    opts.profile = Profile::Compatibility;
+    let opts = ConvertOptions::new(data_fixture("building_with_materials.gml"), pkg.clone());
     convert(&opts).unwrap();
     let report = write_package(&WriteOptions {
         package_dir: pkg.clone(),
@@ -321,8 +319,7 @@ fn materials_round_trip() {
     assert_eq!(report.material_geometries_dropped, 0);
     assert_eq!(report.appearance_skipped_core_profile, 0);
 
-    let mut opts2 = ConvertOptions::new(out_gml.clone(), pkg2.clone());
-    opts2.profile = Profile::Compatibility;
+    let opts2 = ConvertOptions::new(out_gml.clone(), pkg2.clone());
     convert(&opts2).unwrap();
 
     let before = face_materials(&pkg);
@@ -353,8 +350,7 @@ fn materials_round_trip() {
 }
 
 fn compat(input: PathBuf, out: PathBuf) {
-    let mut opts = ConvertOptions::new(input, out);
-    opts.profile = Profile::Compatibility;
+    let opts = ConvertOptions::new(input, out);
     convert(&opts).unwrap();
 }
 

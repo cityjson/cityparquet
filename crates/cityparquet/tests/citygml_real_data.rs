@@ -103,10 +103,34 @@ fn citygml2_solid_building_streams_one_feature() {
 // vertices/boundaries the reader produced form valid WKB and a correct bbox.
 #[test]
 fn citygml2_scan_infers_lod2_and_bbox() {
-    use cityparquet::scan::scan;
+    use cityparquet::scan::{city_and_geo_for_file, scan};
     use cityparquet::schema::SourceFormat as SchemaSourceFormat;
 
-    let src = Source::open(&fixture("b1_lod2_s.gml")).unwrap();
+    // `b1_lod2_s.gml` genuinely carries no CRS/SRS declaration at all (per
+    // `justfile`'s own fixture provenance comment) — real, not an oversight.
+    // Since `scan` now hard-fails on coordinate-bearing input with no
+    // resolvable CRS (spec "CRS rules"), and this test's whole point is the
+    // CityGML -> WKB -> bbox pipeline (nothing CRS-related), a CRS is
+    // injected onto the REAL parsed header — the same "mutate the real
+    // parsed structure, not hand-written input" technique
+    // `module_schema_real_data.rs` already uses for its own CRS-mismatch
+    // fixture pairing.
+    let raw = Source::open(&fixture("b1_lod2_s.gml")).unwrap();
+    let mut header = raw.header().clone();
+    header
+        .metadata
+        .get_or_insert_with(|| cityparquet::cjseq::Metadata {
+            geographical_extent: None,
+            identifier: None,
+            point_of_contact: None,
+            reference_date: None,
+            reference_system: None,
+            title: None,
+        })
+        .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
+    let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
+    let src = Source::from_parts(header, features, raw.doc_appearance().cloned(), raw.format());
+
     let s = scan(&src).unwrap();
     assert_eq!(s.object_count, 1);
     let lods: Vec<String> = s.lods.iter().map(ToString::to_string).collect();
@@ -118,9 +142,15 @@ fn citygml2_scan_infers_lod2_and_bbox() {
         assert!((got - exp).abs() < 1e-6, "bbox component {got} != {exp}");
     }
 
-    let meta = s.metadata(&[]).unwrap();
-    assert_eq!(meta.default_geometry, "geometry_lod2_0");
-    assert_eq!(meta.source_format, SchemaSourceFormat::CityGml);
+    assert_eq!(
+        s.module_geo.len(),
+        1,
+        "b1_lod2_s is a single Building: exactly one module's worth of geometry"
+    );
+    let per_lod = s.module_geo.values().next().unwrap();
+    let (_columns, primary_column, _geo) = city_and_geo_for_file(per_lod);
+    assert_eq!(primary_column.as_deref(), Some("geometry_lod2_0"));
+    assert_eq!(s.base_city_metadata().unwrap().source_format, Some(SchemaSourceFormat::CityGml));
 }
 
 /// Newell's method normal of a ring of world coordinates (unnormalised).

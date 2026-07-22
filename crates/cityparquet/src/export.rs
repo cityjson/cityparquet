@@ -54,7 +54,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
 use cityparquet_schema::model::{LOD_KEY, ROLE_KEY, ROLE_RESERVED};
-use cityparquet_schema::{CityParquetError, CityParquetMetadata, Result};
+use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 use cjseq::{
     Appearance, CityJSON, CityJSONFeature, Geometry, GeometryTemplates, GeometryType, Material,
     Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
@@ -513,12 +513,22 @@ impl<T> OrderedGroups<T> {
     }
 }
 
+/// The source CityJSON header's `metadata` object, when a writer chose to
+/// keep it — folded into `city.other.source_metadata` (spec-alignment M3:
+/// `source_metadata` is no longer its own footer key). **Informational
+/// only**: nothing in this module's decode path may depend on this being
+/// present — see [`build_header`]'s own header-metadata fallback and
+/// [`synthesize_transform`], which never reads `other` at all.
+pub(crate) fn source_metadata_from_other(meta: &CityMetadata) -> Option<Value> {
+    meta.other.as_ref()?.get("source_metadata").cloned()
+}
+
 /// The header `CityJSON`'s `metadata.referenceSystem`, built from the dataset's
 /// `crs` KV entry. As of G1 that entry is **PROJJSON**, so the OGC CRS URL is
 /// rebuilt from its `id.{authority, code}` (e.g. `EPSG` + `7415` ->
 /// `https://www.opengis.net/def/crs/EPSG/0/7415`). A legacy raw-URL-string
 /// entry is still accepted. A CRS with no usable `id` yields no header field.
-fn reference_system(meta: &CityParquetMetadata) -> Result<Option<ReferenceSystem>> {
+fn reference_system(meta: &CityMetadata) -> Result<Option<ReferenceSystem>> {
     let Some(crs) = &meta.crs else {
         return Ok(None);
     };
@@ -561,26 +571,44 @@ fn reference_system(meta: &CityParquetMetadata) -> Result<Option<ReferenceSystem
     }
 }
 
+/// Synthesises a quantisation `transform` for export, from the package's OWN
+/// data rather than `city.other.transform` (spec "Informational only": a
+/// reader/writer MUST NOT need `other` to decode the file). Fixed
+/// millimetre-precision scale (`0.001`, the convention every real fixture in
+/// this repo already uses), translated to the package's own spatial extent's
+/// minimum corner — read back from the `bbox` column's Parquet row-group
+/// statistics via [`crate::stac::package_bbox`], the SAME mechanism the STAC
+/// derivation already uses, never `other`. A package with no geometry at all
+/// (`package_bbox` returns `None`) has nothing to quantise, so `translate`
+/// is the origin.
+///
+/// The exact scale/translate chosen need not match the SOURCE's own — the
+/// comparator ([`crate::compare`]) derives its coordinate tolerance from
+/// each side's own `transform.scale` (`max(scale_a, scale_b)`), so re-
+/// quantising at a different, self-consistent precision never fails a
+/// round-trip comparison; only genuinely lossy rounding would.
+fn synthesize_transform(tables: &PackageTables) -> Result<Transform> {
+    let scale = vec![0.001, 0.001, 0.001];
+    let translate = match crate::stac::package_bbox(tables)? {
+        Some(bbox) => vec![bbox.xmin, bbox.ymin, bbox.zmin],
+        None => vec![0.0, 0.0, 0.0],
+    };
+    Ok(Transform { scale, translate })
+}
+
 /// Reconstructs the header `CityJSON` (empty `CityObjects`/`vertices`) from
-/// the package's `CityParquetMetadata`.
-fn build_header(meta: &CityParquetMetadata) -> Result<CityJSON> {
+/// the package's `CityMetadata` plus its own on-disk data (`tables`), which
+/// [`synthesize_transform`] reads back rather than depending on `other`.
+fn build_header(meta: &CityMetadata, tables: &PackageTables) -> Result<CityJSON> {
     let mut header = CityJSON::new();
     header.version = "2.0".to_string();
-    // The transform is REQUIRED: export re-quantises every coordinate
-    // against it, so a package without one cannot be exported faithfully —
-    // silently substituting the identity transform would corrupt every
-    // vertex.
-    let transform = meta.transform.as_ref().ok_or_else(|| {
-        CityParquetError::Metadata(
-            "package metadata carries no 'transform'; cannot re-quantise for export".to_string(),
-        )
-    })?;
-    header.transform = serde_json::from_value(transform.clone())?;
-    if let Some(source_metadata) = &meta.source_metadata {
+    header.transform = synthesize_transform(tables)?;
+    if let Some(source_metadata) = source_metadata_from_other(meta) {
         // The stored source metadata already carries referenceSystem (and
         // everything else cjseq::Metadata can represent), so it supersedes
-        // the referenceSystem-only fallback below.
-        header.metadata = Some(serde_json::from_value(source_metadata.clone())?);
+        // the referenceSystem-only fallback below. Informational only — see
+        // `source_metadata_from_other`'s doc comment.
+        header.metadata = Some(serde_json::from_value(source_metadata)?);
     } else if let Some(reference_system) = reference_system(meta)? {
         header.metadata = Some(CjMetadata {
             geographical_extent: None,
@@ -1135,7 +1163,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         meta.clone(),
     ));
 
-    let mut header = build_header(&meta)?;
+    let mut header = build_header(&meta, &tables)?;
     let (scale, translate) = transform_axes(&header.transform);
 
     // Whether this package carries the appearance-DEFINITION sidecars: when
@@ -1226,13 +1254,13 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             // safely coexist in one package) rather than the module-scoped
             // schema variation this fix otherwise makes legal.
             let table_meta = builder.cityparquet_metadata()?;
-            if table_meta.cityparquet_version != meta.cityparquet_version {
+            if table_meta.version != meta.version {
                 return Err(err(format!(
                     "table '{}' has cityparquet_version {:?}, expected {:?} \
                      (matching table '{}')",
                     table_display_name(table_path),
-                    table_meta.cityparquet_version,
-                    meta.cityparquet_version,
+                    table_meta.version,
+                    meta.version,
                     table_display_name(first_table_path)
                 )));
             }
@@ -1610,28 +1638,17 @@ mod tests {
         );
     }
 
+    /// spec-alignment M3: `transform` is no longer read from `city.other` at
+    /// all — `build_header` always SYNTHESISES its own quantisation
+    /// transform (see `synthesize_transform`), so a package missing it
+    /// (or missing `other` altogether) is no longer an error. Real-fixture
+    /// coverage that `build_header`'s output round-trips lives in
+    /// `tests/export_real_data.rs`; see `crate::stac::mod::package_bbox` for
+    /// the on-disk mechanism `synthesize_transform` reads.
     #[test]
-    fn build_header_requires_a_transform() {
-        let meta = CityParquetMetadata {
-            cityparquet_version: "0.1.0".to_string(),
-            source_format: cityparquet_schema::SourceFormat::CityJsonSeq,
-            source_version: None,
-            crs: None,
-            transform: None,
-            extensions: None,
-            attribute_columns: vec![],
-            default_geometry: "geometry".to_string(),
-            bbox_column: "bbox".to_string(),
-            sidecar_files: vec![],
-            source_metadata: None,
-            appearance_defaults: None,
-            other: None,
-        };
-        let err = build_header(&meta).unwrap_err();
-        assert!(
-            matches!(err, CityParquetError::Metadata(_)),
-            "a package without a transform cannot be re-quantised: expected Metadata error, got {err:?}"
-        );
+    fn source_metadata_from_other_is_none_when_other_is_absent() {
+        let meta = CityMetadata::new();
+        assert!(source_metadata_from_other(&meta).is_none());
     }
 
     #[test]
@@ -1639,24 +1656,13 @@ mod tests {
         // sol-review G1: metadata `crs` is now PROJJSON. A package whose CRS is
         // OGC:CRS84 (a lon/lat dataset) with no source_metadata must still
         // export a `referenceSystem`, not silently drop it.
-        let meta = CityParquetMetadata {
-            cityparquet_version: "0.1.0".to_string(),
-            source_format: cityparquet_schema::SourceFormat::CityJsonSeq,
-            source_version: None,
+        let meta = CityMetadata {
             crs: Some(serde_json::json!({
                 "type": "GeographicCRS",
                 "name": "WGS 84 (CRS84)",
                 "id": { "authority": "OGC", "code": "CRS84" }
             })),
-            transform: None,
-            extensions: None,
-            attribute_columns: vec![],
-            default_geometry: "geometry".to_string(),
-            bbox_column: "bbox".to_string(),
-            sidecar_files: vec![],
-            source_metadata: None,
-            appearance_defaults: None,
-            other: None,
+            ..CityMetadata::new()
         };
         let rs = reference_system(&meta)
             .expect("resolution must not error")

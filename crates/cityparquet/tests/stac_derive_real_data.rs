@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use city3d_stac_types::metadata::AttributeType;
 use city3d_stac_types::stac::CityObjectsCount;
 use cityparquet::package::{ConvertOptions, convert};
-use cityparquet::schema::Profile;
 use cityparquet::stac::properties::{PackageTables, derive_co_types, derive_from_footer};
 use cityparquet::stac::{ItemOptions, item_for_package, package_bbox};
 
@@ -225,9 +224,8 @@ fn semantic_surfaces_true_for_delft() {
 fn appearance_flags_true_only_with_compatibility_sidecars() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("pkg");
-    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.clone());
-    opts.profile = Profile::Compatibility;
-    convert(&opts).expect("convert lod3_railway (Compatibility)");
+    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.clone());
+    convert(&opts).expect("convert lod3_railway");
 
     let tables = PackageTables::open(&out).expect("resolve tables");
     let props = derive_from_footer(&tables).expect("derive");
@@ -335,28 +333,20 @@ fn derived_item_assets_exist_and_bbox_is_wgs84() {
     assert_eq!(item.id, "pkg");
 }
 
-/// Plan 2b Task 4 step 2: `cityparquet:version`/`cityparquet:profile` must
-/// land in the Item's properties — `version` footer-derived like everything
-/// else in `stac::mod`, `profile` only when the caller supplies it (a
-/// writer knows its own profile; a bare directory read cannot recover it).
-/// Distinct from `city3d:version`, which is the SOURCE CityJSON version, not
-/// CityParquet's own.
+/// Plan 2b Task 4 step 2: `cityparquet:version` must land in the Item's
+/// properties, footer-derived like everything else in `stac::mod`. Distinct
+/// from `city3d:version`, which is the SOURCE CityJSON version, not
+/// CityParquet's own. `cityparquet:profile` is GONE (spec-alignment gap 19:
+/// the `Profile` concept it described no longer exists) — no `ItemOptions`
+/// field to supply it with any more.
 #[test]
-fn cityparquet_version_and_profile_properties_are_present() {
+fn cityparquet_version_property_is_present() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("pkg");
-    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.clone());
-    opts.profile = Profile::Compatibility;
-    convert(&opts).expect("convert delft (Compatibility)");
+    let opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.clone());
+    convert(&opts).expect("convert delft");
 
-    let item = item_for_package(
-        &out,
-        &cityparquet::stac::ItemOptions {
-            profile: Some(Profile::Compatibility),
-            ..Default::default()
-        },
-    )
-    .expect("build item");
+    let item = item_for_package(&out, &ItemOptions::default()).expect("build item");
 
     assert_eq!(
         item.properties
@@ -366,24 +356,12 @@ fn cityparquet_version_and_profile_properties_are_present() {
         Some(cityparquet::schema::CITYPARQUET_VERSION),
         "cityparquet:version must be the footer-derived CityParquet format version"
     );
-    assert_eq!(
-        item.properties
-            .additional_fields
-            .get("cityparquet:profile")
-            .and_then(|v| v.as_str()),
-        Some("compatibility"),
-        "cityparquet:profile must reflect the profile the caller declared"
-    );
-
-    // `item_for_package` with no `profile` in `ItemOptions` must omit the
-    // property rather than guess it.
-    let item_no_profile = item_for_package(&out, &ItemOptions::default()).expect("build item");
     assert!(
-        !item_no_profile
+        !item
             .properties
             .additional_fields
             .contains_key("cityparquet:profile"),
-        "cityparquet:profile must be omitted, not guessed, when ItemOptions doesn't supply it"
+        "cityparquet:profile must not be written at all any more (spec-alignment gap 19)"
     );
 }
 

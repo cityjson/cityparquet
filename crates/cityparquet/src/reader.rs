@@ -23,7 +23,7 @@ use parquet::file::statistics::Statistics;
 use parquet::schema::types::ColumnPath;
 
 use cityparquet_schema::{
-    AttributeType, CityParquetError, CityParquetMetadata, CityParquetSchema, Lod, Result,
+    AttributeType, CityMetadata, CityParquetError, CityParquetSchema, GeoMetadata, Lod, Result,
 };
 
 /// The six fixed `bbox` struct leaves, matching [`crate::recipe::WriterRecipe`]
@@ -37,9 +37,17 @@ const ARROW_JSON_EXTENSION: &str = "arrow.json";
 /// Extension trait adding CityParquet-aware reads directly to
 /// `parquet::arrow::arrow_reader::ArrowReaderBuilder` — no wrapper builder.
 pub trait CityParquetReaderBuilder: Sized {
-    /// Parse this file's CityParquet key-value metadata (spec `notes/spec.md`
-    /// § metadata keys) back into a typed [`CityParquetMetadata`].
-    fn cityparquet_metadata(&self) -> Result<CityParquetMetadata>;
+    /// Parse this file's `city` (required) and `geo` (conditional) footer
+    /// key-value metadata (spec `05-metadata.mdx`) back into their typed
+    /// forms.
+    fn cityparquet_footer(&self) -> Result<(CityMetadata, Option<GeoMetadata>)>;
+
+    /// Convenience: just the `city` half of [`Self::cityparquet_footer`] —
+    /// the common case, since most callers only need CityParquet's own
+    /// metadata, not the GeoParquet mirror.
+    fn cityparquet_metadata(&self) -> Result<CityMetadata> {
+        self.cityparquet_footer().map(|(city, _geo)| city)
+    }
 
     /// Rebuild the CityParquet-described Arrow schema (LoD/attribute/role
     /// field metadata re-attached) from this file's own KV metadata plus its
@@ -61,7 +69,7 @@ pub trait CityParquetReaderBuilder: Sized {
 }
 
 impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
-    fn cityparquet_metadata(&self) -> Result<CityParquetMetadata> {
+    fn cityparquet_footer(&self) -> Result<(CityMetadata, Option<GeoMetadata>)> {
         let kvs = self
             .metadata()
             .file_metadata()
@@ -69,7 +77,7 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             .ok_or_else(|| {
                 CityParquetError::Metadata("parquet file has no key-value metadata".to_string())
             })?;
-        CityParquetMetadata::from_key_values(
+        CityMetadata::from_key_values(
             kvs.iter()
                 .map(|kv| (kv.key.as_str(), kv.value.as_deref().unwrap_or(""))),
         )
@@ -97,7 +105,7 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         // columns for the dataset's actual LoDs are reserved). Exclude the
         // declared attributes first, so such a name is not mistaken for a LoD.
         let attribute_names: std::collections::HashSet<&str> =
-            meta.attribute_columns.iter().map(String::as_str).collect();
+            meta.attributes.iter().map(String::as_str).collect();
         // Every LoD, including LoD0, is suffixed (spec "Levels of detail"),
         // so a single `geometry_<suffix>` scan recovers the full LoD set —
         // there is no separate un-suffixed "footprint" column to special-case.
@@ -111,8 +119,8 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         lods.sort();
         lods.dedup();
 
-        let mut attributes = Vec::with_capacity(meta.attribute_columns.len());
-        for name in &meta.attribute_columns {
+        let mut attributes = Vec::with_capacity(meta.attributes.len());
+        for name in &meta.attributes {
             let field = actual.field_with_name(name).map_err(|_| {
                 CityParquetError::Metadata(format!(
                     "attribute column '{name}' listed in metadata but absent from the file's schema"

@@ -104,29 +104,26 @@ fn attribute_named_like_a_geometry_column_does_not_break_the_reader() {
 fn cityparquet_metadata_matches_the_writer_side_scan() {
     let out = convert_delft_small_row_groups();
 
-    // Writer side, independently: what the scan pass says the metadata is.
+    // Writer side, independently: what the scan pass says the DATASET-WIDE
+    // portion of the metadata is (spec-alignment M3: `columns`/`primary_column`
+    // are per-FILE now, computed post-encode — see
+    // `scan_real_data.rs::delft_city_and_geo_for_file_prefers_lod0` for that
+    // half).
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let scan_result = scan(&src).unwrap();
-    let writer_meta = scan_result.metadata(&[]).unwrap();
+    let writer_meta = scan_result.base_city_metadata().unwrap();
 
     let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let read_meta = builder.cityparquet_metadata().unwrap();
 
-    assert_eq!(read_meta.default_geometry, writer_meta.default_geometry);
-    // delft carries LoD0, so the default geometry is the suffixed LoD0
-    // footprint column, not an un-suffixed one.
-    assert_eq!(read_meta.default_geometry, "geometry_lod0_0");
-    assert_eq!(read_meta.attribute_columns.len(), 50);
-    assert_eq!(
-        read_meta.attribute_columns.len(),
-        writer_meta.attribute_columns.len()
-    );
-    assert_eq!(read_meta.bbox_column, writer_meta.bbox_column);
-    assert_eq!(
-        read_meta.cityparquet_version,
-        writer_meta.cityparquet_version
-    );
+    // delft carries LoD0, so the file's own primary is the suffixed LoD0
+    // footprint column, not an un-suffixed one — this table's own, since the
+    // dataset-wide `writer_meta` no longer carries `primary_column` at all.
+    assert_eq!(read_meta.primary_column.as_deref(), Some("geometry_lod0_0"));
+    assert_eq!(read_meta.attributes.len(), 50);
+    assert_eq!(read_meta.attributes.len(), writer_meta.attributes.len());
+    assert_eq!(read_meta.version, writer_meta.version);
 }
 
 #[test]

@@ -9,7 +9,6 @@ use cityparquet::export::{ExportOptions, export};
 use cityparquet::order::hilbert_index;
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet::schema::Profile;
 use cityparquet::stac::properties::PackageTables;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Encoding;
@@ -127,7 +126,10 @@ fn delft_full_convert_round_trips_through_parquet() {
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let pq_meta = builder.metadata().file_metadata();
     let kvs = pq_meta.key_value_metadata().unwrap();
-    assert!(kvs.iter().any(|kv| kv.key == "cityparquet_version"));
+    // spec-alignment M3: one JSON-valued `city` key (never a flat
+    // `cityparquet_version` scalar key any more), plus `geo` since delft's
+    // LoD0 footprint is GeoParquet-legal.
+    assert!(kvs.iter().any(|kv| kv.key == "city"));
     assert!(kvs.iter().any(|kv| kv.key == "geo"));
     // bbox stats exist for row-group pruning
     let rg = builder.metadata().row_group(0);
@@ -156,10 +158,6 @@ fn delft_full_convert_round_trips_through_parquet() {
         .sum();
     assert_eq!(rows, 2231);
 
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
-            .unwrap();
-    assert_eq!(manifest["properties"]["cityparquet:profile"], "core");
 }
 
 #[test]
@@ -261,24 +259,7 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
     );
 }
 
-/// The `sidecar_files` list recorded in the parquet footer's own key-value
-/// metadata (appended post-encode via `ArrowWriter::append_key_value_metadata`,
-/// so it reflects the files ACTUALLY written, matching `metadata.json`). The
-/// by-type writer appends this to EVERY main table's footer (see
-/// `TableWriters::finish`'s own doc comment), so reading it off the FIRST
-/// table the manifest lists is representative regardless of how many
-/// families the dataset has.
-fn footer_sidecar_files(dir: &std::path::Path) -> Vec<String> {
-    let first_table = manifest_tables(dir)
-        .into_iter()
-        .next()
-        .expect("manifest must list at least one table");
-    let file = std::fs::File::open(dir.join(first_table)).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    builder.cityparquet_metadata().unwrap().sidecar_files
-}
-
-/// Compatibility profile: railway's feature-only appearance sweep (83
+/// Railway's feature-only appearance sweep (83
 /// materials / 33 textures — see the module doc on
 /// `railway_core_convert_rewrites_appearance_maps_to_global_ids`) plus its 3
 /// geometry templates (2 materials + 1 texture reachable ONLY from a
@@ -290,8 +271,7 @@ fn footer_sidecar_files(dir: &std::path::Path) -> Vec<String> {
 #[test]
 fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     let out = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    opts.profile = Profile::Compatibility;
+    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
     let report = convert(&opts).unwrap();
 
     assert_eq!(report.materials_written, 85);
@@ -301,13 +281,6 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     assert!(out.path().join("textures.parquet").exists());
     assert!(out.path().join("geometry_templates.parquet").exists());
 
-    let manifest: Value =
-        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
-            .unwrap();
-    assert_eq!(
-        manifest["properties"]["cityparquet:profile"],
-        "compatibility"
-    );
     assert_eq!(
         PackageTables::open(out.path()).unwrap().sidecar_files,
         vec![
@@ -316,15 +289,6 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
             "geometry_templates.parquet".to_string()
         ],
         "metadata.json's cityparquet-sidecar assets must list exactly the sidecars written"
-    );
-    assert_eq!(
-        footer_sidecar_files(out.path()),
-        vec![
-            "materials.parquet".to_string(),
-            "textures.parquet".to_string(),
-            "geometry_templates.parquet".to_string()
-        ],
-        "the parquet footer's KV sidecar_files must agree with metadata.json"
     );
 
     // The written template rows must carry their LoD: railway's 3 templates
@@ -346,14 +310,14 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     }
 }
 
-/// Compatibility profile on a dataset with no appearance at all (delft):
-/// no sidecar files are written, and both the manifest and the parquet
-/// footer's KV metadata say so.
+/// A dataset with no appearance at all (delft): no sidecar files are
+/// written, and the manifest says so — sidecars are written whenever the
+/// source has content for them (spec-alignment gap 19), so delft (no
+/// materials/textures/templates) simply writes none.
 #[test]
 fn delft_compatibility_convert_writes_no_sidecars() {
     let out = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
-    opts.profile = Profile::Compatibility;
+    let opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
     let report = convert(&opts).unwrap();
 
     assert_eq!(report.materials_written, 0);
@@ -362,22 +326,10 @@ fn delft_compatibility_convert_writes_no_sidecars() {
     assert!(!out.path().join("materials.parquet").exists());
     assert!(!out.path().join("textures.parquet").exists());
 
-    let manifest: Value =
-        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
-            .unwrap();
-    assert_eq!(
-        manifest["properties"]["cityparquet:profile"],
-        "compatibility"
-    );
     assert_eq!(
         PackageTables::open(out.path()).unwrap().sidecar_files,
         Vec::<String>::new(),
         "metadata.json must list no cityparquet-sidecar assets"
-    );
-    assert_eq!(
-        footer_sidecar_files(out.path()),
-        Vec::<String>::new(),
-        "the parquet footer's KV sidecar_files must be empty, matching metadata.json"
     );
 }
 
@@ -393,9 +345,8 @@ fn delft_compatibility_convert_writes_no_sidecars() {
 #[test]
 fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
     let out = tempfile::tempdir().unwrap();
-    let mut first =
+    let first =
         ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    first.profile = Profile::Compatibility;
     let first_report = convert(&first).unwrap();
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
@@ -426,10 +377,6 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
     // writes exactly one main table: building.parquet.
     assert!(out.path().join("building.parquet").exists());
 
-    let manifest: Value =
-        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
-            .unwrap();
-    assert_eq!(manifest["properties"]["cityparquet:profile"], "core");
     assert_eq!(
         PackageTables::open(out.path()).unwrap().sidecar_files,
         Vec::<String>::new(),
@@ -458,9 +405,8 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
 #[test]
 fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
     let out = tempfile::tempdir().unwrap();
-    let mut first =
+    let first =
         ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    first.profile = Profile::Compatibility;
     let first_report = convert(&first).unwrap();
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
@@ -563,9 +509,8 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
 fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
     // Pre-existing, valid Compatibility package at `out`.
     let out = tempfile::tempdir().unwrap();
-    let mut first =
+    let first =
         ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    first.profile = Profile::Compatibility;
     let first_report = convert(&first).unwrap();
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
@@ -917,7 +862,6 @@ fn hilbert_ordering_never_changes_delft_semantics() {
 fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
     let out = tempfile::tempdir().unwrap();
     let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    opts.profile = Profile::Compatibility;
     opts.ordering = RowOrder::Hilbert;
     convert(&opts).unwrap();
 
@@ -1032,20 +976,20 @@ fn by_type_convert_of_delft_writes_exactly_one_family_table() {
          (1115 Building + 1116 BuildingPart)"
     );
 
-    // Every table's footer must carry `cityparquet_version` (required by
-    // `cityparquet_metadata()`, which errors without it), and it must agree
-    // across every table this run wrote.
+    // Every table's footer must carry `city.version` (required by
+    // `cityparquet_metadata()`, which errors without a `city` key at all),
+    // and it must agree across every table this run wrote.
     let mut versions = HashSet::new();
     for name in &tables {
         let file = std::fs::File::open(out.path().join(name)).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         let meta = builder.cityparquet_metadata().unwrap();
-        versions.insert(meta.cityparquet_version.clone());
+        versions.insert(meta.version.clone());
     }
     assert_eq!(
         versions.len(),
         1,
-        "every table's footer must carry the identical cityparquet_version, got: {versions:?}"
+        "every table's footer must carry the identical city.version, got: {versions:?}"
     );
 }
 

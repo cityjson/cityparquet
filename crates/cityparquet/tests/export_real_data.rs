@@ -12,7 +12,6 @@ use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet::schema::Profile;
 use cityparquet::sidecar::{read_materials, read_templates, write_materials, write_templates};
 use cityparquet::source::{Source, SourceFormat};
 use cityparquet::stac::assets::{PARQUET_MEDIA_TYPE, ROLE_OBJECT_TABLE, ROLE_SIDECAR};
@@ -190,10 +189,12 @@ fn railway_exports_dropping_instance_geometries_but_keeping_their_objects() {
 
 /// M4 task 5: the source header's `metadata` object (title,
 /// geographicalExtent, etc.) is captured verbatim into the package's KV
-/// metadata (`source_metadata`) and restored into the exported header.
-/// `fullMetadataUrl` is a documented exception — cjseq's `Metadata` struct
-/// has no passthrough for unknown members, so it never survives even the
-/// initial parse of the source header, let alone the round trip.
+/// metadata (`city.other.source_metadata` — spec-alignment M3 folded
+/// `source_metadata` into `other`, informational only) and restored into the
+/// exported header. `fullMetadataUrl` is a documented exception — cjseq's
+/// `Metadata` struct has no passthrough for unknown members, so it never
+/// survives even the initial parse of the source header, let alone the round
+/// trip.
 #[test]
 fn delft_source_metadata_reaches_kv_metadata_and_the_exported_header() {
     let package_dir = tempfile::tempdir().unwrap();
@@ -208,10 +209,13 @@ fn delft_source_metadata_reaches_kv_metadata_and_the_exported_header() {
     let file = std::fs::File::open(package_dir.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let meta = builder.cityparquet_metadata().unwrap();
-    let source_metadata = meta
-        .source_metadata
+    let other = meta
+        .other
         .as_ref()
-        .expect("delft's header sets metadata; source_metadata must be populated");
+        .expect("delft's header sets metadata; `other` must be populated");
+    let source_metadata = other
+        .get("source_metadata")
+        .expect("delft's header metadata must be preserved under other.source_metadata");
     assert_eq!(source_metadata["title"], serde_json::json!("3DBAG"));
     assert!(
         source_metadata.get("geographicalExtent").is_some(),
@@ -326,11 +330,10 @@ fn assert_texture_rings_are_index_form(v: &Value, tex_limit: usize, uv_limit: us
 #[test]
 fn railway_compatibility_export_restores_appearance_feature_local() {
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(
+    let opts = ConvertOptions::new(
         fixture("lod3_railway.city.json"),
         package_dir.path().to_path_buf(),
     );
-    opts.profile = Profile::Compatibility;
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -462,11 +465,10 @@ fn railway_export_restores_appearance_under_a_non_canonical_lod() {
 
     // Baseline: pristine railway (canonical "3") exports with its texture.
     let pristine_pkg = tempfile::tempdir().unwrap();
-    let mut pristine_opts = ConvertOptions::new(
+    let pristine_opts = ConvertOptions::new(
         fixture("lod3_railway.city.json"),
         pristine_pkg.path().to_path_buf(),
     );
-    pristine_opts.profile = Profile::Compatibility;
     convert(&pristine_opts).unwrap();
     let pristine_export = tempfile::tempdir().unwrap();
     let pristine_out = pristine_export.path().join("export.city.jsonl");
@@ -478,8 +480,7 @@ fn railway_export_restores_appearance_under_a_non_canonical_lod() {
     let (_, pristine_textures) = count_geometry_appearance_keys(&pristine_out);
 
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(input_path, package_dir.path().to_path_buf());
-    opts.profile = Profile::Compatibility;
+    let opts = ConvertOptions::new(input_path, package_dir.path().to_path_buf());
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -589,8 +590,7 @@ fn multi_lod_object_with_single_lod_appearance_round_trips() {
     std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
 
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(input_path.clone(), package_dir.path().to_path_buf());
-    opts.profile = Profile::Compatibility;
+    let opts = ConvertOptions::new(input_path.clone(), package_dir.path().to_path_buf());
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -648,8 +648,7 @@ fn attributes_named_like_appearance_columns_do_not_corrupt_export() {
     std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
 
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(input_path.clone(), package_dir.path().to_path_buf());
-    opts.profile = Profile::Compatibility;
+    let opts = ConvertOptions::new(input_path.clone(), package_dir.path().to_path_buf());
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -843,11 +842,10 @@ fn railway_compatibility_export_attaches_appearance_only_to_referencing_features
     );
 
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(
+    let opts = ConvertOptions::new(
         fixture("lod3_railway.city.json"),
         package_dir.path().to_path_buf(),
     );
-    opts.profile = Profile::Compatibility;
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -973,11 +971,10 @@ fn core_profile_export_attaches_dataset_wide_defaults_even_without_sidecars() {
 #[test]
 fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(
+    let opts = ConvertOptions::new(
         fixture("lod3_railway.city.json"),
         package_dir.path().to_path_buf(),
     );
-    opts.profile = Profile::Compatibility;
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -1178,11 +1175,10 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
 #[test]
 fn export_errors_on_a_dangling_template_id_reference() {
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(
+    let opts = ConvertOptions::new(
         fixture("lod3_railway.city.json"),
         package_dir.path().to_path_buf(),
     );
-    opts.profile = Profile::Compatibility;
     convert(&opts).unwrap();
 
     let templates_path = package_dir.path().join("geometry_templates.parquet");
@@ -1244,11 +1240,10 @@ fn export_errors_on_a_dangling_template_id_reference() {
 #[test]
 fn export_errors_on_an_out_of_range_material_global_id() {
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(
+    let opts = ConvertOptions::new(
         fixture("lod3_railway.city.json"),
         package_dir.path().to_path_buf(),
     );
-    opts.profile = Profile::Compatibility;
     convert(&opts).unwrap();
 
     let materials_path = package_dir.path().join("materials.parquet");
@@ -1375,11 +1370,10 @@ fn table_asset(name: &str, role: &str) -> Asset {
 #[test]
 fn export_errors_when_manifest_lists_templates_but_the_sidecar_file_is_missing() {
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(
+    let opts = ConvertOptions::new(
         fixture("lod3_railway.city.json"),
         package_dir.path().to_path_buf(),
     );
-    opts.profile = Profile::Compatibility;
     convert(&opts).unwrap();
 
     let item = read_item(package_dir.path());
@@ -1421,11 +1415,10 @@ fn export_errors_when_manifest_lists_templates_but_the_sidecar_file_is_missing()
 #[test]
 fn export_ignores_an_unlisted_geometry_templates_file_left_on_disk() {
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(
+    let opts = ConvertOptions::new(
         fixture("lod3_railway.city.json"),
         package_dir.path().to_path_buf(),
     );
-    opts.profile = Profile::Compatibility;
     convert(&opts).unwrap();
 
     let mut item = read_item(package_dir.path());

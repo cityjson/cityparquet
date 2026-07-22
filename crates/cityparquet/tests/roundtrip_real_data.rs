@@ -8,7 +8,6 @@ use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::recipe::RecipePreset;
-use cityparquet::schema::Profile;
 use cityparquet::stac::properties::PackageTables;
 
 fn fixture(name: &str) -> PathBuf {
@@ -48,29 +47,6 @@ fn convert_and_export_path(input: &Path) -> (PathBuf, tempfile::TempDir, tempfil
         package_dir.path().to_path_buf(),
     ))
     .unwrap();
-
-    let export_dir = tempfile::tempdir().unwrap();
-    let output = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
-    .unwrap();
-
-    (output, package_dir, export_dir)
-}
-
-/// Same as [`convert_and_export`] but lets the caller pick the profile —
-/// needed for the Compatibility-profile headline round-trip gate below,
-/// where appearance/instances must actually be restored, not dropped.
-fn convert_and_export_with_profile(
-    input: &str,
-    profile: Profile,
-) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
-    let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture(input), package_dir.path().to_path_buf());
-    opts.profile = profile;
-    convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
@@ -311,11 +287,12 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
     );
 }
 
-/// M4 task 11 (the milestone's headline gate): a Compatibility-profile
-/// round trip with NO exclusions at all — appearance and GeometryInstance
-/// geometries are now restored from the sidecars (M4 tasks 6-10), so unlike
-/// `railway_round_trips_losslessly_modulo_documented_drops` above (which
-/// still excludes both, because that test converts Core), the only
+/// M4 task 11 (the milestone's headline gate): a round trip with NO
+/// exclusions at all — appearance and GeometryInstance geometries are
+/// restored from the sidecars (M4 tasks 6-10, always written now that
+/// sidecars are content-gated rather than profile-gated), so unlike
+/// `railway_round_trips_losslessly_modulo_documented_drops` above (an older
+/// pin from when Core-vs-Compatibility was a real choice), the only
 /// remaining exclusions are the 23 pinned degenerate-ring drops (updated
 /// alongside the comparator's coordinate-degenerate fix — see the comment in
 /// `railway_round_trips_losslessly_modulo_documented_drops` above) and
@@ -324,8 +301,7 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
 /// instance silently failed to round-trip.
 #[test]
 fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
-    let (exported, _package_dir, _export_dir) =
-        convert_and_export_with_profile("lod3_railway.city.json", Profile::Compatibility);
+    let (exported, _package_dir, _export_dir) = convert_and_export("lod3_railway.city.json");
     let report = compare_datasets(
         &fixture("lod3_railway.city.json"),
         &exported,
@@ -373,13 +349,12 @@ fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
 /// profiles must round-trip with no exclusions beyond delft's own documented
 /// header metadata members and the 16 pinned coordinate-degenerate-ring
 /// drops (see `delft_round_trips_losslessly` above for the full explanation)
-/// — the Compatibility profile writing (empty) sidecars must not introduce
-/// any new difference or exclusion relative to the Core round trip already
-/// proven by `delft_round_trips_losslessly`.
+/// — delft has no appearance/templates to write sidecars for, so this must
+/// not introduce any new difference or exclusion relative to the round trip
+/// already proven by `delft_round_trips_losslessly`.
 #[test]
 fn delft_compatibility_round_trips_losslessly_with_only_header_exclusions() {
-    let (exported, _package_dir, _export_dir) =
-        convert_and_export_with_profile("delft.city.jsonl", Profile::Compatibility);
+    let (exported, _package_dir, _export_dir) = convert_and_export("delft.city.jsonl");
     let report = compare_datasets(
         &fixture("delft.city.jsonl"),
         &exported,
@@ -513,17 +488,15 @@ fn delft_derived_solid_face_drop_round_trips_and_comparator_agrees_with_the_writ
     );
 }
 
-/// Like [`convert_and_export_with_profile`] but also lets the caller pick
-/// `ordering` — needed for the M5 task 5 by-type round-trip gates below
-/// (and their Hilbert-composed variant).
+/// Like [`convert_and_export`] but also lets the caller pick `ordering` —
+/// needed for the M5 task 5 by-type round-trip gates below (and their
+/// Hilbert-composed variant).
 fn convert_and_export_with(
     input: &str,
-    profile: Profile,
     ordering: RowOrder,
 ) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
     let package_dir = tempfile::tempdir().unwrap();
     let mut opts = ConvertOptions::new(fixture(input), package_dir.path().to_path_buf());
-    opts.profile = profile;
     opts.ordering = ordering;
     convert(&opts).unwrap();
 
@@ -549,7 +522,7 @@ fn convert_and_export_with(
 #[test]
 fn delft_by_type_round_trips_losslessly() {
     let (exported, package_dir, _export_dir) =
-        convert_and_export_with("delft.city.jsonl", Profile::Core, RowOrder::Source);
+        convert_and_export_with("delft.city.jsonl", RowOrder::Source);
     assert!(
         package_dir.path().join("building.parquet").exists(),
         "sanity: this must actually be a split-by-type package"
@@ -604,11 +577,7 @@ fn delft_by_type_round_trips_losslessly() {
 /// `convert_real_data.rs` for the exact module membership).
 #[test]
 fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
-    let (exported, package_dir, _export_dir) = convert_and_export_with(
-        "lod3_railway.city.json",
-        Profile::Compatibility,
-        RowOrder::Source,
-    );
+    let (exported, package_dir, _export_dir) = convert_and_export_with("lod3_railway.city.json", RowOrder::Source);
     let tables = PackageTables::open(package_dir.path()).unwrap().tables;
     assert_eq!(
         tables.len(),
@@ -661,7 +630,7 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
 #[test]
 fn delft_hilbert_and_by_type_compose_and_round_trip_losslessly() {
     let (exported, package_dir, _export_dir) =
-        convert_and_export_with("delft.city.jsonl", Profile::Core, RowOrder::Hilbert);
+        convert_and_export_with("delft.city.jsonl", RowOrder::Hilbert);
     assert!(
         package_dir.path().join("building.parquet").exists(),
         "sanity: this must actually be a split-by-type package"

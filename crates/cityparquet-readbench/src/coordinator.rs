@@ -56,7 +56,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Schema};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet_schema::CityParquetMetadata;
+use cityparquet_schema::CityMetadata;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -475,7 +475,7 @@ fn locate_cityparquet_table(prepared_dir: &Path, base: &str) -> Result<PathBuf> 
     }
 }
 
-fn open_metadata(table: &Path) -> Result<CityParquetMetadata> {
+fn open_metadata(table: &Path) -> Result<CityMetadata> {
     let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .with_context(|| format!("reading Parquet metadata from {}", table.display()))?;
@@ -655,9 +655,9 @@ fn most_frequent_object_type(table: &Path) -> Result<(String, u64)> {
 /// `None` if the dataset has no numeric attribute at all — deterministic
 /// across runs, never fabricated when no such column exists (e.g.
 /// `lod3_railway.city.json`, whose attributes are all strings).
-fn pick_numeric_attribute(meta: &CityParquetMetadata, schema: &Schema) -> Option<String> {
+fn pick_numeric_attribute(meta: &CityMetadata, schema: &Schema) -> Option<String> {
     let mut candidates: Vec<String> = meta
-        .attribute_columns
+        .attributes
         .iter()
         .filter(|name| {
             schema

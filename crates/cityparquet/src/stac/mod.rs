@@ -18,7 +18,7 @@ use chrono::{SecondsFormat, Utc};
 use city3d_stac_types::metadata::{BBox3D, CRS};
 use city3d_stac_types::stac::StacItemBuilder;
 use city3d_stac_types::stac::types::{Asset, Item};
-use cityparquet_schema::{CityParquetError, Profile, Result};
+use cityparquet_schema::{CityParquetError, Result};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::metadata::RowGroupMetaData;
 use parquet::file::statistics::Statistics;
@@ -48,17 +48,6 @@ pub struct ItemOptions {
     /// make most derived Items schema-invalid on their own. The timestamp
     /// fallback therefore now applies uniformly, library included.
     pub datetime: Option<String>,
-    /// Declares `cityparquet:profile` in the built Item's properties.
-    ///
-    /// Only a writer that just wrote the package knows this for certain — no
-    /// package-level footer field records the profile the way
-    /// `cityparquet:version` does, and "no appearance sidecars" is ambiguous
-    /// between the Core profile and a Compatibility package with no
-    /// appearance to store. [`item_for_package`] therefore leaves this
-    /// `None` when deriving from an arbitrary directory, and the property is
-    /// simply omitted rather than guessed — consistent with this module's
-    /// "never guess" rule (see [`package_crs`]).
-    pub profile: Option<Profile>,
 }
 
 /// Build a STAC Item describing a written CityParquet package.
@@ -105,25 +94,14 @@ pub fn build_item(tables: &PackageTables, opts: &ItemOptions) -> Result<Item> {
     builder = builder.datetime(Some(datetime));
 
     // `cityparquet:version` is footer-derived like everything else in this
-    // module (any conformant package carries it); `cityparquet:profile` is
-    // not recoverable from the footer at all, so it is only ever written
-    // when the caller supplies it (see `ItemOptions::profile`).
+    // module (any conformant package carries it). `cityparquet:profile` is
+    // gone (spec-alignment gap 19): the Profile concept it described no
+    // longer exists — a writer emits a sidecar whenever the source has
+    // content for it, never gated by a declared profile.
     builder = builder.property(
         "cityparquet:version".to_string(),
         Value::String(package_cityparquet_version(tables)?),
     );
-    if let Some(profile) = opts.profile {
-        builder = builder.property(
-            "cityparquet:profile".to_string(),
-            Value::String(
-                match profile {
-                    Profile::Core => "core",
-                    Profile::Compatibility => "compatibility",
-                }
-                .to_string(),
-            ),
-        );
-    }
 
     if let Some(crs) = &crs {
         builder = builder.crs(crs);
@@ -253,7 +231,16 @@ fn source_metadata(tables: &PackageTables) -> Result<Option<Value>> {
         .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| CityParquetError::Parquet(format!("cannot open {}: {e}", path.display())))?;
-    Ok(builder.cityparquet_metadata()?.source_metadata)
+    // `source_metadata` is no longer its own footer key (spec-alignment M3,
+    // gap 16) — the source CityJSON header's `metadata` object, when a
+    // writer chose to keep it, now lives at `city.other.source_metadata`
+    // (informational only; see `crate::export::source_metadata_from_other`).
+    Ok(builder
+        .cityparquet_metadata()?
+        .other
+        .as_ref()
+        .and_then(|o| o.get("source_metadata"))
+        .cloned())
 }
 
 /// The CityParquet spec/encoding version the package's footer declares
@@ -267,7 +254,7 @@ fn package_cityparquet_version(tables: &PackageTables) -> Result<String> {
         .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| CityParquetError::Parquet(format!("cannot open {}: {e}", path.display())))?;
-    Ok(builder.cityparquet_metadata()?.cityparquet_version)
+    Ok(builder.cityparquet_metadata()?.version)
 }
 
 /// Resolve `properties.datetime` for a built Item.

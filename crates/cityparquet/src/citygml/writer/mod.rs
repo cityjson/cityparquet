@@ -175,7 +175,7 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     let schema = first_builder.cityparquet_arrow_schema()?;
     let srs_name = srs_name_for(meta.crs.as_ref())?;
     // Stored attribute column types drive attribute routing (not value shapes).
-    let attr_types = attributes::attribute_types(&schema, &meta.attribute_columns);
+    let attr_types = attributes::attribute_types(&schema, &meta.attributes);
 
     // Global materials table (Compatibility profile): appearance definitions the
     // per-geometry material maps' global ids resolve against. Absent on a Core
@@ -224,12 +224,12 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     CityParquetError::Parquet(format!("cannot open parquet reader: {e}"))
                 })?;
             let table_meta = builder.cityparquet_metadata()?;
-            if table_meta.cityparquet_version != meta.cityparquet_version {
+            if table_meta.version != meta.version {
                 return Err(CityParquetError::Metadata(format!(
                     "table '{}' has cityparquet_version {:?}, expected {:?} (matching '{}')",
                     table_display_name(path),
-                    table_meta.cityparquet_version,
-                    meta.cityparquet_version,
+                    table_meta.version,
+                    meta.version,
                     table_display_name(first_path)
                 )));
             }

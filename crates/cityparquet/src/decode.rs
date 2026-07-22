@@ -20,7 +20,7 @@ use arrow_schema::{DataType, Schema, TimeUnit};
 use chrono::{SecondsFormat, TimeZone, Utc};
 use serde_json::{Map, Value};
 
-use cityparquet_schema::{CityParquetError, CityParquetMetadata, Lod, Result};
+use cityparquet_schema::{CityMetadata, CityParquetError, Lod, Result};
 
 use crate::wkb_read::{self, DecodedGeometry};
 
@@ -302,10 +302,10 @@ fn attribute_value(
 }
 
 /// Decode every row of `batch` into a [`DecodedObject`], reconstructing
-/// attributes from `meta.attribute_columns` against the batch's own (actual)
+/// attributes from `meta.attributes` against the batch's own (actual)
 /// arrow types. See the module docs for what is and is not reassembled into
 /// the returned `cjseq::CityObject`.
-pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<Vec<DecodedObject>> {
+pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<DecodedObject>> {
     let schema = batch.schema();
 
     let id_col = downcast::<StringArray>(get_column(batch, "id")?.as_ref(), "id")?;
@@ -370,7 +370,7 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
         let children = string_list_value(children_col, row)?;
 
         let mut attrs = Map::new();
-        for name in &meta.attribute_columns {
+        for name in &meta.attributes {
             if let Some(value) = attribute_value(batch, &schema, name, row)? {
                 attrs.insert(name.clone(), value);
             }

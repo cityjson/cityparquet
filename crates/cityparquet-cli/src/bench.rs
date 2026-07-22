@@ -15,12 +15,11 @@
 //! the sole, mandatory table layout (2026-07-21); last numbers under the
 //! old `+by-type` axis are in `.superpowers/sdd/bytype-family-report.md`.
 //!
-//! Every variant converts with [`Profile::Compatibility`] — never
-//! conditionally on whether `input` actually has appearance/templates — to
-//! keep the harness uniform across variants and datasets: sidecar files are
-//! only written when the source data has something to put in them, so a
-//! Core-only dataset (no materials/textures/templates) costs nothing extra
-//! by always asking for Compatibility.
+//! Sidecar files (materials/textures/templates) are written whenever `input`
+//! actually has appearance/templates to store (spec-alignment gap 19 removed
+//! the `Profile` choice this used to gate on) — a Core-shaped dataset (no
+//! materials/textures/templates) simply writes none, uniformly across every
+//! variant.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -35,7 +34,6 @@ use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::reader::{CityParquetReaderBuilder, row_group_intersects};
 use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
-use cityparquet::schema::Profile;
 use cityparquet::stac::properties::PackageTables;
 use cityparquet::{CityParquetError, Result};
 
@@ -378,7 +376,6 @@ fn run_variant(
         let repeat_dir = tempfile::tempdir().map_err(|e| io_err(e.to_string()))?;
         let mut convert_opts =
             ConvertOptions::new(opts.input.clone(), repeat_dir.path().to_path_buf());
-        convert_opts.profile = Profile::Compatibility;
         convert_opts.recipe = variant.recipe();
         convert_opts.ordering = variant.ordering;
         convert_opts.overwrite = false;
@@ -398,7 +395,6 @@ fn run_variant(
     // measurements never contend with, or get billed into, `write_s`.
     let out_dir = tempfile::tempdir().map_err(|e| io_err(e.to_string()))?;
     let mut convert_opts = ConvertOptions::new(opts.input.clone(), out_dir.path().to_path_buf());
-    convert_opts.profile = Profile::Compatibility;
     convert_opts.recipe = variant.recipe();
     convert_opts.ordering = variant.ordering;
     convert_opts.overwrite = false;

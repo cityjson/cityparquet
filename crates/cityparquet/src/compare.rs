@@ -2739,24 +2739,23 @@ mod tests {
         );
     }
 
-    /// Converts the real railway fixture under the Compatibility profile and
-    /// exports it back to a single `.city.json` DOCUMENT (not Seq): templates'
-    /// `material`/`texture` are localised at HEADER scope by
-    /// `crate::export::rebuild_templates`, so this is the shape whose
-    /// corruption the M4 Codex-review Finding 3 tests below target. Returns
-    /// the exported file's path and the tempdirs backing it (kept alive for
-    /// the caller).
+    /// Converts the real railway fixture (which carries materials/textures,
+    /// written unconditionally now that sidecars are content-gated rather
+    /// than profile-gated — spec-alignment gap 19) and exports it back to a
+    /// single `.city.json` DOCUMENT (not Seq): templates' `material`/`texture`
+    /// are localised at HEADER scope by `crate::export::rebuild_templates`, so
+    /// this is the shape whose corruption the M4 Codex-review Finding 3 tests
+    /// below target. Returns the exported file's path and the tempdirs
+    /// backing it (kept alive for the caller).
     fn compat_railway_export_doc() -> (std::path::PathBuf, tempfile::TempDir, tempfile::TempDir) {
         use crate::export::{ExportOptions, export};
         use crate::package::{ConvertOptions, convert};
-        use cityparquet_schema::Profile;
 
         let package_dir = tempfile::tempdir().unwrap();
-        let mut opts = ConvertOptions::new(
+        let opts = ConvertOptions::new(
             fixture("lod3_railway.city.json"),
             package_dir.path().to_path_buf(),
         );
-        opts.profile = Profile::Compatibility;
         convert(&opts).unwrap();
 
         let export_dir = tempfile::tempdir().unwrap();

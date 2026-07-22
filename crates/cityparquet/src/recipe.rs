@@ -10,11 +10,10 @@
 use arrow_schema::Field;
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
 use parquet::basic::{BrotliLevel, Compression, Encoding, GzipLevel, ZstdLevel};
-use parquet::file::metadata::KeyValue;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use parquet::schema::types::ColumnPath;
 
-use cityparquet_schema::{CityParquetError, CityParquetMetadata, CityParquetSchema, Result};
+use cityparquet_schema::{CityParquetError, CityParquetSchema, Result};
 
 /// A compression codec, overriding whichever codec [`RecipePreset`] would
 /// otherwise pick — the benchmark's compression-codec axis, orthogonal to
@@ -211,32 +210,19 @@ fn is_json_column(field: &Field) -> bool {
 }
 
 impl WriterRecipe {
-    /// Render this recipe into concrete `WriterProperties` for `schema`,
-    /// embedding `metadata` plus the GeoParquet `geo` key as Parquet file-level
-    /// key-value metadata. `geo_columns` is the GeoParquet-legal geometry
-    /// columns (name + geometry_types), from [`crate::scan::ScanResult`]; the
-    /// `geo` key is written whenever at least one column qualifies, independent
-    /// of the `--geoarrow` field-extension toggle (§13.3, G1). When none
-    /// qualifies (a Solid-only dataset) no `geo` key is written.
-    pub fn writer_properties(
-        &self,
-        schema: &CityParquetSchema,
-        metadata: &CityParquetMetadata,
-        geo_columns: &[(String, Vec<String>)],
-    ) -> Result<WriterProperties> {
+    /// Render this recipe into concrete `WriterProperties` for `schema`: the
+    /// per-column compression/encoding/statistics rules only. The `city`/`geo`
+    /// footer key-value metadata is deliberately NOT embedded here any more
+    /// (spec-alignment M3, gap 16/per-module footer emission) — each
+    /// by-module table's `city`/`geo` genuinely differs (its own realised
+    /// column set), so it can only be known post-encode, once that table's
+    /// rows are actually written; `crate::package::TableWriters::finish`
+    /// appends it via `append_key_value_metadata`, mirroring how
+    /// `sidecar_files` used to be appended post-encode.
+    pub fn writer_properties(&self, schema: &CityParquetSchema) -> Result<WriterProperties> {
         // Stays TAGGED (zero-arg `to_arrow_schema`): used only to detect
-        // geometry columns for the per-column properties below, independent
-        // of whether the `geo` key itself is emitted.
+        // geometry columns for the per-column properties below.
         let arrow_schema = schema.to_arrow_schema()?;
-
-        let mut kvs: Vec<KeyValue> = metadata
-            .to_key_values()?
-            .into_iter()
-            .map(|(key, value)| KeyValue::new(key, value))
-            .collect();
-        if let Some(geo) = metadata.geoparquet_geo_value(geo_columns) {
-            kvs.push(KeyValue::new("geo".to_string(), geo.to_string()));
-        }
 
         // `compression` OVERRIDES the preset's default codec when set;
         // `None` keeps the exact pre-existing behaviour: `Snappy` compresses
@@ -268,8 +254,7 @@ impl WriterRecipe {
             // `set_max_row_group_size` is deprecated in parquet 58 in favour of
             // this row-count-only setter (semantically identical here: we
             // never set a row-group byte cap).
-            .set_max_row_group_row_count(Some(self.row_group_size))
-            .set_key_value_metadata(Some(kvs));
+            .set_max_row_group_row_count(Some(self.row_group_size));
 
         // `NoDictionary` disables dictionary encoding globally: this is the
         // fallback every column without an explicit per-column dictionary
@@ -352,7 +337,7 @@ impl WriterRecipe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cityparquet_schema::{AttributeType, CITYPARQUET_VERSION, Lod, SourceFormat};
+    use cityparquet_schema::{AttributeType, Lod};
     use parquet::basic::Compression;
 
     fn sample_schema() -> CityParquetSchema {
@@ -363,31 +348,10 @@ mod tests {
         }
     }
 
-    fn sample_metadata() -> CityParquetMetadata {
-        CityParquetMetadata {
-            cityparquet_version: CITYPARQUET_VERSION.to_string(),
-            source_format: SourceFormat::CityJsonSeq,
-            source_version: None,
-            crs: None,
-            transform: None,
-            extensions: None,
-            attribute_columns: vec!["yoc".to_string()],
-            default_geometry: "geometry_lod2_2".to_string(),
-            bbox_column: "bbox".to_string(),
-            sidecar_files: vec![],
-            source_metadata: None,
-            appearance_defaults: None,
-            other: None,
-        }
-    }
-
     #[test]
     fn recipe_renders_the_binding_per_column_rules() {
         let schema = sample_schema();
-        let metadata = sample_metadata();
-        let props = WriterRecipe::default()
-            .writer_properties(&schema, &metadata, &sample_geo_columns())
-            .unwrap();
+        let props = WriterRecipe::default().writer_properties(&schema).unwrap();
 
         // id / feature_id: DELTA_BYTE_ARRAY, dictionary off.
         assert!(!props.dictionary_enabled(&ColumnPath::from("id")));
@@ -453,11 +417,6 @@ mod tests {
             props.compression(&ColumnPath::from("yoc")),
             Compression::ZSTD(ZstdLevel::try_new(3).unwrap())
         );
-
-        // key-value metadata: dataset metadata plus the derived `geo` key.
-        let kvs = props.key_value_metadata().expect("key-value metadata set");
-        assert!(kvs.iter().any(|kv| kv.key == "cityparquet_version"));
-        assert!(kvs.iter().any(|kv| kv.key == "geo"));
     }
 
     #[test]
@@ -475,9 +434,7 @@ mod tests {
             ],
             crs: None,
         };
-        let props = WriterRecipe::default()
-            .writer_properties(&schema, &sample_metadata(), &sample_geo_columns())
-            .unwrap();
+        let props = WriterRecipe::default().writer_properties(&schema).unwrap();
 
         // Attribute defaults: dictionary on, statistics not disabled.
         assert!(props.dictionary_enabled(&ColumnPath::from("geometry_extra")));
@@ -497,55 +454,22 @@ mod tests {
     #[test]
     fn statistics_for_json_opts_json_columns_back_in() {
         let schema = sample_schema();
-        let metadata = sample_metadata();
         let recipe = WriterRecipe {
             statistics_for_json: true,
             ..WriterRecipe::default()
         };
-        let props = recipe
-            .writer_properties(&schema, &metadata, &sample_geo_columns())
-            .unwrap();
+        let props = recipe.writer_properties(&schema).unwrap();
         assert_ne!(
             props.statistics_enabled(&ColumnPath::from("other")),
             EnabledStatistics::None
         );
     }
 
-    /// One GeoParquet-legal geometry column, as the scan would hand the writer.
-    fn sample_geo_columns() -> Vec<(String, Vec<String>)> {
-        vec![(
-            "geometry_lod2_2".to_string(),
-            vec!["MultiPolygon Z".to_string()],
-        )]
-    }
-
-    #[test]
-    fn geo_key_present_iff_a_geoparquet_legal_column_exists() {
-        // G1: the `geo` key is written whenever at least one column is
-        // GeoParquet-legal (no longer gated by --geoarrow), and omitted when
-        // none is (a Solid-only dataset).
-        let schema = sample_schema();
-        let metadata = sample_metadata();
-        let recipe = WriterRecipe::default();
-
-        let has_geo = |cols: &[(String, Vec<String>)]| {
-            recipe
-                .writer_properties(&schema, &metadata, cols)
-                .unwrap()
-                .key_value_metadata()
-                .map(|kvs| kvs.iter().any(|kv| kv.key == "geo"))
-                .unwrap_or(false)
-        };
-
-        assert!(
-            has_geo(&sample_geo_columns()),
-            "a GeoParquet-legal column must emit the `geo` key"
-        );
-        assert!(
-            !has_geo(&[]),
-            "no legal column (e.g. Solid-only) must omit the `geo` key"
-        );
-    }
+    // `geo`/`city` footer key-value metadata is no longer rendered by
+    // `WriterRecipe` at all (spec-alignment M3: per-module footer emission
+    // happens post-encode in `crate::package::TableWriters::finish`) — see
+    // `crate::package`'s own tests for the `geo`-present-iff-a-legal-column
+    // coverage this recipe-level test used to carry.
 
     #[test]
     fn all_lists_exactly_six_presets() {
@@ -567,46 +491,34 @@ mod tests {
     #[test]
     fn parquet_defaults_leaves_columns_untuned() {
         let schema = sample_schema();
-        let metadata = sample_metadata();
         let props = RecipePreset::ParquetDefaults
             .recipe()
-            .writer_properties(&schema, &metadata, &sample_geo_columns())
+            .writer_properties(&schema)
             .unwrap();
 
         let bbox_xmin = ColumnPath::new(vec!["bbox".to_string(), "xmin".to_string()]);
         assert_eq!(props.encoding(&bbox_xmin), None);
         assert!(props.dictionary_enabled(&ColumnPath::from("id")));
-
-        // KV metadata is never a preset variable.
-        let kvs = props.key_value_metadata().expect("key-value metadata set");
-        assert!(kvs.iter().any(|kv| kv.key == "cityparquet_version"));
-        assert!(kvs.iter().any(|kv| kv.key == "geo"));
     }
 
     #[test]
     fn no_dictionary_disables_dictionary_everywhere() {
         let schema = sample_schema();
-        let metadata = sample_metadata();
         let props = RecipePreset::NoDictionary
             .recipe()
-            .writer_properties(&schema, &metadata, &sample_geo_columns())
+            .writer_properties(&schema)
             .unwrap();
 
         assert!(!props.dictionary_enabled(&ColumnPath::from("object_type")));
         assert!(!props.dictionary_enabled(&ColumnPath::from("yoc")));
-
-        let kvs = props.key_value_metadata().expect("key-value metadata set");
-        assert!(kvs.iter().any(|kv| kv.key == "cityparquet_version"));
-        assert!(kvs.iter().any(|kv| kv.key == "geo"));
     }
 
     #[test]
     fn no_byte_stream_split_keeps_delta_ids_but_drops_bbox_bss() {
         let schema = sample_schema();
-        let metadata = sample_metadata();
         let props = RecipePreset::NoByteStreamSplit
             .recipe()
-            .writer_properties(&schema, &metadata, &sample_geo_columns())
+            .writer_properties(&schema)
             .unwrap();
 
         assert_eq!(
@@ -624,19 +536,14 @@ mod tests {
             EnabledStatistics::Chunk
         );
         assert!(!props.dictionary_enabled(&bbox_xmin));
-
-        let kvs = props.key_value_metadata().expect("key-value metadata set");
-        assert!(kvs.iter().any(|kv| kv.key == "cityparquet_version"));
-        assert!(kvs.iter().any(|kv| kv.key == "geo"));
     }
 
     #[test]
     fn no_delta_keeps_bbox_bss_but_drops_id_delta() {
         let schema = sample_schema();
-        let metadata = sample_metadata();
         let props = RecipePreset::NoDelta
             .recipe()
-            .writer_properties(&schema, &metadata, &sample_geo_columns())
+            .writer_properties(&schema)
             .unwrap();
 
         let bbox_xmin = ColumnPath::new(vec!["bbox".to_string(), "xmin".to_string()]);
@@ -645,19 +552,14 @@ mod tests {
             Some(Encoding::BYTE_STREAM_SPLIT)
         );
         assert_eq!(props.encoding(&ColumnPath::from("id")), None);
-
-        let kvs = props.key_value_metadata().expect("key-value metadata set");
-        assert!(kvs.iter().any(|kv| kv.key == "cityparquet_version"));
-        assert!(kvs.iter().any(|kv| kv.key == "geo"));
     }
 
     #[test]
     fn snappy_compresses_with_snappy_globally() {
         let schema = sample_schema();
-        let metadata = sample_metadata();
         let props = RecipePreset::Snappy
             .recipe()
-            .writer_properties(&schema, &metadata, &sample_geo_columns())
+            .writer_properties(&schema)
             .unwrap();
 
         assert_eq!(
@@ -670,10 +572,6 @@ mod tests {
             props.encoding(&bbox_xmin),
             Some(Encoding::BYTE_STREAM_SPLIT)
         );
-
-        let kvs = props.key_value_metadata().expect("key-value metadata set");
-        assert!(kvs.iter().any(|kv| kv.key == "cityparquet_version"));
-        assert!(kvs.iter().any(|kv| kv.key == "geo"));
     }
 
     #[test]
@@ -696,12 +594,9 @@ mod tests {
     #[test]
     fn compression_override_none_keeps_preset_default_codec() {
         let schema = sample_schema();
-        let metadata = sample_metadata();
 
         // cityparquet preset defaults to ZSTD at zstd_level.
-        let props = WriterRecipe::default()
-            .writer_properties(&schema, &metadata, &sample_geo_columns())
-            .unwrap();
+        let props = WriterRecipe::default().writer_properties(&schema).unwrap();
         assert_eq!(
             props.compression(&ColumnPath::from("yoc")),
             Compression::ZSTD(ZstdLevel::try_new(3).unwrap())
@@ -710,7 +605,7 @@ mod tests {
         // snappy preset defaults to SNAPPY.
         let props = RecipePreset::Snappy
             .recipe()
-            .writer_properties(&schema, &metadata, &sample_geo_columns())
+            .writer_properties(&schema)
             .unwrap();
         assert_eq!(
             props.compression(&ColumnPath::from("yoc")),
@@ -721,7 +616,6 @@ mod tests {
     #[test]
     fn compression_override_wins_over_the_preset_default() {
         let schema = sample_schema();
-        let metadata = sample_metadata();
 
         let expected = [
             (Codec::Uncompressed, Compression::UNCOMPRESSED),
@@ -740,9 +634,7 @@ mod tests {
                 compression: Some(codec),
                 ..WriterRecipe::default()
             };
-            let props = recipe
-                .writer_properties(&schema, &metadata, &sample_geo_columns())
-                .unwrap();
+            let props = recipe.writer_properties(&schema).unwrap();
             assert_eq!(
                 props.compression(&ColumnPath::from("yoc")),
                 want,
@@ -756,9 +648,7 @@ mod tests {
                 compression: Some(codec),
                 ..WriterRecipe::default()
             };
-            let props = recipe
-                .writer_properties(&schema, &metadata, &sample_geo_columns())
-                .unwrap();
+            let props = recipe.writer_properties(&schema).unwrap();
             assert_eq!(
                 props.compression(&ColumnPath::from("yoc")),
                 want,
