@@ -6,14 +6,16 @@ pub mod crs;
 pub mod error;
 pub mod metadata;
 pub mod model;
-pub mod profile;
+pub mod sidecar_schemas;
 pub mod types;
 
 pub use attributes::{AttributeInferer, AttributeType};
 pub use error::{CityParquetError, Result};
-pub use metadata::{CITYPARQUET_VERSION, CityParquetMetadata, SourceFormat};
+pub use metadata::{
+    CITYPARQUET_VERSION, CityColumnEntry, CityMetadata, GEOPARQUET_VERSION, GeoColumnEntry,
+    GeoMetadata, Orientation3d, SourceFormat,
+};
 pub use model::{CityParquetSchema, normalise_attribute_name};
-pub use profile::Profile;
 pub use types::{
     CityGmlModule, ClassInfo, ExtensionClassDecl, ExtensionRegistry, Lod, ModuleKey,
     ModuleKeyResolver, TAXONOMY, cityjson_type_for_citygml_class, class_info, first_level_type,

@@ -1,29 +1,12 @@
-//! CityParquet profiles (core vs compatibility) and sidecar table schemas.
-//! `metadata.json` itself is a STAC Item, built by `cityparquet::stac` — not
-//! a type defined in this crate.
+//! Sidecar table schemas (`materials.parquet`, `textures.parquet`,
+//! `geometry_templates.parquet`) — spec-alignment M3 dropped the `Profile`
+//! concept these used to live alongside (gap 19: a writer now emits a
+//! sidecar whenever the source has content for it, never gated by a
+//! core/compatibility profile choice), so this module keeps only what was
+//! never profile-specific to begin with. `metadata.json` itself is a STAC
+//! Item, built by `cityparquet::stac` — not a type defined in this crate.
 
 use arrow_schema::{DataType, Field, Schema};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Profile {
-    Core,
-    Compatibility,
-}
-
-impl Profile {
-    pub fn sidecar_files(&self) -> &'static [&'static str] {
-        match self {
-            Profile::Core => &[],
-            Profile::Compatibility => &[
-                "materials.parquet",
-                "textures.parquet",
-                "geometry_templates.parquet",
-            ],
-        }
-    }
-}
 
 fn json_col(name: &str) -> Field {
     Field::new(name, DataType::Utf8, true)
@@ -83,19 +66,6 @@ pub fn geometry_templates_schema() -> Schema {
 mod tests {
     use super::*;
     use arrow_schema::DataType;
-
-    #[test]
-    fn core_profile_has_no_sidecars() {
-        assert!(Profile::Core.sidecar_files().is_empty());
-        assert_eq!(
-            Profile::Compatibility.sidecar_files(),
-            [
-                "materials.parquet",
-                "textures.parquet",
-                "geometry_templates.parquet"
-            ]
-        );
-    }
 
     #[test]
     fn sidecar_schemas_match_spec_tables() {
