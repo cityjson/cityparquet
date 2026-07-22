@@ -450,7 +450,9 @@ fn table_name_for_module(key: &ModuleKey) -> String {
 /// derive the SAME file (the documented `Generics`/`CityObjectGroup` fold —
 /// see [`TableWriters::claimed_by`]'s doc comment), so this unions their
 /// `module_lods` entries rather than assuming one key per file.
-fn module_lods_by_file(module_lods: &std::collections::BTreeMap<ModuleKey, Vec<Lod>>) -> HashMap<String, Vec<Lod>> {
+fn module_lods_by_file(
+    module_lods: &std::collections::BTreeMap<ModuleKey, Vec<Lod>>,
+) -> HashMap<String, Vec<Lod>> {
     let mut by_file: HashMap<String, std::collections::BTreeSet<Lod>> = HashMap::new();
     for (key, lods) in module_lods {
         by_file
@@ -675,9 +677,11 @@ impl TableWriters {
         let file = fs::File::create(&path)
             .map_err(|e| io_err(format!("cannot create {}: {e}", path.display())))?;
         let projection = self.projection_for(name)?;
-        let table_schema = Arc::new(self.wide_schema.project(&projection).map_err(|e| {
-            err(format!("table {name}: cannot project its own schema: {e}"))
-        })?);
+        let table_schema = Arc::new(
+            self.wide_schema
+                .project(&projection)
+                .map_err(|e| err(format!("table {name}: cannot project its own schema: {e}")))?,
+        );
         let writer = ArrowWriter::try_new(file, table_schema, Some(self.props.clone()))
             .map_err(|e| parquet_err(format!("cannot open parquet writer: {e}")))?;
         let idx = self.writers.len();

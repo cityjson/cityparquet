@@ -1745,8 +1745,10 @@ fn export_decodes_a_second_table_with_a_renamed_attribute_column_using_its_own_m
         package_dir: package_dir.path().to_path_buf(),
         output: output.clone(),
     })
-    .expect("two tables with genuinely different (but each internally self-consistent) schemas \
-             must decode successfully, each against its own metadata");
+    .expect(
+        "two tables with genuinely different (but each internally self-consistent) schemas \
+             must decode successfully, each against its own metadata",
+    );
     assert_eq!(
         report.object_count, 2231,
         "both split tables' objects must still be read, not just the first table's"

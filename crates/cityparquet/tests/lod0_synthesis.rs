@@ -116,10 +116,15 @@ fn convert_railway(generate_lod0: bool) -> tempfile::TempDir {
 /// dataset that has no source LoD0; disabling it leaves no such column.
 ///
 /// railway has 10 1st-level families, so by-type conversion writes 10 main
-/// tables — every table shares the IDENTICAL schema (the by-type writer
-/// partitions strictly after encode), so the schema-level checks below only
-/// need the first table, but the non-null footprint count must be summed
-/// across every table (a synthesised footprint can land in any of them).
+/// tables. Since each module's own table now carries only the LoD columns
+/// its own rows need (spec "object-table-schema"), the tables no longer
+/// share one identical schema: a module with NO analysis geometry of its own
+/// (e.g. `Vegetation`, whose real objects here carry none) has nothing to
+/// synthesise a footprint FROM, so it gets no `geometry_lod0_0` column at
+/// all — the non-null footprint count is still summed across every table
+/// that DOES carry the column (a synthesised footprint can land in any of
+/// them), and the first table (`building.parquet`, which does have solids)
+/// is still checked directly for the column's presence.
 #[test]
 fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
     let with = convert_railway(true);
@@ -131,7 +136,7 @@ fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
             .schema()
             .field_with_name("geometry_lod0_0")
             .is_ok(),
-        "synthesis reserves the suffixed geometry_lod0_0 column"
+        "synthesis reserves the suffixed geometry_lod0_0 column on the first (Building) table"
     );
     let mut non_null = 0usize;
     for table in &with_tables {
@@ -139,7 +144,12 @@ fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         for batch in builder.build().unwrap() {
             let batch = batch.unwrap();
-            let g = batch.column_by_name("geometry_lod0_0").unwrap();
+            // A module with no analysis geometry of its own carries no
+            // geometry_lod0_0 column at all — skip it rather than assume
+            // every table shares the identical schema.
+            let Some(g) = batch.column_by_name("geometry_lod0_0") else {
+                continue;
+            };
             non_null += batch.num_rows() - g.null_count();
         }
     }
