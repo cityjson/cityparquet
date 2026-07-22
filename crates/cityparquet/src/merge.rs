@@ -180,12 +180,21 @@ pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
     }
     let doc_appearance = match carriers.first() {
         Some(&ci) => {
-            // Take the carrier's templates AND its header appearance together —
-            // its templates' global appearance indices, and its default themes,
-            // resolve against the carrier's own appearance, not the first
-            // source's (which may differ or be absent).
+            // Take the carrier's templates AND its DOC-LEVEL appearance
+            // together — its templates' global material/texture indices
+            // resolve against `doc_appearance()`, NOT `header().appearance`
+            // (see that method's own doc comment: for a whole-document
+            // source, `cjseq`'s `get_metadata()` slices/reindexes a SEPARATE
+            // clone to build `header().appearance`, in a different index
+            // space than the templates it hands back untouched — using it
+            // here would silently corrupt every template's material/texture
+            // reference). The merged header's `appearance` is written out as
+            // the CityJSONSeq stream's header line, which only ever backs
+            // geometry-templates (features carry their own local appearance
+            // in Seq form) — so it must be the SAME value as `doc_appearance`
+            // below, not a mismatched reslice.
             header.geometry_templates = sources[ci].header().geometry_templates.clone();
-            header.appearance = sources[ci].header().appearance.clone();
+            header.appearance = sources[ci].doc_appearance().cloned();
             sources[ci].doc_appearance().cloned()
         }
         None => {

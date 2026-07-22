@@ -1767,11 +1767,17 @@ pub fn compare_datasets(a: &Path, b: &Path, opts: &CompareOptions) -> Result<Com
     let mut excluded = side_a.excluded;
     excluded.extend(side_b.excluded);
 
-    let ta = serde_json::to_value(&side_a.header.transform)?;
-    let tb = serde_json::to_value(&side_b.header.transform)?;
-    if ta != tb {
-        differences.push(format!("header: transform differs: {ta} vs {tb}"));
-    }
+    // `transform` is NOT compared for exact equality any more (spec-alignment
+    // M3): `export` now SYNTHESISES its own quantisation transform rather
+    // than reading `city.other.transform` verbatim (spec "Informational
+    // only" — a reader/writer MUST NOT need `other` to decode the file; see
+    // `crate::export::synthesize_transform`), so a source and its own
+    // round-tripped export legitimately carry DIFFERENT transforms even when
+    // every coordinate they quantise is identical. `transform` was always an
+    // implementation-chosen encoding parameter, never semantic content — the
+    // per-axis `tol` derived from `scale_a`/`scale_b` below (and every
+    // per-object coordinate comparison against it) is what actually proves
+    // losslessness.
 
     let rsa = reference_system_url(&side_a.header);
     let rsb = reference_system_url(&side_b.header);
@@ -1857,6 +1863,24 @@ mod tests {
             .join(name);
         assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
         p
+    }
+
+    /// The real `lod3_railway.city.json` fixture carries no `referenceSystem`
+    /// at all (a genuine open-data limitation). Since `scan` now hard-fails
+    /// on coordinate-bearing input with no resolvable CRS (spec "CRS rules"),
+    /// tests below that need a clean railway convert write a small on-disk
+    /// COPY with a CRS injected via JSON mutation of the real fixture —
+    /// never hand-written CityJSON.
+    fn railway_fixture_with_crs() -> (tempfile::TempDir, std::path::PathBuf) {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+                .unwrap();
+        doc["metadata"]["referenceSystem"] =
+            serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("railway_with_crs.city.json");
+        fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+        (dir, path)
     }
 
     /// A comparator that always says "equal" is worthless — this test pins
@@ -2752,10 +2776,8 @@ mod tests {
         use crate::package::{ConvertOptions, convert};
 
         let package_dir = tempfile::tempdir().unwrap();
-        let opts = ConvertOptions::new(
-            fixture("lod3_railway.city.json"),
-            package_dir.path().to_path_buf(),
-        );
+        let (_crs_dir, railway_path) = railway_fixture_with_crs();
+        let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
         convert(&opts).unwrap();
 
         let export_dir = tempfile::tempdir().unwrap();

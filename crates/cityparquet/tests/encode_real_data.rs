@@ -13,6 +13,26 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), tests below open a small on-disk COPY
+/// with a CRS injected via JSON mutation of the real fixture — never
+/// hand-written CityJSON. `Source` streams CityJSONSeq lazily from `path`
+/// (see `crate::source::Source::features`), so the returned `TempDir` MUST
+/// outlive the `Source` — callers keep it bound, never `_`-discarded.
+fn railway_source_with_crs() -> (tempfile::TempDir, Source) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    let src = Source::open(&path).unwrap();
+    (dir, src)
+}
+
 #[test]
 fn delft_encodes_all_objects_in_batches() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
@@ -82,7 +102,7 @@ fn delft_lod0_lands_in_a_suffixed_column_with_no_lod_in_properties() {
 
 #[test]
 fn railway_encodes_with_semantics_and_templates() {
-    let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let (_crs_dir, src) = railway_source_with_crs();
     let s = scan(&src).unwrap();
     let batches: Vec<_> = encode(&src, &s, 1024, false)
         .unwrap()
@@ -99,7 +119,7 @@ fn railway_encodes_with_semantics_and_templates() {
 /// per-surface material values array; surface 67 is degenerate.
 #[test]
 fn railway_realigns_material_values_for_dropped_surfaces() {
-    let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let (_crs_dir, src) = railway_source_with_crs();
     let s = scan(&src).unwrap();
     let batches: Vec<_> = encode(&src, &s, 1024, false)
         .unwrap()

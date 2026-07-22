@@ -22,6 +22,26 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), tests below that convert (or compare
+/// against) railway use a small on-disk COPY with a CRS injected via JSON
+/// mutation of the real fixture — never hand-written CityJSON. Used both as
+/// the conversion INPUT and, where a test also compares against "the
+/// source", as that comparison baseline (the pristine original has no CRS to
+/// compare the export's restored referenceSystem against).
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
+}
+
 /// `metadata.json`'s object-table file names for the package at `dir`
 /// (`PackageTables::open`'s `cityparquet-objects`-role assets) — by-type is
 /// the only, mandatory table layout, so this is 1..N main-table file names,
@@ -163,11 +183,8 @@ fn delft_full_convert_round_trips_through_parquet() {
 #[test]
 fn railway_full_convert_succeeds() {
     let out = tempfile::tempdir().unwrap();
-    let report = convert(&ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        out.path().to_path_buf(),
-    ))
-    .unwrap();
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let report = convert(&ConvertOptions::new(railway_path, out.path().to_path_buf())).unwrap();
     assert_eq!(report.object_count, 121);
     // railway's distinct object_type values resolve to 9 distinct CityGML
     // modules (see `by_type_convert_of_railway_writes_nine_module_tables`
@@ -190,11 +207,8 @@ fn railway_full_convert_succeeds() {
 #[test]
 fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
     let out = tempfile::tempdir().unwrap();
-    convert(&ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        out.path().to_path_buf(),
-    ))
-    .unwrap();
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    convert(&ConvertOptions::new(railway_path, out.path().to_path_buf())).unwrap();
 
     // Per-LoD appearance columns (§11.1, G20): each `material_lod*` /
     // `texture_lod*` cell holds the plain `{"<theme>": …}` shape. The index
@@ -271,7 +285,8 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
 #[test]
 fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     let out = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, out.path().to_path_buf());
     let report = convert(&opts).unwrap();
 
     assert_eq!(report.materials_written, 85);
@@ -345,8 +360,8 @@ fn delft_compatibility_convert_writes_no_sidecars() {
 #[test]
 fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
     let out = tempfile::tempdir().unwrap();
-    let first =
-        ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let first = ConvertOptions::new(railway_path, out.path().to_path_buf());
     let first_report = convert(&first).unwrap();
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
@@ -405,8 +420,8 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
 #[test]
 fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
     let out = tempfile::tempdir().unwrap();
-    let first =
-        ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let first = ConvertOptions::new(railway_path, out.path().to_path_buf());
     let first_report = convert(&first).unwrap();
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
@@ -509,8 +524,8 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
 fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
     // Pre-existing, valid Compatibility package at `out`.
     let out = tempfile::tempdir().unwrap();
-    let first =
-        ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let first = ConvertOptions::new(railway_path.clone(), out.path().to_path_buf());
     let first_report = convert(&first).unwrap();
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
@@ -614,12 +629,7 @@ fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
         output: exported.clone(),
     })
     .unwrap();
-    let report = compare_datasets(
-        &fixture("lod3_railway.city.json"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
+    let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
     assert!(
         report.equal,
         "the surviving package must still export losslessly; differences: {:#?}",
@@ -861,7 +871,8 @@ fn hilbert_ordering_never_changes_delft_semantics() {
 #[test]
 fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
     let out = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let mut opts = ConvertOptions::new(railway_path.clone(), out.path().to_path_buf());
     opts.ordering = RowOrder::Hilbert;
     convert(&opts).unwrap();
 
@@ -873,12 +884,7 @@ fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
     })
     .unwrap();
 
-    let report = compare_datasets(
-        &fixture("lod3_railway.city.json"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
+    let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
     assert!(
         report.equal,
         "Hilbert-ordered railway (Compatibility) must round-trip losslessly with no exclusions \
@@ -1082,7 +1088,8 @@ fn empty_input_is_rejected() {
 #[test]
 fn by_type_convert_of_railway_writes_nine_module_tables() {
     let out = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, out.path().to_path_buf());
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 121);
 

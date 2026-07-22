@@ -838,7 +838,8 @@ impl TableWriters {
         let empty = std::collections::BTreeMap::new();
         for (name, writer) in self.order.iter().zip(self.writers.iter_mut()) {
             let per_lod = self.module_geo_by_file.get(name).unwrap_or(&empty);
-            let (columns, primary_column, geo) = city_and_geo_for_file(per_lod);
+            let (columns, primary_column, geo) =
+                city_and_geo_for_file(per_lod, self.base_city.crs.as_ref());
             let mut city = self.base_city.clone();
             city.columns = columns;
             city.primary_column = primary_column;

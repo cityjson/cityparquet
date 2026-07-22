@@ -41,6 +41,23 @@ fn convert_fixture_path(input: &Path, dir: &tempfile::TempDir) -> PathBuf {
     out
 }
 
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), tests below write a small on-disk COPY
+/// with a CRS injected via JSON mutation of the real fixture — never
+/// hand-written CityJSON.
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
+}
+
 /// The footer- and schema-derived fields for delft.
 ///
 /// `object_count` 2231 is the same figure pinned by `decode_real_data.rs` and
@@ -146,7 +163,8 @@ fn co_types_include_second_level_types_a_filename_would_hide() {
 #[test]
 fn co_types_cover_a_many_type_dataset() {
     let dir = tempfile::tempdir().unwrap();
-    let pkg = convert_fixture("lod3_railway.city.json", &dir);
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let pkg = convert_fixture_path(&railway_path, &dir);
 
     let tables = PackageTables::open(&pkg).expect("resolve tables");
     let types = derive_co_types(&tables).expect("co_types");
@@ -224,7 +242,8 @@ fn semantic_surfaces_true_for_delft() {
 fn appearance_flags_true_only_with_compatibility_sidecars() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("pkg");
-    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.clone());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, out.clone());
     convert(&opts).expect("convert lod3_railway");
 
     let tables = PackageTables::open(&out).expect("resolve tables");
@@ -401,13 +420,39 @@ fn datetime_falls_back_to_a_conversion_timestamp_when_nothing_else_is_available(
 /// schema — not a wrong extent, and not a failed conversion either.
 #[test]
 fn a_package_with_no_crs_converts_to_an_unlocated_but_schema_valid_item() {
+    // `helsinki_address` now carries a CRS (spec-alignment M3: coordinate-
+    // bearing input with none is a hard conversion error, per "CRS rules") —
+    // an "unlocated" Item is only still legitimate for a source with NO
+    // CRS-bearing coordinate at all. Derived from the real CityJSONSeq
+    // fixture: strip `geometry`/`address` from every feature's objects
+    // (attributes-only) and the header's own CRS, so the source genuinely
+    // carries none — never hand-written CityJSON, the same "mutate the real
+    // parsed structure, line by line" technique used throughout this test
+    // suite (e.g. `scan_real_data.rs`).
+    let text = std::fs::read_to_string(data_fixture("helsinki_address.city.jsonl")).unwrap();
+    let mut lines = text.lines();
+    let mut header: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    header["metadata"]
+        .as_object_mut()
+        .unwrap()
+        .remove("referenceSystem");
+    let mut out_lines = vec![serde_json::to_string(&header).unwrap()];
+    for line in lines {
+        let mut feature: serde_json::Value = serde_json::from_str(line).unwrap();
+        for (_, co) in feature["CityObjects"].as_object_mut().unwrap() {
+            co.as_object_mut().unwrap().remove("geometry");
+            co.as_object_mut().unwrap().remove("address");
+        }
+        out_lines.push(serde_json::to_string(&feature).unwrap());
+    }
+
     let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("helsinki_attributes_only.city.jsonl");
+    std::fs::write(&input, out_lines.join("\n")).unwrap();
+
     let out = dir.path().join("pkg");
-    convert(&ConvertOptions::new(
-        data_fixture("helsinki_address.city.jsonl"),
-        out.clone(),
-    ))
-    .expect("convert must succeed even though the source has no CRS");
+    convert(&ConvertOptions::new(input, out.clone()))
+        .expect("convert must succeed: an attributes-only source has no CRS-bearing coordinate");
 
     let text = std::fs::read_to_string(out.join("metadata.json")).unwrap();
     let instance: serde_json::Value = serde_json::from_str(&text).unwrap();

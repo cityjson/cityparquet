@@ -179,11 +179,13 @@ fn delft_scan_matches_known_content() {
 
 /// `city_and_geo_for_file` — the per-file `city.columns`/two-selector
 /// primary-column logic (spec-alignment M3) — against delft's own single
-/// (Building) module: delft carries LoD0, so the CityParquet primary is the
-/// suffixed LoD0 footprint column (preferred over the higher, legal LoDs),
-/// matching the pre-M3 `default_geometry` pin this replaces.
+/// (Building) module. The two selectors are INDEPENDENT and, for delft,
+/// genuinely differ: `city_primary` is the highest LoD present regardless of
+/// legality (delft's highest is 2.2, a real `Solid`), while `geo_primary`
+/// prefers the `0.*` family when present (delft's native LoD0 footprint) —
+/// spec "Why city.primary_column and geo.primary_column can differ".
 #[test]
-fn delft_city_and_geo_for_file_prefers_lod0() {
+fn delft_city_and_geo_for_file_has_independent_primaries() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let s = scan(&src).unwrap();
     assert_eq!(
@@ -192,11 +194,34 @@ fn delft_city_and_geo_for_file_prefers_lod0() {
         "delft is Building-only: exactly one module's worth of geometry"
     );
     let per_lod = s.module_geo.values().next().unwrap();
-    let (columns, primary_column, geo) = city_and_geo_for_file(per_lod);
+    let (columns, primary_column, geo) = city_and_geo_for_file(per_lod, s.crs.as_ref());
     assert!(!columns.is_empty());
-    assert_eq!(primary_column.as_deref(), Some("geometry_lod0_0"));
+    assert_eq!(
+        primary_column.as_deref(),
+        Some("geometry_lod2_2"),
+        "city.primary_column is the highest LoD present, solids included"
+    );
+    assert!(
+        columns
+            .iter()
+            .any(|c| c.name == "geometry_lod2_2" && c.geometry_types == ["PolyhedralSurface Z"]),
+        "geometry_lod2_2 must be recorded as the real Solid-family type it is: {columns:?}"
+    );
     let geo = geo.expect("delft's LoD0 footprint is GeoParquet-legal");
-    assert_eq!(geo.primary_column, "geometry_lod0_0");
+    assert_eq!(
+        geo.primary_column, "geometry_lod0_0",
+        "geo.primary_column prefers the 0.* family when present"
+    );
+    assert!(
+        !geo.columns.contains_key("geometry_lod2_2"),
+        "the Solid column must NOT be declared in geo.columns"
+    );
+    let footprint_crs = geo.columns["geometry_lod0_0"]
+        .crs
+        .as_ref()
+        .expect("geo.columns[].crs must be explicit (GeoParquet's own absent-crs-means-CRS84 \
+                 rule, spec CRS rules \"Absent-CRS caveat\")");
+    assert_eq!(footprint_crs["id"]["code"], serde_json::json!(7415));
 }
 
 #[test]

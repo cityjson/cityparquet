@@ -9,6 +9,7 @@ use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::lod0::{Lod0Options, faces_from_geometry, footprint_to_geometry, synthesize_lod0};
 use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::source::Source;
 use cityparquet::stac::properties::PackageTables;
 use cityparquet::wkb_write::{VertexPool, geometry_to_wkb};
@@ -102,11 +103,29 @@ fn delft_solids_synthesise_valid_multipolygon_footprints() {
     );
 }
 
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), [`convert_railway`] writes a small
+/// on-disk COPY with a CRS injected via JSON mutation of the real fixture —
+/// never hand-written CityJSON.
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
+}
+
 /// Convert `lod3_railway` (LoD3 solids only, no source LoD0) with synthesis
 /// on/off, returning the package dir.
 fn convert_railway(generate_lod0: bool) -> tempfile::TempDir {
     let pkg = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), pkg.path().to_path_buf());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let mut opts = ConvertOptions::new(railway_path, pkg.path().to_path_buf());
     opts.generate_lod0 = generate_lod0;
     convert(&opts).unwrap();
     pkg
@@ -163,6 +182,45 @@ fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
         builder.schema().field_with_name("geometry_lod0_0").is_err(),
         "no synthesised LoD0 column without opt-in"
     );
+}
+
+/// spec-alignment M3, checklist item 4 (variant: two independent selectors
+/// disagreeing WITHOUT a solid involved): railway's LoD3 geometry is
+/// `MultiSurface`/`CompositeSurface` — already GeoParquet-legal — so once
+/// LoD0 synthesis adds a legal footprint, `city.primary_column` (the highest
+/// LoD present, unconditionally — LoD3) and `geo.primary_column` (the `0.*`
+/// family, preferred over any higher LoD even when that LoD is ALSO legal)
+/// still genuinely differ. Both columns are legal here, so both appear in
+/// `geo.columns` — this is `lod0_synthesis::synthesised_railway...`'s
+/// companion in `scan_real_data.rs`'s `delft_city_and_geo_for_file_has_independent_primaries`,
+/// which covers the Solid-bearing case.
+#[test]
+fn synthesised_railway_has_independent_city_and_geo_primaries() {
+    let pkg = convert_railway(true);
+    // building.parquet: railway's Buildings/BuildingParts carry both the
+    // source LoD3 surfaces and the synthesised LoD0 footprint.
+    let file = std::fs::File::open(pkg.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let (city, geo) = builder.cityparquet_footer().unwrap();
+
+    assert_eq!(
+        city.primary_column.as_deref(),
+        Some("geometry_lod3_0"),
+        "city.primary_column must be the highest LoD present"
+    );
+    let geo = geo.expect("both LoD0 and LoD3 are GeoParquet-legal here");
+    assert_eq!(
+        geo.primary_column, "geometry_lod0_0",
+        "geo.primary_column prefers the 0.* family even over a higher, also-legal LoD"
+    );
+    assert_ne!(
+        city.primary_column.as_deref(),
+        Some(geo.primary_column.as_str()),
+        "city.primary_column and geo.primary_column must genuinely differ here"
+    );
+    // Both columns are legal, so both are declared in geo.columns too.
+    assert!(geo.columns.contains_key("geometry_lod0_0"));
+    assert!(geo.columns.contains_key("geometry_lod3_0"));
 }
 
 /// Synthesis is idempotent: exporting a synthesised package yields real `lod:"0"`

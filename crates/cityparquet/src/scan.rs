@@ -529,11 +529,18 @@ impl ScanResult {
 ///   and `geo.primary_column` can differ"). `None` when the file has zero
 ///   legal columns (a solid-only table) — no `geo` key is written at all.
 ///
-/// `crs` is the file's own `city.crs` (mirrored per-column when present, per
-/// the spec's `city.columns[].crs` field, which "defaults to the file-level
-/// `city.crs`" — so this crate never bothers repeating it per column).
+/// `crs` is the dataset's `city.crs` (PROJJSON). `city.columns[].crs` is left
+/// absent (per the spec, it "defaults to the file-level `city.crs`", a
+/// sibling in the SAME object, so a CityParquet reader never needs it
+/// repeated). `geo.columns[].crs`, however, IS populated from it whenever
+/// present: GeoParquet's own rule treats an absent column `crs` as
+/// `OGC:CRS84`, and a GeoParquet-only consumer has no access to the foreign
+/// `city` key to fall back to — the spec's CRS rules "Absent-CRS caveat"
+/// requires a writer to state it explicitly there to avoid silently
+/// mis-georeferencing a projected city model.
 pub fn city_and_geo_for_file(
     per_lod: &std::collections::BTreeMap<Lod, BTreeSet<String>>,
+    crs: Option<&serde_json::Value>,
 ) -> (Vec<CityColumnEntry>, Option<String>, Option<GeoMetadata>) {
     if per_lod.is_empty() {
         return (Vec::new(), None, None);
@@ -556,7 +563,7 @@ pub fn city_and_geo_for_file(
                 GeoColumnEntry {
                     encoding: "WKB".to_string(),
                     geometry_types,
-                    crs: None,
+                    crs: crs.cloned(),
                     edges: Some("planar".to_string()),
                     bbox: None,
                     epoch: None,

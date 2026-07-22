@@ -29,6 +29,25 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), tests below that convert (or compare
+/// against) railway use a small on-disk COPY with a CRS injected via JSON
+/// mutation of the real fixture — never hand-written CityJSON. Used both as
+/// the conversion INPUT and, where a test also compares against "the
+/// source", as that comparison baseline.
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
+}
+
 /// Converts `input` into a fresh tempdir package, then exports it back to
 /// `.city.jsonl` in a second tempdir. Returns the export report plus the
 /// re-opened export `Source` and the original `Source` (both kept alive so
@@ -45,9 +64,27 @@ fn convert_and_export(
     tempfile::TempDir,
     tempfile::TempDir,
 ) {
+    convert_and_export_path(fixture(input))
+}
+
+/// [`convert_and_export`] taking an already-resolved input path (so a
+/// CRS-injected derivative, e.g. [`railway_fixture_with_crs`], can be passed
+/// directly). `original` is opened from THIS SAME path, never the pristine
+/// fixture — the exported package's restored `referenceSystem` must be
+/// compared against the CRS the conversion actually saw.
+fn convert_and_export_path(
+    input: PathBuf,
+) -> (
+    cityparquet::export::ExportReport,
+    Source,
+    Source,
+    PathBuf,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
     let package_dir = tempfile::tempdir().unwrap();
     convert(&ConvertOptions::new(
-        fixture(input),
+        input.clone(),
         package_dir.path().to_path_buf(),
     ))
     .unwrap();
@@ -61,7 +98,7 @@ fn convert_and_export(
     .unwrap();
 
     let exported = Source::open(&output).unwrap();
-    let original = Source::open(&fixture(input)).unwrap();
+    let original = Source::open(&input).unwrap();
     (report, exported, original, output, package_dir, export_dir)
 }
 
@@ -96,13 +133,18 @@ fn delft_exports_back_to_a_seq_matching_the_source_header_and_counts() {
 
     assert_eq!(exported.format(), SourceFormat::CityJsonSeq);
 
-    // Exact JSON equality on the transform (compares scale/translate f64
-    // vectors verbatim, not just a re-derived Lod string).
+    // `transform` is NOT required to match the source exactly any more
+    // (spec-alignment M3): `export` SYNTHESISES its own quantisation
+    // transform from the package's own data rather than reading
+    // `city.other.transform` verbatim (spec "Informational only" — see
+    // `crate::export::synthesize_transform`), so only the scale convention
+    // (millimetre precision) is pinned here; `crate::compare`'s tolerance-
+    // based coordinate comparison (exercised by the round-trip tests) is
+    // what actually proves losslessness.
     let exported_transform = serde_json::to_value(&exported.header().transform).unwrap();
-    let original_transform = serde_json::to_value(&original.header().transform).unwrap();
     assert_eq!(
-        exported_transform, original_transform,
-        "exported header transform must equal the source header transform exactly"
+        exported_transform["scale"],
+        serde_json::json!([0.001, 0.001, 0.001])
     );
 
     // referenceSystem survives as the same URL string.
@@ -149,10 +191,45 @@ fn delft_exports_back_to_a_seq_matching_the_source_header_and_counts() {
     assert_eq!(object_count, 2231);
 }
 
+/// railway carries real materials/textures/templates, so a plain convert now
+/// writes all three sidecars unconditionally (spec-alignment gap 19:
+/// sidecars are content-gated, not profile-gated) — the "no sidecars"
+/// scenario this test exercises no longer arises from a plain convert. It is
+/// constructed directly instead, by removing every sidecar asset from the
+/// manifest after conversion (the sidecar FILES are left on disk, untouched
+/// — the same "unlisted-but-present" shape
+/// `export_ignores_an_unlisted_geometry_templates_file_left_on_disk` already
+/// proves `export` ignores), so `export` sees exactly the package shape a
+/// Core-only writer (no sidecars at all) would have produced.
 #[test]
 fn railway_exports_dropping_instance_geometries_but_keeping_their_objects() {
-    let (report, exported, _original, output, _package_dir, _export_dir) =
-        convert_and_export("lod3_railway.city.json");
+    let package_dir = tempfile::tempdir().unwrap();
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    convert(&ConvertOptions::new(
+        railway_path,
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+
+    let mut item = read_item(package_dir.path());
+    let before = item.assets.len();
+    item.assets.retain(|_, a| !a.roles.iter().any(|r| r == ROLE_SIDECAR));
+    assert_eq!(
+        item.assets.len(),
+        before - 3,
+        "precondition: all three sidecar assets (materials/textures/geometry_templates) \
+         must actually have been removed"
+    );
+    write_item(package_dir.path(), &item);
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.jsonl");
+    let report = export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+    let exported = Source::open(&output).unwrap();
 
     assert_eq!(exported.format(), SourceFormat::CityJsonSeq);
     assert_eq!(report.object_count, 121);
@@ -165,8 +242,7 @@ fn railway_exports_dropping_instance_geometries_but_keeping_their_objects() {
     // binding rules (per-(object, LoD) first geometry kept, GeometryInstance
     // excluded — the dataset's only LoD is "3"): 105 stored geometries, of
     // which 24 carry `material`, 95 carry `texture`, and 105 carry at least
-    // one of the two. Core-profile packages store the index maps but not the
-    // appearance definitions (M4 sidecars), so export must DROP them all —
+    // one of the two. With no sidecars listed, export must DROP them all —
     // exporting a dangling index map would be invalid CityJSON.
     assert_eq!(
         report.appearance_refs_dropped, 105,
@@ -330,10 +406,8 @@ fn assert_texture_rings_are_index_form(v: &Value, tex_limit: usize, uv_limit: us
 #[test]
 fn railway_compatibility_export_restores_appearance_feature_local() {
     let package_dir = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        package_dir.path().to_path_buf(),
-    );
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -458,6 +532,8 @@ fn railway_export_restores_appearance_under_a_non_canonical_lod() {
         rewritten,
         "must have rewritten exactly the target geometry's lod"
     );
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
 
     let input_dir = tempfile::tempdir().unwrap();
     let input_path = input_dir.path().join("railway_noncanonical_lod.city.json");
@@ -465,10 +541,8 @@ fn railway_export_restores_appearance_under_a_non_canonical_lod() {
 
     // Baseline: pristine railway (canonical "3") exports with its texture.
     let pristine_pkg = tempfile::tempdir().unwrap();
-    let pristine_opts = ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        pristine_pkg.path().to_path_buf(),
-    );
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let pristine_opts = ConvertOptions::new(railway_path, pristine_pkg.path().to_path_buf());
     convert(&pristine_opts).unwrap();
     let pristine_export = tempfile::tempdir().unwrap();
     let pristine_out = pristine_export.path().join("export.city.jsonl");
@@ -582,6 +656,8 @@ fn multi_lod_object_with_single_lod_appearance_round_trips() {
         second_lod_geom.remove("texture");
         geoms.push(Value::Object(second_lod_geom));
     }
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
 
     let input_dir = tempfile::tempdir().unwrap();
     let input_path = input_dir
@@ -642,6 +718,8 @@ fn attributes_named_like_appearance_columns_do_not_corrupt_export() {
             serde_json::json!("also brick"),
         );
     }
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
 
     let input_dir = tempfile::tempdir().unwrap();
     let input_path = input_dir.path().join("railway_lookalike_attrs.city.json");
@@ -708,6 +786,8 @@ fn children_roles_round_trip() {
         co.insert("children_roles".to_string(), serde_json::json!(roles));
         roles
     };
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
 
     let input_dir = tempfile::tempdir().unwrap();
     let input_path = input_dir.path().join("railway_children_roles.city.json");
@@ -772,6 +852,8 @@ fn mismatched_children_roles_is_rejected() {
         let roles: Vec<String> = (0..n + 1).map(|i| format!("role{i}")).collect();
         co.insert("children_roles".to_string(), serde_json::json!(roles));
     }
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
     let input_dir = tempfile::tempdir().unwrap();
     let input_path = input_dir.path().join("railway_bad_roles.city.json");
     std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
@@ -842,10 +924,8 @@ fn railway_compatibility_export_attaches_appearance_only_to_referencing_features
     );
 
     let package_dir = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        package_dir.path().to_path_buf(),
-    );
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -881,28 +961,33 @@ fn railway_compatibility_export_attaches_appearance_only_to_referencing_features
 }
 
 /// M5 debt item 2, rule half (b): a dataset that declares dataset-wide
-/// `default-theme-material`/`default-theme-texture` members but writes NO
-/// `materials.parquet`/`textures.parquet` sidecars at all (any Core-profile
-/// convert, regardless of what the header sets — sidecars are a
-/// Compatibility-profile artefact) must still see those defaults attached to
-/// every exported feature; before this fix `export` only ever constructed a
-/// `LocalAppearance` (and therefore only ever attached defaults) when the
-/// sidecars were present, so the defaults were lost entirely. Derived from a
-/// mutated copy of the railway fixture (same precedent as
-/// `source_metadata_and_appearance_defaults_reach_scan_metadata` in
-/// `scan_real_data.rs`): inject `default-theme-material`/`-texture` into the
-/// header's `appearance` object, then convert under the DEFAULT (Core)
-/// profile.
+/// `default-theme-material`/`default-theme-texture` members but has NO real
+/// material/texture definitions anywhere (so `materials.parquet`/
+/// `textures.parquet` are never written — sidecars are content-gated, not
+/// profile-gated, spec-alignment gap 19: even a dataset that DOES have
+/// appearance content now always gets its sidecars) must still see those
+/// defaults attached to every exported feature; before this fix `export`
+/// only ever constructed a `LocalAppearance` (and therefore only ever
+/// attached defaults) when the sidecars were present, so the defaults were
+/// lost entirely. Derived from a mutated copy of the delft fixture (which
+/// carries no material/texture of its own — see `crate::compare`'s module
+/// docs — so it is the real fixture that keeps this precondition true even
+/// now that sidecars are content-gated): inject
+/// `default-theme-material`/`-texture` into the header's `appearance`
+/// object.
 #[test]
 fn core_profile_export_attaches_dataset_wide_defaults_even_without_sidecars() {
-    let mut doc: Value =
-        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
-            .unwrap();
-    doc["appearance"]["default-theme-material"] = serde_json::json!("theme-a");
-    doc["appearance"]["default-theme-texture"] = serde_json::json!("theme-b");
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = text.lines();
+    let mut header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    header["appearance"]["default-theme-material"] = serde_json::json!("theme-a");
+    header["appearance"]["default-theme-texture"] = serde_json::json!("theme-b");
+    let mut out_lines = vec![serde_json::to_string(&header).unwrap()];
+    out_lines.extend(lines.map(str::to_string));
+
     let input_dir = tempfile::tempdir().unwrap();
-    let input_path = input_dir.path().join("railway_theme.city.json");
-    std::fs::write(&input_path, serde_json::to_string(&doc).unwrap()).unwrap();
+    let input_path = input_dir.path().join("delft_theme.city.jsonl");
+    std::fs::write(&input_path, out_lines.join("\n")).unwrap();
 
     let package_dir = tempfile::tempdir().unwrap();
     let report = convert(&ConvertOptions::new(
@@ -912,7 +997,7 @@ fn core_profile_export_attaches_dataset_wide_defaults_even_without_sidecars() {
     .unwrap();
     assert_eq!(
         report.materials_written, 0,
-        "precondition: the Core profile never writes sidecars regardless of the header"
+        "precondition: delft has no material/texture definitions of its own to write"
     );
     assert_eq!(report.textures_written, 0);
     assert!(!package_dir.path().join("materials.parquet").exists());
@@ -925,10 +1010,10 @@ fn core_profile_export_attaches_dataset_wide_defaults_even_without_sidecars() {
         output: output.clone(),
     })
     .unwrap();
-    // The Core-profile appearance-refs-dropped behaviour must be completely
-    // unaffected by attaching defaults: real geometry material/texture index
-    // maps still have no defs sidecar to resolve against.
-    assert_eq!(export_report.appearance_refs_dropped, 105);
+    // The appearance-refs-dropped behaviour must be completely unaffected by
+    // attaching defaults: delft has no geometry material/texture index maps
+    // to begin with.
+    assert_eq!(export_report.appearance_refs_dropped, 0);
 
     let exported = Source::open(&output).unwrap();
     let mut checked = 0usize;
@@ -971,10 +1056,8 @@ fn core_profile_export_attaches_dataset_wide_defaults_even_without_sidecars() {
 #[test]
 fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
     let package_dir = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        package_dir.path().to_path_buf(),
-    );
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
     convert(&opts).unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
@@ -1175,10 +1258,8 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
 #[test]
 fn export_errors_on_a_dangling_template_id_reference() {
     let package_dir = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        package_dir.path().to_path_buf(),
-    );
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
     convert(&opts).unwrap();
 
     let templates_path = package_dir.path().join("geometry_templates.parquet");
@@ -1240,10 +1321,8 @@ fn export_errors_on_a_dangling_template_id_reference() {
 #[test]
 fn export_errors_on_an_out_of_range_material_global_id() {
     let package_dir = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        package_dir.path().to_path_buf(),
-    );
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
     convert(&opts).unwrap();
 
     let materials_path = package_dir.path().join("materials.parquet");
@@ -1370,10 +1449,8 @@ fn table_asset(name: &str, role: &str) -> Asset {
 #[test]
 fn export_errors_when_manifest_lists_templates_but_the_sidecar_file_is_missing() {
     let package_dir = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        package_dir.path().to_path_buf(),
-    );
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
     convert(&opts).unwrap();
 
     let item = read_item(package_dir.path());
@@ -1415,10 +1492,8 @@ fn export_errors_when_manifest_lists_templates_but_the_sidecar_file_is_missing()
 #[test]
 fn export_ignores_an_unlisted_geometry_templates_file_left_on_disk() {
     let package_dir = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        package_dir.path().to_path_buf(),
-    );
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
     convert(&opts).unwrap();
 
     let mut item = read_item(package_dir.path());
@@ -1662,33 +1737,33 @@ fn export_decodes_a_second_table_with_a_renamed_attribute_column_using_its_own_m
         arrow_select::concat::concat_batches(&schema, &batches).unwrap()
     };
 
-    let attr_kv = kvs
+    let city_kv = kvs
         .iter()
-        .find(|kv| kv.key == "attributes")
-        .expect("delft's metadata must carry an attributes entry (§13.1)");
-    let mut attrs: Vec<String> = serde_json::from_str(
-        attr_kv
+        .find(|kv| kv.key == "city")
+        .expect("delft's footer must carry a `city` key (spec-alignment M3, gap 16)");
+    let mut city: Value = serde_json::from_str(
+        city_kv
             .value
             .as_deref()
-            .expect("the `attributes` KV must carry a value"),
+            .expect("the `city` KV must carry a value"),
     )
     .unwrap();
+    let attrs = city["attributes"]
+        .as_array_mut()
+        .expect("delft's city.attributes must be an array (§13.1)");
     assert!(
         !attrs.is_empty(),
         "delft must have at least one attribute column to rename"
     );
-    let old_name = attrs[0].clone();
+    let old_name = attrs[0].as_str().unwrap().to_string();
     let new_name = format!("{old_name}_renamed");
-    attrs[0] = new_name.clone();
+    attrs[0] = serde_json::json!(new_name);
 
     let new_kvs: Vec<KeyValue> = kvs
         .into_iter()
         .map(|kv| {
-            if kv.key == "attributes" {
-                KeyValue::new(
-                    "attributes".to_string(),
-                    serde_json::to_string(&attrs).unwrap(),
-                )
+            if kv.key == "city" {
+                KeyValue::new("city".to_string(), serde_json::to_string(&city).unwrap())
             } else {
                 kv
             }

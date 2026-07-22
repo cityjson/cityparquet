@@ -36,13 +36,40 @@ fn manifest_tables(dir: &std::path::Path) -> Vec<String> {
 /// several family tables — see `manifest_tables` — so every one of them
 /// must be read, never a single hardcoded main-table name).
 fn convert_and_decode(input: &str) -> Vec<cityparquet::decode::DecodedObject> {
+    convert_and_decode_path(&fixture(input), input)
+}
+
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), writes a small on-disk COPY with a CRS
+/// injected via JSON mutation of the real fixture — never hand-written
+/// CityJSON.
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
+}
+
+/// [`convert_and_decode`] taking an already-resolved path, so a CRS-injected
+/// derivative can be passed directly. `label` is used only for the progress
+/// `eprintln!`.
+fn convert_and_decode_path(
+    path: &std::path::Path,
+    label: &str,
+) -> Vec<cityparquet::decode::DecodedObject> {
     let out = tempfile::tempdir().unwrap();
     let report = convert(&ConvertOptions::new(
-        fixture(input),
+        path.to_path_buf(),
         out.path().to_path_buf(),
     ))
     .unwrap();
-    eprintln!("{input}: converted {} objects", report.object_count);
+    eprintln!("{label}: converted {} objects", report.object_count);
 
     let mut all = Vec::new();
     for table in manifest_tables(out.path()) {
@@ -199,7 +226,8 @@ fn delft_decodes_every_object_with_correct_types_and_attributes() {
 /// coincide for this fixture).
 #[test]
 fn railway_decodes_templates_and_semantics() {
-    let objects = convert_and_decode("lod3_railway.city.json");
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let objects = convert_and_decode_path(&railway_path, "lod3_railway.city.json");
     assert_eq!(objects.len(), 121);
 
     let template_count = objects.iter().filter(|o| o.template.is_some()).count();
@@ -257,6 +285,12 @@ fn instances_only_dataset_uses_the_unsuffixed_geometry_column() {
         kept_instances, 15,
         "railway must carry 15 GeometryInstances to keep"
     );
+    // A GeometryInstance's `template.point` (the placement anchor, in
+    // DATASET coordinates) is itself a CRS-bearing coordinate (spec "CRS
+    // rules"), so this instances-only derivative still needs a CRS, even
+    // though it has no LoD-bearing analysis geometry at all.
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
     let src_dir = tempfile::tempdir().unwrap();
     let path = src_dir.path().join("railway_instances_only.city.json");
     std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
