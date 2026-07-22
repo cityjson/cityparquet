@@ -52,8 +52,8 @@ mod tests {
 
     #[test]
     fn metadata_error_displays_context() {
-        let e = CityParquetError::Metadata("missing key cityparquet_version".into());
-        assert!(e.to_string().contains("cityparquet_version"));
+        let e = CityParquetError::Metadata("missing key city".into());
+        assert!(e.to_string().contains("missing key city"));
     }
 
     #[test]

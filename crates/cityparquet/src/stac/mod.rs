@@ -244,8 +244,8 @@ fn source_metadata(tables: &PackageTables) -> Result<Option<Value>> {
 }
 
 /// The CityParquet spec/encoding version the package's footer declares
-/// (`cityparquet_version`, §13.1) — e.g. `"0.1.0"`. Distinct from
-/// `city3d:version`, which is the *source* CityJSON version.
+/// (`city.version`, spec `05-metadata.mdx`) — e.g. `"0.1.0-draft"`. Distinct
+/// from `city3d:version`, which is the *source* CityJSON version.
 fn package_cityparquet_version(tables: &PackageTables) -> Result<String> {
     let path = tables.tables.first().ok_or_else(|| {
         CityParquetError::Metadata("package has no object tables to read a version from".into())

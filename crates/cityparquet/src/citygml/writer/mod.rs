@@ -226,7 +226,7 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
             let table_meta = builder.cityparquet_metadata()?;
             if table_meta.version != meta.version {
                 return Err(CityParquetError::Metadata(format!(
-                    "table '{}' has cityparquet_version {:?}, expected {:?} (matching '{}')",
+                    "table '{}' has city.version {:?}, expected {:?} (matching '{}')",
                     table_display_name(path),
                     table_meta.version,
                     meta.version,

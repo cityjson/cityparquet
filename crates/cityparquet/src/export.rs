@@ -1249,14 +1249,14 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
                 CityParquetError::Parquet(format!("cannot open parquet reader: {e}"))
             })?;
-            // Every table must agree on `cityparquet_version` — a genuine
+            // Every table must agree on `city.version` — a genuine
             // internal inconsistency (different writer versions cannot
             // safely coexist in one package) rather than the module-scoped
             // schema variation this fix otherwise makes legal.
             let table_meta = builder.cityparquet_metadata()?;
             if table_meta.version != meta.version {
                 return Err(err(format!(
-                    "table '{}' has cityparquet_version {:?}, expected {:?} \
+                    "table '{}' has city.version {:?}, expected {:?} \
                      (matching table '{}')",
                     table_display_name(table_path),
                     table_meta.version,
