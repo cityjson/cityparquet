@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 
 use cityparquet_schema::{
     AttributeInferer, CITYPARQUET_VERSION, CityParquetError, CityParquetMetadata,
-    CityParquetSchema, Lod, Result, SourceFormat as SchemaSourceFormat, footprint_lod,
-    geometry_column_name, normalise_attribute_name,
+    CityParquetSchema, Lod, Result, SourceFormat as SchemaSourceFormat, geometry_column_name,
+    normalise_attribute_name,
 };
 
 use cjseq::GeometryType;
@@ -315,24 +315,24 @@ impl ScanResult {
     /// pairs, ascending by LoD (§13.3, G1) — the writer declares exactly these
     /// in `geo.columns`, and the highest-LoD one is the `primary_column`.
     pub fn geoparquet_geo_columns(&self) -> Vec<(String, Vec<String>)> {
-        let fp = footprint_lod(&self.lods);
         self.geoparquet_columns
             .iter()
-            .map(|(lod, types)| (geometry_column_name("geometry", lod, fp), types.clone()))
+            .map(|(lod, types)| (geometry_column_name("geometry", lod), types.clone()))
             .collect()
     }
 
-    /// Reserve a synthesised LoD0 footprint column (§9 "LoD0 synthesis"): add
-    /// LoD0 to `lods`/`schema` so the un-suffixed `geometry` column exists, and
-    /// declare it GeoParquet-legal (`MultiPolygon Z`). No-op when the dataset has
-    /// no analysis geometry (nothing to synthesise from) or already carries an
-    /// LoD0 column. Because the bare `geometry`/`material`/… names become
-    /// reserved once LoD0 is present (§5.2, G12), any attribute that now collides
-    /// is diverted into `other` here, mirroring `scan`'s own diversion.
+    /// Reserve a synthesised LoD0 footprint column (spec "LoD0 synthesis"):
+    /// add LoD0 to `lods`/`schema` so the `geometry_lod0_0` column exists,
+    /// and declare it GeoParquet-legal (`MultiPolygon Z`). No-op when the
+    /// dataset has no analysis geometry (nothing to synthesise from) or
+    /// already carries some `0.*` LoD. Because `geometry_lod0_0`/`material_lod0_0`/…
+    /// become reserved once LoD0 is present (§5.2, G12), any attribute that
+    /// now collides is diverted into `other` here, mirroring `scan`'s own
+    /// diversion.
     pub fn add_synthesized_lod0_column(&mut self) {
-        // No-op when there is nothing to synthesise from, or the dataset already
-        // has a footprint (any `0.*` LoD — we use the highest, §9).
-        if self.lods.is_empty() || footprint_lod(&self.lods).is_some() {
+        // No-op when there is nothing to synthesise from, or the dataset
+        // already has some `0.*` LoD.
+        if self.lods.is_empty() || self.lods.iter().any(|l| l.major() == 0) {
             return;
         }
         let lod0 = Lod::parse("0").expect("literal 0 is a valid LoD");
@@ -341,7 +341,7 @@ impl ScanResult {
         self.lods.dedup();
         self.schema.lods = self.lods.clone();
 
-        // Divert attributes that collide with the now-reserved bare names.
+        // Divert attributes that collide with the now-reserved suffixed names.
         let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&self.lods);
         let mut kept = Vec::with_capacity(self.schema.attributes.len());
         for (name, ty) in std::mem::take(&mut self.schema.attributes) {
@@ -362,25 +362,24 @@ impl ScanResult {
     /// Build the full `CityParquetMetadata` for this scan, filling every
     /// spec key: attribute/reserved column lists come from the schema's own
     /// rendered Arrow schema (never hand-duplicated), the default geometry
-    /// column is the highest LoD present (or the plain `geometry` column if
-    /// `lods` is empty), and `sidecars` are the compatibility-profile sidecar
-    /// file names to record (empty for the core profile).
+    /// column is the highest `0.*`-family LoD present, else the highest LoD
+    /// overall (or the plain `geometry` column if `lods` is empty), and
+    /// `sidecars` are the compatibility-profile sidecar file names to record
+    /// (empty for the core profile).
     pub fn metadata(&self, sidecars: &[String]) -> Result<CityParquetMetadata> {
         // Only the attribute list is stored (§13.1): a reader recovers the
         // reserved columns as "everything not listed here".
         let (_reserved_columns, attribute_columns) = self.schema.column_lists()?;
 
-        // Prefer the un-suffixed `geometry` (the highest 0.* footprint) as the
-        // default; else the highest LoD present; else the plain `geometry`
-        // fallback (zero-analysis-geometry case, §9).
-        let fp = footprint_lod(&self.lods);
-        let default_geometry = if fp.is_some() {
-            "geometry".to_string()
-        } else {
-            match self.lods.last() {
-                Some(highest) => geometry_column_name("geometry", highest, fp),
-                None => "geometry".to_string(),
-            }
+        // Every LoD, including 0, is a suffixed column — there is no
+        // un-suffixed "footprint" column. The `0.*` family (typically a
+        // footprint) is preferred as the default when present, else the
+        // highest LoD overall, else the plain `geometry` fallback
+        // (zero-analysis-geometry case).
+        let zero_family_highest = self.lods.iter().copied().filter(|l| l.major() == 0).max();
+        let default_geometry = match zero_family_highest.or_else(|| self.lods.last().copied()) {
+            Some(lod) => geometry_column_name("geometry", &lod),
+            None => "geometry".to_string(),
         };
 
         Ok(CityParquetMetadata {

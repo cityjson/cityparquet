@@ -164,8 +164,8 @@ pub struct EncodeStats {
     /// column, so the conversion report surfaces it (see
     /// [`ScanResult::diverted_attribute_names`] for the names).
     pub diverted_attribute_values: usize,
-    /// LoD0 footprints synthesised into the primary `geometry` column for
-    /// objects lacking a source LoD0 (§9 "LoD0 synthesis").
+    /// LoD0 footprints synthesised into the `geometry_lod0_0` column for
+    /// objects lacking a source LoD0 (spec "LoD0 synthesis").
     pub synthesized_lod0_footprints: usize,
 }
 
@@ -530,17 +530,6 @@ pub(crate) fn geometry_properties_json(
     Ok(serde_json::to_string(&Value::Object(map))?)
 }
 
-/// Insert `"lod"` into a `geometry_properties` JSON object. Used only for the
-/// un-suffixed LoD0 `geometry` column, whose bare column name cannot carry the
-/// LoD — §12's additional-keys mechanism, mirroring geometry templates.
-fn inject_lod_into_properties(props: &str, lod: &Lod) -> Result<String> {
-    let mut v: Value = serde_json::from_str(props)?;
-    if let Value::Object(map) = &mut v {
-        map.insert("lod".to_string(), Value::String(lod.to_string()));
-    }
-    Ok(serde_json::to_string(&v)?)
-}
-
 /// `(template id, WKB point, transformationMatrix JSON)` — one resolved
 /// `template` column's worth of data.
 type TemplateFields = (String, Vec<u8>, Option<String>);
@@ -719,7 +708,6 @@ fn accumulate_geometry(
     co: &CityObject,
     pool: &VertexPool,
     per_lod: bool,
-    footprint: Option<Lod>,
     stats: &mut EncodeStats,
     interner: &mut AppearanceInterner,
     defs: &LocalDefs,
@@ -781,18 +769,12 @@ fn accumulate_geometry(
         // indices are rewritten to dataset-global ids — both handled by the
         // shared pipeline in `rewrite_geometry_appearance` (also used by the
         // geometry-templates sidecar, see its doc comment).
-        let (material, texture, mut props) =
+        let (material, texture, props) =
             rewrite_geometry_appearance(geom, &outcome, interner, defs, &format!("object {id}"))?;
 
-        // The un-suffixed `geometry` column (the footprint — the highest 0.*
-        // LoD) carries no LoD in its column name, so — like a geometry template
-        // (§12) — its LoD rides in `geometry_properties` under `"lod"`, letting
-        // decode/export recover it (which 0.* it was). Suffixed columns encode
-        // the LoD in the name already.
-        if Some(lod) == footprint {
-            props = inject_lod_into_properties(&props, &lod)?;
-        }
-
+        // The LoD lives only in the column name (spec "Levels of detail") —
+        // every geometry column, including LoD0, is suffixed, so there is no
+        // bare column needing its LoD injected into `geometry_properties`.
         acc.slots.insert(
             slot_key,
             GeometrySlotData {
@@ -866,8 +848,12 @@ fn synthesize_footprint(
         outcome.dropped_rings,
         &outcome.dropped_surfaces,
     )?)?;
+    // LoD lives only in the column name (spec "Levels of detail") — the
+    // synthesised footprint lands in `geometry_lod0_0` like any other LoD, so
+    // no `"lod"` value is injected here. `cityparquet:lod0_source` is a
+    // distinct provenance marker (which heuristic produced it), not a
+    // re-storage of the LoD value.
     if let Value::Object(m) = &mut props {
-        m.insert("lod".to_string(), Value::String("0".to_string()));
         m.insert(
             "cityparquet:lod0_source".to_string(),
             Value::String(
@@ -1059,12 +1045,10 @@ struct RowWriter {
     /// reserved/geometry column name (§5.2, G12). Sorted, so the diverted map
     /// each row emits is deterministic.
     diverted_attributes: Vec<String>,
-    /// When `Some`, synthesise an LoD0 footprint into the un-suffixed `geometry`
-    /// slot for any object lacking a source LoD0 (§9). Carries the thresholds.
+    /// When `Some`, synthesise an LoD0 footprint into the `geometry_lod0_0`
+    /// slot for any object lacking a source LoD0 (spec "LoD0 synthesis").
+    /// Carries the thresholds.
     synthesize_lod0: Option<crate::lod0::Lod0Options>,
-    /// The LoD that occupies the un-suffixed `geometry` column (the highest 0.*
-    /// present, §9); its `geometry_properties` carries the `"lod"` member.
-    footprint: Option<Lod>,
     len: usize,
 }
 
@@ -1111,7 +1095,6 @@ impl RowWriter {
             attributes,
             diverted_attributes: scan.diverted_attribute_names.iter().cloned().collect(),
             synthesize_lod0: scan.synthesize_lod0,
-            footprint: cityparquet_schema::footprint_lod(&scan.lods),
             len: 0,
         }
     }
@@ -1257,17 +1240,16 @@ impl RowWriter {
             co,
             &pool,
             self.per_lod,
-            self.footprint,
             stats,
             interner,
             &defs,
             id,
         )?;
 
-        // Synthesise an LoD0 footprint into the un-suffixed `geometry` slot when
-        // enabled and the object has no source LoD0 (§9). The footprint slot key
-        // is LoD0's column suffix (`lod0`), the same key `accumulate_geometry`
-        // would use for a real LoD0.
+        // Synthesise an LoD0 footprint into the `geometry_lod0_0` slot when
+        // enabled and the object has no source LoD0 (spec "LoD0 synthesis").
+        // The footprint slot key is LoD0's column suffix (`lod0_0`), the same
+        // key `accumulate_geometry` would use for a real LoD0.
         if let Some(opts) = &self.synthesize_lod0 {
             let key = Lod::parse("0")
                 .expect("literal 0 is a valid LoD")
@@ -1849,7 +1831,6 @@ mod tests {
             &co,
             &pool,
             true,
-            None,
             &mut stats,
             &mut interner,
             &defs,
@@ -1860,7 +1841,7 @@ mod tests {
         assert_eq!(stats.degenerate_rings_dropped, 1);
         assert_eq!(stats.degenerate_surfaces_dropped, 1);
 
-        let slot = acc.slots.get("lod2").expect("lod2 slot populated");
+        let slot = acc.slots.get("lod2_0").expect("lod2_0 slot populated");
         let props: Value = serde_json::from_str(&slot.properties).unwrap();
         assert_eq!(
             props["dropped_degenerate"],
@@ -1973,7 +1954,6 @@ mod tests {
             &co,
             &pool,
             true,
-            None,
             &mut stats,
             &mut interner,
             &defs,
@@ -1984,7 +1964,7 @@ mod tests {
         assert_eq!(stats.degenerate_rings_dropped, 1);
         assert_eq!(stats.degenerate_surfaces_dropped, 1);
 
-        let slot = acc.slots.get("lod2").expect("lod2 slot populated");
+        let slot = acc.slots.get("lod2_0").expect("lod2_0 slot populated");
         let props: Value = serde_json::from_str(&slot.properties).unwrap();
         assert_eq!(
             props["dropped_degenerate"],
@@ -2101,7 +2081,6 @@ mod tests {
             &co,
             &pool,
             true,
-            None,
             &mut stats,
             &mut interner,
             &defs,
@@ -2112,7 +2091,7 @@ mod tests {
         assert_eq!(stats.degenerate_rings_dropped, 2);
         assert_eq!(stats.degenerate_surfaces_dropped, 2);
 
-        let slot = acc.slots.get("lod2").expect("lod2 slot populated");
+        let slot = acc.slots.get("lod2_0").expect("lod2_0 slot populated");
         let props: Value = serde_json::from_str(&slot.properties).unwrap();
         assert_eq!(
             props["dropped_degenerate"],

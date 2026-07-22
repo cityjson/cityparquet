@@ -134,17 +134,23 @@ impl CityParquetMetadata {
     /// column carries `encoding: "WKB"`, its `geometry_types` (with the `" Z"`
     /// 3D suffix), the dataset `crs` as PROJJSON (§13.3 resolves it at import),
     /// `edges: "planar"`, and the CityParquet extension `cityparquet:orientation`
-    /// (3D right-hand winding, §7.1). `primary_column` is the un-suffixed
-    /// `geometry` (LoD0 footprint) when present, else the highest-LoD legal
-    /// column. Returns `None` when no column is GeoParquet-legal (e.g. a
-    /// Solid-only dataset) — the caller then writes no `geo` key, and the file
-    /// is simply not a GeoParquet file (still a valid CityParquet table).
+    /// (3D right-hand winding, §7.1). `primary_column` is the highest `0.*`-family
+    /// legal column when one is present — the `0.*` family (typically a
+    /// footprint) is the most broadly GeoParquet-compatible geometry a writer
+    /// can offer, so it is preferred as the primary even when a higher, also
+    /// GeoParquet-legal LoD exists — else the highest-LoD legal column overall
+    /// (last, ascending). Every LoD, including LoD0, is itself a suffixed
+    /// column (spec "Levels of detail") — this is a *selection* preference
+    /// among suffixed names, not a reintroduction of an un-suffixed column.
+    /// Returns `None` when no column is GeoParquet-legal (e.g. a Solid-only
+    /// dataset) — the caller then writes no `geo` key, and the file is simply
+    /// not a GeoParquet file (still a valid CityParquet table).
     pub fn geoparquet_geo_value(&self, columns: &[(String, Vec<String>)]) -> Option<Value> {
-        // Prefer the un-suffixed `geometry` column (the LoD0 footprint) as the
-        // primary; otherwise the highest-LoD legal column (last, ascending).
+        // `columns` is ascending by LoD, so the LAST `0.*`-family entry (if
+        // any) is the highest one; otherwise the last entry overall.
         let primary = columns
             .iter()
-            .find(|(name, _)| name == "geometry")
+            .rfind(|(name, _)| name.starts_with("geometry_lod0_"))
             .or_else(|| columns.last())
             .map(|(name, _)| name.clone())?;
         let mut cols = serde_json::Map::new();
@@ -282,9 +288,12 @@ mod tests {
     #[test]
     fn geo_key_primary_is_the_highest_lod_and_lists_only_given_columns() {
         // The scan passes only the GeoParquet-legal columns, ascending by LoD.
+        // No `0.*` LoD here, so the highest LoD overall wins (the `0.*`-family
+        // preference is covered separately by
+        // `primary_column_prefers_the_zero_family_when_lod0_present`).
         let columns = vec![
             (
-                "geometry_lod0".to_string(),
+                "geometry_lod1_2".to_string(),
                 vec!["MultiPolygon Z".to_string()],
             ),
             (
@@ -294,27 +303,32 @@ mod tests {
         ];
         let geo = sample().geoparquet_geo_value(&columns).unwrap();
         let cols = geo["columns"].as_object().unwrap();
-        assert_eq!(cols["geometry_lod0"]["encoding"], "WKB");
+        assert_eq!(cols["geometry_lod1_2"]["encoding"], "WKB");
         assert_eq!(cols["geometry_lod2_2"]["encoding"], "WKB");
-        assert!(!cols.contains_key("geometry_properties_lod0"));
+        assert!(!cols.contains_key("geometry_properties_lod1_2"));
         // Highest LoD (last in the ascending list) is the primary column.
         assert_eq!(geo["primary_column"], "geometry_lod2_2");
     }
 
+    /// spec "Levels of detail": LoD0 is a suffixed column like any other, but
+    /// it is still preferred as the GeoParquet primary when present — the same
+    /// "footprint wins" preference as before, just expressed as a selection
+    /// among suffixed names rather than a picked-out un-suffixed one.
     #[test]
-    fn primary_column_is_bare_geometry_when_lod0_present() {
-        // Real data maps LoD0 to the un-suffixed `geometry` column, which is the
-        // GeoParquet-legal primary footprint (§13.3).
+    fn primary_column_prefers_the_zero_family_when_lod0_present() {
         let columns = vec![
-            ("geometry".to_string(), vec!["MultiPolygon Z".to_string()]),
+            (
+                "geometry_lod0_0".to_string(),
+                vec!["MultiPolygon Z".to_string()],
+            ),
             (
                 "geometry_lod2_2".to_string(),
                 vec!["MultiPolygon Z".to_string()],
             ),
         ];
         let geo = sample().geoparquet_geo_value(&columns).unwrap();
-        assert_eq!(geo["primary_column"], "geometry");
-        assert!(geo["columns"].get("geometry").is_some());
+        assert_eq!(geo["primary_column"], "geometry_lod0_0");
+        assert!(geo["columns"].get("geometry_lod0_0").is_some());
     }
 
     #[test]

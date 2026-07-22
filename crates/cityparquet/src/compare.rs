@@ -68,7 +68,7 @@ use chrono::{DateTime, NaiveDate};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use cityparquet_schema::{CityParquetError, Result};
+use cityparquet_schema::{CityParquetError, Lod, Result};
 use cjseq::{CityJSON, Geometry, GeometryType, Transform};
 
 use crate::source::Source;
@@ -1264,6 +1264,23 @@ fn strings_equal(sa: &str, sb: &str) -> bool {
     sa == sb
 }
 
+/// Canonicalise a raw source `geom.lod` string for use as a comparison key:
+/// a source `"1"` and a source `"1.0"` are the same LoD (spec "Levels of
+/// detail" — a canonicalisation of the LoD string, not its value), so an
+/// original CityJSON's bare-major LoD must compare equal to the same LoD
+/// re-exported in its canonical `"{major}.{minor}"` spelling. Falls back to
+/// the raw string, unchanged, when it does not parse as a `Lod` — comparison
+/// then simply falls back to exact string equality for that malformed value,
+/// same as before this canonicalisation existed. `None` (a `GeometryInstance`
+/// or a genuinely lod-less geometry) passes through unchanged.
+fn canonical_lod_key(lod: &Option<String>) -> Option<String> {
+    lod.as_ref().map(|s| {
+        Lod::parse(s)
+            .map(|l| l.to_string())
+            .unwrap_or_else(|_| s.clone())
+    })
+}
+
 fn claim_or_log(
     geometries: &mut HashMap<Option<String>, NormGeometry>,
     key: Option<String>,
@@ -1337,7 +1354,7 @@ fn build_geometries(
             )?);
             claim_or_log(
                 &mut geometries,
-                geom.lod.clone(),
+                canonical_lod_key(&geom.lod),
                 NormGeometry {
                     gtype: geom.thetype.clone(),
                     tree,
@@ -1383,7 +1400,7 @@ fn build_geometries(
 
         claim_or_log(
             &mut geometries,
-            geom.lod.clone(),
+            canonical_lod_key(&geom.lod),
             NormGeometry {
                 gtype: geom.thetype.clone(),
                 tree: normalised.tree,

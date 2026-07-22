@@ -653,10 +653,10 @@ pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usiz
                 return None;
             }
             if field.name() == prefix {
-                // The bare appearance column is the LoD0 footprint's when it
-                // carries a lod tag (`cityparquet:lod = "0"`, set by the schema
-                // for LoD0), matching the geometry's recovered LoD; it is the
-                // transitional lod-less fallback (key `""`) only when untagged.
+                // Every LoD, including LoD0, is a suffixed column (spec
+                // "Levels of detail"), so a bare `material`/`texture` name
+                // reaching here is always the zero-analysis-geometry fallback
+                // (no LoD to suffix by) — untagged, hence key `""`.
                 let key = field.metadata().get(LOD_KEY).cloned().unwrap_or_default();
                 return Some((index, key));
             }

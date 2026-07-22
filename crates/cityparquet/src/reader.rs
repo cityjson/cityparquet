@@ -98,6 +98,9 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         // declared attributes first, so such a name is not mistaken for a LoD.
         let attribute_names: std::collections::HashSet<&str> =
             meta.attribute_columns.iter().map(String::as_str).collect();
+        // Every LoD, including LoD0, is suffixed (spec "Levels of detail"),
+        // so a single `geometry_<suffix>` scan recovers the full LoD set —
+        // there is no separate un-suffixed "footprint" column to special-case.
         let mut lods: Vec<Lod> = actual
             .fields()
             .iter()
@@ -105,29 +108,6 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             .filter_map(|f| f.name().strip_prefix("geometry_"))
             .filter_map(Lod::from_column_suffix)
             .collect();
-        // The footprint LoD (the highest 0.* present, §9) lives in the
-        // un-suffixed `geometry` column, which has no `geometry_` prefix to
-        // parse. Recover the exact 0.* LoD from that reserved column's lod tag
-        // (`cityparquet:lod`, set by the writer) — this covers a footprints-only
-        // file too. As a fallback for a file whose field metadata was stripped,
-        // recover a bare `0` when suffixed geometry columns exist alongside the
-        // bare one, so the rebuilt schema still matches the file's column set (a
-        // zero-analysis-geometry file's lone, untagged `geometry` column
-        // reconstructs the same fields either way).
-        if !attribute_names.contains("geometry")
-            && let Ok(field) = actual.field_with_name("geometry")
-        {
-            let tagged = field
-                .metadata()
-                .get(cityparquet_schema::model::LOD_KEY)
-                .and_then(|t| Lod::parse(t).ok())
-                .filter(|l| l.major() == 0);
-            if let Some(l) = tagged {
-                lods.push(l);
-            } else if !lods.is_empty() {
-                lods.push(Lod::parse("0").expect("literal 0 is a valid LoD"));
-            }
-        }
         lods.sort();
         lods.dedup();
 
