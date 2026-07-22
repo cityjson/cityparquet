@@ -280,16 +280,59 @@ fn partitioned_convert_prunes_consistently_when_a_module_is_absent_from_some_par
 
     // building.parquet (fed by both delft and railway) is present in every
     // partition that carries it at all with a self-consistent, readable
-    // schema — a smoke check that per-module pruning survives partitioning.
+    // schema — and, since a glob read across partitions needs ONE uniform
+    // schema per module file, its FULL column set (not just that each
+    // partition's own schema resolves) must be IDENTICAL across every
+    // partition that carries it. This is the actual `CanonicalSchema::
+    // module_lods` claim this test's doc comment makes: per-module pruning
+    // must agree across partitions, not merely succeed within each one.
+    let mut building_schemas: Vec<(String, Vec<String>)> = Vec::new();
     for (label, names) in &module_sets {
         if names.contains("building.parquet") {
             let path = out_dir.path().join(label).join("building.parquet");
             let file = fs::File::open(&path).unwrap();
             let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-            builder
+            let schema = builder
                 .cityparquet_arrow_schema()
                 .expect("building.parquet's own schema must still resolve after partitioning");
+            let mut column_names: Vec<String> =
+                schema.fields().iter().map(|f| f.name().clone()).collect();
+            column_names.sort();
+            building_schemas.push((label.clone(), column_names));
         }
+    }
+    assert!(
+        building_schemas.len() >= 2,
+        "expected building.parquet (fed by both delft and railway) in more than one \
+         partition, got {building_schemas:?}"
+    );
+    let (first_label, first_columns) = &building_schemas[0];
+    for (label, columns) in &building_schemas[1..] {
+        assert_eq!(
+            columns, first_columns,
+            "building.parquet's rendered column set must be identical across every \
+             partition that carries it — partition {label:?} disagrees with partition \
+             {first_label:?}, which would break a glob read across partitions that needs \
+             one uniform schema per module file"
+        );
+    }
+
+    // Same claim, narrowed to the `geometry_lod*` columns specifically
+    // (the ones `CanonicalSchema::module_lods` derives per module) using
+    // this file's own helper, and expressed the way a reader would notice
+    // the breakage: two partitions' `geometry_lod_columns()` must match.
+    let building_lod_columns: Vec<Vec<String>> = module_sets
+        .iter()
+        .filter(|(_, names)| names.contains("building.parquet"))
+        .map(|(label, _)| {
+            geometry_lod_columns(&out_dir.path().join(label).join("building.parquet"))
+        })
+        .collect();
+    for pair in building_lod_columns.windows(2) {
+        assert_eq!(
+            pair[0], pair[1],
+            "building.parquet's geometry_lod* columns must match across partitions"
+        );
     }
 }
 
