@@ -107,8 +107,8 @@ fn cityparquet_metadata_matches_the_writer_side_scan() {
     // Writer side, independently: what the scan pass says the DATASET-WIDE
     // portion of the metadata is (spec-alignment M3: `columns`/`primary_column`
     // are per-FILE now, computed post-encode — see
-    // `scan_real_data.rs::delft_city_and_geo_for_file_prefers_lod0` for that
-    // half).
+    // `scan_real_data.rs::delft_city_and_geo_for_file_has_independent_primaries`
+    // for that half).
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let scan_result = scan(&src).unwrap();
     let writer_meta = scan_result.base_city_metadata().unwrap();
@@ -117,10 +117,11 @@ fn cityparquet_metadata_matches_the_writer_side_scan() {
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let read_meta = builder.cityparquet_metadata().unwrap();
 
-    // delft carries LoD0, so the file's own primary is the suffixed LoD0
-    // footprint column, not an un-suffixed one — this table's own, since the
-    // dataset-wide `writer_meta` no longer carries `primary_column` at all.
-    assert_eq!(read_meta.primary_column.as_deref(), Some("geometry_lod0_0"));
+    // city.primary_column is the highest LoD present, solids included — for
+    // delft that is 2.2 (a real Solid), never the 0.*-family preference
+    // (that preference is `geo.primary_column`'s rule, not `city`'s — spec
+    // "Why city.primary_column and geo.primary_column can differ").
+    assert_eq!(read_meta.primary_column.as_deref(), Some("geometry_lod2_2"));
     assert_eq!(read_meta.attributes.len(), 50);
     assert_eq!(read_meta.attributes.len(), writer_meta.attributes.len());
     assert_eq!(read_meta.version, writer_meta.version);

@@ -9,6 +9,25 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), tests below that convert (or compare
+/// against) railway use a small on-disk COPY with a CRS injected via JSON
+/// mutation of the real fixture — never hand-written CityJSON. Used both as
+/// the conversion INPUT and, where a test also compares against "the
+/// source", as that comparison baseline.
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
+}
+
 #[test]
 fn convert_delft_to_tempdir_succeeds() {
     let out = tempfile::tempdir().unwrap();
@@ -240,21 +259,22 @@ fn convert_with_overwrite_succeeds() {
 
 /// M4 task 11 (Step 3): the `convert` report line gains 3 fields
 /// (`materials_written textures_written templates_written`), appended after
-/// the 6 fields it already printed. Exercised against a Compatibility
-/// convert of railway, whose sidecar counts are pinned elsewhere (85/34/3 —
+/// the 6 fields it already printed. Exercised against a convert of railway,
+/// which carries real materials/textures/templates so they are written
+/// unconditionally (spec-alignment gap 19 dropped the `--profile` flag this
+/// test used to pass), whose sidecar counts are pinned elsewhere (85/34/3 —
 /// `railway_compatibility_convert_writes_materials_and_textures_sidecars` in
 /// `crates/cityparquet/tests/convert_real_data.rs`).
 #[test]
 fn convert_compatibility_reports_sidecar_counts() {
     let out = tempfile::tempdir().unwrap();
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
     let binary = env!("CARGO_BIN_EXE_cityparquet");
     let output = Command::new(binary)
         .arg("convert")
-        .arg(fixture("lod3_railway.city.json"))
+        .arg(railway_path)
         .arg("-o")
         .arg(out.path())
-        .arg("--profile")
-        .arg("compatibility")
         .output()
         .expect("failed to run convert");
 
@@ -412,6 +432,7 @@ fn compare_different_datasets_returns_exit_2_with_differences() {
 #[test]
 fn export_and_compare_railway_with_exclusions() {
     let package_dir = tempfile::tempdir().unwrap();
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
     let binary = env!("CARGO_BIN_EXE_cityparquet");
 
     // Convert railway to package (`--no-lod0` for a source-faithful round trip;
@@ -419,7 +440,7 @@ fn export_and_compare_railway_with_exclusions() {
     let status = Command::new(binary)
         .arg("convert")
         .arg("--no-lod0")
-        .arg(fixture("lod3_railway.city.json"))
+        .arg(&railway_path)
         .arg("-o")
         .arg(package_dir.path())
         .status()
@@ -441,7 +462,7 @@ fn export_and_compare_railway_with_exclusions() {
     // Compare with both exclusion flags
     let output = Command::new(binary)
         .arg("compare")
-        .arg(fixture("lod3_railway.city.json"))
+        .arg(&railway_path)
         .arg(&export_path)
         .arg("--exclude-appearance")
         .arg("--exclude-instances")
@@ -642,6 +663,7 @@ fn export_package_to_gml_writes_citygml() {
 #[test]
 fn convert_synthesises_lod0_by_default_and_no_lod0_suppresses_it() {
     let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
 
     let export_lod0_present = |no_lod0: bool| -> bool {
         let pkg = tempfile::tempdir().unwrap();
@@ -651,7 +673,7 @@ fn convert_synthesises_lod0_by_default_and_no_lod0_suppresses_it() {
             cmd.arg("--no-lod0");
         }
         let status = cmd
-            .arg(fixture("lod3_railway.city.json"))
+            .arg(&railway_path)
             .arg("-o")
             .arg(pkg.path())
             .status()

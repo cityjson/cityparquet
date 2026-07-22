@@ -16,6 +16,26 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), tests below open a small on-disk COPY
+/// with a CRS injected via JSON mutation of the real fixture — never
+/// hand-written CityJSON. `Source` streams CityJSONSeq lazily from its own
+/// path (see `crate::source::Source::features`), so the returned `TempDir`
+/// MUST outlive the `Source` — callers keep it bound, never `_`-discarded.
+fn railway_source_with_crs() -> (tempfile::TempDir, Source) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    let src = Source::open(&path).unwrap();
+    (dir, src)
+}
+
 /// `metadata.json`'s object-table file names for the package at `dir`
 /// (`PackageTables::open`'s `cityparquet-objects`-role assets) — by-type is
 /// the only, mandatory table layout, so this is 1..N main-table file names,
@@ -205,7 +225,7 @@ fn non_empty_parent_without_overwrite_errors() {
 #[test]
 fn partitioned_synthesis_declares_the_footprint_as_primary_in_every_partition() {
     let out = tempfile::tempdir().unwrap();
-    let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let (_crs_dir, src) = railway_source_with_crs();
     let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
     opts.generate_lod0 = true;
     let rep =
@@ -227,6 +247,28 @@ fn partitioned_synthesis_declares_the_footprint_as_primary_in_every_partition() 
                 .file_metadata()
                 .key_value_metadata()
                 .unwrap();
+            let city: serde_json::Value = serde_json::from_str(
+                kvs.iter()
+                    .find(|kv| kv.key == "city")
+                    .unwrap_or_else(|| panic!("{label}/{table} must carry a city key"))
+                    .value
+                    .as_deref()
+                    .unwrap(),
+            )
+            .unwrap();
+            // A module whose own objects carry NO analysis geometry at all
+            // (railway's Vegetation module, real data — see
+            // `synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset`'s
+            // doc comment) has nothing for LoD0 synthesis to derive a
+            // footprint FROM, so it legitimately carries no `city.columns`
+            // and no `geo` key at all — skip it rather than assert a
+            // footprint that was never eligible to exist.
+            if city["columns"]
+                .as_array()
+                .is_none_or(std::vec::Vec::is_empty)
+            {
+                continue;
+            }
             let geo = kvs.iter().find(|kv| kv.key == "geo").unwrap_or_else(|| {
                 panic!("{label}/{table} must carry a geo key for the synthesised footprint")
             });

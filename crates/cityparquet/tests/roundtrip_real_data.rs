@@ -59,6 +59,25 @@ fn convert_and_export_path(input: &Path) -> (PathBuf, tempfile::TempDir, tempfil
     (output, package_dir, export_dir)
 }
 
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), tests below that convert (or compare
+/// against) railway use a small on-disk COPY with a CRS injected via JSON
+/// mutation of the real fixture — never hand-written CityJSON. Used both as
+/// the conversion INPUT and, where a test also compares against "the
+/// source", as that comparison baseline.
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
+}
+
 /// M5 task 3 (the milestone claim): presets change bytes, never semantics.
 /// Every named [`RecipePreset`] must still round-trip delft losslessly —
 /// the per-column tuning a preset picks is purely a `WriterProperties`
@@ -211,7 +230,8 @@ fn delft_round_trips_losslessly() {
 
 #[test]
 fn railway_round_trips_losslessly_modulo_documented_drops() {
-    let (exported, _package_dir, _export_dir) = convert_and_export("lod3_railway.city.json");
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let (exported, _package_dir, _export_dir) = convert_and_export_path(&railway_path);
     let opts = CompareOptions {
         coord_tolerance: [0.0; 3],
         exclusions: Exclusions {
@@ -219,7 +239,7 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
             geometry_instances: true,
         },
     };
-    let report = compare_datasets(&fixture("lod3_railway.city.json"), &exported, &opts).unwrap();
+    let report = compare_datasets(&railway_path, &exported, &opts).unwrap();
     assert!(
         report.equal,
         "railway must round-trip losslessly modulo the documented appearance/instance drops; \
@@ -241,16 +261,24 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
     // appearance/instances totals are pinned against counts already proven
     // elsewhere: 105 stored geometries carry material or texture
     // (export_real_data.rs's appearance_refs_dropped), 15 objects carry a
-    // GeometryInstance (instance_geometries_dropped). The degenerate count
-    // was updated from the writer-only-index-drop figure of 3 to 23
-    // alongside the comparator's coordinate-degenerate ring fix (3DBAG tile
-    // `9-284-556.city.json` finding; see `crate::compare`'s module docs):
-    // railway's real, unmutated source carries 20 MORE objects whose
-    // boundaries include an index-distinct/coordinate-identical ring,
-    // previously invisible to the INDEX-only degenerate check (the writer's
-    // 3 pinned drops in `wkb_roundtrip_real_data.rs::geometries_with_drops`
-    // are unaffected — that pin is about the WRITER's own index-based
-    // normalisation, which this fix does not touch).
+    // GeometryInstance (instance_geometries_dropped) — DOUBLED to 210/30
+    // since spec-alignment gap 19: sidecars (materials/textures/
+    // geometry_templates) are now written whenever the source has content
+    // for them, so `export` actually RESTORES railway's appearance/instances
+    // (unlike the old Core-profile default, which dropped them). With
+    // `exclusions.appearance`/`exclusions.geometry_instances` on, the
+    // comparator excludes rather than compares that data on EACH side that
+    // carries it — now both the source and the export do, logging one
+    // exclusion entry per side. The degenerate count was updated from the
+    // writer-only-index-drop figure of 3 to 23 alongside the comparator's
+    // coordinate-degenerate ring fix (3DBAG tile `9-284-556.city.json`
+    // finding; see `crate::compare`'s module docs): railway's real,
+    // unmutated source carries 20 MORE objects whose boundaries include an
+    // index-distinct/coordinate-identical ring, previously invisible to the
+    // INDEX-only degenerate check (the writer's 3 pinned drops in
+    // `wkb_roundtrip_real_data.rs::geometries_with_drops` are unaffected —
+    // that pin is about the WRITER's own index-based normalisation, which
+    // this fix does not touch).
     let appearance = non_header_excluded
         .iter()
         .filter(|e| e.contains("exclusions.appearance"))
@@ -265,14 +293,14 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
         .count();
     assert_eq!(
         (appearance, instances, degenerate),
-        (105, 15, 23),
+        (210, 30, 23),
         "exclusion breakdown must match the pinned pipeline counts, got: {:#?}",
         non_header_excluded
     );
     assert_eq!(
         non_header_excluded.len(),
-        143,
-        "105 appearance + 15 instances + 23 degenerate = 143 total non-header exclusions, \
+        263,
+        "210 appearance + 30 instances + 23 degenerate = 263 total non-header exclusions, \
          nothing else, got: {:#?}",
         non_header_excluded
     );
@@ -301,13 +329,9 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
 /// instance silently failed to round-trip.
 #[test]
 fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
-    let (exported, _package_dir, _export_dir) = convert_and_export("lod3_railway.city.json");
-    let report = compare_datasets(
-        &fixture("lod3_railway.city.json"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let (exported, _package_dir, _export_dir) = convert_and_export_path(&railway_path);
+    let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
     assert!(
         report.equal,
         "railway must round-trip losslessly with NO exclusions under the Compatibility profile; \
@@ -495,8 +519,16 @@ fn convert_and_export_with(
     input: &str,
     ordering: RowOrder,
 ) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
+    convert_and_export_with_path(&fixture(input), ordering)
+}
+
+/// [`convert_and_export_with`] taking an already-resolved input path.
+fn convert_and_export_with_path(
+    input: &Path,
+    ordering: RowOrder,
+) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture(input), package_dir.path().to_path_buf());
+    let mut opts = ConvertOptions::new(input.to_path_buf(), package_dir.path().to_path_buf());
     opts.ordering = ordering;
     convert(&opts).unwrap();
 
@@ -577,7 +609,9 @@ fn delft_by_type_round_trips_losslessly() {
 /// `convert_real_data.rs` for the exact module membership).
 #[test]
 fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
-    let (exported, package_dir, _export_dir) = convert_and_export_with("lod3_railway.city.json", RowOrder::Source);
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let (exported, package_dir, _export_dir) =
+        convert_and_export_with_path(&railway_path, RowOrder::Source);
     let tables = PackageTables::open(package_dir.path()).unwrap().tables;
     assert_eq!(
         tables.len(),
@@ -585,12 +619,7 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
         "railway's pinned type set collapses to 9 distinct CityGML modules, got: {tables:?}"
     );
 
-    let report = compare_datasets(
-        &fixture("lod3_railway.city.json"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
+    let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
     assert!(
         report.equal,
         "By-type railway must round-trip losslessly with NO exclusions under the \
