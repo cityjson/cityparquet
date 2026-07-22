@@ -12,7 +12,7 @@ CityLake is a data lake framework and web API for storing and querying 3D city m
   - Install: `INSTALL cityjson FROM community; LOAD cityjson;`
 - **ducklake**: Data lake catalog extension providing ACID transactions, time travel, and Parquet-based storage. Install: `INSTALL ducklake; LOAD ducklake;`. Attach: `ATTACH 'ducklake:metadata.ducklake' AS citylake;`
 
-Reference implementation: https://github.com/HideBa/cityparquet/tree/main/citylake
+Reference implementation: https://github.com/HideBa/citylake
 DuckDB CityJSON extension: https://github.com/cityjson/duckdb-cityjson
 DuckLake docs: https://ducklake.select/docs/stable/
 
