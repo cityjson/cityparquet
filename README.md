@@ -29,12 +29,12 @@ semantic losslessness.
 | `cityparquet-cli` | The `cityparquet` binary and the benchmark harness |
 
 Status: milestones **M1–M5 complete** — schema, native writer (Core), reader
-& round-trip, Compatibility profile, and the benchmark suite. The **LoD0
-footprint is the un-suffixed, GeoParquet-legal primary `geometry` column**, and
-the writer can **synthesise** one from higher-LoD geometry when the source lacks
-it (CLI default; `--no-lod0` to disable) — see `src/lod0.rs`. Async /
-object-store I/O, native (non-WKB) geometry, and Python bindings are post-1.0
-future work.
+& round-trip, Compatibility profile, and the benchmark suite. Every LoD,
+**including LoD0, is a suffixed geometry column** (`geometry_lod0_0`, `geometry_lod2_2`, …);
+the writer can **synthesise** an LoD0 footprint from higher-LoD geometry when
+the source lacks it (CLI default; `--no-lod0` to disable) — see `src/lod0.rs`.
+Async / object-store I/O, native (non-WKB) geometry, and Python bindings are
+post-1.0 future work.
 
 ## Install & build
 

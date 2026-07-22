@@ -19,7 +19,6 @@ table (`../documents/docs/06-resources/02-software.mdx`). This repo's own
 follow-up here. Known current-vs-spec deltas:
 
 - **File split is per 1st-level CityObject family** (`building.parquet`, `bridge.parquet`, …); the spec's target is **per CityGML module**.
-- **LoD0 footprint is an un-suffixed, GeoParquet-legal primary `geometry` column** (and can be *synthesised* from higher-LoD geometry — `src/lod0.rs`, CLI default, `--no-lod0` to disable); the spec's target is a fully LoD-suffixed grammar with no bare `geometry` column.
 - Footer metadata is still a set of flat keys, not the spec's single `city` object.
 
 ## Crates (Cargo workspace)

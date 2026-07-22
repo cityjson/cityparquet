@@ -158,22 +158,28 @@ semantics mapping, material/texture maps, and the source vertex-index
 structure all live in the sibling `geometry_properties` / `material` /
 `texture` columns.
 
-**LoD is expressed by column layout**: a dataset with LoD 1 and LoD 2.2 gets
-`geometry_lod1` + `geometry_properties_lod1` and `geometry_lod2_2` +
-`geometry_properties_lod2_2`. **LoD 0 is the exception — it occupies the
-un-suffixed `geometry` / `geometry_properties` pair** (the GeoParquet-legal
-primary column, spec §9), carrying its LoD in `geometry_properties.lod` the way
-a template does. A dataset with no LoD labels at all also uses that un-suffixed
-pair (all-null). A second geometry for the same `(object, LoD)` is skipped and
-counted.
+**LoD is expressed by column layout, and every LoD is suffixed — including
+LoD0**: a dataset with LoD 1 and LoD 2.2 gets `geometry_lod1_0` +
+`geometry_properties_lod1_0` and `geometry_lod2_2` +
+`geometry_properties_lod2_2`; a dataset with LoD 0 gets `geometry_lod0_0` +
+`geometry_properties_lod0_0` the same way (spec "Levels of detail" — "a suffix
+always carries a minor" and "there is no un-suffixed `geometry`... column").
+The LoD lives only in the column name, never re-stored as a value: a source
+`"1"` and a source `"1.0"` both map to `geometry_lod1_0` and export in the
+canonical `"1.0"` spelling. A dataset with no LoD labels at all (no analysis
+geometry — only `GeometryInstance`s, or none) uses a single un-suffixed
+`geometry` / `geometry_properties` pair (all-null), a separate fallback that
+does not apply once any LoD is present. A second geometry for the same
+`(object, LoD)` is skipped and counted.
 
 **LoD0 synthesis** (`src/lod0.rs`): when an object has no source LoD0, the
 writer can synthesise a footprint from its lowest higher LoD — semantics-first
 (`GroundSurface` faces), else a geometric fallback (downward-facing faces →
 2D union → Z re-drape → `MultiPolygonZ`), marked with
-`cityparquet:lod0_source` and exported as a real `lod:"0"` geometry. The CLI
-enables it by default (`--no-lod0` to disable); the library `ConvertOptions` is
-source-faithful unless `generate_lod0` is set.
+`cityparquet:lod0_source` and exported as a real `lod:"0.0"` geometry, landing
+in `geometry_lod0_0` like any other LoD. The CLI enables it by default
+(`--no-lod0` to disable); the library `ConvertOptions` is source-faithful
+unless `generate_lod0` is set.
 
 ### Bounding box & spatial ordering
 
