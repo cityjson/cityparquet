@@ -213,7 +213,8 @@ fn railway_exports_dropping_instance_geometries_but_keeping_their_objects() {
 
     let mut item = read_item(package_dir.path());
     let before = item.assets.len();
-    item.assets.retain(|_, a| !a.roles.iter().any(|r| r == ROLE_SIDECAR));
+    item.assets
+        .retain(|_, a| !a.roles.iter().any(|r| r == ROLE_SIDECAR));
     assert_eq!(
         item.assets.len(),
         before - 3,

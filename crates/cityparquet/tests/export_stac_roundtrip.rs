@@ -44,7 +44,11 @@ fn convert_and_export(input: &str) -> (PathBuf, tempfile::TempDir, tempfile::Tem
 /// CRS-injected derivative can be passed directly).
 fn convert_and_export_path(input: PathBuf) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
     let package_dir = tempfile::tempdir().unwrap();
-    convert(&ConvertOptions::new(input, package_dir.path().to_path_buf())).unwrap();
+    convert(&ConvertOptions::new(
+        input,
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
@@ -73,7 +77,6 @@ fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
     std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
     (dir, path)
 }
-
 
 /// Characterisation pin (Core profile, by-type default): delft converts into
 /// a package and exports back out losslessly (up to the documented

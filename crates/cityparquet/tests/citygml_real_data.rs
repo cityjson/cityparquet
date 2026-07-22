@@ -30,7 +30,7 @@ fn source_with_crs(path: &std::path::Path) -> Source {
     let mut header = raw.header().clone();
     header
         .metadata
-        .get_or_insert_with(|| cityparquet::cjseq::Metadata {
+        .get_or_insert(cityparquet::cjseq::Metadata {
             geographical_extent: None,
             identifier: None,
             point_of_contact: None,
@@ -40,7 +40,12 @@ fn source_with_crs(path: &std::path::Path) -> Source {
         })
         .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
     let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
-    Source::from_parts(header, features, raw.doc_appearance().cloned(), raw.format())
+    Source::from_parts(
+        header,
+        features,
+        raw.doc_appearance().cloned(),
+        raw.format(),
+    )
 }
 
 /// A committed (in-repo) fixture under `crates/cityparquet/tests/data/` — small
@@ -152,7 +157,10 @@ fn citygml2_scan_infers_lod2_and_bbox() {
     let per_lod = s.module_geo.values().next().unwrap();
     let (_columns, primary_column, _geo) = city_and_geo_for_file(per_lod, s.crs.as_ref());
     assert_eq!(primary_column.as_deref(), Some("geometry_lod2_0"));
-    assert_eq!(s.base_city_metadata().unwrap().source_format, Some(SchemaSourceFormat::CityGml));
+    assert_eq!(
+        s.base_city_metadata().unwrap().source_format,
+        Some(SchemaSourceFormat::CityGml)
+    );
 }
 
 /// Newell's method normal of a ring of world coordinates (unnormalised).

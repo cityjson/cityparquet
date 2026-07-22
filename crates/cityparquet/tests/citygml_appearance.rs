@@ -40,7 +40,7 @@ fn compat_with_crs(input: PathBuf, out: PathBuf) {
     let mut header = raw.header().clone();
     header
         .metadata
-        .get_or_insert_with(|| cityparquet::cjseq::Metadata {
+        .get_or_insert(cityparquet::cjseq::Metadata {
             geographical_extent: None,
             identifier: None,
             point_of_contact: None,
@@ -50,7 +50,12 @@ fn compat_with_crs(input: PathBuf, out: PathBuf) {
         })
         .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
     let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
-    let src = Source::from_parts(header, features, raw.doc_appearance().cloned(), raw.format());
+    let src = Source::from_parts(
+        header,
+        features,
+        raw.doc_appearance().cloned(),
+        raw.format(),
+    );
     convert_source(&src, &ConvertOptions::new(input, out)).unwrap();
 }
 

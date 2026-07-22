@@ -215,7 +215,8 @@ impl CityMetadata {
                 _ => {}
             }
         }
-        let city = city.ok_or_else(|| CityParquetError::Metadata("missing key city".to_string()))?;
+        let city =
+            city.ok_or_else(|| CityParquetError::Metadata("missing key city".to_string()))?;
         let city: CityMetadata = serde_json::from_str(city)?;
         let geo = geo.map(serde_json::from_str::<GeoMetadata>).transpose()?;
         Ok((city, geo))
@@ -389,7 +390,10 @@ mod tests {
         let (back, _) =
             CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
                 .unwrap();
-        assert_eq!(back.source_format, Some(SourceFormat::Other("3DCityDB".to_string())));
+        assert_eq!(
+            back.source_format,
+            Some(SourceFormat::Other("3DCityDB".to_string()))
+        );
     }
 
     /// `source_format` is optional: a table authored natively omits it

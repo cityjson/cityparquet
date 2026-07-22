@@ -85,8 +85,7 @@ fn railway_by_type_writes_one_file_per_citygml_module() {
         .filter(|f| !SIDECARS.contains(&f.as_str()))
         .collect();
     assert_eq!(
-        main_tables,
-        expected,
+        main_tables, expected,
         "by-module must write exactly one file per CityGML module; 2nd-level types (and \
          CityObjectGroup, folded per spec) share their module's file"
     );

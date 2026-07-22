@@ -13,7 +13,7 @@ cloud object storage. It round-trips back to CityJSON/CityJSONSeq with
 semantic losslessness.
 
 - **[docs/design.md](docs/design.md)** — the data model & format: package
-  layout, columns, geometry/appearance encoding, profiles, round-trip
+  layout, columns, geometry/appearance encoding, sidecars, round-trip
   semantics.
 - **[docs/architecture.md](docs/architecture.md)** — the code: crates, the
   two-pass conversion pipeline, reader/export/compare, the benchmark harness.
@@ -24,12 +24,13 @@ semantic losslessness.
 
 | Crate | Purpose |
 |---|---|
-| `cityparquet-schema` | Type system, CityGML taxonomy, Arrow schema, profiles, manifest — the spec as code (no Parquet/buffer deps) |
+| `cityparquet-schema` | Type system, CityGML taxonomy, Arrow schema, sidecar schemas, manifest — the spec as code (no Parquet/buffer deps) |
 | `cityparquet` | Parquet writer/reader, WKB, appearance interning, sidecars, export, comparator, Hilbert ordering, recipe presets |
 | `cityparquet-cli` | The `cityparquet` binary and the benchmark harness |
 
-Status: milestones **M1–M5 complete** — schema, native writer (Core), reader
-& round-trip, Compatibility profile, and the benchmark suite. Every LoD,
+Status: milestones **M1–M5 complete** — schema, native writer, reader
+& round-trip, content-gated appearance/template sidecars, and the benchmark
+suite. Every LoD,
 **including LoD0, is a suffixed geometry column** (`geometry_lod0_0`, `geometry_lod2_2`, …);
 the writer can **synthesise** an LoD0 footprint from higher-LoD geometry when
 the source lacks it (CLI default; `--no-lod0` to disable) — see `src/lod0.rs`.
@@ -65,7 +66,6 @@ readable by any Parquet reader (DuckDB, pyarrow, …).
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--profile` | `core` | `core` or `compatibility` (adds material/texture/template sidecars) |
 | `--overwrite` | off | purge an existing package in the target dir first |
 | `--recipe` | `cityparquet` | writer preset: `cityparquet`, `parquet-defaults`, `no-dictionary`, `no-bss`, `no-delta`, `snappy` |
 | `--ordering` | `source` | `source` or `hilbert` (spatial row ordering for better bbox pruning) |
@@ -73,18 +73,20 @@ readable by any Parquet reader (DuckDB, pyarrow, …).
 | `--zstd-level` | `3` | zstd level (ignored by `--recipe snappy`) |
 | `--batch-size` | `4096` | encode batch size |
 
-Compatibility adds the sidecars (each skipped when the dataset has none of
-that data):
+Sidecars (`materials.parquet`/`textures.parquet`/`geometry_templates.parquet`)
+are written automatically whenever the source has that kind of content —
+there is no profile flag to opt into them:
 
 ```bash
 cargo run -p cityparquet-cli -- convert tests/fixtures/lod3_railway.city.json \
-    /tmp/railway --profile compatibility --overwrite
+    /tmp/railway --overwrite
 ```
 
 `convert` prints a space-separated report: `object_count files_count
 skipped_same_lod_geometries attribute_coercion_nulls degenerate_rings_dropped
 degenerate_surfaces_dropped materials_written textures_written
-templates_written` (the last three are always `0` under Core).
+templates_written` (the last three are `0` when the source has no
+appearance/templates for that sidecar to write).
 
 ### export — package → CityJSON/Seq
 
@@ -104,8 +106,9 @@ cargo run -p cityparquet-cli -- compare A.city.jsonl B.city.jsonl
 
 Exit `0` and prints `equal` when semantically equal; exit `2` and prints up to
 20 differences otherwise. `--exclude-appearance` and `--exclude-instances`
-skip the Core profile's deliberate drops. This is how a round-trip is proven:
-`convert` → `export` → `compare` against the source.
+skip appearance/`GeometryInstance` comparison, for a package whose sidecars
+were left out of the comparison on purpose. This is how a round-trip is
+proven: `convert` → `export` → `compare` against the source.
 
 ### bench — variant-matrix benchmark
 
@@ -127,7 +130,7 @@ export+compare check. See [bench/README.md](bench/README.md).
 | `just check` | clippy, tests, schema/Parquet isolation, `fmt --check` |
 | `just test` / `just lint` / `just fmt` | the individual gates |
 | `just interop` | convert both fixtures and have DuckDB read the Parquet natively |
-| `just convert-all [FOLDER] [OUT] [PROFILE]` | convert every CityJSON/Seq file under `FOLDER` (default `tests/fixtures`) into a package under `OUT` (default `out/cityparquet`) |
+| `just convert-all FOLDER [OUT]` | convert every CityJSON/Seq file under `FOLDER` into a package under `OUT` (default `out/cityparquet`) |
 | `just bench-fixtures [FOLDER]` | run the benchmark on every CityJSON/Seq file under `FOLDER` (default `tests/fixtures`), one CSV per input |
 | `just bench-data` | fetch the 3 pinned 3DBAG benchmark tiles into `bench/data/` |
 | `just bench-corpus` | fetch the CityJSON benchmark corpus (11 datasets) into `bench/data/benchmark/` |

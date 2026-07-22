@@ -19,19 +19,19 @@ table (`../documents/docs/06-resources/02-software.mdx`). This repo's own
 follow-up here. Known current-vs-spec deltas:
 
 - **File split is per 1st-level CityObject family** (`building.parquet`, `bridge.parquet`, …); the spec's target is **per CityGML module**.
-- Footer metadata is still a set of flat keys, not the spec's single `city` object.
+- Footer metadata is now the spec's single `city` object (plus a conditional pure-GeoParquet `geo` object), emitted per Parquet file.
 
 ## Crates (Cargo workspace)
 
 | Crate | Purpose |
 |---|---|
-| `cityparquet-schema` | Type system, CityGML taxonomy, Arrow schema, profiles, manifest — **the spec as code**. Kept free of `arrow-array`/`parquet` (enforced by `just isolation`) so it stays an executable specification. |
+| `cityparquet-schema` | Type system, CityGML taxonomy, Arrow schema, sidecar schemas, manifest — **the spec as code**. Kept free of `arrow-array`/`parquet` (enforced by `just isolation`) so it stays an executable specification. |
 | `cityparquet` | Parquet writer/reader, WKB, appearance interning, sidecars, export, comparator, Hilbert ordering, recipe presets. |
 | `cityparquet-cli` | The `cityparquet` binary and the benchmark harness. |
 | `cityparquet-readbench` | Read-path benchmark harness. |
 
 Status: milestones **M1–M5 complete** (schema, native writer, reader & round-trip,
-Compatibility profile, benchmarks) plus a native CityGML 2.0 reader/writer stack. Async
+content-gated appearance/template sidecars, benchmarks) plus a native CityGML 2.0 reader/writer stack. Async
 / object-store I/O, native (non-WKB) geometry, and Python bindings are post-1.0.
 
 ## Commands
@@ -54,7 +54,7 @@ cargo run -p cityparquet-cli -- compare A.city.jsonl B.city.jsonl      # semanti
 cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 ```
 
-`convert` flags include `--profile core|compatibility`, `--recipe`, `--ordering
+`convert` flags include `--recipe`, `--ordering
 source|hilbert`, `--row-group-size`, `--zstd-level`. The round-trip is proven by
 `convert` → `export` → `compare` against the source. See `README.md` for the full flag
 tables and the per-command stdout report formats, and `bench/README.md` for benchmark

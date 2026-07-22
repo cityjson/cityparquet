@@ -480,8 +480,10 @@ fn module_geo_by_file(
         std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>,
     >,
 ) -> HashMap<String, std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>> {
-    let mut by_file: HashMap<String, std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>> =
-        HashMap::new();
+    let mut by_file: HashMap<
+        String,
+        std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>,
+    > = HashMap::new();
     for (key, per_lod) in module_geo {
         let entry = by_file.entry(table_name_for_module(key)).or_default();
         for (lod, types) in per_lod {
@@ -605,7 +607,8 @@ struct TableWriters {
     /// [`module_geo_by_file`]. Consulted post-encode, in [`Self::finish`],
     /// exactly once per table (spec "The footer describes the file it lives
     /// in — nothing wider").
-    module_geo_by_file: HashMap<String, std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>>,
+    module_geo_by_file:
+        HashMap<String, std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>>,
     /// The dataset-wide portion of `city` (`version`/`source_format`/
     /// `source_version`/`crs`/`extensions`/`appearance_defaults`/
     /// `attributes`/`other`) — every table's footer starts from a clone of

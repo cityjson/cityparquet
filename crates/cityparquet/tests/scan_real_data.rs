@@ -216,11 +216,10 @@ fn delft_city_and_geo_for_file_has_independent_primaries() {
         !geo.columns.contains_key("geometry_lod2_2"),
         "the Solid column must NOT be declared in geo.columns"
     );
-    let footprint_crs = geo.columns["geometry_lod0_0"]
-        .crs
-        .as_ref()
-        .expect("geo.columns[].crs must be explicit (GeoParquet's own absent-crs-means-CRS84 \
-                 rule, spec CRS rules \"Absent-CRS caveat\")");
+    let footprint_crs = geo.columns["geometry_lod0_0"].crs.as_ref().expect(
+        "geo.columns[].crs must be explicit (GeoParquet's own absent-crs-means-CRS84 \
+                 rule, spec CRS rules \"Absent-CRS caveat\")",
+    );
     assert_eq!(footprint_crs["id"]["code"], serde_json::json!(7415));
 }
 

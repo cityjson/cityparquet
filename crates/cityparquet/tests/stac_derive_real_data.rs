@@ -302,7 +302,6 @@ fn derived_item_validates_against_the_city3d_schema() {
         &ItemOptions {
             id: Some("delft-test".to_string()),
             datetime: Some("2024-01-15T12:00:00Z".to_string()),
-            ..Default::default()
         },
     )
     .expect("build item");

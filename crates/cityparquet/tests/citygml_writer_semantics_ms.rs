@@ -40,7 +40,7 @@ fn source_with_crs(path: &Path) -> Source {
     let mut header = raw.header().clone();
     header
         .metadata
-        .get_or_insert_with(|| cityparquet::cjseq::Metadata {
+        .get_or_insert(cityparquet::cjseq::Metadata {
             geographical_extent: None,
             identifier: None,
             point_of_contact: None,
@@ -50,7 +50,12 @@ fn source_with_crs(path: &Path) -> Source {
         })
         .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
     let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
-    Source::from_parts(header, features, raw.doc_appearance().cloned(), raw.format())
+    Source::from_parts(
+        header,
+        features,
+        raw.doc_appearance().cloned(),
+        raw.format(),
+    )
 }
 
 fn mm(v: f64) -> i64 {

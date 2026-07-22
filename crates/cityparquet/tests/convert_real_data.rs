@@ -177,7 +177,6 @@ fn delft_full_convert_round_trips_through_parquet() {
         .map(|b| b.unwrap().num_rows())
         .sum();
     assert_eq!(rows, 2231);
-
 }
 
 #[test]
