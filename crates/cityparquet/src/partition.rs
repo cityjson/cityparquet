@@ -205,6 +205,7 @@ pub fn convert_partitioned(
     let canonical = CanonicalSchema {
         schema: full_scan.schema.clone(),
         lods: full_scan.lods.clone(),
+        module_lods: full_scan.module_lods.clone(),
         diverted_attribute_names: full_scan.diverted_attribute_names.clone(),
         geoparquet_columns: full_scan.geoparquet_columns.clone(),
     };

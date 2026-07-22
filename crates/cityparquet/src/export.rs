@@ -50,7 +50,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow_array::{Array, RecordBatch, StringArray};
-use arrow_schema::Schema;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
@@ -112,40 +111,6 @@ pub(crate) fn table_display_name(path: &std::path::Path) -> &str {
     path.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("<table>")
-}
-
-/// Compares `other`'s CityParquet-rendered Arrow schema against `first`'s,
-/// field by field, in order — name and data type both must match. Returns a
-/// description of the FIRST mismatch found (field count, a renamed column,
-/// or a retyped one), or `None` if every field matches exactly. See the
-/// M5 Codex review multi-table schema-check finding at this function's call
-/// site in [`export`].
-pub(crate) fn first_schema_mismatch(first: &Schema, other: &Schema) -> Option<String> {
-    if first.fields().len() != other.fields().len() {
-        return Some(format!(
-            "has {} column(s), expected {}",
-            other.fields().len(),
-            first.fields().len()
-        ));
-    }
-    for (idx, (a, b)) in first.fields().iter().zip(other.fields().iter()).enumerate() {
-        if a.name() != b.name() {
-            return Some(format!(
-                "column {idx} is named '{}', expected '{}'",
-                b.name(),
-                a.name()
-            ));
-        }
-        if a.data_type() != b.data_type() {
-            return Some(format!(
-                "column '{}' has type {:?}, expected {:?}",
-                b.name(),
-                b.data_type(),
-                a.data_type()
-            ));
-        }
-    }
-    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1134,19 +1099,27 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     // package's file inventory from.
     let tables = PackageTables::open(&opts.package_dir)?;
 
-    // The FIRST table is authoritative for the package's KV metadata and
-    // rendered Arrow schema (`crate::package`'s by-type writer writes the
-    // IDENTICAL schema to every table, so any one of them would do);
-    // every other table is read via the SAME `schema` below and only
-    // light-checked for a matching `cityparquet_version`, not fully
-    // re-derived. `tables.tables` entries are already absolute paths.
+    // The FIRST table supplies the package-level facts that ARE genuinely
+    // dataset-wide — `transform`/`crs`/`extensions`/`source_metadata`/
+    // `appearance_defaults` are written identically into every table's
+    // footer by `crate::package`'s by-module writer (see
+    // `crate::scan::ScanResult::metadata`, called once per conversion), so
+    // any one table's copy is authoritative for header-building below.
+    // What is NOT dataset-wide any more (spec "object-table-schema": "a
+    // table carries exactly the LoD columns its data needs") is the
+    // rendered Arrow schema and `attribute_columns`/`default_geometry` — a
+    // module's own table only carries the geometry/appearance columns its
+    // own rows need, so EVERY table (this one included) is read against its
+    // OWN `cityparquet_metadata()`/`cityparquet_arrow_schema()` in the loop
+    // below, never a shared one. `tables.tables` entries are already
+    // absolute paths.
     let first_table_path = &tables.tables[0];
     let first_file = fs::File::open(first_table_path)
         .map_err(|e| io_err(format!("cannot open {}: {e}", first_table_path.display())))?;
     let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file)
         .map_err(|e| CityParquetError::Parquet(format!("cannot open parquet reader: {e}")))?;
     let meta = first_builder.cityparquet_metadata()?;
-    let schema = first_builder.cityparquet_arrow_schema()?;
+    let first_schema = first_builder.cityparquet_arrow_schema()?;
     let first_parquet_reader = first_builder
         .build()
         .map_err(|e| CityParquetError::Parquet(format!("cannot build parquet reader: {e}")))?;
@@ -1154,10 +1127,12 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     // for the `idx == 0` table without re-opening the file it already holds
     // open — the first object table's already-open reader is reused for
     // `idx == 0`, so it never pays for a second `File::open`/
-    // `ParquetRecordBatchReaderBuilder`.
-    let mut first_reader = Some(CityParquetRecordBatchReader::new(
-        first_parquet_reader,
-        Arc::clone(&schema),
+    // `ParquetRecordBatchReaderBuilder`. Paired with `meta.clone()`: this
+    // table's own metadata, exactly like every other table's own reader is
+    // paired with its own metadata below.
+    let mut first_reader = Some((
+        CityParquetRecordBatchReader::new(first_parquet_reader, Arc::clone(&first_schema)),
+        meta.clone(),
     ));
 
     let mut header = build_header(&meta)?;
@@ -1236,7 +1211,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     // above already tolerates one feature's objects arriving split across
     // batches (or, here, across whole tables) — see `OrderedGroups`.
     for (idx, table_path) in tables.tables.iter().enumerate() {
-        let reader = if idx == 0 {
+        let (reader, table_meta) = if idx == 0 {
             first_reader
                 .take()
                 .expect("the first table's reader is only ever consumed once")
@@ -1246,8 +1221,10 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
                 CityParquetError::Parquet(format!("cannot open parquet reader: {e}"))
             })?;
-            // Every later table must agree with the first on
-            // `cityparquet_version`...
+            // Every table must agree on `cityparquet_version` — a genuine
+            // internal inconsistency (different writer versions cannot
+            // safely coexist in one package) rather than the module-scoped
+            // schema variation this fix otherwise makes legal.
             let table_meta = builder.cityparquet_metadata()?;
             if table_meta.cityparquet_version != meta.cityparquet_version {
                 return Err(err(format!(
@@ -1259,37 +1236,30 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     table_display_name(first_table_path)
                 )));
             }
-            // ...and (M5 Codex review, Important finding 2) its own
-            // CityParquet-rendered Arrow schema — field names, types, AND
-            // order — must match the first table's exactly, checked
-            // field-by-field so the error names the first mismatching
-            // column. A `cityparquet_version` match alone does not rule out
-            // a tampered/foreign/hand-edited table that happens to carry the
-            // same version but different columns: reading it against the
-            // FIRST table's schema (as every batch below does, via
-            // `CityParquetRecordBatchReader::new(_, Arc::clone(&schema))`)
-            // would silently relabel or misdecode its data rather than
-            // reject the package. This is a real risk for any package NOT
-            // produced by this crate's own by-type writer (which is trusted
-            // to emit identical schemas), and for a corrupted one that was.
+            // Each table is read and decoded against its OWN rendered Arrow
+            // schema and its OWN `CityParquetMetadata` (never the first
+            // table's, and never cross-checked against it) — a module's own
+            // table legitimately carries only the geometry/appearance
+            // columns its own rows need (spec "object-table-schema": "a
+            // table carries exactly the LoD columns its data needs"), so two
+            // tables in the SAME valid package can have genuinely different
+            // schemas. `decode_batch` already derives geometry columns from
+            // each batch's own schema; `table_meta.attribute_columns` is what
+            // makes attribute decoding self-contained per table too.
             let table_schema = builder.cityparquet_arrow_schema()?;
-            if let Some(mismatch) = first_schema_mismatch(&schema, &table_schema) {
-                return Err(err(format!(
-                    "table '{}' {mismatch} (matching table '{}')",
-                    table_display_name(table_path),
-                    table_display_name(first_table_path)
-                )));
-            }
             let parquet_reader = builder.build().map_err(|e| {
                 CityParquetError::Parquet(format!("cannot build parquet reader: {e}"))
             })?;
-            CityParquetRecordBatchReader::new(parquet_reader, Arc::clone(&schema))
+            (
+                CityParquetRecordBatchReader::new(parquet_reader, Arc::clone(&table_schema)),
+                table_meta,
+            )
         };
         for batch in reader {
             let batch = batch?;
             let material_cols = appearance_columns(&batch, "material");
             let texture_cols = appearance_columns(&batch, "texture");
-            let objects = decode_batch(&batch, &meta)?;
+            let objects = decode_batch(&batch, &table_meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
                 let material = read_lod_keyed_appearance(&batch, &material_cols, row)?;
                 let texture = read_lod_keyed_appearance(&batch, &texture_cols, row)?;

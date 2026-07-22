@@ -22,8 +22,8 @@ use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
 use cityparquet_schema::{
-    CityParquetError, CityParquetSchema, ExtensionRegistry, Lod, ModuleKey, ModuleKeyResolver,
-    Profile, Result,
+    AttributeType, CityParquetError, CityParquetSchema, ExtensionRegistry, Lod, ModuleKey,
+    ModuleKeyResolver, Profile, Result, geometry_column_name,
 };
 use cjseq::CityJSONFeature;
 
@@ -444,6 +444,63 @@ fn table_name_for_module(key: &ModuleKey) -> String {
     format!("{}.parquet", cityparquet_schema::module_file(key))
 }
 
+/// Every by-module table FILE this run might open, mapped to the union of
+/// its own rows' LoDs (spec "object-table-schema" — "a table carries exactly
+/// the LoD columns its data needs"). Several [`ModuleKey`]s can legitimately
+/// derive the SAME file (the documented `Generics`/`CityObjectGroup` fold —
+/// see [`TableWriters::claimed_by`]'s doc comment), so this unions their
+/// `module_lods` entries rather than assuming one key per file.
+fn module_lods_by_file(module_lods: &std::collections::BTreeMap<ModuleKey, Vec<Lod>>) -> HashMap<String, Vec<Lod>> {
+    let mut by_file: HashMap<String, std::collections::BTreeSet<Lod>> = HashMap::new();
+    for (key, lods) in module_lods {
+        by_file
+            .entry(table_name_for_module(key))
+            .or_default()
+            .extend(lods.iter().copied());
+    }
+    by_file
+        .into_iter()
+        .map(|(file, set)| (file, set.into_iter().collect()))
+        .collect()
+}
+
+/// Column names, in spec order, for a table whose own rows only need
+/// `file_lods`: the fixed reserved names, then this table's own per-LoD
+/// geometry/appearance columns (ascending) — none at all when `file_lods` is
+/// empty (spec "object-table-schema": "a table whose objects have no
+/// analysis geometry at all carries none of them" — no bare-name fallback,
+/// unlike [`CityParquetSchema::to_arrow_schema`]'s dataset-wide
+/// zero-analysis-geometry rendering, which is a DIFFERENT case this function
+/// is never asked to reproduce — see [`TableWriters::projection_for`]'s doc
+/// comment for why), then `template`, `other`, then the dataset's attribute
+/// columns in scan order. Mirrors `CityParquetSchema::to_arrow_schema`'s
+/// non-empty-lods field order exactly, so every name here is guaranteed to
+/// resolve in the dataset-wide (wide) rendered schema.
+fn module_column_names(file_lods: &[Lod], attributes: &[(String, AttributeType)]) -> Vec<String> {
+    let mut names: Vec<String> = [
+        "id",
+        "feature_id",
+        "object_type",
+        "parents",
+        "children",
+        "children_roles",
+        "bbox",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    for lod in file_lods {
+        names.push(geometry_column_name("geometry", lod));
+        names.push(geometry_column_name("geometry_properties", lod));
+        names.push(geometry_column_name("material", lod));
+        names.push(geometry_column_name("texture", lod));
+    }
+    names.push("template".to_string());
+    names.push("other".to_string());
+    names.extend(attributes.iter().map(|(name, _)| name.clone()));
+    names
+}
+
 /// `batch`'s `object_type` column downcast to its dictionary array and Utf8
 /// dictionary values — the one shared decode both [`TableWriters::write_batch`]
 /// and its tests need (`crate::encode::BatchBuilder` always dictionary-encodes
@@ -488,9 +545,13 @@ fn resolve_dictionary_module_keys(
 /// `object_type` routed through [`cityparquet_schema::resolve_module_key`];
 /// 2nd-level core types, and extension classes specialising an ancestor,
 /// share their module's writer), opened LAZILY on that module's first row
-/// (see [`Self::write_batch`]). Every table shares the identical
-/// `schema`/`props` this was constructed with — only which rows land in
-/// which file differs. `order`/`index` together track FIRST-APPEARANCE
+/// (see [`Self::write_batch`]). Every table is opened against its OWN
+/// pruned Arrow schema — the dataset-wide (wide) reserved/attribute columns
+/// plus only the geometry/appearance columns that table's own rows need
+/// (spec "object-table-schema": "a table carries exactly the LoD columns
+/// its data needs") — computed once at [`Self::open_table`] time from
+/// `module_lods_by_file`/`attributes`; only `props` is shared verbatim
+/// across every writer. `order`/`index` together track FIRST-APPEARANCE
 /// order across the whole call (not just within one batch), which becomes
 /// `table_names` (passed to [`PackageTables::from_lists`], then the built
 /// Item's `cityparquet-objects` asset order) verbatim once [`Self::finish`]
@@ -498,7 +559,34 @@ fn resolve_dictionary_module_keys(
 /// before encoding; partitioning by module happens strictly after.
 struct TableWriters {
     tmp_dir: PathBuf,
-    schema: Arc<Schema>,
+    /// The dataset-wide (encode-pass) Arrow schema every batch handed to
+    /// [`Self::write_batch`] conforms to — every table's own pruned schema is
+    /// a column PROJECTION of this one (see [`Self::projection_for`]), never
+    /// independently rendered, so a projected batch is always guaranteed to
+    /// match the writer it is written to.
+    wide_schema: Arc<Schema>,
+    /// Each by-module table FILE's own LoD set — the union of every
+    /// [`ModuleKey`] routed there (see `crate::package::module_lods_by_file`).
+    /// Consulted only when `dataset_has_lods`; a file absent from this map
+    /// (no rows for it were seen during the dataset-wide scan — should not
+    /// happen since `write_batch` only ever opens a table `crate::scan::scan`
+    /// already resolved a [`ModuleKey`] for, but handled defensively) is
+    /// treated as having no LoDs of its own.
+    module_lods_by_file: HashMap<String, Vec<Lod>>,
+    /// The dataset's attribute columns (unchanged per module — only the
+    /// geometry/appearance columns are pruned, spec "object-table-schema"),
+    /// in scan order.
+    attributes: Vec<(String, AttributeType)>,
+    /// Whether the DATASET AS A WHOLE has any LoD-bearing geometry. `false`
+    /// means every table needs the identical dataset-wide (bare-fallback)
+    /// column set (the zero-analysis-geometry case, §9) — pruning would be
+    /// vacuous there, and re-deriving that fallback shape via
+    /// `module_column_names` would actively DROP the bare
+    /// `geometry`/`geometry_properties`/`material`/`texture` columns every
+    /// table needs (see [`module_column_names`]'s doc comment), so
+    /// [`Self::projection_for`] short-circuits to the full identity
+    /// projection instead.
+    dataset_has_lods: bool,
     props: WriterProperties,
     order: Vec<String>,
     index: HashMap<String, usize>,
@@ -514,6 +602,12 @@ struct TableWriters {
     /// silent merge of two distinct modules into one table.
     claimed_by: HashMap<String, ModuleKey>,
     writers: Vec<ArrowWriter<fs::File>>,
+    /// Per-writer-index projection: `wide_schema` field indices selecting
+    /// that table's own pruned column set, in that table's own column order
+    /// — computed once at [`Self::open_table`] time and reused by every
+    /// [`Self::write_batch`] call for that table (never recomputed per
+    /// batch).
+    projections: Vec<Vec<usize>>,
     /// Resolves `object_type` values to [`ModuleKey`]s, memoising by source
     /// type across every batch this run writes (see
     /// [`cityparquet_schema::ModuleKeyResolver`]).
@@ -525,32 +619,70 @@ impl TableWriters {
     /// are encountered (see [`Self::by_type_table_index`]). `extensions` is
     /// the source's parsed Extension/ADE declarations (spec "extensions");
     /// an empty [`ExtensionRegistry`] is legitimate for a source with none.
+    /// `module_lods_by_file`/`attributes`/`dataset_has_lods` drive the
+    /// per-table column pruning — see the struct's own doc comment.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         tmp_dir: &Path,
-        schema: Arc<Schema>,
+        wide_schema: Arc<Schema>,
         props: WriterProperties,
         extensions: ExtensionRegistry,
+        module_lods_by_file: HashMap<String, Vec<Lod>>,
+        attributes: Vec<(String, AttributeType)>,
+        dataset_has_lods: bool,
     ) -> Result<Self> {
         Ok(Self {
             tmp_dir: tmp_dir.to_path_buf(),
-            schema,
+            wide_schema,
+            module_lods_by_file,
+            attributes,
+            dataset_has_lods,
             props,
             order: Vec::new(),
             index: HashMap::new(),
             claimed_by: HashMap::new(),
             writers: Vec::new(),
+            projections: Vec::new(),
             resolver: ModuleKeyResolver::new(extensions),
         })
+    }
+
+    /// The `wide_schema` field indices selecting `name`'s own pruned column
+    /// set, in that table's own spec order — see [`module_column_names`]. A
+    /// full identity projection when the dataset as a whole has no
+    /// LoD-bearing geometry at all (`!self.dataset_has_lods`; see that
+    /// field's doc comment for why pruning must not run in that case).
+    fn projection_for(&self, name: &str) -> Result<Vec<usize>> {
+        if !self.dataset_has_lods {
+            return Ok((0..self.wide_schema.fields().len()).collect());
+        }
+        let empty = Vec::new();
+        let file_lods = self.module_lods_by_file.get(name).unwrap_or(&empty);
+        module_column_names(file_lods, &self.attributes)
+            .iter()
+            .map(|column| {
+                self.wide_schema.index_of(column).map_err(|e| {
+                    err(format!(
+                        "table {name}: column {column:?} missing from the dataset-wide schema: {e}"
+                    ))
+                })
+            })
+            .collect()
     }
 
     fn open_table(&mut self, name: &str) -> Result<usize> {
         let path = self.tmp_dir.join(name);
         let file = fs::File::create(&path)
             .map_err(|e| io_err(format!("cannot create {}: {e}", path.display())))?;
-        let writer = ArrowWriter::try_new(file, Arc::clone(&self.schema), Some(self.props.clone()))
+        let projection = self.projection_for(name)?;
+        let table_schema = Arc::new(self.wide_schema.project(&projection).map_err(|e| {
+            err(format!("table {name}: cannot project its own schema: {e}"))
+        })?);
+        let writer = ArrowWriter::try_new(file, table_schema, Some(self.props.clone()))
             .map_err(|e| parquet_err(format!("cannot open parquet writer: {e}")))?;
         let idx = self.writers.len();
         self.writers.push(writer);
+        self.projections.push(projection);
         self.order.push(name.to_string());
         self.index.insert(name.to_string(), idx);
         Ok(idx)
@@ -630,8 +762,12 @@ impl TableWriters {
                 mask.append_value(&per_dict_key[code] == key);
             }
             let filtered = filter_record_batch(batch, &mask.finish())?;
+            // Column projection (this table's own pruned schema) — rows
+            // already filtered above; `self.projections[idx]` was computed
+            // once at this table's `open_table` time, never per batch.
+            let projected = filtered.project(&self.projections[idx])?;
             self.writers[idx]
-                .write(&filtered)
+                .write(&projected)
                 .map_err(|e| parquet_err(format!("parquet write error: {e}")))?;
         }
         Ok(())
@@ -693,7 +829,15 @@ fn write_package(
     props: WriterProperties,
     tmp_dir: &Path,
 ) -> Result<WrittenPackage> {
-    let mut writers = TableWriters::new(tmp_dir, arrow_schema, props, extension_registry(source))?;
+    let mut writers = TableWriters::new(
+        tmp_dir,
+        arrow_schema,
+        props,
+        extension_registry(source),
+        module_lods_by_file(&scan_result.module_lods),
+        scan_result.schema.attributes.clone(),
+        !scan_result.lods.is_empty(),
+    )?;
 
     // `RowOrder::Hilbert` buffers every feature and re-sorts it BEFORE
     // handing it to `encode_buffered` (which shares `BatchIter`'s whole
@@ -885,6 +1029,17 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
 pub struct CanonicalSchema {
     pub schema: CityParquetSchema,
     pub lods: Vec<Lod>,
+    /// The whole-merged-dataset per-[`ModuleKey`] LoD sets (see
+    /// [`crate::scan::ScanResult::module_lods`]), stamped into every
+    /// partition's own `scan_result` the same way `lods` already is —
+    /// without this, a partition whose LOCAL rows happen to need fewer LoDs
+    /// for some module than another partition's do would prune that
+    /// module's table to a NARROWER column set, and
+    /// `read_parquet('OUT/*/<module>.parquet')` across partitions would face
+    /// a schema mismatch for that module, exactly the failure mode the
+    /// dataset-wide `lods`/`schema` canonicalisation already exists to avoid
+    /// for the whole-table case.
+    pub module_lods: std::collections::BTreeMap<ModuleKey, Vec<Lod>>,
     /// The attribute names the whole-dataset scan diverts into `other` (§5.2,
     /// G12). Divertedness is schema-relative (it depends on the canonical
     /// `lods` — e.g. an attribute named `geometry` is reserved once the dataset
@@ -946,6 +1101,9 @@ pub(crate) fn convert_source_impl(
     if let Some(canon) = schema_override {
         scan_result.schema = canon.schema.clone();
         scan_result.lods = canon.lods.clone();
+        // Per-module LoDs, canonicalised exactly like `lods` above — see
+        // `CanonicalSchema::module_lods`'s doc comment.
+        scan_result.module_lods = canon.module_lods.clone();
         // Divert the canonical set, not this partition's local one — otherwise a
         // partition whose local LoDs differ (e.g. no LoD0) would keep an
         // attribute the canonical schema diverted, and the encoder would neither
@@ -1077,12 +1235,28 @@ mod tests {
         RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
     }
 
+    /// `dataset_has_lods: false` — these tests' synthetic `object_type`-only
+    /// batches (see [`object_type_only_batch`]) carry none of the reserved
+    /// columns `module_column_names` would look for, so the per-module
+    /// pruning path (which resolves those names against `wide_schema`) must
+    /// stay off; `false` makes [`TableWriters::projection_for`] a plain
+    /// identity projection, reproducing this module's pre-pruning behaviour
+    /// exactly for every existing test below.
     fn writers_with(
         tmp: &std::path::Path,
         schema: Arc<Schema>,
         extensions: ExtensionRegistry,
     ) -> TableWriters {
-        TableWriters::new(tmp, schema, WriterProperties::default(), extensions).unwrap()
+        TableWriters::new(
+            tmp,
+            schema,
+            WriterProperties::default(),
+            extensions,
+            HashMap::new(),
+            Vec::new(),
+            false,
+        )
+        .unwrap()
     }
 
     /// The `ModuleKey`-driven equivalent of the old lossy `table_name_for_type`

@@ -140,6 +140,66 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             attributes.push((name.clone(), attr_type));
         }
 
+        // Whether THIS table's own physical schema carries the bare
+        // un-suffixed `geometry` column — the dataset-wide
+        // zero-analysis-geometry fallback (spec "Levels of detail" / §9):
+        // every table in a dataset with NO LoD-bearing geometry anywhere
+        // carries this pair. Distinguishes that case from a table that
+        // simply carries NO geometry columns of its own (empty `lods` for a
+        // DIFFERENT reason: spec "object-table-schema" — "a table whose
+        // objects have no analysis geometry at all carries none of them" —
+        // the per-module pruning case, where sibling tables DO have
+        // LoD-bearing geometry) — both render `lods.is_empty()` here, but
+        // only the former should get the synthesised bare quartet back.
+        let has_bare_geometry = actual.field_with_name("geometry").is_ok();
+
+        if lods.is_empty() && !has_bare_geometry {
+            // This table needs no geometry section at all. Rendering the
+            // real `attributes` through `CityParquetSchema::to_arrow_schema`
+            // here would be UNSAFE: with `lods` empty, its `validate` reserves
+            // the BARE `geometry`/`geometry_properties`/`material`/`texture`
+            // names (the zero-analysis-geometry fallback's own vocabulary),
+            // and an attribute legitimately named e.g. `material` — legal
+            // dataset-wide, since the dataset's REAL LoDs only reserve
+            // `material_lod<suffix>`, never the bare name — would spuriously
+            // collide and error out (proven by the real-fixture regression
+            // `attributes_named_like_appearance_columns_do_not_corrupt_export`).
+            // So: render the reserved/template/other shape with NO attributes
+            // (nothing to collide with), strip the synthesised bare quartet
+            // `to_arrow_schema` always adds for empty `lods` (the ONLY shape
+            // it knows for that case — never teach `CityParquetSchema` a
+            // third "no geometry at all" `lods` state just for this
+            // reader-side reconstruction), then splice in each attribute's
+            // own ALREADY-RESOLVED physical field from `actual` (its type,
+            // including the Json-vs-String disambiguation, was already
+            // settled above) rather than re-deriving it through the
+            // collision-prone path.
+            let reserved_only = CityParquetSchema {
+                lods: Vec::new(),
+                attributes: Vec::new(),
+                crs: None,
+            }
+            .to_arrow_schema()?;
+            const BARE_GEOMETRY_NAMES: [&str; 4] =
+                ["geometry", "geometry_properties", "material", "texture"];
+            let mut fields: Vec<arrow_schema::Field> = reserved_only
+                .fields()
+                .iter()
+                .filter(|f| !BARE_GEOMETRY_NAMES.contains(&f.name().as_str()))
+                .map(|f| f.as_ref().clone())
+                .collect();
+            for (name, _) in &attributes {
+                let field = actual.field_with_name(name).map_err(|_| {
+                    CityParquetError::Metadata(format!(
+                        "attribute column '{name}' listed in metadata but absent from the \
+                         file's schema"
+                    ))
+                })?;
+                fields.push(field.as_ref().clone());
+            }
+            return Ok(Arc::new(Schema::new(fields)));
+        }
+
         let schema = CityParquetSchema {
             lods,
             attributes,

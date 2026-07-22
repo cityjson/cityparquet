@@ -26,9 +26,7 @@ use self::document::{Bounds, write_city_model_close, write_city_model_open};
 use crate::Result;
 use crate::citygml::crs::srs_name_for;
 use crate::decode::decode_batch;
-use crate::export::{
-    appearance_columns, first_schema_mismatch, read_lod_keyed_appearance, table_display_name,
-};
+use crate::export::{appearance_columns, read_lod_keyed_appearance, table_display_name};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use crate::sidecar::{read_materials, read_textures};
 use crate::stac::properties::PackageTables;
@@ -152,8 +150,13 @@ fn route_geometry(
 /// Standalone: reads the package via the low-level `reader`/`decode`
 /// primitives (never the CityJSON `export` reconstruction), decodes each row's
 /// WKB into world-coordinate geometry, and emits `bldg:Building` +
-/// `bldg:lod<major>Solid` directly. The first table's footer metadata + Arrow
-/// schema are authoritative; later tables must match (same as `export`).
+/// `bldg:lod<major>Solid` directly. The first table supplies the genuinely
+/// dataset-wide facts (`crs`/`attribute_columns`, both identical across every
+/// table — see `crate::export::export`'s doc comment on the same point);
+/// every table's ROWS are otherwise decoded against its own footer metadata
+/// and its own rendered Arrow schema, since a module's own table legitimately
+/// carries only the geometry/appearance columns its own rows need (spec
+/// "object-table-schema").
 pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     // `PackageTables::open` reads the manifest's `tables`/`sidecar_files`
     // lists and already rejects an empty or duplicate-naming manifest, the
@@ -203,12 +206,15 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
 
     let mut first_builder = Some(first_builder);
     for (idx, path) in tables.tables.iter().enumerate() {
-        let reader = if idx == 0 {
+        let (reader, table_meta) = if idx == 0 {
             let builder = first_builder.take().expect("first builder taken once");
             let pr = builder.build().map_err(|e| {
                 CityParquetError::Parquet(format!("cannot build parquet reader: {e}"))
             })?;
-            CityParquetRecordBatchReader::new(pr, Arc::clone(&schema))
+            (
+                CityParquetRecordBatchReader::new(pr, Arc::clone(&schema)),
+                meta.clone(),
+            )
         } else {
             let builder =
                 ParquetRecordBatchReaderBuilder::try_new(fs::File::open(path).map_err(|e| {
@@ -227,25 +233,25 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                     table_display_name(first_path)
                 )));
             }
+            // Each table's own rendered Arrow schema — never cross-checked
+            // against the first table's, since a module's own table
+            // legitimately carries only the geometry/appearance columns its
+            // own rows need (spec "object-table-schema").
             let table_schema = builder.cityparquet_arrow_schema()?;
-            if let Some(mismatch) = first_schema_mismatch(&schema, &table_schema) {
-                return Err(CityParquetError::Metadata(format!(
-                    "table '{}' {mismatch} (matching '{}')",
-                    table_display_name(path),
-                    table_display_name(first_path)
-                )));
-            }
             let pr = builder.build().map_err(|e| {
                 CityParquetError::Parquet(format!("cannot build parquet reader: {e}"))
             })?;
-            CityParquetRecordBatchReader::new(pr, Arc::clone(&schema))
+            (
+                CityParquetRecordBatchReader::new(pr, Arc::clone(&table_schema)),
+                table_meta,
+            )
         };
 
         for batch in reader {
             let batch = batch?;
             let material_cols = appearance_columns(&batch, "material");
             let texture_cols = appearance_columns(&batch, "texture");
-            let objects = decode_batch(&batch, &meta)?;
+            let objects = decode_batch(&batch, &table_meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
                 let ty = obj.object.thetype.clone();
                 // Only Building and BuildingPart are handled; other CityObject
