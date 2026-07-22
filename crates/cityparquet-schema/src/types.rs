@@ -65,7 +65,7 @@ impl std::fmt::Display for Lod {
 }
 
 /// CityGML 3.0 thematic module that owns a feature class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CityGmlModule {
     Core,
     Building,
@@ -359,7 +359,14 @@ pub fn first_level_type(object_type: &str) -> &str {
 /// a specialised ancestor). This is what CityParquet's by-module
 /// object-table split (spec "By-module object-table layout") actually
 /// partitions on — see [`module_file`] for the file name it derives.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// `Ord`/`PartialOrd` (a simple derive: `Core` variants order by
+/// [`CityGmlModule`], `Extension` variants by name, and every `Core` sorts
+/// before every `Extension`) exist so a caller can key a `BTreeMap<ModuleKey,
+/// _>` — e.g. `crate::scan::ScanResult::module_lods` (in the `cityparquet`
+/// crate) — deterministically; no ordering is spec-mandated, this is purely
+/// a container convenience.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ModuleKey {
     /// A recognised core CityGML 3.0 module.
     Core(CityGmlModule),
