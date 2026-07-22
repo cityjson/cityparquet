@@ -44,7 +44,7 @@ const MATERIALS_TABLE: &str = "materials.parquet";
 const TEXTURES_TABLE: &str = "textures.parquet";
 const TEMPLATES_TABLE: &str = "geometry_templates.parquet";
 /// Files a by-type object table's derived name must never collide with —
-/// every package sidecar/metadata file. Since `table_name_for_type` no
+/// every package sidecar/metadata file. Since `table_name_for_module` no
 /// longer namespaces object tables under a `cityobjects_` prefix (Task 4),
 /// this guard is the invariant that keeps a pathological object type from
 /// shadowing a reserved file — enforced at
