@@ -21,7 +21,10 @@ use parquet::arrow::ArrowWriter;
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
-use cityparquet_schema::{CityParquetError, CityParquetSchema, Lod, Profile, Result};
+use cityparquet_schema::{
+    CityParquetError, CityParquetSchema, ExtensionRegistry, Lod, ModuleKey, ModuleKeyResolver,
+    Profile, Result,
+};
 use cjseq::CityJSONFeature;
 
 use crate::appearance::AppearanceInterner;
@@ -430,51 +433,24 @@ fn hilbert_ordered_features(
     Ok(keyed.into_iter().map(|(_, f)| f).collect())
 }
 
-/// The `<snake>.parquet` file name the by-type writer uses for a FAMILY
-/// value (`object_type` mapped through
-/// [`cityparquet_schema::first_level_type`] — always a 1st-level type):
-/// `<snake>` is the family lower-cased with every non-alphanumeric character
-/// replaced by `_`, and a leading `+` (CityJSON extension object types) is
-/// rewritten to the prefix `ext_` rather than folded into an ugly leading
-/// underscore (e.g. `+Foo` becomes `ext_foo.parquet`, never `_foo.parquet`).
-/// Task 4 dropped the `cityobjects_` prefix this used to carry; callers that
-/// open a writer for the result MUST check it against
+/// The `<snake>.parquet` file name the by-module writer uses for a
+/// [`ModuleKey`] (spec "By-module object-table layout" / "extensions"):
+/// [`cityparquet_schema::module_file`] plus the `.parquet` extension.
+/// Callers that open a writer for the result MUST check it against
 /// [`RESERVED_PACKAGE_FILES`] first (see
-/// [`TableWriters::by_type_table_index`]), since the dropped prefix removed
-/// the namespace that previously made a collision with a sidecar/metadata
-/// file impossible. Named `..._for_type` rather than `..._for_family` since
-/// it is a pure string transform with no family-specific logic of its own —
-/// callers are what turn a raw `object_type` into a family first.
-fn table_name_for_type(object_type: &str) -> String {
-    let (prefix, body) = match object_type.strip_prefix('+') {
-        Some(rest) => ("ext_", rest),
-        None => ("", object_type),
-    };
-    let snake: String = body
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("{prefix}{snake}.parquet")
+/// [`TableWriters::by_type_table_index`]), since a pathological extension
+/// module name could otherwise shadow a sidecar/metadata file.
+fn table_name_for_module(key: &ModuleKey) -> String {
+    format!("{}.parquet", cityparquet_schema::module_file(key))
 }
 
-/// The boolean mask selecting exactly the rows of `batch` whose FAMILY —
-/// `object_type` mapped through [`cityparquet_schema::first_level_type`] —
-/// equals `target` (`batch`'s `object_type` column is always a
-/// dictionary-encoded Utf8 — see `crate::encode::BatchBuilder` and
-/// `crate::decode`'s identical downcast). A 2nd-level row (e.g.
-/// `object_type == "BuildingPart"`) is selected by its 1st-level family
-/// (`target == "Building"`), never by its own literal `object_type` value —
-/// this is what puts `BuildingPart` rows into `building.parquet` alongside
-/// `Building` rows. A row with a null `object_type` is a schema violation
-/// (the column is non-nullable), so a null there is a `Schema` error rather
-/// than a silently-false mask entry.
-fn object_type_mask(batch: &RecordBatch, target: &str) -> Result<arrow_array::BooleanArray> {
+/// `batch`'s `object_type` column downcast to its dictionary array and Utf8
+/// dictionary values — the one shared decode both [`TableWriters::write_batch`]
+/// and its tests need (`crate::encode::BatchBuilder` always dictionary-encodes
+/// `object_type`; `crate::decode` downcasts it identically).
+fn object_type_dictionary(
+    batch: &RecordBatch,
+) -> Result<(&DictionaryArray<Int32Type>, &StringArray)> {
     let column = batch
         .column_by_name("object_type")
         .ok_or_else(|| err("encoded batch is missing its 'object_type' column".to_string()))?;
@@ -487,94 +463,74 @@ fn object_type_mask(batch: &RecordBatch, target: &str) -> Result<arrow_array::Bo
         .as_any()
         .downcast_ref::<StringArray>()
         .ok_or_else(|| err("'object_type' dictionary values are not Utf8".to_string()))?;
-    let mut mask = BooleanBuilder::with_capacity(batch.num_rows());
-    for row in 0..batch.num_rows() {
-        if dict.is_null(row) {
-            return Err(err(format!("row {row}: 'object_type' must not be null")));
-        }
-        let key = dict.keys().value(row) as usize;
-        let family = cityparquet_schema::first_level_type(values.value(key));
-        mask.append_value(family == target);
-    }
-    Ok(mask.finish())
+    Ok((dict, values))
 }
 
-/// Every distinct FAMILY value appearing in `batch` — `object_type` mapped
-/// through [`cityparquet_schema::first_level_type`] — in first-appearance
-/// order WITHIN this batch (a plain linear scan — the number of distinct
-/// families is always small, at most a few dozen even for the richest real
-/// dataset, so an O(rows * families) scan costs nothing next to the
-/// WKB/attribute work the same batch already went through). 2nd-level
-/// object types (e.g. `BuildingPart`) collapse into their 1st-level family
-/// here (`"Building"`), so this never returns more distinct values than
-/// there are 1st-level families actually present in `batch`.
-fn distinct_types_in_batch(batch: &RecordBatch) -> Result<Vec<String>> {
-    let column = batch
-        .column_by_name("object_type")
-        .ok_or_else(|| err("encoded batch is missing its 'object_type' column".to_string()))?;
-    let dict = column
-        .as_any()
-        .downcast_ref::<DictionaryArray<Int32Type>>()
-        .ok_or_else(|| err("'object_type' column is not a dictionary array".to_string()))?;
-    let values = dict
-        .values()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| err("'object_type' dictionary values are not Utf8".to_string()))?;
-    let mut order: Vec<String> = Vec::new();
-    for row in 0..batch.num_rows() {
-        if dict.is_null(row) {
-            // Defence-in-depth, aligned with `object_type_mask`'s identical
-            // guard: the schema declares `object_type` non-nullable (see
-            // `cityparquet_schema::model`), so a null can only mean a
-            // corrupt/foreign batch — error loudly rather than skip, or an
-            // all-null batch would be silently dropped under ByType (no
-            // distinct families found -> no writer ever sees its rows).
-            return Err(err(format!("row {row}: 'object_type' must not be null")));
-        }
-        let key = dict.keys().value(row) as usize;
-        let family = cityparquet_schema::first_level_type(values.value(key));
-        if !order.iter().any(|t| t == family) {
-            order.push(family.to_string());
-        }
-    }
-    Ok(order)
+/// Resolves every DISTINCT dictionary VALUE of `batch`'s `object_type`
+/// column to its [`ModuleKey`] exactly once — via `resolver`, which itself
+/// memoises by source-type string across the whole conversion (many
+/// batches) — indexed by dictionary key so every later per-row lookup is a
+/// plain `Vec` index, never a re-derivation from the string. `object_type`
+/// stores the CityGML class name (spec "object_type vocabulary", gap 15);
+/// [`cityparquet_schema::resolve_module_key`] recognises a core class by
+/// either its CityJSON or CityGML spelling, so this is correct as-is.
+fn resolve_dictionary_module_keys(
+    values: &StringArray,
+    resolver: &mut ModuleKeyResolver,
+) -> Result<Vec<ModuleKey>> {
+    (0..values.len())
+        .map(|i| resolver.resolve(values.value(i)))
+        .collect()
 }
 
 /// The main CityObject data tables a `convert` run writes: one writer per
-/// distinct FAMILY (`object_type` mapped through
-/// [`cityparquet_schema::first_level_type`] — 2nd-level types share their
-/// 1st-level parent's writer), opened LAZILY on that family's first row (see
-/// [`Self::write_batch`]). Every table shares the identical `schema`/`props`
-/// this was constructed with — only which rows land in which file differs.
-/// `order`/`index` together track FIRST-APPEARANCE order across the whole
-/// call (not just within one batch), which becomes `table_names` (passed to
-/// [`PackageTables::from_lists`], then the built Item's `cityparquet-objects`
-/// asset order) verbatim once [`Self::finish`] is called — unaffected by
-/// [`RowOrder`], which only reorders FEATURES before encoding; partitioning by family
-/// happens strictly after.
+/// distinct [`ModuleKey`] (spec "By-module object-table layout" —
+/// `object_type` routed through [`cityparquet_schema::resolve_module_key`];
+/// 2nd-level core types, and extension classes specialising an ancestor,
+/// share their module's writer), opened LAZILY on that module's first row
+/// (see [`Self::write_batch`]). Every table shares the identical
+/// `schema`/`props` this was constructed with — only which rows land in
+/// which file differs. `order`/`index` together track FIRST-APPEARANCE
+/// order across the whole call (not just within one batch), which becomes
+/// `table_names` (passed to [`PackageTables::from_lists`], then the built
+/// Item's `cityparquet-objects` asset order) verbatim once [`Self::finish`]
+/// is called — unaffected by [`RowOrder`], which only reorders FEATURES
+/// before encoding; partitioning by module happens strictly after.
 struct TableWriters {
     tmp_dir: PathBuf,
     schema: Arc<Schema>,
     props: WriterProperties,
     order: Vec<String>,
     index: HashMap<String, usize>,
-    /// Which FAMILY first claimed each ByType table FILE NAME.
-    /// [`table_name_for_type`] is lossy (case-folding, `_`-folding, the
-    /// `ext_` prefix), so two DISTINCT families can derive the same
-    /// file name (e.g. a literal type `"Ext_A"` and the extension type
-    /// `"+A"` both become `ext_a.parquet`) — silently sharing
-    /// the writer would merge them into one table, violating the
-    /// one-table-per-family invariant. [`Self::by_type_table_index`] consults
-    /// this to turn any such collision into a `Schema` error instead.
-    claimed_by: HashMap<String, String>,
+    /// Which [`ModuleKey`] first claimed each by-module table FILE NAME.
+    /// Two DIFFERENT `Core` keys sharing a file is always the documented,
+    /// intentional `Generics`/`CityObjectGroup` fold (spec: "On
+    /// `CityObjectGroup`") — `core_module_file`'s pinned table makes any
+    /// OTHER core collision impossible, so [`Self::by_type_table_index`]
+    /// allows any Core-vs-Core share. A collision involving an `Extension`
+    /// key, though, is a genuine ambiguity (snake_case is not injective over
+    /// arbitrary extension module names, and an extension module could
+    /// collide with a core file) — that is a hard `Schema` error, never a
+    /// silent merge of two distinct modules into one table.
+    claimed_by: HashMap<String, ModuleKey>,
     writers: Vec<ArrowWriter<fs::File>>,
+    /// Resolves `object_type` values to [`ModuleKey`]s, memoising by source
+    /// type across every batch this run writes (see
+    /// [`cityparquet_schema::ModuleKeyResolver`]).
+    resolver: ModuleKeyResolver,
 }
 
 impl TableWriters {
-    /// Opens nothing yet — tables are created lazily as new FAMILY values
-    /// are encountered (see [`Self::by_type_table_index`]).
-    fn new(tmp_dir: &Path, schema: Arc<Schema>, props: WriterProperties) -> Result<Self> {
+    /// Opens nothing yet — tables are created lazily as new [`ModuleKey`]s
+    /// are encountered (see [`Self::by_type_table_index`]). `extensions` is
+    /// the source's parsed Extension/ADE declarations (spec "extensions");
+    /// an empty [`ExtensionRegistry`] is legitimate for a source with none.
+    fn new(
+        tmp_dir: &Path,
+        schema: Arc<Schema>,
+        props: WriterProperties,
+        extensions: ExtensionRegistry,
+    ) -> Result<Self> {
         Ok(Self {
             tmp_dir: tmp_dir.to_path_buf(),
             schema,
@@ -583,6 +539,7 @@ impl TableWriters {
             index: HashMap::new(),
             claimed_by: HashMap::new(),
             writers: Vec::new(),
+            resolver: ModuleKeyResolver::new(extensions),
         })
     }
 
@@ -599,54 +556,80 @@ impl TableWriters {
         Ok(idx)
     }
 
-    /// The writer index for `family`'s by-type table, opening it lazily on
-    /// the family's first row and recording the family's CLAIM on the
-    /// derived file name. Because [`table_name_for_type`] is lossy, a
-    /// DIFFERENT family deriving an already-claimed name is a hard `Schema`
-    /// error naming both families and the colliding file — never a silent
-    /// merge of two distinct families into one table (see
-    /// [`Self::claimed_by`]). Task 4's reserved-name guard runs first: since
-    /// by-type tables are no longer namespaced under a `cityobjects_`
-    /// prefix, a pathological family could otherwise derive a name that
+    /// The writer index for `key`'s by-module table, opening it lazily on
+    /// the module's first row and recording the module's CLAIM on the
+    /// derived file name. The reserved-name guard runs first: a
+    /// pathological extension module could otherwise derive a name that
     /// shadows a package sidecar/metadata file (see
     /// [`RESERVED_PACKAGE_FILES`]) — reject that as a clear error instead of
-    /// silently overwriting the sidecar. Callers always pass a FAMILY value
-    /// (already `cityparquet_schema::first_level_type`-mapped — see
-    /// [`Self::write_batch`]), never a raw, possibly-2nd-level `object_type`.
-    fn by_type_table_index(&mut self, family: &str) -> Result<usize> {
-        let name = table_name_for_type(family);
+    /// silently overwriting the sidecar. See [`Self::claimed_by`] for the
+    /// collision rule once past that guard.
+    fn by_type_table_index(&mut self, key: &ModuleKey) -> Result<usize> {
+        let name = table_name_for_module(key);
         if RESERVED_PACKAGE_FILES.contains(&name.as_str()) {
             return Err(err(format!(
-                "object type {family:?} maps to reserved package file {name:?}; \
-                 rename the type"
+                "module {key:?} maps to reserved package file {name:?}; rename the module"
             )));
         }
         match self.claimed_by.get(&name) {
-            Some(claimant) if claimant == family => Ok(self.index[&name]),
+            Some(claimant) if claimant == key => Ok(self.index[&name]),
+            Some(ModuleKey::Core(_)) if matches!(key, ModuleKey::Core(_)) => {
+                // The only way two DISTINCT Core keys can derive the same
+                // file is the intentional Generics/CityObjectGroup fold —
+                // see `Self::claimed_by`'s doc comment.
+                Ok(self.index[&name])
+            }
             Some(claimant) => Err(err(format!(
-                "object types '{claimant}' and '{family}' both derive the table file \
-                 '{name}': refusing to merge two distinct object types into one table"
+                "modules {claimant:?} and {key:?} both derive the table file '{name}': \
+                 refusing to merge two distinct modules into one table"
             ))),
             None => {
                 let idx = self.open_table(&name)?;
-                self.claimed_by.insert(name, family.to_string());
+                self.claimed_by.insert(name, key.clone());
                 Ok(idx)
             }
         }
     }
 
-    /// Writes one encoded batch, partitioned by FAMILY (`object_type`
-    /// mapped through [`cityparquet_schema::first_level_type`]) — one
-    /// `filter_record_batch` call per distinct family present, each
-    /// sub-batch going to that family's own (lazily opened) writer. A
-    /// 2nd-level row's own `object_type` value is untouched by this: only
-    /// which FILE it lands in is decided by its family, the `object_type`
-    /// column itself still carries the row's real, literal type.
+    /// Writes one encoded batch, partitioned by [`ModuleKey`] — one
+    /// `filter_record_batch` call per distinct module present, each
+    /// sub-batch going to that module's own (lazily opened) writer. A
+    /// row's own `object_type` value is untouched by this: only which FILE
+    /// it lands in is decided by its module, the `object_type` column
+    /// itself still carries the row's real, literal type. Resolves each
+    /// DISTINCT dictionary value's `ModuleKey` once (via `self.resolver`),
+    /// then does one linear pass over rows comparing dictionary keys/
+    /// `ModuleKey`s — never re-deriving a `ModuleKey` from a string per row.
     fn write_batch(&mut self, batch: &RecordBatch) -> Result<()> {
-        for family in distinct_types_in_batch(batch)? {
-            let idx = self.by_type_table_index(&family)?;
-            let mask = object_type_mask(batch, &family)?;
-            let filtered = filter_record_batch(batch, &mask)?;
+        let (dict, values) = object_type_dictionary(batch)?;
+        let per_dict_key = resolve_dictionary_module_keys(values, &mut self.resolver)?;
+
+        // Distinct ModuleKeys actually present in `batch`, first-appearance
+        // order within this batch — mirrors the old `distinct_types_in_batch`
+        // shape but keyed on `ModuleKey`, not a re-derived string.
+        let mut order: Vec<ModuleKey> = Vec::new();
+        for row in 0..batch.num_rows() {
+            if dict.is_null(row) {
+                // The schema declares `object_type` non-nullable — a null
+                // here can only mean a corrupt/foreign batch; error loudly
+                // rather than silently drop the row from every table.
+                return Err(err(format!("row {row}: 'object_type' must not be null")));
+            }
+            let code = dict.keys().value(row) as usize;
+            let key = &per_dict_key[code];
+            if !order.iter().any(|k| k == key) {
+                order.push(key.clone());
+            }
+        }
+
+        for key in &order {
+            let idx = self.by_type_table_index(key)?;
+            let mut mask = BooleanBuilder::with_capacity(batch.num_rows());
+            for row in 0..batch.num_rows() {
+                let code = dict.keys().value(row) as usize;
+                mask.append_value(&per_dict_key[code] == key);
+            }
+            let filtered = filter_record_batch(batch, &mask.finish())?;
             self.writers[idx]
                 .write(&filtered)
                 .map_err(|e| parquet_err(format!("parquet write error: {e}")))?;
@@ -676,6 +659,26 @@ impl TableWriters {
     }
 }
 
+/// The `source`'s parsed Extension/ADE declarations, for [`ModuleKeyResolver`]
+/// to route extension classes by (spec "extensions" — "The `ModuleKey`").
+///
+/// **Stub.** `source.header().extensions` only carries each extension's
+/// `url`/`version` reference (`cjseq::CityJSON::extensions`), not the
+/// per-class `module`/`parent` declarations an Extension/ADE schema document
+/// itself defines — actually fetching and parsing those schema documents
+/// (and the equivalent for a CityGML ADE identity) is the `city.extensions`
+/// declaration-mapping work the spec describes, explicitly out of scope for
+/// this change (a later task owns it). Until then this always returns an
+/// empty [`ExtensionRegistry`], so a source with a genuine `+`-marked
+/// extension type resolves via [`cityparquet_schema::resolve_module_key`]'s
+/// hard-error path (spec: "A class with no resolvable `ModuleKey` ... is a
+/// hard error") rather than being silently misfiled — every fixture this
+/// crate round-trips today carries no extension types, so this is not yet
+/// exercised end-to-end.
+fn extension_registry(_source: &Source) -> ExtensionRegistry {
+    ExtensionRegistry::new()
+}
+
 /// Writes one full package (main table, Compatibility-profile sidecars,
 /// `metadata.json` manifest) into `tmp_dir` — this is the entire body that
 /// used to run directly against `opts.output_dir` before the M5 crash-safe-
@@ -690,7 +693,7 @@ fn write_package(
     props: WriterProperties,
     tmp_dir: &Path,
 ) -> Result<WrittenPackage> {
-    let mut writers = TableWriters::new(tmp_dir, arrow_schema, props)?;
+    let mut writers = TableWriters::new(tmp_dir, arrow_schema, props, extension_registry(source))?;
 
     // `RowOrder::Hilbert` buffers every feature and re-sorts it BEFORE
     // handing it to `encode_buffered` (which shares `BatchIter`'s whole
@@ -1054,6 +1057,7 @@ mod tests {
 
     use arrow_array::builder::StringDictionaryBuilder;
     use arrow_schema::{DataType, Field};
+    use cityparquet_schema::{CityGmlModule, ExtensionClassDecl};
 
     /// A minimal one-column batch (`object_type` as dictionary-encoded
     /// Utf8, matching `crate::encode::BatchBuilder`'s real encoding) — all
@@ -1073,25 +1077,50 @@ mod tests {
         RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
     }
 
-    /// M5 review follow-up (Important): [`table_name_for_type`] is lossy, so
-    /// the literal type `"Ext_A"` and the extension type `"+A"` both derive
-    /// `ext_a.parquet` — the writer bookkeeping must reject that collision as
-    /// a `Schema` error naming both types and the colliding file, never
-    /// silently merge two distinct object types into one table.
+    fn writers_with(
+        tmp: &std::path::Path,
+        schema: Arc<Schema>,
+        extensions: ExtensionRegistry,
+    ) -> TableWriters {
+        TableWriters::new(tmp, schema, WriterProperties::default(), extensions).unwrap()
+    }
+
+    /// The `ModuleKey`-driven equivalent of the old lossy `table_name_for_type`
+    /// collision test: since [`to_snake_case`](cityparquet_schema) is not
+    /// injective over arbitrary extension module names, two DIFFERENT
+    /// extension module names can still derive the same file
+    /// (`"MyEnergy"` and `"My_energy"` both -> `my_energy.parquet`) — the
+    /// writer bookkeeping must reject that as a `Schema` error naming both
+    /// colliding `ModuleKey`s and the file, never silently merge two
+    /// distinct modules into one table.
     #[test]
-    fn by_type_write_rejects_two_object_types_deriving_the_same_table_name() {
-        // Precondition the whole scenario rests on: the two types really do
-        // collide on the derived file name.
+    fn by_type_write_rejects_two_extension_modules_colliding_on_snake_case() {
+        let mut extensions = ExtensionRegistry::new();
+        extensions.declare(
+            "A",
+            ExtensionClassDecl {
+                module: Some("MyEnergy".to_string()),
+                parent: None,
+            },
+        );
+        extensions.declare(
+            "B",
+            ExtensionClassDecl {
+                module: Some("My_energy".to_string()),
+                parent: None,
+            },
+        );
+        // Precondition the whole scenario rests on: the two module names
+        // really do collide on the derived file name.
         assert_eq!(
-            table_name_for_type("Ext_A"),
-            table_name_for_type("+A"),
-            "fixture fact: 'Ext_A' and '+A' must derive the same table file name"
+            table_name_for_module(&ModuleKey::Extension("MyEnergy".to_string())),
+            table_name_for_module(&ModuleKey::Extension("My_energy".to_string())),
+            "fixture fact: 'MyEnergy' and 'My_energy' must derive the same table file name"
         );
 
         let tmp = tempfile::tempdir().unwrap();
-        let batch = object_type_only_batch(&["Ext_A", "+A"]);
-        let mut writers =
-            TableWriters::new(tmp.path(), batch.schema(), WriterProperties::default()).unwrap();
+        let batch = object_type_only_batch(&["+A", "+B"]);
+        let mut writers = writers_with(tmp.path(), batch.schema(), extensions);
 
         let e = writers.write_batch(&batch).unwrap_err();
         assert!(
@@ -1100,14 +1129,21 @@ mod tests {
         );
         let msg = e.to_string();
         assert!(
-            msg.contains("Ext_A") && msg.contains("+A") && msg.contains("ext_a.parquet"),
-            "the error must name both colliding types and the derived file, got: {msg}"
+            msg.contains("my_energy.parquet"),
+            "the error must name the colliding file, got: {msg}"
         );
 
-        // The SAME type re-appearing (across batches) is not a collision:
+        // The SAME module re-appearing (across batches) is not a collision:
         // its claim matches, so writing proceeds.
-        let mut ok_writers =
-            TableWriters::new(tmp.path(), batch.schema(), WriterProperties::default()).unwrap();
+        let mut ok_extensions = ExtensionRegistry::new();
+        ok_extensions.declare(
+            "A",
+            ExtensionClassDecl {
+                module: Some("MyEnergy".to_string()),
+                parent: None,
+            },
+        );
+        let mut ok_writers = writers_with(tmp.path(), batch.schema(), ok_extensions);
         ok_writers
             .write_batch(&object_type_only_batch(&["+A"]))
             .unwrap();
@@ -1115,32 +1151,51 @@ mod tests {
             .write_batch(&object_type_only_batch(&["+A"]))
             .unwrap();
         let tables = ok_writers.finish(&[]).unwrap();
-        assert_eq!(tables, vec!["ext_a.parquet".to_string()]);
+        assert_eq!(tables, vec!["my_energy.parquet".to_string()]);
     }
 
-    /// Task 4 review follow-up (Important): the reserved-name guard inside
-    /// [`TableWriters::by_type_table_index`] must actually fire when a
-    /// by-type object type derives a [`RESERVED_PACKAGE_FILES`] name — the
-    /// pre-existing `by_type_table_name_never_collides_with_reserved_package_files`
-    /// test only checks `table_name_for_type("Building")` never collides, so
-    /// it never drives the guard's error branch. This test does: `"Materials"`
-    /// snakes to `materials.parquet`, which IS reserved (it names the
-    /// materials sidecar table), so writing it under `ByType` must be
-    /// rejected before any writer for it is ever opened.
+    /// Any two DISTINCT `Core` `ModuleKey`s sharing a file is always the
+    /// documented `Generics`/`CityObjectGroup` fold — never a collision to
+    /// reject, and never a silent merge of anything else, since
+    /// `core_module_file`'s pinned table makes any other collision between
+    /// two `Core` keys structurally impossible.
     #[test]
-    fn by_type_write_rejects_an_object_type_deriving_a_reserved_package_file() {
-        // Precondition the whole scenario rests on: the type really does
+    fn by_type_write_allows_the_generics_city_object_group_fold_without_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let batch = object_type_only_batch(&["CityObjectGroup", "GenericOccupiedSpace"]);
+        let mut writers = writers_with(tmp.path(), batch.schema(), ExtensionRegistry::new());
+        writers.write_batch(&batch).unwrap();
+        let tables = writers.finish(&[]).unwrap();
+        assert_eq!(tables, vec!["generics.parquet".to_string()]);
+    }
+
+    /// The reserved-name guard inside [`TableWriters::by_type_table_index`]
+    /// must actually fire when a module derives a [`RESERVED_PACKAGE_FILES`]
+    /// name: an extension module literally named `Materials` snakes to
+    /// `materials.parquet`, which IS reserved (it names the materials
+    /// sidecar table), so writing it under by-module must be rejected before
+    /// any writer for it is ever opened.
+    #[test]
+    fn by_type_write_rejects_a_module_deriving_a_reserved_package_file() {
+        let mut extensions = ExtensionRegistry::new();
+        extensions.declare(
+            "Foo",
+            ExtensionClassDecl {
+                module: Some("Materials".to_string()),
+                parent: None,
+            },
+        );
+        // Precondition the whole scenario rests on: the module really does
         // derive a reserved file name.
         assert_eq!(
-            table_name_for_type("Materials"),
+            table_name_for_module(&ModuleKey::Extension("Materials".to_string())),
             MATERIALS_TABLE,
-            "fixture fact: 'Materials' must derive the reserved materials table file name"
+            "fixture fact: module 'Materials' must derive the reserved materials table file name"
         );
 
         let tmp = tempfile::tempdir().unwrap();
-        let batch = object_type_only_batch(&["Materials"]);
-        let mut writers =
-            TableWriters::new(tmp.path(), batch.schema(), WriterProperties::default()).unwrap();
+        let batch = object_type_only_batch(&["+Foo"]);
+        let mut writers = writers_with(tmp.path(), batch.schema(), extensions);
 
         let e = writers.write_batch(&batch).unwrap_err();
         assert!(
@@ -1149,27 +1204,27 @@ mod tests {
         );
         let msg = e.to_string();
         assert!(
-            msg.contains("Materials") && msg.contains("materials.parquet"),
-            "the error must name the object type and the reserved file it collides with, got: {msg}"
+            msg.contains("materials.parquet"),
+            "the error must name the reserved file it collides with, got: {msg}"
         );
         assert!(
             !msg.contains("both derive the table file"),
-            "must be the reserved-file collision error, not the two-types-same-name error, got: {msg}"
+            "must be the reserved-file collision error, not the two-modules-same-name error, \
+             got: {msg}"
         );
 
-        // No file was ever created for the rejected type — the guard runs
+        // No file was ever created for the rejected module — the guard runs
         // before `open_table`, so the reserved sidecar's name is never
-        // claimed by a by-type writer.
+        // claimed by a by-module writer.
         assert!(!tmp.path().join(MATERIALS_TABLE).exists());
     }
 
-    /// M5 review follow-up (Minor b): an all-null `object_type` batch must
-    /// be a hard error under ByType, not a silent drop — aligned with
-    /// `object_type_mask`'s identical guard (the schema declares the column
-    /// non-nullable, so this is defence-in-depth against corrupt/foreign
-    /// batches).
+    /// An all-null `object_type` batch must be a hard error under
+    /// by-module writing, not a silent drop — the schema declares the
+    /// column non-nullable, so this is defence-in-depth against
+    /// corrupt/foreign batches.
     #[test]
-    fn distinct_types_errors_on_a_null_object_type_instead_of_skipping_it() {
+    fn write_batch_errors_on_a_null_object_type_instead_of_skipping_it() {
         let mut builder: StringDictionaryBuilder<Int32Type> = StringDictionaryBuilder::new();
         builder.append_null();
         builder.append_null();
@@ -1181,7 +1236,9 @@ mod tests {
         )]));
         let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
 
-        let e = distinct_types_in_batch(&batch).unwrap_err();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut writers = writers_with(tmp.path(), batch.schema(), ExtensionRegistry::new());
+        let e = writers.write_batch(&batch).unwrap_err();
         assert!(
             matches!(e, CityParquetError::Schema(_)),
             "expected a Schema error, got {e:?}"
@@ -1189,35 +1246,90 @@ mod tests {
         assert!(e.to_string().contains("must not be null"), "got: {e}");
     }
 
-    /// Task 4: the `<snake>.parquet` naming rule (the `cityobjects_` prefix
-    /// dropped), including the leading-`+` (CityJSON extension type) case
-    /// neither shipped fixture exercises — pinned as a pure-function unit
-    /// test since it needs no real CityJSON at all.
+    /// [`table_name_for_module`] is [`cityparquet_schema::module_file`] plus
+    /// `.parquet` — pinned as a pure-function unit test covering both a core
+    /// module and an extension module.
     #[test]
-    fn by_type_table_name_drops_cityobjects_prefix() {
-        assert_eq!(table_name_for_type("Building"), "building.parquet");
-        assert_eq!(table_name_for_type("BuildingPart"), "buildingpart.parquet");
-        assert_eq!(table_name_for_type("+Foo"), "ext_foo.parquet");
+    fn table_name_for_module_is_module_file_plus_extension() {
         assert_eq!(
-            table_name_for_type("+My Extension Type"),
-            "ext_my_extension_type.parquet"
+            table_name_for_module(&ModuleKey::Core(CityGmlModule::Building)),
+            "building.parquet"
+        );
+        assert_eq!(
+            table_name_for_module(&ModuleKey::Core(CityGmlModule::WaterBody)),
+            "water_body.parquet"
+        );
+        assert_eq!(
+            table_name_for_module(&ModuleKey::Extension("Energy".to_string())),
+            "energy.parquet"
         );
     }
 
-    /// Task 4: dropping the `cityobjects_` prefix removes the namespace that
-    /// previously made a by-type file name colliding with a package
-    /// sidecar/metadata file impossible. No core object type actually
-    /// snakes to a reserved name, but this proves the invariant holds for
-    /// the derived name so a future reserved file can't silently regress it.
+    /// No core module's derived file name ever collides with a package
+    /// sidecar/metadata file — proven for every file-bearing `CityGmlModule`
+    /// variant so a future reserved file can't silently regress it.
     #[test]
-    fn by_type_table_name_never_collides_with_reserved_package_files() {
-        for reserved in RESERVED_PACKAGE_FILES {
-            assert_ne!(
-                table_name_for_type("Building"),
-                *reserved,
-                "a by-type object table must never shadow a package sidecar/metadata file"
+    fn core_module_table_names_never_collide_with_reserved_package_files() {
+        let core_modules = [
+            CityGmlModule::Building,
+            CityGmlModule::Bridge,
+            CityGmlModule::Tunnel,
+            CityGmlModule::Construction,
+            CityGmlModule::Transportation,
+            CityGmlModule::Vegetation,
+            CityGmlModule::Relief,
+            CityGmlModule::WaterBody,
+            CityGmlModule::LandUse,
+            CityGmlModule::CityFurniture,
+            CityGmlModule::Generics,
+            CityGmlModule::CityObjectGroup,
+        ];
+        for module in core_modules {
+            let name = table_name_for_module(&ModuleKey::Core(module));
+            assert!(
+                !RESERVED_PACKAGE_FILES.contains(&name.as_str()),
+                "core module {module:?} must never derive a reserved package file name, got \
+                 {name:?}"
             );
         }
+    }
+
+    /// A [`TableWriters`]-level proof that partitioning routes by
+    /// [`ModuleKey`], not by a per-row string re-derivation: `Road`,
+    /// `Railway`, `Waterway`, and `Square` (the CityGML class name for
+    /// CityJSON's `TransportSquare`, spec "object_type vocabulary") are 4
+    /// distinct `object_type` values that all share the Transportation
+    /// module, and must land in the SAME single table.
+    #[test]
+    fn write_batch_routes_every_transportation_type_into_one_table() {
+        let tmp = tempfile::tempdir().unwrap();
+        let batch = object_type_only_batch(&["Road", "Railway", "Waterway", "Square"]);
+        let mut writers = writers_with(tmp.path(), batch.schema(), ExtensionRegistry::new());
+        writers.write_batch(&batch).unwrap();
+        let tables = writers.finish(&[]).unwrap();
+        assert_eq!(tables, vec!["transportation.parquet".to_string()]);
+    }
+
+    /// Companion to the above: types belonging to DIFFERENT modules land in
+    /// DIFFERENT tables, proving the `ModuleKey` partition actually
+    /// discriminates rather than degenerating to one shared table for
+    /// everything.
+    #[test]
+    fn write_batch_routes_different_modules_into_different_tables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let batch = object_type_only_batch(&["TINRelief", "WaterBody", "CityFurniture"]);
+        let mut writers = writers_with(tmp.path(), batch.schema(), ExtensionRegistry::new());
+        writers.write_batch(&batch).unwrap();
+        let tables: std::collections::HashSet<String> =
+            writers.finish(&[]).unwrap().into_iter().collect();
+        assert_eq!(
+            tables,
+            std::collections::HashSet::from([
+                "relief.parquet".to_string(),
+                "water_body.parquet".to_string(),
+                "city_furniture.parquet".to_string(),
+            ])
+        );
     }
 
     /// M5 review follow-up: a mid-swap `rename` failure inside

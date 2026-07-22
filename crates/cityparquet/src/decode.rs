@@ -356,7 +356,16 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
         } else {
             Some(feature_id_col.value(row).to_string())
         };
-        let object_type = object_type_values.value(row).to_string();
+        // `object_type` stores the CityGML 3.0 class name (spec
+        // "object_table-schema" — "object_type vocabulary"); export must
+        // restore the CityJSON spelling for the 4 classes that differ.
+        // Every other core class, and every extension class (no taxonomy
+        // entry), has an identical or unmapped spelling, so the reverse
+        // lookup is a no-op for them.
+        let stored_object_type = object_type_values.value(row);
+        let object_type = cityparquet_schema::cityjson_type_for_citygml_class(stored_object_type)
+            .map(str::to_string)
+            .unwrap_or_else(|| stored_object_type.to_string());
         let parents = string_list_value(parents_col, row)?;
         let children = string_list_value(children_col, row)?;
 

@@ -1206,7 +1206,20 @@ impl RowWriter {
 
         self.id.append_value(id);
         self.feature_id.append_value(&feature.id);
-        self.object_type.append(&co.thetype)?;
+        // `object_type` stores the CityGML 3.0 class name, not the CityJSON
+        // spelling (spec "object_table-schema" — "object_type vocabulary").
+        // For the 4 classes where they differ (`TransportSquare`->`Square`,
+        // `GenericCityObject`->`GenericOccupiedSpace`,
+        // `BuildingStorey`->`Storey`, `TunnelHollowSpace`->`HollowSpace`),
+        // `ClassInfo::citygml_class` carries the CityGML spelling; every
+        // other core class has the same spelling in both fields. An
+        // extension (ADE / CityJSON Extension) class has no taxonomy entry,
+        // so it keeps its own source spelling verbatim (spec: "An extension
+        // ... type keeps its own class name").
+        let object_type = cityparquet_schema::class_info(&co.thetype)
+            .map(|info| info.citygml_class)
+            .unwrap_or(co.thetype.as_str());
+        self.object_type.append(object_type)?;
         Self::push_string_list(&mut self.parents, co.parents.as_deref());
         Self::push_string_list(&mut self.children, co.children.as_deref());
         let children_roles = Self::children_roles(co, id)?;

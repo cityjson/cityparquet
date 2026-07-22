@@ -1,9 +1,13 @@
 //! Task 1 (mandatory-by-type-layout plan): characterization safety net.
 //!
-//! Pins the exact by-type object-table set the by-type layout produces —
-//! this test stayed green across Task 3's removal of the single-file table
-//! layout (by-type is now unconditional), proving the deletion did not
-//! perturb by-type output by a single byte.
+//! Pins the exact by-module object-table set the by-module layout produces
+//! (spec "By-module object-table layout") — this test stayed green across
+//! Task 3's removal of the single-file table layout (by-type/by-module is
+//! now unconditional), proving the deletion did not perturb output by a
+//! single byte. Updated for the ModuleKey-driven by-module split (spec
+//! alignment): the file set is keyed by CityGML 3.0 module, not 1st-level
+//! CityJSON family, so it is smaller and differently named than the old
+//! by-family layout.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -28,7 +32,7 @@ fn table_files(dir: &std::path::Path) -> BTreeSet<String> {
 }
 
 #[test]
-fn railway_by_type_writes_one_file_per_first_level_family() {
+fn railway_by_type_writes_one_file_per_citygml_module() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("pkg");
     let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.clone());
@@ -37,14 +41,13 @@ fn railway_by_type_writes_one_file_per_first_level_family() {
     let expected: BTreeSet<String> = [
         "bridge.parquet",
         "building.parquet",
-        "cityfurniture.parquet",
-        "cityobjectgroup.parquet",
-        "genericcityobject.parquet",
-        "railway.parquet",
-        "solitaryvegetationobject.parquet",
-        "tinrelief.parquet",
+        "city_furniture.parquet",
+        "generics.parquet",
+        "transportation.parquet",
+        "vegetation.parquet",
+        "relief.parquet",
         "tunnel.parquet",
-        "waterbody.parquet",
+        "water_body.parquet",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -52,8 +55,8 @@ fn railway_by_type_writes_one_file_per_first_level_family() {
     assert_eq!(
         table_files(&out),
         expected,
-        "by-type must write exactly one file per 1st-level family; 2nd-level types share their \
-         parent's file"
+        "by-module must write exactly one file per CityGML module; 2nd-level types (and \
+         CityObjectGroup, folded per spec) share their module's file"
     );
 }
 

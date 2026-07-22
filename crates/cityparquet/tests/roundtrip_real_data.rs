@@ -594,13 +594,14 @@ fn delft_by_type_round_trips_losslessly() {
     );
 }
 
-/// M5 task 5 (Step 3): railway under by-type (Compatibility profile) — the
-/// M4 headline round-trip gate
+/// M5 task 5 (Step 3), updated for the by-module split (spec "By-module
+/// object-table layout"): railway under by-module (Compatibility profile) —
+/// the M4 headline round-trip gate
 /// (`railway_compatibility_round_trips_losslessly_with_no_exclusions` above)
-/// must hold across all 10 pinned family tables (railway's 14 distinct
-/// `object_type` values collapse to 10 distinct 1st-level families — see
-/// `by_type_convert_of_railway_writes_ten_family_tables` in
-/// `convert_real_data.rs` for the exact family membership).
+/// must hold across all 9 pinned module tables (railway's 14 distinct
+/// `object_type` values collapse to 9 distinct CityGML 3.0 modules — see
+/// `by_type_convert_of_railway_writes_nine_module_tables` in
+/// `convert_real_data.rs` for the exact module membership).
 #[test]
 fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
     let (exported, package_dir, _export_dir) = convert_and_export_with(
@@ -611,8 +612,8 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
     let tables = PackageTables::open(package_dir.path()).unwrap().tables;
     assert_eq!(
         tables.len(),
-        10,
-        "railway's pinned type set collapses to 10 distinct 1st-level families, got: {tables:?}"
+        9,
+        "railway's pinned type set collapses to 9 distinct CityGML modules, got: {tables:?}"
     );
 
     let report = compare_datasets(

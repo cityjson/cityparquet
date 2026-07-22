@@ -171,12 +171,12 @@ fn railway_full_convert_succeeds() {
     ))
     .unwrap();
     assert_eq!(report.object_count, 121);
-    // railway has 10 1st-level families (see
-    // `by_type_convert_of_railway_writes_ten_family_tables` below), so
-    // by-type conversion writes 10 main tables, never one — every table the
-    // manifest lists must exist.
+    // railway's distinct object_type values resolve to 9 distinct CityGML
+    // modules (see `by_type_convert_of_railway_writes_nine_module_tables`
+    // below), so by-module conversion writes 9 main tables, never one —
+    // every table the manifest lists must exist.
     let tables = manifest_tables(out.path());
-    assert_eq!(tables.len(), 10);
+    assert_eq!(tables.len(), 9);
     for name in &tables {
         assert!(out.path().join(name).exists(), "missing {name}");
     }
@@ -219,9 +219,9 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
 
     let mut checked_material = false;
     let mut checked_texture = false;
-    // railway has 10 1st-level families, so by-type conversion writes 10
-    // main tables — walk every one of them (never a single hardcoded
-    // main-table name).
+    // railway's object_type values resolve to 9 distinct CityGML modules,
+    // so by-module conversion writes 9 main tables — walk every one of them
+    // (never a single hardcoded main-table name).
     for table in manifest_tables(out.path()) {
         let file = std::fs::File::open(out.path().join(&table)).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
@@ -466,10 +466,10 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
     assert!(out.path().join("geometry_templates.parquet").exists());
-    // railway has 10 1st-level families, so this convert wrote 10 main
-    // tables, never one.
+    // railway's object_type values resolve to 9 distinct CityGML modules,
+    // so this convert wrote 9 main tables, never one.
     let tables = manifest_tables(out.path());
-    assert_eq!(tables.len(), 10);
+    assert_eq!(tables.len(), 9);
     for name in &tables {
         assert!(out.path().join(name).exists(), "missing {name}");
     }
@@ -571,10 +571,10 @@ fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
     assert!(out.path().join("geometry_templates.parquet").exists());
-    // railway has 10 1st-level families, so this convert wrote 10 main
-    // tables, never one.
+    // railway's object_type values resolve to 9 distinct CityGML modules,
+    // so this convert wrote 9 main tables, never one.
     let railway_tables = manifest_tables(out.path());
-    assert_eq!(railway_tables.len(), 10);
+    assert_eq!(railway_tables.len(), 9);
     for name in &railway_tables {
         assert!(out.path().join(name).exists(), "missing {name}");
     }
@@ -1121,19 +1121,23 @@ fn empty_input_is_rejected() {
     );
 }
 
-/// M5 task 5 (Step 2/3): railway's 14-distinct-`object_type` fixture fact
-/// (pinned in the milestone brief) round-tripped through the by-type writer
-/// under the family-grouping rule: railway's 14 distinct `object_type`
-/// values collapse to 10 distinct 1st-level FAMILIES — `Bridge`,
-/// `BridgeConstructiveElement`, and `BridgeInstallation` all land in
-/// `bridge.parquet`; `Building` and `BuildingInstallation` in
-/// `building.parquet`; `Tunnel` and `TunnelInstallation` in `tunnel.parquet`;
-/// the other 7 types (`CityFurniture`, `CityObjectGroup`,
-/// `GenericCityObject`, `Railway`, `SolitaryVegetationObject`, `TINRelief`,
-/// `WaterBody`) were already 1st-level and each keep their own single-type
-/// file — row counts summing to railway's full object count.
+/// Spec-alignment: railway's 14-distinct-`object_type` fixture fact (pinned
+/// in the M5 milestone brief) round-tripped through the by-MODULE writer
+/// under the spec's by-module rule (spec "By-module object-table layout"):
+/// railway's 14 distinct `object_type` values collapse to 9 distinct CityGML
+/// 3.0 MODULES — `Bridge`, `BridgeConstructiveElement`, and
+/// `BridgeInstallation` all land in `bridge.parquet` (Bridge module);
+/// `Building` and `BuildingInstallation` in `building.parquet` (Building
+/// module); `Tunnel` and `TunnelInstallation` in `tunnel.parquet` (Tunnel
+/// module); `CityObjectGroup` and `GenericCityObject` (whose `object_type`
+/// is stored as its CityGML class name `GenericOccupiedSpace` — spec
+/// "object_type vocabulary") both fold into `generics.parquet` (spec: "On
+/// `CityObjectGroup`"); the remaining 5 types (`CityFurniture`, `Railway`,
+/// `SolitaryVegetationObject`, `TINRelief`, `WaterBody`) each own module's
+/// sole member and so keep their own single-type file — row counts summing
+/// to railway's full object count.
 #[test]
-fn by_type_convert_of_railway_writes_ten_family_tables() {
+fn by_type_convert_of_railway_writes_nine_module_tables() {
     let out = tempfile::tempdir().unwrap();
     let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
     let report = convert(&opts).unwrap();
@@ -1142,69 +1146,76 @@ fn by_type_convert_of_railway_writes_ten_family_tables() {
     let tables = manifest_tables(out.path());
     assert_eq!(
         tables.len(),
-        10,
-        "railway's pinned type set collapses to 10 distinct 1st-level families, got: {tables:?}"
+        9,
+        "railway's pinned type set collapses to 9 distinct CityGML modules, got: {tables:?}"
     );
 
     let expected_names: HashSet<String> = [
-        "Bridge",
-        "Building",
-        "CityFurniture",
-        "CityObjectGroup",
-        "GenericCityObject",
-        "Railway",
-        "SolitaryVegetationObject",
-        "TINRelief",
-        "Tunnel",
-        "WaterBody",
+        "bridge.parquet",
+        "building.parquet",
+        "city_furniture.parquet",
+        "generics.parquet",
+        "transportation.parquet",
+        "vegetation.parquet",
+        "relief.parquet",
+        "tunnel.parquet",
+        "water_body.parquet",
     ]
     .into_iter()
-    .map(|t| format!("{}.parquet", t.to_lowercase()))
+    .map(|t| t.to_string())
     .collect();
     let actual_names: HashSet<String> = tables.iter().cloned().collect();
     assert_eq!(
         actual_names, expected_names,
-        "unexpected family table name set"
+        "unexpected module table name set"
     );
     assert!(
         !out.path()
             .join("bridgeconstructiveelement.parquet")
             .exists(),
-        "BridgeConstructiveElement is 2nd-level and must not get its own table"
+        "BridgeConstructiveElement shares the Bridge module and must not get its own table"
     );
     assert!(
         !out.path().join("bridgeinstallation.parquet").exists(),
-        "BridgeInstallation is 2nd-level and must not get its own table"
+        "BridgeInstallation shares the Bridge module and must not get its own table"
     );
     assert!(
         !out.path().join("buildinginstallation.parquet").exists(),
-        "BuildingInstallation is 2nd-level and must not get its own table"
+        "BuildingInstallation shares the Building module and must not get its own table"
     );
     assert!(
         !out.path().join("tunnelinstallation.parquet").exists(),
-        "TunnelInstallation is 2nd-level and must not get its own table"
+        "TunnelInstallation shares the Tunnel module and must not get its own table"
+    );
+    assert!(
+        !out.path().join("cityobjectgroup.parquet").exists(),
+        "CityObjectGroup folds into generics.parquet and must not get its own table"
+    );
+    assert!(
+        !out.path().join("genericcityobject.parquet").exists(),
+        "GenericCityObject/GenericOccupiedSpace shares the Generics module and must not get \
+         its own table"
     );
 
-    // Each family table's expected member `object_type` set — the 2nd-level
-    // families (Bridge/Building/Tunnel) carry more than one, everything else
-    // (already 1st-level) carries exactly its own type.
+    // Each module table's expected member `object_type` set — stored values
+    // are CityGML class names (spec "object_type vocabulary"), so
+    // `GenericCityObject`'s row carries `GenericOccupiedSpace`.
     let expected_types: &[(&str, &[&str])] = &[
         (
             "bridge.parquet",
             &["Bridge", "BridgeConstructiveElement", "BridgeInstallation"],
         ),
         ("building.parquet", &["Building", "BuildingInstallation"]),
-        ("cityfurniture.parquet", &["CityFurniture"]),
-        ("cityobjectgroup.parquet", &["CityObjectGroup"]),
-        ("genericcityobject.parquet", &["GenericCityObject"]),
-        ("railway.parquet", &["Railway"]),
+        ("city_furniture.parquet", &["CityFurniture"]),
         (
-            "solitaryvegetationobject.parquet",
-            &["SolitaryVegetationObject"],
+            "generics.parquet",
+            &["CityObjectGroup", "GenericOccupiedSpace"],
         ),
-        ("tinrelief.parquet", &["TINRelief"]),
+        ("transportation.parquet", &["Railway"]),
+        ("vegetation.parquet", &["SolitaryVegetationObject"]),
+        ("relief.parquet", &["TINRelief"]),
         ("tunnel.parquet", &["Tunnel", "TunnelInstallation"]),
-        ("waterbody.parquet", &["WaterBody"]),
+        ("water_body.parquet", &["WaterBody"]),
     ];
 
     let mut total = 0usize;
@@ -1215,13 +1226,13 @@ fn by_type_convert_of_railway_writes_ten_family_tables() {
         let expected: HashSet<String> = member_types.iter().map(|t| t.to_string()).collect();
         assert_eq!(
             types, expected,
-            "table {name} must carry exactly its family's object_type values"
+            "table {name} must carry exactly its module's object_type values"
         );
         total += count;
     }
     assert_eq!(
         total, 121,
-        "row counts across every family table must sum to railway's full object count"
+        "row counts across every module table must sum to railway's full object count"
     );
 }
 
