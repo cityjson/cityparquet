@@ -167,6 +167,50 @@ fn module_files_carry_only_their_own_lod_columns() {
         building_lods, transportation_lods,
         "the two modules must have genuinely different column needs"
     );
+
+    // spec-alignment M3, checklist item 6: the FOOTER `city.columns`/`geo`
+    // must genuinely differ per file too — never a dataset-wide union
+    // stamped identically onto every table (spec "The footer describes the
+    // file it lives in — nothing wider").
+    let building_city = footer_city(&package_dir.path().join("building.parquet"));
+    let transportation_city = footer_city(&package_dir.path().join("transportation.parquet"));
+    let building_cols: Vec<&str> = building_city["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    let transportation_cols: Vec<&str> = transportation_city["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_ne!(
+        building_cols, transportation_cols,
+        "city.columns must genuinely differ between the two module files"
+    );
+    assert_eq!(
+        building_city["primary_column"], "geometry_lod3_0",
+        "building.parquet's own primary is its own highest LoD, not the whole dataset's"
+    );
+    assert_eq!(transportation_city["primary_column"], "geometry_lod3_0");
+}
+
+/// This table's own `city` footer key, parsed.
+fn footer_city(table: &Path) -> serde_json::Value {
+    let file = fs::File::open(table).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let kvs = builder
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .unwrap();
+    let city_kv = kvs
+        .iter()
+        .find(|kv| kv.key == "city")
+        .expect("table must carry a city footer key");
+    serde_json::from_str(city_kv.value.as_deref().unwrap()).unwrap()
 }
 
 /// Checklist item 2: the test that would have caught the `export.rs` bug

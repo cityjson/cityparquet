@@ -1251,6 +1251,82 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
     );
 }
 
+/// spec-alignment M3, checklist item 3: a table whose geometry is entirely
+/// Solid-family carries a `city` object but NO `geo` key at all (spec
+/// "The declaration rule": GeoParquet requires a non-empty `columns` and a
+/// non-empty `primary_column`, so a table with zero legal columns has no
+/// legal `geo` object). Derived from the real delft fixture: every feature's
+/// LoD0 footprint geometry is stripped, keeping only its Solid LoDs
+/// (1.2/1.3/2.2) — never hand-written CityJSON.
+#[test]
+fn solid_only_table_has_city_but_no_geo_key() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = text.lines();
+    let header_line = lines.next().unwrap().to_string();
+    let mut out_lines = vec![header_line];
+    let mut stripped_any = false;
+    for line in lines {
+        let mut feature: Value = serde_json::from_str(line).unwrap();
+        for (_, co) in feature["CityObjects"].as_object_mut().unwrap() {
+            if let Some(geoms) = co.get_mut("geometry").and_then(Value::as_array_mut) {
+                let before = geoms.len();
+                geoms.retain(|g| g.get("lod").and_then(Value::as_str) != Some("0"));
+                if geoms.len() != before {
+                    stripped_any = true;
+                }
+            }
+        }
+        out_lines.push(serde_json::to_string(&feature).unwrap());
+    }
+    assert!(
+        stripped_any,
+        "precondition: delft must carry LoD0 geometry to strip"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let input_path = dir.path().join("delft_solid_only.city.jsonl");
+    std::fs::write(&input_path, out_lines.join("\n")).unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(input_path, out.path().to_path_buf())).unwrap();
+
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let kvs = builder
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .unwrap();
+
+    let city_kv = kvs
+        .iter()
+        .find(|kv| kv.key == "city")
+        .expect("a solid-only table must still carry a city key");
+    let city: Value = serde_json::from_str(city_kv.value.as_deref().unwrap()).unwrap();
+    let columns = city["columns"]
+        .as_array()
+        .expect("city.columns must be present");
+    assert!(
+        !columns.is_empty(),
+        "city.columns must describe the Solid columns: {columns:?}"
+    );
+    assert!(
+        columns
+            .iter()
+            .all(|c| c["geometry_types"] == serde_json::json!(["PolyhedralSurface Z"])),
+        "every remaining LoD must be Solid-family: {columns:?}"
+    );
+    assert!(
+        city["primary_column"].is_string(),
+        "city.primary_column must still name the highest (Solid) LoD"
+    );
+
+    assert!(
+        !kvs.iter().any(|kv| kv.key == "geo"),
+        "a solid-only table must carry no geo key at all"
+    );
+}
+
 /// `ConvertOptions::geoarrow = true` restores the GeoParquet/GeoArrow
 /// self-description: the `geoarrow.wkb` field extension plus the file-level
 /// `geo` key, for GeoPandas/QGIS/GDAL interop.
