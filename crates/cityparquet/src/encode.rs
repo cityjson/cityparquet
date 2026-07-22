@@ -1214,11 +1214,12 @@ impl RowWriter {
         // `ClassInfo::citygml_class` carries the CityGML spelling; every
         // other core class has the same spelling in both fields. An
         // extension (ADE / CityJSON Extension) class has no taxonomy entry,
-        // so it keeps its own source spelling verbatim (spec: "An extension
-        // ... type keeps its own class name").
+        // so it keeps its own source spelling, but with CityJSON's leading
+        // `+` marker stripped (spec: "An extension ... type keeps its own
+        // class name, with the CityJSON `+` prefix stripped").
         let object_type = cityparquet_schema::class_info(&co.thetype)
             .map(|info| info.citygml_class)
-            .unwrap_or(co.thetype.as_str());
+            .unwrap_or_else(|| cityparquet_schema::strip_plus(&co.thetype));
         self.object_type.append(object_type)?;
         Self::push_string_list(&mut self.parents, co.parents.as_deref());
         Self::push_string_list(&mut self.children, co.children.as_deref());

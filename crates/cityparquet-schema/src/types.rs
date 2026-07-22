@@ -415,8 +415,12 @@ impl ExtensionRegistry {
 
 /// Strips CityJSON's leading `+` extension marker, if present. Resolution is
 /// defined to be indifferent to whether it is there (spec "extensions" —
-/// "Whether a class carries CityJSON's `+` marker is irrelevant to routing").
-fn strip_plus(source_type: &str) -> &str {
+/// "Whether a class carries CityJSON's `+` marker is irrelevant to routing"),
+/// and `object_type` storage drops it outright for an extension class (spec
+/// "object_table-schema" — "object_type vocabulary": "with the CityJSON `+`
+/// prefix stripped") — `crate::encode`'s `RowWriter::push_object` is the
+/// latter's caller.
+pub fn strip_plus(source_type: &str) -> &str {
     source_type.strip_prefix('+').unwrap_or(source_type)
 }
 
