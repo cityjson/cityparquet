@@ -1616,26 +1616,32 @@ fn export_reads_every_table_a_manifest_lists_not_just_the_first() {
     assert!(compare_report.differences.is_empty());
 }
 
-/// M5 Codex review (Important finding 2): before this fix, a later table in
-/// a multi-table manifest was only checked against the first table's
-/// `cityparquet_version` — its Arrow schema was never compared, and every
-/// batch was decoded then stamped with the FIRST table's schema regardless
-/// (`CityParquetRecordBatchReader::new` rebuilds each `RecordBatch` against
-/// `Arc::clone(&schema)`, which only checks column COUNT/TYPE, never
-/// names). A second table with a renamed-but-same-typed attribute column
-/// would therefore be silently relabelled under the first table's column
-/// name instead of rejected.
+/// Spec-alignment (per-module Arrow/Parquet schema pruning): TWO tables in
+/// ONE valid CityParquet package can legitimately carry different schemas —
+/// each object table needs only the geometry/appearance columns its own rows
+/// populate (spec "object-table-schema": "a table carries exactly the LoD
+/// columns its data needs"). `export` must therefore decode EVERY table
+/// against its OWN footer metadata and its OWN rendered Arrow schema, never
+/// the first table's — this test proves that end to end with a hand-rolled
+/// stand-in for "two tables, genuinely different schemas": a real delft
+/// package split into two physical files (`split_main_table_into_two_files`,
+/// also used by `export_reads_every_table_a_manifest_lists_not_just_the_first`),
+/// then the SECOND file rewritten with its first attribute column renamed —
+/// both in its own Arrow schema AND in its own rewritten KV metadata's
+/// `attribute_columns` list, so the table stays internally self-consistent
+/// (`cityparquet_arrow_schema()` resolves it cleanly on its own terms) even
+/// though it now genuinely differs from the first table.
 ///
-/// Reuses `split_main_table_into_two_files` (the same hand-rolled
-/// multi-table stand-in `export_reads_every_table_a_manifest_lists_not_just_the_first`
-/// uses), then rewrites the SECOND physical file with its first attribute
-/// column renamed — both in the Arrow schema AND in the rewritten KV
-/// metadata's `attribute_columns` list, so the table stays internally
-/// self-consistent (`cityparquet_arrow_schema()` still resolves it
-/// cleanly) and this is a genuine SCHEMA divergence from the first table,
-/// not a metadata-consistency error.
+/// Before the per-table decode fix, `export` rejected this outright (a
+/// dataset-wide "every table must share the first table's schema"
+/// assumption — see the M5 Codex review this test used to document, and this
+/// task's own regression proving the assumption became actively wrong the
+/// moment per-module schemas could differ for real). Now it must succeed,
+/// and each table's rows must come back under THEIR OWN table's attribute
+/// name: table A's objects keep the original name, table B's carry the
+/// renamed one.
 #[test]
-fn export_rejects_a_second_table_with_a_renamed_attribute_column() {
+fn export_decodes_a_second_table_with_a_renamed_attribute_column_using_its_own_metadata() {
     let package_dir = tempfile::tempdir().unwrap();
     convert(&ConvertOptions::new(
         fixture("delft.city.jsonl"),
@@ -1735,14 +1741,50 @@ fn export_rejects_a_second_table_with_a_renamed_attribute_column() {
 
     let export_dir = tempfile::tempdir().unwrap();
     let output = export_dir.path().join("export.city.jsonl");
-    let error = export(&ExportOptions {
+    let report = export(&ExportOptions {
         package_dir: package_dir.path().to_path_buf(),
-        output,
+        output: output.clone(),
     })
-    .unwrap_err();
-    let msg = error.to_string();
+    .expect("two tables with genuinely different (but each internally self-consistent) schemas \
+             must decode successfully, each against its own metadata");
+    assert_eq!(
+        report.object_count, 2231,
+        "both split tables' objects must still be read, not just the first table's"
+    );
+
+    // Every object exported carries EITHER the original attribute name (rows
+    // that came from table A, decoded with table A's own metadata) OR the
+    // renamed one (rows from table B, decoded with table B's own metadata) —
+    // proof that decoding is genuinely per-table, not the first table's
+    // metadata reused for both.
+    let text = std::fs::read_to_string(&output).unwrap();
+    let mut saw_old_name = false;
+    let mut saw_new_name = false;
+    for line in text.lines().skip(1) {
+        let feature: serde_json::Value = serde_json::from_str(line).unwrap();
+        for (_, co) in feature["CityObjects"].as_object().unwrap() {
+            let Some(attrs) = co.get("attributes").and_then(|a| a.as_object()) else {
+                continue;
+            };
+            if attrs.contains_key(&old_name) {
+                saw_old_name = true;
+            }
+            if attrs.contains_key(&new_name) {
+                saw_new_name = true;
+            }
+            assert!(
+                !(attrs.contains_key(&old_name) && attrs.contains_key(&new_name)),
+                "a single object must never carry both the old and the renamed attribute name"
+            );
+        }
+    }
     assert!(
-        msg.contains(&name_b),
-        "expected an error naming the mismatched table '{name_b}', got: {msg}"
+        saw_old_name,
+        "table A's objects must still carry the attribute under its own (original) name '{old_name}'"
+    );
+    assert!(
+        saw_new_name,
+        "table B's objects must be decoded using ITS OWN metadata's renamed attribute name \
+         '{new_name}', not table A's"
     );
 }
