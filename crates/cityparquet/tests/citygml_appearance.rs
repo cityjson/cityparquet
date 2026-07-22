@@ -330,7 +330,7 @@ fn materials_round_trip() {
 
     // Sanity: BM's lod2 "visual" theme has 2 red faces, 1 green, 1 untargeted.
     let visual = before
-        .get(&("BM".to_string(), "2".to_string(), "visual".to_string()))
+        .get(&("BM".to_string(), "2.0".to_string(), "visual".to_string()))
         .expect("BM lod2 visual materials");
     assert_eq!(visual.len(), 4, "four faces");
     let defs: Vec<&Option<String>> = visual.iter().map(|(_, d)| d).collect();
@@ -386,7 +386,7 @@ fn full_appearance_round_trip() {
     // Sanity: BA's lod2 "visual" texture dereferences to the wall.jpg JPG def.
     let bt = face_textures(&pkg);
     let visual = bt
-        .get(&("BA".to_string(), "2".to_string(), "visual".to_string()))
+        .get(&("BA".to_string(), "2.0".to_string(), "visual".to_string()))
         .expect("BA lod2 visual texture");
     assert_eq!(visual.len(), 1, "one textured ring");
     assert!(visual[0].2.contains("wall.jpg"), "{visual:?}");

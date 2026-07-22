@@ -114,9 +114,9 @@ fn cityparquet_metadata_matches_the_writer_side_scan() {
     let read_meta = builder.cityparquet_metadata().unwrap();
 
     assert_eq!(read_meta.default_geometry, writer_meta.default_geometry);
-    // delft carries LoD0, so the default geometry is the un-suffixed footprint
-    // column (§9/§13.2), not the highest LoD.
-    assert_eq!(read_meta.default_geometry, "geometry");
+    // delft carries LoD0, so the default geometry is the suffixed LoD0
+    // footprint column, not an un-suffixed one.
+    assert_eq!(read_meta.default_geometry, "geometry_lod0_0");
     assert_eq!(read_meta.attribute_columns.len(), 50);
     assert_eq!(
         read_meta.attribute_columns.len(),

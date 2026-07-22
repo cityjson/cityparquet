@@ -637,8 +637,8 @@ fn export_package_to_gml_writes_citygml() {
 }
 
 /// The CLI synthesises an LoD0 footprint by default (§9): converting railway
-/// (LoD3 solids, no source LoD0) and exporting yields a real `lod:"0"`
-/// geometry, and `--no-lod0` suppresses it.
+/// (LoD3 solids, no source LoD0) and exporting yields a real `lod:"0.0"`
+/// geometry (canonical spelling), and `--no-lod0` suppresses it.
 #[test]
 fn convert_synthesises_lod0_by_default_and_no_lod0_suppresses_it() {
     let binary = env!("CARGO_BIN_EXE_cityparquet");
@@ -669,7 +669,7 @@ fn convert_synthesises_lod0_by_default_and_no_lod0_suppresses_it() {
         assert!(status.success());
         std::fs::read_to_string(&export_path)
             .unwrap()
-            .contains("\"lod\":\"0\"")
+            .contains("\"lod\":\"0.0\"")
     };
 
     assert!(

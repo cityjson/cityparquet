@@ -1257,14 +1257,18 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
     let geo: serde_json::Value = serde_json::from_str(geo_kv.value.as_deref().unwrap()).unwrap();
     let columns = geo["columns"].as_object().unwrap();
     assert!(
-        columns.contains_key("geometry"),
-        "the legal LoD0 MultiPolygon footprint must be declared in the un-suffixed geometry column"
+        columns.contains_key("geometry_lod0_0"),
+        "the legal LoD0 MultiPolygon footprint must be declared in the geometry_lod0_0 column"
     );
     assert_eq!(
-        columns["geometry"]["geometry_types"],
+        columns["geometry_lod0_0"]["geometry_types"],
         serde_json::json!(["MultiPolygon Z"])
     );
-    assert_eq!(geo["primary_column"], "geometry");
+    // The `0.*` family is preferred as the GeoParquet primary_column when
+    // present (delft's higher LoDs are Solids/PolyhedralSurfaceZ and
+    // GeoParquet-illegal in any case, so geometry_lod0_0 is also the only
+    // legal column here).
+    assert_eq!(geo["primary_column"], "geometry_lod0_0");
     for solid_lod in ["geometry_lod1_2", "geometry_lod1_3", "geometry_lod2_2"] {
         assert!(
             !columns.contains_key(solid_lod),
@@ -1272,7 +1276,7 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
         );
     }
     // The CRS is PROJJSON (resolved from delft's OGC URL to EPSG:7415).
-    assert_eq!(columns["geometry"]["crs"]["id"]["code"], 7415);
+    assert_eq!(columns["geometry_lod0_0"]["crs"]["id"]["code"], 7415);
 
     // (b) Geometry field is plain Binary with no geoarrow extension (default).
     let field = builder
@@ -1313,11 +1317,12 @@ fn geoarrow_opt_in_restores_tag_and_geo_key() {
         "--geoarrow must write the `geo` key"
     );
 
-    // The LoD0 footprint is the un-suffixed primary `geometry` column; under
-    // --geoarrow it advertises the geoarrow.wkb extension.
+    // The LoD0 footprint is the suffixed `geometry_lod0_0` column (delft's
+    // GeoParquet primary_column — see `default_convert_writes_geo_key_for_legal_columns_only`);
+    // under --geoarrow it advertises the geoarrow.wkb extension.
     let field = builder
         .schema()
-        .field_with_name("geometry")
+        .field_with_name("geometry_lod0_0")
         .unwrap()
         .clone();
     assert_eq!(

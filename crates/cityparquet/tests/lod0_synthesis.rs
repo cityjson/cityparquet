@@ -127,8 +127,11 @@ fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
     let first_file = std::fs::File::open(with.path().join(&with_tables[0])).unwrap();
     let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file).unwrap();
     assert!(
-        first_builder.schema().field_with_name("geometry").is_ok(),
-        "synthesis reserves the un-suffixed geometry column"
+        first_builder
+            .schema()
+            .field_with_name("geometry_lod0_0")
+            .is_ok(),
+        "synthesis reserves the suffixed geometry_lod0_0 column"
     );
     let mut non_null = 0usize;
     for table in &with_tables {
@@ -136,7 +139,7 @@ fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         for batch in builder.build().unwrap() {
             let batch = batch.unwrap();
-            let g = batch.column_by_name("geometry").unwrap();
+            let g = batch.column_by_name("geometry_lod0_0").unwrap();
             non_null += batch.num_rows() - g.null_count();
         }
     }
@@ -147,7 +150,7 @@ fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
     let file = std::fs::File::open(without.path().join(&without_tables[0])).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     assert!(
-        builder.schema().field_with_name("geometry").is_err(),
+        builder.schema().field_with_name("geometry_lod0_0").is_err(),
         "no synthesised LoD0 column without opt-in"
     );
 }
@@ -168,8 +171,8 @@ fn synthesis_is_idempotent_through_a_round_trip() {
     assert!(
         std::fs::read_to_string(&export1)
             .unwrap()
-            .contains("\"lod\":\"0\""),
-        "synthesised LoD0 is exported as a real lod 0 geometry"
+            .contains("\"lod\":\"0.0\""),
+        "synthesised LoD0 is exported as a real lod 0.0 geometry (canonical spelling)"
     );
 
     // Reconvert the enriched export (now carrying a real LoD0) with synthesis

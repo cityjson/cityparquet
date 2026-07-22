@@ -85,7 +85,7 @@ fn delft_decodes_every_object_with_correct_types_and_attributes() {
             });
             let s = lod.to_string();
             assert!(
-                ["0", "1.2", "1.3", "2.2"].contains(&s.as_str()),
+                ["0.0", "1.2", "1.3", "2.2"].contains(&s.as_str()),
                 "unexpected LoD {s} on object {}",
                 obj.id
             );

@@ -133,18 +133,22 @@ fn delft_scan_matches_known_content() {
     let s = scan(&src).unwrap();
     assert_eq!(s.object_count, 2231);
     let lod_strings: Vec<String> = s.lods.iter().map(ToString::to_string).collect();
-    assert_eq!(lod_strings, ["0", "1.2", "1.3", "2.2"]);
+    // "0" canonicalises to "0.0" — the LoD string always carries its minor
+    // (spec "Levels of detail").
+    assert_eq!(lod_strings, ["0.0", "1.2", "1.3", "2.2"]);
     // Recounted against the fixture with python3 (see report): 50 distinct
     // attribute names, not the 47 in the original brief.
     assert_eq!(s.schema.attributes.len(), 50);
     let meta = s.metadata(&[]).unwrap();
-    // delft carries LoD0, so the default geometry is the un-suffixed footprint
-    // column (§9/§13.2), not the highest LoD.
-    assert_eq!(meta.default_geometry, "geometry");
+    // delft carries LoD0, so the default geometry is the suffixed LoD0
+    // footprint column (preferred over the higher, Solid-family LoDs), not
+    // an un-suffixed column.
+    assert_eq!(meta.default_geometry, "geometry_lod0_0");
     assert_eq!(meta.bbox_column, "bbox");
     assert!(meta.crs.is_some());
     let arrow = s.schema.to_arrow_schema().unwrap();
-    assert!(arrow.field_with_name("geometry").is_ok());
+    assert!(arrow.field_with_name("geometry_lod0_0").is_ok());
+    assert!(arrow.field_with_name("geometry").is_err());
     assert!(arrow.field_with_name("geometry_lod0").is_err());
 }
 

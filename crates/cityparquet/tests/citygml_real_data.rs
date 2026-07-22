@@ -110,7 +110,7 @@ fn citygml2_scan_infers_lod2_and_bbox() {
     let s = scan(&src).unwrap();
     assert_eq!(s.object_count, 1);
     let lods: Vec<String> = s.lods.iter().map(ToString::to_string).collect();
-    assert_eq!(lods, ["2"]);
+    assert_eq!(lods, ["2.0"]);
 
     // House solid extent: x,y in [0,100], z in [0,150].
     let bbox = s.dataset_bbox.expect("dataset bbox from WKB");
@@ -119,7 +119,7 @@ fn citygml2_scan_infers_lod2_and_bbox() {
     }
 
     let meta = s.metadata(&[]).unwrap();
-    assert_eq!(meta.default_geometry, "geometry_lod2");
+    assert_eq!(meta.default_geometry, "geometry_lod2_0");
     assert_eq!(meta.source_format, SchemaSourceFormat::CityGml);
 }
 
@@ -308,7 +308,7 @@ fn citygml2_composite_solid_scans_to_correct_bbox() {
     assert_eq!(s.object_count, 1);
     assert_eq!(
         s.lods.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        ["2"]
+        ["2.0"]
     );
     let bbox = s.dataset_bbox.expect("bbox");
     for (got, exp) in bbox.iter().zip([0.0, 0.0, 0.0, 100.0, 100.0, 150.0]) {

@@ -171,8 +171,8 @@ fn delft_lod0_footprint_round_trips_with_lod_restored() {
     let (exported, _package_dir, _export_dir) = convert_and_export("delft.city.jsonl");
     let text = std::fs::read_to_string(&exported).unwrap();
     assert!(
-        text.contains("\"lod\":\"0\""),
-        "exported delft must restore LoD0 geometry with lod \"0\""
+        text.contains("\"lod\":\"0.0\""),
+        "exported delft must restore LoD0 geometry with the canonical lod \"0.0\""
     );
 }
 

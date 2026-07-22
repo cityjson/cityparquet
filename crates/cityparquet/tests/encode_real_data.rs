@@ -41,8 +41,11 @@ fn delft_encodes_all_objects_in_batches() {
 /// bare column name cannot encode the LoD — its `geometry_properties` must
 /// carry `"lod":"0"` (§12's additional-keys mechanism), so decode/export can
 /// recover the LoD.
+/// spec "Levels of detail": every LoD, including LoD0, is a suffixed column —
+/// there is no un-suffixed `geometry` column, and the LoD is never re-stored
+/// as a value inside `geometry_properties` (it lives only in the column name).
 #[test]
-fn delft_lod0_lands_in_bare_geometry_with_lod_in_properties() {
+fn delft_lod0_lands_in_a_suffixed_column_with_no_lod_in_properties() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let s = scan(&src).unwrap();
     let batches: Vec<_> = encode(&src, &s, 4096, false)
@@ -50,24 +53,31 @@ fn delft_lod0_lands_in_bare_geometry_with_lod_in_properties() {
         .collect::<Result<_, _>>()
         .unwrap();
     let b = &batches[0];
+    assert!(
+        b.column_by_name("geometry").is_none(),
+        "no bare/un-suffixed geometry column must ever appear"
+    );
     let geom = b
-        .column_by_name("geometry")
-        .expect("bare geometry column exists for LoD0");
+        .column_by_name("geometry_lod0_0")
+        .expect("geometry_lod0_0 column exists for LoD0");
     assert!(
         geom.null_count() < b.num_rows(),
-        "some LoD0 geometry present in the bare column"
+        "some LoD0 geometry present in the geometry_lod0_0 column"
     );
     let props = b
-        .column_by_name("geometry_properties")
+        .column_by_name("geometry_properties_lod0_0")
         .unwrap()
         .as_any()
         .downcast_ref::<StringArray>()
         .unwrap();
     let first = (0..b.num_rows())
         .find(|&i| props.is_valid(i))
-        .expect("at least one non-null geometry_properties");
+        .expect("at least one non-null geometry_properties_lod0_0");
     let v: serde_json::Value = serde_json::from_str(props.value(first)).unwrap();
-    assert_eq!(v["lod"], "0", "footprint properties must carry lod 0");
+    assert!(
+        v.get("lod").is_none(),
+        "the LoD lives only in the column name, never a geometry_properties value"
+    );
 }
 
 #[test]
@@ -105,13 +115,13 @@ fn railway_realigns_material_values_for_dropped_surfaces() {
             .downcast_ref::<StringArray>()
             .unwrap();
         let materials = batch
-            .column_by_name("material_lod3")
+            .column_by_name("material_lod3_0")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
         let props = batch
-            .column_by_name("geometry_properties_lod3")
+            .column_by_name("geometry_properties_lod3_0")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()

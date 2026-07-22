@@ -233,12 +233,12 @@ fn partitioned_synthesis_declares_the_footprint_as_primary_in_every_partition() 
             let geo: serde_json::Value =
                 serde_json::from_str(geo.value.as_deref().unwrap()).unwrap();
             assert_eq!(
-                geo["primary_column"], "geometry",
+                geo["primary_column"], "geometry_lod0_0",
                 "{label}/{table}: synthesised footprint must be the GeoParquet primary_column"
             );
             assert!(
-                geo["columns"].get("geometry").is_some(),
-                "{label}/{table}: the geometry column must be declared in geo.columns"
+                geo["columns"].get("geometry_lod0_0").is_some(),
+                "{label}/{table}: the geometry_lod0_0 column must be declared in geo.columns"
             );
         }
     }
