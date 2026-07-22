@@ -991,13 +991,12 @@ fn table_object_types_and_count(path: &std::path::Path) -> (HashSet<String>, usi
     (types, count)
 }
 
-/// Per the CityJSON 2.0.1 spec's 1st-level vs 2nd-level city object
-/// distinction, delft's only two `object_type` values are
-/// `Building`/`BuildingPart` — a 1st-level type and its 2nd-level child —
-/// which both belong to the SAME family (`Building`, per
-/// `cityparquet_schema::first_level_type`). The by-type writer must
-/// therefore write exactly ONE table, `building.parquet`, containing every
-/// row of BOTH types; `buildingpart.parquet` must never be created.
+/// delft's only two `object_type` values are `Building`/`BuildingPart` —
+/// both resolve to the Building CityGML module (spec "By-module
+/// object-table layout", via `cityparquet_schema::resolve_module_key`). The
+/// by-module writer must therefore write exactly ONE table,
+/// `building.parquet`, containing every row of BOTH types;
+/// `buildingpart.parquet` must never be created.
 #[test]
 fn by_type_convert_of_delft_writes_exactly_one_family_table() {
     let out = tempfile::tempdir().unwrap();
