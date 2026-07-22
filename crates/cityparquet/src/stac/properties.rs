@@ -129,11 +129,14 @@ impl PackageTables {
 /// The LoDs a package carries, as the LoD strings the writer used.
 ///
 /// Read from each geometry field's `cityparquet:lod` tag rather than parsed
-/// back out of column names. The un-suffixed `geometry` column holds the
-/// footprint LoD (§9) and so has no suffix to parse, but
-/// [`CityParquetReaderBuilder::cityparquet_arrow_schema`] re-attaches its
-/// exact `0.*` value as field metadata — reusing that tag means this reader
-/// cannot disagree with the writer that produced it.
+/// back out of column names — every real LoD, including LoD0, is suffixed
+/// (`geometry_lod0_0`, `geometry_lod2_2`, …) and carries that tag directly.
+/// The bare, un-suffixed `geometry` column only exists for the
+/// zero-analysis-geometry fallback schema (a dataset with only
+/// `GeometryInstance`s, or none — §9); it never carries a `cityparquet:lod`
+/// tag, so matching its name here never contributes a LoD — it is included
+/// only so the loop recognises it as a geometry column (rather than treating
+/// it as unrelated) when deciding whether to look for the tag.
 ///
 /// Returned sorted by LoD order (not lexicographically) and deduplicated, so
 /// a derived Item is byte-stable run to run.

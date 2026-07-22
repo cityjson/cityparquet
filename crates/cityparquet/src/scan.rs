@@ -69,8 +69,8 @@ pub struct ScanResult {
     /// whole file unreadable to GeoParquet tools (§1.3). The `Vec<String>` is
     /// the GeoParquet `geometry_types` for that column (e.g. `["MultiPolygon Z"]`).
     pub geoparquet_columns: Vec<(Lod, Vec<String>)>,
-    /// When `Some`, the encoder synthesises an LoD0 footprint into the primary
-    /// `geometry` column for any object lacking a source LoD0 (§9 "LoD0
+    /// When `Some`, the encoder synthesises an LoD0 footprint into the
+    /// `geometry_lod0_0` column for any object lacking a source LoD0 (§9 "LoD0
     /// synthesis"), using these thresholds. Set by `convert` from
     /// `ConvertOptions::generate_lod0`; `scan` always leaves it `None`.
     pub synthesize_lod0: Option<crate::lod0::Lod0Options>,

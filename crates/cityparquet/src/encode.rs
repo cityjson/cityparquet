@@ -789,10 +789,11 @@ fn accumulate_geometry(
 }
 
 /// Synthesise an LoD0 footprint slot for `co` from its lowest higher-LoD
-/// boundary geometry (§9 "LoD0 synthesis"). Returns the `geometry` slot payload
-/// (WKB `MultiPolygonZ` + `geometry_properties` carrying `lod:"0"` and the
-/// `cityparquet:lod0_source` provenance) and the footprint bbox, or `None` when
-/// the object has no footprint-able geometry or no acceptable ground is found.
+/// boundary geometry (§9 "LoD0 synthesis"). Returns the `geometry_lod0_0`
+/// slot payload (WKB `MultiPolygonZ` + `geometry_properties` carrying the
+/// `cityparquet:lod0_source` provenance, with no `"lod"` field — the LoD
+/// lives only in the column name) and the footprint bbox, or `None` when the
+/// object has no footprint-able geometry or no acceptable ground is found.
 fn synthesize_footprint(
     co: &CityObject,
     pool: &VertexPool,

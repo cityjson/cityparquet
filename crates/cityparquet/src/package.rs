@@ -102,10 +102,11 @@ pub struct ConvertOptions {
     /// `three_d` extension's `ST_3DFromWKB(BLOB)` with zero setup); ON for
     /// GeoPandas/QGIS/GDAL interop.
     pub geoarrow: bool,
-    /// Synthesise an LoD0 footprint into the primary `geometry` column when an
+    /// Synthesise an LoD0 footprint into the `geometry_lod0_0` column when an
     /// object has no source LoD0 (§9 "LoD0 synthesis"). A synthesised footprint
-    /// is marked in `geometry_properties` and exported as a real `lod:"0"`
-    /// geometry. The reference **CLI enables this by default** (the writer's
+    /// is marked in `geometry_properties` and exported with the canonical
+    /// `"0.0"` LoD string (minor defaults to `0` per M1's canonicalisation).
+    /// The reference **CLI enables this by default** (the writer's
     /// convenience for 2D consumers; `--no-lod0` disables it), but
     /// [`ConvertOptions::new`] leaves it **off** so a library round trip is
     /// source-faithful unless the caller opts in — synthesis is an additive

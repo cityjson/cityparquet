@@ -1,9 +1,9 @@
 //! LoD0 footprint synthesis (§9 "LoD0 synthesis").
 //!
 //! Given the higher-LoD boundary geometry of a city object, derive a 2.5D
-//! **footprint** — the ground-contact polygon(s) — to populate the primary,
-//! GeoParquet-legal `geometry` column when the source carries no LoD0. The
-//! entry point [`synthesize_lod0`] is **semantics-first** (uses `GroundSurface`
+//! **footprint** — the ground-contact polygon(s) — to populate the
+//! GeoParquet-legal `geometry_lod0_0` column when the source carries no LoD0.
+//! The entry point [`synthesize_lod0`] is **semantics-first** (uses `GroundSurface`
 //! faces when present) with a **purely geometric** fallback (downward-facing,
 //! region-grown, 2D-unioned, Z-re-draped); it returns `None` rather than
 //! fabricate a footprint when no acceptable ground is found.
