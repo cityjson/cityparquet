@@ -6,12 +6,12 @@
 //! columns and metadata does this dataset need?" so pass 2 (the writer) can
 //! allocate the right Arrow arrays up front.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cityparquet_schema::{
     AttributeInferer, CITYPARQUET_VERSION, CityParquetError, CityParquetMetadata,
-    CityParquetSchema, Lod, Result, SourceFormat as SchemaSourceFormat, geometry_column_name,
-    normalise_attribute_name,
+    CityParquetSchema, ExtensionRegistry, Lod, ModuleKey, ModuleKeyResolver, Result,
+    SourceFormat as SchemaSourceFormat, geometry_column_name, normalise_attribute_name,
 };
 
 use cjseq::GeometryType;
@@ -74,6 +74,16 @@ pub struct ScanResult {
     /// synthesis"), using these thresholds. Set by `convert` from
     /// `ConvertOptions::generate_lod0`; `scan` always leaves it `None`.
     pub synthesize_lod0: Option<crate::lod0::Lod0Options>,
+    /// Per-[`ModuleKey`] LoDs present, ascending — the subset of `lods` that
+    /// module's own rows actually populate (spec "object-table-schema": "a
+    /// table carries exactly the LoD columns its data needs"). A module with
+    /// no analysis geometry of its own (only `GeometryInstance`s, or none)
+    /// still has an entry here, mapped to an empty `Vec` — it is resolved for
+    /// every distinct `object_type` this scan encounters, whether or not that
+    /// object carries geometry, so `crate::package::TableWriters` never needs
+    /// to fall back to "module absent from the map means empty". Resolved
+    /// with an EMPTY [`ExtensionRegistry`] — see [`scan`]'s doc comment.
+    pub module_lods: BTreeMap<ModuleKey, Vec<Lod>>,
     source_format: SchemaSourceFormat,
     source_version: String,
 }
@@ -118,6 +128,15 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 
 /// Scan every feature and object in `source` once, inferring the attribute
 /// and LoD schema and accumulating the dataset-level bbox, CRS, and transform.
+///
+/// [`ScanResult::module_lods`] is resolved with an EMPTY [`ExtensionRegistry`]
+/// — matching `crate::package::extension_registry`'s present-day stub (no
+/// Extension/ADE schema parsing yet, tracked separately: spec
+/// `city.extensions` declaration storage). A genuine `+`-marked extension
+/// class therefore hard-errors here exactly as it already does at write time
+/// (see `extension_module_real_data.rs`'s
+/// `unresolvable_extension_type_is_a_clean_schema_error`), just one pass
+/// earlier — fail fast rather than fail during encode.
 pub fn scan(source: &Source) -> Result<ScanResult> {
     let header = source.header();
     let mut inferer = AttributeInferer::default();
@@ -129,6 +148,8 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
     // and whether any geometry at that LoD is illegal (Solid-family).
     let mut lod_geo: std::collections::BTreeMap<Lod, (std::collections::BTreeSet<String>, bool)> =
         std::collections::BTreeMap::new();
+    let mut resolver = ModuleKeyResolver::new(ExtensionRegistry::new());
+    let mut module_lod_sets: BTreeMap<ModuleKey, BTreeSet<Lod>> = BTreeMap::new();
 
     for feature in source.features()? {
         let feature = feature?;
@@ -136,6 +157,10 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
 
         for (id, co) in &feature.city_objects {
             object_count += 1;
+            let module_key = resolver.resolve(&co.thetype)?;
+            // Every module actually encountered gets an entry, even one with
+            // no analysis geometry at all — see the field's doc comment.
+            module_lod_sets.entry(module_key.clone()).or_default();
 
             if let Some(attrs) = co.attributes.as_ref().and_then(|v| v.as_object()) {
                 for (name, value) in attrs {
@@ -168,6 +193,10 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
                         if let Some(bbox) = bbox {
                             union_bbox(&mut bbox_with_lod, bbox);
                         }
+                        module_lod_sets
+                            .entry(module_key.clone())
+                            .or_default()
+                            .insert(parsed);
                     }
                     None => {
                         // A `GeometryInstance` is lod-less by design — its
@@ -291,6 +320,11 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         crs: crs.clone(),
     };
 
+    let module_lods: BTreeMap<ModuleKey, Vec<Lod>> = module_lod_sets
+        .into_iter()
+        .map(|(key, set)| (key, set.into_iter().collect()))
+        .collect();
+
     Ok(ScanResult {
         schema,
         lods,
@@ -305,6 +339,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         diverted_attribute_names,
         geoparquet_columns,
         synthesize_lod0: None,
+        module_lods,
         source_format: to_schema_source_format(source.format()),
         source_version: header.version.clone(),
     })
@@ -329,6 +364,14 @@ impl ScanResult {
     /// become reserved once LoD0 is present (§5.2, G12), any attribute that
     /// now collides is diverted into `other` here, mirroring `scan`'s own
     /// diversion.
+    ///
+    /// Also extends `module_lods`: a writer synthesises a footprint from an
+    /// object's own highest available LoD (§9), so any module that already
+    /// has at least one LoD of its own is eligible for a synthesised one too
+    /// — mirrored here rather than left to derive LoD0 only in the
+    /// dataset-wide set. A module with NO LoDs of its own (no analysis
+    /// geometry to flatten) gets none either, matching the whole-dataset
+    /// no-op guard above.
     pub fn add_synthesized_lod0_column(&mut self) {
         // No-op when there is nothing to synthesise from, or the dataset
         // already has some `0.*` LoD.
@@ -340,6 +383,14 @@ impl ScanResult {
         self.lods.sort();
         self.lods.dedup();
         self.schema.lods = self.lods.clone();
+
+        for lods in self.module_lods.values_mut() {
+            if !lods.is_empty() && !lods.iter().any(|l| l.major() == 0) {
+                lods.push(lod0);
+                lods.sort();
+                lods.dedup();
+            }
+        }
 
         // Divert attributes that collide with the now-reserved suffixed names.
         let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&self.lods);
