@@ -8,6 +8,8 @@
 
 use arrow_schema::{DataType, Field, Schema};
 
+use crate::model::geometry_properties_data_type;
+
 fn json_col(name: &str) -> Field {
     Field::new(name, DataType::Utf8, true)
         .with_metadata([("ARROW:extension:name".to_string(), "arrow.json".to_string())].into())
@@ -51,11 +53,19 @@ pub fn textures_schema() -> Schema {
 }
 
 /// `geometry_templates.parquet` schema (spec § Geometry template encoding).
+///
+/// `geometry_properties` is the same `STRUCT<type, surfaces, face_semantics,
+/// shells>` the main object table uses (spec: "Applies to the template
+/// sidecar's `geometry_properties_lod*` too ... same struct, reused"), which
+/// has no `lod` field — unlike the main table, this sidecar has no per-LoD
+/// column name to carry a template's LoD in, so it gets its own `lod` column
+/// instead.
 pub fn geometry_templates_schema() -> Schema {
     Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
         Field::new("geometry", DataType::Binary, false),
-        json_col("geometry_properties"),
+        Field::new("geometry_properties", geometry_properties_data_type(), true),
+        Field::new("lod", DataType::Utf8, true),
         json_col("material"),
         json_col("texture"),
         json_col("other"),
@@ -127,6 +137,7 @@ mod tests {
             "id",
             "geometry",
             "geometry_properties",
+            "lod",
             "material",
             "texture",
             "other",
@@ -136,6 +147,14 @@ mod tests {
         assert_eq!(
             g.field_with_name("geometry").unwrap().data_type(),
             &DataType::Binary
+        );
+        assert!(matches!(
+            g.field_with_name("geometry_properties").unwrap().data_type(),
+            DataType::Struct(_)
+        ));
+        assert_eq!(
+            g.field_with_name("lod").unwrap().data_type(),
+            &DataType::Utf8
         );
     }
 }

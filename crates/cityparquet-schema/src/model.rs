@@ -68,6 +68,45 @@ fn json_field(name: &str, nullable: bool) -> Arc<Field> {
     ))
 }
 
+/// The `geometry_properties[_lod*]` Arrow type (spec "Geometry properties and
+/// semantics"):
+///
+/// ```text
+/// STRUCT<
+///   type            VARCHAR,          -- non-null
+///   surfaces        JSON,             -- nullable
+///   face_semantics  LIST<INT>,        -- nullable; items nullable
+///   shells          LIST<LIST<INT>>   -- nullable; where non-null, both
+///                                     -- nesting levels (inner LIST<INT> and
+///                                     -- each INT) are themselves non-null
+/// >
+/// ```
+///
+/// There is no `lod` field — the column name carries the LoD. `shells` is
+/// **always nested one inner list per solid**: a `Solid` (exactly one solid)
+/// still gets one inner list (`[[12]]`, never the flat `[12]`), so a reader
+/// never needs to special-case `Solid` vs `MultiSolid`/`CompositeSolid`.
+pub fn geometry_properties_data_type() -> DataType {
+    let face_semantics_item = Arc::new(Field::new("item", DataType::Int32, true));
+    let face_semantics = DataType::List(face_semantics_item);
+
+    // `shells`: non-null all the way down once populated (spec) — the inner
+    // per-shell `INT` face count is non-nullable, and so is each solid's
+    // inner `LIST<INT>`; only the whole `shells` column (absent for
+    // non-solid types) is nullable.
+    let shell_face_count = Arc::new(Field::new("item", DataType::Int32, false));
+    let shell_list = DataType::List(shell_face_count);
+    let per_solid_shells = Arc::new(Field::new("item", shell_list, false));
+    let shells = DataType::List(per_solid_shells);
+
+    DataType::Struct(Fields::from(vec![
+        Field::new("type", DataType::Utf8, false),
+        json_field("surfaces", true).as_ref().clone(),
+        Field::new("face_semantics", face_semantics, true),
+        Field::new("shells", shells, true),
+    ]))
+}
+
 fn string_list(name: &str) -> Field {
     Field::new(
         name,
@@ -199,7 +238,7 @@ impl CityParquetSchema {
         if self.lods.is_empty() {
             fields.push(self.geometry_field("geometry", None, geoarrow));
             fields.push(with_meta(
-                json_field("geometry_properties", true).as_ref().clone(),
+                Field::new("geometry_properties", geometry_properties_data_type(), true),
                 &[(ROLE_KEY, ROLE_RESERVED)],
             ));
             // Appearance parallels geometry (§11.1): the un-suffixed pair for
@@ -226,9 +265,11 @@ impl CityParquetSchema {
                     geoarrow,
                 ));
                 fields.push(with_meta(
-                    json_field(&geometry_column_name("geometry_properties", lod), true)
-                        .as_ref()
-                        .clone(),
+                    Field::new(
+                        geometry_column_name("geometry_properties", lod),
+                        geometry_properties_data_type(),
+                        true,
+                    ),
                     &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
                 ));
                 for prefix in ["material", "texture"] {
@@ -558,12 +599,7 @@ mod tests {
     #[test]
     fn json_columns_carry_arrow_json_extension() {
         let schema = sample().to_arrow_schema().unwrap();
-        for name in [
-            "geometry_properties_lod1_0",
-            "material_lod1_0",
-            "texture_lod2_2",
-            "other",
-        ] {
+        for name in ["material_lod1_0", "texture_lod2_2", "other"] {
             let field = schema.field_with_name(name).unwrap();
             assert_eq!(
                 field
@@ -575,6 +611,76 @@ mod tests {
             );
             assert_eq!(field.data_type(), &DataType::Utf8);
         }
+    }
+
+    /// spec "Geometry properties and semantics": `geometry_properties_lod*`
+    /// is a genuine Arrow `STRUCT` with typed children — `type` (non-null
+    /// `Utf8`), `surfaces` (nullable `Utf8` tagged `arrow.json`),
+    /// `face_semantics` (nullable `List<Int32>`, items nullable), `shells`
+    /// (nullable `List<List<Int32 non-null> non-null>`) — not a JSON-tagged
+    /// Utf8 blob. Asserted via Arrow's own `Field`/`DataType`
+    /// introspection, not decoded row values.
+    #[test]
+    fn geometry_properties_is_a_typed_struct_not_json() {
+        let schema = sample().to_arrow_schema().unwrap();
+        let field = schema.field_with_name("geometry_properties_lod2_2").unwrap();
+        assert!(
+            !field.metadata().contains_key("ARROW:extension:name"),
+            "the outer geometry_properties field must not itself be tagged arrow.json"
+        );
+        let DataType::Struct(children) = field.data_type() else {
+            panic!("geometry_properties must be a Struct, got {:?}", field.data_type());
+        };
+        assert_eq!(
+            children.iter().map(|f| f.name().as_str()).collect::<Vec<_>>(),
+            vec!["type", "surfaces", "face_semantics", "shells"],
+            "exactly these four fields, in this order"
+        );
+
+        let type_field = children.iter().find(|f| f.name() == "type").unwrap();
+        assert_eq!(type_field.data_type(), &DataType::Utf8);
+        assert!(!type_field.is_nullable(), "type is non-null");
+
+        let surfaces_field = children.iter().find(|f| f.name() == "surfaces").unwrap();
+        assert_eq!(surfaces_field.data_type(), &DataType::Utf8);
+        assert!(surfaces_field.is_nullable());
+        assert_eq!(
+            surfaces_field
+                .metadata()
+                .get("ARROW:extension:name")
+                .map(String::as_str),
+            Some("arrow.json"),
+            "surfaces stays JSON (heterogeneous per-surface attributes)"
+        );
+
+        let fs_field = children.iter().find(|f| f.name() == "face_semantics").unwrap();
+        assert!(fs_field.is_nullable());
+        let DataType::List(fs_item) = fs_field.data_type() else {
+            panic!("face_semantics must be List, got {:?}", fs_field.data_type());
+        };
+        assert_eq!(fs_item.data_type(), &DataType::Int32);
+        assert!(fs_item.is_nullable(), "face_semantics items are nullable");
+
+        let shells_field = children.iter().find(|f| f.name() == "shells").unwrap();
+        assert!(shells_field.is_nullable());
+        let DataType::List(solid_item) = shells_field.data_type() else {
+            panic!("shells must be List, got {:?}", shells_field.data_type());
+        };
+        assert!(
+            !solid_item.is_nullable(),
+            "each solid's inner shell-count list is non-null once shells is populated"
+        );
+        let DataType::List(count_item) = solid_item.data_type() else {
+            panic!(
+                "shells' items must themselves be List, got {:?}",
+                solid_item.data_type()
+            );
+        };
+        assert_eq!(count_item.data_type(), &DataType::Int32);
+        assert!(
+            !count_item.is_nullable(),
+            "each per-shell face count is non-null once shells is populated"
+        );
     }
 
     #[test]
