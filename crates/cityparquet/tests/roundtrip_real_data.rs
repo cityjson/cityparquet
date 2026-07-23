@@ -4,6 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
+use arrow_array::{Array, StringArray};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
@@ -76,6 +79,106 @@ fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
     let path = dir.path().join("railway_with_crs.city.json");
     std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
     (dir, path)
+}
+
+/// spec "Column naming and reservation rules" (gap 14): `other_attributes` is
+/// itself a reserved name, so a source attribute literally called that has
+/// nowhere further to divert to and is rejected outright — the same error
+/// path as any other undiverted reserved-name collision
+/// ([`cityparquet_schema::model::CityParquetSchema::validate`]'s "collides
+/// with a reserved or geometry column name" text). Derived from the real
+/// `delft` fixture with one injected attribute named `other_attributes`.
+#[test]
+fn attribute_literally_named_other_attributes_is_rejected() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut injected = false;
+    let mut out_lines = Vec::new();
+    for line in text.lines() {
+        let mut doc: serde_json::Value = serde_json::from_str(line).unwrap();
+        if !injected && let Some(cos) = doc.get_mut("CityObjects").and_then(|v| v.as_object_mut()) {
+            for co in cos.values_mut() {
+                if let Some(attrs) = co.get_mut("attributes").and_then(|v| v.as_object_mut()) {
+                    attrs.insert(
+                        "other_attributes".to_string(),
+                        serde_json::json!("should-be-rejected"),
+                    );
+                    injected = true;
+                    break;
+                }
+            }
+        }
+        out_lines.push(serde_json::to_string(&doc).unwrap());
+    }
+    assert!(
+        injected,
+        "delft fixture must carry at least one object with attributes to inject into"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir
+        .path()
+        .join("delft_other_attributes_collision.city.jsonl");
+    std::fs::write(&input, out_lines.join("\n") + "\n").unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let opts = ConvertOptions::new(input, out.path().to_path_buf());
+    let err =
+        convert(&opts).expect_err("an attribute literally named other_attributes must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("other_attributes") && msg.contains("collides"),
+        "error must name the offending attribute and the reserved-name collision, got: {msg}"
+    );
+}
+
+/// spec "Appearance & templates" (gap 13): a `transformationMatrix` that
+/// isn't exactly 16 values is rejected at convert time, not silently
+/// truncated/padded. Derived from the real `lod3_railway` fixture (with an
+/// injected CRS, like [`railway_fixture_with_crs`]): the first
+/// `GeometryInstance`'s real `transformationMatrix` is truncated to 3 values.
+/// A 16-length matrix round-tripping exactly is already proven by every
+/// other railway round-trip test above (real `GeometryInstance`s all carry
+/// genuine 16-value matrices).
+#[test]
+fn template_transformation_matrix_wrong_length_is_rejected() {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+
+    let mut truncated = false;
+    if let Some(cos) = doc["CityObjects"].as_object_mut() {
+        'outer: for co in cos.values_mut() {
+            if let Some(geoms) = co["geometry"].as_array_mut() {
+                for geom in geoms.iter_mut() {
+                    if geom.get("type").and_then(|t| t.as_str()) == Some("GeometryInstance")
+                        && geom.get("transformationMatrix").is_some()
+                    {
+                        geom["transformationMatrix"] = serde_json::json!([1.0, 0.0, 0.0]);
+                        truncated = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        truncated,
+        "fixture must carry at least one GeometryInstance with a transformationMatrix"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("railway_bad_matrix.city.json");
+    std::fs::write(&input, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let opts = ConvertOptions::new(input, out.path().to_path_buf());
+    let err = convert(&opts).expect_err("a non-16-length transformationMatrix must be rejected");
+    assert!(
+        format!("{err}").contains("16"),
+        "error must call out the exactly-16 requirement, got: {err}"
+    );
 }
 
 /// M5 task 3 (the milestone claim): presets change bytes, never semantics.
@@ -765,18 +868,27 @@ fn null_shorthand_semantics_round_trips() {
     );
 }
 
-/// G9 (§5.1): unmapped source members — a Building's `address` and its
-/// per-object `geographicalExtent`, neither of which has a dedicated column —
-/// must survive the round-trip via the `other` column. Fixture is a real
-/// subset of the Helsinki dataset (the only fixture carrying `address`); its
-/// addresses have no `location` MultiPoint, so the vertex-index landmine
-/// (documented as a known limitation) is not exercised here.
+/// G9 (§5.1): a per-object `geographicalExtent`, which has no dedicated
+/// column, must survive the round-trip via `other`.
+///
+/// spec "Addresses" (gap 10): `helsinki_address.city.jsonl`'s `address`
+/// entries use non-postal member names (`Country`, `Locality`,
+/// `ThoroughfareName`, `ThoroughfareNumber` — none of which match the
+/// recognised set in [`cityparquet::schema`]'s "Addresses" mapping, chiefly
+/// because of casing), so nothing in them maps onto the reserved struct.
+/// This is the spec's documented, accepted loss (non-postal source address
+/// members are dropped) — not a bug: this test proves the drop happens
+/// cleanly (every entry still round-trips as an empty object, in the same
+/// cardinality) rather than corrupting anything, and that the UNRELATED
+/// `geographicalExtent` member is entirely unaffected. The fixture has no
+/// `address[].location` to exercise the `MultiPoint` round-trip — see
+/// `address_location_round_trips` for that, using a dedicated small fixture.
 ///
 /// The fixture is a small hand-derived subset of the City of Helsinki open 3D
 /// city model. It has no public download URL, so it is committed in-tree under
 /// `tests/data/` (via [`data_fixture`]) rather than fetched by `just fixtures`.
 #[test]
-fn helsinki_unmapped_members_round_trip() {
+fn helsinki_non_postal_address_members_are_dropped_not_corrupted() {
     let (exported, _package_dir, _export_dir) =
         convert_and_export_path(&data_fixture("helsinki_address.city.jsonl"));
     let report = compare_datasets(
@@ -787,13 +899,17 @@ fn helsinki_unmapped_members_round_trip() {
     .unwrap();
     assert!(
         report.equal,
-        "unmapped members (address, geographicalExtent) must round-trip; differences: {:#?}",
+        "the comparator maps both sides through the same recognised-member \
+         mapping (spec \"Addresses\"), so this fixture's non-recognised keys \
+         compare equal on both sides once dropped; differences: {:#?}",
         report.differences
     );
 
-    // Direct proof the members actually survive with their content, not merely
-    // that the comparator is satisfied.
-    let read_addresses = |path: &std::path::Path| -> Vec<(String, serde_json::Value)> {
+    // Direct proof the drop is clean: every source object's TWO address
+    // entries survive (same cardinality), each now an empty object (every
+    // non-recognised member gone, nothing spuriously kept or corrupted),
+    // and `geographicalExtent` is untouched.
+    let read_field = |path: &std::path::Path, field: &str| -> Vec<(String, serde_json::Value)> {
         let text = std::fs::read_to_string(path).unwrap();
         let mut out = Vec::new();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -802,39 +918,223 @@ fn helsinki_unmapped_members_round_trip() {
                 continue;
             };
             for (id, co) in cos {
-                if let Some(addr) = co.get("address") {
-                    out.push((id.clone(), addr.clone()));
+                if let Some(v) = co.get(field) {
+                    out.push((id.clone(), v.clone()));
                 }
             }
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     };
-    let source_addr = read_addresses(&data_fixture("helsinki_address.city.jsonl"));
-    let export_addr = read_addresses(&exported);
+    let source_addr = read_field(&data_fixture("helsinki_address.city.jsonl"), "address");
     assert!(
         !source_addr.is_empty(),
         "fixture must actually carry address members"
     );
+    let export_addr = read_field(&exported, "address");
     assert_eq!(
-        source_addr, export_addr,
-        "every source address must reappear verbatim after export"
+        export_addr.len(),
+        source_addr.len(),
+        "every object with a source address must still carry one after export"
+    );
+    for (_, addr) in &export_addr {
+        let arr = addr.as_array().expect("address must be an array");
+        assert_eq!(
+            arr.len(),
+            2,
+            "cardinality of each object's address list is preserved"
+        );
+        for entry in arr {
+            assert_eq!(
+                entry,
+                &serde_json::json!({}),
+                "a non-recognised-member entry drops to an empty object, not a corrupted one"
+            );
+        }
+    }
+
+    let source_extent = read_field(
+        &data_fixture("helsinki_address.city.jsonl"),
+        "geographicalExtent",
+    );
+    let export_extent = read_field(&exported, "geographicalExtent");
+    assert!(
+        !source_extent.is_empty(),
+        "fixture must actually carry geographicalExtent"
+    );
+    assert_eq!(
+        source_extent, export_extent,
+        "geographicalExtent is unrelated to the address drop and must round-trip verbatim"
     );
 }
 
-/// G12 (§5.2): a source attribute whose name collides with a reserved column
-/// name (here `bbox`) is diverted into `other` under
-/// `cityparquet:diverted_attributes` and restored on export — rather than
-/// aborting the whole conversion, which is what this fixture did before G12.
-/// Fixture is real Helsinki objects with one injected `bbox` attribute
-/// alongside 27 genuine (non-colliding) attributes.
+/// spec "Addresses" (gap 10): a real address with a `location` `MultiPoint`
+/// round-trips — CityJSON `address[].location` (vertex-indexed boundaries) ->
+/// the reserved struct's WKB `MultiPointZ` -> back to a CityJSON `MultiPoint`
+/// with fresh boundaries into the exported feature's own vertex pool. The
+/// recognised postal members round-trip under their canonical names; a
+/// non-recognised member (`Locality`, `id`) alongside a recognised one
+/// (`locality`) in the SAME entry is dropped without disturbing the
+/// recognised sibling (checklist item 2, self-contained).
+///
+/// `helsinki_address.city.jsonl` carries no `address[].location` at all (see
+/// `helsinki_non_postal_address_members_are_dropped_not_corrupted`'s doc
+/// comment), so this is a dedicated small fixture: real Helsinki geometry and
+/// vertices (borrowed from `helsinki_address.city.jsonl`'s first object) with
+/// a hand-added `address` array exercising both the location round-trip and
+/// the recognised/non-recognised member split. No public URL for this exact
+/// content, so committed in-tree under `tests/data/` (via [`data_fixture`])
+/// rather than fetched.
+#[test]
+fn address_location_round_trips() {
+    let (exported, _package_dir, _export_dir) =
+        convert_and_export_path(&data_fixture("address_location.city.jsonl"));
+    let report = compare_datasets(
+        &data_fixture("address_location.city.jsonl"),
+        &exported,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "address (incl. location) must round-trip losslessly; differences: {:#?}",
+        report.differences
+    );
+
+    // Direct proof beyond the comparator: read the exported document and
+    // check the address content itself. Each JSONL document is (header line
+    // carrying `transform`, empty `CityObjects`) + (feature line carrying
+    // `CityObjects`/`vertices`, no `transform` of its own) — `header_and_feature`
+    // returns both, since a location's boundaries dequantise against the
+    // HEADER's transform but live in the FEATURE's own vertices.
+    let header_and_feature = |text: &str| -> (serde_json::Value, serde_json::Value) {
+        let mut header = None;
+        let mut feature = None;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let has_objects = v
+                .get("CityObjects")
+                .and_then(|c| c.as_object())
+                .is_some_and(|c| !c.is_empty());
+            if has_objects {
+                feature = Some(v);
+            } else if header.is_none() {
+                header = Some(v);
+            }
+        }
+        (
+            header.expect("a header line"),
+            feature.expect("a feature line with the CityObject"),
+        )
+    };
+    let (source_header, source_feature) = header_and_feature(
+        &std::fs::read_to_string(data_fixture("address_location.city.jsonl")).unwrap(),
+    );
+    let (export_header, export_feature) =
+        header_and_feature(&std::fs::read_to_string(&exported).unwrap());
+
+    let source_co = source_feature["CityObjects"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    let export_co = export_feature["CityObjects"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    let export_addr = export_co["address"].as_array().unwrap();
+    assert_eq!(export_addr.len(), 2, "both address entries survive");
+
+    // Entry 0: every recognised postal member round-trips verbatim.
+    let e0 = &export_addr[0];
+    for key in [
+        "countryName",
+        "locality",
+        "administrativeArea",
+        "thoroughfareName",
+        "thoroughfareNumber",
+        "postalCode",
+        "postBox",
+        "freeText",
+    ] {
+        assert_eq!(
+            e0.get(key),
+            source_co["address"][0].get(key),
+            "recognised member '{key}' must round-trip verbatim"
+        );
+    }
+
+    // `location` reconstructs as a MultiPoint whose boundaries resolve (via
+    // the exported feature's OWN transform/vertices) to the same real-world
+    // coordinates as the source's vertices 0 and 4.
+    let location = e0.get("location").expect("location must be present");
+    assert_eq!(location["type"], serde_json::json!("MultiPoint"));
+    let boundaries: Vec<usize> = serde_json::from_value(location["boundaries"].clone()).unwrap();
+    assert_eq!(boundaries.len(), 2, "the source location had two vertices");
+
+    let dequantise =
+        |header: &serde_json::Value, feature: &serde_json::Value, idx: usize| -> [f64; 3] {
+            let transform = &header["transform"];
+            let scale: Vec<f64> = serde_json::from_value(transform["scale"].clone()).unwrap();
+            let translate: Vec<f64> =
+                serde_json::from_value(transform["translate"].clone()).unwrap();
+            let raw: Vec<f64> = serde_json::from_value(feature["vertices"][idx].clone()).unwrap();
+            [
+                translate[0] + scale[0] * raw[0],
+                translate[1] + scale[1] * raw[1],
+                translate[2] + scale[2] * raw[2],
+            ]
+        };
+    let expected = [
+        dequantise(&source_header, &source_feature, 0),
+        dequantise(&source_header, &source_feature, 4),
+    ];
+    let actual = [
+        dequantise(&export_header, &export_feature, boundaries[0]),
+        dequantise(&export_header, &export_feature, boundaries[1]),
+    ];
+    for (e, a) in expected.iter().zip(actual.iter()) {
+        for axis in 0..3 {
+            assert!(
+                (e[axis] - a[axis]).abs() < 1e-6,
+                "location coordinate must round-trip: expected {e:?}, got {a:?}"
+            );
+        }
+    }
+
+    // Entry 1: the recognised `locality` survives; the non-recognised
+    // `Locality`/`id` siblings are dropped without corrupting it.
+    let e1 = &export_addr[1];
+    assert_eq!(e1.get("locality"), Some(&serde_json::json!("Espoo")));
+    assert!(
+        e1.get("Locality").is_none(),
+        "the non-recognised sibling member must not survive"
+    );
+    assert!(e1.get("id").is_none(), "non-postal `id` must not survive");
+    assert_eq!(
+        e1.as_object().unwrap().len(),
+        1,
+        "entry 1 must carry exactly the one recognised member"
+    );
+}
+
+/// G12/gap 14 (§5.2): a source attribute whose name collides with a reserved
+/// column name (here `bbox`) is diverted into the reserved `other_attributes`
+/// column — a genuine physical column, not a magic
+/// `cityparquet:diverted_attributes` key riding inside `other` (the pre-gap-14
+/// mechanism) — and restored on export, rather than aborting the whole
+/// conversion. Fixture is real Helsinki objects with one injected `bbox`
+/// attribute alongside 27 genuine (non-colliding) attributes.
 ///
 /// Hand-derived from the City of Helsinki open 3D city model (an injected
 /// colliding attribute on real objects); no public URL, so committed in-tree
 /// under `tests/data/` (via [`data_fixture`]) rather than fetched.
 #[test]
 fn colliding_attribute_is_diverted_and_round_trips() {
-    let (exported, _package_dir, _export_dir) =
+    let (exported, package_dir, _export_dir) =
         convert_and_export_path(&data_fixture("collision_attr.city.jsonl"));
     let report = compare_datasets(
         &data_fixture("collision_attr.city.jsonl"),
@@ -844,7 +1144,7 @@ fn colliding_attribute_is_diverted_and_round_trips() {
     .unwrap();
     assert!(
         report.equal,
-        "a colliding attribute must round-trip via `other`; differences: {:#?}",
+        "a colliding attribute must round-trip via `other_attributes`; differences: {:#?}",
         report.differences
     );
 
@@ -877,4 +1177,50 @@ fn colliding_attribute_is_diverted_and_round_trips() {
         }
     }
     assert_eq!(checked, 2, "fixture has two objects, both must be checked");
+
+    // Physical proof (not just decoded values): the PACKAGE's own
+    // `other_attributes` Parquet column actually carries the diverted value,
+    // and its `other` column does NOT — the divert-key transport mechanism
+    // this superseded is gone.
+    let tables = PackageTables::open(package_dir.path()).unwrap().tables;
+    assert_eq!(tables.len(), 1, "both fixture objects are Buildings");
+    let file = std::fs::File::open(&tables[0]).unwrap();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut other_attributes_seen = 0;
+    for batch in reader {
+        let batch = batch.unwrap();
+        let other_attributes = batch
+            .column_by_name("other_attributes")
+            .expect("other_attributes must be a real physical column")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let other = batch
+            .column_by_name("other")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            assert!(
+                !other_attributes.is_null(row),
+                "the diverted attribute must land in the physical other_attributes cell"
+            );
+            let cell: serde_json::Value =
+                serde_json::from_str(other_attributes.value(row)).unwrap();
+            assert_eq!(cell, serde_json::json!({"bbox": "diverted-sentinel"}));
+            if !other.is_null(row) {
+                let other_cell: serde_json::Value = serde_json::from_str(other.value(row)).unwrap();
+                assert!(
+                    other_cell.get("bbox").is_none(),
+                    "the diverted attribute must not ALSO ride inside other"
+                );
+            }
+            other_attributes_seen += 1;
+        }
+    }
+    assert_eq!(other_attributes_seen, 2);
 }
