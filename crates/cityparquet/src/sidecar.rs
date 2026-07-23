@@ -1405,6 +1405,104 @@ mod tests {
         assert_eq!(back[0].lod, rows[0].lod);
     }
 
+    /// Real railway templates (still the PRODUCTION builder's output — every
+    /// field beyond `lod` is genuine), but with row 0 reassigned to a second,
+    /// distinct LoD, so `write_templates`/`read_templates` are exercised
+    /// against a per-LoD column layout with more than one populated LoD set
+    /// — the sparse-by-construction case `railway_templates_round_trip`
+    /// (all rows at the fixture's real LoD 3) never reaches. Confirms each
+    /// row's data both round-trips through, and is physically stored in, its
+    /// own LoD's column set, with the OTHER LoD's columns null for that row.
+    #[test]
+    fn railway_templates_round_trip_at_two_lods() {
+        use crate::appearance::AppearanceInterner;
+        use crate::package::build_template_rows;
+        use crate::source::Source;
+        use crate::wkb_read::wkb_to_geometry;
+
+        let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+        let templates = source
+            .header()
+            .geometry_templates
+            .clone()
+            .expect("railway has geometry-templates");
+        let mut interner = AppearanceInterner::new();
+        let mut rows = build_template_rows(&templates, &source, &mut interner).unwrap();
+        assert_eq!(rows.len(), 3);
+        let lod3 = Lod::parse("3").unwrap();
+        let lod2 = Lod::parse("2").unwrap();
+        assert!(
+            rows.iter().all(|r| r.lod == lod3),
+            "precondition: the fixture's real templates are all lod 3"
+        );
+        rows[0].lod = lod2;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("geometry_templates.parquet");
+        let written = write_templates(&path, &rows).unwrap();
+        assert_eq!(written, 3);
+
+        // Physical layout: the rendered schema covers exactly the two LoDs
+        // present, and row 0 populates only the lod2 column set while rows
+        // 1/2 populate only the lod3 column set — the other LoD's columns
+        // are null for each.
+        let file = File::open(&path).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let schema = builder.schema().clone();
+        for col in [
+            "geometry_lod2_0",
+            "geometry_properties_lod2_0",
+            "material_lod2_0",
+            "texture_lod2_0",
+            "geometry_lod3_0",
+            "geometry_properties_lod3_0",
+            "material_lod3_0",
+            "texture_lod3_0",
+        ] {
+            assert!(schema.field_with_name(col).is_ok(), "missing column {col}");
+        }
+        let mut reader = builder.build().unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert!(reader.next().is_none(), "test assumes a single batch");
+        let g2: &BinaryArray = downcast(
+            get_column(&batch, "geometry_lod2_0").unwrap().as_ref(),
+            "geometry_lod2_0",
+        )
+        .unwrap();
+        let g3: &BinaryArray = downcast(
+            get_column(&batch, "geometry_lod3_0").unwrap().as_ref(),
+            "geometry_lod3_0",
+        )
+        .unwrap();
+        assert!(!g2.is_null(0), "row 0 must populate geometry_lod2_0");
+        assert!(g3.is_null(0), "row 0's geometry_lod3_0 must be null");
+        for row in 1..3 {
+            assert!(g2.is_null(row), "row {row}'s geometry_lod2_0 must be null");
+            assert!(!g3.is_null(row), "row {row} must populate geometry_lod3_0");
+        }
+
+        let back = read_templates(&path).unwrap();
+        assert_eq!(back.len(), 3);
+        for (i, row) in back.iter().enumerate() {
+            assert_eq!(row.id, i.to_string());
+            wkb_to_geometry(&row.wkb).expect("sidecar WKB must be accepted by the hardened reader");
+            assert_eq!(row.lod, rows[i].lod, "row {i}: lod must round-trip");
+            assert_eq!(
+                row.geometry_properties, rows[i].geometry_properties,
+                "row {i}: geometry_properties must round-trip"
+            );
+            assert_eq!(
+                row.material, rows[i].material,
+                "row {i}: material must round-trip"
+            );
+            assert_eq!(
+                row.texture, rows[i].texture,
+                "row {i}: texture must round-trip"
+            );
+            assert_eq!(row.wkb, rows[i].wkb, "row {i}: wkb must round-trip");
+        }
+    }
+
     /// M4 Codex-review Finding 2: `read_templates` must validate the dense
     /// `id == position` contract, exactly like `read_materials`/
     /// `read_textures` already do — this single check rules out both
@@ -1442,6 +1540,147 @@ mod tests {
         assert!(
             err.to_string().contains("id"),
             "the error must mention the id mismatch, got: {err}"
+        );
+    }
+
+    /// Two real template rows (production-builder output), for the
+    /// malformed-file tests below to misplace across LoD columns by hand.
+    fn two_real_templates() -> (TemplateRow, TemplateRow) {
+        use crate::appearance::AppearanceInterner;
+        use crate::package::build_template_rows;
+        use crate::source::Source;
+
+        let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+        let templates = source
+            .header()
+            .geometry_templates
+            .clone()
+            .expect("railway has geometry-templates");
+        let mut interner = AppearanceInterner::new();
+        let rows = build_template_rows(&templates, &source, &mut interner).unwrap();
+        assert!(
+            rows.len() >= 2,
+            "test needs at least two real template rows"
+        );
+        (rows[0].clone(), rows[1].clone())
+    }
+
+    /// One LoD column set's worth of arrays for a single-row malformed
+    /// batch, built directly from a real [`TemplateRow`]'s content —
+    /// `include_geometry` controls only the `geometry_lod*` cell, so the
+    /// resulting file is realistic everywhere except the specific invariant
+    /// under test.
+    fn malformed_slot_arrays(
+        row: &TemplateRow,
+        include_geometry: bool,
+    ) -> (ArrayRef, ArrayRef, ArrayRef, ArrayRef) {
+        let mut geometry = BinaryBuilder::new();
+        let mut properties = GeometryPropertiesBuilder::new();
+        let mut material = StringBuilder::new();
+        let mut texture = StringBuilder::new();
+        if include_geometry {
+            geometry.append_value(&row.wkb);
+        } else {
+            geometry.append_null();
+        }
+        match &row.geometry_properties {
+            Some(v) => properties
+                .append_value(&GeometryProperties::try_from_value(v).unwrap())
+                .unwrap(),
+            None => properties.append_null(),
+        }
+        push_opt_json(&mut material, row.material.as_ref()).unwrap();
+        push_opt_json(&mut texture, row.texture.as_ref()).unwrap();
+        (
+            Arc::new(geometry.finish()) as ArrayRef,
+            properties.finish(),
+            Arc::new(material.finish()) as ArrayRef,
+            Arc::new(texture.finish()) as ArrayRef,
+        )
+    }
+
+    /// Writes a single-row `geometry_templates.parquet` directly via Arrow
+    /// (never through [`write_templates`], which enforces "exactly one
+    /// populated LoD" itself and so cannot produce this shape) with `lod_a`'s
+    /// and `lod_b`'s column sets populated according to `include_a`/
+    /// `include_b` — standing in for a corrupt or foreign-writer file that
+    /// got the per-LoD sparsity contract wrong.
+    fn write_malformed_two_lod_row(
+        path: &Path,
+        lod_a: Lod,
+        lod_b: Lod,
+        content_a: &TemplateRow,
+        include_a: bool,
+        content_b: &TemplateRow,
+        include_b: bool,
+    ) {
+        let schema = Arc::new(sidecar_schemas::geometry_templates_schema(&[lod_a, lod_b]));
+        let mut id = StringBuilder::new();
+        id.append_value("0");
+        let (g_a, p_a, m_a, t_a) = malformed_slot_arrays(content_a, include_a);
+        let (g_b, p_b, m_b, t_b) = malformed_slot_arrays(content_b, include_b);
+        let arrays: Vec<ArrayRef> = vec![
+            Arc::new(id.finish()),
+            g_a,
+            p_a,
+            m_a,
+            t_a,
+            g_b,
+            p_b,
+            m_b,
+            t_b,
+        ];
+        let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
+        write_batch(path, schema, batch).unwrap();
+    }
+
+    /// `sidecar.rs` ~lines 1000-1018 (pre-this-commit numbering): a row with
+    /// NEITHER LoD's `geometry_lod*` column populated is rejected — a
+    /// template row must populate exactly one LoD, and zero is one of the
+    /// two ways to violate that.
+    #[test]
+    fn read_templates_rejects_a_row_with_no_populated_lod_column() {
+        let (a, b) = two_real_templates();
+        let lod2 = Lod::parse("2").unwrap();
+        let lod3 = Lod::parse("3").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("geometry_templates.parquet");
+        write_malformed_two_lod_row(&path, lod2, lod3, &a, false, &b, false);
+
+        let err = read_templates(&path).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected a Schema error, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("no populated LoD geometry"),
+            "the error must name the zero-populated-LoD case, got: {err}"
+        );
+    }
+
+    /// `sidecar.rs` ~lines 1000-1018 (pre-this-commit numbering): a row with
+    /// BOTH LoDs' `geometry_lod*` columns populated is rejected — a template
+    /// row must populate exactly one LoD, and two is the other way to
+    /// violate that.
+    #[test]
+    fn read_templates_rejects_a_row_with_two_populated_lod_columns() {
+        let (a, b) = two_real_templates();
+        let lod2 = Lod::parse("2").unwrap();
+        let lod3 = Lod::parse("3").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("geometry_templates.parquet");
+        write_malformed_two_lod_row(&path, lod2, lod3, &a, true, &b, true);
+
+        let err = read_templates(&path).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected a Schema error, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("more than one populated"),
+            "the error must name the two-populated-LoD case, got: {err}"
         );
     }
 
