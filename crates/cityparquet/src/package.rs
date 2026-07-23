@@ -355,17 +355,17 @@ pub(crate) fn build_template_rows(
             &defs,
             &format!("geometry template {i}"),
         )?;
-        let mut geometry_properties: serde_json::Value = serde_json::from_str(&props)?;
-        // The shared helper omits "lod" by main-table design (LoD lives in
-        // the geometry column name there); the sidecar's single properties
-        // column must carry it or the template's LoD is lost.
-        if let (Some(obj), Some(lod)) = (geometry_properties.as_object_mut(), &tpl.lod) {
-            obj.insert("lod".to_string(), serde_json::Value::String(lod.clone()));
-        }
+        // The shared helper's struct value has no `lod` field (main-table
+        // design: LoD lives in the geometry column name there) — this
+        // sidecar has no per-LoD column name of its own, so it carries the
+        // template's `lod` in its own sibling column instead (spec:
+        // "Applies to the template sidecar's geometry_properties_lod* too
+        // ... same struct, reused").
         rows.push(TemplateRow {
             id: i.to_string(),
             wkb: outcome.bytes,
-            geometry_properties: Some(geometry_properties),
+            geometry_properties: Some(props.to_value()),
+            lod: tpl.lod.clone(),
             material,
             texture,
             other: None,

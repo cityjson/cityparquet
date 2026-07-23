@@ -271,18 +271,12 @@ fn geom_shape_err(gtype: &GeometryType, kind: &DecodedKind) -> CityParquetError 
     ))
 }
 
-/// The `shells` per-shell face counts from `geometry_properties` (§8), shaped
-/// for a single `Solid` (a flat array).
-pub(crate) fn shell_faces_flat(props: Option<&Value>) -> Result<Option<Vec<usize>>> {
-    let Some(v) = props.and_then(|p| p.get("shells")) else {
-        return Ok(None);
-    };
-    Ok(Some(serde_json::from_value(v.clone())?))
-}
-
-/// The `shells` per-shell face counts from `geometry_properties` (§8), shaped
-/// for `MultiSolid`/`CompositeSolid` (one per-shell face-count list per solid).
-pub(crate) fn shell_faces_nested(props: Option<&Value>) -> Result<Option<Vec<Vec<usize>>>> {
+/// The `shells` per-solid, per-shell face counts from `geometry_properties`
+/// (spec "Geometry properties and semantics"): **always nested one inner
+/// list per solid**, so `Solid` (exactly one solid) and `MultiSolid`/
+/// `CompositeSolid` (one per member) share this single reader — there is no
+/// longer a separate flat-vs-nested shape to distinguish between them.
+pub(crate) fn shell_faces(props: Option<&Value>) -> Result<Option<Vec<Vec<usize>>>> {
     let Some(v) = props.and_then(|p| p.get("shells")) else {
         return Ok(None);
     };
@@ -323,7 +317,18 @@ fn reconstruct_boundaries(
                 return Err(geom_shape_err(gtype, kind));
             };
             let remapped = remap_face_list(faces, vmap);
-            let counts = shell_faces_flat(props)?;
+            // `shells`, when present, has exactly one inner list — the
+            // Solid's own (spec: nested one inner list per solid, even for
+            // a lone Solid).
+            let counts = match shell_faces(props)? {
+                Some(solids) => Some(
+                    solids
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| err("shells is present but lists no solid for this Solid".to_string()))?,
+                ),
+                None => None,
+            };
             let shells = partition_shells(remapped, counts.as_deref())?;
             Ok(serde_json::to_value(shells)?)
         }
@@ -331,7 +336,7 @@ fn reconstruct_boundaries(
             let DecodedKind::GeometryCollection(members) = kind else {
                 return Err(geom_shape_err(gtype, kind));
             };
-            let nested_counts = shell_faces_nested(props)?;
+            let nested_counts = shell_faces(props)?;
             let mut solids = Vec::with_capacity(members.len());
             for (m, member) in members.iter().enumerate() {
                 let DecodedKind::PolyhedralSurface(faces) = member else {
@@ -390,6 +395,50 @@ fn partition_face_semantics(face_semantics: &[Value], counts: &[usize]) -> Resul
     Ok(out)
 }
 
+/// Splits a flat `face_semantics` slice into ONE `Value::Array` per solid,
+/// each itself the per-shell partition of that solid's slice of faces (used
+/// by both `Solid` — always exactly one solid — and `MultiSolid`/
+/// `CompositeSolid` — one per member — since `shells` nests the same way for
+/// both, spec "Geometry properties and semantics"). Every entry of
+/// `face_semantics` must be consumed by exactly one solid; a shortfall or
+/// overrun means `shells` disagrees with `face_semantics`'s length, a
+/// corrupt/hand-rolled package.
+fn partition_face_semantics_by_solids(
+    face_semantics: &[Value],
+    nested: &[Vec<usize>],
+) -> Result<Vec<Value>> {
+    let mut solids = Vec::with_capacity(nested.len());
+    let mut offset: usize = 0;
+    for shell_counts in nested {
+        let mut n: usize = 0;
+        for &c in shell_counts {
+            n = n
+                .checked_add(c)
+                .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
+        }
+        let end = offset
+            .checked_add(n)
+            .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
+        let slice = face_semantics.get(offset..end).ok_or_else(|| {
+            err(format!(
+                "shells describes more faces than face_semantics has ({} entries)",
+                face_semantics.len()
+            ))
+        })?;
+        solids.push(Value::Array(partition_face_semantics(slice, shell_counts)?));
+        offset = end;
+    }
+    // Every face_semantics entry must be consumed — trailing entries mean
+    // `shells` under-counts the faces, a corrupt package.
+    if offset != face_semantics.len() {
+        return Err(err(format!(
+            "shells account for {offset} faces but face_semantics has {} entries",
+            face_semantics.len()
+        )));
+    }
+    Ok(solids)
+}
+
 /// Rebuild a geometry's CityJSON `semantics` (`{surfaces, values}`) from the
 /// flattened `geometry_properties` (§8): `surfaces` verbatim, and the nested
 /// `values` re-derived from the flat `face_semantics` using `shells` (which
@@ -415,52 +464,25 @@ fn rebuild_semantics(props: Option<&Value>, gtype: &GeometryType) -> Result<Opti
         | GeometryType::MultiLineString
         | GeometryType::MultiSurface
         | GeometryType::CompositeSurface => Value::Array(face_semantics),
-        GeometryType::Solid => {
-            let counts = shell_faces_flat(Some(props))?;
-            match counts {
-                Some(counts) => Value::Array(partition_face_semantics(&face_semantics, &counts)?),
-                // No `shells`: mirror `reconstruct_boundaries`, which puts every
-                // face in one shell (§8). A Solid's `values` must be nested, so
-                // wrap the flat list in a single shell rather than emit it flat.
-                None => Value::Array(vec![Value::Array(face_semantics)]),
+        GeometryType::Solid => match shell_faces(Some(props))? {
+            Some(nested) => {
+                let mut solids = partition_face_semantics_by_solids(&face_semantics, &nested)?;
+                solids.pop().ok_or_else(|| {
+                    err("shells is present but lists no solid for this Solid".to_string())
+                })?
             }
-        }
+            // No `shells`: mirror `reconstruct_boundaries`, which puts every
+            // face in one shell (§8). A Solid's `values` must be nested, so
+            // wrap the flat list in a single shell rather than emit it flat.
+            None => Value::Array(vec![Value::Array(face_semantics)]),
+        },
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
             // `shells` is required to split the flat list per solid; without it
             // the partition is ambiguous, so reject rather than silently drop.
-            let nested = shell_faces_nested(Some(props))?.ok_or_else(|| {
+            let nested = shell_faces(Some(props))?.ok_or_else(|| {
                 err("MultiSolid/CompositeSolid geometry_properties is missing `shells`".to_string())
             })?;
-            let mut solids = Vec::with_capacity(nested.len());
-            let mut offset: usize = 0;
-            for shell_counts in &nested {
-                let mut n: usize = 0;
-                for &c in shell_counts {
-                    n = n
-                        .checked_add(c)
-                        .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
-                }
-                let end = offset
-                    .checked_add(n)
-                    .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
-                let slice = face_semantics.get(offset..end).ok_or_else(|| {
-                    err(format!(
-                        "shells describes more faces than face_semantics has ({} entries)",
-                        face_semantics.len()
-                    ))
-                })?;
-                solids.push(Value::Array(partition_face_semantics(slice, shell_counts)?));
-                offset = end;
-            }
-            // Every face_semantics entry must be consumed — trailing entries
-            // mean `shells` under-counts the faces, a corrupt package.
-            if offset != face_semantics.len() {
-                return Err(err(format!(
-                    "shells account for {offset} faces but face_semantics has {} entries",
-                    face_semantics.len()
-                )));
-            }
-            Value::Array(solids)
+            Value::Array(partition_face_semantics_by_solids(&face_semantics, &nested)?)
         }
         GeometryType::GeometryInstance => return Ok(None),
     };

@@ -7,8 +7,9 @@
 //! names and extension metadata, so it can never drift from the schema it is
 //! given.
 
-use arrow_schema::Field;
+use arrow_schema::{Field, Schema};
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
+use parquet::arrow::ArrowSchemaConverter;
 use parquet::basic::{BrotliLevel, Compression, Encoding, GzipLevel, ZstdLevel};
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use parquet::schema::types::ColumnPath;
@@ -209,6 +210,32 @@ fn is_json_column(field: &Field) -> bool {
         == Some(ARROW_JSON_EXTENSION)
 }
 
+/// The `geometry_properties[_lod*]` `STRUCT` column (spec "Geometry
+/// properties and semantics") — named, not extension-tagged, unlike the
+/// other JSON-ish reserved columns: it is a genuine nested `Struct`/`List`
+/// type now, so it carries no single `arrow.json` tag of its own (only its
+/// `surfaces` child does). Detected by name, mirroring
+/// `crate::stac::properties::is_reserved_column_for`'s identical idiom for
+/// the same column.
+fn is_geometry_properties_column(field: &Field) -> bool {
+    field.name() == "geometry_properties" || field.name().starts_with("geometry_properties_lod")
+}
+
+/// Every LEAF `ColumnPath` a nested `field` resolves to in the physical
+/// Parquet schema — e.g. `geometry_properties_lod2_2.face_semantics.list.item`
+/// for its `List<Int32>` child. Computed by actually running the same
+/// Arrow-to-Parquet schema conversion `ArrowWriter` itself uses (over a
+/// throwaway one-field schema), rather than hardcoding Arrow's `list`/`item`
+/// intermediate group names, so a converter version bump can never silently
+/// desync these paths from what gets written.
+fn leaf_column_paths(field: &Field) -> Result<Vec<ColumnPath>> {
+    let schema = Schema::new(vec![field.clone()]);
+    let descr = ArrowSchemaConverter::new()
+        .convert(&schema)
+        .map_err(|e| CityParquetError::Schema(format!("cannot resolve leaf columns: {e}")))?;
+    Ok(descr.columns().iter().map(|c| c.path().clone()).collect())
+}
+
 impl WriterRecipe {
     /// Render this recipe into concrete `WriterProperties` for `schema`: the
     /// per-column compression/encoding/statistics rules only. The `city`/`geo`
@@ -327,6 +354,18 @@ impl WriterRecipe {
             if is_json_column(field) && !self.statistics_for_json {
                 builder = builder
                     .set_column_statistics_enabled(ColumnPath::from(name), EnabledStatistics::None);
+                continue;
+            }
+            // `geometry_properties*` is a nested Struct/List now (spec
+            // "Geometry properties and semantics"), not a single JSON-tagged
+            // leaf — every leaf underneath it (`type`, `surfaces`,
+            // `face_semantics.list.item`, `shells.list.item.list.item`) gets
+            // the same no-statistics-by-default treatment the whole column
+            // used to get as one JSON blob, gated by the same toggle.
+            if is_geometry_properties_column(field) && !self.statistics_for_json {
+                for path in leaf_column_paths(field)? {
+                    builder = builder.set_column_statistics_enabled(path, EnabledStatistics::None);
+                }
             }
         }
 
@@ -401,13 +440,41 @@ mod tests {
 
         // arrow.json-tagged columns: no statistics by default.
         assert_eq!(
-            props.statistics_enabled(&ColumnPath::from("geometry_properties_lod2_2")),
-            EnabledStatistics::None
-        );
-        assert_eq!(
             props.statistics_enabled(&ColumnPath::from("other")),
             EnabledStatistics::None
         );
+
+        // geometry_properties* is a nested Struct now — every leaf gets the
+        // same no-statistics-by-default treatment the whole column used to
+        // get as one JSON blob.
+        for leaf in [
+            vec!["geometry_properties_lod2_2".to_string(), "type".to_string()],
+            vec![
+                "geometry_properties_lod2_2".to_string(),
+                "surfaces".to_string(),
+            ],
+            vec![
+                "geometry_properties_lod2_2".to_string(),
+                "face_semantics".to_string(),
+                "list".to_string(),
+                "item".to_string(),
+            ],
+            vec![
+                "geometry_properties_lod2_2".to_string(),
+                "shells".to_string(),
+                "list".to_string(),
+                "item".to_string(),
+                "list".to_string(),
+                "item".to_string(),
+            ],
+        ] {
+            let path = ColumnPath::new(leaf.clone());
+            assert_eq!(
+                props.statistics_enabled(&path),
+                EnabledStatistics::None,
+                "leaf {leaf:?} must have statistics disabled by default"
+            );
+        }
 
         // attribute columns: parquet defaults (dictionary stays on).
         assert!(props.dictionary_enabled(&ColumnPath::from("yoc")));

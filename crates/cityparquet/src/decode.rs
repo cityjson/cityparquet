@@ -338,12 +338,12 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
     )?;
 
     let geometry_cols = geometry_columns(&schema);
-    let geometry_arrays: Vec<(Option<Lod>, &BinaryArray, &StringArray)> = geometry_cols
+    let geometry_arrays: Vec<(Option<Lod>, &BinaryArray, &StructArray)> = geometry_cols
         .iter()
         .map(|(lod, geom_name, props_name)| {
             let geom = downcast::<BinaryArray>(get_column(batch, geom_name)?.as_ref(), geom_name)?;
             let props =
-                downcast::<StringArray>(get_column(batch, props_name)?.as_ref(), props_name)?;
+                downcast::<StructArray>(get_column(batch, props_name)?.as_ref(), props_name)?;
             Ok((*lod, geom, props))
         })
         .collect::<Result<_>>()?;
@@ -412,11 +412,7 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
                 continue;
             }
             let decoded = wkb_read::wkb_to_geometry(geom_arr.value(row))?;
-            let props = if props_arr.is_null(row) {
-                None
-            } else {
-                Some(serde_json::from_str::<Value>(props_arr.value(row))?)
-            };
+            let props = crate::geometry_properties::read_geometry_properties(props_arr, row)?;
             // Every geometry column, including LoD0, is suffixed (spec
             // "Levels of detail") — `lod` already carries the geometry's LoD
             // straight from the column name. The only `None` case left is the

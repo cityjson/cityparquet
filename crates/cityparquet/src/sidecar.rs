@@ -30,6 +30,7 @@ use arrow_array::builder::{
 };
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
+    StructArray,
 };
 use arrow_schema::Schema;
 use parquet::arrow::ArrowWriter;
@@ -39,6 +40,8 @@ use parquet::file::properties::WriterProperties;
 use serde_json::Value;
 
 use cityparquet_schema::{CityMetadata, CityParquetError, Result, sidecar_schemas};
+
+use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder, read_geometry_properties};
 
 fn schema_err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Schema(msg.into())
@@ -303,10 +306,15 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
 
 /// One row of `geometry_templates.parquet`: a geometry template's WKB (in
 /// its own template-local coordinate space, via [`crate::wkb_write::VertexPool::raw`]),
-/// its `geometry_properties` (mirrors the main-table column: `type`, `lod`,
-/// `semantics`, `dropped_degenerate` if the writer dropped anything), and
-/// its `material`/`texture` maps already rewritten to dataset-global ids by
-/// the same [`crate::appearance::AppearanceInterner`] the main table and the
+/// its `geometry_properties` (the same `STRUCT<type, surfaces, face_semantics,
+/// shells>` the main table uses — spec: "same struct, reused" — carried here
+/// as JSON `{"type", "surfaces"?, "face_semantics"?, "shells"?}` for
+/// call-site stability; [`write_templates`]/[`read_templates`] convert to/from
+/// the physical struct via the shared [`crate::geometry_properties`]
+/// machinery), its `lod` (this sidecar's own column: unlike the main table,
+/// a template row has no per-LoD column name to carry its LoD in), and its
+/// `material`/`texture` maps already rewritten to dataset-global ids by the
+/// same [`crate::appearance::AppearanceInterner`] the main table and the
 /// materials/textures sidecars use. `other` is reserved for any Geometry
 /// member the schema doesn't otherwise carry (cjseq's `Geometry` is a fully
 /// typed struct with no catch-all, so in practice this is always `None`).
@@ -315,6 +323,7 @@ pub struct TemplateRow {
     pub id: String,
     pub wkb: Vec<u8>,
     pub geometry_properties: Option<Value>,
+    pub lod: Option<String>,
     pub material: Option<Value>,
     pub texture: Option<Value>,
     pub other: Option<Value>,
@@ -336,7 +345,10 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
 
     let mut id = StringBuilder::new();
     let mut geometry = BinaryBuilder::new();
-    let mut geometry_properties = StringBuilder::new();
+    // The SAME struct builder the main object table uses (spec: "same
+    // struct, reused") — not a separate implementation.
+    let mut geometry_properties = GeometryPropertiesBuilder::new();
+    let mut lod = StringBuilder::new();
     let mut material = StringBuilder::new();
     let mut texture = StringBuilder::new();
     let mut other = StringBuilder::new();
@@ -344,7 +356,14 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
     for row in rows {
         id.append_value(&row.id);
         geometry.append_value(&row.wkb);
-        push_opt_json(&mut geometry_properties, row.geometry_properties.as_ref())?;
+        match &row.geometry_properties {
+            Some(v) => geometry_properties.append_value(&GeometryProperties::try_from_value(v)?)?,
+            None => geometry_properties.append_null(),
+        }
+        match &row.lod {
+            Some(l) => lod.append_value(l),
+            None => lod.append_null(),
+        }
         push_opt_json(&mut material, row.material.as_ref())?;
         push_opt_json(&mut texture, row.texture.as_ref())?;
         push_opt_json(&mut other, row.other.as_ref())?;
@@ -353,7 +372,8 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
     let arrays: Vec<ArrayRef> = vec![
         Arc::new(id.finish()),
         Arc::new(geometry.finish()),
-        Arc::new(geometry_properties.finish()),
+        geometry_properties.finish(),
+        Arc::new(lod.finish()),
         Arc::new(material.finish()),
         Arc::new(texture.finish()),
         Arc::new(other.finish()),
@@ -400,10 +420,11 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
         let id: &StringArray = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
         let geometry: &BinaryArray =
             downcast(get_column(&batch, "geometry")?.as_ref(), "geometry")?;
-        let geometry_properties: &StringArray = downcast(
+        let geometry_properties: &StructArray = downcast(
             get_column(&batch, "geometry_properties")?.as_ref(),
             "geometry_properties",
         )?;
+        let lod: &StringArray = downcast(get_column(&batch, "lod")?.as_ref(), "lod")?;
         let material: &StringArray =
             downcast(get_column(&batch, "material")?.as_ref(), "material")?;
         let texture: &StringArray = downcast(get_column(&batch, "texture")?.as_ref(), "texture")?;
@@ -424,7 +445,8 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
             out.push(TemplateRow {
                 id: id.value(row).to_string(),
                 wkb: geometry.value(row).to_vec(),
-                geometry_properties: opt_json(geometry_properties, row)?,
+                geometry_properties: read_geometry_properties(geometry_properties, row)?,
+                lod: opt_str(lod, row),
                 material: opt_json(material, row)?,
                 texture: opt_json(texture, row)?,
                 other: opt_json(other, row)?,
@@ -986,10 +1008,17 @@ mod tests {
                 .as_ref()
                 .expect("template rows carry geometry_properties");
             assert!(props.get("type").is_some(), "template {i} missing type");
+            // The struct itself carries no `lod` field (spec "same struct,
+            // reused" — no `lod` field anywhere, main table or sidecar); this
+            // sidecar instead carries it in its own sibling `lod` column.
+            assert!(
+                props.get("lod").is_none(),
+                "template {i}: geometry_properties must carry no lod field"
+            );
             assert_eq!(
-                props.get("lod").and_then(|v| v.as_str()),
+                row.lod.as_deref(),
                 tpl.lod.as_deref(),
-                "template {i}: geometry_properties must carry the source lod"
+                "template {i}: the sidecar's own `lod` column must carry the source lod"
             );
         }
 
@@ -1007,6 +1036,7 @@ mod tests {
         assert_eq!(back[0].material, rows[0].material);
         assert_eq!(back[0].texture, rows[0].texture);
         assert_eq!(back[0].geometry_properties, rows[0].geometry_properties);
+        assert_eq!(back[0].lod, rows[0].lod);
     }
 
     /// M4 Codex-review Finding 2: `read_templates` must validate the dense
