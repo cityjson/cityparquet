@@ -360,11 +360,15 @@ pub(crate) fn build_template_rows(
         // per-LoD column set this row's data lands in — the sidecar's own
         // schema equivalent of the main table's `accumulate_geometry`
         // requiring a valid, parseable LoD for every stored geometry.
-        let lod = tpl.lod.as_deref().and_then(|s| Lod::parse(s).ok()).ok_or_else(|| {
-            CityParquetError::Lod(format!(
-                "geometry template {i}: has no valid lod for a per-LoD sidecar column"
-            ))
-        })?;
+        let lod = tpl
+            .lod
+            .as_deref()
+            .and_then(|s| Lod::parse(s).ok())
+            .ok_or_else(|| {
+                CityParquetError::Lod(format!(
+                    "geometry template {i}: has no valid lod for a per-LoD sidecar column"
+                ))
+            })?;
         rows.push(TemplateRow {
             id: i.to_string(),
             lod,

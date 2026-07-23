@@ -39,7 +39,9 @@ use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use serde_json::Value;
 
-use cityparquet_schema::{CityMetadata, CityParquetError, Lod, Result, geometry_column_name, sidecar_schemas};
+use cityparquet_schema::{
+    CityMetadata, CityParquetError, Lod, Result, geometry_column_name, sidecar_schemas,
+};
 
 use crate::geometry_properties::{
     GeometryProperties, GeometryPropertiesBuilder, read_geometry_properties,
@@ -156,8 +158,11 @@ fn push_opt_json(b: &mut StringBuilder, v: Option<&Value>) -> Result<()> {
 /// schema's non-null item field at `RecordBatch::try_new` time (the same
 /// pitfall `crate::encode::RowWriter`'s `template_matrix` builder documents).
 fn double_list_builder() -> ListBuilder<Float64Builder> {
-    ListBuilder::new(Float64Builder::new())
-        .with_field(Arc::new(Field::new("item", DataType::Float64, false)))
+    ListBuilder::new(Float64Builder::new()).with_field(Arc::new(Field::new(
+        "item",
+        DataType::Float64,
+        false,
+    )))
 }
 
 /// Push a `LIST<DOUBLE>` colour column value (spec: `diffuseColor`/
@@ -198,7 +203,9 @@ fn push_opt_double_list(
             b.append_value(vals);
             Ok(())
         }
-        Some(other) => Err(schema_err(format!("'{field}' must be an array, got {other}"))),
+        Some(other) => Err(schema_err(format!(
+            "'{field}' must be an array, got {other}"
+        ))),
     }
 }
 
@@ -243,7 +250,9 @@ fn opt_double_list_json(arr: &ListArray, row: usize) -> Option<Value> {
         .downcast_ref()
         .expect("LIST<DOUBLE> column's child array must be Float64");
     Some(Value::Array(
-        (0..floats.len()).map(|i| serde_json::json!(floats.value(i))).collect(),
+        (0..floats.len())
+            .map(|i| serde_json::json!(floats.value(i)))
+            .collect(),
     ))
 }
 
@@ -309,9 +318,24 @@ pub fn write_materials(path: &Path, defs: &[Value]) -> Result<usize> {
             obj.get("ambientIntensity"),
             "ambientIntensity",
         )?;
-        push_opt_double_list(&mut diffuse_color, obj.get("diffuseColor"), "diffuseColor", 3)?;
-        push_opt_double_list(&mut specular_color, obj.get("specularColor"), "specularColor", 3)?;
-        push_opt_double_list(&mut emissive_color, obj.get("emissiveColor"), "emissiveColor", 3)?;
+        push_opt_double_list(
+            &mut diffuse_color,
+            obj.get("diffuseColor"),
+            "diffuseColor",
+            3,
+        )?;
+        push_opt_double_list(
+            &mut specular_color,
+            obj.get("specularColor"),
+            "specularColor",
+            3,
+        )?;
+        push_opt_double_list(
+            &mut emissive_color,
+            obj.get("emissiveColor"),
+            "emissiveColor",
+            3,
+        )?;
         push_opt_f64(&mut transparency, obj.get("transparency"), "transparency")?;
         push_opt_f64(&mut shininess, obj.get("shininess"), "shininess")?;
         push_opt_bool(&mut is_smooth, obj.get("isSmooth"), "isSmooth")?;
@@ -1018,7 +1042,11 @@ mod tests {
         // Physical schema assertions (gap 11): colour columns are genuinely
         // LIST<DOUBLE>, not JSON text.
         assert!(matches!(
-            batch.schema().field_with_name("borderColor").unwrap().data_type(),
+            batch
+                .schema()
+                .field_with_name("borderColor")
+                .unwrap()
+                .data_type(),
             arrow_schema::DataType::List(_)
         ));
         let m_file = File::open(&materials_path).unwrap();
@@ -1048,6 +1076,110 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("textures.parquet");
         let err = write_textures(&path, &[Value::String("not an object".into())]).unwrap_err();
+        assert!(matches!(err, CityParquetError::Schema(_)));
+    }
+
+    /// One real railway material definition, for the gap-11 validator tests
+    /// below to mutate a single field of.
+    fn a_railway_material() -> Value {
+        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+        let doc = CityJSON::from_str(&raw_text).unwrap();
+        doc.appearance
+            .as_ref()
+            .and_then(|a| a.materials.clone())
+            .expect("railway has materials")[0]
+            .clone()
+    }
+
+    /// One real railway texture definition, for the gap-11 validator tests
+    /// below to mutate a single field of.
+    fn a_railway_texture() -> Value {
+        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+        let doc = CityJSON::from_str(&raw_text).unwrap();
+        doc.appearance
+            .as_ref()
+            .and_then(|a| a.textures.clone())
+            .expect("railway has textures")[0]
+            .clone()
+    }
+
+    /// Gap 11: a colour column (`diffuseColor`/`specularColor`/
+    /// `emissiveColor`) with the wrong number of values is rejected.
+    #[test]
+    fn write_materials_rejects_a_wrong_length_diffuse_color() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materials.parquet");
+        let mut def = a_railway_material();
+        def.as_object_mut()
+            .unwrap()
+            .insert("diffuseColor".to_string(), serde_json::json!([0.1, 0.2]));
+        let err = write_materials(&path, &[def]).unwrap_err();
+        assert!(matches!(err, CityParquetError::Schema(_)));
+    }
+
+    /// Gap 11: a colour value outside `[0,1]` is rejected.
+    #[test]
+    fn write_materials_rejects_an_out_of_range_diffuse_color_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materials.parquet");
+        let mut def = a_railway_material();
+        def.as_object_mut().unwrap().insert(
+            "diffuseColor".to_string(),
+            serde_json::json!([1.5, 0.0, 0.0]),
+        );
+        let err = write_materials(&path, &[def]).unwrap_err();
+        assert!(matches!(err, CityParquetError::Schema(_)));
+    }
+
+    /// Gap 11: `borderColor` must hold exactly 4 values.
+    #[test]
+    fn write_textures_rejects_a_wrong_length_border_color() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("textures.parquet");
+        let mut def = a_railway_texture();
+        def.as_object_mut().unwrap().insert(
+            "borderColor".to_string(),
+            serde_json::json!([0.0, 0.0, 0.0]),
+        );
+        let err = write_textures(&path, &[def]).unwrap_err();
+        assert!(matches!(err, CityParquetError::Schema(_)));
+    }
+
+    /// Gap 11: `wrapMode` outside the documented enumeration is rejected.
+    #[test]
+    fn write_textures_rejects_an_invalid_wrap_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("textures.parquet");
+        let mut def = a_railway_texture();
+        def.as_object_mut()
+            .unwrap()
+            .insert("wrapMode".to_string(), serde_json::json!("bogus"));
+        let err = write_textures(&path, &[def]).unwrap_err();
+        assert!(matches!(err, CityParquetError::Schema(_)));
+    }
+
+    /// Gap 11: `textureType` outside the documented enumeration is rejected.
+    #[test]
+    fn write_textures_rejects_an_invalid_texture_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("textures.parquet");
+        let mut def = a_railway_texture();
+        def.as_object_mut()
+            .unwrap()
+            .insert("textureType".to_string(), serde_json::json!("bogus"));
+        let err = write_textures(&path, &[def]).unwrap_err();
+        assert!(matches!(err, CityParquetError::Schema(_)));
+    }
+
+    /// Gap 11: a texture row with neither `image` (`image_uri`) nor embedded
+    /// image data is meaningless and must be rejected.
+    #[test]
+    fn write_textures_rejects_a_row_with_no_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("textures.parquet");
+        let mut def = a_railway_texture();
+        def.as_object_mut().unwrap().remove("image");
+        let err = write_textures(&path, &[def]).unwrap_err();
         assert!(matches!(err, CityParquetError::Schema(_)));
     }
 

@@ -151,7 +151,10 @@ mod tests {
         assert!(!m.field_with_name("id").unwrap().is_nullable());
         for col in ["diffuseColor", "specularColor", "emissiveColor"] {
             assert!(
-                matches!(m.field_with_name(col).unwrap().data_type(), DataType::List(_)),
+                matches!(
+                    m.field_with_name(col).unwrap().data_type(),
+                    DataType::List(_)
+                ),
                 "materials.{col} must be LIST<DOUBLE>, got {:?}",
                 m.field_with_name(col).unwrap().data_type()
             );
@@ -213,7 +216,14 @@ mod tests {
         ] {
             assert!(g.field_with_name(col).is_ok(), "templates missing {col}");
         }
-        for col in ["geometry", "geometry_properties", "material", "texture", "lod", "other"] {
+        for col in [
+            "geometry",
+            "geometry_properties",
+            "material",
+            "texture",
+            "lod",
+            "other",
+        ] {
             assert!(
                 g.field_with_name(col).is_err(),
                 "templates schema must not carry an un-suffixed/lod/other column '{col}'"

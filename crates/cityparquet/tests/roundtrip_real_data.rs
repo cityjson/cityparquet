@@ -418,6 +418,66 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
     );
 }
 
+/// Gap 8 (texture ring nesting) evidence: `GMLID_BUI46739_1739_10911`'s
+/// single (LoD 3, `MultiSurface`) geometry carries a real multi-ring
+/// textured face — face index 2 of theme `"visual"` has 7 rings (an
+/// exterior ring plus 6 interior rings, almost certainly window openings
+/// cut into a wall), each independently textured with its OWN UV coordinate
+/// count: 4 UVs on the exterior ring, 15 on each interior ring. Flattening a
+/// face to a single `[texId, uv…]` (the loss gap 8 exists to rule out) would
+/// irrecoverably merge these seven differently-sized UV lists into one, so
+/// this is a real fixture proof — not a hand-built one — that ring
+/// structure survives the full `convert` (encode + appearance interning) →
+/// `export` (sidecar de-interning) pipeline intact.
+#[test]
+fn railway_interior_ring_texture_survives_round_trip() {
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+
+    // Face 2's ring shape as `[ring0_uv_count, ring1_uv_count, ...]` (each
+    // ring is `[texId, [u,v], [u,v], ...]`, so `len() - 1` is its UV count).
+    let ring_shape = |doc: &serde_json::Value| -> Vec<usize> {
+        let face = &doc["CityObjects"]["GMLID_BUI46739_1739_10911"]["geometry"][0]["texture"]["visual"]
+            ["values"][2];
+        face.as_array()
+            .expect("face must be an array of rings")
+            .iter()
+            .map(|ring| ring.as_array().expect("ring must be an array").len() - 1)
+            .collect()
+    };
+
+    let source_doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&railway_path).unwrap()).unwrap();
+    let source_shape = ring_shape(&source_doc);
+    assert_eq!(
+        source_shape,
+        vec![4, 15, 15, 15, 15, 15, 15],
+        "precondition: the fixture's known multi-ring textured face has this exact shape"
+    );
+
+    let package_dir = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        railway_path.clone(),
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.json");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+    let exported_doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+
+    assert_eq!(
+        ring_shape(&exported_doc),
+        source_shape,
+        "gap 8: every ring's independent UV count must survive convert -> export with no \
+         flattening of interior rings into the exterior ring"
+    );
+}
+
 /// M4 task 11 (the milestone's headline gate): a round trip with NO
 /// exclusions at all — appearance and GeometryInstance geometries are
 /// restored from the sidecars (M4 tasks 6-10, always written now that

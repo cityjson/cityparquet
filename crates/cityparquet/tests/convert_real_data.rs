@@ -341,7 +341,14 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
         assert!(schema.field_with_name("geometry_properties_lod3_0").is_ok());
         assert!(schema.field_with_name("material_lod3_0").is_ok());
         assert!(schema.field_with_name("texture_lod3_0").is_ok());
-        for col in ["geometry", "geometry_properties", "material", "texture", "lod", "other"] {
+        for col in [
+            "geometry",
+            "geometry_properties",
+            "material",
+            "texture",
+            "lod",
+            "other",
+        ] {
             assert!(
                 schema.field_with_name(col).is_err(),
                 "geometry_templates.parquet must not carry column '{col}'"
