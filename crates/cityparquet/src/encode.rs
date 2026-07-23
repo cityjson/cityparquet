@@ -13,37 +13,42 @@ use std::sync::Arc;
 
 use arrow_array::builder::{
     BinaryBuilder, BooleanBuilder, Date32Builder, Float64Builder, Int64Builder, ListBuilder,
-    StringBuilder, StringDictionaryBuilder, TimestampMillisecondBuilder,
+    StringBuilder, StringDictionaryBuilder, StructBuilder, TimestampMillisecondBuilder,
 };
 use arrow_array::types::Int32Type;
 use arrow_array::{ArrayRef, Float64Array, RecordBatch, StructArray};
 use arrow_buffer::NullBufferBuilder;
-use arrow_schema::{DataType, Schema};
+use arrow_schema::{DataType, Field, Schema};
 use cjseq::{CityJSON, CityJSONFeature, CityObject, Geometry, GeometryType, Transform};
 use serde_json::Value;
 
-use cityparquet_schema::{AttributeType, CityParquetError, Lod, Result, normalise_attribute_name};
+use cityparquet_schema::{
+    AttributeType, CityParquetError, Lod, Result, geometry_column_name, normalise_attribute_name,
+};
 
 use crate::appearance::AppearanceInterner;
+use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder};
 use crate::scan::ScanResult;
 use crate::source::{FeatureIter, Source};
 use crate::wkb_write::{VertexPool, WkbOutcome, geometry_to_wkb, point_to_wkb};
 
 /// CityObject members carried by a dedicated column, and therefore stripped
 /// from the catch-all `other` column (§5.1, G9). `children_roles` has its own
-/// column (G5); the rest are cjseq's typed fields — **except**
+/// column (G5); `address` has its own reserved struct column (spec
+/// "Addresses", gap 10); the rest are cjseq's typed fields — **except**
 /// `geographicalExtent`, which cjseq types but the encoder never stores
 /// (`bbox` is derived from the geometry union, not from the source extent), so
 /// a per-object `geographicalExtent` legitimately rides `other` and
 /// round-trips straight back into the typed field on decode. This same set is
 /// the decode-time guard: an `other` cell may never carry any of these keys.
-pub(crate) const OTHER_RESERVED_MEMBERS: [&str; 6] = [
+pub(crate) const OTHER_RESERVED_MEMBERS: [&str; 7] = [
     "type",
     "attributes",
     "geometry",
     "children",
     "parents",
     "children_roles",
+    "address",
 ];
 
 /// The source object's unmapped members — every member not carried by a
@@ -59,83 +64,32 @@ pub(crate) fn unmapped_object_members(co: &CityObject) -> Result<serde_json::Map
     Ok(map)
 }
 
-/// Reserved key of the `other` cell holding attributes diverted there because
-/// their name collides with a realised column name (§5.2, G12). Its value is an
-/// object `{ "<attrName>": <value> }`; the decoder merges it back into the
-/// object's `attributes`, never the top level. The `cityparquet:` prefix (as in
-/// `cityparquet:orientation`) is unforgeable from valid CityJSON, whose member
-/// names never contain a colon and whose Extension members start with `+`.
-pub(crate) const DIVERTED_ATTRS_KEY: &str = "cityparquet:diverted_attributes";
-
-/// Collect an object's diverted attributes (those whose name is in `diverted`)
-/// into `unmapped` under [`DIVERTED_ATTRS_KEY`] (§5.2, G12), returning how many
-/// were diverted. Null values are skipped — the column path drops them and the
-/// comparator treats null as absent, so keeping them would make the diverted
-/// path spuriously non-null and inconsistent. Errors if `unmapped` already
-/// carries the key (a foreign object with a literal `cityparquet:diverted_attributes`
-/// flatten member) — overwriting it would be silent data loss.
+/// Collect an object's diverted attributes (those whose name is in
+/// `diverted`) into a plain JSON map keyed by source attribute name — the
+/// `other_attributes` column's cell value (spec "Column naming and
+/// reservation rules"; gap 14 — this used to ride inside `other` under a
+/// `cityparquet:diverted_attributes` transport key, now it is its own
+/// reserved column). `None` when there is nothing to divert for this row
+/// (column cell stays null). Null attribute values are skipped — the column
+/// path drops them and the comparator treats null as absent, so keeping them
+/// would make the diverted path spuriously non-null and inconsistent.
 fn collect_diverted_attributes(
     co: &CityObject,
     diverted: &[String],
-    unmapped: &mut serde_json::Map<String, Value>,
-    id: &str,
-) -> Result<usize> {
-    // The transport key is reserved in source data unconditionally — whether or
-    // not this dataset diverts anything (sol-review G12). A source object that
-    // already carries it (an adversarial/foreign flatten member; colons are
-    // illegal in CityJSON member names) must error, never be reinterpreted as
-    // transport data on decode. This guard therefore runs before every other
-    // early return.
-    if unmapped.contains_key(DIVERTED_ATTRS_KEY) {
-        return Err(CityParquetError::Schema(format!(
-            "object {id}: source carries a member '{DIVERTED_ATTRS_KEY}', which is \
-             reserved for diverted-attribute transport (§5.2)"
-        )));
-    }
+) -> Option<serde_json::Map<String, Value>> {
     if diverted.is_empty() {
-        return Ok(0);
+        return None;
     }
-    let Some(attrs) = co.attributes.as_ref().and_then(Value::as_object) else {
-        return Ok(0);
-    };
+    let attrs = co.attributes.as_ref().and_then(Value::as_object)?;
     let mut map = serde_json::Map::new();
     for name in diverted {
-        match attrs.get(name) {
-            Some(v) if !v.is_null() => {
-                map.insert(name.clone(), v.clone());
-            }
-            _ => {}
-        }
-    }
-    if map.is_empty() {
-        return Ok(0);
-    }
-    let count = map.len();
-    unmapped.insert(DIVERTED_ATTRS_KEY.to_string(), Value::Object(map));
-    Ok(count)
-}
-
-/// Drop `address[].location` from an `other` payload before it is stored (§5.2,
-/// G9), returning how many were dropped. A CityJSON `address.location` is a
-/// `MultiPoint` whose boundaries index the source vertex pool; CityParquet
-/// discards that pool and regenerates vertices on export, so a stored index
-/// would dangle. Dropping it keeps the exported CityJSON valid — textual
-/// address fields still round-trip — which is preferable to silently emitting
-/// an out-of-range vertex reference. Only the encoder's stored copy is stripped;
-/// the comparator sees the source's `location` and therefore reports the drop.
-fn strip_address_locations(members: &mut serde_json::Map<String, Value>) -> usize {
-    let Some(Value::Array(addresses)) = members.get_mut("address") else {
-        return 0;
-    };
-    let mut dropped = 0;
-    for entry in addresses {
-        if let Value::Object(addr) = entry
-            && addr.remove("location").is_some()
+        if let Some(v) = attrs.get(name)
+            && !v.is_null()
         {
-            dropped += 1;
+            map.insert(name.clone(), v.clone());
         }
     }
-    dropped
+    (!map.is_empty()).then_some(map)
 }
 
 /// Counters for the row-population edge cases the binding rules ask us to
@@ -153,19 +107,14 @@ pub struct EncodeStats {
     /// Surfaces the writer dropped because their exterior ring was
     /// degenerate, counted over STORED geometries.
     pub degenerate_surfaces_dropped: usize,
-    /// `address[].location` MultiPoints dropped from the `other` column (§5.2,
-    /// G9): their boundaries index the source vertex pool, which export
-    /// discards, so keeping them would emit a dangling/out-of-range vertex
-    /// reference — invalid CityJSON. Textual address fields are unaffected.
-    pub address_locations_dropped: usize,
-    /// Attribute values diverted into the `other` column because their name
-    /// collides with a reserved/geometry column name (§5.2, G12). Counted over
-    /// all objects: a diverted attribute is preserved but is not a queryable
-    /// column, so the conversion report surfaces it (see
+    /// Attribute values diverted into the `other_attributes` column because
+    /// their name collides with a reserved/geometry column name (§5.2, G12).
+    /// Counted over all objects: a diverted attribute is preserved but is not
+    /// a queryable column, so the conversion report surfaces it (see
     /// [`ScanResult::diverted_attribute_names`] for the names).
     pub diverted_attribute_values: usize,
-    /// LoD0 footprints synthesised into the primary `geometry` column for
-    /// objects lacking a source LoD0 (§9 "LoD0 synthesis").
+    /// LoD0 footprints synthesised into the `geometry_lod0_0` column for
+    /// objects lacking a source LoD0 (spec "LoD0 synthesis").
     pub synthesized_lod0_footprints: usize,
 }
 
@@ -256,41 +205,58 @@ fn dropped_in_shell(dropped: &[usize], pos: &mut usize, n: usize) -> usize {
         .count()
 }
 
+/// A `usize` face count as an `i32`, erroring rather than silently wrapping
+/// on the (never realistically reachable, but untrusted-input-adjacent)
+/// overflow case — `geometry_properties.shells` is a native `LIST<INT>`
+/// (spec), so this is the one place a shell face count crosses into Arrow's
+/// 32-bit domain.
+fn face_count_i32(n: usize) -> Result<i32> {
+    i32::try_from(n)
+        .map_err(|_| CityParquetError::Schema(format!("shell face count {n} exceeds i32::MAX")))
+}
+
 /// The `shells` payload of `geometry_properties` (§8): the STORED (post-drop)
-/// face count of each shell, so a reader can re-partition the flattened
-/// `PolyhedralSurfaceZ` back into shells. Flat `[n0, n1, …]` for `Solid`;
-/// nested `[[…], […]]`, one list per solid in WKB member order, for
-/// `MultiSolid`/`CompositeSolid` (a flat array cannot be partitioned back once
-/// a shell drops to zero faces). `None` for the non-solid types. `dropped`
-/// are the writer-reported flat face positions removed from the WKB; each
-/// shell's count is reduced by the drops inside it, so the total equals the
-/// WKB face count.
-fn solid_shells(geom: &Geometry, dropped: &[usize]) -> Result<Option<Value>> {
+/// per-shell face count, **always nested one inner list per solid** (spec
+/// "Geometry properties and semantics" — a `Solid` gets `[[12]]`, never the
+/// flat `[12]`, so a reader never special-cases `Solid` vs `MultiSolid`/
+/// `CompositeSolid`). `None` for the non-solid types. `dropped` are the
+/// writer-reported flat face positions removed from the WKB; each shell's
+/// count is reduced by the drops inside it, so the total equals the WKB face
+/// count.
+fn solid_shells(geom: &Geometry, dropped: &[usize]) -> Result<Option<Vec<Vec<i32>>>> {
     match geom.thetype {
         GeometryType::Solid => {
             let shells: Vec<Vec<Vec<Vec<usize>>>> =
                 serde_json::from_value(geom.boundaries.clone())?;
             let mut pos = 0;
-            let faces: Vec<usize> = shells
+            let faces: Vec<i32> = shells
                 .iter()
-                .map(|shell| shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()))
-                .collect();
-            Ok(Some(serde_json::to_value(faces)?))
+                .map(|shell| {
+                    face_count_i32(shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()))
+                })
+                .collect::<Result<_>>()?;
+            // One solid -> one inner list, even though a Solid's own
+            // boundaries have no outer "per-solid" nesting of their own.
+            Ok(Some(vec![faces]))
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
             let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
                 serde_json::from_value(geom.boundaries.clone())?;
             let mut pos = 0;
-            let faces: Vec<Vec<usize>> = solids
+            let faces: Vec<Vec<i32>> = solids
                 .iter()
                 .map(|solid| {
                     solid
                         .iter()
-                        .map(|shell| shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()))
-                        .collect()
+                        .map(|shell| {
+                            face_count_i32(
+                                shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()),
+                            )
+                        })
+                        .collect::<Result<_>>()
                 })
-                .collect();
-            Ok(Some(serde_json::to_value(faces)?))
+                .collect::<Result<_>>()?;
+            Ok(Some(faces))
         }
         _ => Ok(None),
     }
@@ -473,30 +439,62 @@ fn realign_nested_appearance_themes(appearance: &mut Value, depth: usize, droppe
     }
 }
 
-/// `geometry_properties_lod*` JSON in the normative flattened, face-aligned
-/// form (§8): `{"type", "surfaces"?, "face_semantics"?, "shells"?,
-/// "dropped_degenerate"?}`.
+/// A `semantics.values` entry (a surface index or `null`) as an
+/// `Option<i32>` — the typed `face_semantics` item shape (spec: `LIST<INT>`,
+/// items nullable).
+fn face_semantics_entry(v: &Value) -> Result<Option<i32>> {
+    match v {
+        Value::Null => Ok(None),
+        Value::Number(n) => {
+            let i = n.as_i64().ok_or_else(|| {
+                CityParquetError::Schema(format!("semantics value {n} is not an integer"))
+            })?;
+            Ok(Some(face_count_i32(usize::try_from(i).map_err(|_| {
+                CityParquetError::Schema(format!("semantics value {i} is negative"))
+            })?)?))
+        }
+        other => Err(CityParquetError::Schema(format!(
+            "semantics value must be an integer or null, got {other}"
+        ))),
+    }
+}
+
+/// The `geometry_properties_lod*` `STRUCT` value (spec "Geometry properties
+/// and semantics"): `type` (always), `surfaces` + `face_semantics` (present
+/// together, only when the source carries semantics — §8), `shells`
+/// (solids only, [`solid_shells`]).
 ///
 /// - `surfaces` is the CityJSON `surfaces` array **verbatim** (order and
 ///   content preserved — `parent`/`children` indices must stay valid).
-/// - `face_semantics` is a flat array with one entry per EMITTED WKB face, in
-///   WKB face order: the face's surface index, or `null`. CityJSON's nested
-///   `values` are flattened (null shorthand expanded, §8) and the
-///   writer-dropped face positions removed, so its length equals the WKB face
-///   count.
-/// - `shells` (solids only) is the per-shell stored face count (§8, [`solid_shells`]).
-/// - `dropped_degenerate` records what the writer removed (non-normative
-///   provenance), so a drop can be traced back to the source.
-pub(crate) fn geometry_properties_json(
+/// - `face_semantics` has one entry per EMITTED WKB face, in WKB face order:
+///   the face's surface index, or `null`. CityJSON's nested `values` are
+///   flattened (null shorthand expanded, §8) and the writer-dropped face
+///   positions removed, so its length equals the WKB face count. A
+///   `surfaces` array with every `face_semantics` entry `null` (real
+///   surfaces defined, nothing currently references them) is kept distinct
+///   from "no semantics at all": `face_semantics` is still emitted, as a
+///   same-length all-null list — never collapsed to a null cell.
+/// - `shells` (solids only) is the per-shell stored face count (§8,
+///   [`solid_shells`]), always nested one inner list per solid.
+///
+/// Non-normative write-time diagnostics (which rings/surfaces the writer
+/// dropped as structurally degenerate) are counted in [`EncodeStats`], not
+/// stored here — the struct's shape is exactly these four fields, with no
+/// extra key for them (unlike the old JSON encoding's `dropped_degenerate`).
+pub(crate) fn compute_geometry_properties(
     geom: &Geometry,
-    dropped_rings: usize,
     dropped_surfaces: &[usize],
-) -> Result<String> {
-    let mut map = serde_json::Map::new();
-    map.insert("type".to_string(), serde_json::to_value(&geom.thetype)?);
+) -> Result<GeometryProperties> {
+    let type_name = serde_json::to_value(&geom.thetype)?
+        .as_str()
+        .ok_or_else(|| CityParquetError::Schema("geometry type is not a string".to_string()))?
+        .to_string();
+
+    let mut surfaces = None;
+    let mut face_semantics = None;
     if let Some(semantics) = &geom.semantics {
-        if let Some(surfaces) = semantics.get("surfaces") {
-            map.insert("surfaces".to_string(), surfaces.clone());
+        if let Some(s) = semantics.get("surfaces") {
+            surfaces = Some(s.clone());
         }
         let depth = values_nesting_depth(&geom.thetype);
         let mut flat = Vec::new();
@@ -511,44 +509,56 @@ pub(crate) fn geometry_properties_json(
         flat.resize(original_faces, Value::Null);
         // Align to the EMITTED faces: drop the writer-removed positions.
         let dropped: std::collections::HashSet<usize> = dropped_surfaces.iter().copied().collect();
-        let face_semantics: Vec<Value> = flat
+        let entries: Vec<Option<i32>> = flat
             .into_iter()
             .enumerate()
-            .filter_map(|(i, v)| (!dropped.contains(&i)).then_some(v))
-            .collect();
-        map.insert("face_semantics".to_string(), Value::Array(face_semantics));
+            .filter(|(i, _)| !dropped.contains(i))
+            .map(|(_, v)| face_semantics_entry(&v))
+            .collect::<Result<_>>()?;
+        face_semantics = Some(entries);
     }
-    if let Some(shells) = solid_shells(geom, dropped_surfaces)? {
-        map.insert("shells".to_string(), shells);
-    }
-    if dropped_rings > 0 || !dropped_surfaces.is_empty() {
-        map.insert(
-            "dropped_degenerate".to_string(),
-            serde_json::json!({"rings": dropped_rings, "surfaces": dropped_surfaces}),
-        );
-    }
-    Ok(serde_json::to_string(&Value::Object(map))?)
+    let shells = solid_shells(geom, dropped_surfaces)?;
+
+    Ok(GeometryProperties {
+        type_name,
+        surfaces,
+        face_semantics,
+        shells,
+    })
 }
 
-/// Insert `"lod"` into a `geometry_properties` JSON object. Used only for the
-/// un-suffixed LoD0 `geometry` column, whose bare column name cannot carry the
-/// LoD — §12's additional-keys mechanism, mirroring geometry templates.
-fn inject_lod_into_properties(props: &str, lod: &Lod) -> Result<String> {
-    let mut v: Value = serde_json::from_str(props)?;
-    if let Value::Object(map) = &mut v {
-        map.insert("lod".to_string(), Value::String(lod.to_string()));
-    }
-    Ok(serde_json::to_string(&v)?)
-}
+/// `(template id, WKB point, transformationMatrix)` — one resolved
+/// `template` column's worth of data. The matrix is the flat, row-major
+/// 16-value list the reserved `LIST<DOUBLE>` column stores (spec "Appearance
+/// & templates").
+type TemplateFields = (String, Vec<u8>, Option<Vec<f64>>);
 
-/// `(template id, WKB point, transformationMatrix JSON)` — one resolved
-/// `template` column's worth of data.
-type TemplateFields = (String, Vec<u8>, Option<String>);
+/// Parses a CityJSON `transformationMatrix` value into the flat 16-value
+/// list the reserved column stores, erroring — not silently truncating or
+/// padding — when it is not an array of exactly 16 numbers (spec "Appearance
+/// & templates": "exactly 16 values when non-null").
+fn parse_transformation_matrix(v: &Value) -> Result<Vec<f64>> {
+    let values: Vec<f64> = serde_json::from_value(v.clone()).map_err(|e| {
+        CityParquetError::Schema(format!(
+            "template.transformationMatrix is not an array of numbers: {e}"
+        ))
+    })?;
+    if values.len() != 16 {
+        return Err(CityParquetError::Schema(format!(
+            "template.transformationMatrix must have exactly 16 values (a flat row-major \
+             4x4), got {}",
+            values.len()
+        )));
+    }
+    Ok(values)
+}
 
 /// `template` binding rule: built from the first `GeometryInstance`
 /// geometry on the object; `None` when it can't be resolved (missing
 /// template index, empty/malformed boundaries) so callers null the column
-/// rather than panic.
+/// rather than panic. A present but malformed `transformationMatrix` (wrong
+/// length or non-numeric) is a hard error, not a graceful drop — see
+/// [`parse_transformation_matrix`].
 fn build_template(geom: &Geometry, pool: &VertexPool) -> Result<Option<TemplateFields>> {
     let Some(template_id) = geom.template else {
         return Ok(None);
@@ -563,9 +573,88 @@ fn build_template(geom: &Geometry, pool: &VertexPool) -> Result<Option<TemplateF
     let matrix = geom
         .transformation_matrix
         .as_ref()
-        .map(serde_json::to_string)
+        .map(parse_transformation_matrix)
         .transpose()?;
     Ok(Some((template_id.to_string(), point, matrix)))
+}
+
+/// One `address[]` entry's resolved fields, ready for the reserved `address`
+/// struct column: the mapped postal strings plus, when the source carried a
+/// resolvable `location`, its WKB `MultiPointZ` bytes (spec "Addresses").
+struct AddressRow {
+    postal: crate::address::AddressPostal,
+    location: Option<Vec<u8>>,
+}
+
+/// Resolves one address entry's `location` member (a CityJSON `MultiPoint`
+/// geometry whose `boundaries` index the feature's vertex pool) into WKB
+/// `MultiPointZ` bytes, reusing [`geometry_to_wkb`] exactly as a regular
+/// `MultiPoint` geometry would. `None` when `location` is absent or
+/// malformed (wrong `type`, unparsable `boundaries`, empty, or an
+/// out-of-range vertex index) — a best-effort address field, not load-bearing
+/// geometry, so a malformed one is silently dropped rather than aborting the
+/// whole conversion (mirrors [`build_template`]'s graceful-degradation
+/// style).
+fn build_location_wkb(location: &Value, pool: &VertexPool) -> Option<Vec<u8>> {
+    let obj = location.as_object()?;
+    if obj.get("type").and_then(Value::as_str) != Some("MultiPoint") {
+        return None;
+    }
+    let idxs: Vec<usize> = serde_json::from_value(obj.get("boundaries")?.clone()).ok()?;
+    if idxs.is_empty() {
+        return None;
+    }
+    let geom = Geometry {
+        thetype: GeometryType::MultiPoint,
+        lod: None,
+        boundaries: serde_json::to_value(&idxs).ok()?,
+        semantics: None,
+        material: None,
+        texture: None,
+        template: None,
+        transformation_matrix: None,
+    };
+    geometry_to_wkb(&geom, pool).ok().flatten().map(|o| o.bytes)
+}
+
+/// The source object's raw `address` array (spec "Addresses"), if any — read
+/// directly since cjseq has no typed field for it (CityJSON does not
+/// prescribe address member names; it rides the struct's private
+/// `#[serde(flatten)]` member, like `children_roles`). `None` when the
+/// object carries no `address` member, or a malformed (non-array) one —
+/// treated as absent rather than an error, since a corrupt `address` member
+/// should not abort an otherwise-valid conversion. `Some(vec![])` is kept
+/// distinct from `None`: an explicit empty array is a genuine (if unusual)
+/// value, not "no address at all".
+pub(crate) fn raw_address_members(co: &CityObject) -> Result<Option<Vec<Value>>> {
+    let Value::Object(map) = serde_json::to_value(co)? else {
+        return Ok(None);
+    };
+    Ok(match map.get("address") {
+        Some(Value::Array(arr)) => Some(arr.clone()),
+        _ => None,
+    })
+}
+
+/// Build the reserved `address` column's row value: one [`AddressRow`] per
+/// source entry, in order — cardinality is preserved even when an entry maps
+/// to nothing recognised (an all-`None` struct still occupies its list
+/// position), since "how many addresses" is itself meaningful. `None` when
+/// the object carries no `address` member at all (column cell null).
+fn build_address_rows(co: &CityObject, pool: &VertexPool) -> Result<Option<Vec<AddressRow>>> {
+    let Some(entries) = raw_address_members(co)? else {
+        return Ok(None);
+    };
+    let rows = entries
+        .iter()
+        .map(|entry| AddressRow {
+            postal: crate::address::map_postal_fields(entry),
+            location: entry
+                .get("location")
+                .and_then(|loc| build_location_wkb(loc, pool)),
+        })
+        .collect();
+    Ok(Some(rows))
 }
 
 /// Per-object accumulator filled by [`accumulate_geometry`], consumed by
@@ -583,11 +672,12 @@ struct GeometryAccumulator {
     own_bbox: Option<[f64; 6]>,
 }
 
-/// One geometry slot's per-object payload: WKB, bbox, and the three JSON
-/// columns (`geometry_properties`, `material`, `texture`) that decorate it.
+/// One geometry slot's per-object payload: WKB, its typed
+/// `geometry_properties` struct value, and the `material`/`texture` JSON
+/// maps that decorate it.
 struct GeometrySlotData {
     bytes: Vec<u8>,
-    properties: String,
+    properties: GeometryProperties,
     material: Option<Value>,
     texture: Option<Value>,
 }
@@ -633,13 +723,14 @@ pub(crate) struct LocalDefs<'a> {
 
 /// Realign (if the writer dropped surfaces) and rewrite one geometry's
 /// `material`/`texture` maps to dataset-global ids via `interner`, and build
-/// its `geometry_properties` JSON. This is the exact per-geometry appearance
-/// pipeline [`accumulate_geometry`] runs for a feature's own geometries,
-/// factored out so the geometry-templates sidecar (`crate::package`) can run
-/// the identical rules over `Source::header`'s `geometry_templates` after the
-/// main encode pass, through the SAME interner — a template's `material`/
-/// `texture`/`semantics` follow the same CityJSON shapes as a regular
-/// geometry's, so the same realignment and rewrite rules apply verbatim.
+/// its `geometry_properties` struct value. This is the exact per-geometry
+/// appearance pipeline [`accumulate_geometry`] runs for a feature's own
+/// geometries, factored out so the geometry-templates sidecar
+/// (`crate::package`) can run the identical rules over `Source::header`'s
+/// `geometry_templates` after the main encode pass, through the SAME
+/// interner — a template's `material`/`texture`/`semantics` follow the same
+/// CityJSON shapes as a regular geometry's, so the same realignment and
+/// rewrite rules apply verbatim.
 ///
 /// `context` names the geometry in any interner error surfaced (e.g.
 /// `"object abc123"` or `"geometry template 0"`).
@@ -649,7 +740,7 @@ pub(crate) fn rewrite_geometry_appearance(
     interner: &mut AppearanceInterner,
     defs: &LocalDefs,
     context: &str,
-) -> Result<(Option<Value>, Option<Value>, String)> {
+) -> Result<(Option<Value>, Option<Value>, GeometryProperties)> {
     let has_drops = !outcome.dropped_surfaces.is_empty();
     let realign = drops_align_with_surface_arrays(&geom.thetype) && has_drops;
     let solid_depth = has_drops
@@ -696,7 +787,7 @@ pub(crate) fn rewrite_geometry_appearance(
         None => None,
     };
 
-    let props = geometry_properties_json(geom, outcome.dropped_rings, &outcome.dropped_surfaces)?;
+    let props = compute_geometry_properties(geom, &outcome.dropped_surfaces)?;
     Ok((material, texture, props))
 }
 
@@ -719,7 +810,6 @@ fn accumulate_geometry(
     co: &CityObject,
     pool: &VertexPool,
     per_lod: bool,
-    footprint: Option<Lod>,
     stats: &mut EncodeStats,
     interner: &mut AppearanceInterner,
     defs: &LocalDefs,
@@ -781,18 +871,12 @@ fn accumulate_geometry(
         // indices are rewritten to dataset-global ids — both handled by the
         // shared pipeline in `rewrite_geometry_appearance` (also used by the
         // geometry-templates sidecar, see its doc comment).
-        let (material, texture, mut props) =
+        let (material, texture, props) =
             rewrite_geometry_appearance(geom, &outcome, interner, defs, &format!("object {id}"))?;
 
-        // The un-suffixed `geometry` column (the footprint — the highest 0.*
-        // LoD) carries no LoD in its column name, so — like a geometry template
-        // (§12) — its LoD rides in `geometry_properties` under `"lod"`, letting
-        // decode/export recover it (which 0.* it was). Suffixed columns encode
-        // the LoD in the name already.
-        if Some(lod) == footprint {
-            props = inject_lod_into_properties(&props, &lod)?;
-        }
-
+        // The LoD lives only in the column name (spec "Levels of detail") —
+        // every geometry column, including LoD0, is suffixed, so there is no
+        // bare column needing its LoD injected into `geometry_properties`.
         acc.slots.insert(
             slot_key,
             GeometrySlotData {
@@ -807,16 +891,21 @@ fn accumulate_geometry(
 }
 
 /// Synthesise an LoD0 footprint slot for `co` from its lowest higher-LoD
-/// boundary geometry (§9 "LoD0 synthesis"). Returns the `geometry` slot payload
-/// (WKB `MultiPolygonZ` + `geometry_properties` carrying `lod:"0"` and the
-/// `cityparquet:lod0_source` provenance) and the footprint bbox, or `None` when
-/// the object has no footprint-able geometry or no acceptable ground is found.
+/// boundary geometry (§9 "LoD0 synthesis"). Returns the `geometry_lod0_0`
+/// slot payload (WKB `MultiPolygonZ` + `geometry_properties`, with no
+/// `"lod"` field — the struct carries no such field, and the LoD lives only
+/// in the column name), the footprint bbox, and the SOURCE column the
+/// footprint was derived from (e.g. `"geometry_lod2_2"`) — the caller
+/// records that as the row's `other.cityparquet:lod0_0_source` provenance
+/// (spec "LoD0 synthesis"): `geometry_properties`'s struct shape has no slot
+/// for it. `None` when the object has no footprint-able geometry or no
+/// acceptable ground is found.
 fn synthesize_footprint(
     co: &CityObject,
     pool: &VertexPool,
     opts: &crate::lod0::Lod0Options,
-) -> Result<Option<(GeometrySlotData, [f64; 6])>> {
-    use crate::lod0::{Lod0Source, faces_from_geometry, footprint_to_geometry, synthesize_lod0};
+) -> Result<Option<(GeometrySlotData, [f64; 6], String)>> {
+    use crate::lod0::{faces_from_geometry, footprint_to_geometry, synthesize_lod0};
 
     let Some(geoms) = &co.geometry else {
         return Ok(None);
@@ -844,7 +933,7 @@ fn synthesize_footprint(
             best = Some((lod, geom));
         }
     }
-    let Some((_, geom)) = best else {
+    let Some((source_lod, geom)) = best else {
         return Ok(None);
     };
 
@@ -861,31 +950,15 @@ fn synthesize_footprint(
         return Ok(None);
     };
 
-    let mut props: Value = serde_json::from_str(&geometry_properties_json(
-        &ms,
-        outcome.dropped_rings,
-        &outcome.dropped_surfaces,
-    )?)?;
-    if let Value::Object(m) = &mut props {
-        m.insert("lod".to_string(), Value::String("0".to_string()));
-        m.insert(
-            "cityparquet:lod0_source".to_string(),
-            Value::String(
-                match fp.source {
-                    Lod0Source::GroundSemantics => "ground-semantics",
-                    Lod0Source::Geometric => "geometric",
-                }
-                .to_string(),
-            ),
-        );
-    }
+    let props = compute_geometry_properties(&ms, &outcome.dropped_surfaces)?;
     let data = GeometrySlotData {
         bytes: outcome.bytes,
-        properties: serde_json::to_string(&props)?,
+        properties: props,
         material: None,
         texture: None,
     };
-    Ok(Some((data, outcome.bbox)))
+    let source_column = geometry_column_name("geometry", &source_lod);
+    Ok(Some((data, outcome.bbox, source_column)))
 }
 
 /// One typed builder per inferred attribute column.
@@ -1029,7 +1102,7 @@ fn push_attribute_value(
 struct GeometrySlot {
     key: String,
     geometry: BinaryBuilder,
-    properties: StringBuilder,
+    properties: GeometryPropertiesBuilder,
     material: StringBuilder,
     texture: StringBuilder,
 }
@@ -1045,26 +1118,33 @@ struct RowWriter {
     parents: ListBuilder<StringBuilder>,
     children: ListBuilder<StringBuilder>,
     children_roles: ListBuilder<StringBuilder>,
+    /// The reserved `address` column: one [`StructBuilder`] (per
+    /// [`cityparquet_schema::model::address_item_fields`]) per list item.
+    address: ListBuilder<StructBuilder>,
     bbox_cols: [Vec<f64>; 6],
     bbox_nulls: NullBufferBuilder,
     per_lod: bool,
     geometry_slots: Vec<GeometrySlot>,
     template_id: StringBuilder,
     template_point: BinaryBuilder,
-    template_matrix: StringBuilder,
+    template_matrix: ListBuilder<Float64Builder>,
     template_nulls: NullBufferBuilder,
     other: StringBuilder,
+    /// The reserved `other_attributes` column (spec "Column naming and
+    /// reservation rules"; gap 14): a JSON object per row, keyed by the
+    /// source attribute name, for every attribute [`Self::diverted_attributes`]
+    /// diverted here because its name collided with a reserved/geometry
+    /// column.
+    other_attributes: StringBuilder,
     attributes: Vec<(String, AttrBuilder)>,
-    /// Attribute names diverted into `other` because they collide with a
-    /// reserved/geometry column name (§5.2, G12). Sorted, so the diverted map
-    /// each row emits is deterministic.
+    /// Attribute names diverted into `other_attributes` because they collide
+    /// with a reserved/geometry column name (§5.2, G12). Sorted, so the
+    /// diverted map each row emits is deterministic.
     diverted_attributes: Vec<String>,
-    /// When `Some`, synthesise an LoD0 footprint into the un-suffixed `geometry`
-    /// slot for any object lacking a source LoD0 (§9). Carries the thresholds.
+    /// When `Some`, synthesise an LoD0 footprint into the `geometry_lod0_0`
+    /// slot for any object lacking a source LoD0 (spec "LoD0 synthesis").
+    /// Carries the thresholds.
     synthesize_lod0: Option<crate::lod0::Lod0Options>,
-    /// The LoD that occupies the un-suffixed `geometry` column (the highest 0.*
-    /// present, §9); its `geometry_properties` carries the `"lod"` member.
-    footprint: Option<Lod>,
     len: usize,
 }
 
@@ -1074,7 +1154,7 @@ impl RowWriter {
         let new_slot = |key: String| GeometrySlot {
             key,
             geometry: BinaryBuilder::new(),
-            properties: StringBuilder::new(),
+            properties: GeometryPropertiesBuilder::new(),
             material: StringBuilder::new(),
             texture: StringBuilder::new(),
         };
@@ -1099,19 +1179,28 @@ impl RowWriter {
             parents: ListBuilder::new(StringBuilder::new()),
             children: ListBuilder::new(StringBuilder::new()),
             children_roles: ListBuilder::new(StringBuilder::new()),
+            address: ListBuilder::new(StructBuilder::from_fields(
+                cityparquet_schema::model::address_item_fields(),
+                0,
+            )),
             bbox_cols: Default::default(),
             bbox_nulls: NullBufferBuilder::new(0),
             per_lod,
             geometry_slots,
             template_id: StringBuilder::new(),
             template_point: BinaryBuilder::new(),
-            template_matrix: StringBuilder::new(),
+            // Item field explicitly pinned to non-null Float64: a
+            // `ListBuilder`'s default-derived item field is always nullable,
+            // which would mismatch `template_data_type()`'s non-null matrix
+            // entries at `StructArray::new` time.
+            template_matrix: ListBuilder::new(Float64Builder::new())
+                .with_field(Arc::new(Field::new("item", DataType::Float64, false))),
             template_nulls: NullBufferBuilder::new(0),
             other: StringBuilder::new(),
+            other_attributes: StringBuilder::new(),
             attributes,
             diverted_attributes: scan.diverted_attribute_names.iter().cloned().collect(),
             synthesize_lod0: scan.synthesize_lod0,
-            footprint: cityparquet_schema::footprint_lod(&scan.lods),
             len: 0,
         }
     }
@@ -1139,7 +1228,7 @@ impl RowWriter {
                 self.template_id.append_value(id);
                 self.template_point.append_value(point);
                 match matrix {
-                    Some(m) => self.template_matrix.append_value(m),
+                    Some(m) => self.template_matrix.append_value(m.into_iter().map(Some)),
                     None => self.template_matrix.append_null(),
                 }
                 self.template_nulls.append(true);
@@ -1150,6 +1239,58 @@ impl RowWriter {
                 self.template_matrix.append_null();
                 self.template_nulls.append(false);
             }
+        }
+    }
+
+    /// Address struct field indices, matching
+    /// [`cityparquet_schema::model::address_item_fields`]'s order exactly.
+    const ADDRESS_STREET: usize = 0;
+    const ADDRESS_HOUSE_NUMBER: usize = 1;
+    const ADDRESS_PO_BOX: usize = 2;
+    const ADDRESS_ZIP_CODE: usize = 3;
+    const ADDRESS_CITY: usize = 4;
+    const ADDRESS_STATE: usize = 5;
+    const ADDRESS_COUNTRY: usize = 6;
+    const ADDRESS_FREE_TEXT: usize = 7;
+    const ADDRESS_LOCATION: usize = 8;
+
+    fn push_address(&mut self, rows: Option<Vec<AddressRow>>) {
+        match rows {
+            Some(rows) => {
+                for row in rows {
+                    let sb = self.address.values();
+                    sb.field_builder::<StringBuilder>(Self::ADDRESS_STREET)
+                        .expect("address.street is a StringBuilder")
+                        .append_option(row.postal.street.as_deref());
+                    sb.field_builder::<StringBuilder>(Self::ADDRESS_HOUSE_NUMBER)
+                        .expect("address.house_number is a StringBuilder")
+                        .append_option(row.postal.house_number.as_deref());
+                    sb.field_builder::<StringBuilder>(Self::ADDRESS_PO_BOX)
+                        .expect("address.po_box is a StringBuilder")
+                        .append_option(row.postal.po_box.as_deref());
+                    sb.field_builder::<StringBuilder>(Self::ADDRESS_ZIP_CODE)
+                        .expect("address.zip_code is a StringBuilder")
+                        .append_option(row.postal.zip_code.as_deref());
+                    sb.field_builder::<StringBuilder>(Self::ADDRESS_CITY)
+                        .expect("address.city is a StringBuilder")
+                        .append_option(row.postal.city.as_deref());
+                    sb.field_builder::<StringBuilder>(Self::ADDRESS_STATE)
+                        .expect("address.state is a StringBuilder")
+                        .append_option(row.postal.state.as_deref());
+                    sb.field_builder::<StringBuilder>(Self::ADDRESS_COUNTRY)
+                        .expect("address.country is a StringBuilder")
+                        .append_option(row.postal.country.as_deref());
+                    sb.field_builder::<StringBuilder>(Self::ADDRESS_FREE_TEXT)
+                        .expect("address.free_text is a StringBuilder")
+                        .append_option(row.postal.free_text.as_deref());
+                    sb.field_builder::<BinaryBuilder>(Self::ADDRESS_LOCATION)
+                        .expect("address.location is a BinaryBuilder")
+                        .append_option(row.location.as_deref());
+                    sb.append(true);
+                }
+                self.address.append(true);
+            }
+            None => self.address.append(false),
         }
     }
 
@@ -1222,30 +1363,30 @@ impl RowWriter {
 
         self.id.append_value(id);
         self.feature_id.append_value(&feature.id);
-        self.object_type.append(&co.thetype)?;
+        // `object_type` stores the CityGML 3.0 class name, not the CityJSON
+        // spelling (spec "object_table-schema" — "object_type vocabulary").
+        // For the 4 classes where they differ (`TransportSquare`->`Square`,
+        // `GenericCityObject`->`GenericOccupiedSpace`,
+        // `BuildingStorey`->`Storey`, `TunnelHollowSpace`->`HollowSpace`),
+        // `ClassInfo::citygml_class` carries the CityGML spelling; every
+        // other core class has the same spelling in both fields. An
+        // extension (ADE / CityJSON Extension) class has no taxonomy entry,
+        // so it keeps its own source spelling, but with CityJSON's leading
+        // `+` marker stripped (spec: "An extension ... type keeps its own
+        // class name, with the CityJSON `+` prefix stripped").
+        let object_type = cityparquet_schema::class_info(&co.thetype)
+            .map(|info| info.citygml_class)
+            .unwrap_or_else(|| cityparquet_schema::strip_plus(&co.thetype));
+        self.object_type.append(object_type)?;
         Self::push_string_list(&mut self.parents, co.parents.as_deref());
         Self::push_string_list(&mut self.children, co.children.as_deref());
         let children_roles = Self::children_roles(co, id)?;
         Self::push_string_list(&mut self.children_roles, children_roles.as_deref());
-        // `other`: the source object's members that have no dedicated column
-        // (§5.1, G9) — a Building's `address`, a per-object `geographicalExtent`,
-        // Extension `+members`. Stored verbatim as a JSON object string; null
-        // when the object has no such members (so a null count = rows carrying
-        // unmapped members).
-        let mut unmapped = unmapped_object_members(co)?;
-        // Diverted colliding attributes go in BEFORE the emptiness check, so a
-        // row whose only unmapped content is diverted attributes still stores
-        // an `other` cell rather than null (§5.2, G12).
-        stats.diverted_attribute_values +=
-            collect_diverted_attributes(co, &self.diverted_attributes, &mut unmapped, id)?;
-        stats.address_locations_dropped += strip_address_locations(&mut unmapped);
-        if unmapped.is_empty() {
-            self.other.append_null();
-        } else {
-            self.other
-                .append_value(serde_json::to_string(&Value::Object(unmapped))?);
-        }
-
+        // Geometry accumulation (incl. optional LoD0 synthesis) runs BEFORE
+        // `other` is finalised below: a synthesised footprint's provenance
+        // (which SOURCE column it was derived from) has to land in this
+        // row's `other` cell (spec "LoD0 synthesis") — `geometry_properties`
+        // has no field for it — so `other` cannot be closed off first.
         let mut acc = GeometryAccumulator::default();
         let defs = LocalDefs {
             materials: feature_local_materials(feature),
@@ -1257,35 +1398,73 @@ impl RowWriter {
             co,
             &pool,
             self.per_lod,
-            self.footprint,
             stats,
             interner,
             &defs,
             id,
         )?;
 
-        // Synthesise an LoD0 footprint into the un-suffixed `geometry` slot when
-        // enabled and the object has no source LoD0 (§9). The footprint slot key
-        // is LoD0's column suffix (`lod0`), the same key `accumulate_geometry`
-        // would use for a real LoD0.
+        // Synthesise an LoD0 footprint into the `geometry_lod0_0` slot when
+        // enabled and the object has no source LoD0 (spec "LoD0 synthesis").
+        // The footprint slot key is LoD0's column suffix (`lod0_0`), the same
+        // key `accumulate_geometry` would use for a real LoD0.
+        let mut lod0_source_column = None;
         if let Some(opts) = &self.synthesize_lod0 {
             let key = Lod::parse("0")
                 .expect("literal 0 is a valid LoD")
                 .column_suffix();
             if !acc.slots.contains_key(&key)
-                && let Some((data, bbox)) = synthesize_footprint(co, &pool, opts)?
+                && let Some((data, bbox, source_column)) = synthesize_footprint(co, &pool, opts)?
             {
                 union_bbox(&mut acc.own_bbox, bbox);
                 acc.slots.insert(key, data);
                 stats.synthesized_lod0_footprints += 1;
+                lod0_source_column = Some(source_column);
             }
         }
+
+        // `other`: the source object's members that have no dedicated column
+        // (§5.1, G9) — a per-object `geographicalExtent`, Extension
+        // `+members`, plus the LoD0-synthesis provenance marker above, if
+        // any. `address` has its own reserved column (below) and is already
+        // excluded here (`OTHER_RESERVED_MEMBERS`). Stored verbatim as a
+        // JSON object string; null when the object has no such members (so a
+        // null count = rows carrying unmapped members).
+        let mut unmapped = unmapped_object_members(co)?;
+        if let Some(source_column) = lod0_source_column {
+            unmapped.insert(
+                "cityparquet:lod0_0_source".to_string(),
+                Value::String(source_column),
+            );
+        }
+        if unmapped.is_empty() {
+            self.other.append_null();
+        } else {
+            self.other
+                .append_value(serde_json::to_string(&Value::Object(unmapped))?);
+        }
+
+        // `other_attributes`: attributes diverted here because their name
+        // collides with a reserved/geometry column name (§5.2, G12) — a
+        // reserved column of its own, keyed by source attribute name, rather
+        // than a magic key inside `other` (gap 14).
+        let diverted = collect_diverted_attributes(co, &self.diverted_attributes);
+        stats.diverted_attribute_values += diverted.as_ref().map_or(0, serde_json::Map::len);
+        match diverted {
+            Some(map) => self
+                .other_attributes
+                .append_value(serde_json::to_string(&Value::Object(map))?),
+            None => self.other_attributes.append_null(),
+        }
+
+        // `address`: the reserved struct column (spec "Addresses", gap 10).
+        self.push_address(build_address_rows(co, &pool)?);
 
         for slot in &mut self.geometry_slots {
             match acc.slots.get(&slot.key) {
                 Some(data) => {
                     slot.geometry.append_value(&data.bytes);
-                    slot.properties.append_value(&data.properties);
+                    slot.properties.append_value(&data.properties)?;
                     match &data.material {
                         Some(m) => slot.material.append_value(serde_json::to_string(m)?),
                         None => slot.material.append_null(),
@@ -1362,16 +1541,18 @@ impl RowWriter {
             Arc::new(self.parents.finish()),
             Arc::new(self.children.finish()),
             Arc::new(self.children_roles.finish()),
+            Arc::new(self.address.finish()),
             self.finish_bbox(),
         ];
         for slot in &mut self.geometry_slots {
             arrays.push(Arc::new(slot.geometry.finish()));
-            arrays.push(Arc::new(slot.properties.finish()));
+            arrays.push(slot.properties.finish());
             arrays.push(Arc::new(slot.material.finish()));
             arrays.push(Arc::new(slot.texture.finish()));
         }
         arrays.push(self.finish_template());
         arrays.push(Arc::new(self.other.finish()));
+        arrays.push(Arc::new(self.other_attributes.finish()));
         for (_, builder) in &mut self.attributes {
             arrays.push(builder.finish());
         }
@@ -1629,9 +1810,8 @@ pub fn encode_buffered<'a>(
 mod tests {
     use super::*;
 
-    // G12: a colliding attribute is collected into `other` under the reserved
-    // diverted key, skipping nulls; a source object that already carries that
-    // reserved member is a hard error (no silent overwrite).
+    // G12/gap 14: a colliding attribute is collected for the
+    // `other_attributes` column, skipping nulls.
     #[test]
     fn collect_diverted_attributes_diverts_present_non_null_values() {
         let co: CityObject = serde_json::from_value(serde_json::json!({
@@ -1639,91 +1819,73 @@ mod tests {
             "attributes": {"bbox": "sentinel", "id": null, "keep": 1}
         }))
         .unwrap();
-        let mut unmapped = serde_json::Map::new();
-        let n = collect_diverted_attributes(
-            &co,
-            &["bbox".to_string(), "id".to_string()],
-            &mut unmapped,
-            "obj-1",
-        )
-        .unwrap();
+        let map = collect_diverted_attributes(&co, &["bbox".to_string(), "id".to_string()])
+            .expect("bbox is diverted");
         assert_eq!(
-            n, 1,
+            map,
+            serde_json::json!({"bbox": "sentinel"})
+                .as_object()
+                .unwrap()
+                .clone(),
             "only the non-null `bbox` is diverted; null `id` skipped"
         );
-        assert_eq!(
-            unmapped[DIVERTED_ATTRS_KEY],
-            serde_json::json!({"bbox": "sentinel"})
-        );
     }
 
     #[test]
-    fn collect_diverted_attributes_errors_on_a_preexisting_reserved_member() {
+    fn collect_diverted_attributes_is_none_when_nothing_diverts() {
         let co: CityObject = serde_json::from_value(serde_json::json!({
             "type": "Building",
-            "attributes": {"bbox": "sentinel"}
+            "attributes": {"keep": 1}
         }))
         .unwrap();
-        // A foreign object already carrying the reserved diverted key would be
-        // silently overwritten — must error instead.
-        let mut unmapped = serde_json::Map::new();
-        unmapped.insert(DIVERTED_ATTRS_KEY.to_string(), serde_json::json!({"x": 1}));
-        assert!(
-            collect_diverted_attributes(&co, &["bbox".to_string()], &mut unmapped, "obj-1")
-                .is_err(),
-            "a pre-existing reserved diverted key must be a hard error"
-        );
+        assert!(collect_diverted_attributes(&co, &["bbox".to_string()]).is_none());
+        assert!(collect_diverted_attributes(&co, &[]).is_none());
     }
 
+    // spec "Addresses" (gap 10): only the recognised postal member names map
+    // onto the reserved struct; anything else is dropped without disturbing
+    // the fields that DID map.
     #[test]
-    fn collect_diverted_attributes_guards_reserved_member_even_without_diversions() {
-        // sol-review G12: the reserved transport key is illegal in source data
-        // regardless of whether THIS dataset diverts anything. The guard must
-        // run even when there are no diverted names (else a foreign flatten
-        // member `cityparquet:diverted_attributes` reaches `other` and decode
-        // reinterprets it as transport data).
+    fn build_address_rows_maps_recognised_members_and_drops_the_rest() {
         let co: CityObject = serde_json::from_value(serde_json::json!({
-            "type": "Building"
+            "type": "Building",
+            "address": [
+                {"locality": "Helsinki", "Locality": "should-not-map", "id": "dropped-id"}
+            ]
         }))
         .unwrap();
-        let mut unmapped = serde_json::Map::new();
-        unmapped.insert(DIVERTED_ATTRS_KEY.to_string(), serde_json::json!({"x": 1}));
-        assert!(
-            collect_diverted_attributes(&co, &[], &mut unmapped, "obj-1").is_err(),
-            "the reserved key must be rejected even with no diverted names"
+        let pool = VertexPool::raw(&[]);
+        let rows = build_address_rows(&co, &pool).unwrap().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].postal.city.as_deref(), Some("Helsinki"));
+        assert_eq!(
+            rows[0].postal.country, None,
+            "no recognised country member present"
         );
+        assert_eq!(rows[0].location, None, "no location member present");
     }
 
-    // G9 sol-review Finding 1: `address[].location` (a vertex-indexed
-    // MultiPoint) is dropped from the stored `other` so export never emits a
-    // dangling vertex reference; textual address fields survive.
     #[test]
-    fn strip_address_locations_drops_only_the_location() {
-        let mut members: serde_json::Map<String, Value> = serde_json::from_value(serde_json::json!({
-            "address": [
-                {"Locality": "Helsinki", "location": {"type": "MultiPoint", "boundaries": [20]}},
-                {"Locality": "Espoo"}
-            ],
-            "geographicalExtent": [0, 0, 0, 1, 1, 1]
-        }))
-        .unwrap();
-        let dropped = strip_address_locations(&mut members);
-        assert_eq!(dropped, 1, "exactly one entry carried a location");
-        assert_eq!(
-            members["address"],
-            serde_json::json!([{"Locality": "Helsinki"}, {"Locality": "Espoo"}]),
-            "textual fields kept, location removed"
-        );
-        assert_eq!(
-            members["geographicalExtent"],
-            serde_json::json!([0, 0, 0, 1, 1, 1]),
-            "unrelated members untouched"
-        );
-        assert_eq!(
-            strip_address_locations(&mut members),
-            0,
-            "no locations left to drop the second time"
-        );
+    fn build_address_rows_is_none_without_an_address_member() {
+        let co: CityObject =
+            serde_json::from_value(serde_json::json!({"type": "Building"})).unwrap();
+        let pool = VertexPool::raw(&[]);
+        assert!(build_address_rows(&co, &pool).unwrap().is_none());
+    }
+
+    // spec "Appearance & templates": transformationMatrix MUST have exactly
+    // 16 values when non-null.
+    #[test]
+    fn parse_transformation_matrix_rejects_a_non_16_length_matrix() {
+        assert!(parse_transformation_matrix(&serde_json::json!([1.0, 2.0, 3.0])).is_err());
+        assert!(parse_transformation_matrix(&serde_json::json!([])).is_err());
+    }
+
+    #[test]
+    fn parse_transformation_matrix_accepts_exactly_16_values() {
+        let values: Vec<f64> = (0..16).map(f64::from).collect();
+        let parsed = parse_transformation_matrix(&serde_json::to_value(&values).unwrap()).unwrap();
+        assert_eq!(parsed, values);
     }
 
     /// No fixture carries MultiSolid/CompositeSolid, so the nested `shells`
@@ -1767,13 +1929,11 @@ mod tests {
         // `shells` nests one list per solid (§8), no separate counts key.
         assert_eq!(
             solid_shells(&geom, &[]).unwrap(),
-            Some(serde_json::json!([[1, 2], [1]]))
+            Some(vec![vec![1, 2], vec![1]])
         );
 
-        let props: Value =
-            serde_json::from_str(&geometry_properties_json(&geom, 0, &[]).unwrap()).unwrap();
-        assert!(props.get("solid_shell_counts").is_none());
-        assert_eq!(props["shells"], serde_json::json!([[1, 2], [1]]));
+        let props = compute_geometry_properties(&geom, &[]).unwrap();
+        assert_eq!(props.shells, Some(vec![vec![1, 2], vec![1]]));
 
         // With writer-dropped flat face positions, each shell's count must
         // describe the STORED geometry: positions 1 and 2 are the two faces of
@@ -1781,7 +1941,7 @@ mod tests {
         // only face.
         assert_eq!(
             solid_shells(&geom, &[1, 3]).unwrap(),
-            Some(serde_json::json!([[1, 1], [0]]))
+            Some(vec![vec![1, 1], vec![0]])
         );
     }
 
@@ -1849,7 +2009,6 @@ mod tests {
             &co,
             &pool,
             true,
-            None,
             &mut stats,
             &mut interner,
             &defs,
@@ -1860,25 +2019,17 @@ mod tests {
         assert_eq!(stats.degenerate_rings_dropped, 1);
         assert_eq!(stats.degenerate_surfaces_dropped, 1);
 
-        let slot = acc.slots.get("lod2").expect("lod2 slot populated");
-        let props: Value = serde_json::from_str(&slot.properties).unwrap();
+        let slot = acc.slots.get("lod2_0").expect("lod2_0 slot populated");
+        let props = &slot.properties;
         assert_eq!(
-            props["dropped_degenerate"],
-            serde_json::json!({"rings": 1, "surfaces": [0]})
-        );
-        assert_eq!(
-            props["face_semantics"],
-            serde_json::json!([1]),
+            props.face_semantics,
+            Some(vec![Some(1)]),
             "face_semantics must lose the dropped face's entry"
         );
         assert_eq!(
-            props["surfaces"],
-            serde_json::json!([{"type": "WallSurface"}, {"type": "RoofSurface"}]),
+            props.surfaces,
+            Some(serde_json::json!([{"type": "WallSurface"}, {"type": "RoofSurface"}])),
             "the surfaces lookup table is stored verbatim (face_semantics indexes into it)"
-        );
-        assert!(
-            props.get("semantics").is_none(),
-            "the nested `semantics` object is replaced by flat surfaces/face_semantics"
         );
 
         // Surface 0 (material index 5, texture index 0) was dropped; only
@@ -1973,7 +2124,6 @@ mod tests {
             &co,
             &pool,
             true,
-            None,
             &mut stats,
             &mut interner,
             &defs,
@@ -1984,25 +2134,21 @@ mod tests {
         assert_eq!(stats.degenerate_rings_dropped, 1);
         assert_eq!(stats.degenerate_surfaces_dropped, 1);
 
-        let slot = acc.slots.get("lod2").expect("lod2 slot populated");
-        let props: Value = serde_json::from_str(&slot.properties).unwrap();
+        let slot = acc.slots.get("lod2_0").expect("lod2_0 slot populated");
+        let props = &slot.properties;
         assert_eq!(
-            props["dropped_degenerate"],
-            serde_json::json!({"rings": 1, "surfaces": [1]})
+            props.shells,
+            Some(vec![vec![2]]),
+            "the single shell drops from 3 to 2 faces, nested one list per solid"
         );
         assert_eq!(
-            props["shells"],
-            serde_json::json!([2]),
-            "the single shell drops from 3 to 2 faces"
-        );
-        assert_eq!(
-            props["face_semantics"],
-            serde_json::json!([0, 2]),
+            props.face_semantics,
+            Some(vec![Some(0), Some(2)]),
             "face_semantics is flat (one entry per emitted face) and loses face 1"
         );
         assert_eq!(
-            props["surfaces"],
-            serde_json::json!([{"type": "A"}, {"type": "B"}, {"type": "C"}]),
+            props.surfaces,
+            Some(serde_json::json!([{"type": "A"}, {"type": "B"}, {"type": "C"}])),
             "the surfaces lookup table is stored verbatim (face_semantics indexes into it)"
         );
 
@@ -2101,7 +2247,6 @@ mod tests {
             &co,
             &pool,
             true,
-            None,
             &mut stats,
             &mut interner,
             &defs,
@@ -2112,20 +2257,16 @@ mod tests {
         assert_eq!(stats.degenerate_rings_dropped, 2);
         assert_eq!(stats.degenerate_surfaces_dropped, 2);
 
-        let slot = acc.slots.get("lod2").expect("lod2 slot populated");
-        let props: Value = serde_json::from_str(&slot.properties).unwrap();
+        let slot = acc.slots.get("lod2_0").expect("lod2_0 slot populated");
+        let props = &slot.properties;
         assert_eq!(
-            props["dropped_degenerate"],
-            serde_json::json!({"rings": 2, "surfaces": [2, 4]})
-        );
-        assert_eq!(
-            props["shells"],
-            serde_json::json!([[2, 0], [1]]),
+            props.shells,
+            Some(vec![vec![2, 0], vec![1]]),
             "solid0's shells drop to (2, 0) faces, solid1's shell drops to 1"
         );
         assert_eq!(
-            props["face_semantics"],
-            serde_json::json!([10, 11, 13]),
+            props.face_semantics,
+            Some(vec![Some(10), Some(11), Some(13)]),
             "face_semantics is flat across all solids/shells, losing positions 2 and 4"
         );
 

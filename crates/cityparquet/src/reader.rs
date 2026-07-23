@@ -23,7 +23,7 @@ use parquet::file::statistics::Statistics;
 use parquet::schema::types::ColumnPath;
 
 use cityparquet_schema::{
-    AttributeType, CityParquetError, CityParquetMetadata, CityParquetSchema, Lod, Result,
+    AttributeType, CityMetadata, CityParquetError, CityParquetSchema, GeoMetadata, Lod, Result,
 };
 
 /// The six fixed `bbox` struct leaves, matching [`crate::recipe::WriterRecipe`]
@@ -37,9 +37,17 @@ const ARROW_JSON_EXTENSION: &str = "arrow.json";
 /// Extension trait adding CityParquet-aware reads directly to
 /// `parquet::arrow::arrow_reader::ArrowReaderBuilder` — no wrapper builder.
 pub trait CityParquetReaderBuilder: Sized {
-    /// Parse this file's CityParquet key-value metadata (spec `notes/spec.md`
-    /// § metadata keys) back into a typed [`CityParquetMetadata`].
-    fn cityparquet_metadata(&self) -> Result<CityParquetMetadata>;
+    /// Parse this file's `city` (required) and `geo` (conditional) footer
+    /// key-value metadata (spec `05-metadata.mdx`) back into their typed
+    /// forms.
+    fn cityparquet_footer(&self) -> Result<(CityMetadata, Option<GeoMetadata>)>;
+
+    /// Convenience: just the `city` half of [`Self::cityparquet_footer`] —
+    /// the common case, since most callers only need CityParquet's own
+    /// metadata, not the GeoParquet mirror.
+    fn cityparquet_metadata(&self) -> Result<CityMetadata> {
+        self.cityparquet_footer().map(|(city, _geo)| city)
+    }
 
     /// Rebuild the CityParquet-described Arrow schema (LoD/attribute/role
     /// field metadata re-attached) from this file's own KV metadata plus its
@@ -61,7 +69,7 @@ pub trait CityParquetReaderBuilder: Sized {
 }
 
 impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
-    fn cityparquet_metadata(&self) -> Result<CityParquetMetadata> {
+    fn cityparquet_footer(&self) -> Result<(CityMetadata, Option<GeoMetadata>)> {
         let kvs = self
             .metadata()
             .file_metadata()
@@ -69,7 +77,7 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             .ok_or_else(|| {
                 CityParquetError::Metadata("parquet file has no key-value metadata".to_string())
             })?;
-        CityParquetMetadata::from_key_values(
+        CityMetadata::from_key_values(
             kvs.iter()
                 .map(|kv| (kv.key.as_str(), kv.value.as_deref().unwrap_or(""))),
         )
@@ -97,7 +105,10 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         // columns for the dataset's actual LoDs are reserved). Exclude the
         // declared attributes first, so such a name is not mistaken for a LoD.
         let attribute_names: std::collections::HashSet<&str> =
-            meta.attribute_columns.iter().map(String::as_str).collect();
+            meta.attributes.iter().map(String::as_str).collect();
+        // Every LoD, including LoD0, is suffixed (spec "Levels of detail"),
+        // so a single `geometry_<suffix>` scan recovers the full LoD set —
+        // there is no separate un-suffixed "footprint" column to special-case.
         let mut lods: Vec<Lod> = actual
             .fields()
             .iter()
@@ -105,34 +116,11 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             .filter_map(|f| f.name().strip_prefix("geometry_"))
             .filter_map(Lod::from_column_suffix)
             .collect();
-        // The footprint LoD (the highest 0.* present, §9) lives in the
-        // un-suffixed `geometry` column, which has no `geometry_` prefix to
-        // parse. Recover the exact 0.* LoD from that reserved column's lod tag
-        // (`cityparquet:lod`, set by the writer) — this covers a footprints-only
-        // file too. As a fallback for a file whose field metadata was stripped,
-        // recover a bare `0` when suffixed geometry columns exist alongside the
-        // bare one, so the rebuilt schema still matches the file's column set (a
-        // zero-analysis-geometry file's lone, untagged `geometry` column
-        // reconstructs the same fields either way).
-        if !attribute_names.contains("geometry")
-            && let Ok(field) = actual.field_with_name("geometry")
-        {
-            let tagged = field
-                .metadata()
-                .get(cityparquet_schema::model::LOD_KEY)
-                .and_then(|t| Lod::parse(t).ok())
-                .filter(|l| l.major() == 0);
-            if let Some(l) = tagged {
-                lods.push(l);
-            } else if !lods.is_empty() {
-                lods.push(Lod::parse("0").expect("literal 0 is a valid LoD"));
-            }
-        }
         lods.sort();
         lods.dedup();
 
-        let mut attributes = Vec::with_capacity(meta.attribute_columns.len());
-        for name in &meta.attribute_columns {
+        let mut attributes = Vec::with_capacity(meta.attributes.len());
+        for name in &meta.attributes {
             let field = actual.field_with_name(name).map_err(|_| {
                 CityParquetError::Metadata(format!(
                     "attribute column '{name}' listed in metadata but absent from the file's schema"
@@ -158,6 +146,66 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
                 attr_type = AttributeType::Json;
             }
             attributes.push((name.clone(), attr_type));
+        }
+
+        // Whether THIS table's own physical schema carries the bare
+        // un-suffixed `geometry` column — the dataset-wide
+        // zero-analysis-geometry fallback (spec "Levels of detail" / §9):
+        // every table in a dataset with NO LoD-bearing geometry anywhere
+        // carries this pair. Distinguishes that case from a table that
+        // simply carries NO geometry columns of its own (empty `lods` for a
+        // DIFFERENT reason: spec "object-table-schema" — "a table whose
+        // objects have no analysis geometry at all carries none of them" —
+        // the per-module pruning case, where sibling tables DO have
+        // LoD-bearing geometry) — both render `lods.is_empty()` here, but
+        // only the former should get the synthesised bare quartet back.
+        let has_bare_geometry = actual.field_with_name("geometry").is_ok();
+
+        if lods.is_empty() && !has_bare_geometry {
+            // This table needs no geometry section at all. Rendering the
+            // real `attributes` through `CityParquetSchema::to_arrow_schema`
+            // here would be UNSAFE: with `lods` empty, its `validate` reserves
+            // the BARE `geometry`/`geometry_properties`/`material`/`texture`
+            // names (the zero-analysis-geometry fallback's own vocabulary),
+            // and an attribute legitimately named e.g. `material` — legal
+            // dataset-wide, since the dataset's REAL LoDs only reserve
+            // `material_lod<suffix>`, never the bare name — would spuriously
+            // collide and error out (proven by the real-fixture regression
+            // `attributes_named_like_appearance_columns_do_not_corrupt_export`).
+            // So: render the reserved/template/other shape with NO attributes
+            // (nothing to collide with), strip the synthesised bare quartet
+            // `to_arrow_schema` always adds for empty `lods` (the ONLY shape
+            // it knows for that case — never teach `CityParquetSchema` a
+            // third "no geometry at all" `lods` state just for this
+            // reader-side reconstruction), then splice in each attribute's
+            // own ALREADY-RESOLVED physical field from `actual` (its type,
+            // including the Json-vs-String disambiguation, was already
+            // settled above) rather than re-deriving it through the
+            // collision-prone path.
+            let reserved_only = CityParquetSchema {
+                lods: Vec::new(),
+                attributes: Vec::new(),
+                crs: None,
+            }
+            .to_arrow_schema()?;
+            const BARE_GEOMETRY_NAMES: [&str; 4] =
+                ["geometry", "geometry_properties", "material", "texture"];
+            let mut fields: Vec<arrow_schema::Field> = reserved_only
+                .fields()
+                .iter()
+                .filter(|f| !BARE_GEOMETRY_NAMES.contains(&f.name().as_str()))
+                .map(|f| f.as_ref().clone())
+                .collect();
+            for (name, _) in &attributes {
+                let field = actual.field_with_name(name).map_err(|_| {
+                    CityParquetError::Metadata(format!(
+                        "attribute column '{name}' listed in metadata but absent from the \
+                         file's schema"
+                    ))
+                })?;
+                fields.push(field.as_ref().clone());
+            }
+            return Ok(Arc::new(Schema::new(fields)));
         }
 
         let schema = CityParquetSchema {

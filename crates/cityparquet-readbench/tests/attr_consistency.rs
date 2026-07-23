@@ -52,6 +52,23 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), tests below that convert (or compare
+/// against) railway use a small on-disk COPY with a CRS injected via JSON
+/// mutation of the real fixture — never hand-written CityJSON.
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
+}
+
 /// Whether the `fcb` CLI is on PATH — mirrors
 /// `tests/flatcitybuf_runner.rs`'s own `fcb_cli_missing`, so the FCB leg of
 /// this test skips gracefully rather than depending on an optional external
@@ -198,7 +215,8 @@ fn cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code() {
 #[test]
 fn cityparquet_attr_filter_rejects_a_multi_family_by_type_package() {
     let out = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, out.path().to_path_buf());
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 121);
 
@@ -225,7 +243,8 @@ fn all_three_runners_agree_on_the_string_typed_numeric_attr_code() {
 
     // --- CityParquet ---
     let out = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, out.path().to_path_buf());
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 121);
     let cityparquet_count = run_child("cityparquet", "attr-filter", out.path(), attr_args);

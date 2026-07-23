@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use cityparquet::scan::scan;
+use cityparquet::scan::{city_and_geo_for_file, scan};
 use cityparquet::source::Source;
 
 fn fixture(name: &str) -> PathBuf {
@@ -9,6 +9,28 @@ fn fixture(name: &str) -> PathBuf {
         .join(name);
     assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
     p
+}
+
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all (a genuine open-data limitation, not something this crate may
+/// hand-fabricate). Since `scan` now hard-fails on coordinate-bearing input
+/// with no resolvable CRS (spec `05-metadata.mdx` "CRS rules"), every test
+/// below that needs a clean railway scan writes a small on-disk COPY with a
+/// CRS injected via JSON mutation of the real fixture — the same technique
+/// [`extensions_declarations_reach_metadata`] already used for extensions,
+/// never hand-written CityJSON. EPSG:7415 (Amersfoort/RD New + NAP), the same
+/// CRS delft already carries, so railway-derived fixtures stay resolvable
+/// against the same vendored PROJJSON table.
+fn railway_source_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
 }
 
 /// RED (G3): CityJSON 2.0 §3 requires a `lod` on every non-`GeometryInstance`
@@ -123,7 +145,8 @@ fn uniformly_lodless_dataset_is_rejected() {
 /// lod, §12), so railway — which has 15 instances — must still scan cleanly.
 #[test]
 fn geometry_instances_are_not_rejected_as_lodless() {
-    let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let (_dir, path) = railway_source_with_crs();
+    let src = Source::open(&path).unwrap();
     scan(&src).expect("GeometryInstance geometries are lod-less by design, not an error");
 }
 
@@ -133,19 +156,71 @@ fn delft_scan_matches_known_content() {
     let s = scan(&src).unwrap();
     assert_eq!(s.object_count, 2231);
     let lod_strings: Vec<String> = s.lods.iter().map(ToString::to_string).collect();
-    assert_eq!(lod_strings, ["0", "1.2", "1.3", "2.2"]);
+    // "0" canonicalises to "0.0" — the LoD string always carries its minor
+    // (spec "Levels of detail").
+    assert_eq!(lod_strings, ["0.0", "1.2", "1.3", "2.2"]);
     // Recounted against the fixture with python3 (see report): 50 distinct
     // attribute names, not the 47 in the original brief.
     assert_eq!(s.schema.attributes.len(), 50);
-    let meta = s.metadata(&[]).unwrap();
-    // delft carries LoD0, so the default geometry is the un-suffixed footprint
-    // column (§9/§13.2), not the highest LoD.
-    assert_eq!(meta.default_geometry, "geometry");
-    assert_eq!(meta.bbox_column, "bbox");
+    let meta = s.base_city_metadata().unwrap();
     assert!(meta.crs.is_some());
+    // `columns`/`primary_column` are no longer part of the dataset-wide
+    // metadata (spec-alignment M3: they only exist per FILE, from that
+    // file's own realised column set — see `city_and_geo_for_file`, exercised
+    // below against delft's single (Building) module).
+    assert!(meta.columns.is_empty());
+    assert!(meta.primary_column.is_none());
+
     let arrow = s.schema.to_arrow_schema().unwrap();
-    assert!(arrow.field_with_name("geometry").is_ok());
+    assert!(arrow.field_with_name("geometry_lod0_0").is_ok());
+    assert!(arrow.field_with_name("geometry").is_err());
     assert!(arrow.field_with_name("geometry_lod0").is_err());
+}
+
+/// `city_and_geo_for_file` — the per-file `city.columns`/two-selector
+/// primary-column logic (spec-alignment M3) — against delft's own single
+/// (Building) module. The two selectors are INDEPENDENT and, for delft,
+/// genuinely differ: `city_primary` is the highest LoD present regardless of
+/// legality (delft's highest is 2.2, a real `Solid`), while `geo_primary`
+/// prefers the `0.*` family when present (delft's native LoD0 footprint) —
+/// spec "Why city.primary_column and geo.primary_column can differ".
+#[test]
+fn delft_city_and_geo_for_file_has_independent_primaries() {
+    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let s = scan(&src).unwrap();
+    assert_eq!(
+        s.module_geo.len(),
+        1,
+        "delft is Building-only: exactly one module's worth of geometry"
+    );
+    let per_lod = s.module_geo.values().next().unwrap();
+    let (columns, primary_column, geo) = city_and_geo_for_file(per_lod, s.crs.as_ref());
+    assert!(!columns.is_empty());
+    assert_eq!(
+        primary_column.as_deref(),
+        Some("geometry_lod2_2"),
+        "city.primary_column is the highest LoD present, solids included"
+    );
+    assert!(
+        columns
+            .iter()
+            .any(|c| c.name == "geometry_lod2_2" && c.geometry_types == ["PolyhedralSurface Z"]),
+        "geometry_lod2_2 must be recorded as the real Solid-family type it is: {columns:?}"
+    );
+    let geo = geo.expect("delft's LoD0 footprint is GeoParquet-legal");
+    assert_eq!(
+        geo.primary_column, "geometry_lod0_0",
+        "geo.primary_column prefers the 0.* family when present"
+    );
+    assert!(
+        !geo.columns.contains_key("geometry_lod2_2"),
+        "the Solid column must NOT be declared in geo.columns"
+    );
+    let footprint_crs = geo.columns["geometry_lod0_0"].crs.as_ref().expect(
+        "geo.columns[].crs must be explicit (GeoParquet's own absent-crs-means-CRS84 \
+                 rule, spec CRS rules \"Absent-CRS caveat\")",
+    );
+    assert_eq!(footprint_crs["id"]["code"], serde_json::json!(7415));
 }
 
 #[test]
@@ -162,13 +237,15 @@ fn extensions_declarations_reach_metadata() {
             "version": "1.1.0"
         }
     });
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("railway_noise.city.json");
     std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
 
     let src = Source::open(&path).unwrap();
     let s = scan(&src).unwrap();
-    let meta = s.metadata(&[]).unwrap();
+    let meta = s.base_city_metadata().unwrap();
     let extensions = meta
         .extensions
         .expect("extensions declaration must survive the scan");
@@ -180,7 +257,7 @@ fn extensions_declarations_reach_metadata() {
     // The delft header carries no extensions key at all; that absence must be
     // preserved as None, not fabricated.
     let delft = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let delft_meta = scan(&delft).unwrap().metadata(&[]).unwrap();
+    let delft_meta = scan(&delft).unwrap().base_city_metadata().unwrap();
     assert!(delft_meta.extensions.is_none());
 }
 
@@ -196,13 +273,15 @@ fn source_metadata_and_appearance_defaults_reach_scan_metadata() {
             .unwrap();
     doc["appearance"]["default-theme-material"] = serde_json::json!("theme-a");
     doc["appearance"]["default-theme-texture"] = serde_json::json!("theme-b");
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("railway_theme.city.json");
     std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
 
     let src = Source::open(&path).unwrap();
     let s = scan(&src).unwrap();
-    let meta = s.metadata(&[]).unwrap();
+    let meta = s.base_city_metadata().unwrap();
 
     let appearance_defaults = meta
         .appearance_defaults
@@ -210,23 +289,50 @@ fn source_metadata_and_appearance_defaults_reach_scan_metadata() {
     assert_eq!(appearance_defaults["default-theme-material"], "theme-a");
     assert_eq!(appearance_defaults["default-theme-texture"], "theme-b");
 
-    let source_metadata = meta
-        .source_metadata
-        .expect("railway's header sets metadata; source_metadata must be populated");
+    // `source_metadata` is folded into `city.other` now (spec-alignment M3,
+    // gap 16) rather than its own footer key.
+    let other = meta
+        .other
+        .expect("railway's header sets metadata; `other` must be populated");
+    let source_metadata = other
+        .get("source_metadata")
+        .expect("railway's header metadata must be preserved under other.source_metadata");
     assert!(source_metadata.get("geographicalExtent").is_some());
+    assert!(
+        other.get("transform").is_some(),
+        "other must also carry the source transform"
+    );
 
     // delft's header carries no appearance key at all: that absence must be
     // preserved as None, not fabricated.
     let delft = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let delft_meta = scan(&delft).unwrap().metadata(&[]).unwrap();
+    let delft_meta = scan(&delft).unwrap().base_city_metadata().unwrap();
     assert!(delft_meta.appearance_defaults.is_none());
 }
 
 #[test]
 fn railway_scan_is_representable() {
-    let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let (_dir, path) = railway_source_with_crs();
+    let src = Source::open(&path).unwrap();
     let s = scan(&src).unwrap();
     assert_eq!(s.object_count, 121);
     assert!(!s.lods.is_empty());
     assert!(s.schema.to_arrow_schema().is_ok());
+}
+
+/// spec-alignment M3, checklist item 5: a CRS-less coordinate-bearing input
+/// (the real railway fixture, unmodified) must error cleanly at `scan` time,
+/// never silently omit `city.crs`.
+#[test]
+fn railway_without_a_crs_is_a_hard_conversion_error() {
+    let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let err = scan(&src).expect_err("coordinate-bearing input with no CRS must fail the scan");
+    assert!(
+        matches!(err, cityparquet::CityParquetError::Schema(_)),
+        "expected a Schema error, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("CRS"),
+        "error must explain the missing CRS, got: {err}"
+    );
 }

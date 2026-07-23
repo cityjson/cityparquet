@@ -104,29 +104,27 @@ fn attribute_named_like_a_geometry_column_does_not_break_the_reader() {
 fn cityparquet_metadata_matches_the_writer_side_scan() {
     let out = convert_delft_small_row_groups();
 
-    // Writer side, independently: what the scan pass says the metadata is.
+    // Writer side, independently: what the scan pass says the DATASET-WIDE
+    // portion of the metadata is (spec-alignment M3: `columns`/`primary_column`
+    // are per-FILE now, computed post-encode — see
+    // `scan_real_data.rs::delft_city_and_geo_for_file_has_independent_primaries`
+    // for that half).
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let scan_result = scan(&src).unwrap();
-    let writer_meta = scan_result.metadata(&[]).unwrap();
+    let writer_meta = scan_result.base_city_metadata().unwrap();
 
     let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let read_meta = builder.cityparquet_metadata().unwrap();
 
-    assert_eq!(read_meta.default_geometry, writer_meta.default_geometry);
-    // delft carries LoD0, so the default geometry is the un-suffixed footprint
-    // column (§9/§13.2), not the highest LoD.
-    assert_eq!(read_meta.default_geometry, "geometry");
-    assert_eq!(read_meta.attribute_columns.len(), 50);
-    assert_eq!(
-        read_meta.attribute_columns.len(),
-        writer_meta.attribute_columns.len()
-    );
-    assert_eq!(read_meta.bbox_column, writer_meta.bbox_column);
-    assert_eq!(
-        read_meta.cityparquet_version,
-        writer_meta.cityparquet_version
-    );
+    // city.primary_column is the highest LoD present, solids included — for
+    // delft that is 2.2 (a real Solid), never the 0.*-family preference
+    // (that preference is `geo.primary_column`'s rule, not `city`'s — spec
+    // "Why city.primary_column and geo.primary_column can differ").
+    assert_eq!(read_meta.primary_column.as_deref(), Some("geometry_lod2_2"));
+    assert_eq!(read_meta.attributes.len(), 50);
+    assert_eq!(read_meta.attributes.len(), writer_meta.attributes.len());
+    assert_eq!(read_meta.version, writer_meta.version);
 }
 
 #[test]
@@ -179,15 +177,74 @@ fn cityparquet_arrow_schema_matches_the_writers_rendered_schema() {
         Some("reserved")
     );
 
+    // geometry_properties_lod2_2 is a genuine Arrow STRUCT on the WRITTEN,
+    // then re-read, Parquet file — not a single arrow.json-tagged Utf8 leaf
+    // (spec "Geometry properties and semantics"). Checked against the
+    // actual physical schema Parquet round-tripped, not just the schema the
+    // writer intended to render.
     let props = read_schema
         .field_with_name("geometry_properties_lod2_2")
         .unwrap();
+    assert!(
+        !props.metadata().contains_key(EXTENSION_TYPE_NAME_KEY),
+        "the outer geometry_properties field is a Struct, not itself arrow.json-tagged"
+    );
+    let arrow_schema::DataType::Struct(children) = props.data_type() else {
+        panic!(
+            "geometry_properties_lod2_2 must round-trip as a Struct, got {:?}",
+            props.data_type()
+        );
+    };
     assert_eq!(
-        props
+        children
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect::<Vec<_>>(),
+        vec!["type", "surfaces", "face_semantics", "shells"]
+    );
+    let type_field = children.iter().find(|f| f.name() == "type").unwrap();
+    assert_eq!(type_field.data_type(), &arrow_schema::DataType::Utf8);
+    assert!(!type_field.is_nullable(), "type is non-null");
+
+    let surfaces_field = children.iter().find(|f| f.name() == "surfaces").unwrap();
+    assert_eq!(surfaces_field.data_type(), &arrow_schema::DataType::Utf8);
+    assert!(surfaces_field.is_nullable());
+    assert_eq!(
+        surfaces_field
             .metadata()
             .get(EXTENSION_TYPE_NAME_KEY)
             .map(String::as_str),
-        Some("arrow.json")
+        Some("arrow.json"),
+        "surfaces alone keeps the arrow.json tag (heterogeneous per-surface attributes)"
+    );
+
+    let fs_field = children
+        .iter()
+        .find(|f| f.name() == "face_semantics")
+        .unwrap();
+    assert!(fs_field.is_nullable());
+    let arrow_schema::DataType::List(fs_item) = fs_field.data_type() else {
+        panic!("face_semantics must round-trip as List");
+    };
+    assert_eq!(fs_item.data_type(), &arrow_schema::DataType::Int32);
+    assert!(fs_item.is_nullable(), "face_semantics items are nullable");
+
+    let shells_field = children.iter().find(|f| f.name() == "shells").unwrap();
+    assert!(shells_field.is_nullable());
+    let arrow_schema::DataType::List(solid_item) = shells_field.data_type() else {
+        panic!("shells must round-trip as List");
+    };
+    assert!(
+        !solid_item.is_nullable(),
+        "each solid's inner shell-count list is non-null once shells is populated"
+    );
+    let arrow_schema::DataType::List(count_item) = solid_item.data_type() else {
+        panic!("shells' items must themselves round-trip as List");
+    };
+    assert_eq!(count_item.data_type(), &arrow_schema::DataType::Int32);
+    assert!(
+        !count_item.is_nullable(),
+        "each per-shell face count is non-null once shells is populated"
     );
 
     // An inferred attribute keeps its role metadata too.

@@ -23,7 +23,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use cityparquet::query::{self, AttrPredicate};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::stac::properties::PackageTables;
-use cityparquet_schema::CityParquetMetadata;
+use cityparquet_schema::CityMetadata;
 
 use super::FormatRunner;
 use crate::scenario::{AttrPred, QueryParams, Scenario};
@@ -111,7 +111,7 @@ fn to_query_predicate(pred: &AttrPred) -> AttrPredicate {
 /// Opens `table` once, just far enough to read its embedded CityParquet
 /// key-value metadata — the `meta` argument `query::full_read`/
 /// `query::id_lookup` need to decode geometry/attributes.
-fn open_metadata(table: &Path) -> Result<CityParquetMetadata> {
+fn open_metadata(table: &Path) -> Result<CityMetadata> {
     let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .with_context(|| format!("reading Parquet metadata from {}", table.display()))?;

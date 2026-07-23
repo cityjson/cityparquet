@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use arrow_array::{Array, BinaryArray, StringArray};
+use arrow_array::{
+    Array, BinaryArray, Int32Array, ListArray, RecordBatch, StringArray, StructArray,
+};
 use cityparquet::encode::encode;
 use cityparquet::scan::scan;
 use cityparquet::source::Source;
@@ -11,6 +13,83 @@ fn fixture(name: &str) -> PathBuf {
         .join(name);
     assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
     p
+}
+
+/// The `geometry_properties[_lod*]` `STRUCT` column of `batch`, by name.
+fn props_struct<'a>(batch: &'a RecordBatch, name: &str) -> &'a StructArray {
+    batch
+        .column_by_name(name)
+        .unwrap_or_else(|| panic!("no column {name}"))
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .unwrap_or_else(|| panic!("{name} is not a Struct array"))
+}
+
+/// One row's `type` child value (the struct itself is non-null at `row`).
+fn props_type(s: &StructArray, row: usize) -> &str {
+    let a = s.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+    a.value(row)
+}
+
+/// One row's `face_semantics` child (`LIST<INT>`, items nullable).
+fn props_face_semantics(s: &StructArray, row: usize) -> Option<Vec<Option<i32>>> {
+    if s.is_null(row) {
+        return None;
+    }
+    let a = s.column(2).as_any().downcast_ref::<ListArray>().unwrap();
+    if a.is_null(row) {
+        return None;
+    }
+    let items = a.value(row);
+    let ints = items.as_any().downcast_ref::<Int32Array>().unwrap();
+    Some(
+        (0..ints.len())
+            .map(|i| (!ints.is_null(i)).then(|| ints.value(i)))
+            .collect(),
+    )
+}
+
+/// One row's `shells` child (`LIST<LIST<INT>>`, non-null at both nesting
+/// levels once populated) — one inner `Vec<i32>` per solid.
+fn props_shells(s: &StructArray, row: usize) -> Option<Vec<Vec<i32>>> {
+    if s.is_null(row) {
+        return None;
+    }
+    let a = s.column(3).as_any().downcast_ref::<ListArray>().unwrap();
+    if a.is_null(row) {
+        return None;
+    }
+    let solids = a.value(row);
+    let solids = solids.as_any().downcast_ref::<ListArray>().unwrap();
+    Some(
+        (0..solids.len())
+            .map(|i| {
+                let counts = solids.value(i);
+                let counts = counts.as_any().downcast_ref::<Int32Array>().unwrap();
+                (0..counts.len()).map(|j| counts.value(j)).collect()
+            })
+            .collect(),
+    )
+}
+
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), tests below open a small on-disk COPY
+/// with a CRS injected via JSON mutation of the real fixture — never
+/// hand-written CityJSON. `Source` streams CityJSONSeq lazily from `path`
+/// (see `crate::source::Source::features`), so the returned `TempDir` MUST
+/// outlive the `Source` — callers keep it bound, never `_`-discarded.
+fn railway_source_with_crs() -> (tempfile::TempDir, Source) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    let src = Source::open(&path).unwrap();
+    (dir, src)
 }
 
 #[test]
@@ -41,8 +120,11 @@ fn delft_encodes_all_objects_in_batches() {
 /// bare column name cannot encode the LoD — its `geometry_properties` must
 /// carry `"lod":"0"` (§12's additional-keys mechanism), so decode/export can
 /// recover the LoD.
+/// spec "Levels of detail": every LoD, including LoD0, is a suffixed column —
+/// there is no un-suffixed `geometry` column, and the LoD is never re-stored
+/// as a value inside `geometry_properties` (it lives only in the column name).
 #[test]
-fn delft_lod0_lands_in_bare_geometry_with_lod_in_properties() {
+fn delft_lod0_lands_in_a_suffixed_column_with_no_lod_in_properties() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let s = scan(&src).unwrap();
     let batches: Vec<_> = encode(&src, &s, 4096, false)
@@ -50,29 +132,36 @@ fn delft_lod0_lands_in_bare_geometry_with_lod_in_properties() {
         .collect::<Result<_, _>>()
         .unwrap();
     let b = &batches[0];
+    assert!(
+        b.column_by_name("geometry").is_none(),
+        "no bare/un-suffixed geometry column must ever appear"
+    );
     let geom = b
-        .column_by_name("geometry")
-        .expect("bare geometry column exists for LoD0");
+        .column_by_name("geometry_lod0_0")
+        .expect("geometry_lod0_0 column exists for LoD0");
     assert!(
         geom.null_count() < b.num_rows(),
-        "some LoD0 geometry present in the bare column"
+        "some LoD0 geometry present in the geometry_lod0_0 column"
     );
-    let props = b
-        .column_by_name("geometry_properties")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
+    let props = props_struct(b, "geometry_properties_lod0_0");
     let first = (0..b.num_rows())
         .find(|&i| props.is_valid(i))
-        .expect("at least one non-null geometry_properties");
-    let v: serde_json::Value = serde_json::from_str(props.value(first)).unwrap();
-    assert_eq!(v["lod"], "0", "footprint properties must carry lod 0");
+        .expect("at least one non-null geometry_properties_lod0_0");
+    // The struct has no `lod` field at all (spec: it declares exactly
+    // type/surfaces/face_semantics/shells, structurally — a reader never
+    // needs to check for a stray value, only the schema).
+    let field_names: Vec<&str> = props.fields().iter().map(|f| f.name().as_str()).collect();
+    assert_eq!(
+        field_names,
+        vec!["type", "surfaces", "face_semantics", "shells"],
+        "the LoD lives only in the column name, never a geometry_properties field"
+    );
+    assert!(!props_type(props, first).is_empty());
 }
 
 #[test]
 fn railway_encodes_with_semantics_and_templates() {
-    let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let (_crs_dir, src) = railway_source_with_crs();
     let s = scan(&src).unwrap();
     let batches: Vec<_> = encode(&src, &s, 1024, false)
         .unwrap()
@@ -89,7 +178,7 @@ fn railway_encodes_with_semantics_and_templates() {
 /// per-surface material values array; surface 67 is degenerate.
 #[test]
 fn railway_realigns_material_values_for_dropped_surfaces() {
-    let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let (_crs_dir, src) = railway_source_with_crs();
     let s = scan(&src).unwrap();
     let batches: Vec<_> = encode(&src, &s, 1024, false)
         .unwrap()
@@ -105,39 +194,42 @@ fn railway_realigns_material_values_for_dropped_surfaces() {
             .downcast_ref::<StringArray>()
             .unwrap();
         let materials = batch
-            .column_by_name("material_lod3")
+            .column_by_name("material_lod3_0")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
-        let props = batch
-            .column_by_name("geometry_properties_lod3")
+        let geom = batch
+            .column_by_name("geometry_lod3_0")
             .unwrap()
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<BinaryArray>()
             .unwrap();
         for row in 0..batch.num_rows() {
             let id = ids.value(row);
-            let expected_drops = match id {
-                "GMLID_855011_330784_753" | "GMLID_0373494_301709_129" => {
-                    serde_json::json!({"rings": 1, "surfaces": [67]})
-                }
-                "UUID_d96effed-08fe-4f74-b134-05b194aa3cff" => {
-                    // CompositeSurface, 22022 source surfaces; its material
-                    // theme uses a scalar `value` (applies to all surfaces),
-                    // so only the drop record itself is checked here.
-                    serde_json::json!({
-                        "rings": 4,
-                        "surfaces": [20460, 21154, 21157, 21894]
-                    })
-                }
+            // The dropped positions themselves are no longer part of
+            // geometry_properties (spec: exactly type/surfaces/
+            // face_semantics/shells, no non-normative drop diagnostic) —
+            // EncodeStats aggregates the counts instead. What's checked
+            // here is that the STORED geometry itself lost exactly the
+            // dropped faces, proving the realignment ran (checked against
+            // the decoded WKB rather than face_semantics, since not every
+            // one of these rows carries semantics).
+            let expected_stored_faces = match id {
+                "GMLID_855011_330784_753" | "GMLID_0373494_301709_129" => 100,
+                "UUID_d96effed-08fe-4f74-b134-05b194aa3cff" => 22022 - 4,
                 _ => continue,
             };
             found += 1;
-            let p: serde_json::Value = serde_json::from_str(props.value(row)).unwrap();
+            assert!(!geom.is_null(row), "{id}: expected geometry_lod3_0");
+            let decoded = cityparquet::wkb_read::wkb_to_geometry(geom.value(row)).unwrap();
+            let cityparquet::wkb_read::DecodedKind::MultiPolygon(faces) = decoded.kind else {
+                panic!("{id}: expected a MultiPolygon-decoded WKB");
+            };
             assert_eq!(
-                p["dropped_degenerate"], expected_drops,
-                "geometry_properties must record what was dropped for {id}"
+                faces.len(),
+                expected_stored_faces,
+                "the stored geometry must lose exactly the dropped faces for {id}"
             );
             if id != "UUID_d96effed-08fe-4f74-b134-05b194aa3cff" {
                 let material: serde_json::Value =
@@ -182,36 +274,33 @@ fn delft_records_per_shell_face_partition_for_solids() {
             let Some(geom_col) = batch.column_by_name(&geom_col_name) else {
                 continue;
             };
-            let props = batch
-                .column_by_name(name)
-                .unwrap()
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap();
+            let props = props_struct(batch, name);
             let geom = geom_col.as_any().downcast_ref::<BinaryArray>().unwrap();
 
             for row in 0..batch.num_rows() {
                 if props.is_null(row) {
                     continue;
                 }
-                let json: serde_json::Value = serde_json::from_str(props.value(row)).unwrap();
-                if json.get("type").and_then(|t| t.as_str()) != Some("Solid") {
+                if props_type(props, row) != "Solid" {
                     continue;
                 }
 
-                let faces = json
-                    .get("shells")
-                    .unwrap_or_else(|| panic!("shells missing for Solid row {row} in {name}"))
-                    .as_array()
-                    .expect("shells must be a JSON array");
+                let solids = props_shells(props, row)
+                    .unwrap_or_else(|| panic!("shells missing for Solid row {row} in {name}"));
+                // A Solid always nests exactly one inner list — its own
+                // (spec: nested one inner list per solid, even for a lone
+                // Solid — never the old flat [n0, n1, ...] shape).
+                assert_eq!(
+                    solids.len(),
+                    1,
+                    "a Solid's shells must nest exactly one inner list, row {row} in {name}"
+                );
+                let faces = &solids[0];
                 assert!(!faces.is_empty(), "shells must be non-empty");
                 let mut sum: u64 = 0;
-                for f in faces {
-                    let n = f
-                        .as_u64()
-                        .expect("shells entries must be positive integers");
+                for &n in faces {
                     assert!(n > 0, "shells entries must be positive");
-                    sum += n;
+                    sum += n as u64;
                 }
 
                 assert!(!geom.is_null(row), "Solid row must carry geometry bytes");
@@ -329,26 +418,20 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
         };
         found = true;
 
-        let props = batch
-            .column_by_name("geometry_properties_lod1_2")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        let props: serde_json::Value = serde_json::from_str(props.value(row)).unwrap();
+        let props = props_struct(batch, "geometry_properties_lod1_2");
+        // The dropped ring/surface positions themselves are no longer part
+        // of geometry_properties (spec: exactly type/surfaces/
+        // face_semantics/shells) — EncodeStats aggregates that instead;
+        // what's checked here is that shells/face_semantics were actually
+        // realigned to the STORED (post-drop) geometry.
         assert_eq!(
-            props["dropped_degenerate"],
-            serde_json::json!({"rings": 1, "surfaces": [2]}),
-            "exactly face 2's ring/surface must be recorded as dropped"
+            props_shells(props, row),
+            Some(vec![vec![5]]),
+            "the single shell drops from 6 to 5 faces, nested one list per solid"
         );
         assert_eq!(
-            props["shells"],
-            serde_json::json!([5]),
-            "the single shell drops from 6 to 5 faces"
-        );
-        assert_eq!(
-            props["face_semantics"],
-            serde_json::json!([0, 2, 2, 2, 1]),
+            props_face_semantics(props, row),
+            Some(vec![Some(0), Some(2), Some(2), Some(2), Some(1)]),
             "face_semantics is the flat per-face list, losing face 2's entry"
         );
 

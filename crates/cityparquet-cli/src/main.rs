@@ -52,10 +52,6 @@ enum Commands {
         #[arg(long, value_name = "METRES")]
         cell_size: Option<f64>,
 
-        /// Profile: core or compatibility
-        #[arg(long, default_value = "core")]
-        profile: String,
-
         /// Overwrite existing output directory
         #[arg(long)]
         overwrite: bool,
@@ -273,7 +269,6 @@ fn main() -> std::process::ExitCode {
             number,
             feature_num,
             cell_size,
-            profile,
             overwrite,
             batch_size,
             row_group_size,
@@ -284,19 +279,6 @@ fn main() -> std::process::ExitCode {
             geoarrow,
             no_lod0,
         } => {
-            // Parse the profile string
-            let profile = match profile.as_str() {
-                "core" => cityparquet_schema::Profile::Core,
-                "compatibility" => cityparquet_schema::Profile::Compatibility,
-                _ => {
-                    eprintln!(
-                        "error: invalid profile '{}' (expected 'core' or 'compatibility')",
-                        profile
-                    );
-                    return std::process::ExitCode::FAILURE;
-                }
-            };
-
             let preset = match RecipePreset::parse(&recipe) {
                 Some(preset) => preset,
                 None => {
@@ -349,7 +331,6 @@ fn main() -> std::process::ExitCode {
             let opts = ConvertOptions {
                 input: inputs.first().cloned().unwrap_or_default(),
                 output_dir: output,
-                profile,
                 overwrite,
                 batch_size,
                 recipe,

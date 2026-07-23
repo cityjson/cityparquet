@@ -373,13 +373,18 @@ pub fn write_solid_with_semantics<W: Write>(
     // 1. Partition into members -> shells -> faces + per-face surface index.
     let (members, surfaces, composite): (Vec<Shells>, Vec<FaceSurfaces>, bool) = match kind {
         DecodedKind::PolyhedralSurface(faces) => {
-            let counts = crate::export::shell_faces_flat(props)?;
+            // `shells` (when present) has exactly one inner list — the
+            // Solid's own (spec: nested one inner list per solid).
+            let counts = match crate::export::shell_faces(props)? {
+                Some(solids) => Some(crate::export::single_solid_shell(solids)?),
+                None => None,
+            };
             let shells = crate::export::partition_shells(faces.clone(), counts.as_deref())?;
             let flat = solid_face_surfaces(&sem.values, &shells, nsurf)?;
             (vec![shells], vec![flat], false)
         }
         DecodedKind::GeometryCollection(gc) => {
-            let nested = crate::export::shell_faces_nested(props)?;
+            let nested = crate::export::shell_faces(props)?;
             if let Some(c) = &nested
                 && c.len() != gc.len()
             {
@@ -639,7 +644,7 @@ mod tests {
             vec![vec![3, 4, 5]],
             vec![vec![6, 7, 8]],
         ]);
-        let props = json!({ "type": "Solid", "shells": [3] });
+        let props = json!({ "type": "Solid", "shells": [[3]] });
         let sem = Semantics {
             surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
             values: json!([0, null, 1]),
@@ -680,7 +685,7 @@ mod tests {
         // 1 face -> surface 0; surface 1 (Roof) has no faces.
         let coords = semantic_coords();
         let kind = tri(0, 1, 2);
-        let props = json!({ "type": "Solid", "shells": [1] });
+        let props = json!({ "type": "Solid", "shells": [[1]] });
         let sem = Semantics {
             surfaces: vec!["WallSurface".into(), "RoofSurface".into()],
             values: json!([0]),

@@ -4,11 +4,12 @@
 
 use std::path::PathBuf;
 
-use arrow_array::Array;
+use arrow_array::{Array, StringArray};
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::lod0::{Lod0Options, faces_from_geometry, footprint_to_geometry, synthesize_lod0};
 use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::source::Source;
 use cityparquet::stac::properties::PackageTables;
 use cityparquet::wkb_write::{VertexPool, geometry_to_wkb};
@@ -102,11 +103,29 @@ fn delft_solids_synthesise_valid_multipolygon_footprints() {
     );
 }
 
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), [`convert_railway`] writes a small
+/// on-disk COPY with a CRS injected via JSON mutation of the real fixture —
+/// never hand-written CityJSON.
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
+}
+
 /// Convert `lod3_railway` (LoD3 solids only, no source LoD0) with synthesis
 /// on/off, returning the package dir.
 fn convert_railway(generate_lod0: bool) -> tempfile::TempDir {
     let pkg = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), pkg.path().to_path_buf());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let mut opts = ConvertOptions::new(railway_path, pkg.path().to_path_buf());
     opts.generate_lod0 = generate_lod0;
     convert(&opts).unwrap();
     pkg
@@ -116,10 +135,15 @@ fn convert_railway(generate_lod0: bool) -> tempfile::TempDir {
 /// dataset that has no source LoD0; disabling it leaves no such column.
 ///
 /// railway has 10 1st-level families, so by-type conversion writes 10 main
-/// tables — every table shares the IDENTICAL schema (the by-type writer
-/// partitions strictly after encode), so the schema-level checks below only
-/// need the first table, but the non-null footprint count must be summed
-/// across every table (a synthesised footprint can land in any of them).
+/// tables. Since each module's own table now carries only the LoD columns
+/// its own rows need (spec "object-table-schema"), the tables no longer
+/// share one identical schema: a module with NO analysis geometry of its own
+/// (e.g. `Vegetation`, whose real objects here carry none) has nothing to
+/// synthesise a footprint FROM, so it gets no `geometry_lod0_0` column at
+/// all — the non-null footprint count is still summed across every table
+/// that DOES carry the column (a synthesised footprint can land in any of
+/// them), and the first table (`building.parquet`, which does have solids)
+/// is still checked directly for the column's presence.
 #[test]
 fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
     let with = convert_railway(true);
@@ -127,8 +151,11 @@ fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
     let first_file = std::fs::File::open(with.path().join(&with_tables[0])).unwrap();
     let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file).unwrap();
     assert!(
-        first_builder.schema().field_with_name("geometry").is_ok(),
-        "synthesis reserves the un-suffixed geometry column"
+        first_builder
+            .schema()
+            .field_with_name("geometry_lod0_0")
+            .is_ok(),
+        "synthesis reserves the suffixed geometry_lod0_0 column on the first (Building) table"
     );
     let mut non_null = 0usize;
     for table in &with_tables {
@@ -136,7 +163,12 @@ fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         for batch in builder.build().unwrap() {
             let batch = batch.unwrap();
-            let g = batch.column_by_name("geometry").unwrap();
+            // A module with no analysis geometry of its own carries no
+            // geometry_lod0_0 column at all — skip it rather than assume
+            // every table shares the identical schema.
+            let Some(g) = batch.column_by_name("geometry_lod0_0") else {
+                continue;
+            };
             non_null += batch.num_rows() - g.null_count();
         }
     }
@@ -147,9 +179,48 @@ fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
     let file = std::fs::File::open(without.path().join(&without_tables[0])).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     assert!(
-        builder.schema().field_with_name("geometry").is_err(),
+        builder.schema().field_with_name("geometry_lod0_0").is_err(),
         "no synthesised LoD0 column without opt-in"
     );
+}
+
+/// spec-alignment M3, checklist item 4 (variant: two independent selectors
+/// disagreeing WITHOUT a solid involved): railway's LoD3 geometry is
+/// `MultiSurface`/`CompositeSurface` — already GeoParquet-legal — so once
+/// LoD0 synthesis adds a legal footprint, `city.primary_column` (the highest
+/// LoD present, unconditionally — LoD3) and `geo.primary_column` (the `0.*`
+/// family, preferred over any higher LoD even when that LoD is ALSO legal)
+/// still genuinely differ. Both columns are legal here, so both appear in
+/// `geo.columns` — this is `lod0_synthesis::synthesised_railway...`'s
+/// companion in `scan_real_data.rs`'s `delft_city_and_geo_for_file_has_independent_primaries`,
+/// which covers the Solid-bearing case.
+#[test]
+fn synthesised_railway_has_independent_city_and_geo_primaries() {
+    let pkg = convert_railway(true);
+    // building.parquet: railway's Buildings/BuildingParts carry both the
+    // source LoD3 surfaces and the synthesised LoD0 footprint.
+    let file = std::fs::File::open(pkg.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let (city, geo) = builder.cityparquet_footer().unwrap();
+
+    assert_eq!(
+        city.primary_column.as_deref(),
+        Some("geometry_lod3_0"),
+        "city.primary_column must be the highest LoD present"
+    );
+    let geo = geo.expect("both LoD0 and LoD3 are GeoParquet-legal here");
+    assert_eq!(
+        geo.primary_column, "geometry_lod0_0",
+        "geo.primary_column prefers the 0.* family even over a higher, also-legal LoD"
+    );
+    assert_ne!(
+        city.primary_column.as_deref(),
+        Some(geo.primary_column.as_str()),
+        "city.primary_column and geo.primary_column must genuinely differ here"
+    );
+    // Both columns are legal, so both are declared in geo.columns too.
+    assert!(geo.columns.contains_key("geometry_lod0_0"));
+    assert!(geo.columns.contains_key("geometry_lod3_0"));
 }
 
 /// Synthesis is idempotent: exporting a synthesised package yields real `lod:"0"`
@@ -168,8 +239,8 @@ fn synthesis_is_idempotent_through_a_round_trip() {
     assert!(
         std::fs::read_to_string(&export1)
             .unwrap()
-            .contains("\"lod\":\"0\""),
-        "synthesised LoD0 is exported as a real lod 0 geometry"
+            .contains("\"lod\":\"0.0\""),
+        "synthesised LoD0 is exported as a real lod 0.0 geometry (canonical spelling)"
     );
 
     // Reconvert the enriched export (now carrying a real LoD0) with synthesis
@@ -191,5 +262,54 @@ fn synthesis_is_idempotent_through_a_round_trip() {
         report.equal,
         "second synthesis pass must be a no-op; differences: {:#?}",
         report.differences
+    );
+}
+
+/// A synthesised footprint's provenance lives in `other.cityparquet:lod0_0_source`
+/// (spec "LoD0 synthesis"), naming the SOURCE geometry column it was derived
+/// from (e.g. `geometry_lod3_0` for railway, whose Buildings carry only a
+/// source LoD3 solid — see `synthesised_railway_has_independent_city_and_geo_primaries`,
+/// which pins `city.primary_column` to that same column for this fixture).
+/// This is `encode.rs`'s relocated key (formerly the in-struct
+/// `geometry_properties`'s `cityparquet:lod0_source`) — this test is the
+/// dedicated regression guarding that exact key/value.
+#[test]
+fn synthesised_footprint_provenance_names_the_source_column_in_other() {
+    let pkg = convert_railway(true);
+    let file = std::fs::File::open(pkg.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let mut checked = 0usize;
+    for batch in builder.build().unwrap() {
+        let batch = batch.unwrap();
+        let Some(geom) = batch.column_by_name("geometry_lod0_0") else {
+            continue;
+        };
+        let other = batch
+            .column_by_name("other")
+            .expect("main table always carries an `other` column")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("`other` is a Utf8 JSON-string column");
+        for row in 0..batch.num_rows() {
+            if geom.is_null(row) {
+                continue;
+            }
+            assert!(
+                !other.is_null(row),
+                "row {row} has a synthesised footprint but no `other` cell to carry its provenance"
+            );
+            let parsed: serde_json::Value = serde_json::from_str(other.value(row)).unwrap();
+            assert_eq!(
+                parsed.get("cityparquet:lod0_0_source"),
+                Some(&serde_json::Value::String("geometry_lod3_0".to_string())),
+                "row {row}'s `other` must name the exact source column the footprint was \
+                 synthesised from, got: {parsed}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 0,
+        "expected at least one synthesised-footprint row to check provenance on"
     );
 }

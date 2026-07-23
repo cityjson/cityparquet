@@ -17,6 +17,37 @@ fn fixture(name: &str) -> PathBuf {
     p
 }
 
+/// Several `.gml` fixtures here carry no `srsName`/envelope at all (real,
+/// upstream limitations, not oversights). Since `scan` now hard-fails on
+/// coordinate-bearing input with no resolvable CRS (spec "CRS rules"), and
+/// these tests are about the CityGML -> WKB -> bbox pipeline (nothing
+/// CRS-related), a CRS is injected onto the REAL parsed header — the same
+/// "mutate the real parsed structure, not hand-written input" technique
+/// `module_schema_real_data.rs` already uses for its own CRS-mismatch
+/// fixture pairing.
+fn source_with_crs(path: &std::path::Path) -> Source {
+    let raw = Source::open(path).unwrap();
+    let mut header = raw.header().clone();
+    header
+        .metadata
+        .get_or_insert(cityparquet::cjseq::Metadata {
+            geographical_extent: None,
+            identifier: None,
+            point_of_contact: None,
+            reference_date: None,
+            reference_system: None,
+            title: None,
+        })
+        .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
+    let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
+    Source::from_parts(
+        header,
+        features,
+        raw.doc_appearance().cloned(),
+        raw.format(),
+    )
+}
+
 /// A committed (in-repo) fixture under `crates/cityparquet/tests/data/` — small
 /// real fragments with provenance headers, not fetched by `just fixtures`.
 fn data_fixture(name: &str) -> PathBuf {
@@ -103,14 +134,14 @@ fn citygml2_solid_building_streams_one_feature() {
 // vertices/boundaries the reader produced form valid WKB and a correct bbox.
 #[test]
 fn citygml2_scan_infers_lod2_and_bbox() {
-    use cityparquet::scan::scan;
+    use cityparquet::scan::{city_and_geo_for_file, scan};
     use cityparquet::schema::SourceFormat as SchemaSourceFormat;
 
-    let src = Source::open(&fixture("b1_lod2_s.gml")).unwrap();
+    let src = source_with_crs(&fixture("b1_lod2_s.gml"));
     let s = scan(&src).unwrap();
     assert_eq!(s.object_count, 1);
     let lods: Vec<String> = s.lods.iter().map(ToString::to_string).collect();
-    assert_eq!(lods, ["2"]);
+    assert_eq!(lods, ["2.0"]);
 
     // House solid extent: x,y in [0,100], z in [0,150].
     let bbox = s.dataset_bbox.expect("dataset bbox from WKB");
@@ -118,9 +149,18 @@ fn citygml2_scan_infers_lod2_and_bbox() {
         assert!((got - exp).abs() < 1e-6, "bbox component {got} != {exp}");
     }
 
-    let meta = s.metadata(&[]).unwrap();
-    assert_eq!(meta.default_geometry, "geometry_lod2");
-    assert_eq!(meta.source_format, SchemaSourceFormat::CityGml);
+    assert_eq!(
+        s.module_geo.len(),
+        1,
+        "b1_lod2_s is a single Building: exactly one module's worth of geometry"
+    );
+    let per_lod = s.module_geo.values().next().unwrap();
+    let (_columns, primary_column, _geo) = city_and_geo_for_file(per_lod, s.crs.as_ref());
+    assert_eq!(primary_column.as_deref(), Some("geometry_lod2_0"));
+    assert_eq!(
+        s.base_city_metadata().unwrap().source_format,
+        Some(SchemaSourceFormat::CityGml)
+    );
 }
 
 /// Newell's method normal of a ring of world coordinates (unnormalised).
@@ -303,12 +343,12 @@ fn citygml2_composite_solid_with_semantics_and_xlinks() {
 #[test]
 fn citygml2_composite_solid_scans_to_correct_bbox() {
     use cityparquet::scan::scan;
-    let src = Source::open(&fixture("b1_lod2_cs_w_sem.gml")).unwrap();
+    let src = source_with_crs(&fixture("b1_lod2_cs_w_sem.gml"));
     let s = scan(&src).unwrap();
     assert_eq!(s.object_count, 1);
     assert_eq!(
         s.lods.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        ["2"]
+        ["2.0"]
     );
     let bbox = s.dataset_bbox.expect("bbox");
     for (got, exp) in bbox.iter().zip([0.0, 0.0, 0.0, 100.0, 100.0, 150.0]) {

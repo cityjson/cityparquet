@@ -13,8 +13,9 @@ use std::path::Path;
 
 use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::decode::decode_batch;
-use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::package::{ConvertOptions, convert, convert_source};
 use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet::source::Source;
 use cityparquet::stac::properties::PackageTables;
 use cityparquet::wkb_read::DecodedKind;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -26,6 +27,36 @@ type SemanticsMap = BTreeMap<(String, u8), Value>;
 
 fn fixture() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/b1_lod2_cs_w_sem.gml")
+}
+
+/// `b1_lod2_cs_w_sem.gml` (a real, hand-authored TU Delft test fixture) has
+/// no `srsName`/envelope at all. Since `scan` now hard-fails on
+/// coordinate-bearing input with no resolvable CRS (spec "CRS rules"), a CRS
+/// is injected onto the REAL parsed header before converting — the writer
+/// (`crate::citygml::writer`) then emits `srsName` into the round-tripped
+/// `.gml`'s own envelope, so the SECOND convert below resolves a CRS from
+/// that file natively, without needing a second injection.
+fn source_with_crs(path: &Path) -> Source {
+    let raw = Source::open(path).unwrap();
+    let mut header = raw.header().clone();
+    header
+        .metadata
+        .get_or_insert(cityparquet::cjseq::Metadata {
+            geographical_extent: None,
+            identifier: None,
+            point_of_contact: None,
+            reference_date: None,
+            reference_system: None,
+            title: None,
+        })
+        .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
+    let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
+    Source::from_parts(
+        header,
+        features,
+        raw.doc_appearance().cloned(),
+        raw.format(),
+    )
 }
 
 fn mm(v: f64) -> i64 {
@@ -45,7 +76,7 @@ fn canonical_ring(ring: &[usize], coords: &[[f64; 3]]) -> Ring {
     rot
 }
 
-fn open_meta(pkg: &Path) -> (PackageTables, cityparquet::schema::CityParquetMetadata) {
+fn open_meta(pkg: &Path) -> (PackageTables, cityparquet::schema::CityMetadata) {
     let tables = PackageTables::open(pkg).unwrap();
     let meta = ParquetRecordBatchReaderBuilder::try_new(File::open(&tables.tables[0]).unwrap())
         .unwrap()
@@ -156,7 +187,11 @@ fn b1_composite_solid_semantics_round_trip_gml_to_parquet_to_gml() {
     let out_gml = tmp.path().join("out.gml");
     let pkg2 = tmp.path().join("pkg2");
 
-    convert(&ConvertOptions::new(fixture(), pkg.clone())).unwrap();
+    convert_source(
+        &source_with_crs(&fixture()),
+        &ConvertOptions::new(fixture(), pkg.clone()),
+    )
+    .unwrap();
     let report = write_package(&WriteOptions {
         package_dir: pkg.clone(),
         output: out_gml.clone(),

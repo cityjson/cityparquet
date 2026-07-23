@@ -186,9 +186,10 @@ pub fn write_inline_member_ids<W: Write>(
 /// A `PolyhedralSurface`'s flat face list + its `geometry_properties` ->
 /// `<gml:Solid>` (shell 0 exterior, shells 1.. interior). The WKB flattens a
 /// Solid's shells; the partition survives only in
-/// `geometry_properties.shells`, so this reuses export's
-/// `shell_faces_flat`/`partition_shells` rather than re-deriving it —
-/// including their shell-count/face mismatch error.
+/// `geometry_properties.shells` (always nested one inner list per solid —
+/// a lone `Solid`'s own single entry), so this reuses export's
+/// `shell_faces`/`partition_shells` rather than re-deriving it — including
+/// their shell-count/face mismatch error.
 pub fn write_solid<W: Write>(
     w: &mut Writer<W>,
     coords: &[[f64; 3]],
@@ -222,7 +223,11 @@ pub fn write_solid_with_ids<W: Write>(
                 .to_string(),
         ));
     }
-    let counts = crate::export::shell_faces_flat(props)?;
+    // `shells` (when present) has exactly one inner list — the Solid's own.
+    let counts = match crate::export::shell_faces(props)? {
+        Some(solids) => Some(crate::export::single_solid_shell(solids)?),
+        None => None,
+    };
     let mut cursor = 0usize;
     write_gml_solid(w, coords, faces, counts.as_deref(), face_ids, &mut cursor)
 }
@@ -303,7 +308,7 @@ pub fn write_composite_solid_with_ids<W: Write>(
             "CompositeSolid has no solid members (gml:solidMember is minOccurs=1)".to_string(),
         ));
     }
-    let nested = crate::export::shell_faces_nested(props)?;
+    let nested = crate::export::shell_faces(props)?;
     if let Some(counts) = &nested
         && counts.len() != members.len()
     {
@@ -435,7 +440,7 @@ mod tests {
             [0.4, 0.4, 0.2], // face 1 (inner shell)
         ];
         let faces = vec![vec![vec![0usize, 1, 2]], vec![vec![3usize, 4, 5]]];
-        let props = serde_json::json!({ "type": "Solid", "shells": [1, 1] });
+        let props = serde_json::json!({ "type": "Solid", "shells": [[1, 1]] });
         let xml = emit(|w| write_solid(w, &coords, &faces, Some(&props)));
         assert!(xml.starts_with("<gml:Solid>"));
         assert!(xml.contains("<gml:exterior><gml:CompositeSurface>"));

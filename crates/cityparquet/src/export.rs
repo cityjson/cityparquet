@@ -50,12 +50,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow_array::{Array, RecordBatch, StringArray};
-use arrow_schema::Schema;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
 use cityparquet_schema::model::{LOD_KEY, ROLE_KEY, ROLE_RESERVED};
-use cityparquet_schema::{CityParquetError, CityParquetMetadata, Result};
+use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 use cjseq::{
     Appearance, CityJSON, CityJSONFeature, Geometry, GeometryTemplates, GeometryType, Material,
     Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
@@ -112,40 +111,6 @@ pub(crate) fn table_display_name(path: &std::path::Path) -> &str {
     path.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("<table>")
-}
-
-/// Compares `other`'s CityParquet-rendered Arrow schema against `first`'s,
-/// field by field, in order — name and data type both must match. Returns a
-/// description of the FIRST mismatch found (field count, a renamed column,
-/// or a retyped one), or `None` if every field matches exactly. See the
-/// M5 Codex review multi-table schema-check finding at this function's call
-/// site in [`export`].
-pub(crate) fn first_schema_mismatch(first: &Schema, other: &Schema) -> Option<String> {
-    if first.fields().len() != other.fields().len() {
-        return Some(format!(
-            "has {} column(s), expected {}",
-            other.fields().len(),
-            first.fields().len()
-        ));
-    }
-    for (idx, (a, b)) in first.fields().iter().zip(other.fields().iter()).enumerate() {
-        if a.name() != b.name() {
-            return Some(format!(
-                "column {idx} is named '{}', expected '{}'",
-                b.name(),
-                a.name()
-            ));
-        }
-        if a.data_type() != b.data_type() {
-            return Some(format!(
-                "column '{}' has type {:?}, expected {:?}",
-                b.name(),
-                b.data_type(),
-                a.data_type()
-            ));
-        }
-    }
-    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,22 +271,36 @@ fn geom_shape_err(gtype: &GeometryType, kind: &DecodedKind) -> CityParquetError 
     ))
 }
 
-/// The `shells` per-shell face counts from `geometry_properties` (§8), shaped
-/// for a single `Solid` (a flat array).
-pub(crate) fn shell_faces_flat(props: Option<&Value>) -> Result<Option<Vec<usize>>> {
+/// The `shells` per-solid, per-shell face counts from `geometry_properties`
+/// (spec "Geometry properties and semantics"): **always nested one inner
+/// list per solid**, so `Solid` (exactly one solid) and `MultiSolid`/
+/// `CompositeSolid` (one per member) share this single reader — there is no
+/// longer a separate flat-vs-nested shape to distinguish between them.
+pub(crate) fn shell_faces(props: Option<&Value>) -> Result<Option<Vec<Vec<usize>>>> {
     let Some(v) = props.and_then(|p| p.get("shells")) else {
         return Ok(None);
     };
     Ok(Some(serde_json::from_value(v.clone())?))
 }
 
-/// The `shells` per-shell face counts from `geometry_properties` (§8), shaped
-/// for `MultiSolid`/`CompositeSolid` (one per-shell face-count list per solid).
-pub(crate) fn shell_faces_nested(props: Option<&Value>) -> Result<Option<Vec<Vec<usize>>>> {
-    let Some(v) = props.and_then(|p| p.get("shells")) else {
-        return Ok(None);
-    };
-    Ok(Some(serde_json::from_value(v.clone())?))
+/// Extracts the single inner shell-count list from a `Solid`'s (always
+/// nested, per [`shell_faces`]) `shells`. A `Solid` geometry has exactly one
+/// solid, so `shells` — when present — must have exactly one entry; every
+/// other length is a corrupt/hand-rolled package. Shared by all four call
+/// sites that used to pull this out independently (`pop()` in three places,
+/// `next()` in a fourth), which meant a malformed `shells: [[..],[..]]` on a
+/// `Solid` was silently accepted by some paths and rejected by others,
+/// picking different entries. This is the single point of truth: unless
+/// `shells.len() == 1`, it errors instead of guessing.
+pub(crate) fn single_solid_shell(mut shells: Vec<Vec<usize>>) -> Result<Vec<usize>> {
+    if shells.len() != 1 {
+        return Err(err(format!(
+            "geometry_properties.shells for a Solid must have exactly one inner list (one \
+             solid), found {}",
+            shells.len()
+        )));
+    }
+    Ok(shells.pop().expect("checked shells.len() == 1 above"))
 }
 
 /// Reconstructs one geometry's CityJSON `boundaries` value from its decoded
@@ -358,7 +337,13 @@ fn reconstruct_boundaries(
                 return Err(geom_shape_err(gtype, kind));
             };
             let remapped = remap_face_list(faces, vmap);
-            let counts = shell_faces_flat(props)?;
+            // `shells`, when present, has exactly one inner list — the
+            // Solid's own (spec: nested one inner list per solid, even for
+            // a lone Solid).
+            let counts = match shell_faces(props)? {
+                Some(solids) => Some(single_solid_shell(solids)?),
+                None => None,
+            };
             let shells = partition_shells(remapped, counts.as_deref())?;
             Ok(serde_json::to_value(shells)?)
         }
@@ -366,7 +351,7 @@ fn reconstruct_boundaries(
             let DecodedKind::GeometryCollection(members) = kind else {
                 return Err(geom_shape_err(gtype, kind));
             };
-            let nested_counts = shell_faces_nested(props)?;
+            let nested_counts = shell_faces(props)?;
             let mut solids = Vec::with_capacity(members.len());
             for (m, member) in members.iter().enumerate() {
                 let DecodedKind::PolyhedralSurface(faces) = member else {
@@ -400,6 +385,55 @@ fn reconstruct_boundaries(
     }
 }
 
+/// Rebuild one row's `address` array from the decoded reserved struct column
+/// (spec "Addresses", gap 10) back into CityJSON: the postal fields under
+/// their canonical member names ([`crate::address::postal_to_members`] — the
+/// SAME names the encoder recognises on the way in, so a re-imported export
+/// round-trips through the identical mapping), and `location` reconstructed
+/// as a `MultiPoint` geometry whose `boundaries` index the feature's own
+/// vertex pool.
+///
+/// `location`'s WKB -> boundaries step reuses exactly the machinery a
+/// regular `MultiPoint` object geometry goes through: [`wkb_to_geometry`]
+/// decodes it, [`vertex_map`] interns its coordinates into the feature's
+/// SHARED vertex pool (the same `interner` real geometries and the template
+/// reference point use), and [`reconstruct_boundaries`] turns the result into
+/// CityJSON `boundaries` — no separate "WKB multipoint -> boundaries" logic
+/// needed.
+fn build_address_value(
+    entries: &[crate::decode::AddressEntry],
+    interner: &mut VertexInterner,
+    scale: [f64; 3],
+    translate: [f64; 3],
+) -> Result<Value> {
+    let mut arr = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let postal = crate::address::AddressPostal {
+            street: entry.street.clone(),
+            house_number: entry.house_number.clone(),
+            po_box: entry.po_box.clone(),
+            zip_code: entry.zip_code.clone(),
+            city: entry.city.clone(),
+            state: entry.state.clone(),
+            country: entry.country.clone(),
+            free_text: entry.free_text.clone(),
+        };
+        let mut map = crate::address::postal_to_members(&postal);
+        if let Some(wkb) = &entry.location {
+            let decoded = wkb_to_geometry(wkb)?;
+            let vmap = vertex_map(&decoded.coords, scale, translate, interner);
+            let boundaries =
+                reconstruct_boundaries(&decoded.kind, &GeometryType::MultiPoint, None, &vmap)?;
+            map.insert(
+                crate::address::LOCATION_KEY.to_string(),
+                serde_json::json!({"type": "MultiPoint", "boundaries": boundaries}),
+            );
+        }
+        arr.push(Value::Object(map));
+    }
+    Ok(Value::Array(arr))
+}
+
 /// Split a flat `face_semantics` slice into consecutive groups of `counts`
 /// lengths — the inverse of the encoder's flatten. A count sum that does not
 /// match the slice length is a corrupt/hand-rolled package, an error.
@@ -423,6 +457,50 @@ fn partition_face_semantics(face_semantics: &[Value], counts: &[usize]) -> Resul
         offset += n;
     }
     Ok(out)
+}
+
+/// Splits a flat `face_semantics` slice into ONE `Value::Array` per solid,
+/// each itself the per-shell partition of that solid's slice of faces (used
+/// by both `Solid` — always exactly one solid — and `MultiSolid`/
+/// `CompositeSolid` — one per member — since `shells` nests the same way for
+/// both, spec "Geometry properties and semantics"). Every entry of
+/// `face_semantics` must be consumed by exactly one solid; a shortfall or
+/// overrun means `shells` disagrees with `face_semantics`'s length, a
+/// corrupt/hand-rolled package.
+fn partition_face_semantics_by_solids(
+    face_semantics: &[Value],
+    nested: &[Vec<usize>],
+) -> Result<Vec<Value>> {
+    let mut solids = Vec::with_capacity(nested.len());
+    let mut offset: usize = 0;
+    for shell_counts in nested {
+        let mut n: usize = 0;
+        for &c in shell_counts {
+            n = n
+                .checked_add(c)
+                .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
+        }
+        let end = offset
+            .checked_add(n)
+            .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
+        let slice = face_semantics.get(offset..end).ok_or_else(|| {
+            err(format!(
+                "shells describes more faces than face_semantics has ({} entries)",
+                face_semantics.len()
+            ))
+        })?;
+        solids.push(Value::Array(partition_face_semantics(slice, shell_counts)?));
+        offset = end;
+    }
+    // Every face_semantics entry must be consumed — trailing entries mean
+    // `shells` under-counts the faces, a corrupt package.
+    if offset != face_semantics.len() {
+        return Err(err(format!(
+            "shells account for {offset} faces but face_semantics has {} entries",
+            face_semantics.len()
+        )));
+    }
+    Ok(solids)
 }
 
 /// Rebuild a geometry's CityJSON `semantics` (`{surfaces, values}`) from the
@@ -450,52 +528,34 @@ fn rebuild_semantics(props: Option<&Value>, gtype: &GeometryType) -> Result<Opti
         | GeometryType::MultiLineString
         | GeometryType::MultiSurface
         | GeometryType::CompositeSurface => Value::Array(face_semantics),
-        GeometryType::Solid => {
-            let counts = shell_faces_flat(Some(props))?;
-            match counts {
-                Some(counts) => Value::Array(partition_face_semantics(&face_semantics, &counts)?),
-                // No `shells`: mirror `reconstruct_boundaries`, which puts every
-                // face in one shell (§8). A Solid's `values` must be nested, so
-                // wrap the flat list in a single shell rather than emit it flat.
-                None => Value::Array(vec![Value::Array(face_semantics)]),
+        GeometryType::Solid => match shell_faces(Some(props))? {
+            Some(nested) => {
+                // `nested` must hold exactly this Solid's own shell-count
+                // list (see `single_solid_shell`); wrap it back into a
+                // one-entry slice so `partition_face_semantics_by_solids`'s
+                // per-solid split still applies, then take that sole entry.
+                let shell_counts = single_solid_shell(nested)?;
+                let mut solids =
+                    partition_face_semantics_by_solids(&face_semantics, &[shell_counts])?;
+                solids
+                    .pop()
+                    .expect("partition_face_semantics_by_solids returns one entry per input")
             }
-        }
+            // No `shells`: mirror `reconstruct_boundaries`, which puts every
+            // face in one shell (§8). A Solid's `values` must be nested, so
+            // wrap the flat list in a single shell rather than emit it flat.
+            None => Value::Array(vec![Value::Array(face_semantics)]),
+        },
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
             // `shells` is required to split the flat list per solid; without it
             // the partition is ambiguous, so reject rather than silently drop.
-            let nested = shell_faces_nested(Some(props))?.ok_or_else(|| {
+            let nested = shell_faces(Some(props))?.ok_or_else(|| {
                 err("MultiSolid/CompositeSolid geometry_properties is missing `shells`".to_string())
             })?;
-            let mut solids = Vec::with_capacity(nested.len());
-            let mut offset: usize = 0;
-            for shell_counts in &nested {
-                let mut n: usize = 0;
-                for &c in shell_counts {
-                    n = n
-                        .checked_add(c)
-                        .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
-                }
-                let end = offset
-                    .checked_add(n)
-                    .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
-                let slice = face_semantics.get(offset..end).ok_or_else(|| {
-                    err(format!(
-                        "shells describes more faces than face_semantics has ({} entries)",
-                        face_semantics.len()
-                    ))
-                })?;
-                solids.push(Value::Array(partition_face_semantics(slice, shell_counts)?));
-                offset = end;
-            }
-            // Every face_semantics entry must be consumed — trailing entries
-            // mean `shells` under-counts the faces, a corrupt package.
-            if offset != face_semantics.len() {
-                return Err(err(format!(
-                    "shells account for {offset} faces but face_semantics has {} entries",
-                    face_semantics.len()
-                )));
-            }
-            Value::Array(solids)
+            Value::Array(partition_face_semantics_by_solids(
+                &face_semantics,
+                &nested,
+            )?)
         }
         GeometryType::GeometryInstance => return Ok(None),
     };
@@ -548,12 +608,22 @@ impl<T> OrderedGroups<T> {
     }
 }
 
+/// The source CityJSON header's `metadata` object, when a writer chose to
+/// keep it — folded into `city.other.source_metadata` (spec-alignment M3:
+/// `source_metadata` is no longer its own footer key). **Informational
+/// only**: nothing in this module's decode path may depend on this being
+/// present — see [`build_header`]'s own header-metadata fallback and
+/// [`synthesize_transform`], which never reads `other` at all.
+pub(crate) fn source_metadata_from_other(meta: &CityMetadata) -> Option<Value> {
+    meta.other.as_ref()?.get("source_metadata").cloned()
+}
+
 /// The header `CityJSON`'s `metadata.referenceSystem`, built from the dataset's
 /// `crs` KV entry. As of G1 that entry is **PROJJSON**, so the OGC CRS URL is
 /// rebuilt from its `id.{authority, code}` (e.g. `EPSG` + `7415` ->
 /// `https://www.opengis.net/def/crs/EPSG/0/7415`). A legacy raw-URL-string
 /// entry is still accepted. A CRS with no usable `id` yields no header field.
-fn reference_system(meta: &CityParquetMetadata) -> Result<Option<ReferenceSystem>> {
+fn reference_system(meta: &CityMetadata) -> Result<Option<ReferenceSystem>> {
     let Some(crs) = &meta.crs else {
         return Ok(None);
     };
@@ -596,26 +666,44 @@ fn reference_system(meta: &CityParquetMetadata) -> Result<Option<ReferenceSystem
     }
 }
 
+/// Synthesises a quantisation `transform` for export, from the package's OWN
+/// data rather than `city.other.transform` (spec "Informational only": a
+/// reader/writer MUST NOT need `other` to decode the file). Fixed
+/// millimetre-precision scale (`0.001`, the convention every real fixture in
+/// this repo already uses), translated to the package's own spatial extent's
+/// minimum corner — read back from the `bbox` column's Parquet row-group
+/// statistics via [`crate::stac::package_bbox`], the SAME mechanism the STAC
+/// derivation already uses, never `other`. A package with no geometry at all
+/// (`package_bbox` returns `None`) has nothing to quantise, so `translate`
+/// is the origin.
+///
+/// The exact scale/translate chosen need not match the SOURCE's own — the
+/// comparator ([`crate::compare`]) derives its coordinate tolerance from
+/// each side's own `transform.scale` (`max(scale_a, scale_b)`), so re-
+/// quantising at a different, self-consistent precision never fails a
+/// round-trip comparison; only genuinely lossy rounding would.
+fn synthesize_transform(tables: &PackageTables) -> Result<Transform> {
+    let scale = vec![0.001, 0.001, 0.001];
+    let translate = match crate::stac::package_bbox(tables)? {
+        Some(bbox) => vec![bbox.xmin, bbox.ymin, bbox.zmin],
+        None => vec![0.0, 0.0, 0.0],
+    };
+    Ok(Transform { scale, translate })
+}
+
 /// Reconstructs the header `CityJSON` (empty `CityObjects`/`vertices`) from
-/// the package's `CityParquetMetadata`.
-fn build_header(meta: &CityParquetMetadata) -> Result<CityJSON> {
+/// the package's `CityMetadata` plus its own on-disk data (`tables`), which
+/// [`synthesize_transform`] reads back rather than depending on `other`.
+fn build_header(meta: &CityMetadata, tables: &PackageTables) -> Result<CityJSON> {
     let mut header = CityJSON::new();
     header.version = "2.0".to_string();
-    // The transform is REQUIRED: export re-quantises every coordinate
-    // against it, so a package without one cannot be exported faithfully —
-    // silently substituting the identity transform would corrupt every
-    // vertex.
-    let transform = meta.transform.as_ref().ok_or_else(|| {
-        CityParquetError::Metadata(
-            "package metadata carries no 'transform'; cannot re-quantise for export".to_string(),
-        )
-    })?;
-    header.transform = serde_json::from_value(transform.clone())?;
-    if let Some(source_metadata) = &meta.source_metadata {
+    header.transform = synthesize_transform(tables)?;
+    if let Some(source_metadata) = source_metadata_from_other(meta) {
         // The stored source metadata already carries referenceSystem (and
         // everything else cjseq::Metadata can represent), so it supersedes
-        // the referenceSystem-only fallback below.
-        header.metadata = Some(serde_json::from_value(source_metadata.clone())?);
+        // the referenceSystem-only fallback below. Informational only — see
+        // `source_metadata_from_other`'s doc comment.
+        header.metadata = Some(serde_json::from_value(source_metadata)?);
     } else if let Some(reference_system) = reference_system(meta)? {
         header.metadata = Some(CjMetadata {
             geographical_extent: None,
@@ -653,10 +741,10 @@ pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usiz
                 return None;
             }
             if field.name() == prefix {
-                // The bare appearance column is the LoD0 footprint's when it
-                // carries a lod tag (`cityparquet:lod = "0"`, set by the schema
-                // for LoD0), matching the geometry's recovered LoD; it is the
-                // transitional lod-less fallback (key `""`) only when untagged.
+                // Every LoD, including LoD0, is a suffixed column (spec
+                // "Levels of detail"), so a bare `material`/`texture` name
+                // reaching here is always the zero-analysis-geometry fallback
+                // (no LoD to suffix by) — untagged, hence key `""`.
                 let key = field.metadata().get(LOD_KEY).cloned().unwrap_or_default();
                 return Some((index, key));
             }
@@ -1060,13 +1148,13 @@ fn rebuild_templates(
                 ))
             })
             .and_then(|v| serde_json::from_value(v.clone()).map_err(CityParquetError::from))?;
-        // Templates fold "lod" into geometry_properties (the main table
-        // instead encodes it in the geometry COLUMN NAME) — see
-        // `crate::package::build_template_rows`'s doc comment.
-        let lod = props
-            .and_then(|p| p.get("lod"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        // A template row's LoD lives in its physical column name, exactly
+        // like the main object table's own geometries — `read_templates`
+        // has already resolved it into `row.lod: Lod` (see `TemplateRow`'s
+        // docs), so it's just re-stringified here the same way the main
+        // object-table export path does (`Lod::to_string`'s canonical
+        // `major.minor` form, e.g. `"2.0"` for a source `"2"`).
+        let lod = Some(row.lod.to_string());
         let boundaries = reconstruct_boundaries(&decoded.kind, &gtype, props, &vmap)?;
         let semantics = rebuild_semantics(props, &gtype)?;
 
@@ -1134,19 +1222,27 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     // package's file inventory from.
     let tables = PackageTables::open(&opts.package_dir)?;
 
-    // The FIRST table is authoritative for the package's KV metadata and
-    // rendered Arrow schema (`crate::package`'s by-type writer writes the
-    // IDENTICAL schema to every table, so any one of them would do);
-    // every other table is read via the SAME `schema` below and only
-    // light-checked for a matching `cityparquet_version`, not fully
-    // re-derived. `tables.tables` entries are already absolute paths.
+    // The FIRST table supplies the package-level facts that ARE genuinely
+    // dataset-wide — `transform`/`crs`/`extensions`/`source_metadata`/
+    // `appearance_defaults` are written identically into every table's
+    // footer by `crate::package`'s by-module writer (see
+    // `crate::scan::ScanResult::metadata`, called once per conversion), so
+    // any one table's copy is authoritative for header-building below.
+    // What is NOT dataset-wide any more (spec "object-table-schema": "a
+    // table carries exactly the LoD columns its data needs") is the
+    // rendered Arrow schema and `attribute_columns`/`default_geometry` — a
+    // module's own table only carries the geometry/appearance columns its
+    // own rows need, so EVERY table (this one included) is read against its
+    // OWN `cityparquet_metadata()`/`cityparquet_arrow_schema()` in the loop
+    // below, never a shared one. `tables.tables` entries are already
+    // absolute paths.
     let first_table_path = &tables.tables[0];
     let first_file = fs::File::open(first_table_path)
         .map_err(|e| io_err(format!("cannot open {}: {e}", first_table_path.display())))?;
     let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file)
         .map_err(|e| CityParquetError::Parquet(format!("cannot open parquet reader: {e}")))?;
     let meta = first_builder.cityparquet_metadata()?;
-    let schema = first_builder.cityparquet_arrow_schema()?;
+    let first_schema = first_builder.cityparquet_arrow_schema()?;
     let first_parquet_reader = first_builder
         .build()
         .map_err(|e| CityParquetError::Parquet(format!("cannot build parquet reader: {e}")))?;
@@ -1154,13 +1250,15 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     // for the `idx == 0` table without re-opening the file it already holds
     // open — the first object table's already-open reader is reused for
     // `idx == 0`, so it never pays for a second `File::open`/
-    // `ParquetRecordBatchReaderBuilder`.
-    let mut first_reader = Some(CityParquetRecordBatchReader::new(
-        first_parquet_reader,
-        Arc::clone(&schema),
+    // `ParquetRecordBatchReaderBuilder`. Paired with `meta.clone()`: this
+    // table's own metadata, exactly like every other table's own reader is
+    // paired with its own metadata below.
+    let mut first_reader = Some((
+        CityParquetRecordBatchReader::new(first_parquet_reader, Arc::clone(&first_schema)),
+        meta.clone(),
     ));
 
-    let mut header = build_header(&meta)?;
+    let mut header = build_header(&meta, &tables)?;
     let (scale, translate) = transform_axes(&header.transform);
 
     // Whether this package carries the appearance-DEFINITION sidecars: when
@@ -1236,7 +1334,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     // above already tolerates one feature's objects arriving split across
     // batches (or, here, across whole tables) — see `OrderedGroups`.
     for (idx, table_path) in tables.tables.iter().enumerate() {
-        let reader = if idx == 0 {
+        let (reader, table_meta) = if idx == 0 {
             first_reader
                 .take()
                 .expect("the first table's reader is only ever consumed once")
@@ -1246,50 +1344,45 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
                 CityParquetError::Parquet(format!("cannot open parquet reader: {e}"))
             })?;
-            // Every later table must agree with the first on
-            // `cityparquet_version`...
+            // Every table must agree on `city.version` — a genuine
+            // internal inconsistency (different writer versions cannot
+            // safely coexist in one package) rather than the module-scoped
+            // schema variation this fix otherwise makes legal.
             let table_meta = builder.cityparquet_metadata()?;
-            if table_meta.cityparquet_version != meta.cityparquet_version {
+            if table_meta.version != meta.version {
                 return Err(err(format!(
-                    "table '{}' has cityparquet_version {:?}, expected {:?} \
+                    "table '{}' has city.version {:?}, expected {:?} \
                      (matching table '{}')",
                     table_display_name(table_path),
-                    table_meta.cityparquet_version,
-                    meta.cityparquet_version,
+                    table_meta.version,
+                    meta.version,
                     table_display_name(first_table_path)
                 )));
             }
-            // ...and (M5 Codex review, Important finding 2) its own
-            // CityParquet-rendered Arrow schema — field names, types, AND
-            // order — must match the first table's exactly, checked
-            // field-by-field so the error names the first mismatching
-            // column. A `cityparquet_version` match alone does not rule out
-            // a tampered/foreign/hand-edited table that happens to carry the
-            // same version but different columns: reading it against the
-            // FIRST table's schema (as every batch below does, via
-            // `CityParquetRecordBatchReader::new(_, Arc::clone(&schema))`)
-            // would silently relabel or misdecode its data rather than
-            // reject the package. This is a real risk for any package NOT
-            // produced by this crate's own by-type writer (which is trusted
-            // to emit identical schemas), and for a corrupted one that was.
+            // Each table is read and decoded against its OWN rendered Arrow
+            // schema and its OWN `CityParquetMetadata` (never the first
+            // table's, and never cross-checked against it) — a module's own
+            // table legitimately carries only the geometry/appearance
+            // columns its own rows need (spec "object-table-schema": "a
+            // table carries exactly the LoD columns its data needs"), so two
+            // tables in the SAME valid package can have genuinely different
+            // schemas. `decode_batch` already derives geometry columns from
+            // each batch's own schema; `table_meta.attribute_columns` is what
+            // makes attribute decoding self-contained per table too.
             let table_schema = builder.cityparquet_arrow_schema()?;
-            if let Some(mismatch) = first_schema_mismatch(&schema, &table_schema) {
-                return Err(err(format!(
-                    "table '{}' {mismatch} (matching table '{}')",
-                    table_display_name(table_path),
-                    table_display_name(first_table_path)
-                )));
-            }
             let parquet_reader = builder.build().map_err(|e| {
                 CityParquetError::Parquet(format!("cannot build parquet reader: {e}"))
             })?;
-            CityParquetRecordBatchReader::new(parquet_reader, Arc::clone(&schema))
+            (
+                CityParquetRecordBatchReader::new(parquet_reader, Arc::clone(&table_schema)),
+                table_meta,
+            )
         };
         for batch in reader {
             let batch = batch?;
             let material_cols = appearance_columns(&batch, "material");
             let texture_cols = appearance_columns(&batch, "texture");
-            let objects = decode_batch(&batch, &meta)?;
+            let objects = decode_batch(&batch, &table_meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
                 let material = read_lod_keyed_appearance(&batch, &material_cols, row)?;
                 let texture = read_lod_keyed_appearance(&batch, &texture_cols, row)?;
@@ -1413,6 +1506,20 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 }
             }
             co.geometry = if geoms.is_empty() { None } else { Some(geoms) };
+            // `address` has no typed cjseq field (CityJSON prescribes no
+            // member set for it), so — like `children_roles` above — it is
+            // injected via a serialize/mutate/deserialize round trip rather
+            // than a direct field assignment (spec "Addresses", gap 10).
+            // Absent entirely when the row's `address` cell was null; a
+            // present (even empty) list always gets a real `"address"` key.
+            if let Some(entries) = &obj.address {
+                let address_value = build_address_value(entries, &mut interner, scale, translate)?;
+                let mut co_value = serde_json::to_value(&co)?;
+                if let Value::Object(map) = &mut co_value {
+                    map.insert("address".to_string(), address_value);
+                }
+                co = serde_json::from_value(co_value)?;
+            }
             feature.add_co(obj.id.clone(), co);
         }
 
@@ -1546,6 +1653,52 @@ mod tests {
         assert_eq!((shells[0].len(), shells[1].len()), (2, 1));
     }
 
+    #[test]
+    fn single_solid_shell_rejects_more_than_one_entry() {
+        // A `Solid` has exactly one solid; `shells` naming two ([[1],[2]]) is a
+        // corrupt/hand-rolled package, and must be rejected rather than
+        // silently picking the first or last entry (the divergence Fix 1
+        // closes: writer/export call sites previously disagreed on which).
+        let err = single_solid_shell(vec![vec![1], vec![2]]).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected Schema error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn single_solid_shell_rejects_zero_entries() {
+        let err = single_solid_shell(vec![]).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected Schema error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn single_solid_shell_accepts_exactly_one_entry() {
+        assert_eq!(
+            single_solid_shell(vec![vec![1, 2, 3]]).unwrap(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn reconstruct_boundaries_rejects_a_solid_with_more_than_one_shells_entry() {
+        // A corrupt/hand-rolled package could label a `Solid`'s `shells` as if
+        // it held two solids ([[1],[1]]) instead of the required one. Every
+        // consuming path must reject this the same way, not silently pick
+        // first-vs-last like the pre-fix `pop()`/`next()` split did.
+        let kind = DecodedKind::PolyhedralSurface(triangle_faces(2));
+        let props = serde_json::json!({"type": "Solid", "shells": [[1], [1]]});
+        let err = reconstruct_boundaries(&kind, &GeometryType::Solid, Some(&props), &[0, 1, 2, 3])
+            .unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected Schema error, got {err:?}"
+        );
+    }
+
     /// A hand-built MultiSolid (no fixture carries one): 2 solids — the
     /// first with 2 single-face shells, the second with 1 — written through
     /// the real WKB writer, read back through the real WKB reader, and
@@ -1640,28 +1793,17 @@ mod tests {
         );
     }
 
+    /// spec-alignment M3: `transform` is no longer read from `city.other` at
+    /// all — `build_header` always SYNTHESISES its own quantisation
+    /// transform (see `synthesize_transform`), so a package missing it
+    /// (or missing `other` altogether) is no longer an error. Real-fixture
+    /// coverage that `build_header`'s output round-trips lives in
+    /// `tests/export_real_data.rs`; see `crate::stac::mod::package_bbox` for
+    /// the on-disk mechanism `synthesize_transform` reads.
     #[test]
-    fn build_header_requires_a_transform() {
-        let meta = CityParquetMetadata {
-            cityparquet_version: "0.1.0".to_string(),
-            source_format: cityparquet_schema::SourceFormat::CityJsonSeq,
-            source_version: None,
-            crs: None,
-            transform: None,
-            extensions: None,
-            attribute_columns: vec![],
-            default_geometry: "geometry".to_string(),
-            bbox_column: "bbox".to_string(),
-            sidecar_files: vec![],
-            source_metadata: None,
-            appearance_defaults: None,
-            other: None,
-        };
-        let err = build_header(&meta).unwrap_err();
-        assert!(
-            matches!(err, CityParquetError::Metadata(_)),
-            "a package without a transform cannot be re-quantised: expected Metadata error, got {err:?}"
-        );
+    fn source_metadata_from_other_is_none_when_other_is_absent() {
+        let meta = CityMetadata::new();
+        assert!(source_metadata_from_other(&meta).is_none());
     }
 
     #[test]
@@ -1669,24 +1811,13 @@ mod tests {
         // sol-review G1: metadata `crs` is now PROJJSON. A package whose CRS is
         // OGC:CRS84 (a lon/lat dataset) with no source_metadata must still
         // export a `referenceSystem`, not silently drop it.
-        let meta = CityParquetMetadata {
-            cityparquet_version: "0.1.0".to_string(),
-            source_format: cityparquet_schema::SourceFormat::CityJsonSeq,
-            source_version: None,
+        let meta = CityMetadata {
             crs: Some(serde_json::json!({
                 "type": "GeographicCRS",
                 "name": "WGS 84 (CRS84)",
                 "id": { "authority": "OGC", "code": "CRS84" }
             })),
-            transform: None,
-            extensions: None,
-            attribute_columns: vec![],
-            default_geometry: "geometry".to_string(),
-            bbox_column: "bbox".to_string(),
-            sidecar_files: vec![],
-            source_metadata: None,
-            appearance_defaults: None,
-            other: None,
+            ..CityMetadata::new()
         };
         let rs = reference_system(&meta)
             .expect("resolution must not error")

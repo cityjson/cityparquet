@@ -68,7 +68,7 @@ use chrono::{DateTime, NaiveDate};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use cityparquet_schema::{CityParquetError, Result};
+use cityparquet_schema::{CityParquetError, Lod, Result};
 use cjseq::{CityJSON, Geometry, GeometryType, Transform};
 
 use crate::source::Source;
@@ -150,6 +150,60 @@ fn points_node(pool: &VertexPool, idxs: &[usize]) -> Result<Node> {
             .map(|&i| Ok(Node::Point(pool.coord(i)?)))
             .collect::<Result<Vec<_>>>()?,
     ))
+}
+
+/// One `address[]` entry as compared: the mapped postal fields (spec
+/// "Addresses", gap 10) plus its `location`, if any, dequantised into a
+/// [`Node`] tree exactly like a real `MultiPoint` geometry's boundaries —
+/// `None` when `location` is absent or malformed, mirroring the encoder's
+/// own graceful-degradation rule ([`crate::encode::build_location_wkb`]) so
+/// the comparator never flags as a difference something the encoder itself
+/// silently drops on both sides identically.
+#[derive(Debug, Clone, PartialEq)]
+struct AddressCompare {
+    postal: crate::address::AddressPostal,
+    location: Option<Node>,
+}
+
+/// Resolves one address entry's `location` member into a [`Node`] tree,
+/// reusing [`points_node`] exactly as [`normalise_geometry`]'s `MultiPoint`
+/// arm does — this IS structurally a `MultiPoint` geometry, just reached via
+/// `address[].location` rather than the object's own `geometry` array.
+fn address_location_node(location: &Value, pool: &VertexPool) -> Option<Node> {
+    let obj = location.as_object()?;
+    if obj.get("type").and_then(Value::as_str) != Some("MultiPoint") {
+        return None;
+    }
+    let idxs: Vec<usize> = serde_json::from_value(obj.get("boundaries")?.clone()).ok()?;
+    if idxs.is_empty() {
+        return None;
+    }
+    points_node(pool, &idxs).ok()
+}
+
+/// One object's `address[]` list as compared (spec "Addresses"): the SAME
+/// recognised-member mapping the encoder uses
+/// ([`crate::address::map_postal_fields`]) applied to the raw source
+/// `address` array, via [`crate::encode::raw_address_members`] — both sides
+/// of a comparison go through this identical extraction (the source's own
+/// address, and the exported CityJSON's re-emitted one, which uses the same
+/// canonical member names), so the two can never diverge on what "the
+/// address" means. `co` with no `address` member (or a malformed one) yields
+/// an empty `Vec` — indistinguishable, for comparison, from an explicit
+/// empty array, since both round-trip to the same thing.
+fn address_comparables(co: &cjseq::CityObject, pool: &VertexPool) -> Result<Vec<AddressCompare>> {
+    let Some(entries) = crate::encode::raw_address_members(co)? else {
+        return Ok(Vec::new());
+    };
+    Ok(entries
+        .iter()
+        .map(|entry| AddressCompare {
+            postal: crate::address::map_postal_fields(entry),
+            location: entry
+                .get("location")
+                .and_then(|loc| address_location_node(loc, pool)),
+        })
+        .collect())
 }
 
 fn ring_list_node(pool: &VertexPool, rings: &[Vec<usize>]) -> Result<Node> {
@@ -1127,11 +1181,16 @@ struct ObjectData {
     /// `children`, independent of the order the round-trip lists children in.
     children_roles: HashMap<String, String>,
     /// The source object's unmapped members (the `other` column, §5.1/G9): a
-    /// Building's `address`, a per-object `geographicalExtent`, Extension
-    /// `+members` — anything with no dedicated column. Compared verbatim so a
-    /// silently-dropped member registers as a difference. Same extraction the
-    /// encoder uses, so the two sides never diverge on definition.
+    /// per-object `geographicalExtent`, Extension `+members` — anything with
+    /// no dedicated column. `address` has its own reserved column and its own
+    /// comparison (see [`Self::address`]), so it is excluded here. Compared
+    /// verbatim so a silently-dropped member registers as a difference. Same
+    /// extraction the encoder uses, so the two sides never diverge on
+    /// definition.
     other: Value,
+    /// The object's `address[]` list, mapped to the reserved struct's fields
+    /// (spec "Addresses", gap 10) — see [`address_comparables`].
+    address: Vec<AddressCompare>,
     geometries: HashMap<Option<String>, NormGeometry>,
 }
 
@@ -1264,6 +1323,23 @@ fn strings_equal(sa: &str, sb: &str) -> bool {
     sa == sb
 }
 
+/// Canonicalise a raw source `geom.lod` string for use as a comparison key:
+/// a source `"1"` and a source `"1.0"` are the same LoD (spec "Levels of
+/// detail" — a canonicalisation of the LoD string, not its value), so an
+/// original CityJSON's bare-major LoD must compare equal to the same LoD
+/// re-exported in its canonical `"{major}.{minor}"` spelling. Falls back to
+/// the raw string, unchanged, when it does not parse as a `Lod` — comparison
+/// then simply falls back to exact string equality for that malformed value,
+/// same as before this canonicalisation existed. `None` (a `GeometryInstance`
+/// or a genuinely lod-less geometry) passes through unchanged.
+fn canonical_lod_key(lod: &Option<String>) -> Option<String> {
+    lod.as_ref().map(|s| {
+        Lod::parse(s)
+            .map(|l| l.to_string())
+            .unwrap_or_else(|_| s.clone())
+    })
+}
+
 fn claim_or_log(
     geometries: &mut HashMap<Option<String>, NormGeometry>,
     key: Option<String>,
@@ -1337,7 +1413,7 @@ fn build_geometries(
             )?);
             claim_or_log(
                 &mut geometries,
-                geom.lod.clone(),
+                canonical_lod_key(&geom.lod),
                 NormGeometry {
                     gtype: geom.thetype.clone(),
                     tree,
@@ -1383,7 +1459,7 @@ fn build_geometries(
 
         claim_or_log(
             &mut geometries,
-            geom.lod.clone(),
+            canonical_lod_key(&geom.lod),
             NormGeometry {
                 gtype: geom.thetype.clone(),
                 tree: normalised.tree,
@@ -1487,6 +1563,7 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
                     children,
                     children_roles: children_roles_map(co),
                     other: Value::Object(crate::encode::unmapped_object_members(co)?),
+                    address: address_comparables(co, &pool)?,
                     geometries,
                 },
             );
@@ -1607,6 +1684,41 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
         ));
     }
 
+    // `address` (spec "Addresses", gap 10): postal fields compare exactly;
+    // `location` compares as a coordinate tree, with the same tolerance as
+    // any other geometry — round-tripping through WKB requantises it.
+    if a.address.len() != b.address.len() {
+        out.push(format!(
+            "object {id}: address list length differs: {} vs {}",
+            a.address.len(),
+            b.address.len()
+        ));
+    } else {
+        for (i, (aa, bb)) in a.address.iter().zip(&b.address).enumerate() {
+            if aa.postal != bb.postal {
+                out.push(format!(
+                    "object {id}: address[{i}] postal fields differ: {:?} vs {:?}",
+                    aa.postal, bb.postal
+                ));
+            }
+            match (&aa.location, &bb.location) {
+                (Some(la), Some(lb)) if !node_matches(la, lb, tol) => {
+                    out.push(format!(
+                        "object {id}: address[{i}] location coordinates differ"
+                    ));
+                }
+                (Some(_), None) | (None, Some(_)) => {
+                    out.push(format!(
+                        "object {id}: address[{i}] location presence differs: {} vs {}",
+                        aa.location.is_some(),
+                        bb.location.is_some()
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
     let lods_a: HashSet<&Option<String>> = a.geometries.keys().collect();
     let lods_b: HashSet<&Option<String>> = b.geometries.keys().collect();
     for lod in lods_a.difference(&lods_b) {
@@ -1651,7 +1763,17 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
                         ia.template_type, ib.template_type
                     ));
                 }
-                if ia.template_lod != ib.template_lod {
+                // Canonicalised, not literal, comparison — same reasoning as
+                // `canonical_lod_key`: a template is a single geometry at a
+                // single LoD (spec "geometry_templates.parquet"), and since
+                // spec-alignment M6 that LoD is carried by the sidecar's
+                // per-LoD column NAME (`geometry_lod3_0`, canonical
+                // `major.minor` form) rather than a literal string column, so
+                // a source template's bare-major `"3"` re-exports as `"3.0"`
+                // — the same normalisation a regular (non-instance)
+                // geometry's `lod` already undergoes, just not hidden behind
+                // a map key here.
+                if canonical_lod_key(&ia.template_lod) != canonical_lod_key(&ib.template_lod) {
                     out.push(format!(
                         "object {id}: geometry at lod {lod:?}: instance template lod differs: {:?} vs {:?}",
                         ia.template_lod, ib.template_lod
@@ -1750,11 +1872,17 @@ pub fn compare_datasets(a: &Path, b: &Path, opts: &CompareOptions) -> Result<Com
     let mut excluded = side_a.excluded;
     excluded.extend(side_b.excluded);
 
-    let ta = serde_json::to_value(&side_a.header.transform)?;
-    let tb = serde_json::to_value(&side_b.header.transform)?;
-    if ta != tb {
-        differences.push(format!("header: transform differs: {ta} vs {tb}"));
-    }
+    // `transform` is NOT compared for exact equality any more (spec-alignment
+    // M3): `export` now SYNTHESISES its own quantisation transform rather
+    // than reading `city.other.transform` verbatim (spec "Informational
+    // only" — a reader/writer MUST NOT need `other` to decode the file; see
+    // `crate::export::synthesize_transform`), so a source and its own
+    // round-tripped export legitimately carry DIFFERENT transforms even when
+    // every coordinate they quantise is identical. `transform` was always an
+    // implementation-chosen encoding parameter, never semantic content — the
+    // per-axis `tol` derived from `scale_a`/`scale_b` below (and every
+    // per-object coordinate comparison against it) is what actually proves
+    // losslessness.
 
     let rsa = reference_system_url(&side_a.header);
     let rsb = reference_system_url(&side_b.header);
@@ -1840,6 +1968,24 @@ mod tests {
             .join(name);
         assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
         p
+    }
+
+    /// The real `lod3_railway.city.json` fixture carries no `referenceSystem`
+    /// at all (a genuine open-data limitation). Since `scan` now hard-fails
+    /// on coordinate-bearing input with no resolvable CRS (spec "CRS rules"),
+    /// tests below that need a clean railway convert write a small on-disk
+    /// COPY with a CRS injected via JSON mutation of the real fixture —
+    /// never hand-written CityJSON.
+    fn railway_fixture_with_crs() -> (tempfile::TempDir, std::path::PathBuf) {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+                .unwrap();
+        doc["metadata"]["referenceSystem"] =
+            serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("railway_with_crs.city.json");
+        fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+        (dir, path)
     }
 
     /// A comparator that always says "equal" is worthless — this test pins
@@ -2722,24 +2868,21 @@ mod tests {
         );
     }
 
-    /// Converts the real railway fixture under the Compatibility profile and
-    /// exports it back to a single `.city.json` DOCUMENT (not Seq): templates'
-    /// `material`/`texture` are localised at HEADER scope by
-    /// `crate::export::rebuild_templates`, so this is the shape whose
-    /// corruption the M4 Codex-review Finding 3 tests below target. Returns
-    /// the exported file's path and the tempdirs backing it (kept alive for
-    /// the caller).
+    /// Converts the real railway fixture (which carries materials/textures,
+    /// written unconditionally now that sidecars are content-gated rather
+    /// than profile-gated — spec-alignment gap 19) and exports it back to a
+    /// single `.city.json` DOCUMENT (not Seq): templates' `material`/`texture`
+    /// are localised at HEADER scope by `crate::export::rebuild_templates`, so
+    /// this is the shape whose corruption the M4 Codex-review Finding 3 tests
+    /// below target. Returns the exported file's path and the tempdirs
+    /// backing it (kept alive for the caller).
     fn compat_railway_export_doc() -> (std::path::PathBuf, tempfile::TempDir, tempfile::TempDir) {
         use crate::export::{ExportOptions, export};
         use crate::package::{ConvertOptions, convert};
-        use cityparquet_schema::Profile;
 
         let package_dir = tempfile::tempdir().unwrap();
-        let mut opts = ConvertOptions::new(
-            fixture("lod3_railway.city.json"),
-            package_dir.path().to_path_buf(),
-        );
-        opts.profile = Profile::Compatibility;
+        let (_crs_dir, railway_path) = railway_fixture_with_crs();
+        let opts = ConvertOptions::new(railway_path, package_dir.path().to_path_buf());
         convert(&opts).unwrap();
 
         let export_dir = tempfile::tempdir().unwrap();

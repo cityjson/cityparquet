@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 
 use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::decode::decode_batch;
-use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::package::{ConvertOptions, convert, convert_source};
 use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet::source::Source;
 use cityparquet::stac::properties::PackageTables;
 use cityparquet::wkb_read::DecodedKind;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -24,6 +25,37 @@ fn data_fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data")
         .join(name)
+}
+
+/// `building_with_parts.gml` (a committed, hand-authored CityGML fixture)
+/// carries no `srsName`/envelope at all. Since `scan` now hard-fails on
+/// coordinate-bearing input with no resolvable CRS (spec "CRS rules"), the
+/// FIRST convert of the raw fixture injects one onto the REAL parsed header
+/// — the writer (`crate::citygml::writer`) then emits `srsName` into the
+/// round-tripped `.gml`'s own envelope, so the SECOND convert below resolves
+/// a CRS from that file natively, without needing a second injection.
+fn convert_with_crs(input: PathBuf, out: PathBuf) {
+    let raw = Source::open(&input).unwrap();
+    let mut header = raw.header().clone();
+    header
+        .metadata
+        .get_or_insert(cityparquet::cjseq::Metadata {
+            geographical_extent: None,
+            identifier: None,
+            point_of_contact: None,
+            reference_date: None,
+            reference_system: None,
+            title: None,
+        })
+        .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
+    let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
+    let src = Source::from_parts(
+        header,
+        features,
+        raw.doc_appearance().cloned(),
+        raw.format(),
+    );
+    convert_source(&src, &ConvertOptions::new(input, out)).unwrap();
 }
 
 fn workspace_fixture(name: &str) -> PathBuf {
@@ -166,11 +198,7 @@ fn hand_fixture_building_parts_round_trip() {
     let out_gml = tmp.path().join("out.gml");
     let pkg2 = tmp.path().join("pkg2");
 
-    convert(&ConvertOptions::new(
-        data_fixture("building_with_parts.gml"),
-        pkg.clone(),
-    ))
-    .unwrap();
+    convert_with_crs(data_fixture("building_with_parts.gml"), pkg.clone());
     let report = write_package(&WriteOptions {
         package_dir: pkg.clone(),
         output: out_gml.clone(),

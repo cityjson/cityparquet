@@ -22,7 +22,7 @@ use arrow_array::{
     StringArray, StructArray,
 };
 use arrow_schema::DataType;
-use cityparquet_schema::{CityParquetError, CityParquetMetadata, Result};
+use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 use parquet::arrow::ProjectionMask;
 use parquet::file::metadata::RowGroupMetaData;
 use parquet::file::statistics::Statistics;
@@ -80,7 +80,7 @@ fn surface_count(kind: &DecodedKind) -> u64 {
 /// [`FullReadResult::feature_count`] (total rows) and
 /// [`FullReadResult::boundary_count`] (total decoded surfaces/faces).
 /// Forces full geometry materialisation.
-pub fn full_read(table_path: &Path, meta: &CityParquetMetadata) -> Result<FullReadResult> {
+pub fn full_read(table_path: &Path, meta: &CityMetadata) -> Result<FullReadResult> {
     let file = File::open(table_path).map_err(io_err)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
     let schema = builder.cityparquet_arrow_schema()?;
@@ -562,7 +562,7 @@ pub fn attr_stats(table_path: &Path, column: &str) -> Result<AttrStats> {
 /// the first decoded object. `None` if no row matches.
 pub fn id_lookup(
     table_path: &Path,
-    meta: &CityParquetMetadata,
+    meta: &CityMetadata,
     id: &str,
 ) -> Result<Option<crate::decode::DecodedObject>> {
     let file = File::open(table_path).map_err(io_err)?;

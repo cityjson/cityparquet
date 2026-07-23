@@ -12,11 +12,11 @@ use arrow_array::RecordBatch;
 use arrow_array::{Array, StringArray};
 use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::decode::decode_batch;
-use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::package::{ConvertOptions, convert, convert_source};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::Lod;
-use cityparquet::schema::Profile;
 use cityparquet::sidecar::{read_materials, read_textures};
+use cityparquet::source::Source;
 use cityparquet::stac::properties::PackageTables;
 use cityparquet::wkb_read::{DecodedGeometry, DecodedKind};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -26,6 +26,37 @@ fn data_fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data")
         .join(name)
+}
+
+/// These committed CityGML fixtures carry no `srsName`/envelope at all.
+/// Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), the FIRST convert of a raw fixture
+/// injects one onto the REAL parsed header — the writer
+/// (`crate::citygml::writer`) then emits `srsName` into the round-tripped
+/// `.gml`'s own envelope, so a SECOND convert of that output resolves a CRS
+/// natively (plain `compat`/`convert`, no injection needed).
+fn compat_with_crs(input: PathBuf, out: PathBuf) {
+    let raw = Source::open(&input).unwrap();
+    let mut header = raw.header().clone();
+    header
+        .metadata
+        .get_or_insert(cityparquet::cjseq::Metadata {
+            geographical_extent: None,
+            identifier: None,
+            point_of_contact: None,
+            reference_date: None,
+            reference_system: None,
+            title: None,
+        })
+        .reference_system = Some(cityparquet::citygml::crs::reference_system("7415"));
+    let features: Vec<_> = raw.features().unwrap().map(|f| f.unwrap()).collect();
+    let src = Source::from_parts(
+        header,
+        features,
+        raw.doc_appearance().cloned(),
+        raw.format(),
+    );
+    convert_source(&src, &ConvertOptions::new(input, out)).unwrap();
 }
 
 /// Flatten a material `values` tree's leaves (a non-negative integer, or `null`)
@@ -307,9 +338,7 @@ fn materials_round_trip() {
     let out_gml = tmp.path().join("out.gml");
     let pkg2 = tmp.path().join("pkg2");
 
-    let mut opts = ConvertOptions::new(data_fixture("building_with_materials.gml"), pkg.clone());
-    opts.profile = Profile::Compatibility;
-    convert(&opts).unwrap();
+    compat_with_crs(data_fixture("building_with_materials.gml"), pkg.clone());
     let report = write_package(&WriteOptions {
         package_dir: pkg.clone(),
         output: out_gml.clone(),
@@ -321,8 +350,7 @@ fn materials_round_trip() {
     assert_eq!(report.material_geometries_dropped, 0);
     assert_eq!(report.appearance_skipped_core_profile, 0);
 
-    let mut opts2 = ConvertOptions::new(out_gml.clone(), pkg2.clone());
-    opts2.profile = Profile::Compatibility;
+    let opts2 = ConvertOptions::new(out_gml.clone(), pkg2.clone());
     convert(&opts2).unwrap();
 
     let before = face_materials(&pkg);
@@ -330,7 +358,7 @@ fn materials_round_trip() {
 
     // Sanity: BM's lod2 "visual" theme has 2 red faces, 1 green, 1 untargeted.
     let visual = before
-        .get(&("BM".to_string(), "2".to_string(), "visual".to_string()))
+        .get(&("BM".to_string(), "2.0".to_string(), "visual".to_string()))
         .expect("BM lod2 visual materials");
     assert_eq!(visual.len(), 4, "four faces");
     let defs: Vec<&Option<String>> = visual.iter().map(|(_, d)| d).collect();
@@ -353,8 +381,7 @@ fn materials_round_trip() {
 }
 
 fn compat(input: PathBuf, out: PathBuf) {
-    let mut opts = ConvertOptions::new(input, out);
-    opts.profile = Profile::Compatibility;
+    let opts = ConvertOptions::new(input, out);
     convert(&opts).unwrap();
 }
 
@@ -362,6 +389,23 @@ fn workspace_fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures")
         .join(name)
+}
+
+/// The real `lod3_railway.city.json` fixture (a CityJSON file, unlike the
+/// committed `.gml` fixtures [`compat_with_crs`] handles) carries no
+/// `referenceSystem` either. Writes a small on-disk COPY with a CRS injected
+/// via JSON mutation of the real fixture — never hand-written CityJSON.
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(workspace_fixture("lod3_railway.city.json")).unwrap(),
+    )
+    .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
 }
 
 #[test]
@@ -372,7 +416,7 @@ fn full_appearance_round_trip() {
     let out_gml = tmp.path().join("out.gml");
     let pkg2 = tmp.path().join("pkg2");
 
-    compat(data_fixture("building_with_appearance.gml"), pkg.clone());
+    compat_with_crs(data_fixture("building_with_appearance.gml"), pkg.clone());
     let report = write_package(&WriteOptions {
         package_dir: pkg.clone(),
         output: out_gml.clone(),
@@ -386,7 +430,7 @@ fn full_appearance_round_trip() {
     // Sanity: BA's lod2 "visual" texture dereferences to the wall.jpg JPG def.
     let bt = face_textures(&pkg);
     let visual = bt
-        .get(&("BA".to_string(), "2".to_string(), "visual".to_string()))
+        .get(&("BA".to_string(), "2.0".to_string(), "visual".to_string()))
         .expect("BA lod2 visual texture");
     assert_eq!(visual.len(), 1, "one textured ring");
     assert!(visual[0].2.contains("wall.jpg"), "{visual:?}");
@@ -421,7 +465,8 @@ fn lod3_railway_building_appearance_round_trip() {
     let out_gml = tmp.path().join("out.gml");
     let pkg2 = tmp.path().join("pkg2");
 
-    compat(workspace_fixture("lod3_railway.city.json"), pkg.clone());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    compat(railway_path, pkg.clone());
     write_package(&WriteOptions {
         package_dir: pkg.clone(),
         output: out_gml.clone(),

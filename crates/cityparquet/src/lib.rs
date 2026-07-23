@@ -1,11 +1,13 @@
 //! CityParquet reader/writer: the native Parquet path for CityJSON models.
 
+mod address;
 pub mod appearance;
 pub mod citygml;
 pub mod compare;
 pub mod decode;
 pub mod encode;
 pub mod export;
+mod geometry_properties;
 pub mod inputs;
 pub mod lod0;
 pub mod merge;

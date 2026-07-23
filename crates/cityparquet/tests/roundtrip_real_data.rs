@@ -4,11 +4,13 @@
 
 use std::path::{Path, PathBuf};
 
+use arrow_array::{Array, StringArray};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
 use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::recipe::RecipePreset;
-use cityparquet::schema::Profile;
 use cityparquet::stac::properties::PackageTables;
 
 fn fixture(name: &str) -> PathBuf {
@@ -60,27 +62,123 @@ fn convert_and_export_path(input: &Path) -> (PathBuf, tempfile::TempDir, tempfil
     (output, package_dir, export_dir)
 }
 
-/// Same as [`convert_and_export`] but lets the caller pick the profile —
-/// needed for the Compatibility-profile headline round-trip gate below,
-/// where appearance/instances must actually be restored, not dropped.
-fn convert_and_export_with_profile(
-    input: &str,
-    profile: Profile,
-) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
-    let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture(input), package_dir.path().to_path_buf());
-    opts.profile = profile;
-    convert(&opts).unwrap();
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), tests below that convert (or compare
+/// against) railway use a small on-disk COPY with a CRS injected via JSON
+/// mutation of the real fixture — never hand-written CityJSON. Used both as
+/// the conversion INPUT and, where a test also compares against "the
+/// source", as that comparison baseline.
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
+}
 
-    let export_dir = tempfile::tempdir().unwrap();
-    let output = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: package_dir.path().to_path_buf(),
-        output: output.clone(),
-    })
-    .unwrap();
+/// spec "Column naming and reservation rules" (gap 14): `other_attributes` is
+/// itself a reserved name, so a source attribute literally called that has
+/// nowhere further to divert to and is rejected outright — the same error
+/// path as any other undiverted reserved-name collision
+/// ([`cityparquet_schema::model::CityParquetSchema::validate`]'s "collides
+/// with a reserved or geometry column name" text). Derived from the real
+/// `delft` fixture with one injected attribute named `other_attributes`.
+#[test]
+fn attribute_literally_named_other_attributes_is_rejected() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut injected = false;
+    let mut out_lines = Vec::new();
+    for line in text.lines() {
+        let mut doc: serde_json::Value = serde_json::from_str(line).unwrap();
+        if !injected && let Some(cos) = doc.get_mut("CityObjects").and_then(|v| v.as_object_mut()) {
+            for co in cos.values_mut() {
+                if let Some(attrs) = co.get_mut("attributes").and_then(|v| v.as_object_mut()) {
+                    attrs.insert(
+                        "other_attributes".to_string(),
+                        serde_json::json!("should-be-rejected"),
+                    );
+                    injected = true;
+                    break;
+                }
+            }
+        }
+        out_lines.push(serde_json::to_string(&doc).unwrap());
+    }
+    assert!(
+        injected,
+        "delft fixture must carry at least one object with attributes to inject into"
+    );
 
-    (output, package_dir, export_dir)
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir
+        .path()
+        .join("delft_other_attributes_collision.city.jsonl");
+    std::fs::write(&input, out_lines.join("\n") + "\n").unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let opts = ConvertOptions::new(input, out.path().to_path_buf());
+    let err =
+        convert(&opts).expect_err("an attribute literally named other_attributes must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("other_attributes") && msg.contains("collides"),
+        "error must name the offending attribute and the reserved-name collision, got: {msg}"
+    );
+}
+
+/// spec "Appearance & templates" (gap 13): a `transformationMatrix` that
+/// isn't exactly 16 values is rejected at convert time, not silently
+/// truncated/padded. Derived from the real `lod3_railway` fixture (with an
+/// injected CRS, like [`railway_fixture_with_crs`]): the first
+/// `GeometryInstance`'s real `transformationMatrix` is truncated to 3 values.
+/// A 16-length matrix round-tripping exactly is already proven by every
+/// other railway round-trip test above (real `GeometryInstance`s all carry
+/// genuine 16-value matrices).
+#[test]
+fn template_transformation_matrix_wrong_length_is_rejected() {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+
+    let mut truncated = false;
+    if let Some(cos) = doc["CityObjects"].as_object_mut() {
+        'outer: for co in cos.values_mut() {
+            if let Some(geoms) = co["geometry"].as_array_mut() {
+                for geom in geoms.iter_mut() {
+                    if geom.get("type").and_then(|t| t.as_str()) == Some("GeometryInstance")
+                        && geom.get("transformationMatrix").is_some()
+                    {
+                        geom["transformationMatrix"] = serde_json::json!([1.0, 0.0, 0.0]);
+                        truncated = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        truncated,
+        "fixture must carry at least one GeometryInstance with a transformationMatrix"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("railway_bad_matrix.city.json");
+    std::fs::write(&input, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let opts = ConvertOptions::new(input, out.path().to_path_buf());
+    let err = convert(&opts).expect_err("a non-16-length transformationMatrix must be rejected");
+    assert!(
+        format!("{err}").contains("16"),
+        "error must call out the exactly-16 requirement, got: {err}"
+    );
 }
 
 /// M5 task 3 (the milestone claim): presets change bytes, never semantics.
@@ -171,8 +269,8 @@ fn delft_lod0_footprint_round_trips_with_lod_restored() {
     let (exported, _package_dir, _export_dir) = convert_and_export("delft.city.jsonl");
     let text = std::fs::read_to_string(&exported).unwrap();
     assert!(
-        text.contains("\"lod\":\"0\""),
-        "exported delft must restore LoD0 geometry with lod \"0\""
+        text.contains("\"lod\":\"0.0\""),
+        "exported delft must restore LoD0 geometry with the canonical lod \"0.0\""
     );
 }
 
@@ -235,7 +333,8 @@ fn delft_round_trips_losslessly() {
 
 #[test]
 fn railway_round_trips_losslessly_modulo_documented_drops() {
-    let (exported, _package_dir, _export_dir) = convert_and_export("lod3_railway.city.json");
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let (exported, _package_dir, _export_dir) = convert_and_export_path(&railway_path);
     let opts = CompareOptions {
         coord_tolerance: [0.0; 3],
         exclusions: Exclusions {
@@ -243,7 +342,7 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
             geometry_instances: true,
         },
     };
-    let report = compare_datasets(&fixture("lod3_railway.city.json"), &exported, &opts).unwrap();
+    let report = compare_datasets(&railway_path, &exported, &opts).unwrap();
     assert!(
         report.equal,
         "railway must round-trip losslessly modulo the documented appearance/instance drops; \
@@ -265,16 +364,24 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
     // appearance/instances totals are pinned against counts already proven
     // elsewhere: 105 stored geometries carry material or texture
     // (export_real_data.rs's appearance_refs_dropped), 15 objects carry a
-    // GeometryInstance (instance_geometries_dropped). The degenerate count
-    // was updated from the writer-only-index-drop figure of 3 to 23
-    // alongside the comparator's coordinate-degenerate ring fix (3DBAG tile
-    // `9-284-556.city.json` finding; see `crate::compare`'s module docs):
-    // railway's real, unmutated source carries 20 MORE objects whose
-    // boundaries include an index-distinct/coordinate-identical ring,
-    // previously invisible to the INDEX-only degenerate check (the writer's
-    // 3 pinned drops in `wkb_roundtrip_real_data.rs::geometries_with_drops`
-    // are unaffected — that pin is about the WRITER's own index-based
-    // normalisation, which this fix does not touch).
+    // GeometryInstance (instance_geometries_dropped) — DOUBLED to 210/30
+    // since spec-alignment gap 19: sidecars (materials/textures/
+    // geometry_templates) are now written whenever the source has content
+    // for them, so `export` actually RESTORES railway's appearance/instances
+    // (unlike the old Core-profile default, which dropped them). With
+    // `exclusions.appearance`/`exclusions.geometry_instances` on, the
+    // comparator excludes rather than compares that data on EACH side that
+    // carries it — now both the source and the export do, logging one
+    // exclusion entry per side. The degenerate count was updated from the
+    // writer-only-index-drop figure of 3 to 23 alongside the comparator's
+    // coordinate-degenerate ring fix (3DBAG tile `9-284-556.city.json`
+    // finding; see `crate::compare`'s module docs): railway's real,
+    // unmutated source carries 20 MORE objects whose boundaries include an
+    // index-distinct/coordinate-identical ring, previously invisible to the
+    // INDEX-only degenerate check (the writer's 3 pinned drops in
+    // `wkb_roundtrip_real_data.rs::geometries_with_drops` are unaffected —
+    // that pin is about the WRITER's own index-based normalisation, which
+    // this fix does not touch).
     let appearance = non_header_excluded
         .iter()
         .filter(|e| e.contains("exclusions.appearance"))
@@ -289,14 +396,14 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
         .count();
     assert_eq!(
         (appearance, instances, degenerate),
-        (105, 15, 23),
+        (210, 30, 23),
         "exclusion breakdown must match the pinned pipeline counts, got: {:#?}",
         non_header_excluded
     );
     assert_eq!(
         non_header_excluded.len(),
-        143,
-        "105 appearance + 15 instances + 23 degenerate = 143 total non-header exclusions, \
+        263,
+        "210 appearance + 30 instances + 23 degenerate = 263 total non-header exclusions, \
          nothing else, got: {:#?}",
         non_header_excluded
     );
@@ -311,11 +418,72 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
     );
 }
 
-/// M4 task 11 (the milestone's headline gate): a Compatibility-profile
-/// round trip with NO exclusions at all — appearance and GeometryInstance
-/// geometries are now restored from the sidecars (M4 tasks 6-10), so unlike
-/// `railway_round_trips_losslessly_modulo_documented_drops` above (which
-/// still excludes both, because that test converts Core), the only
+/// Gap 8 (texture ring nesting) evidence: `GMLID_BUI46739_1739_10911`'s
+/// single (LoD 3, `MultiSurface`) geometry carries a real multi-ring
+/// textured face — face index 2 of theme `"visual"` has 7 rings (an
+/// exterior ring plus 6 interior rings, almost certainly window openings
+/// cut into a wall), each independently textured with its OWN UV coordinate
+/// count: 4 UVs on the exterior ring, 15 on each interior ring. Flattening a
+/// face to a single `[texId, uv…]` (the loss gap 8 exists to rule out) would
+/// irrecoverably merge these seven differently-sized UV lists into one, so
+/// this is a real fixture proof — not a hand-built one — that ring
+/// structure survives the full `convert` (encode + appearance interning) →
+/// `export` (sidecar de-interning) pipeline intact.
+#[test]
+fn railway_interior_ring_texture_survives_round_trip() {
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+
+    // Face 2's ring shape as `[ring0_uv_count, ring1_uv_count, ...]` (each
+    // ring is `[texId, [u,v], [u,v], ...]`, so `len() - 1` is its UV count).
+    let ring_shape = |doc: &serde_json::Value| -> Vec<usize> {
+        let face = &doc["CityObjects"]["GMLID_BUI46739_1739_10911"]["geometry"][0]["texture"]["visual"]
+            ["values"][2];
+        face.as_array()
+            .expect("face must be an array of rings")
+            .iter()
+            .map(|ring| ring.as_array().expect("ring must be an array").len() - 1)
+            .collect()
+    };
+
+    let source_doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&railway_path).unwrap()).unwrap();
+    let source_shape = ring_shape(&source_doc);
+    assert_eq!(
+        source_shape,
+        vec![4, 15, 15, 15, 15, 15, 15],
+        "precondition: the fixture's known multi-ring textured face has this exact shape"
+    );
+
+    let package_dir = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        railway_path.clone(),
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+    let export_dir = tempfile::tempdir().unwrap();
+    let output = export_dir.path().join("export.city.json");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: output.clone(),
+    })
+    .unwrap();
+    let exported_doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+
+    assert_eq!(
+        ring_shape(&exported_doc),
+        source_shape,
+        "gap 8: every ring's independent UV count must survive convert -> export with no \
+         flattening of interior rings into the exterior ring"
+    );
+}
+
+/// M4 task 11 (the milestone's headline gate): a round trip with NO
+/// exclusions at all — appearance and GeometryInstance geometries are
+/// restored from the sidecars (M4 tasks 6-10, always written now that
+/// sidecars are content-gated rather than profile-gated), so unlike
+/// `railway_round_trips_losslessly_modulo_documented_drops` above (an older
+/// pin from when Core-vs-Compatibility was a real choice), the only
 /// remaining exclusions are the 23 pinned degenerate-ring drops (updated
 /// alongside the comparator's coordinate-degenerate fix — see the comment in
 /// `railway_round_trips_losslessly_modulo_documented_drops` above) and
@@ -324,14 +492,9 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
 /// instance silently failed to round-trip.
 #[test]
 fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
-    let (exported, _package_dir, _export_dir) =
-        convert_and_export_with_profile("lod3_railway.city.json", Profile::Compatibility);
-    let report = compare_datasets(
-        &fixture("lod3_railway.city.json"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let (exported, _package_dir, _export_dir) = convert_and_export_path(&railway_path);
+    let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
     assert!(
         report.equal,
         "railway must round-trip losslessly with NO exclusions under the Compatibility profile; \
@@ -373,13 +536,12 @@ fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
 /// profiles must round-trip with no exclusions beyond delft's own documented
 /// header metadata members and the 16 pinned coordinate-degenerate-ring
 /// drops (see `delft_round_trips_losslessly` above for the full explanation)
-/// — the Compatibility profile writing (empty) sidecars must not introduce
-/// any new difference or exclusion relative to the Core round trip already
-/// proven by `delft_round_trips_losslessly`.
+/// — delft has no appearance/templates to write sidecars for, so this must
+/// not introduce any new difference or exclusion relative to the round trip
+/// already proven by `delft_round_trips_losslessly`.
 #[test]
 fn delft_compatibility_round_trips_losslessly_with_only_header_exclusions() {
-    let (exported, _package_dir, _export_dir) =
-        convert_and_export_with_profile("delft.city.jsonl", Profile::Compatibility);
+    let (exported, _package_dir, _export_dir) = convert_and_export("delft.city.jsonl");
     let report = compare_datasets(
         &fixture("delft.city.jsonl"),
         &exported,
@@ -513,17 +675,23 @@ fn delft_derived_solid_face_drop_round_trips_and_comparator_agrees_with_the_writ
     );
 }
 
-/// Like [`convert_and_export_with_profile`] but also lets the caller pick
-/// `ordering` — needed for the M5 task 5 by-type round-trip gates below
-/// (and their Hilbert-composed variant).
+/// Like [`convert_and_export`] but also lets the caller pick `ordering` —
+/// needed for the M5 task 5 by-type round-trip gates below (and their
+/// Hilbert-composed variant).
 fn convert_and_export_with(
     input: &str,
-    profile: Profile,
+    ordering: RowOrder,
+) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
+    convert_and_export_with_path(&fixture(input), ordering)
+}
+
+/// [`convert_and_export_with`] taking an already-resolved input path.
+fn convert_and_export_with_path(
+    input: &Path,
     ordering: RowOrder,
 ) -> (PathBuf, tempfile::TempDir, tempfile::TempDir) {
     let package_dir = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture(input), package_dir.path().to_path_buf());
-    opts.profile = profile;
+    let mut opts = ConvertOptions::new(input.to_path_buf(), package_dir.path().to_path_buf());
     opts.ordering = ordering;
     convert(&opts).unwrap();
 
@@ -549,7 +717,7 @@ fn convert_and_export_with(
 #[test]
 fn delft_by_type_round_trips_losslessly() {
     let (exported, package_dir, _export_dir) =
-        convert_and_export_with("delft.city.jsonl", Profile::Core, RowOrder::Source);
+        convert_and_export_with("delft.city.jsonl", RowOrder::Source);
     assert!(
         package_dir.path().join("building.parquet").exists(),
         "sanity: this must actually be a split-by-type package"
@@ -594,33 +762,27 @@ fn delft_by_type_round_trips_losslessly() {
     );
 }
 
-/// M5 task 5 (Step 3): railway under by-type (Compatibility profile) — the
-/// M4 headline round-trip gate
+/// M5 task 5 (Step 3), updated for the by-module split (spec "By-module
+/// object-table layout"): railway under by-module (Compatibility profile) —
+/// the M4 headline round-trip gate
 /// (`railway_compatibility_round_trips_losslessly_with_no_exclusions` above)
-/// must hold across all 10 pinned family tables (railway's 14 distinct
-/// `object_type` values collapse to 10 distinct 1st-level families — see
-/// `by_type_convert_of_railway_writes_ten_family_tables` in
-/// `convert_real_data.rs` for the exact family membership).
+/// must hold across all 9 pinned module tables (railway's 14 distinct
+/// `object_type` values collapse to 9 distinct CityGML 3.0 modules — see
+/// `by_type_convert_of_railway_writes_nine_module_tables` in
+/// `convert_real_data.rs` for the exact module membership).
 #[test]
 fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
-    let (exported, package_dir, _export_dir) = convert_and_export_with(
-        "lod3_railway.city.json",
-        Profile::Compatibility,
-        RowOrder::Source,
-    );
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let (exported, package_dir, _export_dir) =
+        convert_and_export_with_path(&railway_path, RowOrder::Source);
     let tables = PackageTables::open(package_dir.path()).unwrap().tables;
     assert_eq!(
         tables.len(),
-        10,
-        "railway's pinned type set collapses to 10 distinct 1st-level families, got: {tables:?}"
+        9,
+        "railway's pinned type set collapses to 9 distinct CityGML modules, got: {tables:?}"
     );
 
-    let report = compare_datasets(
-        &fixture("lod3_railway.city.json"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
+    let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
     assert!(
         report.equal,
         "By-type railway must round-trip losslessly with NO exclusions under the \
@@ -660,7 +822,7 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
 #[test]
 fn delft_hilbert_and_by_type_compose_and_round_trip_losslessly() {
     let (exported, package_dir, _export_dir) =
-        convert_and_export_with("delft.city.jsonl", Profile::Core, RowOrder::Hilbert);
+        convert_and_export_with("delft.city.jsonl", RowOrder::Hilbert);
     assert!(
         package_dir.path().join("building.parquet").exists(),
         "sanity: this must actually be a split-by-type package"
@@ -766,18 +928,27 @@ fn null_shorthand_semantics_round_trips() {
     );
 }
 
-/// G9 (§5.1): unmapped source members — a Building's `address` and its
-/// per-object `geographicalExtent`, neither of which has a dedicated column —
-/// must survive the round-trip via the `other` column. Fixture is a real
-/// subset of the Helsinki dataset (the only fixture carrying `address`); its
-/// addresses have no `location` MultiPoint, so the vertex-index landmine
-/// (documented as a known limitation) is not exercised here.
+/// G9 (§5.1): a per-object `geographicalExtent`, which has no dedicated
+/// column, must survive the round-trip via `other`.
+///
+/// spec "Addresses" (gap 10): `helsinki_address.city.jsonl`'s `address`
+/// entries use non-postal member names (`Country`, `Locality`,
+/// `ThoroughfareName`, `ThoroughfareNumber` — none of which match the
+/// recognised set in [`cityparquet::schema`]'s "Addresses" mapping, chiefly
+/// because of casing), so nothing in them maps onto the reserved struct.
+/// This is the spec's documented, accepted loss (non-postal source address
+/// members are dropped) — not a bug: this test proves the drop happens
+/// cleanly (every entry still round-trips as an empty object, in the same
+/// cardinality) rather than corrupting anything, and that the UNRELATED
+/// `geographicalExtent` member is entirely unaffected. The fixture has no
+/// `address[].location` to exercise the `MultiPoint` round-trip — see
+/// `address_location_round_trips` for that, using a dedicated small fixture.
 ///
 /// The fixture is a small hand-derived subset of the City of Helsinki open 3D
 /// city model. It has no public download URL, so it is committed in-tree under
 /// `tests/data/` (via [`data_fixture`]) rather than fetched by `just fixtures`.
 #[test]
-fn helsinki_unmapped_members_round_trip() {
+fn helsinki_non_postal_address_members_are_dropped_not_corrupted() {
     let (exported, _package_dir, _export_dir) =
         convert_and_export_path(&data_fixture("helsinki_address.city.jsonl"));
     let report = compare_datasets(
@@ -788,13 +959,17 @@ fn helsinki_unmapped_members_round_trip() {
     .unwrap();
     assert!(
         report.equal,
-        "unmapped members (address, geographicalExtent) must round-trip; differences: {:#?}",
+        "the comparator maps both sides through the same recognised-member \
+         mapping (spec \"Addresses\"), so this fixture's non-recognised keys \
+         compare equal on both sides once dropped; differences: {:#?}",
         report.differences
     );
 
-    // Direct proof the members actually survive with their content, not merely
-    // that the comparator is satisfied.
-    let read_addresses = |path: &std::path::Path| -> Vec<(String, serde_json::Value)> {
+    // Direct proof the drop is clean: every source object's TWO address
+    // entries survive (same cardinality), each now an empty object (every
+    // non-recognised member gone, nothing spuriously kept or corrupted),
+    // and `geographicalExtent` is untouched.
+    let read_field = |path: &std::path::Path, field: &str| -> Vec<(String, serde_json::Value)> {
         let text = std::fs::read_to_string(path).unwrap();
         let mut out = Vec::new();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -803,39 +978,223 @@ fn helsinki_unmapped_members_round_trip() {
                 continue;
             };
             for (id, co) in cos {
-                if let Some(addr) = co.get("address") {
-                    out.push((id.clone(), addr.clone()));
+                if let Some(v) = co.get(field) {
+                    out.push((id.clone(), v.clone()));
                 }
             }
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     };
-    let source_addr = read_addresses(&data_fixture("helsinki_address.city.jsonl"));
-    let export_addr = read_addresses(&exported);
+    let source_addr = read_field(&data_fixture("helsinki_address.city.jsonl"), "address");
     assert!(
         !source_addr.is_empty(),
         "fixture must actually carry address members"
     );
+    let export_addr = read_field(&exported, "address");
     assert_eq!(
-        source_addr, export_addr,
-        "every source address must reappear verbatim after export"
+        export_addr.len(),
+        source_addr.len(),
+        "every object with a source address must still carry one after export"
+    );
+    for (_, addr) in &export_addr {
+        let arr = addr.as_array().expect("address must be an array");
+        assert_eq!(
+            arr.len(),
+            2,
+            "cardinality of each object's address list is preserved"
+        );
+        for entry in arr {
+            assert_eq!(
+                entry,
+                &serde_json::json!({}),
+                "a non-recognised-member entry drops to an empty object, not a corrupted one"
+            );
+        }
+    }
+
+    let source_extent = read_field(
+        &data_fixture("helsinki_address.city.jsonl"),
+        "geographicalExtent",
+    );
+    let export_extent = read_field(&exported, "geographicalExtent");
+    assert!(
+        !source_extent.is_empty(),
+        "fixture must actually carry geographicalExtent"
+    );
+    assert_eq!(
+        source_extent, export_extent,
+        "geographicalExtent is unrelated to the address drop and must round-trip verbatim"
     );
 }
 
-/// G12 (§5.2): a source attribute whose name collides with a reserved column
-/// name (here `bbox`) is diverted into `other` under
-/// `cityparquet:diverted_attributes` and restored on export — rather than
-/// aborting the whole conversion, which is what this fixture did before G12.
-/// Fixture is real Helsinki objects with one injected `bbox` attribute
-/// alongside 27 genuine (non-colliding) attributes.
+/// spec "Addresses" (gap 10): a real address with a `location` `MultiPoint`
+/// round-trips — CityJSON `address[].location` (vertex-indexed boundaries) ->
+/// the reserved struct's WKB `MultiPointZ` -> back to a CityJSON `MultiPoint`
+/// with fresh boundaries into the exported feature's own vertex pool. The
+/// recognised postal members round-trip under their canonical names; a
+/// non-recognised member (`Locality`, `id`) alongside a recognised one
+/// (`locality`) in the SAME entry is dropped without disturbing the
+/// recognised sibling (checklist item 2, self-contained).
+///
+/// `helsinki_address.city.jsonl` carries no `address[].location` at all (see
+/// `helsinki_non_postal_address_members_are_dropped_not_corrupted`'s doc
+/// comment), so this is a dedicated small fixture: real Helsinki geometry and
+/// vertices (borrowed from `helsinki_address.city.jsonl`'s first object) with
+/// a hand-added `address` array exercising both the location round-trip and
+/// the recognised/non-recognised member split. No public URL for this exact
+/// content, so committed in-tree under `tests/data/` (via [`data_fixture`])
+/// rather than fetched.
+#[test]
+fn address_location_round_trips() {
+    let (exported, _package_dir, _export_dir) =
+        convert_and_export_path(&data_fixture("address_location.city.jsonl"));
+    let report = compare_datasets(
+        &data_fixture("address_location.city.jsonl"),
+        &exported,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "address (incl. location) must round-trip losslessly; differences: {:#?}",
+        report.differences
+    );
+
+    // Direct proof beyond the comparator: read the exported document and
+    // check the address content itself. Each JSONL document is (header line
+    // carrying `transform`, empty `CityObjects`) + (feature line carrying
+    // `CityObjects`/`vertices`, no `transform` of its own) — `header_and_feature`
+    // returns both, since a location's boundaries dequantise against the
+    // HEADER's transform but live in the FEATURE's own vertices.
+    let header_and_feature = |text: &str| -> (serde_json::Value, serde_json::Value) {
+        let mut header = None;
+        let mut feature = None;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let has_objects = v
+                .get("CityObjects")
+                .and_then(|c| c.as_object())
+                .is_some_and(|c| !c.is_empty());
+            if has_objects {
+                feature = Some(v);
+            } else if header.is_none() {
+                header = Some(v);
+            }
+        }
+        (
+            header.expect("a header line"),
+            feature.expect("a feature line with the CityObject"),
+        )
+    };
+    let (source_header, source_feature) = header_and_feature(
+        &std::fs::read_to_string(data_fixture("address_location.city.jsonl")).unwrap(),
+    );
+    let (export_header, export_feature) =
+        header_and_feature(&std::fs::read_to_string(&exported).unwrap());
+
+    let source_co = source_feature["CityObjects"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    let export_co = export_feature["CityObjects"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    let export_addr = export_co["address"].as_array().unwrap();
+    assert_eq!(export_addr.len(), 2, "both address entries survive");
+
+    // Entry 0: every recognised postal member round-trips verbatim.
+    let e0 = &export_addr[0];
+    for key in [
+        "country",
+        "locality",
+        "administrativeArea",
+        "thoroughfareName",
+        "thoroughfareNumber",
+        "postcode",
+        "postBox",
+        "freeText",
+    ] {
+        assert_eq!(
+            e0.get(key),
+            source_co["address"][0].get(key),
+            "recognised member '{key}' must round-trip verbatim"
+        );
+    }
+
+    // `location` reconstructs as a MultiPoint whose boundaries resolve (via
+    // the exported feature's OWN transform/vertices) to the same real-world
+    // coordinates as the source's vertices 0 and 4.
+    let location = e0.get("location").expect("location must be present");
+    assert_eq!(location["type"], serde_json::json!("MultiPoint"));
+    let boundaries: Vec<usize> = serde_json::from_value(location["boundaries"].clone()).unwrap();
+    assert_eq!(boundaries.len(), 2, "the source location had two vertices");
+
+    let dequantise =
+        |header: &serde_json::Value, feature: &serde_json::Value, idx: usize| -> [f64; 3] {
+            let transform = &header["transform"];
+            let scale: Vec<f64> = serde_json::from_value(transform["scale"].clone()).unwrap();
+            let translate: Vec<f64> =
+                serde_json::from_value(transform["translate"].clone()).unwrap();
+            let raw: Vec<f64> = serde_json::from_value(feature["vertices"][idx].clone()).unwrap();
+            [
+                translate[0] + scale[0] * raw[0],
+                translate[1] + scale[1] * raw[1],
+                translate[2] + scale[2] * raw[2],
+            ]
+        };
+    let expected = [
+        dequantise(&source_header, &source_feature, 0),
+        dequantise(&source_header, &source_feature, 4),
+    ];
+    let actual = [
+        dequantise(&export_header, &export_feature, boundaries[0]),
+        dequantise(&export_header, &export_feature, boundaries[1]),
+    ];
+    for (e, a) in expected.iter().zip(actual.iter()) {
+        for axis in 0..3 {
+            assert!(
+                (e[axis] - a[axis]).abs() < 1e-6,
+                "location coordinate must round-trip: expected {e:?}, got {a:?}"
+            );
+        }
+    }
+
+    // Entry 1: the recognised `locality` survives; the non-recognised
+    // `Locality`/`id` siblings are dropped without corrupting it.
+    let e1 = &export_addr[1];
+    assert_eq!(e1.get("locality"), Some(&serde_json::json!("Espoo")));
+    assert!(
+        e1.get("Locality").is_none(),
+        "the non-recognised sibling member must not survive"
+    );
+    assert!(e1.get("id").is_none(), "non-postal `id` must not survive");
+    assert_eq!(
+        e1.as_object().unwrap().len(),
+        1,
+        "entry 1 must carry exactly the one recognised member"
+    );
+}
+
+/// G12/gap 14 (§5.2): a source attribute whose name collides with a reserved
+/// column name (here `bbox`) is diverted into the reserved `other_attributes`
+/// column — a genuine physical column, not a magic
+/// `cityparquet:diverted_attributes` key riding inside `other` (the pre-gap-14
+/// mechanism) — and restored on export, rather than aborting the whole
+/// conversion. Fixture is real Helsinki objects with one injected `bbox`
+/// attribute alongside 27 genuine (non-colliding) attributes.
 ///
 /// Hand-derived from the City of Helsinki open 3D city model (an injected
 /// colliding attribute on real objects); no public URL, so committed in-tree
 /// under `tests/data/` (via [`data_fixture`]) rather than fetched.
 #[test]
 fn colliding_attribute_is_diverted_and_round_trips() {
-    let (exported, _package_dir, _export_dir) =
+    let (exported, package_dir, _export_dir) =
         convert_and_export_path(&data_fixture("collision_attr.city.jsonl"));
     let report = compare_datasets(
         &data_fixture("collision_attr.city.jsonl"),
@@ -845,7 +1204,7 @@ fn colliding_attribute_is_diverted_and_round_trips() {
     .unwrap();
     assert!(
         report.equal,
-        "a colliding attribute must round-trip via `other`; differences: {:#?}",
+        "a colliding attribute must round-trip via `other_attributes`; differences: {:#?}",
         report.differences
     );
 
@@ -878,4 +1237,50 @@ fn colliding_attribute_is_diverted_and_round_trips() {
         }
     }
     assert_eq!(checked, 2, "fixture has two objects, both must be checked");
+
+    // Physical proof (not just decoded values): the PACKAGE's own
+    // `other_attributes` Parquet column actually carries the diverted value,
+    // and its `other` column does NOT — the divert-key transport mechanism
+    // this superseded is gone.
+    let tables = PackageTables::open(package_dir.path()).unwrap().tables;
+    assert_eq!(tables.len(), 1, "both fixture objects are Buildings");
+    let file = std::fs::File::open(&tables[0]).unwrap();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut other_attributes_seen = 0;
+    for batch in reader {
+        let batch = batch.unwrap();
+        let other_attributes = batch
+            .column_by_name("other_attributes")
+            .expect("other_attributes must be a real physical column")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let other = batch
+            .column_by_name("other")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            assert!(
+                !other_attributes.is_null(row),
+                "the diverted attribute must land in the physical other_attributes cell"
+            );
+            let cell: serde_json::Value =
+                serde_json::from_str(other_attributes.value(row)).unwrap();
+            assert_eq!(cell, serde_json::json!({"bbox": "diverted-sentinel"}));
+            if !other.is_null(row) {
+                let other_cell: serde_json::Value = serde_json::from_str(other.value(row)).unwrap();
+                assert!(
+                    other_cell.get("bbox").is_none(),
+                    "the diverted attribute must not ALSO ride inside other"
+                );
+            }
+            other_attributes_seen += 1;
+        }
+    }
+    assert_eq!(other_attributes_seen, 2);
 }

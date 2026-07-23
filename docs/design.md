@@ -101,7 +101,7 @@ appearance/template references, then the inferred attribute columns.
 | `children_roles` | `List<Utf8>` | one role per child, from CityJSON `children_roles` |
 | `bbox` | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>` | see below |
 | `geometry` *or* `geometry_lod<k>` | `Binary` (WKB) | one column per LoD |
-| `geometry_properties` *or* `geometry_properties_lod<k>` | JSON | semantics WKB can't carry |
+| `geometry_properties` *or* `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>` | semantics WKB can't carry |
 | `material` | JSON | surface→material map into `materials.parquet` |
 | `texture` | JSON | surface→texture map into `textures.parquet` |
 | `template` | `Struct<id: Utf8, point: Binary, transformationMatrix: JSON>` | geometry-instance data |
@@ -158,22 +158,30 @@ semantics mapping, material/texture maps, and the source vertex-index
 structure all live in the sibling `geometry_properties` / `material` /
 `texture` columns.
 
-**LoD is expressed by column layout**: a dataset with LoD 1 and LoD 2.2 gets
-`geometry_lod1` + `geometry_properties_lod1` and `geometry_lod2_2` +
-`geometry_properties_lod2_2`. **LoD 0 is the exception — it occupies the
-un-suffixed `geometry` / `geometry_properties` pair** (the GeoParquet-legal
-primary column, spec §9), carrying its LoD in `geometry_properties.lod` the way
-a template does. A dataset with no LoD labels at all also uses that un-suffixed
-pair (all-null). A second geometry for the same `(object, LoD)` is skipped and
-counted.
+**LoD is expressed by column layout, and every LoD is suffixed — including
+LoD0**: a dataset with LoD 1 and LoD 2.2 gets `geometry_lod1_0` +
+`geometry_properties_lod1_0` and `geometry_lod2_2` +
+`geometry_properties_lod2_2`; a dataset with LoD 0 gets `geometry_lod0_0` +
+`geometry_properties_lod0_0` the same way (spec "Levels of detail" — "a suffix
+always carries a minor" and "there is no un-suffixed `geometry`... column").
+The LoD lives only in the column name, never re-stored as a value: a source
+`"1"` and a source `"1.0"` both map to `geometry_lod1_0` and export in the
+canonical `"1.0"` spelling. A dataset with no LoD labels at all (no analysis
+geometry — only `GeometryInstance`s, or none) uses a single un-suffixed
+`geometry` / `geometry_properties` pair (all-null), a separate fallback that
+does not apply once any LoD is present. A second geometry for the same
+`(object, LoD)` is skipped and counted.
 
 **LoD0 synthesis** (`src/lod0.rs`): when an object has no source LoD0, the
 writer can synthesise a footprint from its lowest higher LoD — semantics-first
 (`GroundSurface` faces), else a geometric fallback (downward-facing faces →
-2D union → Z re-drape → `MultiPolygonZ`), marked with
-`cityparquet:lod0_source` and exported as a real `lod:"0"` geometry. The CLI
-enables it by default (`--no-lod0` to disable); the library `ConvertOptions` is
-source-faithful unless `generate_lod0` is set.
+2D union → Z re-drape → `MultiPolygonZ`). `geometry_properties`'s struct shape
+has no field for provenance, so the row's `other` column instead gets a
+`cityparquet:lod0_0_source` key naming the source geometry column the
+footprint was derived from (e.g. `"geometry_lod2_2"`). The footprint is
+exported as a real `lod:"0.0"` geometry, landing in `geometry_lod0_0` like any
+other LoD. The CLI enables it by default (`--no-lod0` to disable); the
+library `ConvertOptions` is source-faithful unless `generate_lod0` is set.
 
 ### Bounding box & spatial ordering
 
@@ -221,14 +229,24 @@ literal-exact.
 ### Geometry templates
 
 Reusable templates live in `geometry_templates.parquet`, one per row, using
-the same WKB-plus-`geometry_properties` strategy as the main table. Template
-vertices are **raw floats** — CityJSON `vertices-templates` are *not* subject
-to the dataset transform — so they are interned by exact `f64` bit pattern
-rather than through the quantised transform. A template row also carries its
-`lod` inside `geometry_properties` (templates have no per-LoD column name to
-carry it). Its `id` is the template's position, matching the main-table
-`template.id`. An object that instantiates a template stores the reference
-point (WKB `PointZ`) and `transformationMatrix` in its `template` column.
+the same WKB-plus-`geometry_properties` strategy as the main table, **per-LoD
+suffixed exactly like the main object table's own geometry and appearance
+columns**: `geometry_lod*`/`geometry_properties_lod*`/`material_lod*`/
+`texture_lod*`, one column set per LoD present among the templates being
+rendered. A template row populates exactly the column set matching its own
+LoD and leaves every other LoD's columns null — sparse by construction, like
+the main table. There is no `lod` column (the column name already carries
+it, just as in the main table) and no `other` column (a geometry template is
+a plain geometry — WKB + properties + appearance — with no members left over
+to preserve). Template vertices are **raw floats** — CityJSON
+`vertices-templates` are *not* subject to the dataset transform — so they are
+interned by exact `f64` bit pattern rather than through the quantised
+transform, and a template's `geometry_lod*` carries no `geoarrow.wkb`/CRS
+tagging: template coordinates are in the template's own local frame, exempt
+from the file CRS. Its `id` is the template's position, matching the
+main-table `template.id`. An object that instantiates a template stores the
+reference point (WKB `PointZ`) and `transformationMatrix` in its `template`
+column.
 
 ## Dataset metadata
 
@@ -247,6 +265,13 @@ of a package: profile, LoDs, the list of tables, and the list of sidecar
 files actually written. Export reads the manifest, not the directory — a
 sidecar file present on disk but absent from the manifest is ignored, and one
 listed but missing is an error, never a silent drop.
+
+`metadata.json` is a **STAC Item** (the 3D city models `city3d:*` extension)
+describing that one package — see `crates/cityparquet/src/stac/`. A
+dataset-level `collection.json` (a STAC **Collection** curating *multiple*
+CityParquet packages/tiles into one aggregated dataset) is **not yet
+implemented** — it needs a multi-package conversion workflow this CLI doesn't
+yet have (`convert` writes one package per run); tracked as a follow-up.
 
 ## Round-trip semantics
 

@@ -11,7 +11,7 @@ use geoarrow_schema::{Crs, Metadata as GeoMetadata, WkbType};
 
 use crate::attributes::AttributeType;
 use crate::error::{CityParquetError, Result};
-use crate::types::{Lod, footprint_lod, geometry_column_name};
+use crate::types::{Lod, geometry_column_name};
 
 pub const ROLE_KEY: &str = "cityparquet:role";
 pub const LOD_KEY: &str = "cityparquet:lod";
@@ -42,12 +42,56 @@ pub fn bbox_data_type() -> DataType {
     ))
 }
 
+/// `template.transformationMatrix`'s element field: a flat, row-major 4x4
+/// (spec "Appearance & templates" — "exactly 16 values when non-null"). Items
+/// are non-null — a transformation matrix is 16 real numbers, never a partial
+/// list with holes.
+fn transformation_matrix_data_type() -> DataType {
+    DataType::List(Arc::new(Field::new("item", DataType::Float64, false)))
+}
+
 pub fn template_data_type() -> DataType {
     DataType::Struct(Fields::from(vec![
         Field::new("id", DataType::Utf8, true),
         Field::new("point", DataType::Binary, true),
-        json_field("transformationMatrix", true).as_ref().clone(),
+        Field::new(
+            "transformationMatrix",
+            transformation_matrix_data_type(),
+            true,
+        ),
     ]))
+}
+
+/// The `address` list item's `STRUCT` fields, in spec order (spec
+/// "Addresses"): a lean subset of 3DCityDB v5's `ADDRESS` table, plus
+/// `location` (WKB `MultiPointZ` in the file CRS). All nine fields are
+/// nullable. Exposed separately from [`address_item_data_type`] so the
+/// encoder can build an Arrow `StructBuilder` from the exact same
+/// [`Fields`] the rendered schema uses (`StructBuilder::from_fields`), never
+/// duplicating the field list.
+pub fn address_item_fields() -> Fields {
+    Fields::from(vec![
+        Field::new("street", DataType::Utf8, true),
+        Field::new("house_number", DataType::Utf8, true),
+        Field::new("po_box", DataType::Utf8, true),
+        Field::new("zip_code", DataType::Utf8, true),
+        Field::new("city", DataType::Utf8, true),
+        Field::new("state", DataType::Utf8, true),
+        Field::new("country", DataType::Utf8, true),
+        Field::new("free_text", DataType::Utf8, true),
+        Field::new("location", DataType::Binary, true),
+    ])
+}
+
+pub fn address_item_data_type() -> DataType {
+    DataType::Struct(address_item_fields())
+}
+
+/// The reserved `address` column: `LIST<STRUCT<...>>` (spec "Addresses") —
+/// an object may have several addresses, so it is stored as a list of the
+/// [`address_item_data_type`] struct, one list per row.
+pub fn address_data_type() -> DataType {
+    DataType::List(Arc::new(Field::new("item", address_item_data_type(), true)))
 }
 
 fn with_meta(field: Field, pairs: &[(&str, &str)]) -> Field {
@@ -66,6 +110,45 @@ fn json_field(name: &str, nullable: bool) -> Arc<Field> {
         Field::new(name, DataType::Utf8, nullable),
         &[(EXTENSION_TYPE_NAME_KEY, "arrow.json")],
     ))
+}
+
+/// The `geometry_properties[_lod*]` Arrow type (spec "Geometry properties and
+/// semantics"):
+///
+/// ```text
+/// STRUCT<
+///   type            VARCHAR,          -- non-null
+///   surfaces        JSON,             -- nullable
+///   face_semantics  LIST<INT>,        -- nullable; items nullable
+///   shells          LIST<LIST<INT>>   -- nullable; where non-null, both
+///                                     -- nesting levels (inner LIST<INT> and
+///                                     -- each INT) are themselves non-null
+/// >
+/// ```
+///
+/// There is no `lod` field — the column name carries the LoD. `shells` is
+/// **always nested one inner list per solid**: a `Solid` (exactly one solid)
+/// still gets one inner list (`[[12]]`, never the flat `[12]`), so a reader
+/// never needs to special-case `Solid` vs `MultiSolid`/`CompositeSolid`.
+pub fn geometry_properties_data_type() -> DataType {
+    let face_semantics_item = Arc::new(Field::new("item", DataType::Int32, true));
+    let face_semantics = DataType::List(face_semantics_item);
+
+    // `shells`: non-null all the way down once populated (spec) — the inner
+    // per-shell `INT` face count is non-nullable, and so is each solid's
+    // inner `LIST<INT>`; only the whole `shells` column (absent for
+    // non-solid types) is nullable.
+    let shell_face_count = Arc::new(Field::new("item", DataType::Int32, false));
+    let shell_list = DataType::List(shell_face_count);
+    let per_solid_shells = Arc::new(Field::new("item", shell_list, false));
+    let shells = DataType::List(per_solid_shells);
+
+    DataType::Struct(Fields::from(vec![
+        Field::new("type", DataType::Utf8, false),
+        json_field("surfaces", true).as_ref().clone(),
+        Field::new("face_semantics", face_semantics, true),
+        Field::new("shells", shells, true),
+    ]))
 }
 
 fn string_list(name: &str) -> Field {
@@ -92,22 +175,22 @@ const RESERVED_COLUMN_NAMES: &[&str] = &[
     "parents",
     "children",
     "children_roles",
+    "address",
     "bbox",
     "template",
     "other",
+    "other_attributes",
 ];
 
 /// Every column name an attribute column must not collide with, for a schema
 /// with these `lods`: the fixed reserved names plus the geometry/appearance
-/// column names the LoDs realise. **Schema-relative**, per §9 — LoD `0` reserves
-/// the bare `geometry`/`geometry_properties`/`material`/`texture` names, every
-/// other LoD reserves its suffixed forms (`geometry_lod2`, …), and the
-/// zero-analysis-geometry case (empty `lods`) reserves the bare names too. So an
-/// attribute literally named `geometry` is a legal column only when the dataset
-/// has neither an LoD0 nor the empty-lods fallback. This is the single source of truth
-/// shared by [`CityParquetSchema::validate`] (which errors on a collision) and
-/// the scan-time diversion of colliding attributes into `other` (§5.2, G12), so
-/// the two can never diverge on what "reserved" means.
+/// column names the LoDs realise. **Schema-relative** — every LoD reserves its
+/// suffixed forms (`geometry_lod2_2`, …), and the zero-analysis-geometry case
+/// (empty `lods`) reserves the bare names instead (no LoD to suffix by). This
+/// is the single source of truth shared by [`CityParquetSchema::validate`]
+/// (which errors on a collision) and the scan-time diversion of colliding
+/// attributes into `other` (§5.2, G12), so the two can never diverge on what
+/// "reserved" means.
 pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
     let mut names: HashSet<String> = RESERVED_COLUMN_NAMES
         .iter()
@@ -119,12 +202,11 @@ pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
         names.insert("material".to_string());
         names.insert("texture".to_string());
     } else {
-        let fp = footprint_lod(lods);
         for lod in lods {
-            names.insert(geometry_column_name("geometry", lod, fp));
-            names.insert(geometry_column_name("geometry_properties", lod, fp));
-            names.insert(geometry_column_name("material", lod, fp));
-            names.insert(geometry_column_name("texture", lod, fp));
+            names.insert(geometry_column_name("geometry", lod));
+            names.insert(geometry_column_name("geometry_properties", lod));
+            names.insert(geometry_column_name("material", lod));
+            names.insert(geometry_column_name("texture", lod));
         }
     }
     names
@@ -196,13 +278,14 @@ impl CityParquetSchema {
             reserved(string_list("parents")),
             reserved(string_list("children")),
             reserved(string_list("children_roles")),
+            reserved(Field::new("address", address_data_type(), true)),
             reserved(Field::new("bbox", bbox_data_type(), true)),
         ];
 
         if self.lods.is_empty() {
             fields.push(self.geometry_field("geometry", None, geoarrow));
             fields.push(with_meta(
-                json_field("geometry_properties", true).as_ref().clone(),
+                Field::new("geometry_properties", geometry_properties_data_type(), true),
                 &[(ROLE_KEY, ROLE_RESERVED)],
             ));
             // Appearance parallels geometry (§11.1): the un-suffixed pair for
@@ -218,24 +301,27 @@ impl CityParquetSchema {
         } else {
             // Per-LoD columns, grouped so each LoD's geometry, semantics and
             // appearance sit adjacent: geometry_lodX, geometry_properties_lodX,
-            // material_lodX, texture_lodX (§9, §11.1). Appearance pairs to the
+            // material_lodX, texture_lodX (§11.1). Appearance pairs to the
             // geometry it decorates by column name, not by a JSON LoD key.
-            let fp = footprint_lod(&self.lods);
+            // Every LoD — including LoD0 — is suffixed; there is no
+            // un-suffixed "footprint" column (spec "Levels of detail").
             for lod in &self.lods {
                 fields.push(self.geometry_field(
-                    &geometry_column_name("geometry", lod, fp),
+                    &geometry_column_name("geometry", lod),
                     Some(lod),
                     geoarrow,
                 ));
                 fields.push(with_meta(
-                    json_field(&geometry_column_name("geometry_properties", lod, fp), true)
-                        .as_ref()
-                        .clone(),
+                    Field::new(
+                        geometry_column_name("geometry_properties", lod),
+                        geometry_properties_data_type(),
+                        true,
+                    ),
                     &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
                 ));
                 for prefix in ["material", "texture"] {
                     fields.push(with_meta(
-                        json_field(&geometry_column_name(prefix, lod, fp), true)
+                        json_field(&geometry_column_name(prefix, lod), true)
                             .as_ref()
                             .clone(),
                         &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
@@ -246,6 +332,10 @@ impl CityParquetSchema {
         fields.push(reserved(Field::new("template", template_data_type(), true)));
         fields.push(with_meta(
             json_field("other", true).as_ref().clone(),
+            &[(ROLE_KEY, ROLE_RESERVED)],
+        ));
+        fields.push(with_meta(
+            json_field("other_attributes", true).as_ref().clone(),
             &[(ROLE_KEY, ROLE_RESERVED)],
         ));
 
@@ -296,7 +386,7 @@ impl CityParquetSchema {
 mod tests {
     use super::*;
     use crate::attributes::AttributeType;
-    use crate::types::{Lod, footprint_lod, geometry_column_name};
+    use crate::types::{Lod, geometry_column_name};
     use arrow_schema::DataType;
 
     fn sample() -> CityParquetSchema {
@@ -323,73 +413,77 @@ mod tests {
                 "parents",
                 "children",
                 "children_roles",
+                "address",
                 "bbox",
-                "geometry_lod1",
-                "geometry_properties_lod1",
-                "material_lod1",
-                "texture_lod1",
+                "geometry_lod1_0",
+                "geometry_properties_lod1_0",
+                "material_lod1_0",
+                "texture_lod1_0",
                 "geometry_lod2_2",
                 "geometry_properties_lod2_2",
                 "material_lod2_2",
                 "texture_lod2_2",
                 "template",
                 "other",
+                "other_attributes",
                 "yoc",
                 "ex_height",
             ]
         );
     }
 
+    /// spec "Levels of detail": LoD0 is suffixed exactly like any other LoD —
+    /// no bare `geometry`/`geometry_properties`/`material`/`texture` column.
     #[test]
-    fn lod0_realises_bare_geometry_columns() {
+    fn lod0_is_suffixed_like_any_other_lod() {
         let schema = CityParquetSchema {
             lods: vec![Lod::parse("0").unwrap(), Lod::parse("2.2").unwrap()],
             attributes: vec![],
             crs: None,
         };
         let arrow = schema.to_arrow_schema().unwrap();
-        assert!(arrow.field_with_name("geometry").is_ok());
-        assert!(arrow.field_with_name("geometry_properties").is_ok());
-        assert!(arrow.field_with_name("material").is_ok());
-        assert!(arrow.field_with_name("texture").is_ok());
+        assert!(arrow.field_with_name("geometry_lod0_0").is_ok());
+        assert!(arrow.field_with_name("geometry_properties_lod0_0").is_ok());
+        assert!(arrow.field_with_name("material_lod0_0").is_ok());
+        assert!(arrow.field_with_name("texture_lod0_0").is_ok());
         assert!(arrow.field_with_name("geometry_lod2_2").is_ok());
-        // LoD0 renamed away from the suffixed form.
-        assert!(arrow.field_with_name("geometry_lod0").is_err());
-        // The bare LoD0 geometry field still carries its lod metadata.
-        let f = arrow.field_with_name("geometry").unwrap();
-        assert_eq!(f.metadata().get(LOD_KEY).map(String::as_str), Some("0"));
+        // No bare/un-suffixed column ever appears.
+        assert!(arrow.field_with_name("geometry").is_err());
+        assert!(arrow.field_with_name("geometry_properties").is_err());
+        assert!(arrow.field_with_name("material").is_err());
+        assert!(arrow.field_with_name("texture").is_err());
+        let f = arrow.field_with_name("geometry_lod0_0").unwrap();
+        assert_eq!(f.metadata().get(LOD_KEY).map(String::as_str), Some("0.0"));
     }
 
     #[test]
-    fn reserved_names_include_bare_geometry_for_lod0() {
+    fn reserved_names_suffix_every_lod_including_zero() {
         let names = reserved_and_geometry_column_names(&[Lod::parse("0").unwrap()]);
-        assert!(names.contains("geometry"));
-        assert!(names.contains("geometry_properties"));
-        assert!(names.contains("material"));
-        assert!(names.contains("texture"));
-        assert!(!names.contains("geometry_lod0"));
-        // A mixed schema reserves the bare LoD0 names and the suffixed rest.
+        assert!(names.contains("geometry_lod0_0"));
+        assert!(names.contains("geometry_properties_lod0_0"));
+        assert!(names.contains("material_lod0_0"));
+        assert!(names.contains("texture_lod0_0"));
+        assert!(!names.contains("geometry"));
+        // A mixed schema reserves every LoD's suffixed forms.
         let mixed = reserved_and_geometry_column_names(&[
             Lod::parse("0").unwrap(),
             Lod::parse("2").unwrap(),
         ]);
-        assert!(mixed.contains("geometry"));
-        assert!(mixed.contains("geometry_lod2"));
+        assert!(mixed.contains("geometry_lod0_0"));
+        assert!(mixed.contains("geometry_lod2_0"));
     }
 
     #[test]
     fn geometry_column_name_helper_is_wired() {
         let lod0 = Lod::parse("0").unwrap();
-        assert_eq!(
-            geometry_column_name("geometry", &lod0, footprint_lod(&[lod0])),
-            "geometry"
-        );
+        assert_eq!(geometry_column_name("geometry", &lod0), "geometry_lod0_0");
     }
 
+    /// A dataset with LoD 0.1, 0.3, and 2.2: every one of them, including
+    /// both members of the `0.*` family, keeps its own suffixed column — no
+    /// single 0.* LoD is picked out to go unsuffixed.
     #[test]
-    fn highest_zero_family_lod_realises_the_bare_geometry_column() {
-        // A dataset with LoD 0.1, 0.3, and 2.2: the highest 0.* (0.3) is the
-        // un-suffixed `geometry`, the lower 0.* keeps its suffix.
+    fn every_zero_family_lod_keeps_its_own_suffix() {
         let schema = CityParquetSchema {
             lods: vec![
                 Lod::parse("0.1").unwrap(),
@@ -400,16 +494,10 @@ mod tests {
             crs: None,
         };
         let arrow = schema.to_arrow_schema().unwrap();
-        assert!(arrow.field_with_name("geometry").is_ok());
         assert!(arrow.field_with_name("geometry_lod0_1").is_ok());
-        assert!(
-            arrow.field_with_name("geometry_lod0_3").is_err(),
-            "the highest 0.* is the bare geometry, not a suffixed column"
-        );
+        assert!(arrow.field_with_name("geometry_lod0_3").is_ok());
         assert!(arrow.field_with_name("geometry_lod2_2").is_ok());
-        // The bare column carries the footprint LoD (0.3) in its metadata.
-        let f = arrow.field_with_name("geometry").unwrap();
-        assert_eq!(f.metadata().get(LOD_KEY).map(String::as_str), Some("0.3"));
+        assert!(arrow.field_with_name("geometry").is_err());
     }
 
     /// RED (G20): spec §11.1 makes appearance per-LoD columns
@@ -419,7 +507,7 @@ mod tests {
     #[test]
     fn appearance_columns_are_per_lod() {
         let schema = sample().to_arrow_schema().unwrap();
-        for lod_suffix in ["lod1", "lod2_2"] {
+        for lod_suffix in ["lod1_0", "lod2_2"] {
             assert!(
                 schema
                     .field_with_name(&format!("material_{lod_suffix}"))
@@ -556,8 +644,8 @@ mod tests {
         assert_eq!(get("ex_height", ROLE_KEY).as_deref(), Some("extension"));
         assert_eq!(get("geometry_lod2_2", LOD_KEY).as_deref(), Some("2.2"));
         assert_eq!(
-            get("geometry_properties_lod1", LOD_KEY).as_deref(),
-            Some("1")
+            get("geometry_properties_lod1_0", LOD_KEY).as_deref(),
+            Some("1.0")
         );
     }
 
@@ -565,10 +653,10 @@ mod tests {
     fn json_columns_carry_arrow_json_extension() {
         let schema = sample().to_arrow_schema().unwrap();
         for name in [
-            "geometry_properties_lod1",
-            "material_lod1",
+            "material_lod1_0",
             "texture_lod2_2",
             "other",
+            "other_attributes",
         ] {
             let field = schema.field_with_name(name).unwrap();
             assert_eq!(
@@ -581,6 +669,90 @@ mod tests {
             );
             assert_eq!(field.data_type(), &DataType::Utf8);
         }
+    }
+
+    /// spec "Geometry properties and semantics": `geometry_properties_lod*`
+    /// is a genuine Arrow `STRUCT` with typed children — `type` (non-null
+    /// `Utf8`), `surfaces` (nullable `Utf8` tagged `arrow.json`),
+    /// `face_semantics` (nullable `List<Int32>`, items nullable), `shells`
+    /// (nullable `List<List<Int32 non-null> non-null>`) — not a JSON-tagged
+    /// Utf8 blob. Asserted via Arrow's own `Field`/`DataType`
+    /// introspection, not decoded row values.
+    #[test]
+    fn geometry_properties_is_a_typed_struct_not_json() {
+        let schema = sample().to_arrow_schema().unwrap();
+        let field = schema
+            .field_with_name("geometry_properties_lod2_2")
+            .unwrap();
+        assert!(
+            !field.metadata().contains_key("ARROW:extension:name"),
+            "the outer geometry_properties field must not itself be tagged arrow.json"
+        );
+        let DataType::Struct(children) = field.data_type() else {
+            panic!(
+                "geometry_properties must be a Struct, got {:?}",
+                field.data_type()
+            );
+        };
+        assert_eq!(
+            children
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>(),
+            vec!["type", "surfaces", "face_semantics", "shells"],
+            "exactly these four fields, in this order"
+        );
+
+        let type_field = children.iter().find(|f| f.name() == "type").unwrap();
+        assert_eq!(type_field.data_type(), &DataType::Utf8);
+        assert!(!type_field.is_nullable(), "type is non-null");
+
+        let surfaces_field = children.iter().find(|f| f.name() == "surfaces").unwrap();
+        assert_eq!(surfaces_field.data_type(), &DataType::Utf8);
+        assert!(surfaces_field.is_nullable());
+        assert_eq!(
+            surfaces_field
+                .metadata()
+                .get("ARROW:extension:name")
+                .map(String::as_str),
+            Some("arrow.json"),
+            "surfaces stays JSON (heterogeneous per-surface attributes)"
+        );
+
+        let fs_field = children
+            .iter()
+            .find(|f| f.name() == "face_semantics")
+            .unwrap();
+        assert!(fs_field.is_nullable());
+        let DataType::List(fs_item) = fs_field.data_type() else {
+            panic!(
+                "face_semantics must be List, got {:?}",
+                fs_field.data_type()
+            );
+        };
+        assert_eq!(fs_item.data_type(), &DataType::Int32);
+        assert!(fs_item.is_nullable(), "face_semantics items are nullable");
+
+        let shells_field = children.iter().find(|f| f.name() == "shells").unwrap();
+        assert!(shells_field.is_nullable());
+        let DataType::List(solid_item) = shells_field.data_type() else {
+            panic!("shells must be List, got {:?}", shells_field.data_type());
+        };
+        assert!(
+            !solid_item.is_nullable(),
+            "each solid's inner shell-count list is non-null once shells is populated"
+        );
+        let DataType::List(count_item) = solid_item.data_type() else {
+            panic!(
+                "shells' items must themselves be List, got {:?}",
+                solid_item.data_type()
+            );
+        };
+        assert_eq!(count_item.data_type(), &DataType::Int32);
+        assert!(
+            !count_item.is_nullable(),
+            "each per-shell face count is non-null once shells is populated"
+        );
     }
 
     #[test]
@@ -598,7 +770,7 @@ mod tests {
 
     #[test]
     fn attribute_colliding_with_reserved_column_is_an_error() {
-        for bad_name in ["id", "material"] {
+        for bad_name in ["id", "material", "address", "other_attributes"] {
             let schema = CityParquetSchema {
                 lods: vec![],
                 attributes: vec![(bad_name.to_string(), AttributeType::String)],
@@ -638,6 +810,97 @@ mod tests {
     fn bbox_is_nullable() {
         let schema = sample().to_arrow_schema().unwrap();
         assert!(schema.field_with_name("bbox").unwrap().is_nullable());
+    }
+
+    /// spec "Addresses": `address` is `LIST<STRUCT<...>>`, column and every
+    /// field nullable, in exactly this order — `location` is `BLOB` (WKB),
+    /// everything else `VARCHAR`.
+    #[test]
+    fn address_is_a_nullable_list_of_a_nine_field_struct() {
+        let schema = sample().to_arrow_schema().unwrap();
+        let field = schema.field_with_name("address").unwrap();
+        assert!(field.is_nullable());
+        let DataType::List(item) = field.data_type() else {
+            panic!("address must be a List, got {:?}", field.data_type());
+        };
+        assert!(item.is_nullable());
+        let DataType::Struct(children) = item.data_type() else {
+            panic!("address item must be a Struct, got {:?}", item.data_type());
+        };
+        assert_eq!(
+            children
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "street",
+                "house_number",
+                "po_box",
+                "zip_code",
+                "city",
+                "state",
+                "country",
+                "free_text",
+                "location",
+            ]
+        );
+        for f in children.iter() {
+            assert!(f.is_nullable(), "{} must be nullable", f.name());
+            let expected = if f.name() == "location" {
+                &DataType::Binary
+            } else {
+                &DataType::Utf8
+            };
+            assert_eq!(f.data_type(), expected, "{} has the wrong type", f.name());
+        }
+    }
+
+    /// spec "Appearance & templates": `template.transformationMatrix` is a
+    /// flat, row-major `LIST<DOUBLE>` — no longer JSON.
+    #[test]
+    fn template_transformation_matrix_is_a_list_of_double() {
+        let schema = sample().to_arrow_schema().unwrap();
+        let field = schema.field_with_name("template").unwrap();
+        let DataType::Struct(children) = field.data_type() else {
+            panic!("template must be a Struct, got {:?}", field.data_type());
+        };
+        let matrix = children
+            .iter()
+            .find(|f| f.name() == "transformationMatrix")
+            .unwrap();
+        assert!(matrix.is_nullable());
+        assert!(
+            !matrix.metadata().contains_key("ARROW:extension:name"),
+            "transformationMatrix must not be tagged arrow.json any more"
+        );
+        let DataType::List(item) = matrix.data_type() else {
+            panic!(
+                "transformationMatrix must be List, got {:?}",
+                matrix.data_type()
+            );
+        };
+        assert_eq!(item.data_type(), &DataType::Float64);
+        assert!(!item.is_nullable(), "matrix entries are non-null");
+    }
+
+    /// `other_attributes` is a reserved `JSON` column (spec "Column naming
+    /// and reservation rules"), sitting after `other`.
+    #[test]
+    fn other_attributes_is_reserved_json_after_other() {
+        let schema = sample().to_arrow_schema().unwrap();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        let other_pos = names.iter().position(|n| *n == "other").unwrap();
+        let other_attrs_pos = names.iter().position(|n| *n == "other_attributes").unwrap();
+        assert_eq!(other_attrs_pos, other_pos + 1);
+        assert_eq!(
+            schema
+                .field_with_name("other_attributes")
+                .unwrap()
+                .metadata()
+                .get(ROLE_KEY)
+                .map(String::as_str),
+            Some(ROLE_RESERVED)
+        );
     }
 
     #[test]

@@ -9,7 +9,6 @@ use cityparquet::export::{ExportOptions, export};
 use cityparquet::order::hilbert_index;
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet::schema::Profile;
 use cityparquet::stac::properties::PackageTables;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Encoding;
@@ -21,6 +20,26 @@ fn fixture(name: &str) -> PathBuf {
         .join(name);
     assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
     p
+}
+
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), tests below that convert (or compare
+/// against) railway use a small on-disk COPY with a CRS injected via JSON
+/// mutation of the real fixture — never hand-written CityJSON. Used both as
+/// the conversion INPUT and, where a test also compares against "the
+/// source", as that comparison baseline (the pristine original has no CRS to
+/// compare the export's restored referenceSystem against).
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
 }
 
 /// `metadata.json`'s object-table file names for the package at `dir`
@@ -127,7 +146,10 @@ fn delft_full_convert_round_trips_through_parquet() {
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
     let pq_meta = builder.metadata().file_metadata();
     let kvs = pq_meta.key_value_metadata().unwrap();
-    assert!(kvs.iter().any(|kv| kv.key == "cityparquet_version"));
+    // spec-alignment M3: one JSON-valued `city` key (never a flat
+    // `cityparquet_version` scalar key any more), plus `geo` since delft's
+    // LoD0 footprint is GeoParquet-legal.
+    assert!(kvs.iter().any(|kv| kv.key == "city"));
     assert!(kvs.iter().any(|kv| kv.key == "geo"));
     // bbox stats exist for row-group pruning
     let rg = builder.metadata().row_group(0);
@@ -155,28 +177,20 @@ fn delft_full_convert_round_trips_through_parquet() {
         .map(|b| b.unwrap().num_rows())
         .sum();
     assert_eq!(rows, 2231);
-
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
-            .unwrap();
-    assert_eq!(manifest["properties"]["cityparquet:profile"], "core");
 }
 
 #[test]
 fn railway_full_convert_succeeds() {
     let out = tempfile::tempdir().unwrap();
-    let report = convert(&ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        out.path().to_path_buf(),
-    ))
-    .unwrap();
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let report = convert(&ConvertOptions::new(railway_path, out.path().to_path_buf())).unwrap();
     assert_eq!(report.object_count, 121);
-    // railway has 10 1st-level families (see
-    // `by_type_convert_of_railway_writes_ten_family_tables` below), so
-    // by-type conversion writes 10 main tables, never one — every table the
-    // manifest lists must exist.
+    // railway's distinct object_type values resolve to 9 distinct CityGML
+    // modules (see `by_type_convert_of_railway_writes_nine_module_tables`
+    // below), so by-module conversion writes 9 main tables, never one —
+    // every table the manifest lists must exist.
     let tables = manifest_tables(out.path());
-    assert_eq!(tables.len(), 10);
+    assert_eq!(tables.len(), 9);
     for name in &tables {
         assert!(out.path().join(name).exists(), "missing {name}");
     }
@@ -192,11 +206,8 @@ fn railway_full_convert_succeeds() {
 #[test]
 fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
     let out = tempfile::tempdir().unwrap();
-    convert(&ConvertOptions::new(
-        fixture("lod3_railway.city.json"),
-        out.path().to_path_buf(),
-    ))
-    .unwrap();
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    convert(&ConvertOptions::new(railway_path, out.path().to_path_buf())).unwrap();
 
     // Per-LoD appearance columns (§11.1, G20): each `material_lod*` /
     // `texture_lod*` cell holds the plain `{"<theme>": …}` shape. The index
@@ -219,9 +230,9 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
 
     let mut checked_material = false;
     let mut checked_texture = false;
-    // railway has 10 1st-level families, so by-type conversion writes 10
-    // main tables — walk every one of them (never a single hardcoded
-    // main-table name).
+    // railway's object_type values resolve to 9 distinct CityGML modules,
+    // so by-module conversion writes 9 main tables — walk every one of them
+    // (never a single hardcoded main-table name).
     for table in manifest_tables(out.path()) {
         let file = std::fs::File::open(out.path().join(&table)).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
@@ -261,24 +272,7 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
     );
 }
 
-/// The `sidecar_files` list recorded in the parquet footer's own key-value
-/// metadata (appended post-encode via `ArrowWriter::append_key_value_metadata`,
-/// so it reflects the files ACTUALLY written, matching `metadata.json`). The
-/// by-type writer appends this to EVERY main table's footer (see
-/// `TableWriters::finish`'s own doc comment), so reading it off the FIRST
-/// table the manifest lists is representative regardless of how many
-/// families the dataset has.
-fn footer_sidecar_files(dir: &std::path::Path) -> Vec<String> {
-    let first_table = manifest_tables(dir)
-        .into_iter()
-        .next()
-        .expect("manifest must list at least one table");
-    let file = std::fs::File::open(dir.join(first_table)).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    builder.cityparquet_metadata().unwrap().sidecar_files
-}
-
-/// Compatibility profile: railway's feature-only appearance sweep (83
+/// Railway's feature-only appearance sweep (83
 /// materials / 33 textures — see the module doc on
 /// `railway_core_convert_rewrites_appearance_maps_to_global_ids`) plus its 3
 /// geometry templates (2 materials + 1 texture reachable ONLY from a
@@ -290,8 +284,8 @@ fn footer_sidecar_files(dir: &std::path::Path) -> Vec<String> {
 #[test]
 fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     let out = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    opts.profile = Profile::Compatibility;
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, out.path().to_path_buf());
     let report = convert(&opts).unwrap();
 
     assert_eq!(report.materials_written, 85);
@@ -301,13 +295,6 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     assert!(out.path().join("textures.parquet").exists());
     assert!(out.path().join("geometry_templates.parquet").exists());
 
-    let manifest: Value =
-        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
-            .unwrap();
-    assert_eq!(
-        manifest["properties"]["cityparquet:profile"],
-        "compatibility"
-    );
     assert_eq!(
         PackageTables::open(out.path()).unwrap().sidecar_files,
         vec![
@@ -317,43 +304,67 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
         ],
         "metadata.json's cityparquet-sidecar assets must list exactly the sidecars written"
     );
-    assert_eq!(
-        footer_sidecar_files(out.path()),
-        vec![
-            "materials.parquet".to_string(),
-            "textures.parquet".to_string(),
-            "geometry_templates.parquet".to_string()
-        ],
-        "the parquet footer's KV sidecar_files must agree with metadata.json"
-    );
 
     // The written template rows must carry their LoD: railway's 3 templates
-    // all declare lod "3", and the sidecar's single geometry_properties
-    // column is the only place it can live (regression: the shared
-    // main-table helper omits "lod" because there LoD is the column name).
+    // all declare lod "3". The geometry_properties struct itself has no
+    // `lod` field (spec: "same struct, reused" — no lod field anywhere); a
+    // template's LoD instead picks which physical per-LoD column set
+    // (`geometry_lod3_0` etc.) its row lands in, exactly like the main
+    // object table's own geometry columns (spec: "a template's LoD is
+    // carried by its column name here exactly as it is in an object table").
     let template_rows =
         cityparquet::sidecar::read_templates(&out.path().join("geometry_templates.parquet"))
             .unwrap();
     assert_eq!(template_rows.len(), 3);
+    let lod3 = cityparquet_schema::Lod::parse("3").unwrap();
     for (i, row) in template_rows.iter().enumerate() {
         let props = row.geometry_properties.as_ref().unwrap();
         assert!(props.get("type").is_some(), "template {i} missing type");
-        assert_eq!(
-            props.get("lod").and_then(|v| v.as_str()),
-            Some("3"),
-            "template {i}: geometry_properties must carry lod"
+        assert!(
+            props.get("lod").is_none(),
+            "template {i}: geometry_properties struct must carry no lod field"
         );
+        assert_eq!(
+            row.lod, lod3,
+            "template {i}: row.lod must carry the source lod"
+        );
+    }
+
+    // Physical schema assertion (gap 12): the sidecar carries a per-LoD
+    // suffixed column set, no un-suffixed geometry/geometry_properties/
+    // material/texture columns, no `lod` column, and no `other` column.
+    {
+        let file = std::fs::File::open(out.path().join("geometry_templates.parquet")).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let schema = builder.schema();
+        assert!(schema.field_with_name("geometry_lod3_0").is_ok());
+        assert!(schema.field_with_name("geometry_properties_lod3_0").is_ok());
+        assert!(schema.field_with_name("material_lod3_0").is_ok());
+        assert!(schema.field_with_name("texture_lod3_0").is_ok());
+        for col in [
+            "geometry",
+            "geometry_properties",
+            "material",
+            "texture",
+            "lod",
+            "other",
+        ] {
+            assert!(
+                schema.field_with_name(col).is_err(),
+                "geometry_templates.parquet must not carry column '{col}'"
+            );
+        }
     }
 }
 
-/// Compatibility profile on a dataset with no appearance at all (delft):
-/// no sidecar files are written, and both the manifest and the parquet
-/// footer's KV metadata say so.
+/// A dataset with no appearance at all (delft): no sidecar files are
+/// written, and the manifest says so — sidecars are written whenever the
+/// source has content for them (spec-alignment gap 19), so delft (no
+/// materials/textures/templates) simply writes none.
 #[test]
 fn delft_compatibility_convert_writes_no_sidecars() {
     let out = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
-    opts.profile = Profile::Compatibility;
+    let opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
     let report = convert(&opts).unwrap();
 
     assert_eq!(report.materials_written, 0);
@@ -362,22 +373,10 @@ fn delft_compatibility_convert_writes_no_sidecars() {
     assert!(!out.path().join("materials.parquet").exists());
     assert!(!out.path().join("textures.parquet").exists());
 
-    let manifest: Value =
-        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
-            .unwrap();
-    assert_eq!(
-        manifest["properties"]["cityparquet:profile"],
-        "compatibility"
-    );
     assert_eq!(
         PackageTables::open(out.path()).unwrap().sidecar_files,
         Vec::<String>::new(),
         "metadata.json must list no cityparquet-sidecar assets"
-    );
-    assert_eq!(
-        footer_sidecar_files(out.path()),
-        Vec::<String>::new(),
-        "the parquet footer's KV sidecar_files must be empty, matching metadata.json"
     );
 }
 
@@ -393,9 +392,8 @@ fn delft_compatibility_convert_writes_no_sidecars() {
 #[test]
 fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
     let out = tempfile::tempdir().unwrap();
-    let mut first =
-        ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    first.profile = Profile::Compatibility;
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let first = ConvertOptions::new(railway_path, out.path().to_path_buf());
     let first_report = convert(&first).unwrap();
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
@@ -426,10 +424,6 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
     // writes exactly one main table: building.parquet.
     assert!(out.path().join("building.parquet").exists());
 
-    let manifest: Value =
-        serde_json::from_str(&std::fs::read_to_string(out.path().join("metadata.json")).unwrap())
-            .unwrap();
-    assert_eq!(manifest["properties"]["cityparquet:profile"], "core");
     assert_eq!(
         PackageTables::open(out.path()).unwrap().sidecar_files,
         Vec::<String>::new(),
@@ -458,18 +452,17 @@ fn overwrite_purges_stale_sidecars_from_a_prior_compatibility_convert() {
 #[test]
 fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
     let out = tempfile::tempdir().unwrap();
-    let mut first =
-        ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    first.profile = Profile::Compatibility;
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let first = ConvertOptions::new(railway_path, out.path().to_path_buf());
     let first_report = convert(&first).unwrap();
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
     assert!(out.path().join("geometry_templates.parquet").exists());
-    // railway has 10 1st-level families, so this convert wrote 10 main
-    // tables, never one.
+    // railway's object_type values resolve to 9 distinct CityGML modules,
+    // so this convert wrote 9 main tables, never one.
     let tables = manifest_tables(out.path());
-    assert_eq!(tables.len(), 10);
+    assert_eq!(tables.len(), 9);
     for name in &tables {
         assert!(out.path().join(name).exists(), "missing {name}");
     }
@@ -563,18 +556,17 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
 fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
     // Pre-existing, valid Compatibility package at `out`.
     let out = tempfile::tempdir().unwrap();
-    let mut first =
-        ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    first.profile = Profile::Compatibility;
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let first = ConvertOptions::new(railway_path.clone(), out.path().to_path_buf());
     let first_report = convert(&first).unwrap();
     assert_eq!(first_report.materials_written, 85);
     assert!(out.path().join("materials.parquet").exists());
     assert!(out.path().join("textures.parquet").exists());
     assert!(out.path().join("geometry_templates.parquet").exists());
-    // railway has 10 1st-level families, so this convert wrote 10 main
-    // tables, never one.
+    // railway's object_type values resolve to 9 distinct CityGML modules,
+    // so this convert wrote 9 main tables, never one.
     let railway_tables = manifest_tables(out.path());
-    assert_eq!(railway_tables.len(), 10);
+    assert_eq!(railway_tables.len(), 9);
     for name in &railway_tables {
         assert!(out.path().join(name).exists(), "missing {name}");
     }
@@ -669,12 +661,7 @@ fn overwrite_with_a_mid_encode_failure_leaves_the_existing_package_intact() {
         output: exported.clone(),
     })
     .unwrap();
-    let report = compare_datasets(
-        &fixture("lod3_railway.city.json"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
+    let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
     assert!(
         report.equal,
         "the surviving package must still export losslessly; differences: {:#?}",
@@ -916,8 +903,8 @@ fn hilbert_ordering_never_changes_delft_semantics() {
 #[test]
 fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
     let out = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
-    opts.profile = Profile::Compatibility;
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let mut opts = ConvertOptions::new(railway_path.clone(), out.path().to_path_buf());
     opts.ordering = RowOrder::Hilbert;
     convert(&opts).unwrap();
 
@@ -929,12 +916,7 @@ fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
     })
     .unwrap();
 
-    let report = compare_datasets(
-        &fixture("lod3_railway.city.json"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
+    let report = compare_datasets(&railway_path, &exported, &CompareOptions::default()).unwrap();
     assert!(
         report.equal,
         "Hilbert-ordered railway (Compatibility) must round-trip losslessly with no exclusions \
@@ -991,13 +973,12 @@ fn table_object_types_and_count(path: &std::path::Path) -> (HashSet<String>, usi
     (types, count)
 }
 
-/// Per the CityJSON 2.0.1 spec's 1st-level vs 2nd-level city object
-/// distinction, delft's only two `object_type` values are
-/// `Building`/`BuildingPart` — a 1st-level type and its 2nd-level child —
-/// which both belong to the SAME family (`Building`, per
-/// `cityparquet_schema::first_level_type`). The by-type writer must
-/// therefore write exactly ONE table, `building.parquet`, containing every
-/// row of BOTH types; `buildingpart.parquet` must never be created.
+/// delft's only two `object_type` values are `Building`/`BuildingPart` —
+/// both resolve to the Building CityGML module (spec "By-module
+/// object-table layout", via `cityparquet_schema::resolve_module_key`). The
+/// by-module writer must therefore write exactly ONE table,
+/// `building.parquet`, containing every row of BOTH types;
+/// `buildingpart.parquet` must never be created.
 #[test]
 fn by_type_convert_of_delft_writes_exactly_one_family_table() {
     let out = tempfile::tempdir().unwrap();
@@ -1033,20 +1014,20 @@ fn by_type_convert_of_delft_writes_exactly_one_family_table() {
          (1115 Building + 1116 BuildingPart)"
     );
 
-    // Every table's footer must carry `cityparquet_version` (required by
-    // `cityparquet_metadata()`, which errors without it), and it must agree
-    // across every table this run wrote.
+    // Every table's footer must carry `city.version` (required by
+    // `cityparquet_metadata()`, which errors without a `city` key at all),
+    // and it must agree across every table this run wrote.
     let mut versions = HashSet::new();
     for name in &tables {
         let file = std::fs::File::open(out.path().join(name)).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         let meta = builder.cityparquet_metadata().unwrap();
-        versions.insert(meta.cityparquet_version.clone());
+        versions.insert(meta.version.clone());
     }
     assert_eq!(
         versions.len(),
         1,
-        "every table's footer must carry the identical cityparquet_version, got: {versions:?}"
+        "every table's footer must carry the identical city.version, got: {versions:?}"
     );
 }
 
@@ -1121,90 +1102,102 @@ fn empty_input_is_rejected() {
     );
 }
 
-/// M5 task 5 (Step 2/3): railway's 14-distinct-`object_type` fixture fact
-/// (pinned in the milestone brief) round-tripped through the by-type writer
-/// under the family-grouping rule: railway's 14 distinct `object_type`
-/// values collapse to 10 distinct 1st-level FAMILIES — `Bridge`,
-/// `BridgeConstructiveElement`, and `BridgeInstallation` all land in
-/// `bridge.parquet`; `Building` and `BuildingInstallation` in
-/// `building.parquet`; `Tunnel` and `TunnelInstallation` in `tunnel.parquet`;
-/// the other 7 types (`CityFurniture`, `CityObjectGroup`,
-/// `GenericCityObject`, `Railway`, `SolitaryVegetationObject`, `TINRelief`,
-/// `WaterBody`) were already 1st-level and each keep their own single-type
-/// file — row counts summing to railway's full object count.
+/// Spec-alignment: railway's 14-distinct-`object_type` fixture fact (pinned
+/// in the M5 milestone brief) round-tripped through the by-MODULE writer
+/// under the spec's by-module rule (spec "By-module object-table layout"):
+/// railway's 14 distinct `object_type` values collapse to 9 distinct CityGML
+/// 3.0 MODULES — `Bridge`, `BridgeConstructiveElement`, and
+/// `BridgeInstallation` all land in `bridge.parquet` (Bridge module);
+/// `Building` and `BuildingInstallation` in `building.parquet` (Building
+/// module); `Tunnel` and `TunnelInstallation` in `tunnel.parquet` (Tunnel
+/// module); `CityObjectGroup` and `GenericCityObject` (whose `object_type`
+/// is stored as its CityGML class name `GenericOccupiedSpace` — spec
+/// "object_type vocabulary") both fold into `generics.parquet` (spec: "On
+/// `CityObjectGroup`"); the remaining 5 types (`CityFurniture`, `Railway`,
+/// `SolitaryVegetationObject`, `TINRelief`, `WaterBody`) each own module's
+/// sole member and so keep their own single-type file — row counts summing
+/// to railway's full object count.
 #[test]
-fn by_type_convert_of_railway_writes_ten_family_tables() {
+fn by_type_convert_of_railway_writes_nine_module_tables() {
     let out = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let opts = ConvertOptions::new(railway_path, out.path().to_path_buf());
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 121);
 
     let tables = manifest_tables(out.path());
     assert_eq!(
         tables.len(),
-        10,
-        "railway's pinned type set collapses to 10 distinct 1st-level families, got: {tables:?}"
+        9,
+        "railway's pinned type set collapses to 9 distinct CityGML modules, got: {tables:?}"
     );
 
     let expected_names: HashSet<String> = [
-        "Bridge",
-        "Building",
-        "CityFurniture",
-        "CityObjectGroup",
-        "GenericCityObject",
-        "Railway",
-        "SolitaryVegetationObject",
-        "TINRelief",
-        "Tunnel",
-        "WaterBody",
+        "bridge.parquet",
+        "building.parquet",
+        "city_furniture.parquet",
+        "generics.parquet",
+        "transportation.parquet",
+        "vegetation.parquet",
+        "relief.parquet",
+        "tunnel.parquet",
+        "water_body.parquet",
     ]
     .into_iter()
-    .map(|t| format!("{}.parquet", t.to_lowercase()))
+    .map(|t| t.to_string())
     .collect();
     let actual_names: HashSet<String> = tables.iter().cloned().collect();
     assert_eq!(
         actual_names, expected_names,
-        "unexpected family table name set"
+        "unexpected module table name set"
     );
     assert!(
         !out.path()
             .join("bridgeconstructiveelement.parquet")
             .exists(),
-        "BridgeConstructiveElement is 2nd-level and must not get its own table"
+        "BridgeConstructiveElement shares the Bridge module and must not get its own table"
     );
     assert!(
         !out.path().join("bridgeinstallation.parquet").exists(),
-        "BridgeInstallation is 2nd-level and must not get its own table"
+        "BridgeInstallation shares the Bridge module and must not get its own table"
     );
     assert!(
         !out.path().join("buildinginstallation.parquet").exists(),
-        "BuildingInstallation is 2nd-level and must not get its own table"
+        "BuildingInstallation shares the Building module and must not get its own table"
     );
     assert!(
         !out.path().join("tunnelinstallation.parquet").exists(),
-        "TunnelInstallation is 2nd-level and must not get its own table"
+        "TunnelInstallation shares the Tunnel module and must not get its own table"
+    );
+    assert!(
+        !out.path().join("cityobjectgroup.parquet").exists(),
+        "CityObjectGroup folds into generics.parquet and must not get its own table"
+    );
+    assert!(
+        !out.path().join("genericcityobject.parquet").exists(),
+        "GenericCityObject/GenericOccupiedSpace shares the Generics module and must not get \
+         its own table"
     );
 
-    // Each family table's expected member `object_type` set — the 2nd-level
-    // families (Bridge/Building/Tunnel) carry more than one, everything else
-    // (already 1st-level) carries exactly its own type.
+    // Each module table's expected member `object_type` set — stored values
+    // are CityGML class names (spec "object_type vocabulary"), so
+    // `GenericCityObject`'s row carries `GenericOccupiedSpace`.
     let expected_types: &[(&str, &[&str])] = &[
         (
             "bridge.parquet",
             &["Bridge", "BridgeConstructiveElement", "BridgeInstallation"],
         ),
         ("building.parquet", &["Building", "BuildingInstallation"]),
-        ("cityfurniture.parquet", &["CityFurniture"]),
-        ("cityobjectgroup.parquet", &["CityObjectGroup"]),
-        ("genericcityobject.parquet", &["GenericCityObject"]),
-        ("railway.parquet", &["Railway"]),
+        ("city_furniture.parquet", &["CityFurniture"]),
         (
-            "solitaryvegetationobject.parquet",
-            &["SolitaryVegetationObject"],
+            "generics.parquet",
+            &["CityObjectGroup", "GenericOccupiedSpace"],
         ),
-        ("tinrelief.parquet", &["TINRelief"]),
+        ("transportation.parquet", &["Railway"]),
+        ("vegetation.parquet", &["SolitaryVegetationObject"]),
+        ("relief.parquet", &["TINRelief"]),
         ("tunnel.parquet", &["Tunnel", "TunnelInstallation"]),
-        ("waterbody.parquet", &["WaterBody"]),
+        ("water_body.parquet", &["WaterBody"]),
     ];
 
     let mut total = 0usize;
@@ -1215,13 +1208,13 @@ fn by_type_convert_of_railway_writes_ten_family_tables() {
         let expected: HashSet<String> = member_types.iter().map(|t| t.to_string()).collect();
         assert_eq!(
             types, expected,
-            "table {name} must carry exactly its family's object_type values"
+            "table {name} must carry exactly its module's object_type values"
         );
         total += count;
     }
     assert_eq!(
         total, 121,
-        "row counts across every family table must sum to railway's full object count"
+        "row counts across every module table must sum to railway's full object count"
     );
 }
 
@@ -1257,14 +1250,18 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
     let geo: serde_json::Value = serde_json::from_str(geo_kv.value.as_deref().unwrap()).unwrap();
     let columns = geo["columns"].as_object().unwrap();
     assert!(
-        columns.contains_key("geometry"),
-        "the legal LoD0 MultiPolygon footprint must be declared in the un-suffixed geometry column"
+        columns.contains_key("geometry_lod0_0"),
+        "the legal LoD0 MultiPolygon footprint must be declared in the geometry_lod0_0 column"
     );
     assert_eq!(
-        columns["geometry"]["geometry_types"],
+        columns["geometry_lod0_0"]["geometry_types"],
         serde_json::json!(["MultiPolygon Z"])
     );
-    assert_eq!(geo["primary_column"], "geometry");
+    // The `0.*` family is preferred as the GeoParquet primary_column when
+    // present (delft's higher LoDs are Solids/PolyhedralSurfaceZ and
+    // GeoParquet-illegal in any case, so geometry_lod0_0 is also the only
+    // legal column here).
+    assert_eq!(geo["primary_column"], "geometry_lod0_0");
     for solid_lod in ["geometry_lod1_2", "geometry_lod1_3", "geometry_lod2_2"] {
         assert!(
             !columns.contains_key(solid_lod),
@@ -1272,7 +1269,7 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
         );
     }
     // The CRS is PROJJSON (resolved from delft's OGC URL to EPSG:7415).
-    assert_eq!(columns["geometry"]["crs"]["id"]["code"], 7415);
+    assert_eq!(columns["geometry_lod0_0"]["crs"]["id"]["code"], 7415);
 
     // (b) Geometry field is plain Binary with no geoarrow extension (default).
     let field = builder
@@ -1284,6 +1281,82 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
     assert!(
         !field.metadata().contains_key("ARROW:extension:name"),
         "default output geometry column must not advertise geoarrow.wkb"
+    );
+}
+
+/// spec-alignment M3, checklist item 3: a table whose geometry is entirely
+/// Solid-family carries a `city` object but NO `geo` key at all (spec
+/// "The declaration rule": GeoParquet requires a non-empty `columns` and a
+/// non-empty `primary_column`, so a table with zero legal columns has no
+/// legal `geo` object). Derived from the real delft fixture: every feature's
+/// LoD0 footprint geometry is stripped, keeping only its Solid LoDs
+/// (1.2/1.3/2.2) — never hand-written CityJSON.
+#[test]
+fn solid_only_table_has_city_but_no_geo_key() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = text.lines();
+    let header_line = lines.next().unwrap().to_string();
+    let mut out_lines = vec![header_line];
+    let mut stripped_any = false;
+    for line in lines {
+        let mut feature: Value = serde_json::from_str(line).unwrap();
+        for (_, co) in feature["CityObjects"].as_object_mut().unwrap() {
+            if let Some(geoms) = co.get_mut("geometry").and_then(Value::as_array_mut) {
+                let before = geoms.len();
+                geoms.retain(|g| g.get("lod").and_then(Value::as_str) != Some("0"));
+                if geoms.len() != before {
+                    stripped_any = true;
+                }
+            }
+        }
+        out_lines.push(serde_json::to_string(&feature).unwrap());
+    }
+    assert!(
+        stripped_any,
+        "precondition: delft must carry LoD0 geometry to strip"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let input_path = dir.path().join("delft_solid_only.city.jsonl");
+    std::fs::write(&input_path, out_lines.join("\n")).unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(input_path, out.path().to_path_buf())).unwrap();
+
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let kvs = builder
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .unwrap();
+
+    let city_kv = kvs
+        .iter()
+        .find(|kv| kv.key == "city")
+        .expect("a solid-only table must still carry a city key");
+    let city: Value = serde_json::from_str(city_kv.value.as_deref().unwrap()).unwrap();
+    let columns = city["columns"]
+        .as_array()
+        .expect("city.columns must be present");
+    assert!(
+        !columns.is_empty(),
+        "city.columns must describe the Solid columns: {columns:?}"
+    );
+    assert!(
+        columns
+            .iter()
+            .all(|c| c["geometry_types"] == serde_json::json!(["PolyhedralSurface Z"])),
+        "every remaining LoD must be Solid-family: {columns:?}"
+    );
+    assert!(
+        city["primary_column"].is_string(),
+        "city.primary_column must still name the highest (Solid) LoD"
+    );
+
+    assert!(
+        !kvs.iter().any(|kv| kv.key == "geo"),
+        "a solid-only table must carry no geo key at all"
     );
 }
 
@@ -1313,11 +1386,12 @@ fn geoarrow_opt_in_restores_tag_and_geo_key() {
         "--geoarrow must write the `geo` key"
     );
 
-    // The LoD0 footprint is the un-suffixed primary `geometry` column; under
-    // --geoarrow it advertises the geoarrow.wkb extension.
+    // The LoD0 footprint is the suffixed `geometry_lod0_0` column (delft's
+    // GeoParquet primary_column — see `default_convert_writes_geo_key_for_legal_columns_only`);
+    // under --geoarrow it advertises the geoarrow.wkb extension.
     let field = builder
         .schema()
-        .field_with_name("geometry")
+        .field_with_name("geometry_lod0_0")
         .unwrap()
         .clone();
     assert_eq!(

@@ -108,11 +108,10 @@ fn delft_jsonl_types_lods_and_attributes_are_representable() {
     }
     .to_arrow_schema()
     .unwrap();
-    let fp = cityparquet_schema::footprint_lod(&lods);
     for lod in &lods {
-        // The footprint LoD (highest 0.*) occupies the un-suffixed `geometry`
-        // column (§9), every other LoD its suffixed form.
-        let col = cityparquet_schema::geometry_column_name("geometry", lod, fp);
+        // Every LoD — including LoD0 — occupies its own suffixed column;
+        // there is no un-suffixed "footprint" column (spec "Levels of detail").
+        let col = cityparquet_schema::geometry_column_name("geometry", lod);
         assert!(schema.field_with_name(&col).is_ok(), "missing {col}");
     }
 }

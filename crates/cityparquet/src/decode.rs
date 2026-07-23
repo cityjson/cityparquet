@@ -20,7 +20,7 @@ use arrow_schema::{DataType, Schema, TimeUnit};
 use chrono::{SecondsFormat, TimeZone, Utc};
 use serde_json::{Map, Value};
 
-use cityparquet_schema::{CityParquetError, CityParquetMetadata, Lod, Result};
+use cityparquet_schema::{CityMetadata, CityParquetError, Lod, Result};
 
 use crate::wkb_read::{self, DecodedGeometry};
 
@@ -39,10 +39,29 @@ pub struct TemplateInstance {
     pub transformation_matrix: Option<Value>,
 }
 
+/// One `address` list item, decoded straight off the reserved struct column
+/// (spec "Addresses"): the postal strings, plus `location` still as raw WKB
+/// `MultiPointZ` bytes — resolving it into CityJSON `boundaries` needs a
+/// feature-scoped vertex pool, which this module deliberately does not own
+/// (see the module docs); that is `crate::export`'s job.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AddressEntry {
+    pub street: Option<String>,
+    pub house_number: Option<String>,
+    pub po_box: Option<String>,
+    pub zip_code: Option<String>,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub country: Option<String>,
+    pub free_text: Option<String>,
+    pub location: Option<Vec<u8>>,
+}
+
 /// One decoded row: the reassembled `cjseq::CityObject` (attributes,
 /// parents/children, `type`; geometry deliberately excluded, see the module
 /// docs), its per-LoD geometries decoded from WKB alongside their
-/// `geometry_properties`, and its `template` reference if any.
+/// `geometry_properties`, its `template` reference if any, and its
+/// `address` list if any.
 #[derive(Debug, Clone)]
 pub struct DecodedObject {
     pub id: String,
@@ -57,6 +76,9 @@ pub struct DecodedObject {
     /// practice.
     pub geometries: Vec<(Option<Lod>, DecodedGeometry, Option<Value>)>,
     pub template: Option<TemplateInstance>,
+    /// `None` when the row's `address` cell is null (no address at all);
+    /// `Some(vec![])`/`Some(entries)` otherwise (spec "Addresses").
+    pub address: Option<Vec<AddressEntry>>,
 }
 
 fn err(msg: impl Into<String>) -> CityParquetError {
@@ -64,10 +86,10 @@ fn err(msg: impl Into<String>) -> CityParquetError {
 }
 
 /// Merge the `other` column's unmapped members into the JSON that rebuilds a
-/// CityObject (§5.1, G9): members with no dedicated column — a Building's
-/// `address`, a per-object `geographicalExtent`, Extension `+members`. Typed
-/// fields route home; the rest ride cjseq's private flatten and re-serialise on
-/// export. A `None`/empty-`{}` cell contributes nothing.
+/// CityObject (§5.1, G9): members with no dedicated column — a per-object
+/// `geographicalExtent`, Extension `+members`. Typed fields route home; the
+/// rest ride cjseq's private flatten and re-serialise on export. A
+/// `None`/empty-`{}` cell contributes nothing.
 ///
 /// Errors on a non-object cell or one carrying a reserved member. A well-formed
 /// encoder strips the reserved keys (they have their own columns), so their
@@ -88,12 +110,6 @@ fn merge_other_members(json: &mut Map<String, Value>, cell: Option<&str>, id: &s
         )));
     };
     for (key, value) in members {
-        // Attributes diverted here because their name collides with a column
-        // (§5.2, G12) are merged back into `attributes`, not the top level.
-        if key == crate::encode::DIVERTED_ATTRS_KEY {
-            merge_diverted_attributes(json, value, id)?;
-            continue;
-        }
         if crate::encode::OTHER_RESERVED_MEMBERS.contains(&key.as_str()) {
             return Err(err(format!(
                 "object '{id}': 'other' column carries reserved member '{key}'"
@@ -114,16 +130,31 @@ fn merge_other_members(json: &mut Map<String, Value>, cell: Option<&str>, id: &s
     Ok(())
 }
 
-/// Merge diverted attributes (the `other` cell's `cityparquet:diverted_attributes`
-/// value, §5.2/G12) back into the object's `attributes`, creating that object if
-/// the row had no column attributes. Errors if the value is not an object, or if
-/// a diverted name duplicates a decoded column attribute — both mean a corrupt
-/// or foreign file, and silently dropping either would mask it.
-fn merge_diverted_attributes(json: &mut Map<String, Value>, value: Value, id: &str) -> Result<()> {
-    let Value::Object(diverted) = value else {
+/// Merge the `other_attributes` column's diverted entries back into the
+/// object's `attributes` (spec "Column naming and reservation rules"; gap 14
+/// — this used to ride inside `other` under a `cityparquet:diverted_attributes`
+/// transport key, now it is its own reserved column keyed directly by the
+/// diverted attribute's source name), creating `attributes` if the row had
+/// none from its own columns. A `None`/absent cell contributes nothing.
+/// Errors on a non-object cell, or a diverted name duplicating a decoded
+/// column attribute — both mean a corrupt or foreign file, and silently
+/// dropping either would mask it.
+fn merge_other_attributes(
+    json: &mut Map<String, Value>,
+    cell: Option<&str>,
+    id: &str,
+) -> Result<()> {
+    let Some(cell) = cell else {
+        return Ok(());
+    };
+    let Value::Object(diverted) = serde_json::from_str::<Value>(cell).map_err(|e| {
+        err(format!(
+            "object '{id}': 'other_attributes' column is not valid JSON: {e}"
+        ))
+    })?
+    else {
         return Err(err(format!(
-            "object '{id}': '{}' must be a JSON object",
-            crate::encode::DIVERTED_ATTRS_KEY
+            "object '{id}': 'other_attributes' column must be a JSON object, got: {cell}"
         )));
     };
     let attrs = json
@@ -219,6 +250,51 @@ fn string_list_value(col: &ListArray, row: usize) -> Result<Option<Vec<String>>>
     ))
 }
 
+/// A nullable `Utf8` struct field at item `idx`: `None` when either the
+/// struct item itself or the field within it is null.
+fn struct_str_field(items: &StructArray, field_idx: usize, idx: usize) -> Result<Option<String>> {
+    if items.is_null(idx) {
+        return Ok(None);
+    }
+    let arr = downcast::<StringArray>(items.column(field_idx).as_ref(), "address field")?;
+    Ok((!arr.is_null(idx)).then(|| arr.value(idx).to_string()))
+}
+
+/// The reserved `address` column at `row`: `None` when the cell itself is
+/// null (no address at all — spec "Addresses"); `Some(entries)` otherwise,
+/// one [`AddressEntry`] per list item, in order. `location` stays raw WKB —
+/// resolving it into CityJSON `boundaries` needs a feature-scoped vertex
+/// pool that this module deliberately does not own (see the module docs);
+/// that is `crate::export`'s job.
+fn decode_address_column(col: &ListArray, row: usize) -> Result<Option<Vec<AddressEntry>>> {
+    if col.is_null(row) {
+        return Ok(None);
+    }
+    let items = col.value(row);
+    let items = downcast::<StructArray>(items.as_ref(), "address item")?;
+    let mut out = Vec::with_capacity(items.len());
+    for i in 0..items.len() {
+        let location = if items.is_null(i) {
+            None
+        } else {
+            let arr = downcast::<BinaryArray>(items.column(8).as_ref(), "address.location")?;
+            (!arr.is_null(i)).then(|| arr.value(i).to_vec())
+        };
+        out.push(AddressEntry {
+            street: struct_str_field(items, 0, i)?,
+            house_number: struct_str_field(items, 1, i)?,
+            po_box: struct_str_field(items, 2, i)?,
+            zip_code: struct_str_field(items, 3, i)?,
+            city: struct_str_field(items, 4, i)?,
+            state: struct_str_field(items, 5, i)?,
+            country: struct_str_field(items, 6, i)?,
+            free_text: struct_str_field(items, 7, i)?,
+            location,
+        });
+    }
+    Ok(Some(out))
+}
+
 /// One reconstructed attribute value at `row`, per the binding rules: `Date32`
 /// -> `"%Y-%m-%d"` string; `Timestamp(ms, UTC)` -> RFC3339 `Z` string;
 /// `List<Utf8>` -> JSON array; a Utf8 column tagged `arrow.json` -> the parsed
@@ -302,10 +378,10 @@ fn attribute_value(
 }
 
 /// Decode every row of `batch` into a [`DecodedObject`], reconstructing
-/// attributes from `meta.attribute_columns` against the batch's own (actual)
+/// attributes from `meta.attributes` against the batch's own (actual)
 /// arrow types. See the module docs for what is and is not reassembled into
 /// the returned `cjseq::CityObject`.
-pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<Vec<DecodedObject>> {
+pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<DecodedObject>> {
     let schema = batch.schema();
 
     let id_col = downcast::<StringArray>(get_column(batch, "id")?.as_ref(), "id")?;
@@ -325,25 +401,30 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
         get_column(batch, "children_roles")?.as_ref(),
         "children_roles",
     )?;
+    let address_col = downcast::<ListArray>(get_column(batch, "address")?.as_ref(), "address")?;
     let other_col = downcast::<StringArray>(get_column(batch, "other")?.as_ref(), "other")?;
+    let other_attributes_col = downcast::<StringArray>(
+        get_column(batch, "other_attributes")?.as_ref(),
+        "other_attributes",
+    )?;
 
     let template_col =
         downcast::<StructArray>(get_column(batch, "template")?.as_ref(), "template")?;
     let template_id_col = downcast::<StringArray>(template_col.column(0).as_ref(), "template.id")?;
     let template_point_col =
         downcast::<BinaryArray>(template_col.column(1).as_ref(), "template.point")?;
-    let template_matrix_col = downcast::<StringArray>(
+    let template_matrix_col = downcast::<ListArray>(
         template_col.column(2).as_ref(),
         "template.transformationMatrix",
     )?;
 
     let geometry_cols = geometry_columns(&schema);
-    let geometry_arrays: Vec<(Option<Lod>, &BinaryArray, &StringArray)> = geometry_cols
+    let geometry_arrays: Vec<(Option<Lod>, &BinaryArray, &StructArray)> = geometry_cols
         .iter()
         .map(|(lod, geom_name, props_name)| {
             let geom = downcast::<BinaryArray>(get_column(batch, geom_name)?.as_ref(), geom_name)?;
             let props =
-                downcast::<StringArray>(get_column(batch, props_name)?.as_ref(), props_name)?;
+                downcast::<StructArray>(get_column(batch, props_name)?.as_ref(), props_name)?;
             Ok((*lod, geom, props))
         })
         .collect::<Result<_>>()?;
@@ -356,12 +437,21 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
         } else {
             Some(feature_id_col.value(row).to_string())
         };
-        let object_type = object_type_values.value(row).to_string();
+        // `object_type` stores the CityGML 3.0 class name (spec
+        // "object_table-schema" — "object_type vocabulary"); export must
+        // restore the CityJSON spelling for the 4 classes that differ.
+        // Every other core class, and every extension class (no taxonomy
+        // entry), has an identical or unmapped spelling, so the reverse
+        // lookup is a no-op for them.
+        let stored_object_type = object_type_values.value(row);
+        let object_type = cityparquet_schema::cityjson_type_for_citygml_class(stored_object_type)
+            .map(str::to_string)
+            .unwrap_or_else(|| stored_object_type.to_string());
         let parents = string_list_value(parents_col, row)?;
         let children = string_list_value(children_col, row)?;
 
         let mut attrs = Map::new();
-        for name in &meta.attribute_columns {
+        for name in &meta.attributes {
             if let Some(value) = attribute_value(batch, &schema, name, row)? {
                 attrs.insert(name.clone(), value);
             }
@@ -395,7 +485,12 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
         }
         let other_cell = (!other_col.is_null(row)).then(|| other_col.value(row));
         merge_other_members(&mut json, other_cell, &id)?;
+        let other_attributes_cell =
+            (!other_attributes_col.is_null(row)).then(|| other_attributes_col.value(row));
+        merge_other_attributes(&mut json, other_attributes_cell, &id)?;
         let object: cjseq::CityObject = serde_json::from_value(Value::Object(json))?;
+
+        let address = decode_address_column(address_col, row)?;
 
         let mut geometries = Vec::with_capacity(geometry_arrays.len());
         for (lod, geom_arr, props_arr) in &geometry_arrays {
@@ -403,27 +498,14 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
                 continue;
             }
             let decoded = wkb_read::wkb_to_geometry(geom_arr.value(row))?;
-            let props = if props_arr.is_null(row) {
-                None
-            } else {
-                Some(serde_json::from_str::<Value>(props_arr.value(row))?)
-            };
-            // The un-suffixed `geometry` column carries no LoD in its name. By
-            // §9 a NON-NULL cell there is the footprint (the highest 0.* LoD);
-            // recover WHICH 0.* from `geometry_properties.lod`, defaulting to
-            // bare `0` when it is absent or not a 0.* LoD (never trust a foreign
-            // non-zero lod there — the bare column is a footprint by §9). Null
-            // cells are skipped above, so the fallback column never reaches here.
-            let effective_lod = (*lod).or_else(|| {
-                props
-                    .as_ref()
-                    .and_then(|p| p.get("lod"))
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| Lod::parse(s).ok())
-                    .filter(|l| l.major() == 0)
-                    .or_else(|| Lod::parse("0").ok())
-            });
-            geometries.push((effective_lod, decoded, props));
+            let props = crate::geometry_properties::read_geometry_properties(props_arr, row)?;
+            // Every geometry column, including LoD0, is suffixed (spec
+            // "Levels of detail") — `lod` already carries the geometry's LoD
+            // straight from the column name. The only `None` case left is the
+            // genuine zero-analysis-geometry fallback's un-suffixed column,
+            // whose cell is always null (skipped above), so `lod` here is
+            // never trusted as a footprint fallback.
+            geometries.push((*lod, decoded, props));
         }
 
         let template = if template_col.is_null(row) {
@@ -433,7 +515,26 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
             let transformation_matrix = if template_matrix_col.is_null(row) {
                 None
             } else {
-                Some(serde_json::from_str(template_matrix_col.value(row))?)
+                let values = template_matrix_col.value(row);
+                let floats = downcast::<Float64Array>(
+                    values.as_ref(),
+                    "template.transformationMatrix item",
+                )?;
+                // spec "Appearance & templates": exactly 16 values when
+                // non-null — a defensive check against a corrupt or foreign
+                // file, mirroring the encoder's own write-time validator.
+                if floats.len() != 16 {
+                    return Err(err(format!(
+                        "object '{id}': template.transformationMatrix has {} values, expected \
+                         exactly 16",
+                        floats.len()
+                    )));
+                }
+                Some(serde_json::to_value(
+                    (0..floats.len())
+                        .map(|i| floats.value(i))
+                        .collect::<Vec<f64>>(),
+                )?)
             };
             Some(TemplateInstance {
                 id: template_id_col.value(row).to_string(),
@@ -448,6 +549,7 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityParquetMetadata) -> Result<V
             object,
             geometries,
             template,
+            address,
         });
     }
     Ok(out)
@@ -468,16 +570,32 @@ mod tests {
         json.insert("type".to_string(), json!("Building"));
         merge_other_members(
             &mut json,
-            Some(r#"{"address":[{"Locality":"Helsinki"}],"geographicalExtent":[0,0,0,1,1,1]}"#),
+            Some(r#"{"geographicalExtent":[0,0,0,1,1,1]}"#),
             "obj-1",
         )
         .unwrap();
-        assert_eq!(json["address"], json!([{"Locality": "Helsinki"}]));
         assert_eq!(json["geographicalExtent"], json!([0, 0, 0, 1, 1, 1]));
         assert_eq!(
             json["type"],
             json!("Building"),
             "must not disturb typed members"
+        );
+    }
+
+    /// `address` has its own reserved column now (gap 10) — a well-formed
+    /// `other` cell must never carry it.
+    #[test]
+    fn merge_other_members_rejects_address() {
+        let mut json = Map::new();
+        let err = merge_other_members(
+            &mut json,
+            Some(r#"{"address":[{"locality":"Helsinki"}]}"#),
+            "obj-1",
+        )
+        .expect_err("address in `other` must be an error");
+        assert!(
+            format!("{err:?}").contains("reserved member 'address'"),
+            "error must name the offending member, got: {err:?}"
         );
     }
 
@@ -519,16 +637,12 @@ mod tests {
     }
 
     #[test]
-    fn merge_diverted_attributes_restores_into_attributes() {
-        // G12: the diverted map merges into `attributes` (creating it if the
-        // row had no column attributes), never the top level.
+    fn merge_other_attributes_restores_into_attributes() {
+        // G12/gap 14: the `other_attributes` column's map merges into
+        // `attributes` (creating it if the row had no column attributes),
+        // never the top level.
         let mut json = Map::new();
-        merge_other_members(
-            &mut json,
-            Some(r#"{"cityparquet:diverted_attributes":{"bbox":"x","id":42}}"#),
-            "o",
-        )
-        .unwrap();
+        merge_other_attributes(&mut json, Some(r#"{"bbox":"x","id":42}"#), "o").unwrap();
         assert_eq!(json["attributes"], json!({"bbox": "x", "id": 42}));
         assert!(
             !json.contains_key("bbox"),
@@ -537,28 +651,25 @@ mod tests {
     }
 
     #[test]
-    fn merge_diverted_attributes_guards() {
-        // Non-object value → error.
+    fn merge_other_attributes_null_is_a_no_op() {
+        let mut json = Map::new();
+        merge_other_attributes(&mut json, None, "o").unwrap();
+        assert!(json.is_empty());
+    }
+
+    #[test]
+    fn merge_other_attributes_guards() {
+        // Non-object cell → error.
         let mut json = Map::new();
         assert!(
-            merge_other_members(
-                &mut json,
-                Some(r#"{"cityparquet:diverted_attributes":"nope"}"#),
-                "o"
-            )
-            .is_err(),
-            "a non-object diverted value must error"
+            merge_other_attributes(&mut json, Some("\"nope\""), "o").is_err(),
+            "a non-object other_attributes cell must error"
         );
         // A diverted name duplicating a decoded column attribute → error.
         let mut json = Map::new();
         json.insert("attributes".to_string(), json!({"bbox": "from-column"}));
         assert!(
-            merge_other_members(
-                &mut json,
-                Some(r#"{"cityparquet:diverted_attributes":{"bbox":"x"}}"#),
-                "o"
-            )
-            .is_err(),
+            merge_other_attributes(&mut json, Some(r#"{"bbox":"x"}"#), "o").is_err(),
             "a diverted attr colliding with a column attr must error"
         );
     }
