@@ -58,7 +58,7 @@ convert-all FOLDER OUT='out/cityparquet':
         dest="{{OUT}}/${name}"
         echo ">> ${f} -> ${dest}"
         cargo run --release -p cityparquet-cli --bin cityparquet -- convert \
-            "$f" "$dest" --overwrite
+            "$f" -o "$dest" --overwrite
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
         \( -name '*.json' -o -name '*.jsonl' \) ! -name 'metadata.json' -print0 \

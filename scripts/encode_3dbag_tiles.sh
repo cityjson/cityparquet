@@ -100,7 +100,7 @@ while IFS= read -r url || [[ -n "$url" ]]; do
 
   echo "    encode -> $dest"
   # shellcheck disable=SC2086  # CONVERT_ARGS is intentionally word-split
-  if "$CLI" convert "$json" "$dest" --overwrite $CONVERT_ARGS; then
+  if "$CLI" convert "$json" -o "$dest" --overwrite $CONVERT_ARGS; then
     pass=$((pass + 1))
   else
     echo "    ! convert failed: $tile" >&2
