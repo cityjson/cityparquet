@@ -229,15 +229,24 @@ literal-exact.
 ### Geometry templates
 
 Reusable templates live in `geometry_templates.parquet`, one per row, using
-the same WKB-plus-`geometry_properties` strategy as the main table. Template
-vertices are **raw floats** — CityJSON `vertices-templates` are *not* subject
-to the dataset transform — so they are interned by exact `f64` bit pattern
-rather than through the quantised transform. A template row also carries its
-own `lod` column, separate from `geometry_properties` (unlike the main table,
-a template row has no per-LoD column name to carry its LoD in). Its `id` is
-the template's position, matching the main-table `template.id`. An object
-that instantiates a template stores the reference point (WKB `PointZ`) and
-`transformationMatrix` in its `template` column.
+the same WKB-plus-`geometry_properties` strategy as the main table, **per-LoD
+suffixed exactly like the main object table's own geometry and appearance
+columns**: `geometry_lod*`/`geometry_properties_lod*`/`material_lod*`/
+`texture_lod*`, one column set per LoD present among the templates being
+rendered. A template row populates exactly the column set matching its own
+LoD and leaves every other LoD's columns null — sparse by construction, like
+the main table. There is no `lod` column (the column name already carries
+it, just as in the main table) and no `other` column (a geometry template is
+a plain geometry — WKB + properties + appearance — with no members left over
+to preserve). Template vertices are **raw floats** — CityJSON
+`vertices-templates` are *not* subject to the dataset transform — so they are
+interned by exact `f64` bit pattern rather than through the quantised
+transform, and a template's `geometry_lod*` carries no `geoarrow.wkb`/CRS
+tagging: template coordinates are in the template's own local frame, exempt
+from the file CRS. Its `id` is the template's position, matching the
+main-table `template.id`. An object that instantiates a template stores the
+reference point (WKB `PointZ`) and `transformationMatrix` in its `template`
+column.
 
 ## Dataset metadata
 
