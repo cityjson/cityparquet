@@ -62,7 +62,12 @@ cargo run -p cityparquet-cli -- convert INPUT OUTPUT_DIR --overwrite
 
 Writes `OUTPUT_DIR/` containing one `<snake>.parquet` table per 1st-level
 CityObject family (e.g. `building.parquet`, `bridge.parquet`) + `metadata.json`,
-readable by any Parquet reader (DuckDB, pyarrow, …).
+readable by any Parquet reader (DuckDB, pyarrow, …). `metadata.json` is a STAC
+Item (the `city3d:*` extension) describing that one package; a dataset-level
+`collection.json` aggregating multiple packages/tiles into one STAC
+Collection is **not yet implemented** — it needs a multi-package workflow
+this CLI doesn't have, so it's tracked as a follow-up rather than emitted as
+a meaningless single-Item Collection.
 
 | Flag | Default | Meaning |
 |---|---|---|
