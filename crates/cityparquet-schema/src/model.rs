@@ -42,12 +42,56 @@ pub fn bbox_data_type() -> DataType {
     ))
 }
 
+/// `template.transformationMatrix`'s element field: a flat, row-major 4x4
+/// (spec "Appearance & templates" — "exactly 16 values when non-null"). Items
+/// are non-null — a transformation matrix is 16 real numbers, never a partial
+/// list with holes.
+fn transformation_matrix_data_type() -> DataType {
+    DataType::List(Arc::new(Field::new("item", DataType::Float64, false)))
+}
+
 pub fn template_data_type() -> DataType {
     DataType::Struct(Fields::from(vec![
         Field::new("id", DataType::Utf8, true),
         Field::new("point", DataType::Binary, true),
-        json_field("transformationMatrix", true).as_ref().clone(),
+        Field::new(
+            "transformationMatrix",
+            transformation_matrix_data_type(),
+            true,
+        ),
     ]))
+}
+
+/// The `address` list item's `STRUCT` fields, in spec order (spec
+/// "Addresses"): a lean subset of 3DCityDB v5's `ADDRESS` table, plus
+/// `location` (WKB `MultiPointZ` in the file CRS). All nine fields are
+/// nullable. Exposed separately from [`address_item_data_type`] so the
+/// encoder can build an Arrow `StructBuilder` from the exact same
+/// [`Fields`] the rendered schema uses (`StructBuilder::from_fields`), never
+/// duplicating the field list.
+pub fn address_item_fields() -> Fields {
+    Fields::from(vec![
+        Field::new("street", DataType::Utf8, true),
+        Field::new("house_number", DataType::Utf8, true),
+        Field::new("po_box", DataType::Utf8, true),
+        Field::new("zip_code", DataType::Utf8, true),
+        Field::new("city", DataType::Utf8, true),
+        Field::new("state", DataType::Utf8, true),
+        Field::new("country", DataType::Utf8, true),
+        Field::new("free_text", DataType::Utf8, true),
+        Field::new("location", DataType::Binary, true),
+    ])
+}
+
+pub fn address_item_data_type() -> DataType {
+    DataType::Struct(address_item_fields())
+}
+
+/// The reserved `address` column: `LIST<STRUCT<...>>` (spec "Addresses") —
+/// an object may have several addresses, so it is stored as a list of the
+/// [`address_item_data_type`] struct, one list per row.
+pub fn address_data_type() -> DataType {
+    DataType::List(Arc::new(Field::new("item", address_item_data_type(), true)))
 }
 
 fn with_meta(field: Field, pairs: &[(&str, &str)]) -> Field {
@@ -131,9 +175,11 @@ const RESERVED_COLUMN_NAMES: &[&str] = &[
     "parents",
     "children",
     "children_roles",
+    "address",
     "bbox",
     "template",
     "other",
+    "other_attributes",
 ];
 
 /// Every column name an attribute column must not collide with, for a schema
@@ -232,6 +278,7 @@ impl CityParquetSchema {
             reserved(string_list("parents")),
             reserved(string_list("children")),
             reserved(string_list("children_roles")),
+            reserved(Field::new("address", address_data_type(), true)),
             reserved(Field::new("bbox", bbox_data_type(), true)),
         ];
 
@@ -285,6 +332,10 @@ impl CityParquetSchema {
         fields.push(reserved(Field::new("template", template_data_type(), true)));
         fields.push(with_meta(
             json_field("other", true).as_ref().clone(),
+            &[(ROLE_KEY, ROLE_RESERVED)],
+        ));
+        fields.push(with_meta(
+            json_field("other_attributes", true).as_ref().clone(),
             &[(ROLE_KEY, ROLE_RESERVED)],
         ));
 
@@ -362,6 +413,7 @@ mod tests {
                 "parents",
                 "children",
                 "children_roles",
+                "address",
                 "bbox",
                 "geometry_lod1_0",
                 "geometry_properties_lod1_0",
@@ -373,6 +425,7 @@ mod tests {
                 "texture_lod2_2",
                 "template",
                 "other",
+                "other_attributes",
                 "yoc",
                 "ex_height",
             ]
@@ -599,7 +652,12 @@ mod tests {
     #[test]
     fn json_columns_carry_arrow_json_extension() {
         let schema = sample().to_arrow_schema().unwrap();
-        for name in ["material_lod1_0", "texture_lod2_2", "other"] {
+        for name in [
+            "material_lod1_0",
+            "texture_lod2_2",
+            "other",
+            "other_attributes",
+        ] {
             let field = schema.field_with_name(name).unwrap();
             assert_eq!(
                 field
@@ -712,7 +770,7 @@ mod tests {
 
     #[test]
     fn attribute_colliding_with_reserved_column_is_an_error() {
-        for bad_name in ["id", "material"] {
+        for bad_name in ["id", "material", "address", "other_attributes"] {
             let schema = CityParquetSchema {
                 lods: vec![],
                 attributes: vec![(bad_name.to_string(), AttributeType::String)],
@@ -752,6 +810,97 @@ mod tests {
     fn bbox_is_nullable() {
         let schema = sample().to_arrow_schema().unwrap();
         assert!(schema.field_with_name("bbox").unwrap().is_nullable());
+    }
+
+    /// spec "Addresses": `address` is `LIST<STRUCT<...>>`, column and every
+    /// field nullable, in exactly this order — `location` is `BLOB` (WKB),
+    /// everything else `VARCHAR`.
+    #[test]
+    fn address_is_a_nullable_list_of_a_nine_field_struct() {
+        let schema = sample().to_arrow_schema().unwrap();
+        let field = schema.field_with_name("address").unwrap();
+        assert!(field.is_nullable());
+        let DataType::List(item) = field.data_type() else {
+            panic!("address must be a List, got {:?}", field.data_type());
+        };
+        assert!(item.is_nullable());
+        let DataType::Struct(children) = item.data_type() else {
+            panic!("address item must be a Struct, got {:?}", item.data_type());
+        };
+        assert_eq!(
+            children
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "street",
+                "house_number",
+                "po_box",
+                "zip_code",
+                "city",
+                "state",
+                "country",
+                "free_text",
+                "location",
+            ]
+        );
+        for f in children.iter() {
+            assert!(f.is_nullable(), "{} must be nullable", f.name());
+            let expected = if f.name() == "location" {
+                &DataType::Binary
+            } else {
+                &DataType::Utf8
+            };
+            assert_eq!(f.data_type(), expected, "{} has the wrong type", f.name());
+        }
+    }
+
+    /// spec "Appearance & templates": `template.transformationMatrix` is a
+    /// flat, row-major `LIST<DOUBLE>` — no longer JSON.
+    #[test]
+    fn template_transformation_matrix_is_a_list_of_double() {
+        let schema = sample().to_arrow_schema().unwrap();
+        let field = schema.field_with_name("template").unwrap();
+        let DataType::Struct(children) = field.data_type() else {
+            panic!("template must be a Struct, got {:?}", field.data_type());
+        };
+        let matrix = children
+            .iter()
+            .find(|f| f.name() == "transformationMatrix")
+            .unwrap();
+        assert!(matrix.is_nullable());
+        assert!(
+            !matrix.metadata().contains_key("ARROW:extension:name"),
+            "transformationMatrix must not be tagged arrow.json any more"
+        );
+        let DataType::List(item) = matrix.data_type() else {
+            panic!(
+                "transformationMatrix must be List, got {:?}",
+                matrix.data_type()
+            );
+        };
+        assert_eq!(item.data_type(), &DataType::Float64);
+        assert!(!item.is_nullable(), "matrix entries are non-null");
+    }
+
+    /// `other_attributes` is a reserved `JSON` column (spec "Column naming
+    /// and reservation rules"), sitting after `other`.
+    #[test]
+    fn other_attributes_is_reserved_json_after_other() {
+        let schema = sample().to_arrow_schema().unwrap();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        let other_pos = names.iter().position(|n| *n == "other").unwrap();
+        let other_attrs_pos = names.iter().position(|n| *n == "other_attributes").unwrap();
+        assert_eq!(other_attrs_pos, other_pos + 1);
+        assert_eq!(
+            schema
+                .field_with_name("other_attributes")
+                .unwrap()
+                .metadata()
+                .get(ROLE_KEY)
+                .map(String::as_str),
+            Some(ROLE_RESERVED)
+        );
     }
 
     #[test]
