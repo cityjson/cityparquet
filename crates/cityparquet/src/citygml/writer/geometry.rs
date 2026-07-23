@@ -225,12 +225,7 @@ pub fn write_solid_with_ids<W: Write>(
     }
     // `shells` (when present) has exactly one inner list — the Solid's own.
     let counts = match crate::export::shell_faces(props)? {
-        Some(mut solids) => Some(solids.pop().ok_or_else(|| {
-            CityParquetError::Schema(
-                "geometry_properties.shells is present but lists no solid for this Solid"
-                    .to_string(),
-            )
-        })?),
+        Some(solids) => Some(crate::export::single_solid_shell(solids)?),
         None => None,
     };
     let mut cursor = 0usize;

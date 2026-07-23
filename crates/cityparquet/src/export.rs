@@ -283,6 +283,26 @@ pub(crate) fn shell_faces(props: Option<&Value>) -> Result<Option<Vec<Vec<usize>
     Ok(Some(serde_json::from_value(v.clone())?))
 }
 
+/// Extracts the single inner shell-count list from a `Solid`'s (always
+/// nested, per [`shell_faces`]) `shells`. A `Solid` geometry has exactly one
+/// solid, so `shells` — when present — must have exactly one entry; every
+/// other length is a corrupt/hand-rolled package. Shared by all four call
+/// sites that used to pull this out independently (`pop()` in three places,
+/// `next()` in a fourth), which meant a malformed `shells: [[..],[..]]` on a
+/// `Solid` was silently accepted by some paths and rejected by others,
+/// picking different entries. This is the single point of truth: unless
+/// `shells.len() == 1`, it errors instead of guessing.
+pub(crate) fn single_solid_shell(mut shells: Vec<Vec<usize>>) -> Result<Vec<usize>> {
+    if shells.len() != 1 {
+        return Err(err(format!(
+            "geometry_properties.shells for a Solid must have exactly one inner list (one \
+             solid), found {}",
+            shells.len()
+        )));
+    }
+    Ok(shells.pop().expect("checked shells.len() == 1 above"))
+}
+
 /// Reconstructs one geometry's CityJSON `boundaries` value from its decoded
 /// WKB shape, the CityJSON `type` recorded in `geometry_properties` (which
 /// disambiguates MultiSurface/CompositeSurface and MultiSolid/
@@ -321,9 +341,7 @@ fn reconstruct_boundaries(
             // Solid's own (spec: nested one inner list per solid, even for
             // a lone Solid).
             let counts = match shell_faces(props)? {
-                Some(solids) => Some(solids.into_iter().next().ok_or_else(|| {
-                    err("shells is present but lists no solid for this Solid".to_string())
-                })?),
+                Some(solids) => Some(single_solid_shell(solids)?),
                 None => None,
             };
             let shells = partition_shells(remapped, counts.as_deref())?;
@@ -463,10 +481,16 @@ fn rebuild_semantics(props: Option<&Value>, gtype: &GeometryType) -> Result<Opti
         | GeometryType::CompositeSurface => Value::Array(face_semantics),
         GeometryType::Solid => match shell_faces(Some(props))? {
             Some(nested) => {
-                let mut solids = partition_face_semantics_by_solids(&face_semantics, &nested)?;
-                solids.pop().ok_or_else(|| {
-                    err("shells is present but lists no solid for this Solid".to_string())
-                })?
+                // `nested` must hold exactly this Solid's own shell-count
+                // list (see `single_solid_shell`); wrap it back into a
+                // one-entry slice so `partition_face_semantics_by_solids`'s
+                // per-solid split still applies, then take that sole entry.
+                let shell_counts = single_solid_shell(nested)?;
+                let mut solids =
+                    partition_face_semantics_by_solids(&face_semantics, &[shell_counts])?;
+                solids
+                    .pop()
+                    .expect("partition_face_semantics_by_solids returns one entry per input")
             }
             // No `shells`: mirror `reconstruct_boundaries`, which puts every
             // face in one shell (§8). A Solid's `values` must be nested, so
@@ -1563,6 +1587,52 @@ mod tests {
         let shells = partition_shells(triangle_faces(3), Some(&[2, 1])).unwrap();
         assert_eq!(shells.len(), 2);
         assert_eq!((shells[0].len(), shells[1].len()), (2, 1));
+    }
+
+    #[test]
+    fn single_solid_shell_rejects_more_than_one_entry() {
+        // A `Solid` has exactly one solid; `shells` naming two ([[1],[2]]) is a
+        // corrupt/hand-rolled package, and must be rejected rather than
+        // silently picking the first or last entry (the divergence Fix 1
+        // closes: writer/export call sites previously disagreed on which).
+        let err = single_solid_shell(vec![vec![1], vec![2]]).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected Schema error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn single_solid_shell_rejects_zero_entries() {
+        let err = single_solid_shell(vec![]).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected Schema error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn single_solid_shell_accepts_exactly_one_entry() {
+        assert_eq!(
+            single_solid_shell(vec![vec![1, 2, 3]]).unwrap(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn reconstruct_boundaries_rejects_a_solid_with_more_than_one_shells_entry() {
+        // A corrupt/hand-rolled package could label a `Solid`'s `shells` as if
+        // it held two solids ([[1],[1]]) instead of the required one. Every
+        // consuming path must reject this the same way, not silently pick
+        // first-vs-last like the pre-fix `pop()`/`next()` split did.
+        let kind = DecodedKind::PolyhedralSurface(triangle_faces(2));
+        let props = serde_json::json!({"type": "Solid", "shells": [[1], [1]]});
+        let err = reconstruct_boundaries(&kind, &GeometryType::Solid, Some(&props), &[0, 1, 2, 3])
+            .unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected Schema error, got {err:?}"
+        );
     }
 
     /// A hand-built MultiSolid (no fixture carries one): 2 solids — the

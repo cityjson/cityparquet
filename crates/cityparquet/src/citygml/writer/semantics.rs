@@ -376,9 +376,7 @@ pub fn write_solid_with_semantics<W: Write>(
             // `shells` (when present) has exactly one inner list — the
             // Solid's own (spec: nested one inner list per solid).
             let counts = match crate::export::shell_faces(props)? {
-                Some(mut solids) => Some(solids.pop().ok_or_else(|| {
-                    err("geometry_properties.shells is present but lists no solid for this Solid")
-                })?),
+                Some(solids) => Some(crate::export::single_solid_shell(solids)?),
                 None => None,
             };
             let shells = crate::export::partition_shells(faces.clone(), counts.as_deref())?;
