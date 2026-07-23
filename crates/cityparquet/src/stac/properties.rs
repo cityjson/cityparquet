@@ -22,7 +22,6 @@ use cityparquet_schema::types::Lod;
 use cityparquet_schema::{AttributeType, CityMetadata, CityParquetError, Result};
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use serde_json::Value;
 
 use crate::reader::CityParquetReaderBuilder;
 use crate::stac::assets::{ROLE_OBJECT_TABLE, ROLE_SIDECAR};
@@ -204,29 +203,35 @@ fn attributes_from_schema(
     (defs, skipped)
 }
 
-/// Whether one `geometry_properties` cell describes semantic surfaces.
+/// Whether one `geometry_properties` STRUCT row describes semantic surfaces:
+/// its `surfaces` (child 1) or `face_semantics` (child 2) is non-null.
 ///
-/// **Non-null is not the question.** `crate::encode`'s
-/// `geometry_properties_json` always writes at least `{"type": ...}` for every
-/// stored geometry, and adds `surfaces` / `face_semantics` only when the
-/// source geometry actually carried semantics (§8). So a null-count test
+/// **The struct being non-null is not the question.** Every stored geometry
+/// gets a non-null `geometry_properties` cell with at least `type` set
+/// (spec), and adds `surfaces` / `face_semantics` only when the source
+/// geometry actually carried semantics. So a struct-non-null-count test
 /// answers "does this package have geometry", which is true of essentially
-/// every package — the cell's content has to be inspected.
-fn cell_has_semantics(cell: &str) -> bool {
-    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(cell) else {
+/// every package — the row's `surfaces`/`face_semantics` children have to be
+/// inspected.
+fn row_has_semantics(props: &arrow_array::StructArray, row: usize) -> bool {
+    if props.is_null(row) {
         return false;
-    };
-    // Either member alone is enough: `surfaces` carries the semantic-surface
-    // definitions, `face_semantics` the per-face indices into them.
-    map.contains_key("surfaces") || map.contains_key("face_semantics")
+    }
+    let surfaces = props.column(1);
+    let face_semantics = props.column(2);
+    surfaces.is_valid(row) || face_semantics.is_valid(row)
 }
 
 /// Whether any `geometry_properties*` column in this file describes semantic
 /// surfaces.
 ///
-/// Always reads: these are JSON columns, and no footer statistic can
-/// distinguish `{"type":"Solid"}` from a cell that also carries `surfaces`.
-/// Only the `geometry_properties*` columns are projected.
+/// Always reads: no footer statistic can distinguish a cell carrying only
+/// `type` from one that also carries `surfaces`/`face_semantics`. A
+/// `geometry_properties*` field now resolves to SEVERAL Parquet leaf columns
+/// (`type`, `surfaces`, `face_semantics.list.item`,
+/// `shells.list.item.list.item` — spec "Geometry properties and semantics"),
+/// so every leaf under the field's top-level name is projected together,
+/// which Arrow reconstructs back into one `StructArray` column.
 fn file_has_semantic_surfaces(path: &Path, schema: &Schema) -> Result<bool> {
     for field in schema.fields() {
         if !is_reserved_column_for(field.name(), "geometry_properties") {
@@ -238,12 +243,13 @@ fn file_has_semantic_surfaces(path: &Path, schema: &Schema) -> Result<bool> {
             CityParquetError::Parquet(format!("cannot open {}: {e}", path.display()))
         })?;
         let descr = builder.parquet_schema();
-        let Some(root) = (0..descr.num_columns())
-            .find(|&i| descr.column(i).path().parts().first() == Some(field.name()))
-        else {
+        let leaves: Vec<usize> = (0..descr.num_columns())
+            .filter(|&i| descr.column(i).path().parts().first() == Some(field.name()))
+            .collect();
+        if leaves.is_empty() {
             continue;
-        };
-        let mask = ProjectionMask::leaves(descr, [root]);
+        }
+        let mask = ProjectionMask::leaves(descr, leaves);
         let reader = builder
             .with_projection(mask)
             .build()
@@ -255,11 +261,12 @@ fn file_has_semantic_surfaces(path: &Path, schema: &Schema) -> Result<bool> {
             if batch.num_columns() == 0 {
                 continue;
             }
-            let Some(values) = batch.column(0).as_any().downcast_ref::<StringArray>() else {
+            let Some(props) = batch.column(0).as_any().downcast_ref::<arrow_array::StructArray>()
+            else {
                 continue;
             };
-            for i in 0..values.len() {
-                if values.is_valid(i) && cell_has_semantics(values.value(i)) {
+            for row in 0..props.len() {
+                if row_has_semantics(props, row) {
                     return Ok(true);
                 }
             }
@@ -490,7 +497,20 @@ fn merge_presence(a: Option<bool>, b: Option<bool>) -> Option<bool> {
 mod tests {
     use std::path::Path;
 
-    use super::{PackageTables, cell_has_semantics};
+    use arrow_array::StructArray;
+
+    use super::{PackageTables, row_has_semantics};
+    use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder};
+
+    /// Builds a one-row `geometry_properties` `StructArray` from `props`, the
+    /// SAME builder the writer uses — so these tests exercise `row_has_semantics`
+    /// against the real physical shape, not a hand-rolled stand-in.
+    fn one_row(props: &GeometryProperties) -> StructArray {
+        let mut b = GeometryPropertiesBuilder::new();
+        b.append_value(props).unwrap();
+        let array = b.finish();
+        array.as_any().downcast_ref::<StructArray>().unwrap().clone()
+    }
 
     /// `from_lists` is a pure path-join — it must round-trip a table/sidecar
     /// list without reading anything from disk (the directory it is given
@@ -514,35 +534,57 @@ mod tests {
     }
 
     /// Every stored geometry gets a `geometry_properties` cell carrying at
-    /// least `{"type": ...}` (`crate::encode::geometry_properties_json`), so a
-    /// non-null test would report semantic surfaces for any package that has
-    /// geometry at all. These cases are the exact shapes that function emits,
-    /// pinning the distinction the integration tests cannot: every fixture in
-    /// this repo carries some semantics, so the negative case has no real
-    /// dataset to come from.
+    /// least `type` (`crate::encode::compute_geometry_properties`), so a
+    /// struct-non-null test would report semantic surfaces for any package
+    /// that has geometry at all. These cases pin the distinction the
+    /// integration tests cannot: every fixture in this repo carries some
+    /// semantics, so the negative case has no real dataset to come from.
     #[test]
-    fn a_type_only_cell_is_not_semantics() {
-        assert!(!cell_has_semantics(r#"{"type":"Solid"}"#));
-        assert!(!cell_has_semantics(r#"{"type":"MultiSurface"}"#));
-        assert!(!cell_has_semantics(
-            r#"{"type":"Solid","shells":[[6]],"dropped_degenerate":{"rings":0}}"#
-        ));
+    fn a_type_only_row_is_not_semantics() {
+        for type_name in ["Solid", "MultiSurface"] {
+            let row = one_row(&GeometryProperties {
+                type_name: type_name.to_string(),
+                surfaces: None,
+                face_semantics: None,
+                shells: None,
+            });
+            assert!(!row_has_semantics(&row, 0));
+        }
+        // A Solid with `shells` populated but no semantics at all.
+        let row = one_row(&GeometryProperties {
+            type_name: "Solid".to_string(),
+            surfaces: None,
+            face_semantics: None,
+            shells: Some(vec![vec![6]]),
+        });
+        assert!(!row_has_semantics(&row, 0));
     }
 
     #[test]
     fn surfaces_or_face_semantics_is_semantics() {
-        assert!(cell_has_semantics(
-            r#"{"type":"MultiSurface","surfaces":[{"type":"RoofSurface"}]}"#
-        ));
-        assert!(cell_has_semantics(
-            r#"{"type":"MultiSurface","face_semantics":[0,0,1]}"#
-        ));
+        let row = one_row(&GeometryProperties {
+            type_name: "MultiSurface".to_string(),
+            surfaces: Some(serde_json::json!([{"type": "RoofSurface"}])),
+            face_semantics: None,
+            shells: None,
+        });
+        assert!(row_has_semantics(&row, 0));
+
+        let row = one_row(&GeometryProperties {
+            type_name: "MultiSurface".to_string(),
+            surfaces: None,
+            face_semantics: Some(vec![Some(0), Some(0), Some(1)]),
+            shells: None,
+        });
+        assert!(row_has_semantics(&row, 0));
     }
 
     #[test]
-    fn a_malformed_or_non_object_cell_is_not_semantics() {
-        assert!(!cell_has_semantics("not json"));
-        assert!(!cell_has_semantics("[1,2,3]"));
-        assert!(!cell_has_semantics("null"));
+    fn a_null_struct_row_is_not_semantics() {
+        let mut b = GeometryPropertiesBuilder::new();
+        b.append_null();
+        let array = b.finish();
+        let row = array.as_any().downcast_ref::<StructArray>().unwrap();
+        assert!(!row_has_semantics(row, 0));
     }
 }
