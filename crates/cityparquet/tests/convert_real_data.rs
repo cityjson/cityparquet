@@ -306,9 +306,11 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     );
 
     // The written template rows must carry their LoD: railway's 3 templates
-    // all declare lod "3", and the sidecar's single geometry_properties
-    // column is the only place it can live (regression: the shared
-    // main-table helper omits "lod" because there LoD is the column name).
+    // all declare lod "3". The geometry_properties struct itself has no
+    // `lod` field (spec: "same struct, reused" — no lod field anywhere), so
+    // this sidecar carries it in its own sibling `lod` column instead
+    // (regression: the shared main-table helper omits "lod" because there
+    // LoD is the column name).
     let template_rows =
         cityparquet::sidecar::read_templates(&out.path().join("geometry_templates.parquet"))
             .unwrap();
@@ -316,10 +318,14 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     for (i, row) in template_rows.iter().enumerate() {
         let props = row.geometry_properties.as_ref().unwrap();
         assert!(props.get("type").is_some(), "template {i} missing type");
+        assert!(
+            props.get("lod").is_none(),
+            "template {i}: geometry_properties struct must carry no lod field"
+        );
         assert_eq!(
-            props.get("lod").and_then(|v| v.as_str()),
+            row.lod.as_deref(),
             Some("3"),
-            "template {i}: geometry_properties must carry lod"
+            "template {i}: the sidecar's own lod column must carry the source lod"
         );
     }
 }

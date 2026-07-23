@@ -1075,13 +1075,12 @@ fn rebuild_templates(
                 ))
             })
             .and_then(|v| serde_json::from_value(v.clone()).map_err(CityParquetError::from))?;
-        // Templates fold "lod" into geometry_properties (the main table
-        // instead encodes it in the geometry COLUMN NAME) — see
-        // `crate::package::build_template_rows`'s doc comment.
-        let lod = props
-            .and_then(|p| p.get("lod"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        // The struct itself carries no `lod` field (spec: "same struct,
+        // reused" — no lod field anywhere); this sidecar instead carries a
+        // template's LoD in its own sibling `lod` column (the main table
+        // encodes it in the geometry COLUMN NAME instead — see
+        // `crate::package::build_template_rows`'s doc comment).
+        let lod = row.lod.clone();
         let boundaries = reconstruct_boundaries(&decoded.kind, &gtype, props, &vmap)?;
         let semantics = rebuild_semantics(props, &gtype)?;
 
