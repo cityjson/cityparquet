@@ -101,7 +101,7 @@ appearance/template references, then the inferred attribute columns.
 | `children_roles` | `List<Utf8>` | one role per child, from CityJSON `children_roles` |
 | `bbox` | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>` | see below |
 | `geometry` *or* `geometry_lod<k>` | `Binary` (WKB) | one column per LoD |
-| `geometry_properties` *or* `geometry_properties_lod<k>` | JSON | semantics WKB can't carry |
+| `geometry_properties` *or* `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>` | semantics WKB can't carry |
 | `material` | JSON | surface→material map into `materials.parquet` |
 | `texture` | JSON | surface→texture map into `textures.parquet` |
 | `template` | `Struct<id: Utf8, point: Binary, transformationMatrix: JSON>` | geometry-instance data |
@@ -175,11 +175,13 @@ does not apply once any LoD is present. A second geometry for the same
 **LoD0 synthesis** (`src/lod0.rs`): when an object has no source LoD0, the
 writer can synthesise a footprint from its lowest higher LoD — semantics-first
 (`GroundSurface` faces), else a geometric fallback (downward-facing faces →
-2D union → Z re-drape → `MultiPolygonZ`), marked with
-`cityparquet:lod0_source` and exported as a real `lod:"0.0"` geometry, landing
-in `geometry_lod0_0` like any other LoD. The CLI enables it by default
-(`--no-lod0` to disable); the library `ConvertOptions` is source-faithful
-unless `generate_lod0` is set.
+2D union → Z re-drape → `MultiPolygonZ`). `geometry_properties`'s struct shape
+has no field for provenance, so the row's `other` column instead gets a
+`cityparquet:lod0_0_source` key naming the source geometry column the
+footprint was derived from (e.g. `"geometry_lod2_2"`). The footprint is
+exported as a real `lod:"0.0"` geometry, landing in `geometry_lod0_0` like any
+other LoD. The CLI enables it by default (`--no-lod0` to disable); the
+library `ConvertOptions` is source-faithful unless `generate_lod0` is set.
 
 ### Bounding box & spatial ordering
 
@@ -231,10 +233,11 @@ the same WKB-plus-`geometry_properties` strategy as the main table. Template
 vertices are **raw floats** — CityJSON `vertices-templates` are *not* subject
 to the dataset transform — so they are interned by exact `f64` bit pattern
 rather than through the quantised transform. A template row also carries its
-`lod` inside `geometry_properties` (templates have no per-LoD column name to
-carry it). Its `id` is the template's position, matching the main-table
-`template.id`. An object that instantiates a template stores the reference
-point (WKB `PointZ`) and `transformationMatrix` in its `template` column.
+own `lod` column, separate from `geometry_properties` (unlike the main table,
+a template row has no per-LoD column name to carry its LoD in). Its `id` is
+the template's position, matching the main-table `template.id`. An object
+that instantiates a template stores the reference point (WKB `PointZ`) and
+`transformationMatrix` in its `template` column.
 
 ## Dataset metadata
 
