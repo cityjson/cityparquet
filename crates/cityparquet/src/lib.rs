@@ -1,5 +1,6 @@
 //! CityParquet reader/writer: the native Parquet path for CityJSON models.
 
+mod address;
 pub mod appearance;
 pub mod citygml;
 pub mod compare;

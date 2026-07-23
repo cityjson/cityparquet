@@ -352,15 +352,28 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
     }
 
     // Divert an attribute whose (normalised) name collides with a realised
-    // reserved/geometry column name into `other` rather than aborting the whole
-    // conversion (§5.2, G12). Divertedness is schema-relative — it depends on
-    // the final `lods` — so this runs only after the LoDs are settled.
-    // `CityParquetSchema::validate` stays strict; scan simply never hands it a
-    // colliding attribute (the two share one reserved-name definition).
+    // reserved/geometry column name into `other_attributes` rather than
+    // aborting the whole conversion (§5.2, G12). Divertedness is
+    // schema-relative — it depends on the final `lods` — so this runs only
+    // after the LoDs are settled. `CityParquetSchema::validate` stays strict;
+    // scan simply never hands it a colliding attribute (the two share one
+    // reserved-name definition).
+    //
+    // `other_attributes` is ITSELF a reserved name (spec "Column naming and
+    // reservation rules"): an attribute literally named that has nowhere
+    // further to divert to (diverting it into the very column named after it
+    // would be circular), so it is rejected outright — the same error
+    // `CityParquetSchema::validate` would raise for any other undiverted
+    // collision, just caught here before it ever reaches the schema.
     let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&lods);
     let mut attributes = Vec::new();
     let mut diverted_attribute_names = BTreeSet::new();
     for (name, ty) in inferer.finish() {
+        if name == "other_attributes" {
+            return Err(CityParquetError::Schema(format!(
+                "attribute column '{name}' collides with a reserved or geometry column name"
+            )));
+        }
         if reserved.contains(&name) {
             diverted_attribute_names.insert(name);
         } else {

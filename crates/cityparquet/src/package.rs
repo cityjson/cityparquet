@@ -501,10 +501,11 @@ fn module_geo_by_file(
 /// unlike [`CityParquetSchema::to_arrow_schema`]'s dataset-wide
 /// zero-analysis-geometry rendering, which is a DIFFERENT case this function
 /// is never asked to reproduce — see [`TableWriters::projection_for`]'s doc
-/// comment for why), then `template`, `other`, then the dataset's attribute
-/// columns in scan order. Mirrors `CityParquetSchema::to_arrow_schema`'s
-/// non-empty-lods field order exactly, so every name here is guaranteed to
-/// resolve in the dataset-wide (wide) rendered schema.
+/// comment for why), then `template`, `other`, `other_attributes`, then the
+/// dataset's attribute columns in scan order. Mirrors
+/// `CityParquetSchema::to_arrow_schema`'s non-empty-lods field order exactly,
+/// so every name here is guaranteed to resolve in the dataset-wide (wide)
+/// rendered schema.
 fn module_column_names(file_lods: &[Lod], attributes: &[(String, AttributeType)]) -> Vec<String> {
     let mut names: Vec<String> = [
         "id",
@@ -513,6 +514,7 @@ fn module_column_names(file_lods: &[Lod], attributes: &[(String, AttributeType)]
         "parents",
         "children",
         "children_roles",
+        "address",
         "bbox",
     ]
     .into_iter()
@@ -526,6 +528,7 @@ fn module_column_names(file_lods: &[Lod], attributes: &[(String, AttributeType)]
     }
     names.push("template".to_string());
     names.push("other".to_string());
+    names.push("other_attributes".to_string());
     names.extend(attributes.iter().map(|(name, _)| name.clone()));
     names
 }

@@ -385,6 +385,55 @@ fn reconstruct_boundaries(
     }
 }
 
+/// Rebuild one row's `address` array from the decoded reserved struct column
+/// (spec "Addresses", gap 10) back into CityJSON: the postal fields under
+/// their canonical member names ([`crate::address::postal_to_members`] — the
+/// SAME names the encoder recognises on the way in, so a re-imported export
+/// round-trips through the identical mapping), and `location` reconstructed
+/// as a `MultiPoint` geometry whose `boundaries` index the feature's own
+/// vertex pool.
+///
+/// `location`'s WKB -> boundaries step reuses exactly the machinery a
+/// regular `MultiPoint` object geometry goes through: [`wkb_to_geometry`]
+/// decodes it, [`vertex_map`] interns its coordinates into the feature's
+/// SHARED vertex pool (the same `interner` real geometries and the template
+/// reference point use), and [`reconstruct_boundaries`] turns the result into
+/// CityJSON `boundaries` — no separate "WKB multipoint -> boundaries" logic
+/// needed.
+fn build_address_value(
+    entries: &[crate::decode::AddressEntry],
+    interner: &mut VertexInterner,
+    scale: [f64; 3],
+    translate: [f64; 3],
+) -> Result<Value> {
+    let mut arr = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let postal = crate::address::AddressPostal {
+            street: entry.street.clone(),
+            house_number: entry.house_number.clone(),
+            po_box: entry.po_box.clone(),
+            zip_code: entry.zip_code.clone(),
+            city: entry.city.clone(),
+            state: entry.state.clone(),
+            country: entry.country.clone(),
+            free_text: entry.free_text.clone(),
+        };
+        let mut map = crate::address::postal_to_members(&postal);
+        if let Some(wkb) = &entry.location {
+            let decoded = wkb_to_geometry(wkb)?;
+            let vmap = vertex_map(&decoded.coords, scale, translate, interner);
+            let boundaries =
+                reconstruct_boundaries(&decoded.kind, &GeometryType::MultiPoint, None, &vmap)?;
+            map.insert(
+                crate::address::LOCATION_KEY.to_string(),
+                serde_json::json!({"type": "MultiPoint", "boundaries": boundaries}),
+            );
+        }
+        arr.push(Value::Object(map));
+    }
+    Ok(Value::Array(arr))
+}
+
 /// Split a flat `face_semantics` slice into consecutive groups of `counts`
 /// lengths — the inverse of the encoder's flatten. A count sum that does not
 /// match the slice length is a corrupt/hand-rolled package, an error.
@@ -1456,6 +1505,20 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 }
             }
             co.geometry = if geoms.is_empty() { None } else { Some(geoms) };
+            // `address` has no typed cjseq field (CityJSON prescribes no
+            // member set for it), so — like `children_roles` above — it is
+            // injected via a serialize/mutate/deserialize round trip rather
+            // than a direct field assignment (spec "Addresses", gap 10).
+            // Absent entirely when the row's `address` cell was null; a
+            // present (even empty) list always gets a real `"address"` key.
+            if let Some(entries) = &obj.address {
+                let address_value = build_address_value(entries, &mut interner, scale, translate)?;
+                let mut co_value = serde_json::to_value(&co)?;
+                if let Value::Object(map) = &mut co_value {
+                    map.insert("address".to_string(), address_value);
+                }
+                co = serde_json::from_value(co_value)?;
+            }
             feature.add_co(obj.id.clone(), co);
         }
 
