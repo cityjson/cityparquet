@@ -294,12 +294,14 @@ fn file_has_semantic_surfaces(path: &Path, schema: &Schema) -> Result<bool> {
 
 /// Whether a field is one of the reserved columns for `base`, across every LoD.
 ///
-/// **The footprint LoD's column has no suffix.** `geometry_column_name`
-/// (`cityparquet_schema::types`) drops the suffix for the footprint LoD, so the
-/// column is literally `geometry_properties`, not `geometry_properties_lod0`.
-/// Matching only `geometry_properties_lod*` would make semantic surfaces on the
-/// footprint LoD invisible, and the CLI enables LoD0 synthesis by default, so
-/// that column exists in essentially every CLI-written package.
+/// Matches the LoD-suffixed form `base_lod<major>_<minor>` — which the reference
+/// writer always emits, since every geometry column now carries an LoD suffix
+/// (spec "Levels of detail"; there is no un-suffixed footprint column) — and
+/// also a bare, un-suffixed `base`. The writer does not emit the bare form for
+/// LoD-bearing geometry, but it stays matched defensively: the un-suffixed names
+/// remain reserved for a geometry-less table (no LoD to suffix by), and files
+/// from other tools may use them. Matching only `base_lod*` would make semantic
+/// surfaces on such a column invisible.
 fn is_reserved_column_for(name: &str, base: &str) -> bool {
     name == base || name.starts_with(&format!("{base}_lod"))
 }
