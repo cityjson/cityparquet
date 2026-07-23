@@ -119,6 +119,8 @@
 # convert`. NOT wired into `just check`/CI.
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 DUCKDB=${DUCKDB:-duckdb}
 
 CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes"
@@ -127,8 +129,8 @@ usage() {
   cat >&2 <<EOF
 usage: $0 PARQUET_PKG OUT_CSV [--numeric-column COL] [--repeat N]
   PARQUET_PKG        a CityParquet package directory whose metadata.json
-                      manifest lists exactly one main table (a single-family
-                      by-type package, e.g. delft)
+                      STAC Item declares exactly one cityparquet-objects
+                      asset (a single-family by-type package, e.g. delft)
   OUT_CSV            the read-benchmark result CSV to append duckdb-parquet rows to
   --numeric-column   a real numeric (Int64/Float64/Double) attribute column;
                       enables the attr-stats scenario (skipped without it)
@@ -174,29 +176,15 @@ if ! [[ "$REPEAT" =~ ^[0-9]+$ ]] || [[ "$REPEAT" -lt 1 ]]; then
 fi
 
 # By-type is the only, mandatory table layout: a package's `metadata.json`
-# manifest must list exactly one main table for this script's single-table
-# SQL (every scenario below queries `$TABLE` directly) to be meaningful —
-# true for a single-family dataset (e.g. delft, all Building/BuildingPart),
-# never for a multi-family one (e.g. lod3_railway's 10 family tables).
-MANIFEST="$PARQUET_PKG/metadata.json"
-if [[ ! -f "$MANIFEST" ]]; then
-  echo "error: no metadata.json manifest at $PARQUET_PKG (not a CityParquet package)" >&2
-  exit 1
-fi
-MAIN_TABLE_NAME="$(python3 -c "
-import json, sys
-with open(sys.argv[1]) as f:
-    manifest = json.load(f)
-tables = manifest.get('tables', [])
-if len(tables) != 1:
-    print(
-        f'error: {sys.argv[1]} lists {len(tables)} tables ({tables}); this script only '
-        'supports single-table (single-family) packages, not multi-table by-type packages',
-        file=sys.stderr,
-    )
-    sys.exit(1)
-print(tables[0])
-" "$MANIFEST")"
+# STAC Item must declare exactly one object table for this script's
+# single-table SQL (every scenario below queries `$TABLE` directly) to be
+# meaningful — true for a single-family dataset (e.g. delft, all
+# Building/BuildingPart), never for a multi-family one (e.g. lod3_railway's 10
+# family tables). `scripts/package_tables.py` resolves the table list from the
+# `cityparquet-objects` asset role, mirroring the Rust `PackageTables::open`;
+# it reports its own errors (missing manifest, no tables, multi-table) on
+# stderr and exits non-zero, which `set -e` propagates.
+MAIN_TABLE_NAME="$("$REPO_ROOT/scripts/package_tables.py" "$PARQUET_PKG" --single)"
 TABLE="$PARQUET_PKG/$MAIN_TABLE_NAME"
 
 # Derive `dataset` from the package directory's own name (see this script's
