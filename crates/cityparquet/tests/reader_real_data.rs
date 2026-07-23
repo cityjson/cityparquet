@@ -177,15 +177,68 @@ fn cityparquet_arrow_schema_matches_the_writers_rendered_schema() {
         Some("reserved")
     );
 
+    // geometry_properties_lod2_2 is a genuine Arrow STRUCT on the WRITTEN,
+    // then re-read, Parquet file — not a single arrow.json-tagged Utf8 leaf
+    // (spec "Geometry properties and semantics"). Checked against the
+    // actual physical schema Parquet round-tripped, not just the schema the
+    // writer intended to render.
     let props = read_schema
         .field_with_name("geometry_properties_lod2_2")
         .unwrap();
+    assert!(
+        !props.metadata().contains_key(EXTENSION_TYPE_NAME_KEY),
+        "the outer geometry_properties field is a Struct, not itself arrow.json-tagged"
+    );
+    let arrow_schema::DataType::Struct(children) = props.data_type() else {
+        panic!(
+            "geometry_properties_lod2_2 must round-trip as a Struct, got {:?}",
+            props.data_type()
+        );
+    };
     assert_eq!(
-        props
+        children.iter().map(|f| f.name().as_str()).collect::<Vec<_>>(),
+        vec!["type", "surfaces", "face_semantics", "shells"]
+    );
+    let type_field = children.iter().find(|f| f.name() == "type").unwrap();
+    assert_eq!(type_field.data_type(), &arrow_schema::DataType::Utf8);
+    assert!(!type_field.is_nullable(), "type is non-null");
+
+    let surfaces_field = children.iter().find(|f| f.name() == "surfaces").unwrap();
+    assert_eq!(surfaces_field.data_type(), &arrow_schema::DataType::Utf8);
+    assert!(surfaces_field.is_nullable());
+    assert_eq!(
+        surfaces_field
             .metadata()
             .get(EXTENSION_TYPE_NAME_KEY)
             .map(String::as_str),
-        Some("arrow.json")
+        Some("arrow.json"),
+        "surfaces alone keeps the arrow.json tag (heterogeneous per-surface attributes)"
+    );
+
+    let fs_field = children.iter().find(|f| f.name() == "face_semantics").unwrap();
+    assert!(fs_field.is_nullable());
+    let arrow_schema::DataType::List(fs_item) = fs_field.data_type() else {
+        panic!("face_semantics must round-trip as List");
+    };
+    assert_eq!(fs_item.data_type(), &arrow_schema::DataType::Int32);
+    assert!(fs_item.is_nullable(), "face_semantics items are nullable");
+
+    let shells_field = children.iter().find(|f| f.name() == "shells").unwrap();
+    assert!(shells_field.is_nullable());
+    let arrow_schema::DataType::List(solid_item) = shells_field.data_type() else {
+        panic!("shells must round-trip as List");
+    };
+    assert!(
+        !solid_item.is_nullable(),
+        "each solid's inner shell-count list is non-null once shells is populated"
+    );
+    let arrow_schema::DataType::List(count_item) = solid_item.data_type() else {
+        panic!("shells' items must themselves round-trip as List");
+    };
+    assert_eq!(count_item.data_type(), &arrow_schema::DataType::Int32);
+    assert!(
+        !count_item.is_nullable(),
+        "each per-shell face count is non-null once shells is populated"
     );
 
     // An inferred attribute keeps its role metadata too.
