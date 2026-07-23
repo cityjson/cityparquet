@@ -3,13 +3,17 @@
 //! Every input here is a real CityJSON file converted by this crate — no
 //! inline artificial CityJSON, per this repo's testing discipline.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use city3d_stac_types::metadata::AttributeType;
 use city3d_stac_types::stac::CityObjectsCount;
+use cityparquet::merge::merge_sources;
 use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::source::{Source, SourceFormat};
 use cityparquet::stac::properties::{PackageTables, derive_co_types, derive_from_footer};
 use cityparquet::stac::{ItemOptions, item_for_package, package_bbox};
+use cjseq::CityJSONFeature;
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -95,6 +99,117 @@ fn footer_properties_from_delft() {
         Some(true),
         "delft carries semantic surfaces"
     );
+}
+
+/// Real railway (10 CityGML modules, all at LoD 3 — see
+/// `module_schema_real_data.rs`'s twin helper for why the CRS override onto
+/// delft's own is legitimate here: spatial/coordinate correctness is
+/// irrelevant to what this suite proves) merged BEFORE real delft (Building
+/// only, LoDs {0, 1.2, 1.3, 2.2}), so that `merge_sources`/`TableWriters`
+/// (first-appearance table order) writes a railway-only module
+/// (`water_body.parquet`, `WaterBody`s, LoD 3 alone) as the FIRST object
+/// table, with `building.parquet` (fed by both delft's higher-LoD buildings
+/// AND railway's LoD-3 ones) coming LATER. This is the mirror image of
+/// `module_schema_real_data.rs::write_delft_and_railway_merged` (delft
+/// first) — reversed on purpose, because delft-first makes `building.parquet`
+/// table 0, and building.parquet already carries the union of both sources'
+/// LoDs (delft's own plus railway's LoD 3, since railway's Buildings feed the
+/// same file), which would mask exactly the bug this test exists to catch.
+/// Railway-first instead puts a table with a genuinely NARROWER LoD set at
+/// index 0, so a reader that (bug) only consults the first table provably
+/// under-reports.
+fn write_railway_and_delft_merged(dst: &Path) {
+    let railway_src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+    let delft = Source::open(&fixture("delft.city.jsonl")).unwrap();
+
+    let mut railway_header = railway_src.header().clone();
+    let delft_crs = delft
+        .header()
+        .metadata
+        .as_ref()
+        .and_then(|m| m.reference_system.clone());
+    railway_header
+        .metadata
+        .as_mut()
+        .expect("railway fixture carries a metadata block")
+        .reference_system = delft_crs;
+    let railway_feats: Vec<CityJSONFeature> = railway_src
+        .features()
+        .unwrap()
+        .map(|f| f.unwrap())
+        .collect();
+    let railway = Source::from_parts(
+        railway_header,
+        railway_feats,
+        railway_src.doc_appearance().cloned(),
+        SourceFormat::CityJsonSeq,
+    );
+
+    let merged = merge_sources(&[railway, delft]).unwrap();
+
+    let mut out = serde_json::to_string(&merged.header).unwrap();
+    out.push('\n');
+    for f in &merged.features {
+        out.push_str(&serde_json::to_string(f).unwrap());
+        out.push('\n');
+    }
+    fs::write(dst, out).unwrap();
+}
+
+/// M7 gap 18 (spec-alignment): `city3d:lods` must be the UNION of every
+/// object table's own LoDs, not just the first table's — spec "The footer
+/// describes the file it lives in — nothing wider": *"`city3d:lods` is the
+/// union over all tables"*. `water_body.parquet` (table 0 by construction —
+/// see [`write_railway_and_delft_merged`]) carries only LoD 3, while
+/// `building.parquet` (a later table) carries {0, 1.2, 1.3, 2.2, 3}. RED
+/// before the fix: the old `if idx == 0` code read `lods_from_schema` only
+/// off `water_body.parquet` and reported `["3.0"]` alone, silently dropping
+/// delft's {0, 1.2, 1.3, 2.2}. GREEN after: every LoD from every table is
+/// present.
+#[test]
+fn city3d_lods_is_the_union_across_every_table_not_just_the_first() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let src_path = src_dir.path().join("railway_and_delft.city.jsonl");
+    write_railway_and_delft_merged(&src_path);
+
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = convert_fixture_path(&src_path, &dir);
+
+    let tables = PackageTables::open(&pkg).expect("resolve tables");
+
+    // Pin the ordering assumption this test relies on, so a future writer
+    // change that reshuffles table order fails loudly here instead of
+    // silently making this test pass for the wrong reason (an accidentally
+    // superset-carrying first table) — the exact trap flagged in
+    // `write_railway_and_delft_merged`'s doc comment.
+    let table_names: Vec<String> = tables
+        .tables
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        table_names.first().map(String::as_str),
+        Some("water_body.parquet"),
+        "this test needs a railway-only, LoD-3-only module as the FIRST table; got {table_names:?}"
+    );
+    let building_pos = table_names
+        .iter()
+        .position(|n| n == "building.parquet")
+        .expect("building.parquet must be one of the tables");
+    assert_ne!(
+        building_pos, 0,
+        "building.parquet (the table carrying delft's wider LoD set) must NOT be the first table"
+    );
+
+    let props = derive_from_footer(&tables).expect("derive");
+
+    for lod in ["0.0", "1.2", "1.3", "2.2", "3.0"] {
+        assert!(
+            props.lods.iter().any(|l| l == lod),
+            "expected LoD {lod} in the dataset-level union, got {:?}",
+            props.lods
+        );
+    }
 }
 
 /// LoDs must come back as the LoD strings the writer used, not column names.
@@ -476,6 +591,45 @@ fn a_package_with_no_crs_converts_to_an_unlocated_but_schema_valid_item() {
         "the unlocated Item violates the city3d schema:\n{}\n\ninstance:\n{}",
         errors.join("\n"),
         serde_json::to_string_pretty(&instance).unwrap()
+    );
+}
+
+/// M7 gap 18 companion check: `city3d:attributes` must include attributes
+/// from EVERY table, not just the first. Unlike [`city3d_lods_is_the_union_across_every_table_not_just_the_first`],
+/// this is NOT a red/green regression test — attribute columns are never
+/// pruned per module (only geometry/appearance columns are, per M2; see
+/// `crate::scan`'s `module_lods` doc comment), so every table in a real
+/// package already carries the SAME dataset-wide attribute column set, and
+/// `derive_from_footer`'s old first-table-only code already happened to
+/// report the full set here too. This test instead pins that
+/// `city3d:attributes` keeps carrying both railway's (`function`) and
+/// delft's (`b3_bouwlagen`) attributes together as a regression guard for the
+/// union logic now in place, even though today's writer can't produce a
+/// table whose attribute set is a strict subset of another's within one
+/// package. The union/dedup semantics themselves (two tables genuinely
+/// disagreeing) are proven directly by `properties::tests::
+/// merge_attributes_unions_by_name_and_keeps_first_seen_on_conflict`, since
+/// no real fixture can exercise that today.
+#[test]
+fn city3d_attributes_spans_every_module_present_in_the_package() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let src_path = src_dir.path().join("railway_and_delft.city.jsonl");
+    write_railway_and_delft_merged(&src_path);
+
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = convert_fixture_path(&src_path, &dir);
+
+    let tables = PackageTables::open(&pkg).expect("resolve tables");
+    let props = derive_from_footer(&tables).expect("derive");
+
+    let names: Vec<&str> = props.attributes.iter().map(|a| a.name.as_str()).collect();
+    assert!(
+        names.contains(&"function"),
+        "expected railway's `function` attribute in the dataset-level union, got {names:?}"
+    );
+    assert!(
+        names.contains(&"b3_bouwlagen"),
+        "expected delft's `b3_bouwlagen` attribute in the dataset-level union, got {names:?}"
     );
 }
 

@@ -7,7 +7,7 @@
 //! it means the encoder's own type decisions are reported rather than
 //! independently re-inferred.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -125,7 +125,7 @@ impl PackageTables {
     }
 }
 
-/// The LoDs a package carries, as the LoD strings the writer used.
+/// The LoDs *one table's* schema carries, as a set.
 ///
 /// Read from each geometry field's `cityparquet:lod` tag rather than parsed
 /// back out of column names — every real LoD, including LoD0, is suffixed
@@ -137,9 +137,12 @@ impl PackageTables {
 /// only so the loop recognises it as a geometry column (rather than treating
 /// it as unrelated) when deciding whether to look for the tag.
 ///
-/// Returned sorted by LoD order (not lexicographically) and deduplicated, so
-/// a derived Item is byte-stable run to run.
-fn lods_from_schema(schema: &Schema) -> Vec<String> {
+/// Since M2, a module's table carries only the LoD/appearance columns its own
+/// rows use (spec "The footer describes the file it lives in — nothing
+/// wider"), so this is per-table by construction — [`derive_from_footer`]
+/// unions the result across every table to get the dataset-level
+/// `city3d:lods`, exactly as it already does for `co_types`.
+fn lods_from_schema(schema: &Schema) -> BTreeSet<Lod> {
     let mut lods: BTreeSet<Lod> = BTreeSet::new();
     for field in schema.fields() {
         let name = field.name();
@@ -158,20 +161,31 @@ fn lods_from_schema(schema: &Schema) -> Vec<String> {
             lods.insert(lod);
         }
     }
-    lods.into_iter().map(|l| l.to_string()).collect()
+    lods
 }
 
-/// The attribute definitions a package carries.
+/// The attribute definitions *one table* carries.
 ///
-/// The declared attribute columns come from the footer; each one's type comes
-/// from the rebuilt schema. A `Json` attribute is stored as Utf8 and is only
-/// distinguishable by its `arrow.json` extension tag, so that is checked
-/// before falling back to [`AttributeType::from_arrow`] — otherwise every
-/// JSON-valued attribute would be reported as a plain `String`. This mirrors
-/// the same disambiguation in [`crate::reader`].
+/// The declared attribute columns come from that table's own footer
+/// (`meta.attributes`); each one's type comes from the rebuilt schema. A
+/// `Json` attribute is stored as Utf8 and is only distinguishable by its
+/// `arrow.json` extension tag, so that is checked before falling back to
+/// [`AttributeType::from_arrow`] — otherwise every JSON-valued attribute
+/// would be reported as a plain `String`. This mirrors the same
+/// disambiguation in [`crate::reader`].
 ///
 /// A column whose Arrow type maps to no CityParquet type is skipped rather
 /// than guessed at; the count is returned so the caller can report it.
+///
+/// Unlike [`lods_from_schema`], `meta.attributes` is **not** module-pruned by
+/// this writer today: every table in a package is stamped with the same
+/// dataset-wide attribute-column list (only geometry/appearance LoD columns
+/// are pruned per M2), so calling this once, on any single table, already
+/// returns the whole package's attributes. [`derive_from_footer`] still
+/// unions this across every table for `city3d:attributes` — spec
+/// `city.attributes` is a per-*file* field, so a conformant writer that DOES
+/// prune attribute columns per module is legal, and reading only the first
+/// table would silently under-report for one.
 fn attributes_from_schema(
     schema: &Schema,
     meta: &CityMetadata,
@@ -417,9 +431,29 @@ fn collect_string_values(array: &ArrayRef, seen: &mut BTreeSet<String>) -> Resul
 
 /// Derive every `city3d:*` field a written package can supply.
 ///
-/// Most come from the footer and Arrow schema of the first object table.
-/// `co_types` and `semantic_surfaces` additionally read one projected column;
-/// `textures`/`materials` are the presence of the appearance sidecars.
+/// `lods` and `attributes` are genuine dataset-level UNIONS across every
+/// object table — spec "The footer describes the file it lives in — nothing
+/// wider": *"The `metadata.json` STAC Item is the dataset-level view: it
+/// aggregates across every file in the package (e.g. `city3d:lods` is the
+/// union over all tables)"*. `co_types` and `semantic_surfaces` already
+/// aggregate the same way (the pattern this fix extends to
+/// `lods`/`attributes`); `textures`/`materials` are the presence of the
+/// appearance sidecars, not per-table at all.
+///
+/// **Why this matters concretely for `lods`, and only theoretically (today)
+/// for `attributes`.** Since M2 each module's table is pruned to only the
+/// **geometry/appearance** LoD columns its own rows use (spec
+/// "object-table-schema"; `crate::scan`'s `module_lods` doc comment), so
+/// reading only the first table — as this function used to — silently drops
+/// any LoD that exists only in a later table (e.g. a railway-only module at
+/// LoD 3 first, a building module spanning {0, 1.2, 1.3, 2.2, 3} later).
+/// **Attribute columns are not module-pruned** by this writer — every table
+/// in a package renders the same dataset-wide attribute column set — so
+/// today `attributes` unioned across tables and `attributes` read from the
+/// first table alone happen to agree. `attributes` is still unioned here:
+/// `city.attributes` is a per-*file* field in the spec (a table's own
+/// inferred attribute columns), so a differently-pruning writer is legal, and
+/// reading only the first table would be a latent bug waiting for one.
 pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
     let mut props = City3dProperties::new();
     let mut total_rows: u64 = 0;
@@ -428,8 +462,13 @@ pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
     // on one type and none on another. Appearance is judged separately, from the
     // presence of the definition sidecars (after the loop).
     let mut semantics: Option<bool> = None;
+    let mut lods: BTreeSet<Lod> = BTreeSet::new();
+    // Keyed by name (see `merge_attributes`) so a `BTreeMap` also gives a
+    // stable, sorted `city3d:attributes` for free, matching `lods`/
+    // `co_types`'s own sorted-and-deduplicated output.
+    let mut attributes: BTreeMap<String, AttributeDefinition> = BTreeMap::new();
 
-    for (idx, path) in tables.tables.iter().enumerate() {
+    for path in &tables.tables {
         let file = fs::File::open(path)
             .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
@@ -446,25 +485,30 @@ pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
             CityParquetError::Metadata("package row count overflows u64".to_string())
         })?;
         let schema = builder.cityparquet_arrow_schema()?;
+        let meta = builder.cityparquet_metadata()?;
 
-        // Every object table in a package carries the identical schema and KV
-        // metadata (see `crate::package`'s writer), so the first table is
-        // authoritative for schema-derived fields — the same assumption
-        // `crate::export` makes. Row counts and data-presence flags are
-        // per-table and accumulate.
-        if idx == 0 {
-            let meta = builder.cityparquet_metadata()?;
+        // `source_version` (the SOURCE schema version, e.g. CityJSON 2.0) is
+        // genuinely dataset-wide and single-valued: every table in one
+        // package came from the same conversion of the same source, so it is
+        // read once, from the first table, rather than accumulated — unlike
+        // `lods`/`attributes` below, which this function treats as per-table
+        // and unions (see this function's doc comment for why that is a real
+        // concern for `lods` and a defensive one, today, for `attributes`).
+        if props.version.is_none() {
             props.version = meta.source_version.clone();
-            props.lods = lods_from_schema(&schema);
-            let (attributes, _skipped) = attributes_from_schema(&schema, &meta);
-            props.attributes = attributes;
         }
+        lods.extend(lods_from_schema(&schema));
+        let (table_attributes, _skipped) = attributes_from_schema(&schema, &meta);
+        merge_attributes(&mut attributes, table_attributes);
 
         // Semantic surfaces live in the `geometry_properties*` columns (§8),
         // but a null-count test would answer the wrong question — see
         // `cell_has_semantics`.
         semantics = merge_presence(semantics, Some(file_has_semantic_surfaces(path, &schema)?));
     }
+
+    props.lods = lods.into_iter().map(|l| l.to_string()).collect();
+    props.attributes = attributes.into_values().collect();
 
     // Appearance presence IS the presence of its definition sidecar. The
     // Compatibility profile writes `textures.parquet` / `materials.parquet` only
@@ -486,6 +530,26 @@ pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
     Ok(props)
 }
 
+/// Fold one table's attribute definitions into the running dataset-level
+/// union, keyed by name so the same attribute reported by two tables
+/// collapses to a single entry.
+///
+/// Kept **first-seen** on a name collision: two modules disagreeing on the
+/// SAME attribute name's inferred type would be surprising (the same
+/// attribute name is expected to mean the same thing dataset-wide), and
+/// there is no principled way to pick a "better" type between two tables'
+/// independent inferences — so whichever table `derive_from_footer` visits
+/// first (manifest/table order) wins, rather than a later table silently
+/// overwriting it.
+fn merge_attributes(
+    dest: &mut BTreeMap<String, AttributeDefinition>,
+    defs: Vec<AttributeDefinition>,
+) {
+    for def in defs {
+        dest.entry(def.name.clone()).or_insert(def);
+    }
+}
+
 /// Combine two presence verdicts: any `Some(true)` wins, `None` is "unknown"
 /// and never overrides a known answer.
 fn merge_presence(a: Option<bool>, b: Option<bool>) -> Option<bool> {
@@ -498,12 +562,59 @@ fn merge_presence(a: Option<bool>, b: Option<bool>) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     use arrow_array::StructArray;
+    use city3d_stac_types::metadata::{AttributeDefinition, AttributeType};
 
-    use super::{PackageTables, row_has_semantics};
+    use super::{PackageTables, merge_attributes, row_has_semantics};
     use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder};
+
+    /// The union/dedup semantics [`merge_attributes`] promises, proven
+    /// directly against two synthetic tables' worth of definitions — plain
+    /// Rust data, not CityJSON, so this isn't subject to this repo's
+    /// real-fixture-only discipline for *model content*. It has to be proven
+    /// this way: today's writer never module-prunes attribute columns (only
+    /// geometry/appearance columns are pruned per M2), so no real converted
+    /// package can produce two tables with genuinely different attribute
+    /// sets for an end-to-end test to exercise — see
+    /// `stac_derive_real_data.rs::city3d_attributes_spans_every_module_present_in_the_package`'s
+    /// doc comment for the same point from the integration-test side.
+    #[test]
+    fn merge_attributes_unions_by_name_and_keeps_first_seen_on_conflict() {
+        let mut dest: BTreeMap<String, AttributeDefinition> = BTreeMap::new();
+
+        merge_attributes(
+            &mut dest,
+            vec![
+                AttributeDefinition::new("function", AttributeType::String),
+                AttributeDefinition::new("class", AttributeType::String),
+            ],
+        );
+        // A second table: one brand-new name (`b3_bouwlagen`, from a
+        // different module) and one NAME COLLISION with a conflicting type
+        // (`class` as `Number` here, `String` above) that must NOT win.
+        merge_attributes(
+            &mut dest,
+            vec![
+                AttributeDefinition::new("class", AttributeType::Number),
+                AttributeDefinition::new("b3_bouwlagen", AttributeType::Number),
+            ],
+        );
+
+        let names: Vec<&str> = dest.keys().map(String::as_str).collect();
+        assert_eq!(
+            names,
+            vec!["b3_bouwlagen", "class", "function"],
+            "the union must contain every distinct name from both tables"
+        );
+        assert_eq!(
+            dest["class"].attr_type,
+            AttributeType::String,
+            "the FIRST table's type for a colliding name must win, not the second's"
+        );
+    }
 
     /// Builds a one-row `geometry_properties` `StructArray` from `props`, the
     /// SAME builder the writer uses — so these tests exercise `row_has_semantics`
