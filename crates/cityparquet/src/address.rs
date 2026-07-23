@@ -12,23 +12,40 @@
 //! (re-deriving the "expected" struct from a source address entry) can never
 //! diverge on what counts as a recognised, "postal" member.
 //!
-//! Recognised names follow CityJSON's own documented address example
-//! (xAL-derived): `countryName`, `locality`, `administrativeArea`,
-//! `thoroughfareName`, `thoroughfareNumber`, `postalCode`, `postBox`,
-//! `freeText`, `location`. A source spelling these differently (there is no
-//! prescribed schema, and real-world data frequently does) simply does not
-//! map — a documented, accepted loss (spec "Addresses" -> "Scope"): only the
-//! members outside this lean set are dropped, never the struct itself.
+//! `country`, `locality`, `thoroughfareName`, `thoroughfareNumber`,
+//! `postcode`, and `location` follow CityJSON's own documented worked
+//! example verbatim (cityjson.org/specs/2.0.1/#address, xAL-derived):
+//!
+//! ```json
+//! "address": [{
+//!   "country": "Canada",
+//!   "locality": "Chibougamau",
+//!   "thoroughfareNumber": "1",
+//!   "thoroughfareName": "rue de la Patate",
+//!   "postcode": "H0H 0H0",
+//!   "location": {"type": "MultiPoint", "lod": "1", "boundaries": [231]}
+//! }]
+//! ```
+//!
+//! `administrativeArea` (-> `state`), `postBox` (-> `po_box`), and
+//! `freeText` (-> `free_text`) have no CityJSON-documented precedent — they
+//! are this implementation's own reasonable extension of the reserved
+//! struct, not names CityJSON's spec text prescribes. A source spelling any
+//! recognised field differently (there is no prescribed schema, and
+//! real-world data frequently does — e.g. the common but non-standard
+//! `countryName`/`postalCode`) simply does not map — a documented, accepted
+//! loss (spec "Addresses" -> "Scope"): only the members outside this lean
+//! set are dropped, never the struct itself.
 
 use serde_json::Value;
 
 pub(crate) const STREET_KEY: &str = "thoroughfareName";
 pub(crate) const HOUSE_NUMBER_KEY: &str = "thoroughfareNumber";
 pub(crate) const PO_BOX_KEY: &str = "postBox";
-pub(crate) const ZIP_CODE_KEY: &str = "postalCode";
+pub(crate) const ZIP_CODE_KEY: &str = "postcode";
 pub(crate) const CITY_KEY: &str = "locality";
 pub(crate) const STATE_KEY: &str = "administrativeArea";
-pub(crate) const COUNTRY_KEY: &str = "countryName";
+pub(crate) const COUNTRY_KEY: &str = "country";
 pub(crate) const FREE_TEXT_KEY: &str = "freeText";
 pub(crate) const LOCATION_KEY: &str = "location";
 
@@ -102,12 +119,12 @@ mod tests {
     #[test]
     fn maps_recognised_members_only() {
         let entry = json!({
-            "countryName": "Finland",
+            "country": "Finland",
             "locality": "Helsinki",
             "administrativeArea": "Uusimaa",
             "thoroughfareName": "Mannerheimintie",
             "thoroughfareNumber": "1",
-            "postalCode": "00100",
+            "postcode": "00100",
             "postBox": "PO 1",
             "freeText": "note",
             "Country": "unrecognised-casing-must-not-map",
@@ -121,6 +138,21 @@ mod tests {
         assert_eq!(postal.zip_code.as_deref(), Some("00100"));
         assert_eq!(postal.po_box.as_deref(), Some("PO 1"));
         assert_eq!(postal.free_text.as_deref(), Some("note"));
+    }
+
+    /// The common but non-standard `countryName`/`postalCode` spelling (seen
+    /// in some real-world producers) is deliberately NOT recognised — only
+    /// CityJSON's actual documented `country`/`postcode` are. This is a
+    /// documented, accepted loss (spec "Addresses" -> "Scope"), not a bug.
+    #[test]
+    fn common_non_standard_country_name_and_postal_code_spelling_is_not_recognised() {
+        let entry = json!({
+            "countryName": "Finland",
+            "postalCode": "00100",
+        });
+        let postal = map_postal_fields(&entry);
+        assert_eq!(postal.country, None);
+        assert_eq!(postal.zip_code, None);
     }
 
     #[test]
@@ -142,11 +174,43 @@ mod tests {
     #[test]
     fn postal_to_members_round_trips_the_recognised_names() {
         let entry = json!({
-            "countryName": "Finland",
+            "country": "Finland",
             "locality": "Helsinki",
         });
         let postal = map_postal_fields(&entry);
         let members = postal_to_members(&postal);
         assert_eq!(map_postal_fields(&Value::Object(members)), postal);
+    }
+
+    /// CityJSON 2.0.1's own documented worked example
+    /// (cityjson.org/specs/2.0.1/#address), verbatim:
+    /// ```json
+    /// "address": [{
+    ///   "country": "Canada",
+    ///   "locality": "Chibougamau",
+    ///   "thoroughfareNumber": "1",
+    ///   "thoroughfareName": "rue de la Patate",
+    ///   "postcode": "H0H 0H0",
+    ///   "location": {"type": "MultiPoint", "lod": "1", "boundaries": [231]}
+    /// }]
+    /// ```
+    /// `country` and `postcode` are the real spec vocabulary — NOT
+    /// `countryName`/`postalCode`, which this module previously (and
+    /// wrongly) recognised instead.
+    #[test]
+    fn maps_the_real_cityjson_documented_worked_example() {
+        let entry = json!({
+            "country": "Canada",
+            "locality": "Chibougamau",
+            "thoroughfareNumber": "1",
+            "thoroughfareName": "rue de la Patate",
+            "postcode": "H0H 0H0",
+        });
+        let postal = map_postal_fields(&entry);
+        assert_eq!(postal.country.as_deref(), Some("Canada"));
+        assert_eq!(postal.city.as_deref(), Some("Chibougamau"));
+        assert_eq!(postal.house_number.as_deref(), Some("1"));
+        assert_eq!(postal.street.as_deref(), Some("rue de la Patate"));
+        assert_eq!(postal.zip_code.as_deref(), Some("H0H 0H0"));
     }
 }

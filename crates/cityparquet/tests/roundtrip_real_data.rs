@@ -1051,12 +1051,12 @@ fn address_location_round_trips() {
     // Entry 0: every recognised postal member round-trips verbatim.
     let e0 = &export_addr[0];
     for key in [
-        "countryName",
+        "country",
         "locality",
         "administrativeArea",
         "thoroughfareName",
         "thoroughfareNumber",
-        "postalCode",
+        "postcode",
         "postBox",
         "freeText",
     ] {
