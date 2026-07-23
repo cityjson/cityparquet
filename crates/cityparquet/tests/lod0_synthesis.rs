@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use arrow_array::Array;
+use arrow_array::{Array, StringArray};
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::lod0::{Lod0Options, faces_from_geometry, footprint_to_geometry, synthesize_lod0};
@@ -262,5 +262,54 @@ fn synthesis_is_idempotent_through_a_round_trip() {
         report.equal,
         "second synthesis pass must be a no-op; differences: {:#?}",
         report.differences
+    );
+}
+
+/// A synthesised footprint's provenance lives in `other.cityparquet:lod0_0_source`
+/// (spec "LoD0 synthesis"), naming the SOURCE geometry column it was derived
+/// from (e.g. `geometry_lod3_0` for railway, whose Buildings carry only a
+/// source LoD3 solid — see `synthesised_railway_has_independent_city_and_geo_primaries`,
+/// which pins `city.primary_column` to that same column for this fixture).
+/// This is `encode.rs`'s relocated key (formerly the in-struct
+/// `geometry_properties`'s `cityparquet:lod0_source`) — this test is the
+/// dedicated regression guarding that exact key/value.
+#[test]
+fn synthesised_footprint_provenance_names_the_source_column_in_other() {
+    let pkg = convert_railway(true);
+    let file = std::fs::File::open(pkg.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let mut checked = 0usize;
+    for batch in builder.build().unwrap() {
+        let batch = batch.unwrap();
+        let Some(geom) = batch.column_by_name("geometry_lod0_0") else {
+            continue;
+        };
+        let other = batch
+            .column_by_name("other")
+            .expect("main table always carries an `other` column")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("`other` is a Utf8 JSON-string column");
+        for row in 0..batch.num_rows() {
+            if geom.is_null(row) {
+                continue;
+            }
+            assert!(
+                !other.is_null(row),
+                "row {row} has a synthesised footprint but no `other` cell to carry its provenance"
+            );
+            let parsed: serde_json::Value = serde_json::from_str(other.value(row)).unwrap();
+            assert_eq!(
+                parsed.get("cityparquet:lod0_0_source"),
+                Some(&serde_json::Value::String("geometry_lod3_0".to_string())),
+                "row {row}'s `other` must name the exact source column the footprint was \
+                 synthesised from, got: {parsed}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 0,
+        "expected at least one synthesised-footprint row to check provenance on"
     );
 }
