@@ -321,12 +321,9 @@ fn reconstruct_boundaries(
             // Solid's own (spec: nested one inner list per solid, even for
             // a lone Solid).
             let counts = match shell_faces(props)? {
-                Some(solids) => Some(
-                    solids
-                        .into_iter()
-                        .next()
-                        .ok_or_else(|| err("shells is present but lists no solid for this Solid".to_string()))?,
-                ),
+                Some(solids) => Some(solids.into_iter().next().ok_or_else(|| {
+                    err("shells is present but lists no solid for this Solid".to_string())
+                })?),
                 None => None,
             };
             let shells = partition_shells(remapped, counts.as_deref())?;
@@ -482,7 +479,10 @@ fn rebuild_semantics(props: Option<&Value>, gtype: &GeometryType) -> Result<Opti
             let nested = shell_faces(Some(props))?.ok_or_else(|| {
                 err("MultiSolid/CompositeSolid geometry_properties is missing `shells`".to_string())
             })?;
-            Value::Array(partition_face_semantics_by_solids(&face_semantics, &nested)?)
+            Value::Array(partition_face_semantics_by_solids(
+                &face_semantics,
+                &nested,
+            )?)
         }
         GeometryType::GeometryInstance => return Ok(None),
     };

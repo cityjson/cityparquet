@@ -623,16 +623,24 @@ mod tests {
     #[test]
     fn geometry_properties_is_a_typed_struct_not_json() {
         let schema = sample().to_arrow_schema().unwrap();
-        let field = schema.field_with_name("geometry_properties_lod2_2").unwrap();
+        let field = schema
+            .field_with_name("geometry_properties_lod2_2")
+            .unwrap();
         assert!(
             !field.metadata().contains_key("ARROW:extension:name"),
             "the outer geometry_properties field must not itself be tagged arrow.json"
         );
         let DataType::Struct(children) = field.data_type() else {
-            panic!("geometry_properties must be a Struct, got {:?}", field.data_type());
+            panic!(
+                "geometry_properties must be a Struct, got {:?}",
+                field.data_type()
+            );
         };
         assert_eq!(
-            children.iter().map(|f| f.name().as_str()).collect::<Vec<_>>(),
+            children
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>(),
             vec!["type", "surfaces", "face_semantics", "shells"],
             "exactly these four fields, in this order"
         );
@@ -653,10 +661,16 @@ mod tests {
             "surfaces stays JSON (heterogeneous per-surface attributes)"
         );
 
-        let fs_field = children.iter().find(|f| f.name() == "face_semantics").unwrap();
+        let fs_field = children
+            .iter()
+            .find(|f| f.name() == "face_semantics")
+            .unwrap();
         assert!(fs_field.is_nullable());
         let DataType::List(fs_item) = fs_field.data_type() else {
-            panic!("face_semantics must be List, got {:?}", fs_field.data_type());
+            panic!(
+                "face_semantics must be List, got {:?}",
+                fs_field.data_type()
+            );
         };
         assert_eq!(fs_item.data_type(), &DataType::Int32);
         assert!(fs_item.is_nullable(), "face_semantics items are nullable");

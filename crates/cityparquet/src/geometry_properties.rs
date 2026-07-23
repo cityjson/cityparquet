@@ -112,7 +112,9 @@ impl GeometryProperties {
                     })
                     .collect::<Result<Vec<_>>>()?,
             ),
-            Some(other) => return Err(err(format!("face_semantics must be an array, got {other}"))),
+            Some(other) => {
+                return Err(err(format!("face_semantics must be an array, got {other}")));
+            }
         };
         let shells = match obj.get("shells") {
             None => None,
@@ -120,9 +122,9 @@ impl GeometryProperties {
                 solids
                     .iter()
                     .map(|solid| {
-                        let arr = solid
-                            .as_array()
-                            .ok_or_else(|| err(format!("shells entry must be an array, got {solid}")))?;
+                        let arr = solid.as_array().ok_or_else(|| {
+                            err(format!("shells entry must be an array, got {solid}"))
+                        })?;
                         arr.iter()
                             .map(|n| {
                                 n.as_i64()
@@ -265,10 +267,11 @@ impl GeometryPropertiesBuilder {
 }
 
 fn downcast<'a, T: 'static>(array: &'a dyn Array, name: &str) -> Result<&'a T> {
-    array
-        .as_any()
-        .downcast_ref::<T>()
-        .ok_or_else(|| err(format!("geometry_properties.{name} has an unexpected array type")))
+    array.as_any().downcast_ref::<T>().ok_or_else(|| {
+        err(format!(
+            "geometry_properties.{name} has an unexpected array type"
+        ))
+    })
 }
 
 /// Reads one `geometry_properties[_lod*]` cell at `row` of a decoded
@@ -317,7 +320,9 @@ pub(crate) fn read_geometry_properties(array: &StructArray, row: usize) -> Resul
         for s in 0..solids.len() {
             let counts = solids.value(s);
             let counts = downcast::<Int32Array>(counts.as_ref(), "shells.item.item")?;
-            let arr: Vec<Value> = (0..counts.len()).map(|i| Value::from(counts.value(i))).collect();
+            let arr: Vec<Value> = (0..counts.len())
+                .map(|i| Value::from(counts.value(i)))
+                .collect();
             out.push(Value::Array(arr));
         }
         map.insert("shells".to_string(), Value::Array(out));

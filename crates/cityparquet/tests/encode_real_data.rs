@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use arrow_array::{Array, BinaryArray, Int32Array, ListArray, RecordBatch, StringArray, StructArray};
+use arrow_array::{
+    Array, BinaryArray, Int32Array, ListArray, RecordBatch, StringArray, StructArray,
+};
 use cityparquet::encode::encode;
 use cityparquet::scan::scan;
 use cityparquet::source::Source;
@@ -148,11 +150,7 @@ fn delft_lod0_lands_in_a_suffixed_column_with_no_lod_in_properties() {
     // The struct has no `lod` field at all (spec: it declares exactly
     // type/surfaces/face_semantics/shells, structurally — a reader never
     // needs to check for a stray value, only the schema).
-    let field_names: Vec<&str> = props
-        .fields()
-        .iter()
-        .map(|f| f.name().as_str())
-        .collect();
+    let field_names: Vec<&str> = props.fields().iter().map(|f| f.name().as_str()).collect();
     assert_eq!(
         field_names,
         vec!["type", "surfaces", "face_semantics", "shells"],

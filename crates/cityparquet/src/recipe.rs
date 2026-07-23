@@ -7,8 +7,8 @@
 //! names and extension metadata, so it can never drift from the schema it is
 //! given.
 
-use arrow_schema::{Field, Schema};
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
+use arrow_schema::{Field, Schema};
 use parquet::arrow::ArrowSchemaConverter;
 use parquet::basic::{BrotliLevel, Compression, Encoding, GzipLevel, ZstdLevel};
 use parquet::file::properties::{EnabledStatistics, WriterProperties};

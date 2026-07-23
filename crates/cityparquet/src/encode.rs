@@ -285,7 +285,9 @@ fn solid_shells(geom: &Geometry, dropped: &[usize]) -> Result<Option<Vec<Vec<i32
             let mut pos = 0;
             let faces: Vec<i32> = shells
                 .iter()
-                .map(|shell| face_count_i32(shell.len() - dropped_in_shell(dropped, &mut pos, shell.len())))
+                .map(|shell| {
+                    face_count_i32(shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()))
+                })
                 .collect::<Result<_>>()?;
             // One solid -> one inner list, even though a Solid's own
             // boundaries have no outer "per-solid" nesting of their own.
@@ -301,7 +303,9 @@ fn solid_shells(geom: &Geometry, dropped: &[usize]) -> Result<Option<Vec<Vec<i32
                     solid
                         .iter()
                         .map(|shell| {
-                            face_count_i32(shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()))
+                            face_count_i32(
+                                shell.len() - dropped_in_shell(dropped, &mut pos, shell.len()),
+                            )
                         })
                         .collect::<Result<_>>()
                 })

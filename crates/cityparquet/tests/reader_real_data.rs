@@ -196,7 +196,10 @@ fn cityparquet_arrow_schema_matches_the_writers_rendered_schema() {
         );
     };
     assert_eq!(
-        children.iter().map(|f| f.name().as_str()).collect::<Vec<_>>(),
+        children
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect::<Vec<_>>(),
         vec!["type", "surfaces", "face_semantics", "shells"]
     );
     let type_field = children.iter().find(|f| f.name() == "type").unwrap();
@@ -215,7 +218,10 @@ fn cityparquet_arrow_schema_matches_the_writers_rendered_schema() {
         "surfaces alone keeps the arrow.json tag (heterogeneous per-surface attributes)"
     );
 
-    let fs_field = children.iter().find(|f| f.name() == "face_semantics").unwrap();
+    let fs_field = children
+        .iter()
+        .find(|f| f.name() == "face_semantics")
+        .unwrap();
     assert!(fs_field.is_nullable());
     let arrow_schema::DataType::List(fs_item) = fs_field.data_type() else {
         panic!("face_semantics must round-trip as List");

@@ -41,7 +41,9 @@ use serde_json::Value;
 
 use cityparquet_schema::{CityMetadata, CityParquetError, Result, sidecar_schemas};
 
-use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder, read_geometry_properties};
+use crate::geometry_properties::{
+    GeometryProperties, GeometryPropertiesBuilder, read_geometry_properties,
+};
 
 fn schema_err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Schema(msg.into())

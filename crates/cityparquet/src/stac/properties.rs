@@ -261,7 +261,10 @@ fn file_has_semantic_surfaces(path: &Path, schema: &Schema) -> Result<bool> {
             if batch.num_columns() == 0 {
                 continue;
             }
-            let Some(props) = batch.column(0).as_any().downcast_ref::<arrow_array::StructArray>()
+            let Some(props) = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow_array::StructArray>()
             else {
                 continue;
             };
@@ -509,7 +512,11 @@ mod tests {
         let mut b = GeometryPropertiesBuilder::new();
         b.append_value(props).unwrap();
         let array = b.finish();
-        array.as_any().downcast_ref::<StructArray>().unwrap().clone()
+        array
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap()
+            .clone()
     }
 
     /// `from_lists` is a pure path-join — it must round-trip a table/sidecar

@@ -149,7 +149,9 @@ mod tests {
             &DataType::Binary
         );
         assert!(matches!(
-            g.field_with_name("geometry_properties").unwrap().data_type(),
+            g.field_with_name("geometry_properties")
+                .unwrap()
+                .data_type(),
             DataType::Struct(_)
         ));
         assert_eq!(
