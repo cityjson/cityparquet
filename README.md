@@ -57,7 +57,7 @@ realistic timing). Four subcommands:
 ### convert — CityJSON/Seq → CityParquet package
 
 ```bash
-cargo run -p cityparquet-cli -- convert INPUT OUTPUT_DIR --overwrite
+cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite
 ```
 
 Writes `OUTPUT_DIR/` containing one `<snake>.parquet` table per 1st-level
@@ -84,7 +84,7 @@ there is no profile flag to opt into them:
 
 ```bash
 cargo run -p cityparquet-cli -- convert tests/fixtures/lod3_railway.city.json \
-    /tmp/railway --overwrite
+    --output /tmp/railway --overwrite
 ```
 
 `convert` prints a space-separated report: `object_count files_count
