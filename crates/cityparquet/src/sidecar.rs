@@ -26,20 +26,20 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Float64Builder, Int64Builder, StringBuilder,
+    BinaryBuilder, BooleanBuilder, Float64Builder, Int64Builder, ListBuilder, StringBuilder,
 };
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
-    StructArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch,
+    StringArray, StructArray,
 };
-use arrow_schema::Schema;
+use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use serde_json::Value;
 
-use cityparquet_schema::{CityMetadata, CityParquetError, Result, sidecar_schemas};
+use cityparquet_schema::{CityMetadata, CityParquetError, Lod, Result, geometry_column_name, sidecar_schemas};
 
 use crate::geometry_properties::{
     GeometryProperties, GeometryPropertiesBuilder, read_geometry_properties,
@@ -149,6 +149,104 @@ fn push_opt_json(b: &mut StringBuilder, v: Option<&Value>) -> Result<()> {
     Ok(())
 }
 
+/// A `LIST<DOUBLE>` colour-column builder matching
+/// [`cityparquet_schema::sidecar_schemas`]'s rendered field exactly: item
+/// field pinned to non-null `Float64` — a bare `ListBuilder::new(...)`'s
+/// default-derived item field is always nullable, which mismatches the
+/// schema's non-null item field at `RecordBatch::try_new` time (the same
+/// pitfall `crate::encode::RowWriter`'s `template_matrix` builder documents).
+fn double_list_builder() -> ListBuilder<Float64Builder> {
+    ListBuilder::new(Float64Builder::new())
+        .with_field(Arc::new(Field::new("item", DataType::Float64, false)))
+}
+
+/// Push a `LIST<DOUBLE>` colour column value (spec: `diffuseColor`/
+/// `specularColor`/`emissiveColor`/`borderColor` — "**MUST** hold exactly
+/// [`expected_len`] values, each in `[0,1]`, when non-null"). Rejects a
+/// non-array value, a wrong-length array, a non-numeric element, and an
+/// out-of-range element as a `Schema` error naming `field`.
+fn push_opt_double_list(
+    b: &mut ListBuilder<Float64Builder>,
+    v: Option<&Value>,
+    field: &str,
+    expected_len: usize,
+) -> Result<()> {
+    match v {
+        None | Some(Value::Null) => {
+            b.append_null();
+            Ok(())
+        }
+        Some(Value::Array(items)) => {
+            if items.len() != expected_len {
+                return Err(schema_err(format!(
+                    "'{field}' must hold exactly {expected_len} value(s), got {}",
+                    items.len()
+                )));
+            }
+            let mut vals = Vec::with_capacity(items.len());
+            for item in items {
+                let x = item.as_f64().ok_or_else(|| {
+                    schema_err(format!("'{field}' values must be numbers, got {item}"))
+                })?;
+                if !(0.0..=1.0).contains(&x) {
+                    return Err(schema_err(format!(
+                        "'{field}' value {x} is out of range [0,1]"
+                    )));
+                }
+                vals.push(Some(x));
+            }
+            b.append_value(vals);
+            Ok(())
+        }
+        Some(other) => Err(schema_err(format!("'{field}' must be an array, got {other}"))),
+    }
+}
+
+/// Validate that an enum-typed string field (spec: `wrapMode`/`textureType`)
+/// is either absent/null or one of `allowed` — a `Schema` error naming
+/// `field` and the offending value otherwise. Does not itself write
+/// anything; called alongside [`push_opt_str`], which still handles the
+/// actual column append.
+fn validate_enum_str(v: Option<&Value>, allowed: &[&str], field: &str) -> Result<()> {
+    match v {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(s)) => {
+            if allowed.contains(&s.as_str()) {
+                Ok(())
+            } else {
+                Err(schema_err(format!(
+                    "'{field}' must be one of {allowed:?}, got {s:?}"
+                )))
+            }
+        }
+        // Not a string at all: `push_opt_str` (called right after this in
+        // every caller) surfaces the more specific "must be a string" error;
+        // this function only adds a value-domain check on top.
+        Some(_) => Ok(()),
+    }
+}
+
+/// `wrapMode`'s enumeration (spec "textures.parquet").
+const WRAP_MODES: [&str; 5] = ["none", "wrap", "mirror", "clamp", "border"];
+/// `textureType`'s enumeration (spec "textures.parquet").
+const TEXTURE_TYPES: [&str; 3] = ["unknown", "specific", "typical"];
+
+/// Read one `LIST<DOUBLE>` column value back as a `serde_json::Value` array
+/// (`None` when the row is null). The inverse of [`push_opt_double_list`].
+fn opt_double_list_json(arr: &ListArray, row: usize) -> Option<Value> {
+    if arr.is_null(row) {
+        return None;
+    }
+    let values = arr.value(row);
+    let floats: &Float64Array = values
+        .as_any()
+        .downcast_ref()
+        .expect("LIST<DOUBLE> column's child array must be Float64");
+    Some(Value::Array(
+        (0..floats.len()).map(|i| serde_json::json!(floats.value(i))).collect(),
+    ))
+}
+
 /// The remaining members of `obj` not in `known`, as a JSON object (`None`
 /// when nothing is left over).
 fn other_members(obj: &serde_json::Map<String, Value>, known: &[&str]) -> Option<String> {
@@ -192,9 +290,9 @@ pub fn write_materials(path: &Path, defs: &[Value]) -> Result<usize> {
     let mut id = Int64Builder::with_capacity(defs.len());
     let mut name = StringBuilder::new();
     let mut ambient_intensity = Float64Builder::new();
-    let mut diffuse_color = StringBuilder::new();
-    let mut specular_color = StringBuilder::new();
-    let mut emissive_color = StringBuilder::new();
+    let mut diffuse_color = double_list_builder();
+    let mut specular_color = double_list_builder();
+    let mut emissive_color = double_list_builder();
     let mut transparency = Float64Builder::new();
     let mut shininess = Float64Builder::new();
     let mut is_smooth = BooleanBuilder::new();
@@ -211,9 +309,9 @@ pub fn write_materials(path: &Path, defs: &[Value]) -> Result<usize> {
             obj.get("ambientIntensity"),
             "ambientIntensity",
         )?;
-        push_opt_json(&mut diffuse_color, obj.get("diffuseColor"))?;
-        push_opt_json(&mut specular_color, obj.get("specularColor"))?;
-        push_opt_json(&mut emissive_color, obj.get("emissiveColor"))?;
+        push_opt_double_list(&mut diffuse_color, obj.get("diffuseColor"), "diffuseColor", 3)?;
+        push_opt_double_list(&mut specular_color, obj.get("specularColor"), "specularColor", 3)?;
+        push_opt_double_list(&mut emissive_color, obj.get("emissiveColor"), "emissiveColor", 3)?;
         push_opt_f64(&mut transparency, obj.get("transparency"), "transparency")?;
         push_opt_f64(&mut shininess, obj.get("shininess"), "shininess")?;
         push_opt_bool(&mut is_smooth, obj.get("isSmooth"), "isSmooth")?;
@@ -253,6 +351,13 @@ const TEXTURE_KNOWN_FIELDS: [&str; 5] = ["type", "image", "wrapMode", "textureTy
 /// is the value-exact inverse — literally exact for textures, in fact,
 /// since no texture column is numeric (the module docs' float
 /// normalisation only applies to the materials table).
+///
+/// A row with neither `image` (→ `image_uri`) nor embedded image bytes (this
+/// writer never populates `image_data` — no CityJSON source field maps to
+/// it) is a `Schema` error naming the index: spec "a row **MUST** carry at
+/// least one of `image_uri` / `image_data` — a texture with no image is
+/// meaningless". `wrapMode`/`textureType`, when present, must be one of the
+/// spec's documented enumeration values.
 pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
     if defs.is_empty() {
         return Ok(0);
@@ -261,22 +366,31 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
 
     let mut id = Int64Builder::with_capacity(defs.len());
     let mut image_uri = StringBuilder::new();
-    let mut mime_type = StringBuilder::new();
+    let mut image_type = StringBuilder::new();
     let mut wrap_mode = StringBuilder::new();
     let mut texture_type = StringBuilder::new();
-    let mut border_color = StringBuilder::new();
+    let mut border_color = double_list_builder();
     let mut other = StringBuilder::new();
 
     for (idx, def) in defs.iter().enumerate() {
         let obj = def
             .as_object()
             .ok_or_else(|| schema_err(format!("texture def {idx} is not a JSON object")))?;
+        let image = obj.get("image");
+        if !matches!(image, Some(Value::String(_))) {
+            return Err(schema_err(format!(
+                "texture def {idx}: must carry at least one of 'image' (image_uri) or embedded \
+                 image data — a texture with no image is meaningless"
+            )));
+        }
         id.append_value(idx as i64);
-        push_opt_str(&mut image_uri, obj.get("image"), "image")?;
-        push_opt_str(&mut mime_type, obj.get("type"), "type")?;
+        push_opt_str(&mut image_uri, image, "image")?;
+        push_opt_str(&mut image_type, obj.get("type"), "type")?;
+        validate_enum_str(obj.get("wrapMode"), &WRAP_MODES, "wrapMode")?;
         push_opt_str(&mut wrap_mode, obj.get("wrapMode"), "wrapMode")?;
+        validate_enum_str(obj.get("textureType"), &TEXTURE_TYPES, "textureType")?;
         push_opt_str(&mut texture_type, obj.get("textureType"), "textureType")?;
-        push_opt_json(&mut border_color, obj.get("borderColor"))?;
+        push_opt_double_list(&mut border_color, obj.get("borderColor"), "borderColor", 4)?;
         match other_members(obj, &TEXTURE_KNOWN_FIELDS) {
             Some(json) => other.append_value(json),
             None => other.append_null(),
@@ -295,7 +409,7 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
         Arc::new(id.finish()),
         Arc::new(image_uri.finish()),
         Arc::new(image_data.finish()),
-        Arc::new(mime_type.finish()),
+        Arc::new(image_type.finish()),
         Arc::new(wrap_mode.finish()),
         Arc::new(texture_type.finish()),
         Arc::new(border_color.finish()),
@@ -313,73 +427,107 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
 /// as JSON `{"type", "surfaces"?, "face_semantics"?, "shells"?}` for
 /// call-site stability; [`write_templates`]/[`read_templates`] convert to/from
 /// the physical struct via the shared [`crate::geometry_properties`]
-/// machinery), its `lod` (this sidecar's own column: unlike the main table,
-/// a template row has no per-LoD column name to carry its LoD in), and its
-/// `material`/`texture` maps already rewritten to dataset-global ids by the
-/// same [`crate::appearance::AppearanceInterner`] the main table and the
-/// materials/textures sidecars use. `other` is reserved for any Geometry
-/// member the schema doesn't otherwise carry (cjseq's `Geometry` is a fully
-/// typed struct with no catch-all, so in practice this is always `None`).
+/// machinery), its `lod` (a template is a single geometry at a single LoD —
+/// spec "geometry_templates.parquet" — so this is exactly one [`Lod`], never
+/// a per-row-optional value; that LoD picks WHICH physical `geometry_lod*`/
+/// `geometry_properties_lod*`/`material_lod*`/`texture_lod*` column set this
+/// row's data lands in, mirroring the main object table's own per-LoD
+/// grammar rather than carrying its own sibling `lod` column the way the
+/// pre-M6 shape did), and its `material`/`texture` maps already rewritten to
+/// dataset-global ids by the same [`crate::appearance::AppearanceInterner`]
+/// the main table and the materials/textures sidecars use. No `other`: spec
+/// "a geometry template is a plain geometry (WKB + properties + appearance)
+/// with no members left over to preserve".
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemplateRow {
     pub id: String,
+    pub lod: Lod,
     pub wkb: Vec<u8>,
     pub geometry_properties: Option<Value>,
-    pub lod: Option<String>,
     pub material: Option<Value>,
     pub texture: Option<Value>,
-    pub other: Option<Value>,
+}
+
+/// One LoD's worth of per-row column builders — the geometry-templates
+/// sidecar's counterpart of `crate::encode::GeometrySlot`, minus the material/
+/// texture arrays being JSON (not the typed geometry-properties struct) since
+/// there is no dedicated appearance builder type to reuse here.
+struct TemplateSlot {
+    geometry: BinaryBuilder,
+    properties: GeometryPropertiesBuilder,
+    material: StringBuilder,
+    texture: StringBuilder,
+}
+
+impl TemplateSlot {
+    fn new() -> Self {
+        Self {
+            geometry: BinaryBuilder::new(),
+            properties: GeometryPropertiesBuilder::new(),
+            material: StringBuilder::new(),
+            texture: StringBuilder::new(),
+        }
+    }
+
+    fn append_null(&mut self) {
+        self.geometry.append_null();
+        self.properties.append_null();
+        self.material.append_null();
+        self.texture.append_null();
+    }
 }
 
 /// Write one row per `rows[i]` to `path`, per
-/// [`cityparquet_schema::sidecar_schemas::geometry_templates_schema`]'s column
-/// mapping (`id`/`geometry` non-null, everything else an optional JSON
-/// column). Writes nothing and returns `0` when `rows` is empty. `id` is
-/// written verbatim (the caller assigns it — the main-table `template.id`
-/// column stores the template's position as a string, and this sidecar's
-/// `id` must match it so a reader can join the two). [`read_templates`] is
-/// the value-exact inverse.
+/// [`cityparquet_schema::sidecar_schemas::geometry_templates_schema`]'s
+/// per-LoD-suffixed column mapping. The rendered schema covers exactly the
+/// distinct LoDs present in `rows` (never a wider, dataset-inherited set —
+/// mirrors the main object table's own `scan.lods`-driven column set, except
+/// here the "scan" is `rows` itself). Writes nothing and returns `0` when
+/// `rows` is empty. `id` is written verbatim (the caller assigns it — the
+/// main-table `template.id` column stores the template's position as a
+/// string, and this sidecar's `id` must match it so a reader can join the
+/// two). Each row populates only its own `row.lod`'s column set, leaving
+/// every other LoD's columns null for that row (spec: "sparse by
+/// construction"). [`read_templates`] is the value-exact inverse.
 pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
     if rows.is_empty() {
         return Ok(0);
     }
-    let schema = Arc::new(sidecar_schemas::geometry_templates_schema());
+    let mut lods: Vec<Lod> = rows.iter().map(|r| r.lod).collect();
+    lods.sort();
+    lods.dedup();
+    let schema = Arc::new(sidecar_schemas::geometry_templates_schema(&lods));
 
     let mut id = StringBuilder::new();
-    let mut geometry = BinaryBuilder::new();
-    // The SAME struct builder the main object table uses (spec: "same
-    // struct, reused") — not a separate implementation.
-    let mut geometry_properties = GeometryPropertiesBuilder::new();
-    let mut lod = StringBuilder::new();
-    let mut material = StringBuilder::new();
-    let mut texture = StringBuilder::new();
-    let mut other = StringBuilder::new();
+    let mut slots: Vec<(Lod, TemplateSlot)> =
+        lods.iter().map(|&lod| (lod, TemplateSlot::new())).collect();
 
     for row in rows {
         id.append_value(&row.id);
-        geometry.append_value(&row.wkb);
-        match &row.geometry_properties {
-            Some(v) => geometry_properties.append_value(&GeometryProperties::try_from_value(v)?)?,
-            None => geometry_properties.append_null(),
+        for (lod, slot) in &mut slots {
+            if *lod != row.lod {
+                slot.append_null();
+                continue;
+            }
+            slot.geometry.append_value(&row.wkb);
+            match &row.geometry_properties {
+                Some(v) => slot
+                    .properties
+                    .append_value(&GeometryProperties::try_from_value(v)?)?,
+                None => slot.properties.append_null(),
+            }
+            push_opt_json(&mut slot.material, row.material.as_ref())?;
+            push_opt_json(&mut slot.texture, row.texture.as_ref())?;
         }
-        match &row.lod {
-            Some(l) => lod.append_value(l),
-            None => lod.append_null(),
-        }
-        push_opt_json(&mut material, row.material.as_ref())?;
-        push_opt_json(&mut texture, row.texture.as_ref())?;
-        push_opt_json(&mut other, row.other.as_ref())?;
     }
 
-    let arrays: Vec<ArrayRef> = vec![
-        Arc::new(id.finish()),
-        Arc::new(geometry.finish()),
-        geometry_properties.finish(),
-        Arc::new(lod.finish()),
-        Arc::new(material.finish()),
-        Arc::new(texture.finish()),
-        Arc::new(other.finish()),
-    ];
+    let mut arrays: Vec<ArrayRef> = vec![Arc::new(id.finish())];
+    for (_, mut slot) in slots {
+        arrays.push(Arc::new(slot.geometry.finish()));
+        arrays.push(slot.properties.finish());
+        arrays.push(Arc::new(slot.material.finish()));
+        arrays.push(Arc::new(slot.texture.finish()));
+    }
     let batch = RecordBatch::try_new(schema.clone(), arrays)?;
     write_batch(path, schema, batch)?;
     Ok(rows.len())
@@ -391,6 +539,14 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
 /// MANIFEST-LISTED file is instead an error is `export`'s call to make, not
 /// this function's — see `crate::export`'s module doc for the M4 Codex-review
 /// Finding 1 gating).
+///
+/// The LoD set is discovered from the file's OWN physical schema (never
+/// assumed): every `geometry_lod*` field (never `geometry_properties_lod*`,
+/// which shares the `geometry_` prefix but fails `Lod::from_column_suffix`
+/// on its own `properties_lod*` remainder) names one populated LoD. For each
+/// row, exactly one of those LoDs' `geometry_lod*` cells must be non-null
+/// (spec: "each row populates exactly the column set matching its own
+/// LoD") — zero or more than one is a `Schema` error naming the row.
 ///
 /// The join from a main-table `template.id` string to a row here is
 /// POSITIONAL (row `i`'s id is `i.to_string()` — this crate's own
@@ -411,6 +567,18 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
         File::open(path).map_err(|e| io_err(format!("cannot open {}: {e}", path.display())))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| parquet_err(format!("cannot open parquet reader: {e}")))?;
+    let mut lods: Vec<Lod> = builder
+        .schema()
+        .fields()
+        .iter()
+        .filter_map(|f| {
+            f.name()
+                .strip_prefix("geometry_")
+                .and_then(Lod::from_column_suffix)
+        })
+        .collect();
+    lods.sort();
+    lods.dedup();
     let reader = builder
         .build()
         .map_err(|e| parquet_err(format!("cannot build parquet reader: {e}")))?;
@@ -420,17 +588,25 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
     for batch in reader {
         let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
         let id: &StringArray = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
-        let geometry: &BinaryArray =
-            downcast(get_column(&batch, "geometry")?.as_ref(), "geometry")?;
-        let geometry_properties: &StructArray = downcast(
-            get_column(&batch, "geometry_properties")?.as_ref(),
-            "geometry_properties",
-        )?;
-        let lod: &StringArray = downcast(get_column(&batch, "lod")?.as_ref(), "lod")?;
-        let material: &StringArray =
-            downcast(get_column(&batch, "material")?.as_ref(), "material")?;
-        let texture: &StringArray = downcast(get_column(&batch, "texture")?.as_ref(), "texture")?;
-        let other: &StringArray = downcast(get_column(&batch, "other")?.as_ref(), "other")?;
+
+        let cols: Vec<(Lod, TemplateCols)> = lods
+            .iter()
+            .map(|&lod| {
+                let g = geometry_column_name("geometry", &lod);
+                let p = geometry_column_name("geometry_properties", &lod);
+                let m = geometry_column_name("material", &lod);
+                let t = geometry_column_name("texture", &lod);
+                Ok((
+                    lod,
+                    TemplateCols {
+                        geometry: downcast(get_column(&batch, &g)?.as_ref(), &g)?,
+                        properties: downcast(get_column(&batch, &p)?.as_ref(), &p)?,
+                        material: downcast(get_column(&batch, &m)?.as_ref(), &m)?,
+                        texture: downcast(get_column(&batch, &t)?.as_ref(), &t)?,
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         for row in 0..batch.num_rows() {
             let expected = next_pos.to_string();
@@ -444,18 +620,46 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
             }
             next_pos += 1;
 
+            let mut matched: Option<(Lod, &TemplateCols)> = None;
+            for (lod, c) in &cols {
+                if c.geometry.is_null(row) {
+                    continue;
+                }
+                if matched.is_some() {
+                    return Err(schema_err(format!(
+                        "geometry_templates.parquet: row {row} has more than one populated \
+                         LoD geometry column — a template row must populate exactly one LoD"
+                    )));
+                }
+                matched = Some((*lod, c));
+            }
+            let (lod, c) = matched.ok_or_else(|| {
+                schema_err(format!(
+                    "geometry_templates.parquet: row {row} has no populated LoD geometry \
+                     column — a template row must populate exactly one LoD"
+                ))
+            })?;
+
             out.push(TemplateRow {
                 id: id.value(row).to_string(),
-                wkb: geometry.value(row).to_vec(),
-                geometry_properties: read_geometry_properties(geometry_properties, row)?,
-                lod: opt_str(lod, row),
-                material: opt_json(material, row)?,
-                texture: opt_json(texture, row)?,
-                other: opt_json(other, row)?,
+                lod,
+                wkb: c.geometry.value(row).to_vec(),
+                geometry_properties: read_geometry_properties(c.properties, row)?,
+                material: opt_json(c.material, row)?,
+                texture: opt_json(c.texture, row)?,
             });
         }
     }
     Ok(out)
+}
+
+/// One LoD's worth of column handles into an already-read `RecordBatch` —
+/// [`read_templates`]'s per-batch counterpart of [`TemplateSlot`].
+struct TemplateCols<'a> {
+    geometry: &'a BinaryArray,
+    properties: &'a StructArray,
+    material: &'a StringArray,
+    texture: &'a StringArray,
 }
 
 fn get_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a ArrayRef> {
@@ -550,13 +754,13 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
             get_column(&batch, "ambientIntensity")?.as_ref(),
             "ambientIntensity",
         )?;
-        let diffuse_color: &StringArray =
+        let diffuse_color: &ListArray =
             downcast(get_column(&batch, "diffuseColor")?.as_ref(), "diffuseColor")?;
-        let specular_color: &StringArray = downcast(
+        let specular_color: &ListArray = downcast(
             get_column(&batch, "specularColor")?.as_ref(),
             "specularColor",
         )?;
-        let emissive_color: &StringArray = downcast(
+        let emissive_color: &ListArray = downcast(
             get_column(&batch, "emissiveColor")?.as_ref(),
             "emissiveColor",
         )?;
@@ -584,13 +788,13 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
             if let Some(v) = opt_f64(ambient_intensity, row) {
                 map.insert("ambientIntensity".to_string(), serde_json::json!(v));
             }
-            if let Some(v) = opt_json(diffuse_color, row)? {
+            if let Some(v) = opt_double_list_json(diffuse_color, row) {
                 map.insert("diffuseColor".to_string(), v);
             }
-            if let Some(v) = opt_json(specular_color, row)? {
+            if let Some(v) = opt_double_list_json(specular_color, row) {
                 map.insert("specularColor".to_string(), v);
             }
-            if let Some(v) = opt_json(emissive_color, row)? {
+            if let Some(v) = opt_double_list_json(emissive_color, row) {
                 map.insert("emissiveColor".to_string(), v);
             }
             if let Some(v) = opt_f64(transparency, row) {
@@ -651,13 +855,13 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
             downcast(get_column(&batch, "image_uri")?.as_ref(), "image_uri")?;
         let image_data: &BinaryArray =
             downcast(get_column(&batch, "image_data")?.as_ref(), "image_data")?;
-        let mime_type: &StringArray =
-            downcast(get_column(&batch, "mime_type")?.as_ref(), "mime_type")?;
+        let image_type: &StringArray =
+            downcast(get_column(&batch, "image_type")?.as_ref(), "image_type")?;
         let wrap_mode: &StringArray =
             downcast(get_column(&batch, "wrapMode")?.as_ref(), "wrapMode")?;
         let texture_type: &StringArray =
             downcast(get_column(&batch, "textureType")?.as_ref(), "textureType")?;
-        let border_color: &StringArray =
+        let border_color: &ListArray =
             downcast(get_column(&batch, "borderColor")?.as_ref(), "borderColor")?;
         let other: &StringArray = downcast(get_column(&batch, "other")?.as_ref(), "other")?;
 
@@ -681,7 +885,7 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
             }
 
             let mut map = serde_json::Map::new();
-            if let Some(v) = opt_str(mime_type, row) {
+            if let Some(v) = opt_str(image_type, row) {
                 map.insert("type".to_string(), Value::String(v));
             }
             if let Some(v) = opt_str(image_uri, row) {
@@ -693,7 +897,7 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
             if let Some(v) = opt_str(texture_type, row) {
                 map.insert("textureType".to_string(), Value::String(v));
             }
-            if let Some(v) = opt_json(border_color, row)? {
+            if let Some(v) = opt_double_list_json(border_color, row) {
                 map.insert("borderColor".to_string(), v);
             }
             // Our own writer no longer emits this column (§11.3, G16), but a
@@ -785,8 +989,8 @@ mod tests {
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         let mut reader = builder.build().unwrap();
         let batch = reader.next().unwrap().unwrap();
-        let mime_type: &StringArray = batch
-            .column_by_name("mime_type")
+        let image_type: &StringArray = batch
+            .column_by_name("image_type")
             .unwrap()
             .as_any()
             .downcast_ref()
@@ -797,7 +1001,7 @@ mod tests {
             .as_any()
             .downcast_ref()
             .unwrap();
-        assert_eq!(mime_type.value(0), "JPG");
+        assert_eq!(image_type.value(0), "JPG");
         assert_eq!(image_uri.value(0), "appearances/Vegetation_Juniper2.jpg");
 
         // G16 (§11.3): a CityJSON `Texture` has no `name` member, so
@@ -806,6 +1010,29 @@ mod tests {
             batch.schema().field_with_name("name").is_err(),
             "textures.parquet must not declare a `name` column (§11.3)"
         );
+        assert!(
+            batch.schema().field_with_name("mime_type").is_err(),
+            "textures.parquet must not declare the old `mime_type` column name"
+        );
+
+        // Physical schema assertions (gap 11): colour columns are genuinely
+        // LIST<DOUBLE>, not JSON text.
+        assert!(matches!(
+            batch.schema().field_with_name("borderColor").unwrap().data_type(),
+            arrow_schema::DataType::List(_)
+        ));
+        let m_file = File::open(&materials_path).unwrap();
+        let m_builder = ParquetRecordBatchReaderBuilder::try_new(m_file).unwrap();
+        let m_batch = m_builder.build().unwrap().next().unwrap().unwrap();
+        for col in ["diffuseColor", "specularColor", "emissiveColor"] {
+            assert!(
+                matches!(
+                    m_batch.schema().field_with_name(col).unwrap().data_type(),
+                    arrow_schema::DataType::List(_)
+                ),
+                "materials.{col} must be LIST<DOUBLE>"
+            );
+        }
     }
 
     #[test]
@@ -1011,16 +1238,21 @@ mod tests {
                 .expect("template rows carry geometry_properties");
             assert!(props.get("type").is_some(), "template {i} missing type");
             // The struct itself carries no `lod` field (spec "same struct,
-            // reused" — no `lod` field anywhere, main table or sidecar); this
-            // sidecar instead carries it in its own sibling `lod` column.
+            // reused" — no `lod` field anywhere, main table or sidecar); a
+            // template's LoD instead picks which physical per-LoD column set
+            // its row lands in (`TemplateRow::lod`).
             assert!(
                 props.get("lod").is_none(),
                 "template {i}: geometry_properties must carry no lod field"
             );
+            let expected_lod = tpl
+                .lod
+                .as_deref()
+                .and_then(|s| Lod::parse(s).ok())
+                .unwrap_or_else(|| panic!("template {i}: source lod must be a valid Lod"));
             assert_eq!(
-                row.lod.as_deref(),
-                tpl.lod.as_deref(),
-                "template {i}: the sidecar's own `lod` column must carry the source lod"
+                row.lod, expected_lod,
+                "template {i}: row.lod must carry the source lod"
             );
         }
 
@@ -1103,10 +1335,10 @@ mod tests {
         let mut name_b = StringBuilder::new();
         let mut image_uri = StringBuilder::new();
         let mut image_data_b = BinaryBuilder::new();
-        let mut mime_type = StringBuilder::new();
+        let mut image_type = StringBuilder::new();
         let mut wrap_mode = StringBuilder::new();
         let mut texture_type = StringBuilder::new();
-        let mut border_color = StringBuilder::new();
+        let mut border_color = double_list_builder();
         let mut other = StringBuilder::new();
 
         id.append_value(0);
@@ -1119,7 +1351,7 @@ mod tests {
             Some(bytes) => image_data_b.append_value(bytes),
             None => image_data_b.append_null(),
         }
-        mime_type.append_value("JPG");
+        image_type.append_value("JPG");
         wrap_mode.append_null();
         texture_type.append_null();
         border_color.append_null();
@@ -1130,7 +1362,7 @@ mod tests {
             Arc::new(name_b.finish()),
             Arc::new(image_uri.finish()),
             Arc::new(image_data_b.finish()),
-            Arc::new(mime_type.finish()),
+            Arc::new(image_type.finish()),
             Arc::new(wrap_mode.finish()),
             Arc::new(texture_type.finish()),
             Arc::new(border_color.finish()),

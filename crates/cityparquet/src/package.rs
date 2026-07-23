@@ -355,20 +355,23 @@ pub(crate) fn build_template_rows(
             &defs,
             &format!("geometry template {i}"),
         )?;
-        // The shared helper's struct value has no `lod` field (main-table
-        // design: LoD lives in the geometry column name there) — this
-        // sidecar has no per-LoD column name of its own, so it carries the
-        // template's `lod` in its own sibling column instead (spec:
-        // "Applies to the template sidecar's geometry_properties_lod* too
-        // ... same struct, reused").
+        // A template is a single geometry at a single LoD (spec
+        // "geometry_templates.parquet"): its LoD picks which physical
+        // per-LoD column set this row's data lands in — the sidecar's own
+        // schema equivalent of the main table's `accumulate_geometry`
+        // requiring a valid, parseable LoD for every stored geometry.
+        let lod = tpl.lod.as_deref().and_then(|s| Lod::parse(s).ok()).ok_or_else(|| {
+            CityParquetError::Lod(format!(
+                "geometry template {i}: has no valid lod for a per-LoD sidecar column"
+            ))
+        })?;
         rows.push(TemplateRow {
             id: i.to_string(),
+            lod,
             wkb: outcome.bytes,
             geometry_properties: Some(props.to_value()),
-            lod: tpl.lod.clone(),
             material,
             texture,
-            other: None,
         });
     }
     Ok(rows)

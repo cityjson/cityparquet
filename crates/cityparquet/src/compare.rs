@@ -1763,7 +1763,17 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
                         ia.template_type, ib.template_type
                     ));
                 }
-                if ia.template_lod != ib.template_lod {
+                // Canonicalised, not literal, comparison — same reasoning as
+                // `canonical_lod_key`: a template is a single geometry at a
+                // single LoD (spec "geometry_templates.parquet"), and since
+                // spec-alignment M6 that LoD is carried by the sidecar's
+                // per-LoD column NAME (`geometry_lod3_0`, canonical
+                // `major.minor` form) rather than a literal string column, so
+                // a source template's bare-major `"3"` re-exports as `"3.0"`
+                // — the same normalisation a regular (non-instance)
+                // geometry's `lod` already undergoes, just not hidden behind
+                // a map key here.
+                if canonical_lod_key(&ia.template_lod) != canonical_lod_key(&ib.template_lod) {
                     out.push(format!(
                         "object {id}: geometry at lod {lod:?}: instance template lod differs: {:?} vs {:?}",
                         ia.template_lod, ib.template_lod

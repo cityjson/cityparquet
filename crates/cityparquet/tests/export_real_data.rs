@@ -1110,8 +1110,18 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
             rebuilt.thetype, source.thetype,
             "template {i}: type must match the source"
         );
+        // Canonicalised, not literal, comparison (spec-alignment M6): a
+        // template's LoD is now carried by the sidecar's per-LoD column NAME
+        // (`geometry_lod3_0`, canonical `major.minor` form), so the source's
+        // bare-major `"3"` re-exports as `"3.0"` — the same normalisation a
+        // regular (non-instance) geometry's `lod` already undergoes.
+        let canon = |s: &Option<String>| {
+            s.as_deref()
+                .and_then(|s| cityparquet_schema::Lod::parse(s).ok())
+        };
         assert_eq!(
-            rebuilt.lod, source.lod,
+            canon(&rebuilt.lod),
+            canon(&source.lod),
             "template {i}: lod must match the source"
         );
     }

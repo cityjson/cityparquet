@@ -307,14 +307,16 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
 
     // The written template rows must carry their LoD: railway's 3 templates
     // all declare lod "3". The geometry_properties struct itself has no
-    // `lod` field (spec: "same struct, reused" — no lod field anywhere), so
-    // this sidecar carries it in its own sibling `lod` column instead
-    // (regression: the shared main-table helper omits "lod" because there
-    // LoD is the column name).
+    // `lod` field (spec: "same struct, reused" — no lod field anywhere); a
+    // template's LoD instead picks which physical per-LoD column set
+    // (`geometry_lod3_0` etc.) its row lands in, exactly like the main
+    // object table's own geometry columns (spec: "a template's LoD is
+    // carried by its column name here exactly as it is in an object table").
     let template_rows =
         cityparquet::sidecar::read_templates(&out.path().join("geometry_templates.parquet"))
             .unwrap();
     assert_eq!(template_rows.len(), 3);
+    let lod3 = cityparquet_schema::Lod::parse("3").unwrap();
     for (i, row) in template_rows.iter().enumerate() {
         let props = row.geometry_properties.as_ref().unwrap();
         assert!(props.get("type").is_some(), "template {i} missing type");
@@ -323,10 +325,28 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
             "template {i}: geometry_properties struct must carry no lod field"
         );
         assert_eq!(
-            row.lod.as_deref(),
-            Some("3"),
-            "template {i}: the sidecar's own lod column must carry the source lod"
+            row.lod, lod3,
+            "template {i}: row.lod must carry the source lod"
         );
+    }
+
+    // Physical schema assertion (gap 12): the sidecar carries a per-LoD
+    // suffixed column set, no un-suffixed geometry/geometry_properties/
+    // material/texture columns, no `lod` column, and no `other` column.
+    {
+        let file = std::fs::File::open(out.path().join("geometry_templates.parquet")).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let schema = builder.schema();
+        assert!(schema.field_with_name("geometry_lod3_0").is_ok());
+        assert!(schema.field_with_name("geometry_properties_lod3_0").is_ok());
+        assert!(schema.field_with_name("material_lod3_0").is_ok());
+        assert!(schema.field_with_name("texture_lod3_0").is_ok());
+        for col in ["geometry", "geometry_properties", "material", "texture", "lod", "other"] {
+            assert!(
+                schema.field_with_name(col).is_err(),
+                "geometry_templates.parquet must not carry column '{col}'"
+            );
+        }
     }
 }
 
