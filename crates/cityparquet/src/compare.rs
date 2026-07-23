@@ -152,6 +152,60 @@ fn points_node(pool: &VertexPool, idxs: &[usize]) -> Result<Node> {
     ))
 }
 
+/// One `address[]` entry as compared: the mapped postal fields (spec
+/// "Addresses", gap 10) plus its `location`, if any, dequantised into a
+/// [`Node`] tree exactly like a real `MultiPoint` geometry's boundaries —
+/// `None` when `location` is absent or malformed, mirroring the encoder's
+/// own graceful-degradation rule ([`crate::encode::build_location_wkb`]) so
+/// the comparator never flags as a difference something the encoder itself
+/// silently drops on both sides identically.
+#[derive(Debug, Clone, PartialEq)]
+struct AddressCompare {
+    postal: crate::address::AddressPostal,
+    location: Option<Node>,
+}
+
+/// Resolves one address entry's `location` member into a [`Node`] tree,
+/// reusing [`points_node`] exactly as [`normalise_geometry`]'s `MultiPoint`
+/// arm does — this IS structurally a `MultiPoint` geometry, just reached via
+/// `address[].location` rather than the object's own `geometry` array.
+fn address_location_node(location: &Value, pool: &VertexPool) -> Option<Node> {
+    let obj = location.as_object()?;
+    if obj.get("type").and_then(Value::as_str) != Some("MultiPoint") {
+        return None;
+    }
+    let idxs: Vec<usize> = serde_json::from_value(obj.get("boundaries")?.clone()).ok()?;
+    if idxs.is_empty() {
+        return None;
+    }
+    points_node(pool, &idxs).ok()
+}
+
+/// One object's `address[]` list as compared (spec "Addresses"): the SAME
+/// recognised-member mapping the encoder uses
+/// ([`crate::address::map_postal_fields`]) applied to the raw source
+/// `address` array, via [`crate::encode::raw_address_members`] — both sides
+/// of a comparison go through this identical extraction (the source's own
+/// address, and the exported CityJSON's re-emitted one, which uses the same
+/// canonical member names), so the two can never diverge on what "the
+/// address" means. `co` with no `address` member (or a malformed one) yields
+/// an empty `Vec` — indistinguishable, for comparison, from an explicit
+/// empty array, since both round-trip to the same thing.
+fn address_comparables(co: &cjseq::CityObject, pool: &VertexPool) -> Result<Vec<AddressCompare>> {
+    let Some(entries) = crate::encode::raw_address_members(co)? else {
+        return Ok(Vec::new());
+    };
+    Ok(entries
+        .iter()
+        .map(|entry| AddressCompare {
+            postal: crate::address::map_postal_fields(entry),
+            location: entry
+                .get("location")
+                .and_then(|loc| address_location_node(loc, pool)),
+        })
+        .collect())
+}
+
 fn ring_list_node(pool: &VertexPool, rings: &[Vec<usize>]) -> Result<Node> {
     Ok(Node::List(
         rings
@@ -1127,11 +1181,16 @@ struct ObjectData {
     /// `children`, independent of the order the round-trip lists children in.
     children_roles: HashMap<String, String>,
     /// The source object's unmapped members (the `other` column, §5.1/G9): a
-    /// Building's `address`, a per-object `geographicalExtent`, Extension
-    /// `+members` — anything with no dedicated column. Compared verbatim so a
-    /// silently-dropped member registers as a difference. Same extraction the
-    /// encoder uses, so the two sides never diverge on definition.
+    /// per-object `geographicalExtent`, Extension `+members` — anything with
+    /// no dedicated column. `address` has its own reserved column and its own
+    /// comparison (see [`Self::address`]), so it is excluded here. Compared
+    /// verbatim so a silently-dropped member registers as a difference. Same
+    /// extraction the encoder uses, so the two sides never diverge on
+    /// definition.
     other: Value,
+    /// The object's `address[]` list, mapped to the reserved struct's fields
+    /// (spec "Addresses", gap 10) — see [`address_comparables`].
+    address: Vec<AddressCompare>,
     geometries: HashMap<Option<String>, NormGeometry>,
 }
 
@@ -1504,6 +1563,7 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
                     children,
                     children_roles: children_roles_map(co),
                     other: Value::Object(crate::encode::unmapped_object_members(co)?),
+                    address: address_comparables(co, &pool)?,
                     geometries,
                 },
             );
@@ -1622,6 +1682,41 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
             "object {id}: unmapped members (other) differ: {} vs {}",
             a.other, b.other
         ));
+    }
+
+    // `address` (spec "Addresses", gap 10): postal fields compare exactly;
+    // `location` compares as a coordinate tree, with the same tolerance as
+    // any other geometry — round-tripping through WKB requantises it.
+    if a.address.len() != b.address.len() {
+        out.push(format!(
+            "object {id}: address list length differs: {} vs {}",
+            a.address.len(),
+            b.address.len()
+        ));
+    } else {
+        for (i, (aa, bb)) in a.address.iter().zip(&b.address).enumerate() {
+            if aa.postal != bb.postal {
+                out.push(format!(
+                    "object {id}: address[{i}] postal fields differ: {:?} vs {:?}",
+                    aa.postal, bb.postal
+                ));
+            }
+            match (&aa.location, &bb.location) {
+                (Some(la), Some(lb)) if !node_matches(la, lb, tol) => {
+                    out.push(format!(
+                        "object {id}: address[{i}] location coordinates differ"
+                    ));
+                }
+                (Some(_), None) | (None, Some(_)) => {
+                    out.push(format!(
+                        "object {id}: address[{i}] location presence differs: {} vs {}",
+                        aa.location.is_some(),
+                        bb.location.is_some()
+                    ));
+                }
+                _ => {}
+            }
+        }
     }
 
     let lods_a: HashSet<&Option<String>> = a.geometries.keys().collect();
