@@ -337,6 +337,57 @@ pub async fn attr_stats_async(
     })
 }
 
+use arrow_array::BooleanArray;
+
+/// The async mirror of [`crate::query::id_lookup`]: filters to `id` via a
+/// [`RowFilter`], then fully decodes the (expected exactly one) surviving
+/// row.
+pub async fn id_lookup_async(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    meta: &CityMetadata,
+    id: &str,
+) -> Result<Option<crate::decode::DecodedObject>> {
+    let reader = ParquetObjectReader::new(store, path.clone());
+    let builder = ParquetRecordBatchStreamBuilder::new(reader)
+        .await
+        .map_err(parquet_err)?;
+    let schema = builder.cityparquet_arrow_schema()?;
+
+    let predicate_mask = ProjectionMask::columns(builder.parquet_schema(), ["id"]);
+    let owned_id = id.to_string();
+    let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                arrow_schema::ArrowError::SchemaError("'id' column is not Utf8".to_string())
+            })?;
+        Ok(BooleanArray::from_iter((0..ids.len()).map(|i| {
+            Some(!ids.is_null(i) && ids.value(i) == owned_id)
+        })))
+    });
+    let row_filter = RowFilter::new(vec![Box::new(predicate_fn)]);
+
+    let mut stream = builder
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(parquet_err)?;
+
+    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let batch = restamp(batch, &schema)?;
+        let decoded = decode_batch(&batch, meta)?;
+        if let Some(object) = decoded.into_iter().next() {
+            return Ok(Some(object));
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +498,45 @@ mod tests {
         assert_eq!(async_stats.min, sync_stats.min);
         assert_eq!(async_stats.max, sync_stats.max);
         assert!((async_stats.sum - sync_stats.sum).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn id_lookup_async_matches_sync_id_lookup_on_a_real_fixture() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, path) = delft_table(dir.path()).await;
+        let table_file = dir.path().join(path.as_ref());
+        let meta = {
+            let file = std::fs::File::open(&table_file).unwrap();
+            let builder =
+                parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
+                    .unwrap();
+            crate::reader::CityParquetReaderBuilder::cityparquet_metadata(&builder).unwrap()
+        };
+
+        // A real id from the fixture: read the first row's id straight off
+        // the local table, rather than hardcoding one.
+        let first_id = {
+            let file = std::fs::File::open(&table_file).unwrap();
+            let builder =
+                parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
+                    .unwrap();
+            let mut reader = builder.build().unwrap();
+            let batch = reader.next().unwrap().unwrap();
+            let ids = batch
+                .column_by_name("id")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            ids.value(0).to_string()
+        };
+
+        let sync_result = crate::query::id_lookup(&table_file, &meta, &first_id).unwrap();
+        let async_result = id_lookup_async(store, &path, &meta, &first_id)
+            .await
+            .unwrap();
+        assert!(sync_result.is_some());
+        assert!(async_result.is_some());
+        assert_eq!(sync_result.unwrap().id, async_result.unwrap().id);
     }
 }
