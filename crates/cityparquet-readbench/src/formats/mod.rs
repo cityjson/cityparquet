@@ -6,28 +6,58 @@ pub mod cityjsonseq;
 pub mod cityparquet;
 pub mod flatcitybuf;
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
 use crate::scenario::{QueryParams, Scenario};
 
+/// Where a format's artefact lives: a local filesystem path (today's only
+/// transport) or an HTTP location (`base_url` + the artefact's own relative
+/// `key`, e.g. `"delft.parquet"`, `"delft.parquet/building.parquet"` for a
+/// sub-file within a CityParquet package directory, `"delft.fcb"`,
+/// `"delft.city.jsonl"`).
+#[derive(Debug, Clone)]
+pub enum Source {
+    Local(PathBuf),
+    Http { base_url: String, key: String },
+}
+
+/// Bytes transferred and HTTP request count for one measurement — `None`
+/// for [`Source::Local`] (no meaningful "HTTP request" concept, and this
+/// keeps every existing local CSV row's shape unchanged; see
+/// `coordinator::write_row`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IoStats {
+    pub bytes: u64,
+    pub requests: u64,
+}
+
+/// A [`FormatRunner::run`] call's result: the scenario's natural result
+/// cardinality, plus [`IoStats`] when `source` was [`Source::Http`].
+#[derive(Debug, Clone)]
+pub struct RunOutcome {
+    pub result_count: u64,
+    pub io: Option<IoStats>,
+}
+
 /// One format's read-benchmark backend: runs exactly one [`Scenario`]
-/// against `input` (a format-specific path — a CityParquet package
+/// against `source` (a format-specific location — a CityParquet package
 /// directory or its main table file, a `.city.jsonl`/`.jsonl.gz` file, or a
-/// `.fcb` file) and returns the scenario's natural result cardinality
-/// (`result_count` — see the milestone plan's "Scenario & metric contract"
-/// for what that means per scenario; in particular `Count`/`FullRead`
-/// counts are NOT necessarily comparable across formats — each runner's own
-/// doc comment discloses its counting semantics).
+/// `.fcb` file, either local or over HTTP) and returns the scenario's
+/// natural result cardinality (`result_count` — see the milestone plan's
+/// "Scenario & metric contract" for what that means per scenario; in
+/// particular `Count`/`FullRead` counts are NOT necessarily comparable
+/// across formats — each runner's own doc comment discloses its counting
+/// semantics).
 ///
-/// Implementations are expected to open `input` themselves on every call
+/// Implementations are expected to open `source` themselves on every call
 /// (no persistent state between calls) — the `--child` protocol spawns one
 /// fresh process per (format, scenario, dataset, repeat) measurement, so a
 /// `FormatRunner` never needs to serve more than one [`Self::run`] call in
 /// its process lifetime.
 pub trait FormatRunner {
-    fn run(&self, input: &Path, scenario: Scenario, params: &QueryParams) -> Result<u64>;
+    fn run(&self, source: &Source, scenario: Scenario, params: &QueryParams) -> Result<RunOutcome>;
 }
 
 /// Resolves `--format <name>` to its [`FormatRunner`]. `cityparquet`,

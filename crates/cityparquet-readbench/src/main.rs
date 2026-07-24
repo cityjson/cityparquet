@@ -199,12 +199,15 @@ fn run(cli: Cli) -> Result<()> {
 
     alloc::reset();
     let start = Instant::now();
-    let result_count = runner.run(&input, scenario, &params)?;
+    let outcome = runner.run(&formats::Source::Local(input), scenario, &params)?;
     let time_s = start.elapsed().as_secs_f64();
     let peak_heap_bytes = alloc::peak_heap_bytes();
     let ru_maxrss_bytes = max_rss_bytes()?;
 
-    println!("{time_s:.6} {peak_heap_bytes} {ru_maxrss_bytes} {result_count}");
+    println!(
+        "{time_s:.6} {peak_heap_bytes} {ru_maxrss_bytes} {}",
+        outcome.result_count
+    );
     Ok(())
 }
 

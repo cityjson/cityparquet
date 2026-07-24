@@ -91,7 +91,7 @@ use fcb_core::{
     SpatialQuery,
 };
 
-use super::FormatRunner;
+use super::{FormatRunner, RunOutcome, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// This runner's `--attr-column`/params error for a scenario missing a
@@ -444,13 +444,19 @@ fn project(input: &Path, column: &str) -> Result<u64> {
 pub struct FlatCityBufRunner;
 
 impl FormatRunner for FlatCityBufRunner {
-    fn run(&self, input: &Path, scenario: Scenario, params: &QueryParams) -> Result<u64> {
-        match scenario {
+    fn run(&self, source: &Source, scenario: Scenario, params: &QueryParams) -> Result<RunOutcome> {
+        let input = match source {
+            Source::Local(path) => path.as_path(),
+            Source::Http { .. } => {
+                bail!("flatcitybuf: HTTP transport not implemented yet (Task 12)")
+            }
+        };
+        let result_count = match scenario {
             Scenario::Count => {
                 let reader = open(input)?;
-                Ok(reader.header().features_count())
+                reader.header().features_count()
             }
-            Scenario::FullRead => full_read(input),
+            Scenario::FullRead => full_read(input)?,
             Scenario::BBoxQuery => {
                 let bbox = *require(&params.bbox, "bbox", scenario)?;
                 let reader = open(input)?;
@@ -458,25 +464,29 @@ impl FormatRunner for FlatCityBufRunner {
                 // (indices 2/5) rather than approximate them.
                 let query = SpatialQuery::BBox(bbox[0], bbox[1], bbox[3], bbox[4]);
                 let iter = reader.select_query(query, None, None)?;
-                Ok(iter.features_count().unwrap_or(0) as u64)
+                iter.features_count().unwrap_or(0) as u64
             }
             Scenario::AttrFilter => {
                 let column = require(&params.attr_column, "attr-column", scenario)?;
                 let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
-                attr_filter(input, column, pred)
+                attr_filter(input, column, pred)?
             }
             Scenario::AttrStats => {
                 let column = require(&params.attr_column, "attr-column", scenario)?;
-                attr_stats(input, column)
+                attr_stats(input, column)?
             }
             Scenario::IdLookup => {
                 let id = require(&params.target_id, "target-id", scenario)?;
-                id_lookup(input, id)
+                id_lookup(input, id)?
             }
             Scenario::Project => {
                 let column = require(&params.attr_column, "attr-column", scenario)?;
-                project(input, column)
+                project(input, column)?
             }
-        }
+        };
+        Ok(RunOutcome {
+            result_count,
+            io: None,
+        })
     }
 }

@@ -37,12 +37,12 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use cityparquet::cjseq::{CityJSON, CityJSONFeature, CityObject, SortingStrategy, Transform};
 use cityparquet::source::Source;
 use flate2::read::GzDecoder;
 
-use super::FormatRunner;
+use super::{FormatRunner, RunOutcome, Source as TransportSource};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// This runner's `--attr-column`/params error for a scenario missing a
@@ -314,103 +314,125 @@ impl CityJsonSeqRunner {
     }
 }
 
-impl FormatRunner for CityJsonSeqRunner {
-    fn run(&self, input: &Path, scenario: Scenario, params: &QueryParams) -> Result<u64> {
-        let backend = Backend::open(input, self.gzip)?;
-
-        match scenario {
-            Scenario::Count => {
-                let mut feature_count = 0u64;
-                for feature in backend.features()? {
-                    feature?;
-                    feature_count += 1;
-                }
-                Ok(feature_count)
+/// The scenario-dispatch body shared by both the local and (future) HTTP
+/// branches of [`FormatRunner::run`]: everything below `Backend::open`
+/// (which itself only differs in WHERE the bytes come from) is
+/// transport-independent.
+fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> Result<u64> {
+    match scenario {
+        Scenario::Count => {
+            let mut feature_count = 0u64;
+            for feature in backend.features()? {
+                feature?;
+                feature_count += 1;
             }
-            Scenario::FullRead => {
-                let mut feature_count = 0u64;
-                let mut boundary_work = 0u64;
-                for feature in backend.features()? {
-                    let feature = feature?;
-                    feature_count += 1;
-                    for co in feature.city_objects.values() {
-                        if let Some(geoms) = &co.geometry {
-                            for geom in geoms {
-                                boundary_work += count_boundary_leaves(&geom.boundaries);
-                            }
+            Ok(feature_count)
+        }
+        Scenario::FullRead => {
+            let mut feature_count = 0u64;
+            let mut boundary_work = 0u64;
+            for feature in backend.features()? {
+                let feature = feature?;
+                feature_count += 1;
+                for co in feature.city_objects.values() {
+                    if let Some(geoms) = &co.geometry {
+                        for geom in geoms {
+                            boundary_work += count_boundary_leaves(&geom.boundaries);
                         }
                     }
                 }
-                // `boundary_work` is computed purely to force full geometry
-                // traversal (the "full read" cost); the returned metric
-                // stays feature-level, per this module's own doc comment.
-                let _ = boundary_work;
-                Ok(feature_count)
             }
-            Scenario::BBoxQuery => {
-                let query_bbox = *require(&params.bbox, "bbox", scenario)?;
-                let transform = backend.transform().clone();
-                let mut matched = 0u64;
-                for feature in backend.features()? {
-                    let feature = feature?;
-                    if let Some((min, max)) = feature_bbox(&feature, &transform)
-                        && intersects(min, max, &query_bbox)
-                    {
+            // `boundary_work` is computed purely to force full geometry
+            // traversal (the "full read" cost); the returned metric
+            // stays feature-level, per this module's own doc comment.
+            let _ = boundary_work;
+            Ok(feature_count)
+        }
+        Scenario::BBoxQuery => {
+            let query_bbox = *require(&params.bbox, "bbox", scenario)?;
+            let transform = backend.transform().clone();
+            let mut matched = 0u64;
+            for feature in backend.features()? {
+                let feature = feature?;
+                if let Some((min, max)) = feature_bbox(&feature, &transform)
+                    && intersects(min, max, &query_bbox)
+                {
+                    matched += 1;
+                }
+            }
+            Ok(matched)
+        }
+        Scenario::AttrFilter => {
+            let column = require(&params.attr_column, "attr-column", scenario)?;
+            let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
+            let mut matched = 0u64;
+            for feature in backend.features()? {
+                let feature = feature?;
+                for co in feature.city_objects.values() {
+                    if matches_predicate(column_value(co, column).as_ref(), pred) {
                         matched += 1;
                     }
                 }
-                Ok(matched)
             }
-            Scenario::AttrFilter => {
-                let column = require(&params.attr_column, "attr-column", scenario)?;
-                let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
-                let mut matched = 0u64;
-                for feature in backend.features()? {
-                    let feature = feature?;
-                    for co in feature.city_objects.values() {
-                        if matches_predicate(column_value(co, column).as_ref(), pred) {
-                            matched += 1;
-                        }
-                    }
-                }
-                Ok(matched)
-            }
-            Scenario::AttrStats => {
-                let column = require(&params.attr_column, "attr-column", scenario)?;
-                let mut count = 0u64;
-                for feature in backend.features()? {
-                    let feature = feature?;
-                    for co in feature.city_objects.values() {
-                        if column_value(co, column).and_then(|v| v.as_f64()).is_some() {
-                            count += 1;
-                        }
-                    }
-                }
-                Ok(count)
-            }
-            Scenario::IdLookup => {
-                let id = require(&params.target_id, "target-id", scenario)?;
-                for feature in backend.features()? {
-                    let feature = feature?;
-                    if feature.city_objects.contains_key(id) {
-                        return Ok(1);
-                    }
-                }
-                Ok(0)
-            }
-            Scenario::Project => {
-                let column = require(&params.attr_column, "attr-column", scenario)?;
-                let mut count = 0u64;
-                for feature in backend.features()? {
-                    let feature = feature?;
-                    for co in feature.city_objects.values() {
-                        if column_value(co, column).is_some() {
-                            count += 1;
-                        }
-                    }
-                }
-                Ok(count)
-            }
+            Ok(matched)
         }
+        Scenario::AttrStats => {
+            let column = require(&params.attr_column, "attr-column", scenario)?;
+            let mut count = 0u64;
+            for feature in backend.features()? {
+                let feature = feature?;
+                for co in feature.city_objects.values() {
+                    if column_value(co, column).and_then(|v| v.as_f64()).is_some() {
+                        count += 1;
+                    }
+                }
+            }
+            Ok(count)
+        }
+        Scenario::IdLookup => {
+            let id = require(&params.target_id, "target-id", scenario)?;
+            for feature in backend.features()? {
+                let feature = feature?;
+                if feature.city_objects.contains_key(id) {
+                    return Ok(1);
+                }
+            }
+            Ok(0)
+        }
+        Scenario::Project => {
+            let column = require(&params.attr_column, "attr-column", scenario)?;
+            let mut count = 0u64;
+            for feature in backend.features()? {
+                let feature = feature?;
+                for co in feature.city_objects.values() {
+                    if column_value(co, column).is_some() {
+                        count += 1;
+                    }
+                }
+            }
+            Ok(count)
+        }
+    }
+}
+
+impl FormatRunner for CityJsonSeqRunner {
+    fn run(
+        &self,
+        source: &TransportSource,
+        scenario: Scenario,
+        params: &QueryParams,
+    ) -> Result<RunOutcome> {
+        let input = match source {
+            TransportSource::Local(path) => path.as_path(),
+            TransportSource::Http { .. } => {
+                bail!("cityjsonseq: HTTP transport not implemented yet (Task 13)")
+            }
+        };
+        let backend = Backend::open(input, self.gzip)?;
+        let result_count = run_scenario(&backend, scenario, params)?;
+        Ok(RunOutcome {
+            result_count,
+            io: None,
+        })
     }
 }

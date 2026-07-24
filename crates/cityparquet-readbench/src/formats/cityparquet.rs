@@ -25,7 +25,7 @@ use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::stac::properties::PackageTables;
 use cityparquet_schema::CityMetadata;
 
-use super::FormatRunner;
+use super::{FormatRunner, RunOutcome, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// Locates the main CityObject table inside a CityParquet package:
@@ -126,40 +126,46 @@ fn open_metadata(table: &Path) -> Result<CityMetadata> {
 pub struct CityParquetRunner;
 
 impl FormatRunner for CityParquetRunner {
-    fn run(&self, input: &Path, scenario: Scenario, params: &QueryParams) -> Result<u64> {
+    fn run(&self, source: &Source, scenario: Scenario, params: &QueryParams) -> Result<RunOutcome> {
+        let input = match source {
+            Source::Local(path) => path.as_path(),
+            Source::Http { .. } => {
+                bail!("cityparquet: HTTP transport not implemented yet (Task 11)")
+            }
+        };
         let table = locate_main_table(input)?;
-        match scenario {
-            Scenario::Count => Ok(query::count(&table)?),
+        let result_count = match scenario {
+            Scenario::Count => query::count(&table)?,
             Scenario::FullRead => {
                 let meta = open_metadata(&table)?;
-                Ok(query::full_read(&table, &meta)?.feature_count)
+                query::full_read(&table, &meta)?.feature_count
             }
             Scenario::BBoxQuery => {
                 let bbox = *require(&params.bbox, "bbox", scenario)?;
-                Ok(query::bbox_query(&table, bbox)?.ids.len() as u64)
+                query::bbox_query(&table, bbox)?.ids.len() as u64
             }
             Scenario::AttrFilter => {
                 let column = require(&params.attr_column, "attr-column", scenario)?;
                 let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
-                Ok(query::attr_filter(
-                    &table,
-                    column,
-                    &to_query_predicate(pred),
-                )?)
+                query::attr_filter(&table, column, &to_query_predicate(pred))?
             }
             Scenario::AttrStats => {
                 let column = require(&params.attr_column, "attr-column", scenario)?;
-                Ok(query::attr_stats(&table, column)?.count)
+                query::attr_stats(&table, column)?.count
             }
             Scenario::IdLookup => {
                 let id = require(&params.target_id, "target-id", scenario)?;
                 let meta = open_metadata(&table)?;
-                Ok(query::id_lookup(&table, &meta, id)?.is_some() as u64)
+                query::id_lookup(&table, &meta, id)?.is_some() as u64
             }
             Scenario::Project => {
                 let column = require(&params.attr_column, "attr-column", scenario)?;
-                Ok(query::project_column(&table, column)?)
+                query::project_column(&table, column)?
             }
-        }
+        };
+        Ok(RunOutcome {
+            result_count,
+            io: None,
+        })
     }
 }
