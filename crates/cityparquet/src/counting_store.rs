@@ -1,11 +1,14 @@
-//! `CountingObjectStore<T>`: an `ObjectStore` decorator tallying request
-//! count and bytes returned. Overrides only `get_opts` — every byte-range
-//! fetch this crate's async reader (or `parquet`'s own `ParquetObjectReader`)
-//! makes funnels through it: `ObjectStoreExt::get_range`'s default body is
+//! `CountingObjectStore<T>`: an `ObjectStore` decorator tallying LOGICAL
+//! request count and bytes returned (successful `get_opts` calls this crate
+//! itself makes — not necessarily a 1:1 count of physical HTTP requests: a
+//! failed call is not tallied, and any retry `inner` performs internally is
+//! invisible here). Overrides only `get_opts` — every byte-range fetch this
+//! crate's async reader (or `parquet`'s own `ParquetObjectReader`) makes
+//! funnels through it: `ObjectStoreExt::get_range`'s default body is
 //! `self.get_opts(...)`, and `ObjectStore::get_ranges`'s default body
 //! coalesces into repeated `self.get_range` calls — so overriding `get_opts`
-//! alone captures every request, whether a single range, a coalesced
-//! multi-range fetch, or a suffix footer fetch. The other 6 required
+//! alone captures every LOGICAL request, whether a single range, a
+//! coalesced multi-range fetch, or a suffix footer fetch. The other 6 required
 //! `ObjectStore` methods (`put_opts`, `put_multipart_opts`, `delete_stream`,
 //! `list`, `list_with_delimiter`, `copy_opts`) are pure passthroughs — this
 //! benchmark never calls them, but the trait requires an impl regardless

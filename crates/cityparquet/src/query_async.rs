@@ -36,7 +36,7 @@ fn parquet_err(e: impl std::fmt::Display) -> CityParquetError {
 /// only [`full_read_async`]/`id_lookup_async` need it.
 fn restamp(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
     RecordBatch::try_new(SchemaRef::clone(schema), batch.columns().to_vec())
-        .map_err(|e| CityParquetError::Parquet(e.to_string()))
+        .map_err(CityParquetError::from)
 }
 
 /// Total surface/face count in `kind` — duplicated from `crate::query`'s
@@ -53,9 +53,10 @@ fn surface_count(kind: &DecodedKind) -> u64 {
     }
 }
 
-/// The table's row count straight from Parquet file metadata — O(1), one
-/// footer fetch (a suffix range request), no row scan. The async mirror of
-/// [`crate::query::count`].
+/// The table's row count straight from Parquet file metadata — O(1) in row
+/// count (a suffix range request for the footer, plus a second request only
+/// if the footer exceeds the reader's initial prefetch size), no row scan.
+/// The async mirror of [`crate::query::count`].
 pub async fn count_async(store: Arc<dyn ObjectStore>, path: &ObjectPath) -> Result<u64> {
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
