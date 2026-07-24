@@ -63,10 +63,18 @@ just how long it takes locally.
   committed http-transport run is a snapshot of one network path at one
   time, not a reproducible local benchmark.
 - **Two extra metrics, per scenario: bytes transferred and HTTP request
-  count.** The CSV's trailing `bytes_read`/`http_requests` columns (see the
-  CSV contract above) are empty for every `local`-transport row and
-  populated for every `http`-transport row, straight from each format's own
-  transport-agnostic reader:
+  count — successful, LOGICAL reads, not raw wire traffic.** The CSV's
+  trailing `bytes_read`/`http_requests` columns (see the CSV contract above)
+  are empty for every `local`-transport row and populated for every
+  `http`-transport row, straight from each format's own transport-agnostic
+  reader. Both tallies count successful logical range/GET calls the reader
+  itself makes — a failed attempt is not counted, and any retry the
+  underlying HTTP client performs internally (connection resets, transient
+  5xx, etc.) is invisible to this tally. On a lossy real network the
+  reported numbers can therefore be a lower bound on actual wire traffic,
+  not an exact packet count — still exactly the right level to compare
+  formats' *access patterns* against each other, which is what this
+  benchmark is for.
   - `cityparquet`: an `object_store`/`ParquetObjectReader`-based async
     reader (`crates/cityparquet/src/query_async.rs`) shares the exact same
     row-group-pruning/projection/predicate logic as the local sync reader
@@ -91,11 +99,20 @@ just how long it takes locally.
   `--transport`.** The dataset bbox, the sampled `object_type`/numeric
   attribute/id, and the shared CityObject total are always read directly
   from the local `--prepared-dir` (see `crates/cityparquet-readbench/src/
-  coordinator.rs`'s own module doc) — only the actual timed per-scenario
-  measurement calls the coordinator spawns go over HTTP. This means an
-  http-transport run still needs the prepared artefacts present *locally*
-  too (to derive query parameters), in addition to uploaded to the served
-  URL.
+  coordinator.rs`'s own module doc). This means an http-transport run still
+  needs the prepared artefacts present *locally* too (to derive query
+  parameters), in addition to uploaded to the served URL.
+- **One untimed `Count` preflight per *resolved* format also goes over HTTP
+  under `--transport http`, not just the timed measurement rows.** For each
+  format actually being benchmarked, the coordinator issues one untimed
+  `Count` child call to establish that format's own total (used as the
+  `bbox-query` selectivity denominator) — under `--transport http` this
+  preflight uses the same http `Source` as every other row for that format,
+  so it *does* touch the network, but its own bytes/requests are not folded
+  into any CSV row (only the timed rows below it are reported). This is a
+  small, fixed amount of extra untimed traffic per format per run (one
+  `Count`, the cheapest scenario), disclosed here rather than silently
+  absent from the reported totals.
 
 ## The seven scenarios
 

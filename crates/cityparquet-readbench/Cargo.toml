@@ -36,6 +36,7 @@ async-trait = "0.1.91"
 http-range-client = { version = "0.9", default-features = false, features = ["reqwest-async"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tempfile.workspace = true
+url = "2"
 
 [dev-dependencies]
 axum = "0.8.9"

@@ -646,6 +646,23 @@ async fn project_http(url: &str, tally: RangeTally, column: &str) -> Result<u64>
     Ok(count)
 }
 
+/// Joins `base_url`/`key` into one URL via `Url::path_segments_mut`
+/// (percent-encodes each segment) — not a plain `format!("{base}/{key}")`,
+/// which would send a `key` containing a character like `#`/`?`/`%` or a
+/// space to the wrong resource (or fail) once actually sent over HTTP,
+/// unlike the `ObjectPath`-based CityParquet/CityJSONSeq runners, which
+/// handle this internally.
+fn join_url(base_url: &str, key: &str) -> Result<String> {
+    let mut parsed =
+        url::Url::parse(base_url).with_context(|| format!("parsing --base-url '{base_url}'"))?;
+    parsed
+        .path_segments_mut()
+        .map_err(|()| anyhow!("--base-url '{base_url}' cannot be a base for a relative key"))?
+        .pop_if_empty()
+        .extend(key.split('/'));
+    Ok(parsed.to_string())
+}
+
 /// The HTTP-transport body of [`FlatCityBufRunner::run`]: `base_url`/`key`
 /// join into one URL (`fcb_core`'s HTTP reader targets a single object, no
 /// package manifest to resolve first — unlike the CityParquet runner), then
@@ -657,7 +674,7 @@ async fn run_http(
     scenario: Scenario,
     params: &QueryParams,
 ) -> Result<RunOutcome> {
-    let url = format!("{}/{}", base_url.trim_end_matches('/'), key);
+    let url = join_url(base_url, key)?;
     let tally = RangeTally::default();
 
     let result_count = match scenario {
@@ -754,5 +771,40 @@ impl FormatRunner for FlatCityBufRunner {
 
         let handle = tokio::runtime::Handle::current();
         handle.block_on(run_http(base_url, key, scenario, params))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_url;
+
+    #[test]
+    fn join_url_appends_a_plain_key_under_the_base() {
+        assert_eq!(
+            join_url("http://127.0.0.1:8080", "delft.fcb").unwrap(),
+            "http://127.0.0.1:8080/delft.fcb"
+        );
+        // A base URL already ending in `/` must not produce a doubled slash.
+        assert_eq!(
+            join_url("http://127.0.0.1:8080/", "delft.fcb").unwrap(),
+            "http://127.0.0.1:8080/delft.fcb"
+        );
+    }
+
+    #[test]
+    fn join_url_percent_encodes_special_characters_in_the_key() {
+        let url = join_url("http://127.0.0.1:8080", "a file#1?.fcb").unwrap();
+        // `#`/`?`/space are all percent-encoded, not left to be
+        // misinterpreted as a URL fragment/query/separator.
+        assert!(!url.contains(' '), "space must be percent-encoded: {url}");
+        assert!(
+            url.ends_with("a%20file%231%3F.fcb"),
+            "expected percent-encoded key, got: {url}"
+        );
+    }
+
+    #[test]
+    fn join_url_rejects_a_base_that_cannot_be_a_base() {
+        assert!(join_url("not a url", "delft.fcb").is_err());
     }
 }

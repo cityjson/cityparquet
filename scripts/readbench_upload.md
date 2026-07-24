@@ -57,10 +57,14 @@ Public access):
 rclone copy bench/data/readbench/ r2:<BUCKET_NAME>/readbench/ --progress
 ```
 
-Your `--base-url` is then the bucket's public root plus the `readbench/`
-prefix, e.g. `https://<BUCKET_NAME>.<ACCOUNT_ID>.r2.dev/readbench` (or your
-custom domain) — no trailing slash needed, `cityparquet-readbench` joins
-`base_url/key` itself.
+Your `--base-url` is the bucket's public root plus the `readbench/` prefix.
+**Copy the exact Public Bucket URL from the R2 dashboard** (Settings →
+Public access → the `r2.dev` URL shown there, e.g.
+`https://pub-<id>.r2.dev`, or your own custom domain if you attached one) —
+don't guess its shape from the bucket/account name, the managed `r2.dev`
+domain is an opaque identifier R2 assigns, not `<BUCKET_NAME>.<ACCOUNT_ID>.
+r2.dev`. Append `/readbench` to whatever that dashboard URL is; no trailing
+slash needed, `cityparquet-readbench` joins `base_url/key` itself.
 
 ## AWS S3 (`aws s3`)
 
@@ -86,13 +90,18 @@ default; a plain static-file host usually does too, but check once per new
 host):
 
 ```sh
-curl -I -H "Range: bytes=0-99" \
+curl -sS -D - -o /dev/null --range 0-99 \
     "<BASE_URL>/<name>.parquet/metadata.json"
 ```
 
-Expect `HTTP/1.1 206 Partial Content` (not `200 OK`, which means the server
-ignored the `Range` header and would send the whole file every time,
-defeating the point of the comparison).
+(A plain `curl -I` sends a `HEAD` request, which some servers answer
+without honouring `Range` at all even when a real ranged `GET` — what this
+benchmark actually issues — works fine; `--range` on a normal `GET` is the
+only way to check what the benchmark itself will experience.)
+
+Expect `HTTP/1.1 206 Partial Content` with a `Content-Range` header (not
+`200 OK`, which means the server ignored the `Range` header and would send
+the whole file every time, defeating the point of the comparison).
 
 ## Running the benchmark
 
