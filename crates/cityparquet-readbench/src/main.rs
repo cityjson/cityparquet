@@ -241,15 +241,36 @@ fn run(cli: Cli) -> Result<()> {
 
     alloc::reset();
     let start = Instant::now();
-    let outcome = if is_http {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("building the child's tokio runtime for --transport http")?;
-        rt.block_on(async { runner.run(&source, scenario, &params) })?
+    // For `--transport http`, `runner.run` itself calls
+    // `tokio::runtime::Handle::current().block_on(...)` internally (each
+    // format's own HTTP arm); this just needs a runtime CONTEXT to find via
+    // `Handle::current()` — entering it (not blocking on it here) is what
+    // makes that inner `block_on` the only one on the call stack. Wrapping
+    // this call in an outer `rt.block_on(async { runner.run(..) })` would
+    // instead panic ("Cannot start a runtime from within a runtime") the
+    // moment the inner call reaches its own `block_on`.
+    //
+    // MUST be `new_multi_thread` (not `new_current_thread`), even though
+    // this process only ever runs one scenario at a time: reproduced and
+    // confirmed in isolation (a standalone `object_store::http::HttpStore`
+    // GET, driven the same way — `rt.enter()` here, `Handle::current().
+    // block_on(...)` deeper in the call stack) that a `current_thread`
+    // runtime entered-but-never-block_on'd-at-this-frame hangs forever on
+    // the underlying `reqwest` request; a `multi_thread` runtime (even with
+    // a single worker thread) does not.
+    let rt = if is_http {
+        Some(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .context("building the child's tokio runtime for --transport http")?,
+        )
     } else {
-        runner.run(&source, scenario, &params)?
+        None
     };
+    let _rt_guard = rt.as_ref().map(|rt| rt.enter());
+    let outcome = runner.run(&source, scenario, &params)?;
     let time_s = start.elapsed().as_secs_f64();
     let peak_heap_bytes = alloc::peak_heap_bytes();
     let ru_maxrss_bytes = max_rss_bytes()?;

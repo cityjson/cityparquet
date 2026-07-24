@@ -12,7 +12,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-cityparquet = { path = "../cityparquet" }
+cityparquet = { path = "../cityparquet", features = ["object-store"] }
 cityparquet-schema = { workspace = true }
 fcb_core = { workspace = true }
 # fcb_core 0.7's own `CityJSONFeature`/`CityObject` types come from this
@@ -29,7 +29,10 @@ arrow-schema = { workspace = true }
 parquet = { workspace = true }
 libc = "0.2"
 anyhow = "1"
-tokio = { version = "1.53.1", features = ["rt", "macros"] }
+tokio = { version = "1.53.1", features = ["rt", "macros", "rt-multi-thread"] }
+object_store = { version = "0.13", features = ["http"] }
 
 [dev-dependencies]
+axum = "0.8.9"
 tempfile = { workspace = true }
+tower-http = { version = "0.6", features = ["fs"] }

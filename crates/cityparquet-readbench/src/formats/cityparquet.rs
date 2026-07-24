@@ -16,16 +16,25 @@
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use object_store::ObjectStore;
+use object_store::ObjectStoreExt;
+use object_store::http::{HttpBuilder, HttpStore};
+use object_store::path::Path as ObjectPath;
+use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::async_reader::ParquetObjectReader;
 
+use cityparquet::counting_store::CountingObjectStore;
 use cityparquet::query::{self, AttrPredicate};
+use cityparquet::query_async;
 use cityparquet::reader::CityParquetReaderBuilder;
-use cityparquet::stac::properties::PackageTables;
+use cityparquet::stac::properties::{PackageTables, table_names_from_manifest_bytes};
 use cityparquet_schema::CityMetadata;
 
-use super::{FormatRunner, RunOutcome, Source};
+use super::{FormatRunner, IoStats, RunOutcome, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// Locates the main CityObject table inside a CityParquet package:
@@ -118,6 +127,121 @@ fn open_metadata(table: &Path) -> Result<CityMetadata> {
     Ok(builder.cityparquet_metadata()?)
 }
 
+/// Resolves `base_url`/`key`'s single main table over HTTP: range-fetches
+/// `<key>/metadata.json` (the same STAC Item the local [`locate_main_table`]
+/// reads via [`PackageTables::open`]), rejects a multi-table manifest
+/// (mirrors the local runner's own single-family restriction), and returns
+/// a ready-to-query `(CountingObjectStore-wrapped store, table object path)`
+/// pair.
+async fn resolve_http_main_table(
+    base_url: &str,
+    key: &str,
+) -> Result<(Arc<CountingObjectStore<HttpStore>>, ObjectPath)> {
+    // `with_allow_http(true)` is required for a plain `http://` target (the
+    // in-test Range server this crate's own tests point at); it does not
+    // disable or otherwise affect `https://` targets (real S3/R2 buckets),
+    // so it is set unconditionally rather than sniffed from `base_url`.
+    let store = HttpBuilder::new()
+        .with_url(base_url)
+        .with_client_options(object_store::ClientOptions::new().with_allow_http(true))
+        .build()?;
+    let counting = Arc::new(CountingObjectStore::new(store));
+
+    let manifest_path = ObjectPath::from(format!("{key}/metadata.json"));
+    let manifest_bytes = counting.get(&manifest_path).await?.bytes().await?;
+    let tables = table_names_from_manifest_bytes(&manifest_bytes)?;
+    let [only] = tables.as_slice() else {
+        bail!(
+            "package at '{key}' has {} tables; the read-benchmark only supports \
+             single-table (single-family) packages over HTTP",
+            tables.len()
+        );
+    };
+    let table_path = ObjectPath::from(format!("{key}/{only}"));
+    Ok((counting, table_path))
+}
+
+/// Opens `table_path` (over `store`) just far enough to read its embedded
+/// CityParquet key-value metadata — the async, HTTP-sourced mirror of
+/// [`open_metadata`].
+async fn open_metadata_http(
+    store: Arc<dyn ObjectStore>,
+    table_path: &ObjectPath,
+) -> Result<CityMetadata> {
+    let reader = ParquetObjectReader::new(store, table_path.clone());
+    let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
+    Ok(CityParquetReaderBuilder::cityparquet_metadata(&builder)?)
+}
+
+/// The HTTP-transport body of [`CityParquetRunner::run`]: resolves the
+/// package's main table, dispatches `scenario` onto the matching
+/// `cityparquet::query_async::*_async` primitive (the exact async mirror of
+/// the local branch's own `cityparquet::query::*` call), and reports the
+/// `CountingObjectStore`'s tally as [`IoStats`].
+async fn run_http(
+    base_url: &str,
+    key: &str,
+    scenario: Scenario,
+    params: &QueryParams,
+) -> Result<RunOutcome> {
+    let (store, table_path) = resolve_http_main_table(base_url, key).await?;
+    let dyn_store = || Arc::clone(&store) as Arc<dyn ObjectStore>;
+
+    let result_count = match scenario {
+        Scenario::Count => query_async::count_async(dyn_store(), &table_path).await?,
+        Scenario::FullRead => {
+            let meta = open_metadata_http(dyn_store(), &table_path).await?;
+            query_async::full_read_async(dyn_store(), &table_path, &meta)
+                .await?
+                .feature_count
+        }
+        Scenario::BBoxQuery => {
+            let bbox = *require(&params.bbox, "bbox", scenario)?;
+            query_async::bbox_query_async(dyn_store(), &table_path, bbox)
+                .await?
+                .ids
+                .len() as u64
+        }
+        Scenario::AttrFilter => {
+            let column = require(&params.attr_column, "attr-column", scenario)?;
+            let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
+            query_async::attr_filter_async(
+                dyn_store(),
+                &table_path,
+                column,
+                &to_query_predicate(pred),
+            )
+            .await?
+        }
+        Scenario::AttrStats => {
+            let column = require(&params.attr_column, "attr-column", scenario)?;
+            query_async::attr_stats_async(dyn_store(), &table_path, column)
+                .await?
+                .count
+        }
+        Scenario::IdLookup => {
+            let id = require(&params.target_id, "target-id", scenario)?;
+            let meta = open_metadata_http(dyn_store(), &table_path).await?;
+            query_async::id_lookup_async(dyn_store(), &table_path, &meta, id)
+                .await?
+                .is_some() as u64
+        }
+        Scenario::Project => {
+            let column = require(&params.attr_column, "attr-column", scenario)?;
+            query_async::project_column_async(dyn_store(), &table_path, column).await?
+        }
+    };
+
+    let stats = store.tally();
+    Ok(RunOutcome {
+        result_count,
+        io: Some(IoStats {
+            bytes: stats.bytes,
+            requests: stats.requests,
+        }),
+    })
+}
+
 /// The CityParquet backend: every scenario locates `input`'s main table
 /// (see [`locate_main_table`]) and calls straight into
 /// `cityparquet::query`, so this file adds no query logic of its own — it
@@ -127,45 +251,48 @@ pub struct CityParquetRunner;
 
 impl FormatRunner for CityParquetRunner {
     fn run(&self, source: &Source, scenario: Scenario, params: &QueryParams) -> Result<RunOutcome> {
-        let input = match source {
-            Source::Local(path) => path.as_path(),
-            Source::Http { .. } => {
-                bail!("cityparquet: HTTP transport not implemented yet (Task 11)")
+        let (base_url, key) = match source {
+            Source::Local(path) => {
+                let table = locate_main_table(path)?;
+                let result_count = match scenario {
+                    Scenario::Count => query::count(&table)?,
+                    Scenario::FullRead => {
+                        let meta = open_metadata(&table)?;
+                        query::full_read(&table, &meta)?.feature_count
+                    }
+                    Scenario::BBoxQuery => {
+                        let bbox = *require(&params.bbox, "bbox", scenario)?;
+                        query::bbox_query(&table, bbox)?.ids.len() as u64
+                    }
+                    Scenario::AttrFilter => {
+                        let column = require(&params.attr_column, "attr-column", scenario)?;
+                        let pred =
+                            require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
+                        query::attr_filter(&table, column, &to_query_predicate(pred))?
+                    }
+                    Scenario::AttrStats => {
+                        let column = require(&params.attr_column, "attr-column", scenario)?;
+                        query::attr_stats(&table, column)?.count
+                    }
+                    Scenario::IdLookup => {
+                        let id = require(&params.target_id, "target-id", scenario)?;
+                        let meta = open_metadata(&table)?;
+                        query::id_lookup(&table, &meta, id)?.is_some() as u64
+                    }
+                    Scenario::Project => {
+                        let column = require(&params.attr_column, "attr-column", scenario)?;
+                        query::project_column(&table, column)?
+                    }
+                };
+                return Ok(RunOutcome {
+                    result_count,
+                    io: None,
+                });
             }
+            Source::Http { base_url, key } => (base_url, key),
         };
-        let table = locate_main_table(input)?;
-        let result_count = match scenario {
-            Scenario::Count => query::count(&table)?,
-            Scenario::FullRead => {
-                let meta = open_metadata(&table)?;
-                query::full_read(&table, &meta)?.feature_count
-            }
-            Scenario::BBoxQuery => {
-                let bbox = *require(&params.bbox, "bbox", scenario)?;
-                query::bbox_query(&table, bbox)?.ids.len() as u64
-            }
-            Scenario::AttrFilter => {
-                let column = require(&params.attr_column, "attr-column", scenario)?;
-                let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
-                query::attr_filter(&table, column, &to_query_predicate(pred))?
-            }
-            Scenario::AttrStats => {
-                let column = require(&params.attr_column, "attr-column", scenario)?;
-                query::attr_stats(&table, column)?.count
-            }
-            Scenario::IdLookup => {
-                let id = require(&params.target_id, "target-id", scenario)?;
-                let meta = open_metadata(&table)?;
-                query::id_lookup(&table, &meta, id)?.is_some() as u64
-            }
-            Scenario::Project => {
-                let column = require(&params.attr_column, "attr-column", scenario)?;
-                query::project_column(&table, column)?
-            }
-        };
-        Ok(RunOutcome {
-            result_count,
-            io: None,
-        })
+
+        let handle = tokio::runtime::Handle::current();
+        handle.block_on(run_http(base_url, key, scenario, params))
     }
 }

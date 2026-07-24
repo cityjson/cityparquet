@@ -528,6 +528,7 @@ dependencies = [
  "anyhow",
  "arrow-array",
  "arrow-schema",
+ "axum",
  "cityparquet",
  "cityparquet-schema",
  "cjseq2",
@@ -535,11 +536,13 @@ dependencies = [
  "fcb_core",
  "flate2",
  "libc",
+ "object_store",
  "parquet",
  "peak_alloc",
  "serde_json",
  "tempfile",
  "tokio",
+ "tower-http",
 ]
 
 [[package]]
