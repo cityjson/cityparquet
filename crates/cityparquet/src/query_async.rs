@@ -388,6 +388,36 @@ pub async fn id_lookup_async(
     Ok(None)
 }
 
+/// The async mirror of [`crate::query::project_column`]: a single-column
+/// projected scan across every row, counting non-null values.
+pub async fn project_column_async(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    column: &str,
+) -> Result<u64> {
+    let reader = ParquetObjectReader::new(store, path.clone());
+    let builder = ParquetRecordBatchStreamBuilder::new(reader)
+        .await
+        .map_err(parquet_err)?;
+
+    builder.schema().field_with_name(column).map_err(|_| {
+        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+    })?;
+
+    let projection = ProjectionMask::columns(builder.parquet_schema(), [column]);
+    let mut stream = builder
+        .with_projection(projection)
+        .build()
+        .map_err(parquet_err)?;
+
+    let mut count = 0u64;
+    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+        let array = batch.column(0);
+        count += (array.len() - array.null_count()) as u64;
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,5 +568,19 @@ mod tests {
         assert!(sync_result.is_some());
         assert!(async_result.is_some());
         assert_eq!(sync_result.unwrap().id, async_result.unwrap().id);
+    }
+
+    #[tokio::test]
+    async fn project_column_async_matches_sync_project_column_on_a_real_fixture() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, path) = delft_table(dir.path()).await;
+        let table_file = dir.path().join(path.as_ref());
+
+        let sync_count = crate::query::project_column(&table_file, "object_type").unwrap();
+        let async_count = project_column_async(store, &path, "object_type")
+            .await
+            .unwrap();
+        assert_eq!(async_count, sync_count);
+        assert_eq!(async_count, 2231);
     }
 }
