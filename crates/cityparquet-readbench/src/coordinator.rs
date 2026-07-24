@@ -60,6 +60,7 @@ use cityparquet_schema::CityMetadata;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
+use crate::formats::{IoStats, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// The `run` subcommand's own options — the parsed form of `main.rs`'s
@@ -124,9 +125,14 @@ const BBOX_FRACTIONS: [(f64, &str); 3] = [
     (0.25, "bbox-25pct"),
 ];
 
-/// The exact CSV header this coordinator writes.
+/// The exact CSV header this coordinator writes. `bytes_read`/`http_requests`
+/// are empty for a local-transport row (no HTTP concept, and this keeps
+/// every existing local row's own field values unchanged; see
+/// [`write_row`]'s own `io: None` handling) and populated for an
+/// http-transport row from the wrapped `ObjectStore`/range-client tally each
+/// `FormatRunner`'s `Source::Http` arm reports (see `formats::IoStats`).
 const CSV_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,\
-peak_heap_bytes,peak_rss_bytes,repeat,notes";
+peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests";
 
 /// Runs `opts`'s whole (format x scenario) matrix, writing `opts.out` fresh.
 pub fn run(opts: &RunOptions) -> Result<()> {
@@ -160,18 +166,31 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         _ => DEFAULT_FORMATS.iter().map(|s| s.to_string()).collect(),
     };
 
-    let mut resolved_formats: Vec<(String, PathBuf)> = Vec::new();
+    let mut resolved_formats: Vec<(String, Source)> = Vec::new();
     for format in &requested_formats {
-        match resolve_format_artefact(format, &opts.input, &opts.prepared_dir, base) {
-            ArtefactResolution::Path(path) if path.exists() => {
-                resolved_formats.push((format.clone(), path));
+        match resolve_format_artefact(
+            format,
+            &opts.input,
+            &opts.prepared_dir,
+            base,
+            opts.transport,
+            opts.base_url.as_deref(),
+        ) {
+            ArtefactResolution::Source(Source::Local(path)) if path.exists() => {
+                resolved_formats.push((format.clone(), Source::Local(path)));
             }
-            ArtefactResolution::Path(path) => eprintln!(
+            ArtefactResolution::Source(Source::Local(path)) => eprintln!(
                 "cityparquet-readbench: skipping format '{format}': missing artefact {} \
                  (run `just readbench-prepare {}` first)",
                 path.display(),
                 opts.input.display()
             ),
+            // Optimistic, no existence check: a missing remote object
+            // surfaces as a natural child-process error, not a preflight
+            // HEAD request this coordinator would otherwise need to make.
+            ArtefactResolution::Source(source @ Source::Http { .. }) => {
+                resolved_formats.push((format.clone(), source));
+            }
             ArtefactResolution::NotCoordinated => eprintln!(
                 "cityparquet-readbench: skipping format '{format}': driven by \
                  scripts/readbench_duckdb.sh, not this coordinator"
@@ -217,7 +236,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // own `Count` is exactly that total (one row per CityObject), and the
     // cityparquet package is already required/located above regardless of
     // `--formats`.
-    let cp_object_total = total_count_for("cityparquet", &cp_table)
+    let cp_object_total = total_count_for("cityparquet", &Source::Local(cp_table.clone()))
         .context("deriving the dataset-global CityObject total from the cityparquet package")?;
 
     eprintln!(
@@ -243,8 +262,8 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // self-consistency check below.
     let mut attr_filter_counts: HashMap<String, u64> = HashMap::new();
 
-    for (format, path) in &resolved_formats {
-        let total = total_count_for(format, path)
+    for (format, source) in &resolved_formats {
+        let total = total_count_for(format, source)
             .with_context(|| format!("deriving total count for format '{format}'"))?;
 
         for scenario in &scenarios {
@@ -254,7 +273,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         &mut csv,
                         &dataset,
                         format,
-                        path,
+                        source,
                         *scenario,
                         &QueryParams::default(),
                         opts.repeat,
@@ -272,7 +291,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             &mut csv,
                             &dataset,
                             format,
-                            path,
+                            source,
                             *scenario,
                             &params,
                             opts.repeat,
@@ -294,7 +313,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         &mut csv,
                         &dataset,
                         format,
-                        path,
+                        source,
                         *scenario,
                         &params,
                         opts.repeat,
@@ -314,7 +333,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             &mut csv,
                             &dataset,
                             format,
-                            path,
+                            source,
                             *scenario,
                             &params,
                             opts.repeat,
@@ -338,7 +357,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         &mut csv,
                         &dataset,
                         format,
-                        path,
+                        source,
                         *scenario,
                         &params,
                         opts.repeat,
@@ -355,7 +374,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                  drop the OS disk/page cache before this FullRead measurement, if you have not \
                  already (this coordinator cannot invoke `sudo` itself)"
             );
-            let line = spawn_child(format, Scenario::FullRead, path, &QueryParams::default())?;
+            let line = spawn_child(format, Scenario::FullRead, source, &QueryParams::default())?;
             write_row(
                 &mut csv,
                 &dataset,
@@ -369,6 +388,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 line.ru_maxrss_bytes,
                 1,
                 "cold",
+                line.io,
             )?;
         }
     }
@@ -408,35 +428,67 @@ fn strip_known_extension(name: &str) -> &str {
     name
 }
 
-/// One requested format's artefact path, or how it is out of this
+/// One requested format's artefact [`Source`], or how it is out of this
 /// coordinator's scope.
 enum ArtefactResolution {
-    Path(PathBuf),
+    Source(Source),
     /// `duckdb-parquet`: a separate SQL-engine baseline (Task 12).
     NotCoordinated,
     /// Not one of the five formats this coordinator knows.
     Unknown,
 }
 
-/// Maps `format` onto its artefact path under `prepared_dir` (or `input`
-/// itself, for `cityjsonseq`) — the exact naming convention
-/// `scripts/readbench_prepare.sh` produces.
+/// Maps `format` onto its artefact [`Source`] — for [`Transport::Local`], a
+/// local path under `prepared_dir` (or `input` itself, for `cityjsonseq`),
+/// the exact naming convention `scripts/readbench_prepare.sh` produces; for
+/// [`Transport::Http`], the same artefact's relative key under `base_url`
+/// (`prepared_dir` uploaded wholesale — see `scripts/readbench_upload.md`).
+///
+/// `cityjsonseq`'s own local artefact is `input` itself, which normally
+/// lives OUTSIDE `prepared_dir` (e.g. a committed fixture); there is no
+/// `prepared_dir`-relative path to strip for it, so its HTTP key is instead
+/// `input`'s own file name — the upload step is expected to have placed a
+/// copy of the original CityJSONSeq file at that name alongside the other
+/// artefacts on the served root.
 fn resolve_format_artefact(
     format: &str,
     input: &Path,
     prepared_dir: &Path,
     base: &str,
+    transport: Transport,
+    base_url: Option<&str>,
 ) -> ArtefactResolution {
-    match format {
-        "cityparquet" => ArtefactResolution::Path(prepared_dir.join(format!("{base}.parquet"))),
-        "cityparquet-hilbert" => {
-            ArtefactResolution::Path(prepared_dir.join(format!("{base}-hilbert.parquet")))
+    let local_path = match format {
+        "cityparquet" => prepared_dir.join(format!("{base}.parquet")),
+        "cityparquet-hilbert" => prepared_dir.join(format!("{base}-hilbert.parquet")),
+        "flatcitybuf" => prepared_dir.join(format!("{base}.fcb")),
+        "cityjsonseq" => input.to_path_buf(),
+        "cityjsonseq-gz" => prepared_dir.join(format!("{base}.jsonl.gz")),
+        "duckdb-parquet" => return ArtefactResolution::NotCoordinated,
+        _ => return ArtefactResolution::Unknown,
+    };
+
+    match transport {
+        Transport::Local => ArtefactResolution::Source(Source::Local(local_path)),
+        Transport::Http => {
+            let key = if format == "cityjsonseq" {
+                input.file_name().and_then(|n| n.to_str())
+            } else {
+                local_path
+                    .strip_prefix(prepared_dir)
+                    .ok()
+                    .and_then(|p| p.to_str())
+            };
+            match key {
+                Some(key) => ArtefactResolution::Source(Source::Http {
+                    base_url: base_url
+                        .expect("caller (run) already validated Transport::Http requires base_url")
+                        .to_string(),
+                    key: key.to_string(),
+                }),
+                None => ArtefactResolution::Unknown,
+            }
         }
-        "flatcitybuf" => ArtefactResolution::Path(prepared_dir.join(format!("{base}.fcb"))),
-        "cityjsonseq" => ArtefactResolution::Path(input.to_path_buf()),
-        "cityjsonseq-gz" => ArtefactResolution::Path(prepared_dir.join(format!("{base}.jsonl.gz"))),
-        "duckdb-parquet" => ArtefactResolution::NotCoordinated,
-        _ => ArtefactResolution::Unknown,
     }
 }
 
@@ -715,12 +767,14 @@ fn sample_object_id(table: &Path) -> Result<String> {
     bail!("{} has no non-null id values", table.display())
 }
 
-/// One parsed `--child` protocol stdout line.
+/// One parsed `--child` protocol stdout line. `io` is `Some` only for the 6-
+/// field http-transport protocol shape (see [`spawn_child`]'s own parsing).
 struct ChildLine {
     time_s: f64,
     peak_heap_bytes: u64,
     ru_maxrss_bytes: u64,
     result_count: u64,
+    io: Option<IoStats>,
 }
 
 /// Spawns a FRESH `--child` process (this binary's own executable, found via
@@ -733,7 +787,7 @@ struct ChildLine {
 fn spawn_child(
     format: &str,
     scenario: Scenario,
-    input: &Path,
+    source: &Source,
     params: &QueryParams,
 ) -> Result<ChildLine> {
     let self_exe = std::env::current_exe().context("cannot determine own executable path")?;
@@ -743,9 +797,20 @@ fn spawn_child(
         .arg("--format")
         .arg(format)
         .arg("--scenario")
-        .arg(scenario.as_str())
-        .arg("--input")
-        .arg(input);
+        .arg(scenario.as_str());
+    match source {
+        Source::Local(path) => {
+            cmd.arg("--input").arg(path);
+        }
+        Source::Http { base_url, key } => {
+            cmd.arg("--transport")
+                .arg("http")
+                .arg("--base-url")
+                .arg(base_url)
+                .arg("--input")
+                .arg(key);
+        }
+    }
 
     if let Some(bbox) = params.bbox {
         let joined = bbox
@@ -795,13 +860,24 @@ fn spawn_child(
     let stdout = String::from_utf8(output.stdout).context("child stdout was not valid UTF-8")?;
     let line = stdout.trim();
     let fields: Vec<&str> = line.split_whitespace().collect();
-    if fields.len() != 4 {
-        bail!(
-            "expected 4 whitespace-separated fields from the child protocol, got {} in '{line}' \
-             (format={format}, scenario={scenario})",
-            fields.len()
-        );
-    }
+    // 4 fields: local transport (unchanged since Task 8). 6 fields: http
+    // transport, `bytes_read`/`http_requests` appended (see
+    // `main.rs`'s own child-protocol doc comment).
+    let io = match fields.len() {
+        4 => None,
+        6 => Some(IoStats {
+            bytes: fields[4]
+                .parse()
+                .with_context(|| format!("parsing bytes_read from '{}'", fields[4]))?,
+            requests: fields[5]
+                .parse()
+                .with_context(|| format!("parsing http_requests from '{}'", fields[5]))?,
+        }),
+        n => bail!(
+            "expected 4 or 6 whitespace-separated fields from the child protocol, got {n} in \
+             '{line}' (format={format}, scenario={scenario})"
+        ),
+    };
     Ok(ChildLine {
         time_s: fields[0]
             .parse()
@@ -815,6 +891,7 @@ fn spawn_child(
         result_count: fields[3]
             .parse()
             .with_context(|| format!("parsing result_count from '{}'", fields[3]))?,
+        io,
     })
 }
 
@@ -831,8 +908,8 @@ fn spawn_child(
 /// — as a SHARED denominator across every format, so those scenarios'
 /// selectivity is directly comparable and always in `(0, 1]` (see this
 /// module's own doc comment).
-fn total_count_for(format: &str, path: &Path) -> Result<u64> {
-    let line = spawn_child(format, Scenario::Count, path, &QueryParams::default())?;
+fn total_count_for(format: &str, source: &Source) -> Result<u64> {
+    let line = spawn_child(format, Scenario::Count, source, &QueryParams::default())?;
     Ok(line.result_count)
 }
 
@@ -849,7 +926,7 @@ fn run_measurement(
     csv: &mut File,
     dataset: &str,
     format: &str,
-    path: &Path,
+    source: &Source,
     scenario: Scenario,
     params: &QueryParams,
     repeat: usize,
@@ -860,9 +937,14 @@ fn run_measurement(
     let mut peak_heap_max = 0u64;
     let mut peak_rss_max = 0u64;
     let mut result_count: Option<u64> = None;
+    // The first warm sample's io, same convention as `result_count`: every
+    // warm sample measures the identical scenario against the identical
+    // unmodified remote object, so bytes/requests are deterministic across
+    // repeats (unlike timing) — no need to aggregate beyond "the first one".
+    let mut io: Option<IoStats> = None;
 
     for i in 0..=repeat {
-        let line = spawn_child(format, scenario, path, params)?;
+        let line = spawn_child(format, scenario, source, params)?;
         if i == 0 {
             // Warmup: discarded entirely (never contributes to the median,
             // the MAX peak metrics, or `result_count`).
@@ -873,6 +955,7 @@ fn run_measurement(
         peak_rss_max = peak_rss_max.max(line.ru_maxrss_bytes);
         if result_count.is_none() {
             result_count = Some(line.result_count);
+            io = line.io;
         }
     }
 
@@ -899,6 +982,7 @@ fn run_measurement(
         peak_rss_max,
         repeat,
         notes,
+        io,
     )?;
 
     Ok(result_count)
@@ -938,15 +1022,21 @@ fn write_row(
     peak_rss_bytes: u64,
     repeat: usize,
     notes: &str,
+    io: Option<IoStats>,
 ) -> Result<()> {
     let selectivity_field = match selectivity {
         Some(value) => format!("{value:.6}"),
         None => String::new(),
     };
+    let (bytes_field, requests_field) = match io {
+        Some(io) => (io.bytes.to_string(), io.requests.to_string()),
+        None => (String::new(), String::new()),
+    };
     writeln!(
         csv,
         "{dataset},{format},{scenario},{selectivity_field},{result_count},{time_s:.6},\
-         {time_mad_s:.6},{peak_heap_bytes},{peak_rss_bytes},{repeat},{notes}"
+         {time_mad_s:.6},{peak_heap_bytes},{peak_rss_bytes},{repeat},{notes},\
+         {bytes_field},{requests_field}"
     )
     .context("writing a CSV row")?;
     Ok(())

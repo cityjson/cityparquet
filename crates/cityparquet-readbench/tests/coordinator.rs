@@ -73,7 +73,7 @@ impl Row {
     }
 }
 
-const CSV_COLUMNS: [&str; 11] = [
+const CSV_COLUMNS: [&str; 13] = [
     "dataset",
     "format",
     "scenario",
@@ -85,10 +85,12 @@ const CSV_COLUMNS: [&str; 11] = [
     "peak_rss_bytes",
     "repeat",
     "notes",
+    "bytes_read",
+    "http_requests",
 ];
 
 const EXPECTED_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,\
-time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes";
+time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests";
 
 #[test]
 fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from_real_data() {
@@ -174,6 +176,16 @@ fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from
             )
         });
         assert_eq!(row.field("repeat"), "2");
+        assert_eq!(
+            row.field("bytes_read"),
+            "",
+            "a local-transport row's bytes_read must be empty (no HTTP concept locally)"
+        );
+        assert_eq!(
+            row.field("http_requests"),
+            "",
+            "a local-transport row's http_requests must be empty (no HTTP concept locally)"
+        );
 
         if row.field("scenario") == "count" {
             assert_eq!(
@@ -424,5 +436,88 @@ fn attr_filter_selectivity_uses_the_shared_cityparquet_object_total_as_denominat
         "expected selectivity == result_count / cityparquet object total \
          ({cp_count}/{}) = {expected}, got {cp_selectivity}",
         report.object_count
+    );
+}
+
+async fn spawn_server(dir: PathBuf) -> std::net::SocketAddr {
+    let app = axum::Router::new().fallback_service(tower_http::services::ServeDir::new(dir));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
+/// `--transport http`: the coordinator's own QueryParams derivation (bbox,
+/// object_type, numeric attribute, sample id, and the shared CityObject
+/// total) always reads the LOCAL `prepared_dir` directly (unchanged by
+/// `--transport` — see this module's own doc comment on where `QueryParams`
+/// come from); only the actual per-scenario measurement calls the
+/// coordinator spawns go over HTTP. Serves the same `parent/delft.parquet/`
+/// layout `tests/cityparquet_http_runner.rs` uses (`parent/` is the served
+/// root, `delft.parquet/` the package inside it) and asserts the CSV's new
+/// `bytes_read`/`http_requests` columns are populated with real positive
+/// numbers on the http-transport row.
+///
+/// `flavor = "multi_thread"`: `run_coordinator` makes a blocking
+/// `std::process::Command::output()` call, which would starve a plain
+/// current-thread `#[tokio::test]`'s single OS thread and prevent the
+/// spawned axum server task from ever being polled — the same gotcha fixed
+/// in `tests/cityparquet_http_runner.rs`.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_http_transport_reports_bytes_and_requests_on_the_cityparquet_row() {
+    let parent = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = parent.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+
+    let addr = spawn_server(parent.path().to_path_buf()).await;
+    let base_url = format!("http://{addr}");
+
+    let out_csv = parent.path().join("out.csv");
+
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        parent.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet",
+        "--transport",
+        "http",
+        "--base-url",
+        &base_url,
+    ]);
+
+    let csv_text = std::fs::read_to_string(&out_csv).expect("coordinator must write the CSV");
+    let mut lines = csv_text.lines();
+    assert_eq!(lines.next().unwrap(), EXPECTED_HEADER);
+    let rows: Vec<Row> = lines.map(Row::parse).collect();
+    assert_eq!(rows.len(), 1, "expected exactly 1 count row: {csv_text}");
+
+    assert_eq!(rows[0].field("format"), "cityparquet");
+    let bytes: u64 = rows[0].field("bytes_read").parse().unwrap_or_else(|e| {
+        panic!(
+            "bytes_read '{}' must parse as u64: {e}",
+            rows[0].field("bytes_read")
+        )
+    });
+    let requests: u64 = rows[0].field("http_requests").parse().unwrap_or_else(|e| {
+        panic!(
+            "http_requests '{}' must parse as u64: {e}",
+            rows[0].field("http_requests")
+        )
+    });
+    assert!(bytes > 0, "expected a positive bytes_read, got {bytes}");
+    assert!(
+        requests >= 1,
+        "expected at least 1 http_requests, got {requests}"
     );
 }
