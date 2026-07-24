@@ -4,6 +4,8 @@ mod address;
 pub mod appearance;
 pub mod citygml;
 pub mod compare;
+#[cfg(feature = "object-store")]
+pub mod counting_store;
 pub mod decode;
 pub mod encode;
 pub mod export;
