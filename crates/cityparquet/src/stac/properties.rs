@@ -66,44 +66,11 @@ impl PackageTables {
             CityParquetError::Io(format!("cannot read {}: {e}", manifest_path.display()))
         })?;
         let item: Item = serde_json::from_str(&text)?;
-
-        let mut tables = Vec::new();
-        let mut sidecar_files = Vec::new();
-        // A package naming the same object table twice is corrupt: every
-        // object in it would be counted twice. `crate::export` rejects this
-        // for the same reason, and a describing pass must not be more
-        // permissive than the pass that consumes the description.
-        let mut seen_tables = BTreeSet::new();
-
-        for asset in item.assets.values() {
-            let is_object_table = asset.roles.iter().any(|r| r == ROLE_OBJECT_TABLE);
-            let is_sidecar = asset.roles.iter().any(|r| r == ROLE_SIDECAR);
-            if !is_object_table && !is_sidecar {
-                continue;
-            }
-            let name = asset.href.trim_start_matches("./").to_string();
-            if is_object_table {
-                if !seen_tables.insert(name.clone()) {
-                    return Err(CityParquetError::Metadata(format!(
-                        "package lists duplicate object table '{name}'"
-                    )));
-                }
-                tables.push(dir.join(&name));
-            } else {
-                sidecar_files.push(name);
-            }
-        }
-
-        if tables.is_empty() {
-            return Err(CityParquetError::Metadata(
-                "package lists no object tables (no asset carries the cityparquet-objects role)"
-                    .to_string(),
-            ));
-        }
+        let (table_names, sidecar_files) = classify_assets(&item)?;
 
         Ok(Self {
             dir: dir.to_path_buf(),
-            tables,
+            tables: table_names.iter().map(|name| dir.join(name)).collect(),
             sidecar_files,
         })
     }
@@ -123,6 +90,60 @@ impl PackageTables {
             sidecar_files: sidecars.to_vec(),
         }
     }
+}
+
+/// Classifies `item`'s assets into (object table names, sidecar names), both
+/// with any `"./"` href prefix stripped — the pure parsing core shared by
+/// [`PackageTables::open`] (filesystem) and
+/// [`table_names_from_manifest_bytes`] (an already-fetched manifest, e.g. via
+/// `object_store` over HTTP). Errors on a duplicate object-table name or an
+/// empty table list, exactly as `open` did before this was extracted.
+fn classify_assets(item: &Item) -> Result<(Vec<String>, Vec<String>)> {
+    let mut tables = Vec::new();
+    let mut sidecar_files = Vec::new();
+    // A package naming the same object table twice is corrupt: every
+    // object in it would be counted twice. `crate::export` rejects this
+    // for the same reason, and a describing pass must not be more
+    // permissive than the pass that consumes the description.
+    let mut seen_tables = BTreeSet::new();
+
+    for asset in item.assets.values() {
+        let is_object_table = asset.roles.iter().any(|r| r == ROLE_OBJECT_TABLE);
+        let is_sidecar = asset.roles.iter().any(|r| r == ROLE_SIDECAR);
+        if !is_object_table && !is_sidecar {
+            continue;
+        }
+        let name = asset.href.trim_start_matches("./").to_string();
+        if is_object_table {
+            if !seen_tables.insert(name.clone()) {
+                return Err(CityParquetError::Metadata(format!(
+                    "package lists duplicate object table '{name}'"
+                )));
+            }
+            tables.push(name);
+        } else {
+            sidecar_files.push(name);
+        }
+    }
+
+    if tables.is_empty() {
+        return Err(CityParquetError::Metadata(
+            "package lists no object tables (no asset carries the cityparquet-objects role)"
+                .to_string(),
+        ));
+    }
+
+    Ok((tables, sidecar_files))
+}
+
+/// The relative object-table names an already-fetched `metadata.json`'s
+/// bytes declare, in manifest order — the HTTP-callable counterpart of
+/// [`PackageTables::open`] for callers that already have the manifest bytes
+/// (e.g. fetched via `object_store`) rather than a local directory.
+pub fn table_names_from_manifest_bytes(bytes: &[u8]) -> Result<Vec<String>> {
+    let item: Item = serde_json::from_slice(bytes)?;
+    let (tables, _sidecars) = classify_assets(&item)?;
+    Ok(tables)
 }
 
 /// The LoDs *one table's* schema carries, as a set.
