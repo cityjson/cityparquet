@@ -79,19 +79,24 @@
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
+use bytes::Bytes;
 // fcb_core 0.7's own `CityJSONFeature`/`CityObject` come from the `cjseq2`
 // crate (aliased internally to `cjseq` inside `fcb_core`'s own source), NOT
 // the `cjseq` 0.4 crate `super::cityjsonseq` uses — see this crate's own
 // `Cargo.toml` comment on the `cjseq2` dependency.
 use cjseq2::CityObject;
 use fcb_core::{
-    AttrQuery, ColumnType, FcbReader, FixedStringKey, Float, Header, KeyType, Operator,
-    SpatialQuery,
+    AttrQuery, ColumnType, FcbReader, FixedStringKey, Float, Header, HttpFcbReader, KeyType,
+    Operator, SpatialQuery,
 };
+use http_range_client::{AsyncBufferedHttpRangeClient, AsyncHttpRangeClient};
 
-use super::{FormatRunner, RunOutcome, Source};
+use super::{FormatRunner, IoStats, RunOutcome, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// This runner's `--attr-column`/params error for a scenario missing a
@@ -439,54 +444,315 @@ fn project(input: &Path, column: &str) -> Result<u64> {
     Ok(count)
 }
 
+/// Request count + bytes tally shared (via `Arc`) across every
+/// [`CountingRangeClient`] clone created for one [`run_http`] call —
+/// `fcb_core`'s HTTP reader reopens a fresh reader per scenario stage (see
+/// [`open_http`], mirroring the local runner's own per-call `open`), so the
+/// tally must outlive any single reader to accumulate across all of them.
+#[derive(Debug, Clone, Default)]
+struct RangeTally {
+    bytes: Arc<AtomicU64>,
+    requests: Arc<AtomicU64>,
+}
+
+impl RangeTally {
+    fn snapshot(&self) -> (u64, u64) {
+        (
+            self.bytes.load(Ordering::Relaxed),
+            self.requests.load(Ordering::Relaxed),
+        )
+    }
+}
+
+/// Wraps a `reqwest::Client` (or any `AsyncHttpRangeClient`), tallying
+/// request count and bytes returned by every `get_range` call — the
+/// FlatCityBuf analogue of `cityparquet::counting_store::CountingObjectStore`.
+/// `head_response_header` is a metadata-only call (no body bytes) and is
+/// passed through untallied — `fcb_core`'s own HTTP reader only uses it to
+/// probe response headers, not to fetch data.
+#[derive(Debug, Clone)]
+struct CountingRangeClient<T> {
+    inner: T,
+    tally: RangeTally,
+}
+
+#[async_trait]
+impl<T: AsyncHttpRangeClient + Send + Sync> AsyncHttpRangeClient for CountingRangeClient<T> {
+    async fn get_range(&self, url: &str, range: &str) -> http_range_client::Result<Bytes> {
+        let bytes = self.inner.get_range(url, range).await?;
+        self.tally.requests.fetch_add(1, Ordering::Relaxed);
+        self.tally
+            .bytes
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        Ok(bytes)
+    }
+
+    async fn head_response_header(
+        &self,
+        url: &str,
+        header: &str,
+    ) -> http_range_client::Result<Option<String>> {
+        self.inner.head_response_header(url, header).await
+    }
+}
+
+/// Opens a fresh `HttpFcbReader` against `url`, tallying every range
+/// request onto `tally` — the async, HTTP-sourced mirror of [`open`].
+async fn open_http(
+    url: &str,
+    tally: RangeTally,
+) -> Result<HttpFcbReader<CountingRangeClient<reqwest::Client>>> {
+    let client = CountingRangeClient {
+        inner: reqwest::Client::new(),
+        tally,
+    };
+    let buffered = AsyncBufferedHttpRangeClient::with(client, url);
+    Ok(HttpFcbReader::new(buffered).await?)
+}
+
+/// The async, HTTP-sourced mirror of [`full_read`].
+async fn full_read_http(url: &str, tally: RangeTally) -> Result<u64> {
+    let reader = open_http(url, tally).await?;
+    let mut iter = reader.select_all().await?;
+    let mut feature_count = 0u64;
+    let mut touch = 0u64;
+    while iter.next().await?.is_some() {
+        let cj = iter.cur_cj_feature()?;
+        feature_count += 1;
+        touch += cj.city_objects.len() as u64;
+    }
+    let _ = touch;
+    Ok(feature_count)
+}
+
+/// The async, HTTP-sourced mirror of [`full_walk_attr_filter`].
+async fn full_walk_attr_filter_http(
+    url: &str,
+    tally: RangeTally,
+    column: &str,
+    pred: &AttrPred,
+) -> Result<u64> {
+    let reader = open_http(url, tally).await?;
+    let mut iter = reader.select_all().await?;
+    let mut matched = 0u64;
+    while iter.next().await?.is_some() {
+        let cj = iter.cur_cj_feature()?;
+        matched += cj
+            .city_objects
+            .values()
+            .filter(|co| matches_predicate(column_value(co, column).as_ref(), pred))
+            .count() as u64;
+    }
+    Ok(matched)
+}
+
+/// The async, HTTP-sourced mirror of [`full_walk_id_lookup`].
+async fn full_walk_id_lookup_http(url: &str, tally: RangeTally, id: &str) -> Result<u64> {
+    let reader = open_http(url, tally).await?;
+    let mut iter = reader.select_all().await?;
+    while iter.next().await?.is_some() {
+        let cj = iter.cur_cj_feature()?;
+        if cj.city_objects.contains_key(id) {
+            return Ok(1);
+        }
+    }
+    Ok(0)
+}
+
+/// The async, HTTP-sourced mirror of [`attr_query_for`].
+async fn attr_query_for_http(
+    url: &str,
+    tally: RangeTally,
+    column: &str,
+    pred: &AttrPred,
+) -> Result<Option<AttrQuery>> {
+    let reader = open_http(url, tally).await?;
+    let column_type = {
+        let header = reader.header();
+        column_type_for(&header, column)
+    };
+    let Some(column_type) = column_type else {
+        return Ok(None);
+    };
+    Ok(build_attr_query(column, pred, column_type).ok())
+}
+
+/// The async, HTTP-sourced mirror of [`attr_filter`].
+async fn attr_filter_http(
+    url: &str,
+    tally: RangeTally,
+    column: &str,
+    pred: &AttrPred,
+) -> Result<u64> {
+    if let Some(query) = attr_query_for_http(url, tally.clone(), column, pred).await? {
+        let reader = open_http(url, tally.clone()).await?;
+        match reader.select_attr_query(&query).await {
+            Ok(iter) => return Ok(iter.features_count().unwrap_or(0) as u64),
+            Err(e) => eprintln!(
+                "cityparquet-readbench: flatcitybuf: indexed attr-filter query on '{column}' \
+                 failed ({e}); falling back to a full scan"
+            ),
+        }
+    } else {
+        eprintln!(
+            "cityparquet-readbench: flatcitybuf: attribute '{column}' has no B+-tree index \
+             (no-attr-index); falling back to a full scan"
+        );
+    }
+    full_walk_attr_filter_http(url, tally, column, pred).await
+}
+
+/// The async, HTTP-sourced mirror of [`id_lookup`].
+async fn id_lookup_http(url: &str, tally: RangeTally, id: &str) -> Result<u64> {
+    let pred = AttrPred::Eq(serde_json::Value::String(id.to_string()));
+    if let Some(query) = attr_query_for_http(url, tally.clone(), "id", &pred).await? {
+        let reader = open_http(url, tally.clone()).await?;
+        if let Ok(mut iter) = reader.select_attr_query(&query).await {
+            return Ok(if iter.next().await?.is_some() { 1 } else { 0 });
+        }
+    }
+    full_walk_id_lookup_http(url, tally, id).await
+}
+
+/// The async, HTTP-sourced mirror of [`attr_stats`].
+async fn attr_stats_http(url: &str, tally: RangeTally, column: &str) -> Result<u64> {
+    let reader = open_http(url, tally).await?;
+    let mut iter = reader.select_all().await?;
+    let mut count = 0u64;
+    while iter.next().await?.is_some() {
+        let cj = iter.cur_cj_feature()?;
+        count += cj
+            .city_objects
+            .values()
+            .filter(|co| column_value(co, column).and_then(|v| v.as_f64()).is_some())
+            .count() as u64;
+    }
+    Ok(count)
+}
+
+/// The async, HTTP-sourced mirror of [`project`].
+async fn project_http(url: &str, tally: RangeTally, column: &str) -> Result<u64> {
+    let reader = open_http(url, tally).await?;
+    let mut iter = reader.select_all().await?;
+    let mut count = 0u64;
+    while iter.next().await?.is_some() {
+        let cj = iter.cur_cj_feature()?;
+        count += cj
+            .city_objects
+            .values()
+            .filter(|co| column_value(co, column).is_some())
+            .count() as u64;
+    }
+    Ok(count)
+}
+
+/// The HTTP-transport body of [`FlatCityBufRunner::run`]: `base_url`/`key`
+/// join into one URL (`fcb_core`'s HTTP reader targets a single object, no
+/// package manifest to resolve first — unlike the CityParquet runner), then
+/// dispatches `scenario` onto the matching `*_http` mirror above, reporting
+/// the shared [`RangeTally`] as [`IoStats`].
+async fn run_http(
+    base_url: &str,
+    key: &str,
+    scenario: Scenario,
+    params: &QueryParams,
+) -> Result<RunOutcome> {
+    let url = format!("{}/{}", base_url.trim_end_matches('/'), key);
+    let tally = RangeTally::default();
+
+    let result_count = match scenario {
+        Scenario::Count => {
+            let reader = open_http(&url, tally.clone()).await?;
+            reader.header().features_count()
+        }
+        Scenario::FullRead => full_read_http(&url, tally.clone()).await?,
+        Scenario::BBoxQuery => {
+            let bbox = *require(&params.bbox, "bbox", scenario)?;
+            let reader = open_http(&url, tally.clone()).await?;
+            // FCB's packed R-tree is 2D; drop the z components (indices
+            // 2/5) rather than approximate them — same as the local branch.
+            let query = SpatialQuery::BBox(bbox[0], bbox[1], bbox[3], bbox[4]);
+            let iter = reader.select_query(query).await?;
+            iter.features_count().unwrap_or(0) as u64
+        }
+        Scenario::AttrFilter => {
+            let column = require(&params.attr_column, "attr-column", scenario)?;
+            let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
+            attr_filter_http(&url, tally.clone(), column, pred).await?
+        }
+        Scenario::AttrStats => {
+            let column = require(&params.attr_column, "attr-column", scenario)?;
+            attr_stats_http(&url, tally.clone(), column).await?
+        }
+        Scenario::IdLookup => {
+            let id = require(&params.target_id, "target-id", scenario)?;
+            id_lookup_http(&url, tally.clone(), id).await?
+        }
+        Scenario::Project => {
+            let column = require(&params.attr_column, "attr-column", scenario)?;
+            project_http(&url, tally.clone(), column).await?
+        }
+    };
+
+    let (bytes, requests) = tally.snapshot();
+    Ok(RunOutcome {
+        result_count,
+        io: Some(IoStats { bytes, requests }),
+    })
+}
+
 /// The FlatCityBuf backend (see this module's own doc comment for which
 /// scenarios count features vs. CityObjects).
 pub struct FlatCityBufRunner;
 
 impl FormatRunner for FlatCityBufRunner {
     fn run(&self, source: &Source, scenario: Scenario, params: &QueryParams) -> Result<RunOutcome> {
-        let input = match source {
-            Source::Local(path) => path.as_path(),
-            Source::Http { .. } => {
-                bail!("flatcitybuf: HTTP transport not implemented yet (Task 12)")
+        let (base_url, key) = match source {
+            Source::Local(path) => {
+                let input = path.as_path();
+                let result_count = match scenario {
+                    Scenario::Count => {
+                        let reader = open(input)?;
+                        reader.header().features_count()
+                    }
+                    Scenario::FullRead => full_read(input)?,
+                    Scenario::BBoxQuery => {
+                        let bbox = *require(&params.bbox, "bbox", scenario)?;
+                        let reader = open(input)?;
+                        // FCB's packed R-tree is 2D; drop the z components
+                        // (indices 2/5) rather than approximate them.
+                        let query = SpatialQuery::BBox(bbox[0], bbox[1], bbox[3], bbox[4]);
+                        let iter = reader.select_query(query, None, None)?;
+                        iter.features_count().unwrap_or(0) as u64
+                    }
+                    Scenario::AttrFilter => {
+                        let column = require(&params.attr_column, "attr-column", scenario)?;
+                        let pred =
+                            require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
+                        attr_filter(input, column, pred)?
+                    }
+                    Scenario::AttrStats => {
+                        let column = require(&params.attr_column, "attr-column", scenario)?;
+                        attr_stats(input, column)?
+                    }
+                    Scenario::IdLookup => {
+                        let id = require(&params.target_id, "target-id", scenario)?;
+                        id_lookup(input, id)?
+                    }
+                    Scenario::Project => {
+                        let column = require(&params.attr_column, "attr-column", scenario)?;
+                        project(input, column)?
+                    }
+                };
+                return Ok(RunOutcome {
+                    result_count,
+                    io: None,
+                });
             }
+            Source::Http { base_url, key } => (base_url, key),
         };
-        let result_count = match scenario {
-            Scenario::Count => {
-                let reader = open(input)?;
-                reader.header().features_count()
-            }
-            Scenario::FullRead => full_read(input)?,
-            Scenario::BBoxQuery => {
-                let bbox = *require(&params.bbox, "bbox", scenario)?;
-                let reader = open(input)?;
-                // FCB's packed R-tree is 2D; drop the z components
-                // (indices 2/5) rather than approximate them.
-                let query = SpatialQuery::BBox(bbox[0], bbox[1], bbox[3], bbox[4]);
-                let iter = reader.select_query(query, None, None)?;
-                iter.features_count().unwrap_or(0) as u64
-            }
-            Scenario::AttrFilter => {
-                let column = require(&params.attr_column, "attr-column", scenario)?;
-                let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
-                attr_filter(input, column, pred)?
-            }
-            Scenario::AttrStats => {
-                let column = require(&params.attr_column, "attr-column", scenario)?;
-                attr_stats(input, column)?
-            }
-            Scenario::IdLookup => {
-                let id = require(&params.target_id, "target-id", scenario)?;
-                id_lookup(input, id)?
-            }
-            Scenario::Project => {
-                let column = require(&params.attr_column, "attr-column", scenario)?;
-                project(input, column)?
-            }
-        };
-        Ok(RunOutcome {
-            result_count,
-            io: None,
-        })
+
+        let handle = tokio::runtime::Handle::current();
+        handle.block_on(run_http(base_url, key, scenario, params))
     }
 }

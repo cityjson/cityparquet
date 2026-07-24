@@ -206,13 +206,13 @@ dependencies = [
 
 [[package]]
 name = "async-trait"
-version = "0.1.89"
+version = "0.1.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+checksum = "ae36dc4177970ef04fde5178d3e2429882def40e57a451f919c098f72baa6cec"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.118",
+ "syn 3.0.2",
 ]
 
 [[package]]
@@ -409,9 +409,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
-version = "1.12.0"
+version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
+checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cc"
@@ -528,17 +528,21 @@ dependencies = [
  "anyhow",
  "arrow-array",
  "arrow-schema",
+ "async-trait",
  "axum",
+ "bytes",
  "cityparquet",
  "cityparquet-schema",
  "cjseq2",
  "clap",
  "fcb_core",
  "flate2",
+ "http-range-client",
  "libc",
  "object_store",
  "parquet",
  "peak_alloc",
+ "reqwest 0.12.28",
  "serde_json",
  "tempfile",
  "tokio",
