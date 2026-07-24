@@ -21,9 +21,25 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 geo = { workspace = true }
 city3d-stac-types = { workspace = true }
+object_store = { version = "0.13", features = ["http"], optional = true }
+futures = { version = "0.3", optional = true }
+futures-util = { version = "0.3", optional = true }
+async-trait = { version = "0.1", optional = true }
 
 [dev-dependencies]
 wkb = { workspace = true }
 geo-traits = { workspace = true }
 tempfile = { workspace = true }
 jsonschema = { workspace = true }
+tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs"] }
+
+[features]
+object-store = [
+    "dep:object_store",
+    "dep:futures",
+    "dep:futures-util",
+    "dep:async-trait",
+    "parquet/object_store",
+]

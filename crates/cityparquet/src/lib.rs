@@ -15,6 +15,8 @@ pub mod order;
 pub mod package;
 pub mod partition;
 pub mod query;
+#[cfg(feature = "object-store")]
+pub mod query_async;
 pub mod reader;
 pub mod recipe;
 pub mod scan;
