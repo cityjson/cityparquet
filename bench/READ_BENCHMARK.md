@@ -40,6 +40,63 @@ over a `cityparquet-rs`-**written** package: it carries our full geometry
 and our typed `bbox` STRUCT column, so none of that write-side coverage
 caveat applies to it (see Caveat 5 below for what *does* apply).
 
+## HTTP transport
+
+Every scenario above can also run against **real cloud object storage over
+HTTP** instead of a local file — `--transport local|http` (default `local`,
+identical to everything above) and `--base-url <url>` on both
+`cityparquet-readbench run` and its own `--child` protocol. This measures
+each format's actual **cloud-native access pattern**: how many bytes and
+HTTP requests a scenario costs when the file lives behind a network, not
+just how long it takes locally.
+
+- **Real cloud storage, not a bundled server.** `--base-url` must point at a
+  real HTTPS endpoint (S3, Cloudflare R2, or any static host serving `Range`
+  requests) hosting a `just readbench-prepare`d directory uploaded wholesale
+  — see `scripts/readbench_upload.md`. There is no local HTTP server this
+  repo spins up for a real run (only test-only in-process servers inside
+  `cargo test`, never part of the measured path).
+- **Network variance is real and disclosed, not hidden.** Unlike the local,
+  same-machine `time_s`/`time_mad_s`, an http-transport row's timing
+  variance includes real network latency/jitter — the MAD (`time_mad_s`)
+  column now also captures that, not just OS/filesystem-cache noise. A
+  committed http-transport run is a snapshot of one network path at one
+  time, not a reproducible local benchmark.
+- **Two extra metrics, per scenario: bytes transferred and HTTP request
+  count.** The CSV's trailing `bytes_read`/`http_requests` columns (see the
+  CSV contract above) are empty for every `local`-transport row and
+  populated for every `http`-transport row, straight from each format's own
+  transport-agnostic reader:
+  - `cityparquet`: an `object_store`/`ParquetObjectReader`-based async
+    reader (`crates/cityparquet/src/query_async.rs`) shares the exact same
+    row-group-pruning/projection/predicate logic as the local sync reader
+    (`crates/cityparquet/src/query.rs`) — same query, same pruning
+    decisions, only the I/O source differs. A `CountingObjectStore`
+    decorator (`crates/cityparquet/src/counting_store.rs`) tallies every
+    range request the reader actually makes.
+  - `flatcitybuf`: `fcb_core`'s own `HttpFcbReader`
+    (`fcb_core::http_reader`) drives its native R-tree/B+-tree indexes over
+    HTTP range requests, tallied by a `CountingRangeClient` wrapper
+    (`crates/cityparquet-readbench/src/formats/flatcitybuf.rs`).
+  - `cityjsonseq`(+gz): a single **whole-object GET** — exactly 1 request,
+    the whole file's byte length, by construction, regardless of scenario
+    (there is no index to prune with, so there is nothing smaller to fetch).
+  - `duckdb-parquet` has no HTTP-transport row; it is a local-only SQL
+    baseline (`scripts/readbench_duckdb.sh`), unaffected by `--transport`.
+
+  This is the benchmark's headline cloud-native argument: CityParquet and
+  FlatCityBuf pull kilobytes via a handful of range requests for a selective
+  query; CityJSONSeq pulls the entire file over the network every time.
+- **The coordinator's own `QueryParams` derivation stays local regardless of
+  `--transport`.** The dataset bbox, the sampled `object_type`/numeric
+  attribute/id, and the shared CityObject total are always read directly
+  from the local `--prepared-dir` (see `crates/cityparquet-readbench/src/
+  coordinator.rs`'s own module doc) — only the actual timed per-scenario
+  measurement calls the coordinator spawns go over HTTP. This means an
+  http-transport run still needs the prepared artefacts present *locally*
+  too (to derive query parameters), in addition to uploaded to the served
+  URL.
+
 ## The seven scenarios
 
 Every format implements every scenario via its own natural mechanism —
@@ -67,7 +124,7 @@ harness uses for its own single window) — one CSV row per target, tagged
 [, selectivity target]):
 
 ```
-dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes
+dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests
 ```
 
 - `time_s` / `time_mad_s` — **warm-cache** median and median-absolute-
@@ -94,6 +151,10 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
 - `notes` — free text: the `bbox-*pct` selectivity tag, the attribute
   name/predicate used for `attr-filter`/`attr-stats`/`project`, the sampled
   id for `id-lookup`, or `cold` for the one cold-cache row.
+- `bytes_read` / `http_requests` — **empty for every `--transport local`
+  row** (no HTTP concept locally); for a `--transport http` row, the total
+  bytes transferred and HTTP request count that scenario's own
+  transport-agnostic reader made (see "HTTP transport" below).
 
 ## Warm vs cold protocol
 

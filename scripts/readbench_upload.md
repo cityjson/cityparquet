@@ -1,0 +1,111 @@
+# Uploading readbench artefacts for HTTP transport
+
+`cityparquet-readbench run --transport http` (and its own `--child
+--transport http`) needs a real public HTTPS endpoint supporting `Range`
+requests — S3, Cloudflare R2, or any static host that serves byte-range
+GETs. This repo does not automate the upload (no bundled server, no CI
+integration — see `bench/READ_BENCHMARK.md`'s "HTTP transport" section for
+why): do it once, by hand, per dataset you want to benchmark over HTTP.
+
+## What to upload
+
+Exactly the directory `just readbench-prepare <input>` (or
+`readbench_prepare.sh`) produces — `bench/data/readbench/` by default —
+preserving its structure:
+
+```
+bench/data/readbench/
+  <name>.parquet/           # CityParquet package directory
+    metadata.json           # STAC manifest — CityParquet's HTTP reader
+    building.parquet        #   range-fetches this first to find the
+    ...                     #   package's own table(s)
+  <name>-hilbert.parquet/
+    metadata.json
+    ...
+  <name>.fcb
+  <name>.jsonl.gz
+```
+
+The plain (non-gz) `cityjsonseq` format's own artefact is the *original*
+CityJSONSeq/CityJSON input, which normally lives outside `prepared_dir`
+(e.g. a fixture under `tests/fixtures/`) — for HTTP transport, also place a
+copy of it at the served root under its own file name (e.g.
+`bench/data/readbench/delft.city.jsonl`) alongside the other artefacts, so
+`--base-url <url> --input delft.city.jsonl` resolves.
+
+Upload the **whole directory as-is** — don't rename or flatten anything;
+`cityparquet-readbench`'s HTTP paths key off these exact relative names
+(`<name>.parquet/metadata.json`, `<name>.fcb`, `<name>.city.jsonl`, …).
+
+## Cloudflare R2 (`rclone`)
+
+One-time setup (an R2 API token with object read/write scope):
+
+```sh
+rclone config create r2 s3 \
+    provider=Cloudflare \
+    access_key_id=<YOUR_ACCESS_KEY_ID> \
+    secret_access_key=<YOUR_SECRET_ACCESS_KEY> \
+    endpoint=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+```
+
+Upload, then make the bucket's objects public (either a public bucket, or a
+custom domain / `r2.dev` public URL — see R2's own dashboard: Settings →
+Public access):
+
+```sh
+rclone copy bench/data/readbench/ r2:<BUCKET_NAME>/readbench/ --progress
+```
+
+Your `--base-url` is then the bucket's public root plus the `readbench/`
+prefix, e.g. `https://<BUCKET_NAME>.<ACCOUNT_ID>.r2.dev/readbench` (or your
+custom domain) — no trailing slash needed, `cityparquet-readbench` joins
+`base_url/key` itself.
+
+## AWS S3 (`aws s3`)
+
+```sh
+aws s3 sync bench/data/readbench/ s3://<BUCKET_NAME>/readbench/
+```
+
+Make the objects publicly readable — either a bucket policy allowing
+`s3:GetObject` for `arn:aws:s3:::<BUCKET_NAME>/readbench/*`, or upload with
+`--acl public-read` (only if the bucket doesn't block public ACLs):
+
+```sh
+aws s3 sync bench/data/readbench/ s3://<BUCKET_NAME>/readbench/ --acl public-read
+```
+
+`--base-url` is then the bucket's public HTTPS endpoint plus the prefix,
+e.g. `https://<BUCKET_NAME>.s3.<REGION>.amazonaws.com/readbench`.
+
+## Verifying `Range` support before running the benchmark
+
+Confirm the host actually honours byte-range requests (S3/R2 do by
+default; a plain static-file host usually does too, but check once per new
+host):
+
+```sh
+curl -I -H "Range: bytes=0-99" \
+    "<BASE_URL>/<name>.parquet/metadata.json"
+```
+
+Expect `HTTP/1.1 206 Partial Content` (not `200 OK`, which means the server
+ignored the `Range` header and would send the whole file every time,
+defeating the point of the comparison).
+
+## Running the benchmark
+
+Once uploaded and verified, the prepared artefacts must still also be
+present *locally* (the coordinator's own `QueryParams` derivation — dataset
+bbox, sampled attribute/id — always reads the local `--prepared-dir`
+directly, regardless of transport; see `bench/READ_BENCHMARK.md`):
+
+```sh
+cargo run --release -p cityparquet-readbench -- run \
+    --input tests/fixtures/delft.city.jsonl \
+    --prepared-dir bench/data/readbench \
+    --out bench/read_results/delft-http.csv \
+    --transport http --base-url "<BASE_URL>" \
+    --repeat 7
+```
