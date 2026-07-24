@@ -87,6 +87,17 @@ struct Cli {
     /// results CSV's `notes` column; no scenario reads this itself.
     #[arg(long)]
     selectivity_tag: Option<String>,
+
+    /// Transport for `--child`'s own `--input`: `local` (a filesystem path,
+    /// default) or `http` (an HTTP base URL + relative key, combined with
+    /// `--base-url`).
+    #[arg(long, default_value = "local")]
+    transport: String,
+
+    /// HTTP base URL (required when `--transport http`); `--input` becomes
+    /// the relative key under it.
+    #[arg(long)]
+    base_url: Option<String>,
 }
 
 /// The coordinator's own subcommand.
@@ -138,6 +149,15 @@ struct RunArgs {
     /// on the `sudo purge` protocol this does NOT automate).
     #[arg(long)]
     cold: bool,
+
+    /// Transport for every measurement in this run: `local` (default) or
+    /// `http` (requires `--base-url`).
+    #[arg(long, default_value = "local")]
+    transport: String,
+
+    /// HTTP base URL when `--transport http`.
+    #[arg(long)]
+    base_url: Option<String>,
 }
 
 fn main() {
@@ -150,6 +170,11 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     if let Some(Command::Run(run_args)) = cli.command {
+        let transport = match run_args.transport.as_str() {
+            "local" => coordinator::Transport::Local,
+            "http" => coordinator::Transport::Http,
+            other => bail!("unknown --transport '{other}'; expected 'local' or 'http'"),
+        };
         return coordinator::run(&coordinator::RunOptions {
             input: run_args.input,
             prepared_dir: run_args.prepared_dir,
@@ -158,6 +183,8 @@ fn run(cli: Cli) -> Result<()> {
             formats: run_args.formats,
             scenarios: run_args.scenarios,
             cold: run_args.cold,
+            transport,
+            base_url: run_args.base_url,
         });
     }
 
@@ -195,19 +222,48 @@ fn run(cli: Cli) -> Result<()> {
         selectivity_tag: cli.selectivity_tag,
     };
 
+    let source = match cli.transport.as_str() {
+        "local" => formats::Source::Local(input),
+        "http" => {
+            let base_url = cli
+                .base_url
+                .context("--transport http requires --base-url")?;
+            let key = input
+                .to_str()
+                .context("--input must be valid UTF-8 for --transport http")?
+                .to_string();
+            formats::Source::Http { base_url, key }
+        }
+        other => bail!("unknown --transport '{other}'; expected 'local' or 'http'"),
+    };
+    let is_http = matches!(source, formats::Source::Http { .. });
     let runner = formats::resolve(&format)?;
 
     alloc::reset();
     let start = Instant::now();
-    let outcome = runner.run(&formats::Source::Local(input), scenario, &params)?;
+    let outcome = if is_http {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("building the child's tokio runtime for --transport http")?;
+        rt.block_on(async { runner.run(&source, scenario, &params) })?
+    } else {
+        runner.run(&source, scenario, &params)?
+    };
     let time_s = start.elapsed().as_secs_f64();
     let peak_heap_bytes = alloc::peak_heap_bytes();
     let ru_maxrss_bytes = max_rss_bytes()?;
 
-    println!(
-        "{time_s:.6} {peak_heap_bytes} {ru_maxrss_bytes} {}",
-        outcome.result_count
-    );
+    match outcome.io {
+        Some(io) => println!(
+            "{time_s:.6} {peak_heap_bytes} {ru_maxrss_bytes} {} {} {}",
+            outcome.result_count, io.bytes, io.requests
+        ),
+        None => println!(
+            "{time_s:.6} {peak_heap_bytes} {ru_maxrss_bytes} {}",
+            outcome.result_count
+        ),
+    }
     Ok(())
 }
 

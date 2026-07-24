@@ -88,6 +88,19 @@ pub struct RunOptions {
     /// tagged `cold` in `notes` (see [`run`]'s own doc comment on the
     /// `sudo purge` protocol this does NOT automate).
     pub cold: bool,
+    /// Transport for every measurement this run drives (see [`Transport`]).
+    pub transport: Transport,
+    /// HTTP base URL; required when `transport` is [`Transport::Http`].
+    pub base_url: Option<String>,
+}
+
+/// `run`'s own transport selector — the CLI-facing mirror of
+/// `formats::Source`'s two variants (that enum instead carries a resolved
+/// per-artefact base_url+key/path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    Local,
+    Http,
 }
 
 /// Formats this coordinator drives when `--formats` is omitted.
@@ -119,6 +132,9 @@ peak_heap_bytes,peak_rss_bytes,repeat,notes";
 pub fn run(opts: &RunOptions) -> Result<()> {
     if opts.repeat == 0 {
         bail!("--repeat must be >= 1");
+    }
+    if opts.transport == Transport::Http && opts.base_url.is_none() {
+        bail!("--transport http requires --base-url");
     }
 
     let dataset = opts

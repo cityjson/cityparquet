@@ -20,7 +20,14 @@ use crate::scenario::{QueryParams, Scenario};
 #[derive(Debug, Clone)]
 pub enum Source {
     Local(PathBuf),
-    Http { base_url: String, key: String },
+    // `base_url`/`key` are read starting with the CityParquet HTTP runner
+    // (next task); `#[allow(dead_code)]` is temporary until every format's
+    // `Source::Http` arm is implemented.
+    #[allow(dead_code)]
+    Http {
+        base_url: String,
+        key: String,
+    },
 }
 
 /// Bytes transferred and HTTP request count for one measurement — `None`
