@@ -37,12 +37,16 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use cityparquet::cjseq::{CityJSON, CityJSONFeature, CityObject, SortingStrategy, Transform};
+use cityparquet::counting_store::CountingObjectStore;
 use cityparquet::source::Source;
 use flate2::read::GzDecoder;
+use object_store::ObjectStoreExt;
+use object_store::http::HttpBuilder;
+use object_store::path::Path as ObjectPath;
 
-use super::{FormatRunner, RunOutcome, Source as TransportSource};
+use super::{FormatRunner, IoStats, RunOutcome, Source as TransportSource};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// This runner's `--attr-column`/params error for a scenario missing a
@@ -415,6 +419,55 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
     }
 }
 
+/// The HTTP-transport body of [`CityJsonSeqRunner::run`]: a single
+/// whole-object GET (via a [`CountingObjectStore`]-wrapped
+/// `object_store::http::HttpStore` — exactly 1 request, the whole file's
+/// bytes, by construction) written to a [`tempfile::NamedTempFile`], then
+/// handed to the existing, unchanged [`Backend::open`]/[`run_scenario`]
+/// local parsing — no in-memory CityJSONSeq parser duplicated for this
+/// transport.
+async fn run_http(
+    base_url: &str,
+    key: &str,
+    gzip: bool,
+    scenario: Scenario,
+    params: &QueryParams,
+) -> Result<RunOutcome> {
+    // `with_allow_http(true)` is required for a plain `http://` target (the
+    // in-test Range server this crate's own tests point at); it does not
+    // disable or otherwise affect `https://` targets (real S3/R2 buckets).
+    let store = HttpBuilder::new()
+        .with_url(base_url)
+        .with_client_options(object_store::ClientOptions::new().with_allow_http(true))
+        .build()?;
+    let counting = CountingObjectStore::new(store);
+
+    let obj_path = ObjectPath::from(key);
+    let bytes = counting
+        .get(&obj_path)
+        .await
+        .with_context(|| format!("GET {key}"))?
+        .bytes()
+        .await
+        .with_context(|| format!("reading body of {key}"))?;
+
+    let tmp =
+        tempfile::NamedTempFile::new().context("creating a tempfile for the whole-object GET")?;
+    std::fs::write(tmp.path(), &bytes)
+        .with_context(|| format!("writing {} bytes to {}", bytes.len(), tmp.path().display()))?;
+    let stats = counting.tally();
+
+    let backend = Backend::open(tmp.path(), gzip)?;
+    let result_count = run_scenario(&backend, scenario, params)?;
+    Ok(RunOutcome {
+        result_count,
+        io: Some(IoStats {
+            bytes: stats.bytes,
+            requests: stats.requests,
+        }),
+    })
+}
+
 impl FormatRunner for CityJsonSeqRunner {
     fn run(
         &self,
@@ -422,17 +475,19 @@ impl FormatRunner for CityJsonSeqRunner {
         scenario: Scenario,
         params: &QueryParams,
     ) -> Result<RunOutcome> {
-        let input = match source {
-            TransportSource::Local(path) => path.as_path(),
-            TransportSource::Http { .. } => {
-                bail!("cityjsonseq: HTTP transport not implemented yet (Task 13)")
+        let (base_url, key) = match source {
+            TransportSource::Local(path) => {
+                let backend = Backend::open(path, self.gzip)?;
+                let result_count = run_scenario(&backend, scenario, params)?;
+                return Ok(RunOutcome {
+                    result_count,
+                    io: None,
+                });
             }
+            TransportSource::Http { base_url, key } => (base_url, key),
         };
-        let backend = Backend::open(input, self.gzip)?;
-        let result_count = run_scenario(&backend, scenario, params)?;
-        Ok(RunOutcome {
-            result_count,
-            io: None,
-        })
+
+        let handle = tokio::runtime::Handle::current();
+        handle.block_on(run_http(base_url, key, self.gzip, scenario, params))
     }
 }
