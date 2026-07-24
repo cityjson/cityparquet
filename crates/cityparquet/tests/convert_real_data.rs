@@ -1403,3 +1403,136 @@ fn geoarrow_opt_in_restores_tag_and_geo_key() {
         "--geoarrow must advertise geoarrow.wkb"
     );
 }
+
+/// A genuinely geometry-less dataset derived from the real `delft.city.jsonl`
+/// by JSON mutation (never hand-written CityJSON, per this file's convention):
+/// every CityObject keeps its type/attributes/parents but loses all
+/// `geometry`, and every `vertices` array is emptied. delft carries no
+/// appearance, so the result is a clean "objects with no analysis geometry"
+/// dataset.
+fn geometryless_delft_fixture() -> (tempfile::TempDir, PathBuf) {
+    let src = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut out = String::new();
+    for line in src.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut doc: Value = serde_json::from_str(line).unwrap();
+        if let Some(objs) = doc.get_mut("CityObjects").and_then(Value::as_object_mut) {
+            for co in objs.values_mut() {
+                if let Some(obj) = co.as_object_mut() {
+                    obj.remove("geometry");
+                }
+            }
+        }
+        if let Some(v) = doc.get_mut("vertices") {
+            *v = Value::Array(Vec::new());
+        }
+        out.push_str(&serde_json::to_string(&doc).unwrap());
+        out.push('\n');
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delft_no_geometry.city.jsonl");
+    std::fs::write(&path, out).unwrap();
+    (dir, path)
+}
+
+/// Spec "Levels of detail": "a table whose objects have no analysis geometry
+/// ... simply carries no geometry column, and declares no `city.primary_column`."
+/// A geometry-less dataset must therefore write NONE of the geometry/
+/// geometry_properties/material/texture columns — not an all-null bare
+/// `geometry` quartet (the zero-analysis-geometry fallback the writer used to
+/// emit).
+#[test]
+fn geometryless_dataset_writes_no_geometry_columns() {
+    let (_src_dir, src) = geometryless_delft_fixture();
+    let out = tempfile::tempdir().unwrap();
+    let opts = ConvertOptions::new(src, out.path().to_path_buf());
+    let report = convert(&opts).unwrap();
+    assert_eq!(report.object_count, 2231);
+
+    // delft is a single Building family -> exactly one main table.
+    assert_eq!(
+        manifest_tables(out.path()),
+        vec!["building.parquet".to_string()]
+    );
+
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let schema = builder.schema();
+
+    // No geometry column of ANY shape: neither the bare quartet nor a
+    // suffixed geometry_lod* / material_lod* / texture_lod* column.
+    for col in ["geometry", "geometry_properties", "material", "texture"] {
+        assert!(
+            schema.field_with_name(col).is_err(),
+            "a geometry-less table must not carry the bare '{col}' column"
+        );
+    }
+    assert!(
+        !schema.fields().iter().any(|f| {
+            let n = f.name();
+            n.starts_with("geometry_lod")
+                || n.starts_with("material_lod")
+                || n.starts_with("texture_lod")
+        }),
+        "a geometry-less table must not carry any per-LoD geometry/appearance column"
+    );
+
+    // Not an empty package: the objects and their reserved columns are still
+    // present, the rows simply carry no geometry.
+    assert!(schema.field_with_name("id").is_ok());
+    assert!(schema.field_with_name("object_type").is_ok());
+
+    // Footer: a geometry-less table declares no primary geometry column, no
+    // geometry-column registry, and no GeoParquet `geo` object (spec "Levels
+    // of detail" / "Metadata"). `primary_column` (None) and `columns` (empty)
+    // are both skip-serialised, so they are absent from the `city` object.
+    let kvs = builder
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .expect("footer key-value metadata");
+    let city_kv = kvs
+        .iter()
+        .find(|kv| kv.key == "city")
+        .expect("city footer key present");
+    let city: Value = serde_json::from_str(city_kv.value.as_deref().unwrap()).unwrap();
+    assert!(
+        city.get("primary_column").is_none(),
+        "a geometry-less table must declare no city.primary_column"
+    );
+    assert!(
+        city.get("columns").is_none(),
+        "a geometry-less table registers no geometry columns in city.columns"
+    );
+    assert!(
+        !kvs.iter().any(|kv| kv.key == "geo"),
+        "a geometry-less table has no GeoParquet `geo` object"
+    );
+}
+
+/// A geometry-less dataset must still round-trip losslessly: convert -> export
+/// brings back the source objects (attributes and parent/child hierarchy) —
+/// they simply never carried geometry. Guards the export path against the
+/// dropped-geometry-columns change.
+#[test]
+fn geometryless_dataset_round_trips() {
+    let (_src_dir, src) = geometryless_delft_fixture();
+    let out = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(src.clone(), out.path().to_path_buf())).unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let exported = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: out.path().to_path_buf(),
+        output: exported.clone(),
+    })
+    .unwrap();
+    let report = compare_datasets(&src, &exported, &CompareOptions::default()).unwrap();
+    assert!(
+        report.equal,
+        "a geometry-less dataset must export losslessly; differences: {:#?}",
+        report.differences
+    );
+}

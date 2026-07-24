@@ -130,8 +130,9 @@ impl PackageTables {
 /// Read from each geometry field's `cityparquet:lod` tag rather than parsed
 /// back out of column names — every real LoD, including LoD0, is suffixed
 /// (`geometry_lod0_0`, `geometry_lod2_2`, …) and carries that tag directly.
-/// The bare, un-suffixed `geometry` column only exists for the
-/// zero-analysis-geometry fallback schema (a dataset with only
+/// The bare, un-suffixed `geometry` column only appears in the wide-schema
+/// scaffold and in legacy/foreign files (the current writer prunes it for a
+/// geometry-less table; a dataset with only
 /// `GeometryInstance`s, or none — §9); it never carries a `cityparquet:lod`
 /// tag, so matching its name here never contributes a LoD — it is included
 /// only so the loop recognises it as a geometry column (rather than treating
