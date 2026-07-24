@@ -9,8 +9,6 @@
 //! is defined generically as `impl<T> ArrowReaderBuilder<T>` in `parquet`
 //! itself — there is no sync/async split to bridge.
 
-#![cfg(feature = "object-store")]
-
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -103,6 +101,90 @@ pub async fn full_read_async(
     })
 }
 
+use arrow_array::{Array, StringArray, StructArray};
+use parquet::arrow::ProjectionMask;
+
+use crate::query::BBoxQueryResult;
+use crate::reader::{box_intersects_query, row_group_intersects};
+
+/// Same row leaf-reader as `crate::query`'s private `row_bbox` (kept local:
+/// a four-line struct-field read, cheaper to duplicate once than to widen
+/// `query.rs`'s visibility for it alone).
+fn row_bbox(bbox_col: &StructArray, row: usize) -> Result<Option<([f64; 3], [f64; 3])>> {
+    if bbox_col.is_null(row) {
+        return Ok(None);
+    }
+    let leaf = |name: &str| -> Result<f64> {
+        Ok(bbox_col
+            .column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<arrow_array::Float64Array>())
+            .ok_or_else(|| {
+                CityParquetError::Schema(format!("bbox.{name} column missing or not Float64"))
+            })?
+            .value(row))
+    };
+    let min = [leaf("xmin")?, leaf("ymin")?, leaf("zmin")?];
+    let max = [leaf("xmax")?, leaf("ymax")?, leaf("zmax")?];
+    Ok(Some((min, max)))
+}
+
+/// The async mirror of [`crate::query::bbox_query`]. Row-group pruning
+/// counts come from the SAME [`row_group_intersects`] predicate the sync
+/// path uses (over the identical `parquet::file::metadata::RowGroupMetaData`
+/// type — footer metadata has no sync/async distinction), then the
+/// surviving rows are read via an `id`/`bbox`-only [`ProjectionMask`] and
+/// filtered exactly via [`box_intersects_query`].
+pub async fn bbox_query_async(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    query_bbox: [f64; 6],
+) -> Result<BBoxQueryResult> {
+    let reader = ParquetObjectReader::new(Arc::clone(&store), path.clone());
+    let builder = ParquetRecordBatchStreamBuilder::new(reader)
+        .await
+        .map_err(parquet_err)?;
+
+    let metadata = Arc::clone(builder.metadata());
+    let row_groups_total = metadata.num_row_groups();
+    let row_groups_touched = (0..row_groups_total)
+        .filter(|&i| row_group_intersects(metadata.row_group(i), &query_bbox))
+        .count();
+
+    let projection = ProjectionMask::columns(builder.parquet_schema(), ["id", "bbox"]);
+    let pruned = builder
+        .with_projection(projection)
+        .with_bbox_row_groups(query_bbox)?;
+    let mut stream = pruned.build().map_err(parquet_err)?;
+
+    let mut ids = Vec::new();
+    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+        let id_col = batch
+            .column_by_name("id")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .ok_or_else(|| CityParquetError::Schema("'id' column missing or not Utf8".into()))?;
+        let bbox_col = batch
+            .column_by_name("bbox")
+            .and_then(|c| c.as_any().downcast_ref::<StructArray>())
+            .ok_or_else(|| {
+                CityParquetError::Schema("'bbox' column missing or not a struct".into())
+            })?;
+        for row in 0..batch.num_rows() {
+            let Some((row_min, row_max)) = row_bbox(bbox_col, row)? else {
+                continue;
+            };
+            if box_intersects_query(row_min, row_max, &query_bbox) {
+                ids.push(id_col.value(row).to_string());
+            }
+        }
+    }
+
+    Ok(BBoxQueryResult {
+        ids,
+        row_groups_total,
+        row_groups_touched,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +239,26 @@ mod tests {
         let async_result = full_read_async(store, &path, &meta).await.unwrap();
         assert_eq!(async_result.feature_count, sync_result.feature_count);
         assert_eq!(async_result.boundary_count, sync_result.boundary_count);
+    }
+
+    #[tokio::test]
+    async fn bbox_query_async_matches_sync_bbox_query_on_a_real_fixture() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, path) = delft_table(dir.path()).await;
+        let table_file = dir.path().join(path.as_ref());
+
+        // A generous window covering the whole delft fixture's extent plus
+        // margin, so the exact same rows match on both paths regardless of
+        // the fixture's real coordinates.
+        let bbox = [-1e9, -1e9, -1e9, 1e9, 1e9, 1e9];
+        let sync_result = crate::query::bbox_query(&table_file, bbox).unwrap();
+        let async_result = bbox_query_async(store, &path, bbox).await.unwrap();
+        assert_eq!(async_result.row_groups_total, sync_result.row_groups_total);
+        assert_eq!(async_result.row_groups_touched, sync_result.row_groups_touched);
+        let mut sync_ids = sync_result.ids.clone();
+        let mut async_ids = async_result.ids.clone();
+        sync_ids.sort();
+        async_ids.sort();
+        assert_eq!(async_ids, sync_ids);
     }
 }
