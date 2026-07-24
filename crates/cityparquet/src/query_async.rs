@@ -185,6 +185,54 @@ pub async fn bbox_query_async(
     })
 }
 
+use parquet::arrow::arrow_reader::{ArrowPredicateFn, RowFilter};
+
+use crate::query::{AttrPredicate, evaluate_attr_predicate};
+
+/// The async mirror of [`crate::query::attr_filter`]: restricts the scan to
+/// `column` alone and applies `pred` as a Parquet [`RowFilter`] — the SAME
+/// `evaluate_attr_predicate` dispatch the sync path uses, so a predicate
+/// that is legal/illegal against a given column's Arrow type behaves
+/// identically on both transports.
+pub async fn attr_filter_async(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Result<u64> {
+    let reader = ParquetObjectReader::new(store, path.clone());
+    let builder = ParquetRecordBatchStreamBuilder::new(reader)
+        .await
+        .map_err(parquet_err)?;
+
+    builder.schema().field_with_name(column).map_err(|_| {
+        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+    })?;
+
+    let predicate_mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
+    let output_mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
+    let owned_column = column.to_string();
+    let owned_pred = pred.clone();
+    let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
+        let array = batch.column(0);
+        evaluate_attr_predicate(&owned_column, array.as_ref(), &owned_pred)
+            .map_err(arrow_schema::ArrowError::from)
+    });
+    let row_filter = RowFilter::new(vec![Box::new(predicate_fn)]);
+
+    let mut stream = builder
+        .with_projection(output_mask)
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(parquet_err)?;
+
+    let mut count = 0u64;
+    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+        count += batch.num_rows() as u64;
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +308,22 @@ mod tests {
         sync_ids.sort();
         async_ids.sort();
         assert_eq!(async_ids, sync_ids);
+    }
+
+    #[tokio::test]
+    async fn attr_filter_async_matches_sync_attr_filter_on_a_real_fixture() {
+        use crate::query::AttrPredicate;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (store, path) = delft_table(dir.path()).await;
+        let table_file = dir.path().join(path.as_ref());
+
+        let pred = AttrPredicate::Eq(serde_json::Value::String("BuildingPart".to_string()));
+        let sync_count = crate::query::attr_filter(&table_file, "object_type", &pred).unwrap();
+        let async_count = attr_filter_async(store, &path, "object_type", &pred)
+            .await
+            .unwrap();
+        assert_eq!(async_count, sync_count);
+        assert_eq!(async_count, 1116);
     }
 }

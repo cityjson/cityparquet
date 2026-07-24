@@ -236,7 +236,7 @@ pub enum AttrPredicate {
 /// Build the `BooleanArray` deciding which rows of `array` (the single
 /// projected `column`) satisfy `pred`, dispatching on `array`'s Arrow
 /// `DataType`. Null cells always decide `false` (never match).
-fn evaluate_attr_predicate(
+pub(crate) fn evaluate_attr_predicate(
     column: &str,
     array: &dyn Array,
     pred: &AttrPredicate,
