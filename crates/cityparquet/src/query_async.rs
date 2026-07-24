@@ -233,6 +233,110 @@ pub async fn attr_filter_async(
     Ok(count)
 }
 
+use arrow_array::{Float64Array, Int64Array};
+use arrow_schema::DataType;
+
+use crate::query::{AttrStats, column_statistics, statistics_min_max};
+
+/// The async mirror of [`crate::query::attr_stats`]: the same
+/// statistics-fast-path-then-scan structure, over `column_statistics`/
+/// `statistics_min_max` from `crate::query` (Parquet row-group metadata is
+/// identical between sync and async readers — no transport-specific
+/// re-derivation needed).
+pub async fn attr_stats_async(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    column: &str,
+) -> Result<AttrStats> {
+    let reader = ParquetObjectReader::new(store, path.clone());
+    let builder = ParquetRecordBatchStreamBuilder::new(reader)
+        .await
+        .map_err(parquet_err)?;
+
+    builder.schema().field_with_name(column).map_err(|_| {
+        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+    })?;
+
+    let metadata = Arc::clone(builder.metadata());
+    let mut stats_available = true;
+    let mut stats_min = f64::INFINITY;
+    let mut stats_max = f64::NEG_INFINITY;
+    for i in 0..metadata.num_row_groups() {
+        match column_statistics(metadata.row_group(i), column).and_then(statistics_min_max) {
+            Some((min, max)) => {
+                stats_min = stats_min.min(min);
+                stats_max = stats_max.max(max);
+            }
+            None => {
+                stats_available = false;
+                break;
+            }
+        }
+    }
+
+    let projection = ProjectionMask::columns(builder.parquet_schema(), [column]);
+    let mut stream = builder
+        .with_projection(projection)
+        .build()
+        .map_err(parquet_err)?;
+
+    let mut sum = 0f64;
+    let mut count = 0u64;
+    let mut scan_min = f64::INFINITY;
+    let mut scan_max = f64::NEG_INFINITY;
+
+    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+        let array = batch.column(0);
+        let mut visit = |v: f64| {
+            sum += v;
+            count += 1;
+            if !stats_available {
+                scan_min = scan_min.min(v);
+                scan_max = scan_max.max(v);
+            }
+        };
+        match array.data_type() {
+            DataType::Int64 => {
+                let values = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
+                    CityParquetError::Schema(format!("column '{column}' is not Int64"))
+                })?;
+                for i in 0..values.len() {
+                    if !values.is_null(i) {
+                        visit(values.value(i) as f64);
+                    }
+                }
+            }
+            DataType::Float64 => {
+                let values = array.as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
+                    CityParquetError::Schema(format!("column '{column}' is not Float64"))
+                })?;
+                for i in 0..values.len() {
+                    if !values.is_null(i) {
+                        visit(values.value(i));
+                    }
+                }
+            }
+            other => {
+                return Err(CityParquetError::Schema(format!(
+                    "column '{column}' has an arrow type attr_stats cannot aggregate: {other:?}"
+                )));
+            }
+        }
+    }
+
+    let (min, max) = if stats_available {
+        (stats_min, stats_max)
+    } else {
+        (scan_min, scan_max)
+    };
+    Ok(AttrStats {
+        min,
+        max,
+        sum,
+        count,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,5 +429,23 @@ mod tests {
             .unwrap();
         assert_eq!(async_count, sync_count);
         assert_eq!(async_count, 1116);
+    }
+
+    #[tokio::test]
+    async fn attr_stats_async_matches_sync_attr_stats_on_a_real_fixture() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, path) = delft_table(dir.path()).await;
+        let table_file = dir.path().join(path.as_ref());
+
+        // delft's own numeric attribute (year built), confirmed against
+        // `crates/cityparquet/tests/query_real_data.rs`'s own
+        // `attr_filter_numeric_predicates_match_year_built_attribute_column`.
+        let column = "oorspronkelijkbouwjaar";
+        let sync_stats = crate::query::attr_stats(&table_file, column).unwrap();
+        let async_stats = attr_stats_async(store, &path, column).await.unwrap();
+        assert_eq!(async_stats.count, sync_stats.count);
+        assert_eq!(async_stats.min, sync_stats.min);
+        assert_eq!(async_stats.max, sync_stats.max);
+        assert!((async_stats.sum - sync_stats.sum).abs() < 1e-6);
     }
 }

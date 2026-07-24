@@ -417,7 +417,7 @@ pub struct AttrStats {
 /// [`crate::reader`]'s `bbox_leaf_statistics`, but over a single-part
 /// [`ColumnPath`] (a plain attribute column, not a nested `bbox.<leaf>`
 /// struct field).
-fn column_statistics<'a>(rg: &'a RowGroupMetaData, column: &str) -> Option<&'a Statistics> {
+pub(crate) fn column_statistics<'a>(rg: &'a RowGroupMetaData, column: &str) -> Option<&'a Statistics> {
     let path = ColumnPath::new(vec![column.to_string()]);
     rg.columns()
         .iter()
@@ -429,7 +429,7 @@ fn column_statistics<'a>(rg: &'a RowGroupMetaData, column: &str) -> Option<&'a S
 /// CityParquet attribute columns use (`Int64`/`Double`). `None` if `stats`
 /// is some other physical type, or if the chunk has no defined min/max (e.g.
 /// every value in the chunk is null).
-fn statistics_min_max(stats: &Statistics) -> Option<(f64, f64)> {
+pub(crate) fn statistics_min_max(stats: &Statistics) -> Option<(f64, f64)> {
     match stats {
         Statistics::Int64(v) => Some((*v.min_opt()? as f64, *v.max_opt()? as f64)),
         Statistics::Double(v) => Some((*v.min_opt()?, *v.max_opt()?)),
