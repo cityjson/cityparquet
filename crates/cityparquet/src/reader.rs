@@ -149,16 +149,18 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         }
 
         // Whether THIS table's own physical schema carries the bare
-        // un-suffixed `geometry` column — the dataset-wide
-        // zero-analysis-geometry fallback (spec "Levels of detail" / §9):
-        // every table in a dataset with NO LoD-bearing geometry anywhere
-        // carries this pair. Distinguishes that case from a table that
-        // simply carries NO geometry columns of its own (empty `lods` for a
-        // DIFFERENT reason: spec "object-table-schema" — "a table whose
-        // objects have no analysis geometry at all carries none of them" —
-        // the per-module pruning case, where sibling tables DO have
-        // LoD-bearing geometry) — both render `lods.is_empty()` here, but
-        // only the former should get the synthesised bare quartet back.
+        // un-suffixed `geometry` column. The current writer never emits it: a
+        // geometry-less table carries NO geometry column at all — whether the
+        // whole dataset has no analysis geometry or just this per-module table
+        // does (both are pruned identically now; spec "Levels of detail" /
+        // "object-table-schema" — "a table whose objects have no analysis
+        // geometry carries none of them"). So `lods.is_empty() &&
+        // !has_bare_geometry` is the normal geometry-less shape. A bare
+        // `geometry` column therefore signals a LEGACY/FOREIGN file (an old
+        // zero-analysis-geometry package that still wrote the un-suffixed
+        // quartet, or a single-LoD un-suffixed layout); it is rendered
+        // faithfully by the main path below (empty-`lods` `to_arrow_schema`
+        // still includes that quartet) so such files keep reading.
         let has_bare_geometry = actual.field_with_name("geometry").is_ok();
 
         if lods.is_empty() && !has_bare_geometry {

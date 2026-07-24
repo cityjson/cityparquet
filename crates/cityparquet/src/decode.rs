@@ -68,10 +68,10 @@ pub struct DecodedObject {
     pub feature_id: Option<String>,
     pub object: cjseq::CityObject,
     /// `(lod, decoded WKB geometry, geometry_properties)`, one entry per
-    /// non-null geometry cell on this row, ascending by LoD. `None` LoD means
-    /// the dataset's single unsuffixed `geometry` column — the
-    /// zero-analysis-geometry fallback (a dataset with only GeometryInstances,
-    /// or none; see [`cityparquet_schema::model`]'s lods-empty branch). In
+    /// non-null geometry cell on this row, ascending by LoD. `None` LoD means a
+    /// bare, un-suffixed `geometry` column — which the current writer never
+    /// emits (a geometry-less table carries no geometry column); it appears
+    /// only in a legacy/foreign file, read defensively here. In
     /// that dataset the column is all-null, so this variant does not arise in
     /// practice.
     pub geometries: Vec<(Option<Lod>, DecodedGeometry, Option<Value>)>,
@@ -206,11 +206,13 @@ fn downcast<'a, T: 'static>(array: &'a dyn Array, name: &str) -> Result<&'a T> {
 /// `CityParquetReaderBuilder::cityparquet_arrow_schema`'s LoD derivation:
 /// only `geometry_lod*` names parse as a LoD suffix — `geometry_properties_lod*`
 /// also starts with `geometry_` but is excluded because `"properties_lod1"`
-/// does not parse as one. A zero-analysis-geometry dataset instead has the
-/// single unsuffixed `geometry`/`geometry_properties` pair ([`cityparquet_schema::model`]'s
-/// lods-empty branch), returned as a `None`-LoD entry; the two shapes are
-/// mutually exclusive by construction, but both are checked unconditionally
-/// so a file carrying both would still decode every geometry column.
+/// does not parse as one. A geometry-less table carries no geometry column at
+/// all (the current writer prunes them; spec "Levels of detail"), so it yields
+/// no entries here. A LEGACY/FOREIGN file may still carry the single unsuffixed
+/// `geometry`/`geometry_properties` pair, read defensively as a `None`-LoD
+/// entry; the two shapes are mutually exclusive by construction, but both are
+/// checked unconditionally so a file carrying both would still decode every
+/// geometry column.
 fn geometry_columns(schema: &Schema) -> Vec<(Option<Lod>, String, String)> {
     let mut cols: Vec<(Option<Lod>, String, String)> = schema
         .fields()

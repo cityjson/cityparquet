@@ -27,9 +27,10 @@ use crate::wkb_write::{VertexPool, geometry_to_wkb};
 pub struct ScanResult {
     pub schema: CityParquetSchema,
     /// LoDs present, ascending; empty means the dataset has no analysis
-    /// geometry (only `GeometryInstance`s, or no geometry at all) and uses the
-    /// un-suffixed `geometry` column. Every non-instance source geometry has a
-    /// lod — [`scan`] rejects any that does not (§9, CityJSON 2.0 §3).
+    /// geometry (only `GeometryInstance`s, or no geometry at all), so its
+    /// tables carry NO geometry column at all (spec "Levels of detail"; the
+    /// writer prunes them). Every non-instance source geometry has a lod —
+    /// [`scan`] rejects any that does not (§9, CityJSON 2.0 §3).
     pub lods: Vec<Lod>,
     pub object_count: usize,
     /// Union of every analysis geometry's bbox, `None` if none contributed one
@@ -262,8 +263,9 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
     // (every non-instance geometry now has a lod — the loop above rejected any
     // that did not). A dataset with none — only `GeometryInstance`s, or an
     // attributes-only dataset with no geometry at all — has no analysis
-    // geometry, hence no LoDs and no dataset bbox; it uses the un-suffixed
-    // geometry columns (the zero-analysis-geometry case, §9 / Appendix B).
+    // geometry, hence no LoDs and no dataset bbox; its tables carry no
+    // geometry column at all (the zero-analysis-geometry case, §9 / Appendix
+    // B; the writer prunes the geometry/appearance columns).
     let (lods, dataset_bbox) = if geometries_with_lod > 0 {
         let mut lods: Vec<Lod> = lod_strings
             .iter()

@@ -606,7 +606,8 @@ struct TableWriters {
     wide_schema: Arc<Schema>,
     /// Each by-module table FILE's own LoD set — the union of every
     /// [`ModuleKey`] routed there (see `crate::package::module_lods_by_file`).
-    /// Consulted only when `dataset_has_lods`; a file absent from this map
+    /// Consulted whenever pruning runs (i.e. not `force_identity_projection`);
+    /// a file absent from this map
     /// (no rows for it were seen during the dataset-wide scan — should not
     /// happen since `write_batch` only ever opens a table `crate::scan::scan`
     /// already resolved a [`ModuleKey`] for, but handled defensively) is
@@ -629,16 +630,19 @@ struct TableWriters {
     /// geometry/appearance columns are pruned, spec "object-table-schema"),
     /// in scan order.
     attributes: Vec<(String, AttributeType)>,
-    /// Whether the DATASET AS A WHOLE has any LoD-bearing geometry. `false`
-    /// means every table needs the identical dataset-wide (bare-fallback)
-    /// column set (the zero-analysis-geometry case, §9) — pruning would be
-    /// vacuous there, and re-deriving that fallback shape via
-    /// `module_column_names` would actively DROP the bare
-    /// `geometry`/`geometry_properties`/`material`/`texture` columns every
-    /// table needs (see [`module_column_names`]'s doc comment), so
-    /// [`Self::projection_for`] short-circuits to the full identity
-    /// projection instead.
-    dataset_has_lods: bool,
+    /// Test-only escape hatch forcing [`Self::projection_for`] to a full
+    /// identity projection, bypassing per-module column pruning. The unit
+    /// tests below drive `write_batch` with deliberately minimal synthetic
+    /// batches (see [`object_type_only_batch`]) that carry none of the reserved
+    /// columns `module_column_names` resolves against `wide_schema`, so pruning
+    /// cannot run for them. Production ALWAYS prunes (`false`): a table carries
+    /// exactly the geometry/appearance columns its own rows need, and a table
+    /// whose objects have no analysis geometry carries none of them (spec
+    /// "object-table-schema" / "Levels of detail") — including the dataset-wide
+    /// zero-analysis-geometry case, where `module_column_names` (empty
+    /// `file_lods`) correctly drops the bare
+    /// `geometry`/`geometry_properties`/`material`/`texture` quartet.
+    force_identity_projection: bool,
     props: WriterProperties,
     order: Vec<String>,
     index: HashMap<String, usize>,
@@ -671,7 +675,7 @@ impl TableWriters {
     /// are encountered (see [`Self::by_type_table_index`]). `extensions` is
     /// the source's parsed Extension/ADE declarations (spec "extensions");
     /// an empty [`ExtensionRegistry`] is legitimate for a source with none.
-    /// `module_lods_by_file`/`attributes`/`dataset_has_lods` drive the
+    /// `module_lods_by_file`/`attributes`/`force_identity_projection` drive the
     /// per-table column pruning; `module_geo_by_file`/`base_city` drive the
     /// per-table `city`/`geo` footer [`Self::finish`] builds — see the
     /// struct's own doc comment.
@@ -688,7 +692,7 @@ impl TableWriters {
         >,
         base_city: CityMetadata,
         attributes: Vec<(String, AttributeType)>,
-        dataset_has_lods: bool,
+        force_identity_projection: bool,
     ) -> Result<Self> {
         Ok(Self {
             tmp_dir: tmp_dir.to_path_buf(),
@@ -697,7 +701,7 @@ impl TableWriters {
             module_geo_by_file,
             base_city,
             attributes,
-            dataset_has_lods,
+            force_identity_projection,
             props,
             order: Vec::new(),
             index: HashMap::new(),
@@ -710,11 +714,15 @@ impl TableWriters {
 
     /// The `wide_schema` field indices selecting `name`'s own pruned column
     /// set, in that table's own spec order — see [`module_column_names`]. A
-    /// full identity projection when the dataset as a whole has no
-    /// LoD-bearing geometry at all (`!self.dataset_has_lods`; see that
-    /// field's doc comment for why pruning must not run in that case).
+    /// geometry-less table (empty `file_lods`) therefore projects to NO
+    /// geometry/appearance columns — whether other tables in the dataset carry
+    /// geometry (ordinary per-module pruning) or none do (the dataset-wide
+    /// zero-analysis-geometry case, spec "Levels of detail": such a table
+    /// "carries no geometry column"). Only the test-only
+    /// `force_identity_projection` escape (see that field's doc comment)
+    /// bypasses pruning.
     fn projection_for(&self, name: &str) -> Result<Vec<usize>> {
-        if !self.dataset_has_lods {
+        if self.force_identity_projection {
             return Ok((0..self.wide_schema.fields().len()).collect());
         }
         let empty = Vec::new();
@@ -912,7 +920,10 @@ fn write_package(
         module_geo_by_file(&scan_result.module_geo),
         scan_result.base_city_metadata()?,
         scan_result.schema.attributes.clone(),
-        !scan_result.lods.is_empty(),
+        // Production always prunes: a geometry-less table (dataset-wide or
+        // per-module) carries no geometry columns. Identity projection is a
+        // test-only escape — see `TableWriters::force_identity_projection`.
+        false,
     )?;
 
     // `RowOrder::Hilbert` buffers every feature and re-sorts it BEFORE
@@ -1308,13 +1319,14 @@ mod tests {
         RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
     }
 
-    /// `dataset_has_lods: false` — these tests' synthetic `object_type`-only
-    /// batches (see [`object_type_only_batch`]) carry none of the reserved
-    /// columns `module_column_names` would look for, so the per-module
-    /// pruning path (which resolves those names against `wide_schema`) must
-    /// stay off; `false` makes [`TableWriters::projection_for`] a plain
-    /// identity projection, reproducing this module's pre-pruning behaviour
-    /// exactly for every existing test below.
+    /// `force_identity_projection: true` — these tests' synthetic
+    /// `object_type`-only batches (see [`object_type_only_batch`]) carry none
+    /// of the reserved columns `module_column_names` would look for, so the
+    /// per-module pruning path (which resolves those names against
+    /// `wide_schema`) must stay off; `true` makes
+    /// [`TableWriters::projection_for`] a plain identity projection,
+    /// reproducing this module's pre-pruning behaviour exactly for every
+    /// existing test below.
     fn writers_with(
         tmp: &std::path::Path,
         schema: Arc<Schema>,
@@ -1329,7 +1341,7 @@ mod tests {
             HashMap::new(),
             CityMetadata::new(),
             Vec::new(),
-            false,
+            true,
         )
         .unwrap()
     }

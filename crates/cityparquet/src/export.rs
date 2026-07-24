@@ -743,7 +743,7 @@ pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usiz
             if field.name() == prefix {
                 // Every LoD, including LoD0, is a suffixed column (spec
                 // "Levels of detail"), so a bare `material`/`texture` name
-                // reaching here is always the zero-analysis-geometry fallback
+                // reaching here comes from a legacy/foreign file's un-suffixed
                 // (no LoD to suffix by) — untagged, hence key `""`.
                 let key = field.metadata().get(LOD_KEY).cloned().unwrap_or_default();
                 return Some((index, key));

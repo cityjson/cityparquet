@@ -26,7 +26,12 @@ pub const EXTENSION_ATTR_PREFIX: &str = "ex_";
 /// Logical description of one CityParquet object table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CityParquetSchema {
-    /// LoDs present, ascending. Empty means a single un-suffixed `geometry` column.
+    /// LoDs present, ascending. Empty means a geometry-less table — no geometry
+    /// column at all (the package writer prunes them; spec "Levels of detail").
+    /// The empty-`lods` `to_arrow_schema` still renders the un-suffixed
+    /// `geometry`/`geometry_properties`/`material`/`texture` quartet, but only
+    /// as the wide scaffold and as the reader's shape for a legacy/foreign
+    /// bare-geometry file.
     pub lods: Vec<Lod>,
     /// Inferred attribute columns in first-seen order.
     pub attributes: Vec<(String, AttributeType)>,
@@ -288,10 +293,14 @@ impl CityParquetSchema {
                 Field::new("geometry_properties", geometry_properties_data_type(), true),
                 &[(ROLE_KEY, ROLE_RESERVED)],
             ));
-            // Appearance parallels geometry (§11.1): the un-suffixed pair for
-            // the zero-analysis-geometry fallback (a dataset with only
-            // GeometryInstances, or none — §9). A lod-less non-instance
-            // geometry never reaches here; scan rejects it (§9, G3).
+            // Appearance parallels geometry (§11.1): the un-suffixed pair.
+            // This empty-`lods` quartet is the WIDE schema — the package
+            // writer prunes a geometry-less table's geometry columns away
+            // entirely (spec "Levels of detail": such a table carries none),
+            // so this shape survives only as the wide scaffold and as the
+            // reader's rendering for a legacy/foreign bare-geometry file. A
+            // lod-less non-instance geometry never reaches here; scan rejects
+            // it (§9, G3).
             for name in ["material", "texture"] {
                 fields.push(with_meta(
                     json_field(name, true).as_ref().clone(),

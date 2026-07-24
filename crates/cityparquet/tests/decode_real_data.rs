@@ -256,16 +256,18 @@ fn railway_decodes_templates_and_semantics() {
 
 /// The zero-analysis-geometry case that G3 preserves: a dataset whose only
 /// geometry is `GeometryInstance`s (plus objects with no geometry) has no LoD
-/// to suffix, so it falls back to the un-suffixed `geometry` column — which is
-/// entirely null (instances route to `template`, not a geometry column). This
-/// is the ONLY way `lods` is empty now: a lod-less NON-instance geometry is
-/// rejected at scan (§9, CityJSON 2.0 §3), covered in `scan_real_data.rs`.
+/// to suffix, so — per spec "Levels of detail" ("a table whose objects have no
+/// analysis geometry ... simply carries no geometry column") — it carries NO
+/// geometry column at all; the instances route to `template`. This is the ONLY
+/// way `lods` is empty now: a lod-less NON-instance geometry is rejected at
+/// scan (§9, CityJSON 2.0 §3), covered in `scan_real_data.rs`.
 ///
 /// Derived from `lod3_railway.city.json` by removing every non-instance
-/// geometry, keeping its 15 `GeometryInstance`s. Decode must read the all-null
-/// un-suffixed column without error and still route the instances to template.
+/// geometry, keeping its 15 `GeometryInstance`s. Decode must handle a table
+/// with no geometry column without error and still route the instances to
+/// template.
 #[test]
-fn instances_only_dataset_uses_the_unsuffixed_geometry_column() {
+fn instances_only_dataset_carries_no_geometry_column() {
     let text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
     let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();
     let mut kept_instances = 0usize;
@@ -310,11 +312,14 @@ fn instances_only_dataset_uses_the_unsuffixed_geometry_column() {
     let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file).unwrap();
     let schema = first_builder.cityparquet_arrow_schema().unwrap();
 
-    // No LoD-bearing geometry: the un-suffixed geometry column, no per-LoD ones.
-    assert!(
-        schema.field_with_name("geometry").is_ok(),
-        "a zero-analysis-geometry dataset uses the unsuffixed geometry column"
-    );
+    // No analysis geometry -> no geometry column at all (spec "Levels of
+    // detail"): neither the bare quartet nor a suffixed geometry_lod* column.
+    for col in ["geometry", "geometry_properties", "material", "texture"] {
+        assert!(
+            schema.field_with_name(col).is_err(),
+            "a zero-analysis-geometry dataset must not carry the bare '{col}' column"
+        );
+    }
     assert!(
         !schema
             .fields()
@@ -324,7 +329,6 @@ fn instances_only_dataset_uses_the_unsuffixed_geometry_column() {
     );
 
     let mut objects = Vec::new();
-    let mut non_null_cells = 0usize;
     for table in &tables {
         let file = std::fs::File::open(out.path().join(table)).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
@@ -334,16 +338,12 @@ fn instances_only_dataset_uses_the_unsuffixed_geometry_column() {
         let reader = CityParquetRecordBatchReader::new(parquet_reader, table_schema);
         for batch in reader {
             let batch = batch.unwrap();
-            let col = batch.column_by_name("geometry").unwrap();
-            non_null_cells += col.len() - col.null_count();
+            // There is no geometry column to read.
+            assert!(batch.column_by_name("geometry").is_none());
             objects.extend(decode_batch(&batch, &meta).unwrap());
         }
     }
     assert_eq!(objects.len(), 121);
-    assert_eq!(
-        non_null_cells, 0,
-        "instances produce no analysis geometry, so the unsuffixed column is all null"
-    );
     let total_geometries: usize = objects.iter().map(|o| o.geometries.len()).sum();
     assert_eq!(total_geometries, 0, "no non-instance geometry survives");
 
