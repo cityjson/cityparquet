@@ -307,9 +307,12 @@ pub async fn attr_stats_async(
                 }
             }
             DataType::Float64 => {
-                let values = array.as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-                    CityParquetError::Schema(format!("column '{column}' is not Float64"))
-                })?;
+                let values = array
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .ok_or_else(|| {
+                        CityParquetError::Schema(format!("column '{column}' is not Float64"))
+                    })?;
                 for i in 0..values.len() {
                     if !values.is_null(i) {
                         visit(values.value(i));
@@ -487,7 +490,10 @@ mod tests {
         let sync_result = crate::query::bbox_query(&table_file, bbox).unwrap();
         let async_result = bbox_query_async(store, &path, bbox).await.unwrap();
         assert_eq!(async_result.row_groups_total, sync_result.row_groups_total);
-        assert_eq!(async_result.row_groups_touched, sync_result.row_groups_touched);
+        assert_eq!(
+            async_result.row_groups_touched,
+            sync_result.row_groups_touched
+        );
         let mut sync_ids = sync_result.ids.clone();
         let mut async_ids = async_result.ids.clone();
         sync_ids.sort();

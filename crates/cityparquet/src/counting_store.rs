@@ -133,8 +133,7 @@ mod tests {
     async fn get_range_over_local_fs_tallies_exact_bytes_and_one_request_per_call() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("data.bin"), b"0123456789ABCDEFGHIJ").unwrap();
-        let store =
-            CountingObjectStore::new(LocalFileSystem::new_with_prefix(dir.path()).unwrap());
+        let store = CountingObjectStore::new(LocalFileSystem::new_with_prefix(dir.path()).unwrap());
 
         let path = ObjectPath::from("data.bin");
         let bytes = store.get_range(&path, 5..10).await.unwrap();

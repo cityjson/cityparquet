@@ -417,7 +417,10 @@ pub struct AttrStats {
 /// [`crate::reader`]'s `bbox_leaf_statistics`, but over a single-part
 /// [`ColumnPath`] (a plain attribute column, not a nested `bbox.<leaf>`
 /// struct field).
-pub(crate) fn column_statistics<'a>(rg: &'a RowGroupMetaData, column: &str) -> Option<&'a Statistics> {
+pub(crate) fn column_statistics<'a>(
+    rg: &'a RowGroupMetaData,
+    column: &str,
+) -> Option<&'a Statistics> {
     let path = ColumnPath::new(vec![column.to_string()]);
     rg.columns()
         .iter()
