@@ -2,6 +2,18 @@ use std::collections::HashMap;
 
 use crate::error::{CityParquetError, Result};
 
+/// Which physical Arrow encoding a `geometry_lod*` column uses. `Wkb` is the
+/// only encoding CityParquet supports normatively today; `ArrowNative` is the
+/// experimental alternative from the `arrow-native-type` branch (see
+/// `docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`) —
+/// nested indexed `List`/`Struct` columns instead of a WKB `BLOB`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GeometryEncoding {
+    #[default]
+    Wkb,
+    ArrowNative,
+}
+
 /// A CityJSON Level of Detail such as `1`, `2`, or `2.2` (major, minor —
 /// defaulting to `0` when the source string carried none, e.g. `"1"` and
 /// `"1.0"` both parse to the same value). This is a canonicalisation of the

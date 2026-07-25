@@ -11,7 +11,7 @@ use geoarrow_schema::{Crs, Metadata as GeoMetadata, WkbType};
 
 use crate::attributes::AttributeType;
 use crate::error::{CityParquetError, Result};
-use crate::types::{Lod, geometry_column_name};
+use crate::types::{GeometryEncoding, Lod, geometry_column_name};
 
 pub const ROLE_KEY: &str = "cityparquet:role";
 pub const LOD_KEY: &str = "cityparquet:lod";
@@ -156,6 +156,39 @@ pub fn geometry_properties_data_type() -> DataType {
     ]))
 }
 
+/// The unified arrow-native `geometry_lod*` shape (design doc "Arrow type
+/// definitions"): `List<solid><List<shell><List<face><List<List<Int32>>>>>>`
+/// — solid -> shell -> face -> ring -> vertex-pool index. `MultiSurface`/
+/// `CompositeSurface` pad the two outer dimensions to length 1; this is a
+/// PHYSICAL shape only — a reader dispatches on `geometry_properties.type`,
+/// never on nesting depth (design doc "Critical invariant").
+pub fn arrow_native_geometry_data_type() -> DataType {
+    let index = Arc::new(Field::new("item", DataType::Int32, false));
+    let ring = DataType::List(index);
+    let rings = Arc::new(Field::new("item", ring, false)); // ring, non-null once populated
+    let face = DataType::List(rings);
+    let faces = Arc::new(Field::new("item", face, false));
+    let shell = DataType::List(faces);
+    let shells = Arc::new(Field::new("item", shell, false));
+    let solid = DataType::List(shells);
+    DataType::List(Arc::new(Field::new("item", solid, false)))
+}
+
+/// The arrow-native `geometry_vertices_lod*` sibling: this row's
+/// distinct-source-index-compacted vertex pool (design doc "Approaches
+/// considered" — NOT coordinate-value dedup; two different source indices
+/// with identical coordinates are two separate entries). `Struct<x,y,z>`,
+/// not `FixedSizeList<Float64,3>` (design doc "Arrow type definitions" —
+/// Parquet shreds struct fields into independent leaf columns).
+pub fn arrow_native_vertices_data_type() -> DataType {
+    let coord = DataType::Struct(Fields::from(
+        ["x", "y", "z"]
+            .map(|n| Field::new(n, DataType::Float64, false))
+            .to_vec(),
+    ));
+    DataType::List(Arc::new(Field::new("item", coord, true)))
+}
+
 fn string_list(name: &str) -> Field {
     Field::new(
         name,
@@ -212,6 +245,12 @@ pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
             names.insert(geometry_column_name("geometry_properties", lod));
             names.insert(geometry_column_name("material", lod));
             names.insert(geometry_column_name("texture", lod));
+            // Reserved unconditionally (not just when the schema actually
+            // renders `ArrowNative`) — an attribute must never collide with
+            // this name regardless of which encoding a given render call
+            // picks, since the same `CityParquetSchema` value can be
+            // rendered either way.
+            names.insert(geometry_column_name("geometry_vertices", lod));
         }
     }
     names
@@ -241,17 +280,31 @@ impl CityParquetSchema {
         Ok(())
     }
 
-    fn geometry_field(&self, name: &str, lod: Option<&Lod>, geoarrow: bool) -> Field {
-        let mut field = Field::new(name, DataType::Binary, true);
-        if geoarrow {
-            let crs = match &self.crs {
-                Some(projjson) => Crs::from_projjson(projjson.clone()),
-                None => Crs::default(),
-            };
-            let wkb = WkbType::new(Arc::new(GeoMetadata::new(crs, None)));
-            field = field.with_extension_type(wkb);
-        }
-        let mut field = reserved(field);
+    fn geometry_field(
+        &self,
+        name: &str,
+        lod: Option<&Lod>,
+        geoarrow: bool,
+        encoding: GeometryEncoding,
+    ) -> Field {
+        let mut field = match encoding {
+            GeometryEncoding::Wkb => {
+                let mut field = Field::new(name, DataType::Binary, true);
+                if geoarrow {
+                    let crs = match &self.crs {
+                        Some(projjson) => Crs::from_projjson(projjson.clone()),
+                        None => Crs::default(),
+                    };
+                    let wkb = WkbType::new(Arc::new(GeoMetadata::new(crs, None)));
+                    field = field.with_extension_type(wkb);
+                }
+                field
+            }
+            GeometryEncoding::ArrowNative => {
+                Field::new(name, arrow_native_geometry_data_type(), true)
+            }
+        };
+        field = reserved(field);
         if let Some(lod) = lod {
             field = with_meta(field, &[(LOD_KEY, &lod.to_string())]);
         }
@@ -259,10 +312,21 @@ impl CityParquetSchema {
     }
 
     /// Render the Arrow schema, columns in spec order. Geometry columns carry
-    /// the `geoarrow.wkb` extension type (and CRS) iff `geoarrow` — the write
-    /// path passes the caller's `--geoarrow` choice; every other caller wants
-    /// the self-describing (tagged) form.
-    pub fn to_arrow_schema_tagged(&self, geoarrow: bool) -> Result<Schema> {
+    /// the `geoarrow.wkb` extension type (and CRS) iff `geoarrow` (and
+    /// `encoding == GeometryEncoding::Wkb` — the tag is WKB-only, `ArrowNative`
+    /// geometry has no `geoarrow.wkb` equivalent yet) — the write path passes
+    /// the caller's `--geoarrow` choice; every other caller wants the
+    /// self-describing (tagged) form. `encoding` selects the physical shape
+    /// of every `geometry_lod*` column dataset-wide (design doc): `Wkb`
+    /// (default) renders the existing `Binary` column; `ArrowNative` renders
+    /// [`arrow_native_geometry_data_type`] instead and adds a
+    /// `geometry_vertices_lod*` sibling column right after each geometry
+    /// column.
+    pub fn to_arrow_schema_tagged(
+        &self,
+        geoarrow: bool,
+        encoding: GeometryEncoding,
+    ) -> Result<Schema> {
         self.validate()?;
 
         let mut fields: Vec<Field> = vec![
@@ -288,7 +352,7 @@ impl CityParquetSchema {
         ];
 
         if self.lods.is_empty() {
-            fields.push(self.geometry_field("geometry", None, geoarrow));
+            fields.push(self.geometry_field("geometry", None, geoarrow, encoding));
             fields.push(with_meta(
                 Field::new("geometry_properties", geometry_properties_data_type(), true),
                 &[(ROLE_KEY, ROLE_RESERVED)],
@@ -319,7 +383,18 @@ impl CityParquetSchema {
                     &geometry_column_name("geometry", lod),
                     Some(lod),
                     geoarrow,
+                    encoding,
                 ));
+                if encoding == GeometryEncoding::ArrowNative {
+                    fields.push(reserved(with_meta(
+                        Field::new(
+                            geometry_column_name("geometry_vertices", lod),
+                            arrow_native_vertices_data_type(),
+                            true,
+                        ),
+                        &[(LOD_KEY, &lod.to_string())],
+                    )));
+                }
                 fields.push(with_meta(
                     Field::new(
                         geometry_column_name("geometry_properties", lod),
@@ -371,7 +446,13 @@ impl CityParquetSchema {
     /// non-write caller (reader schema rebuild, `column_lists`, recipe
     /// geometry-column detection) expects.
     pub fn to_arrow_schema(&self) -> Result<Schema> {
-        self.to_arrow_schema_tagged(true)
+        // Hardcoded to `Wkb`: every existing caller of this zero-arg helper
+        // (reader schema rebuild, `column_lists`, recipe geometry-column
+        // detection) reasons about a `Binary`/`geoarrow.wkb` geometry column
+        // today — none of them yet knows how to read or route an
+        // `ArrowNative` shape. Task 6+ gives them their own encoding-aware
+        // entry point rather than silently defaulting this one.
+        self.to_arrow_schema_tagged(true, GeometryEncoding::Wkb)
     }
 
     /// (reserved incl. geometry columns, attribute columns), derived from the
@@ -395,7 +476,7 @@ impl CityParquetSchema {
 mod tests {
     use super::*;
     use crate::attributes::AttributeType;
-    use crate::types::{Lod, geometry_column_name};
+    use crate::types::{GeometryEncoding, Lod, geometry_column_name};
     use arrow_schema::DataType;
 
     fn sample() -> CityParquetSchema {
@@ -601,9 +682,13 @@ mod tests {
         let schema = sample();
 
         // Tagged (default zero-arg and explicit true): geoarrow.wkb present.
+        // Explicit `Wkb` — this test is specifically about the WKB
+        // geoarrow-tagging toggle, not the arrow-native shape.
         for tagged in [
             schema.to_arrow_schema().unwrap(),
-            schema.to_arrow_schema_tagged(true).unwrap(),
+            schema
+                .to_arrow_schema_tagged(true, GeometryEncoding::Wkb)
+                .unwrap(),
         ] {
             let field = tagged.field_with_name("geometry_lod2_2").unwrap();
             assert_eq!(
@@ -618,7 +703,11 @@ mod tests {
 
         // Untagged: NO geoarrow extension, but the binary type and the
         // cityparquet role/lod metadata that decode relies on must survive.
-        let untagged = schema.to_arrow_schema_tagged(false).unwrap();
+        // Explicit `Wkb` — asserts `DataType::Binary`, which only the WKB
+        // encoding produces.
+        let untagged = schema
+            .to_arrow_schema_tagged(false, GeometryEncoding::Wkb)
+            .unwrap();
         let field = untagged.field_with_name("geometry_lod2_2").unwrap();
         assert_eq!(field.data_type(), &arrow_schema::DataType::Binary);
         assert!(
@@ -926,5 +1015,84 @@ mod tests {
         assert!(reserved.contains(&"geometry_lod2_2".to_string()));
         assert!(!reserved.contains(&"yoc".to_string()));
         assert_eq!(attrs, vec!["yoc".to_string(), "ex_height".to_string()]);
+    }
+
+    #[test]
+    fn arrow_native_geometry_data_type_is_solid_shell_face_ring_index() {
+        // solid -> shell -> face -> ring -> vertex-pool index (Int32), matching
+        // the design doc's unified shape (padding dimensions for surface types,
+        // not a semantic distinction — see design doc "Arrow type definitions").
+        let dt = arrow_native_geometry_data_type();
+        let solid = match &dt {
+            DataType::List(f) => f.data_type().clone(),
+            other => panic!("expected outer List (solid), got {other:?}"),
+        };
+        let shell = match &solid {
+            DataType::List(f) => f.data_type().clone(),
+            other => panic!("expected List (shell), got {other:?}"),
+        };
+        let face = match &shell {
+            DataType::List(f) => f.data_type().clone(),
+            other => panic!("expected List (face), got {other:?}"),
+        };
+        // face -> List<List<Int32>> (ring -> index)
+        let ring_list = match &face {
+            DataType::List(f) => f.data_type().clone(),
+            other => panic!("expected List (ring), got {other:?}"),
+        };
+        match &ring_list {
+            DataType::List(f) => assert_eq!(f.data_type(), &DataType::Int32, "index type"),
+            other => panic!("expected innermost List<Int32>, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn arrow_native_vertices_data_type_is_list_of_xyz_struct() {
+        let dt = arrow_native_vertices_data_type();
+        let item = match &dt {
+            DataType::List(f) => f.data_type().clone(),
+            other => panic!("expected List, got {other:?}"),
+        };
+        let fields = match &item {
+            DataType::Struct(fields) => fields.clone(),
+            other => panic!("expected Struct, got {other:?}"),
+        };
+        let names: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, vec!["x", "y", "z"]);
+        for f in fields.iter() {
+            assert_eq!(f.data_type(), &DataType::Float64);
+            assert!(
+                !f.is_nullable(),
+                "coordinate fields are non-null (design doc nullability invariants)"
+            );
+        }
+    }
+
+    #[test]
+    fn arrow_native_encoding_adds_vertices_sibling_and_arrow_native_geometry_type() {
+        let schema = CityParquetSchema {
+            lods: vec![Lod::parse("2.2").unwrap()],
+            attributes: vec![],
+            crs: None,
+        };
+        let arrow_schema = schema
+            .to_arrow_schema_tagged(false, GeometryEncoding::ArrowNative)
+            .unwrap();
+        let geom = arrow_schema.field_with_name("geometry_lod2_2").unwrap();
+        assert_eq!(geom.data_type(), &arrow_native_geometry_data_type());
+        let vertices = arrow_schema
+            .field_with_name("geometry_vertices_lod2_2")
+            .expect("arrow-native encoding must add a geometry_vertices_lod* sibling column");
+        assert_eq!(vertices.data_type(), &arrow_native_vertices_data_type());
+
+        // WKB encoding (default) must NOT gain a vertices sibling.
+        let wkb_schema = schema
+            .to_arrow_schema_tagged(false, GeometryEncoding::Wkb)
+            .unwrap();
+        assert!(
+            wkb_schema
+                .field_with_name("geometry_vertices_lod2_2")
+                .is_err()
+        );
     }
 }

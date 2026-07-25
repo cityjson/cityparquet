@@ -22,8 +22,8 @@ use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
 use cityparquet_schema::{
-    AttributeType, CityMetadata, CityParquetError, CityParquetSchema, ExtensionRegistry, Lod,
-    ModuleKey, ModuleKeyResolver, Result, geometry_column_name,
+    AttributeType, CityMetadata, CityParquetError, CityParquetSchema, ExtensionRegistry,
+    GeometryEncoding, Lod, ModuleKey, ModuleKeyResolver, Result, geometry_column_name,
 };
 use cjseq::CityJSONFeature;
 
@@ -1223,7 +1223,15 @@ pub(crate) fn convert_source_impl(
     // from this one `to_arrow_schema_tagged` call, never hand-duplicated —
     // and it must use the SAME `opts.geoarrow` flag `encode`/`encode_buffered`
     // feed their batch schema, or Arrow rejects the batches at write time.
-    let arrow_schema = Arc::new(scan_result.schema.to_arrow_schema_tagged(opts.geoarrow)?);
+    // Hardcoded to `Wkb`: `encode`/`encode_buffered` (called below) only ever
+    // write WKB geometry — this crate's writer has no arrow-native path
+    // until Task 6 lands, so passing anything else here would desync the
+    // declared schema from what the batches actually contain.
+    let arrow_schema = Arc::new(
+        scan_result
+            .schema
+            .to_arrow_schema_tagged(opts.geoarrow, GeometryEncoding::Wkb)?,
+    );
     // `city`/`geo` footer key-value metadata is NOT built here any more
     // (spec-alignment M3, per-module footer emission): each by-module
     // table's `columns`/`primary_column`/`geo` can only be known once that

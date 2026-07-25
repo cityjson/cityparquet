@@ -6,6 +6,7 @@ use arrow_array::{
 use cityparquet::encode::encode;
 use cityparquet::scan::scan;
 use cityparquet::source::Source;
+use cityparquet_schema::GeometryEncoding;
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -103,7 +104,13 @@ fn delft_encodes_all_objects_in_batches() {
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 2231);
     assert!(batches.len() >= 2231 / 512);
-    let schema = s.schema.to_arrow_schema_tagged(false).unwrap();
+    // Explicit `Wkb`: `encode` (under test) only ever produces WKB batches
+    // today, so the comparison schema must match that, not some future
+    // arrow-native shape.
+    let schema = s
+        .schema
+        .to_arrow_schema_tagged(false, GeometryEncoding::Wkb)
+        .unwrap();
     assert_eq!(batches[0].schema().fields(), schema.fields());
     // Spot checks on real content:
     let b = &batches[0];

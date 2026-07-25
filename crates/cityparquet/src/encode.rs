@@ -23,7 +23,8 @@ use cjseq::{CityJSON, CityJSONFeature, CityObject, Geometry, GeometryType, Trans
 use serde_json::Value;
 
 use cityparquet_schema::{
-    AttributeType, CityParquetError, Lod, Result, geometry_column_name, normalise_attribute_name,
+    AttributeType, CityParquetError, GeometryEncoding, Lod, Result, geometry_column_name,
+    normalise_attribute_name,
 };
 
 use crate::appearance::AppearanceInterner;
@@ -1744,7 +1745,13 @@ pub fn encode<'a>(
     batch_size: usize,
     geoarrow: bool,
 ) -> Result<BatchIter<'a>> {
-    let schema = Arc::new(scan.schema.to_arrow_schema_tagged(geoarrow)?);
+    // Hardcoded to `Wkb`: `RowWriter` (below) only knows how to encode
+    // geometry through `wkb_write::geometry_to_wkb` — there is no
+    // arrow-native row-writing path until Task 6 lands.
+    let schema = Arc::new(
+        scan.schema
+            .to_arrow_schema_tagged(geoarrow, GeometryEncoding::Wkb)?,
+    );
     let features = source.features()?;
     let transform = source.header().transform.clone();
     let writer = RowWriter::new(scan);
@@ -1787,7 +1794,12 @@ pub fn encode_buffered<'a>(
     batch_size: usize,
     geoarrow: bool,
 ) -> Result<BatchIter<'a>> {
-    let schema = Arc::new(scan.schema.to_arrow_schema_tagged(geoarrow)?);
+    // Hardcoded to `Wkb`: same `RowWriter`/`geometry_to_wkb` writer path as
+    // `encode` above — no arrow-native row-writing support until Task 6.
+    let schema = Arc::new(
+        scan.schema
+            .to_arrow_schema_tagged(geoarrow, GeometryEncoding::Wkb)?,
+    );
     let transform = header.transform.clone();
     let writer = RowWriter::new(scan);
     Ok(BatchIter {
