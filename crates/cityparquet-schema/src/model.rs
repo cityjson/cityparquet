@@ -221,15 +221,24 @@ const RESERVED_COLUMN_NAMES: &[&str] = &[
 ];
 
 /// Every column name an attribute column must not collide with, for a schema
-/// with these `lods`: the fixed reserved names plus the geometry/appearance
-/// column names the LoDs realise. **Schema-relative** — every LoD reserves its
-/// suffixed forms (`geometry_lod2_2`, …), and the zero-analysis-geometry case
-/// (empty `lods`) reserves the bare names instead (no LoD to suffix by). This
-/// is the single source of truth shared by [`CityParquetSchema::validate`]
+/// with these `lods`, rendered with this `encoding`: the fixed reserved names
+/// plus the geometry/appearance column names the LoDs realise. **Schema- AND
+/// encoding-relative** — every LoD reserves its suffixed forms
+/// (`geometry_lod2_2`, …), the zero-analysis-geometry case (empty `lods`)
+/// reserves the bare names instead (no LoD to suffix by), and the
+/// `geometry_vertices_lod*` sibling is reserved only when `encoding ==
+/// GeometryEncoding::ArrowNative` — under `Wkb` that column never exists, so
+/// an attribute genuinely named e.g. `geometry_vertices_lod2_2` must stay a
+/// normal typed attribute rather than being silently diverted (the WKB path
+/// must stay byte-for-byte untouched by the arrow-native addition). This is
+/// the single source of truth shared by [`CityParquetSchema::validate`]
 /// (which errors on a collision) and the scan-time diversion of colliding
 /// attributes into `other` (§5.2, G12), so the two can never diverge on what
 /// "reserved" means.
-pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
+pub fn reserved_and_geometry_column_names(
+    lods: &[Lod],
+    encoding: GeometryEncoding,
+) -> HashSet<String> {
     let mut names: HashSet<String> = RESERVED_COLUMN_NAMES
         .iter()
         .map(|s| s.to_string())
@@ -245,12 +254,9 @@ pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
             names.insert(geometry_column_name("geometry_properties", lod));
             names.insert(geometry_column_name("material", lod));
             names.insert(geometry_column_name("texture", lod));
-            // Reserved unconditionally (not just when the schema actually
-            // renders `ArrowNative`) — an attribute must never collide with
-            // this name regardless of which encoding a given render call
-            // picks, since the same `CityParquetSchema` value can be
-            // rendered either way.
-            names.insert(geometry_column_name("geometry_vertices", lod));
+            if encoding == GeometryEncoding::ArrowNative {
+                names.insert(geometry_column_name("geometry_vertices", lod));
+            }
         }
     }
     names
@@ -258,8 +264,11 @@ pub fn reserved_and_geometry_column_names(lods: &[Lod]) -> HashSet<String> {
 
 impl CityParquetSchema {
     /// Reject schemas that can't be rendered unambiguously: duplicate LoDs, or
-    /// an attribute name colliding with a reserved or geometry column name.
-    fn validate(&self) -> Result<()> {
+    /// an attribute name colliding with a reserved or geometry column name
+    /// under the given render `encoding` (the `geometry_vertices_lod*` name
+    /// is only reserved for `ArrowNative` — see
+    /// [`reserved_and_geometry_column_names`]).
+    fn validate(&self, encoding: GeometryEncoding) -> Result<()> {
         let mut seen_lods = HashSet::new();
         for lod in &self.lods {
             if !seen_lods.insert(*lod) {
@@ -269,7 +278,7 @@ impl CityParquetSchema {
             }
         }
 
-        let reserved = reserved_and_geometry_column_names(&self.lods);
+        let reserved = reserved_and_geometry_column_names(&self.lods, encoding);
         for (name, _) in &self.attributes {
             if reserved.contains(name) {
                 return Err(CityParquetError::Schema(format!(
@@ -327,7 +336,7 @@ impl CityParquetSchema {
         geoarrow: bool,
         encoding: GeometryEncoding,
     ) -> Result<Schema> {
-        self.validate()?;
+        self.validate(encoding)?;
 
         let mut fields: Vec<Field> = vec![
             reserved(Field::new("id", DataType::Utf8, false)),
@@ -548,19 +557,79 @@ mod tests {
 
     #[test]
     fn reserved_names_suffix_every_lod_including_zero() {
-        let names = reserved_and_geometry_column_names(&[Lod::parse("0").unwrap()]);
+        let names =
+            reserved_and_geometry_column_names(&[Lod::parse("0").unwrap()], GeometryEncoding::Wkb);
         assert!(names.contains("geometry_lod0_0"));
         assert!(names.contains("geometry_properties_lod0_0"));
         assert!(names.contains("material_lod0_0"));
         assert!(names.contains("texture_lod0_0"));
         assert!(!names.contains("geometry"));
         // A mixed schema reserves every LoD's suffixed forms.
-        let mixed = reserved_and_geometry_column_names(&[
-            Lod::parse("0").unwrap(),
-            Lod::parse("2").unwrap(),
-        ]);
+        let mixed = reserved_and_geometry_column_names(
+            &[Lod::parse("0").unwrap(), Lod::parse("2").unwrap()],
+            GeometryEncoding::Wkb,
+        );
         assert!(mixed.contains("geometry_lod0_0"));
         assert!(mixed.contains("geometry_lod2_0"));
+    }
+
+    /// RED-covering the reviewer-found bug: `geometry_vertices_lod*` must be
+    /// reserved ONLY under `ArrowNative` (that column doesn't exist under
+    /// `Wkb`, so an attribute genuinely named e.g. `geometry_vertices_lod2_2`
+    /// must survive as a normal typed WKB attribute, not get silently
+    /// diverted purely because of its name) — proven both at the
+    /// `reserved_and_geometry_column_names` level and through
+    /// `validate`/`to_arrow_schema_tagged` end to end.
+    #[test]
+    fn geometry_vertices_name_is_reserved_only_for_arrow_native() {
+        let lod = Lod::parse("2.2").unwrap();
+
+        let wkb_names = reserved_and_geometry_column_names(&[lod], GeometryEncoding::Wkb);
+        assert!(
+            !wkb_names.contains("geometry_vertices_lod2_2"),
+            "the vertices sibling column doesn't exist under Wkb, so its name must not be reserved"
+        );
+
+        let arrow_native_names =
+            reserved_and_geometry_column_names(&[lod], GeometryEncoding::ArrowNative);
+        assert!(
+            arrow_native_names.contains("geometry_vertices_lod2_2"),
+            "the vertices sibling column exists under ArrowNative, so its name must be reserved"
+        );
+
+        // End to end: a schema with an attribute literally named
+        // `geometry_vertices_lod2_2` still validates and renders under Wkb
+        // (untouched WKB path)...
+        let schema_with_colliding_name = CityParquetSchema {
+            lods: vec![lod],
+            attributes: vec![(
+                "geometry_vertices_lod2_2".to_string(),
+                AttributeType::String,
+            )],
+            crs: None,
+        };
+        let wkb_schema = schema_with_colliding_name
+            .to_arrow_schema_tagged(false, GeometryEncoding::Wkb)
+            .expect(
+                "an attribute literally named geometry_vertices_lod2_2 must remain a normal \
+                 typed attribute under Wkb, since that column name doesn't exist there",
+            );
+        let attr_field = wkb_schema
+            .field_with_name("geometry_vertices_lod2_2")
+            .unwrap();
+        assert_eq!(
+            attr_field.metadata().get(ROLE_KEY).map(String::as_str),
+            Some(ROLE_ATTRIBUTE),
+            "the colliding name must render as a normal attribute column under Wkb, not be \
+             swallowed by a reserved geometry_vertices column"
+        );
+
+        // ...but is a hard collision error under ArrowNative, since the
+        // sibling column is real there.
+        let err = schema_with_colliding_name
+            .to_arrow_schema_tagged(false, GeometryEncoding::ArrowNative)
+            .unwrap_err();
+        assert!(matches!(err, CityParquetError::Schema(_)));
     }
 
     #[test]
@@ -1084,6 +1153,33 @@ mod tests {
             .field_with_name("geometry_vertices_lod2_2")
             .expect("arrow-native encoding must add a geometry_vertices_lod* sibling column");
         assert_eq!(vertices.data_type(), &arrow_native_vertices_data_type());
+
+        // The sibling sits immediately after its geometry column (spec
+        // "Per-LoD columns" grouping: geometry_lodX, then whatever decorates
+        // it, before geometry_properties_lodX).
+        let names: Vec<&str> = arrow_schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        let geom_pos = names.iter().position(|n| *n == "geometry_lod2_2").unwrap();
+        assert_eq!(
+            names[geom_pos + 1],
+            "geometry_vertices_lod2_2",
+            "the vertices sibling must come immediately after its geometry column"
+        );
+
+        // Reserved-role + LoD metadata, matching the geometry column's own.
+        assert_eq!(
+            vertices.metadata().get(ROLE_KEY).map(String::as_str),
+            Some(ROLE_RESERVED),
+            "geometry_vertices_lod2_2 must be tagged reserved, like every other geometry column"
+        );
+        assert_eq!(
+            vertices.metadata().get(LOD_KEY).map(String::as_str),
+            Some("2.2"),
+            "geometry_vertices_lod2_2 must carry the LoD metadata its geometry column carries"
+        );
 
         // WKB encoding (default) must NOT gain a vertices sibling.
         let wkb_schema = schema

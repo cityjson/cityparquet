@@ -4,9 +4,12 @@ use crate::error::{CityParquetError, Result};
 
 /// Which physical Arrow encoding a `geometry_lod*` column uses. `Wkb` is the
 /// only encoding CityParquet supports normatively today; `ArrowNative` is the
-/// experimental alternative from the `arrow-native-type` branch (see
-/// `docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`) —
-/// nested indexed `List`/`Struct` columns instead of a WKB `BLOB`.
+/// experimental alternative from the `arrow-native-type` branch (design doc
+/// in the PARENT workspace repo, at
+/// `docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md` —
+/// i.e. `../docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`
+/// relative to this `cityparquet-rs` repo's own root) — nested indexed
+/// `List`/`Struct` columns instead of a WKB `BLOB`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GeometryEncoding {
     #[default]

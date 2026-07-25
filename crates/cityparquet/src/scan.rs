@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cityparquet_schema::{
     AttributeInferer, CITYPARQUET_VERSION, CityColumnEntry, CityMetadata, CityParquetError,
-    CityParquetSchema, ExtensionRegistry, GeoColumnEntry, GeoMetadata, Lod, ModuleKey,
-    ModuleKeyResolver, Result, SourceFormat as SchemaSourceFormat, geometry_column_name,
+    CityParquetSchema, ExtensionRegistry, GeoColumnEntry, GeoMetadata, GeometryEncoding, Lod,
+    ModuleKey, ModuleKeyResolver, Result, SourceFormat as SchemaSourceFormat, geometry_column_name,
     normalise_attribute_name,
 };
 
@@ -367,7 +367,12 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
     // would be circular), so it is rejected outright — the same error
     // `CityParquetSchema::validate` would raise for any other undiverted
     // collision, just caught here before it ever reaches the schema.
-    let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&lods);
+    // Hardcoded to `Wkb`: `scan` has no `GeometryEncoding` in scope yet —
+    // `ConvertOptions` doesn't carry a chosen encoding until Task 2/3 lands
+    // it, at which point this should reserve/divert against the real
+    // dataset-wide encoding the conversion will actually write.
+    let reserved =
+        cityparquet_schema::model::reserved_and_geometry_column_names(&lods, GeometryEncoding::Wkb);
     let mut attributes = Vec::new();
     let mut diverted_attribute_names = BTreeSet::new();
     for (name, ty) in inferer.finish() {
@@ -472,7 +477,13 @@ impl ScanResult {
         }
 
         // Divert attributes that collide with the now-reserved suffixed names.
-        let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&self.lods);
+        // Hardcoded to `Wkb` — same rationale as the other call site above:
+        // no real `GeometryEncoding` in scope until Task 2/3 threads
+        // `ConvertOptions.geometry_encoding` through here.
+        let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(
+            &self.lods,
+            GeometryEncoding::Wkb,
+        );
         let mut kept = Vec::with_capacity(self.schema.attributes.len());
         for (name, ty) in std::mem::take(&mut self.schema.attributes) {
             if reserved.contains(&name) {
