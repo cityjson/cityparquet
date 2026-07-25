@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use cityparquet::scan::{city_and_geo_for_file, scan};
 use cityparquet::source::Source;
+use cityparquet_schema::GeometryEncoding;
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -194,7 +195,8 @@ fn delft_city_and_geo_for_file_has_independent_primaries() {
         "delft is Building-only: exactly one module's worth of geometry"
     );
     let per_lod = s.module_geo.values().next().unwrap();
-    let (columns, primary_column, geo) = city_and_geo_for_file(per_lod, s.crs.as_ref());
+    let (columns, primary_column, geo) =
+        city_and_geo_for_file(per_lod, s.crs.as_ref(), GeometryEncoding::Wkb);
     assert!(!columns.is_empty());
     assert_eq!(
         primary_column.as_deref(),

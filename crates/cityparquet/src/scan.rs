@@ -564,9 +564,18 @@ impl ScanResult {
 /// `city` key to fall back to — the spec's CRS rules "Absent-CRS caveat"
 /// requires a writer to state it explicitly there to avoid silently
 /// mis-georeferencing a projected city model.
+///
+/// `encoding` is the REAL physical [`GeometryEncoding`] this file's geometry
+/// columns were rendered under — it feeds [`CityColumnEntry::new`] directly
+/// (this plan's Task 2) so `city.columns[].encoding` agrees with the Arrow
+/// schema (never hardcoded `"WKB"` regardless of caller). A later task
+/// (this plan's Task 3) also threads it into the GeoParquet-legality check
+/// below — the SAME parameter, not a second one, so the two never diverge on
+/// what encoding this file was actually written under.
 pub fn city_and_geo_for_file(
     per_lod: &std::collections::BTreeMap<Lod, BTreeSet<String>>,
     crs: Option<&serde_json::Value>,
+    encoding: GeometryEncoding,
 ) -> (Vec<CityColumnEntry>, Option<String>, Option<GeoMetadata>) {
     if per_lod.is_empty() {
         return (Vec::new(), None, None);
@@ -579,7 +588,11 @@ pub fn city_and_geo_for_file(
     for (lod, types) in per_lod {
         let name = geometry_column_name("geometry", lod);
         let geometry_types: Vec<String> = types.iter().cloned().collect();
-        columns.push(CityColumnEntry::new(name.clone(), geometry_types.clone()));
+        columns.push(CityColumnEntry::new(
+            name.clone(),
+            geometry_types.clone(),
+            encoding,
+        ));
 
         let legal = types.iter().all(|t| is_geoparquet_legal_type(t));
         if legal {

@@ -99,6 +99,14 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         geoarrow: bool,
 
+        /// Physical geometry column encoding: "wkb" (default, normative) or
+        /// "arrow-native" (experimental nested Arrow List/Struct columns —
+        /// see docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md).
+        /// Only the DECLARED schema responds to this so far (the row-encoder
+        /// still only writes WKB bytes; see `Task 6`).
+        #[arg(long, default_value = "wkb")]
+        geometry_encoding: String,
+
         /// Do NOT synthesise an LoD0 footprint into the primary `geometry`
         /// column for objects lacking a source LoD0. By default a footprint is
         /// derived from the lowest higher LoD (§9 "LoD0 synthesis") so the
@@ -277,6 +285,7 @@ fn main() -> std::process::ExitCode {
             compression,
             ordering,
             geoarrow,
+            geometry_encoding,
             no_lod0,
         } => {
             let preset = match RecipePreset::parse(&recipe) {
@@ -328,6 +337,17 @@ fn main() -> std::process::ExitCode {
                 }
             };
 
+            let geometry_encoding = match geometry_encoding.as_str() {
+                "wkb" => cityparquet_schema::types::GeometryEncoding::Wkb,
+                "arrow-native" => cityparquet_schema::types::GeometryEncoding::ArrowNative,
+                other => {
+                    eprintln!(
+                        "error: --geometry-encoding must be \"wkb\" or \"arrow-native\", got {other:?}"
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+
             let opts = ConvertOptions {
                 input: inputs.first().cloned().unwrap_or_default(),
                 output_dir: output,
@@ -336,6 +356,7 @@ fn main() -> std::process::ExitCode {
                 recipe,
                 ordering,
                 geoarrow,
+                geometry_encoding,
                 generate_lod0: !no_lod0,
                 lod0: cityparquet::lod0::Lod0Options::default(),
             };

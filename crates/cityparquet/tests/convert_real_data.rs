@@ -1404,6 +1404,45 @@ fn geoarrow_opt_in_restores_tag_and_geo_key() {
     );
 }
 
+/// `ConvertOptions::geometry_encoding = ArrowNative` (this plan's Task 2) —
+/// STILL EXPECTED TO FAIL at this stage: only the DECLARED schema
+/// (`CityParquetSchema::to_arrow_schema_tagged`, Task 1) responds to the
+/// chosen encoding so far. `crate::encode`'s row-writer has no arrow-native
+/// row-building path until Task 6, so it still only ever produces WKB bytes
+/// — desyncing the writer's declared (arrow-native) schema from what the
+/// encoded batches actually contain. This test documents that gap; revisit
+/// it once Task 6 lands the matching encoder.
+#[test]
+fn geometry_encoding_arrow_native_writes_nested_geometry_column() {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    opts.geometry_encoding = cityparquet_schema::GeometryEncoding::ArrowNative;
+    opts.overwrite = true;
+    let report = convert(&opts).unwrap();
+    assert!(report.object_count > 0);
+
+    // delft is a single 1st-level family, so by-type conversion writes
+    // exactly one main table: building.parquet (same convention as
+    // `geoarrow_opt_in_restores_tag_and_geo_key` above).
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let schema = builder.schema();
+    // delft carries a real Solid at LoD 1.2/1.3/2.2 (see
+    // `default_convert_writes_geo_key_for_legal_columns_only`'s
+    // `["geometry_lod1_2", "geometry_lod1_3", "geometry_lod2_2"]` loop).
+    let geom_field = schema
+        .field_with_name("geometry_lod1_2")
+        .expect("Solid LoD column");
+    assert_eq!(
+        geom_field.data_type(),
+        &cityparquet_schema::model::arrow_native_geometry_data_type()
+    );
+    assert!(
+        schema.field_with_name("geometry_vertices_lod1_2").is_ok(),
+        "arrow-native encoding must write the vertices sibling column"
+    );
+}
+
 /// A genuinely geometry-less dataset derived from the real `delft.city.jsonl`
 /// by JSON mutation (never hand-written CityJSON, per this file's convention):
 /// every CityObject keeps its type/attributes/parents but loses all

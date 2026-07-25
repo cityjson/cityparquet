@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{CityParquetError, Result};
+use crate::types::GeometryEncoding;
 
 /// CityParquet format version this crate writes (`city.version`) — the
 /// spec's stated draft version (`01-dataset-package.mdx` "Versioning").
@@ -85,7 +86,10 @@ pub enum Orientation3d {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CityColumnEntry {
     pub name: String,
-    /// `"WKB"` — the only encoding CityParquet supports at present.
+    /// `"WKB"` for a normative [`GeometryEncoding::Wkb`] column, or
+    /// `"CityParquetArrowNative-v1"` for the experimental
+    /// [`GeometryEncoding::ArrowNative`] nested-Arrow encoding — see
+    /// [`CityColumnEntry::new`].
     pub encoding: String,
     pub geometry_types: Vec<String>,
     /// PROJJSON; defaults to the file-level `city.crs` when absent.
@@ -103,12 +107,23 @@ pub struct CityColumnEntry {
 }
 
 impl CityColumnEntry {
-    /// A WKB column entry with every optional field absent — the writer
-    /// currently only ever produces right-handed winding.
-    pub fn new(name: impl Into<String>, geometry_types: Vec<String>) -> Self {
+    /// A column entry with every optional field absent — the writer
+    /// currently only ever produces right-handed winding. `encoding` records
+    /// the REAL physical encoding the column was rendered under (spec
+    /// "the footer describes the file it lives in"): `Wkb` ->
+    /// `"WKB"`, `ArrowNative` -> `"CityParquetArrowNative-v1"`.
+    pub fn new(
+        name: impl Into<String>,
+        geometry_types: Vec<String>,
+        encoding: GeometryEncoding,
+    ) -> Self {
         Self {
             name: name.into(),
-            encoding: "WKB".to_string(),
+            encoding: match encoding {
+                GeometryEncoding::Wkb => "WKB",
+                GeometryEncoding::ArrowNative => "CityParquetArrowNative-v1",
+            }
+            .to_string(),
             geometry_types,
             crs: None,
             orientation_3d: Orientation3d::RightHanded,
@@ -279,6 +294,7 @@ mod tests {
             columns: vec![CityColumnEntry::new(
                 "geometry_lod2_2",
                 vec!["MultiPolygon Z".to_string()],
+                GeometryEncoding::Wkb,
             )],
             attributes: vec!["yoc".to_string(), "height".to_string()],
             extensions: None,
@@ -375,9 +391,35 @@ mod tests {
 
     #[test]
     fn orientation_3d_is_always_explicit_right_handed_by_default() {
-        let entry = CityColumnEntry::new("geometry_lod2_2", vec!["MultiPolygon Z".to_string()]);
+        let entry = CityColumnEntry::new(
+            "geometry_lod2_2",
+            vec!["MultiPolygon Z".to_string()],
+            GeometryEncoding::Wkb,
+        );
         let value = serde_json::to_value(&entry).unwrap();
         assert_eq!(value["orientation_3d"], "right-handed");
+    }
+
+    /// RED (this plan's Task 2, step 4b): `CityColumnEntry::new` must record
+    /// the REAL encoding a column was rendered under, not silently hardcode
+    /// `"WKB"` regardless of caller — the footer must agree with the
+    /// physical Arrow schema Task 1 threads `GeometryEncoding` through
+    /// (`CityParquetSchema::to_arrow_schema_tagged`).
+    #[test]
+    fn city_column_entry_records_the_real_encoding_not_always_wkb() {
+        let entry = CityColumnEntry::new(
+            "geometry_lod2_2".to_string(),
+            vec!["Solid".to_string()],
+            GeometryEncoding::ArrowNative,
+        );
+        assert_eq!(entry.encoding, "CityParquetArrowNative-v1");
+
+        let wkb_entry = CityColumnEntry::new(
+            "geometry_lod2_2".to_string(),
+            vec!["MultiPolygon Z".to_string()],
+            GeometryEncoding::Wkb,
+        );
+        assert_eq!(wkb_entry.encoding, "WKB");
     }
 
     /// `source_format` is open-ended: an unrecognised string round-trips as

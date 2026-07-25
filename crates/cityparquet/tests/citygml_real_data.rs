@@ -136,6 +136,7 @@ fn citygml2_solid_building_streams_one_feature() {
 fn citygml2_scan_infers_lod2_and_bbox() {
     use cityparquet::scan::{city_and_geo_for_file, scan};
     use cityparquet::schema::SourceFormat as SchemaSourceFormat;
+    use cityparquet_schema::GeometryEncoding;
 
     let src = source_with_crs(&fixture("b1_lod2_s.gml"));
     let s = scan(&src).unwrap();
@@ -155,7 +156,8 @@ fn citygml2_scan_infers_lod2_and_bbox() {
         "b1_lod2_s is a single Building: exactly one module's worth of geometry"
     );
     let per_lod = s.module_geo.values().next().unwrap();
-    let (_columns, primary_column, _geo) = city_and_geo_for_file(per_lod, s.crs.as_ref());
+    let (_columns, primary_column, _geo) =
+        city_and_geo_for_file(per_lod, s.crs.as_ref(), GeometryEncoding::Wkb);
     assert_eq!(primary_column.as_deref(), Some("geometry_lod2_0"));
     assert_eq!(
         s.base_city_metadata().unwrap().source_format,

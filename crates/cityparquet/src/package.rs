@@ -104,6 +104,15 @@ pub struct ConvertOptions {
     /// `three_d` extension's `ST_3DFromWKB(BLOB)` with zero setup); ON for
     /// GeoPandas/QGIS/GDAL interop.
     pub geoarrow: bool,
+    /// Which physical Arrow encoding `geometry_lod*` columns use. `Wkb` (the
+    /// default) is normative; `ArrowNative` is the experimental
+    /// `arrow-native-type` branch encoding — see
+    /// `docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`.
+    /// Only the DECLARED schema (footer + Arrow `DataType`) responds to this
+    /// so far — the row-encoder (`crate::encode`) still only knows how to
+    /// write WKB bytes, so `ArrowNative` fails at write time until Task 6
+    /// gives it a matching arrow-native row-building path.
+    pub geometry_encoding: GeometryEncoding,
     /// Synthesise an LoD0 footprint into the `geometry_lod0_0` column when an
     /// object has no source LoD0 (§9 "LoD0 synthesis"). A synthesised footprint
     /// is marked in `geometry_properties` and exported with the canonical
@@ -135,6 +144,7 @@ impl ConvertOptions {
             recipe: WriterRecipe::default(),
             ordering: RowOrder::default(),
             geoarrow: false,
+            geometry_encoding: GeometryEncoding::default(),
             // Off here (source-faithful library default); the CLI turns it on.
             generate_lod0: false,
             lod0: Lod0Options::default(),
@@ -657,6 +667,13 @@ struct TableWriters {
     /// collide with a core file) — that is a hard `Schema` error, never a
     /// silent merge of two distinct modules into one table.
     claimed_by: HashMap<String, ModuleKey>,
+    /// The REAL [`GeometryEncoding`] `wide_schema`'s geometry columns were
+    /// rendered under — [`Self::finish`] feeds it to
+    /// [`crate::scan::city_and_geo_for_file`] so each table's
+    /// `city.columns[].encoding` agrees with the physical schema, rather
+    /// than the old hardcoded `"WKB"` regardless of caller (this plan's
+    /// Task 2, step 4b).
+    geometry_encoding: GeometryEncoding,
     writers: Vec<ArrowWriter<fs::File>>,
     /// Per-writer-index projection: `wide_schema` field indices selecting
     /// that table's own pruned column set, in that table's own column order
@@ -693,6 +710,7 @@ impl TableWriters {
         base_city: CityMetadata,
         attributes: Vec<(String, AttributeType)>,
         force_identity_projection: bool,
+        geometry_encoding: GeometryEncoding,
     ) -> Result<Self> {
         Ok(Self {
             tmp_dir: tmp_dir.to_path_buf(),
@@ -700,6 +718,7 @@ impl TableWriters {
             module_lods_by_file,
             module_geo_by_file,
             base_city,
+            geometry_encoding,
             attributes,
             force_identity_projection,
             props,
@@ -860,7 +879,7 @@ impl TableWriters {
         for (name, writer) in self.order.iter().zip(self.writers.iter_mut()) {
             let per_lod = self.module_geo_by_file.get(name).unwrap_or(&empty);
             let (columns, primary_column, geo) =
-                city_and_geo_for_file(per_lod, self.base_city.crs.as_ref());
+                city_and_geo_for_file(per_lod, self.base_city.crs.as_ref(), self.geometry_encoding);
             let mut city = self.base_city.clone();
             city.columns = columns;
             city.primary_column = primary_column;
@@ -924,6 +943,7 @@ fn write_package(
         // per-module) carries no geometry columns. Identity projection is a
         // test-only escape — see `TableWriters::force_identity_projection`.
         false,
+        opts.geometry_encoding,
     )?;
 
     // `RowOrder::Hilbert` buffers every feature and re-sorts it BEFORE
@@ -1223,14 +1243,18 @@ pub(crate) fn convert_source_impl(
     // from this one `to_arrow_schema_tagged` call, never hand-duplicated —
     // and it must use the SAME `opts.geoarrow` flag `encode`/`encode_buffered`
     // feed their batch schema, or Arrow rejects the batches at write time.
-    // Hardcoded to `Wkb`: `encode`/`encode_buffered` (called below) only ever
-    // write WKB geometry — this crate's writer has no arrow-native path
-    // until Task 6 lands, so passing anything else here would desync the
-    // declared schema from what the batches actually contain.
+    // `opts.geometry_encoding` (this plan's Task 2) is the DECLARED schema
+    // only — `encode`/`encode_buffered` (called below) still only ever know
+    // how to WRITE WKB geometry bytes (this crate's row-writer has no
+    // arrow-native row-building path until Task 6 lands), so choosing
+    // `GeometryEncoding::ArrowNative` here desyncs the declared writer
+    // schema from what the batches actually contain and `write_batch` below
+    // fails at write time — expected and tracked until Task 6 gives the
+    // encoder a matching arrow-native path.
     let arrow_schema = Arc::new(
         scan_result
             .schema
-            .to_arrow_schema_tagged(opts.geoarrow, GeometryEncoding::Wkb)?,
+            .to_arrow_schema_tagged(opts.geoarrow, opts.geometry_encoding)?,
     );
     // `city`/`geo` footer key-value metadata is NOT built here any more
     // (spec-alignment M3, per-module footer emission): each by-module
@@ -1350,6 +1374,7 @@ mod tests {
             CityMetadata::new(),
             Vec::new(),
             true,
+            GeometryEncoding::Wkb,
         )
         .unwrap()
     }
