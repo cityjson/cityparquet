@@ -263,4 +263,177 @@ mod tests {
         let decoded_out = super::decode_row(geometry, vertices, 0, "Solid").unwrap();
         assert_eq!(decoded_out, decoded_in);
     }
+
+    /// Codex review finding (Important): the test above round-trips through
+    /// `ArrowGeomBuilders`, but `push_padded_solid` (arrow_geom_write.rs)
+    /// always writes exactly ONE physical shell — Task 4's
+    /// `geometry_to_compacted` has already flattened a real `Solid`'s
+    /// multiple shells into one face list before `ArrowGeomBuilders` ever
+    /// sees it. So that test can never exercise `flatten_shells`'s loop over
+    /// more than one shell; an implementation that silently dropped every
+    /// shell after the first would still pass it.
+    ///
+    /// This test instead hand-builds the raw 5-level Arrow arrays directly
+    /// (the same `OffsetBuffer`/`ListArray::new` primitives
+    /// `ArrowGeomBuilders::finish` uses), bypassing the builder entirely, so
+    /// the SHELL-level array genuinely has `len() == 2` — a shape the schema
+    /// permits even though today's writer never produces it. `decode_row`
+    /// must still recover faces from both shells, because a reader has to
+    /// handle whatever the declared column type allows, not only whatever
+    /// today's writer happens to emit.
+    #[test]
+    fn decode_row_flattens_multiple_physical_shells_not_just_the_first() {
+        use arrow_array::{ArrayRef, Float64Array, Int32Array, ListArray, StructArray};
+        use arrow_buffer::{NullBuffer, OffsetBuffer};
+        use arrow_schema::{DataType, FieldRef};
+        use std::sync::Arc;
+
+        /// Peels the five `List` item fields off the declared schema type
+        /// itself (mirrors `arrow_geom_write::geometry_item_fields`, which
+        /// is private to that module) so this hand-built array cannot drift
+        /// from the real column type.
+        fn geometry_item_fields() -> [FieldRef; 5] {
+            let mut data_type = cityparquet_schema::model::arrow_native_geometry_data_type();
+            let mut items = Vec::with_capacity(5);
+            for _ in 0..5 {
+                match data_type {
+                    DataType::List(item) => {
+                        data_type = item.data_type().clone();
+                        items.push(item);
+                    }
+                    other => panic!(
+                        "arrow_native_geometry_data_type must be 5 nested Lists, got {other:?}"
+                    ),
+                }
+            }
+            items
+                .try_into()
+                .expect("the loop above pushes exactly 5 items")
+        }
+
+        fn vertices_item_field() -> FieldRef {
+            match cityparquet_schema::model::arrow_native_vertices_data_type() {
+                DataType::List(item) => item,
+                other => panic!("arrow_native_vertices_data_type must be a List, got {other:?}"),
+            }
+        }
+
+        let [
+            solid_field,
+            shell_field,
+            face_field,
+            ring_field,
+            index_field,
+        ] = geometry_item_fields();
+
+        // One row, one solid, TWO physical shells: shell 0 -> face [0,1,2],
+        // shell 1 -> face [3,4,5]. Built bottom-up, exactly like
+        // `ArrowGeomBuilders::finish`, but with `shell_lengths = [1, 1]`
+        // (two shell-level list entries) instead of the builder's always-one.
+        let indices: ArrayRef = Arc::new(Int32Array::from(vec![0, 1, 2, 3, 4, 5]));
+        let rings = ListArray::new(
+            index_field,
+            OffsetBuffer::from_lengths([3usize, 3]), // 2 rings, 3 indices each
+            indices,
+            None,
+        );
+        let faces = ListArray::new(
+            ring_field,
+            OffsetBuffer::from_lengths([1usize, 1]), // 2 faces, 1 ring each
+            Arc::new(rings),
+            None,
+        );
+        let shells = ListArray::new(
+            face_field,
+            OffsetBuffer::from_lengths([1usize, 1]), // 2 SHELLS, 1 face each — the case under test
+            Arc::new(faces),
+            None,
+        );
+        let solids = ListArray::new(
+            shell_field,
+            OffsetBuffer::from_lengths([2usize]), // 1 solid, spanning both shells
+            Arc::new(shells),
+            None,
+        );
+        let geometry = ListArray::new(
+            solid_field,
+            OffsetBuffer::from_lengths([1usize]), // 1 row, 1 solid
+            Arc::new(solids),
+            Some(NullBuffer::from(vec![true])),
+        );
+
+        // Matching 6-entry vertex pool for the 6 distinct indices used above.
+        let xs = Float64Array::from(vec![0.0, 1.0, 0.0, 0.0, 1.0, 0.0]);
+        let ys = Float64Array::from(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+        let zs = Float64Array::from(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        let coord_fields = match vertices_item_field().data_type() {
+            DataType::Struct(fields) => fields.clone(),
+            other => panic!("expected Struct, got {other:?}"),
+        };
+        let coords = StructArray::new(
+            coord_fields,
+            vec![Arc::new(xs), Arc::new(ys), Arc::new(zs)],
+            None,
+        );
+        let vertices = ListArray::new(
+            vertices_item_field(),
+            OffsetBuffer::from_lengths([6usize]),
+            Arc::new(coords),
+            Some(NullBuffer::from(vec![true])),
+        );
+
+        let decoded = super::decode_row(&geometry, &vertices, 0, "Solid").unwrap();
+        match decoded.kind {
+            DecodedKind::PolyhedralSurface(faces) => {
+                assert_eq!(
+                    faces,
+                    vec![vec![vec![0, 1, 2]], vec![vec![3, 4, 5]]],
+                    "must include faces from BOTH physical shells, not just shell 0"
+                );
+            }
+            other => panic!("expected PolyhedralSurface, got {other:?}"),
+        }
+    }
+
+    /// Codex review finding (Minor): `MultiSolid`/`CompositeSolid` dispatch
+    /// had no test in this module. Two members with distinct indices and
+    /// different face counts (1 face vs. 2 faces) — proves each member keeps
+    /// its own indices and its own face list, with no cross-contamination.
+    #[test]
+    fn decode_row_multisolid_round_trips_with_distinct_members() {
+        let decoded_in = DecodedGeometry {
+            coords: vec![
+                // member 0: a single triangle.
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                // member 1: two triangles sharing an edge.
+                [5.0, 5.0, 5.0],
+                [6.0, 5.0, 5.0],
+                [5.0, 6.0, 5.0],
+                [5.0, 5.0, 6.0],
+            ],
+            kind: DecodedKind::GeometryCollection(vec![
+                DecodedKind::PolyhedralSurface(vec![vec![vec![0, 1, 2]]]),
+                DecodedKind::PolyhedralSurface(vec![vec![vec![3, 4, 5]], vec![vec![3, 4, 6]]]),
+            ]),
+        };
+        let mut b = ArrowGeomBuilders::new();
+        b.append_value(&decoded_in);
+        let (geometry, vertices) = b.finish();
+        let geometry = geometry
+            .as_any()
+            .downcast_ref::<arrow_array::ListArray>()
+            .unwrap();
+        let vertices = vertices
+            .as_any()
+            .downcast_ref::<arrow_array::ListArray>()
+            .unwrap();
+
+        let decoded_out = super::decode_row(geometry, vertices, 0, "MultiSolid").unwrap();
+        assert_eq!(
+            decoded_out, decoded_in,
+            "each member must keep its own indices/face count, no cross-contamination"
+        );
+    }
 }
