@@ -28,10 +28,12 @@ use cityparquet_schema::{
 };
 
 use crate::appearance::AppearanceInterner;
+use crate::arrow_geom_write::{ArrowGeomBuilders, geometry_to_compacted};
 use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder};
 use crate::scan::ScanResult;
 use crate::source::{FeatureIter, Source};
-use crate::wkb_write::{VertexPool, WkbOutcome, geometry_to_wkb, point_to_wkb};
+use crate::wkb_read::DecodedGeometry;
+use crate::wkb_write::{VertexPool, geometry_to_wkb, point_to_wkb};
 
 /// CityObject members carried by a dedicated column, and therefore stripped
 /// from the catch-all `other` column (§5.1, G9). `children_roles` has its own
@@ -673,14 +675,50 @@ struct GeometryAccumulator {
     own_bbox: Option<[f64; 6]>,
 }
 
-/// One geometry slot's per-object payload: WKB, its typed
+/// One geometry's encoded payload, in whichever physical shape
+/// [`GeometryEncoding`] the dataset renders under (this plan's Task 6) — the
+/// `RowWriter` this feeds is built for exactly one encoding for its whole
+/// lifetime (see [`RowWriter::new`]), so every [`GeometrySlotData`] a given
+/// `RowWriter` ever sees carries the SAME variant here as its
+/// [`GeometryBuilder`] slot.
+enum GeometryPayload {
+    Wkb(Vec<u8>),
+    ArrowNative(DecodedGeometry),
+}
+
+/// One geometry slot's per-object payload: its encoded geometry, typed
 /// `geometry_properties` struct value, and the `material`/`texture` JSON
 /// maps that decorate it.
 struct GeometrySlotData {
-    bytes: Vec<u8>,
+    payload: GeometryPayload,
     properties: GeometryProperties,
     material: Option<Value>,
     texture: Option<Value>,
+}
+
+/// Computes the same `[xmin,ymin,zmin,xmax,ymax,zmax]` shape
+/// [`crate::wkb_write::WkbOutcome::bbox`] provides, from a
+/// [`DecodedGeometry`]'s coords — used by the arrow-native path in place of
+/// `wkb_write`'s own bbox accumulator, which is private to that module and
+/// WKB-shaped (accumulates while writing bytes) rather than reusable
+/// standalone. `decoded.coords` is never empty here: [`geometry_to_compacted`]
+/// only ever returns `Some` when it collected at least one coordinate.
+fn bbox_of(decoded: &DecodedGeometry) -> [f64; 6] {
+    let mut b = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for c in &decoded.coords {
+        for i in 0..3 {
+            b[i] = b[i].min(c[i]);
+            b[i + 3] = b[i + 3].max(c[i]);
+        }
+    }
+    b
 }
 
 /// This feature's local material definitions, from `feature.appearance`
@@ -735,14 +773,24 @@ pub(crate) struct LocalDefs<'a> {
 ///
 /// `context` names the geometry in any interner error surfaced (e.g.
 /// `"object abc123"` or `"geometry template 0"`).
+///
+/// `dropped_surfaces` are the writer-dropped flat surface positions (see
+/// [`crate::wkb_write::WkbOutcome::dropped_surfaces`]) — under
+/// [`GeometryEncoding::Wkb`] the caller passes the real ones straight from
+/// its `WkbOutcome`; under [`GeometryEncoding::ArrowNative`] the caller
+/// currently always passes `&[]`, because [`geometry_to_compacted`] reuses
+/// the same ring/surface normalisation internally but does not (yet) surface
+/// which positions it dropped — so an arrow-native geometry with a genuinely
+/// degenerate surface gets no realignment here (a known, documented gap; see
+/// [`accumulate_geometry`]'s arrow-native branch).
 pub(crate) fn rewrite_geometry_appearance(
     geom: &Geometry,
-    outcome: &WkbOutcome,
+    dropped_surfaces: &[usize],
     interner: &mut AppearanceInterner,
     defs: &LocalDefs,
     context: &str,
 ) -> Result<(Option<Value>, Option<Value>, GeometryProperties)> {
-    let has_drops = !outcome.dropped_surfaces.is_empty();
+    let has_drops = !dropped_surfaces.is_empty();
     let realign = drops_align_with_surface_arrays(&geom.thetype) && has_drops;
     let solid_depth = has_drops
         .then(|| solid_face_nesting_depth(&geom.thetype))
@@ -752,9 +800,9 @@ pub(crate) fn rewrite_geometry_appearance(
         Some(material) => {
             let mut material = serde_json::to_value(material)?;
             if realign {
-                realign_appearance_themes(&mut material, &outcome.dropped_surfaces);
+                realign_appearance_themes(&mut material, dropped_surfaces);
             } else if let Some(depth) = solid_depth {
-                realign_nested_appearance_themes(&mut material, depth, &outcome.dropped_surfaces);
+                realign_nested_appearance_themes(&mut material, depth, dropped_surfaces);
             }
             let material = interner
                 .rewrite_material_map(&material, defs.materials)
@@ -772,9 +820,9 @@ pub(crate) fn rewrite_geometry_appearance(
         Some(texture) => {
             let mut texture = serde_json::to_value(texture)?;
             if realign {
-                realign_appearance_themes(&mut texture, &outcome.dropped_surfaces);
+                realign_appearance_themes(&mut texture, dropped_surfaces);
             } else if let Some(depth) = solid_depth {
-                realign_nested_appearance_themes(&mut texture, depth, &outcome.dropped_surfaces);
+                realign_nested_appearance_themes(&mut texture, depth, dropped_surfaces);
             }
             let texture = interner
                 .rewrite_texture_map(&texture, defs.textures, defs.uvs)
@@ -788,7 +836,7 @@ pub(crate) fn rewrite_geometry_appearance(
         None => None,
     };
 
-    let props = compute_geometry_properties(geom, &outcome.dropped_surfaces)?;
+    let props = compute_geometry_properties(geom, dropped_surfaces)?;
     Ok((material, texture, props))
 }
 
@@ -805,6 +853,14 @@ pub(crate) fn rewrite_geometry_appearance(
 /// the feature carries no matching appearance block at all, so the defs'
 /// slices are empty) — dangling local indices must never silently survive
 /// into the dataset-global rewrite.
+///
+/// `encoding` picks which physical payload every produced [`GeometrySlotData`]
+/// carries (this plan's Task 6): [`GeometryEncoding::Wkb`] runs the original
+/// `geometry_to_wkb` pipeline unchanged; [`GeometryEncoding::ArrowNative`]
+/// runs [`geometry_to_compacted`] instead. Must be the SAME encoding the
+/// calling `RowWriter`'s slots were built for, or [`RowWriter::push_object`]'s
+/// payload/builder match panics (`GeometryBuilder`/`GeometryPayload` variant
+/// mismatch) — see [`RowWriter::new`].
 #[allow(clippy::too_many_arguments)]
 fn accumulate_geometry(
     acc: &mut GeometryAccumulator,
@@ -815,6 +871,7 @@ fn accumulate_geometry(
     interner: &mut AppearanceInterner,
     defs: &LocalDefs,
     id: &str,
+    encoding: GeometryEncoding,
 ) -> Result<()> {
     let Some(geoms) = &co.geometry else {
         return Ok(());
@@ -827,24 +884,56 @@ fn accumulate_geometry(
             continue;
         }
 
-        let Some(outcome) = geometry_to_wkb(geom, pool)? else {
-            continue;
+        let (payload, bbox, dropped_rings, dropped_surfaces): (
+            GeometryPayload,
+            [f64; 6],
+            usize,
+            Vec<usize>,
+        ) = match encoding {
+            GeometryEncoding::Wkb => {
+                let Some(outcome) = geometry_to_wkb(geom, pool)? else {
+                    continue;
+                };
+                (
+                    GeometryPayload::Wkb(outcome.bytes),
+                    outcome.bbox,
+                    outcome.dropped_rings,
+                    outcome.dropped_surfaces,
+                )
+            }
+            GeometryEncoding::ArrowNative => {
+                let Some(decoded) = geometry_to_compacted(geom, pool)? else {
+                    continue;
+                };
+                let bbox = bbox_of(&decoded);
+                // `geometry_to_compacted` reuses the same ring/surface
+                // normalisation `geometry_to_wkb` uses internally, but does
+                // not (yet) surface how much it dropped — so both
+                // diagnostics below are under-reported (never
+                // over-reported) for this encoding. See
+                // `rewrite_geometry_appearance`'s doc comment for the same
+                // gap's effect on material/texture/semantics realignment.
+                // Extend `geometry_to_compacted`'s return type with a
+                // `Drops` (mirroring `WkbOutcome`) if a later task's
+                // round-trip proof needs exact parity here.
+                (GeometryPayload::ArrowNative(decoded), bbox, 0, Vec::new())
+            }
         };
         // Row bbox deliberately covers ALL of the object's analysis geometry,
         // including a duplicate-(object, LoD) geometry that is later skipped
         // (§10, G10): the object occupies that extent, and a superset bbox can
         // only cause false-positive reads, never false-negative pruning.
-        union_bbox(&mut acc.own_bbox, outcome.bbox);
+        union_bbox(&mut acc.own_bbox, bbox);
 
-        // Every geometry reaching here is a non-instance that produced WKB
-        // (instances are routed to `template` above). For a `ScanResult` that
-        // matches this `Source`, [`crate::scan`] guarantees such a geometry
-        // carries a valid lod and that the dataset is therefore per-LoD — so
-        // both a missing/unparseable lod and `per_lod == false` mean the scan
-        // does not match the source (`encode` is public and takes an
-        // independent scan; a Seq file is also reopened between the scan and
-        // encode passes). Reject rather than silently drop or misplace the
-        // geometry.
+        // Every geometry reaching here is a non-instance that produced a
+        // payload (instances are routed to `template` above). For a
+        // `ScanResult` that matches this `Source`, [`crate::scan`] guarantees
+        // such a geometry carries a valid lod and that the dataset is
+        // therefore per-LoD — so both a missing/unparseable lod and
+        // `per_lod == false` mean the scan does not match the source
+        // (`encode` is public and takes an independent scan; a Seq file is
+        // also reopened between the scan and encode passes). Reject rather
+        // than silently drop or misplace the geometry.
         let lod = match geom.lod.as_deref().and_then(|s| Lod::parse(s).ok()) {
             Some(lod) if per_lod => lod,
             _ => {
@@ -863,8 +952,8 @@ fn accumulate_geometry(
 
         // Counted over STORED geometries only, so the totals describe the
         // data downstream actually sees.
-        stats.degenerate_rings_dropped += outcome.dropped_rings;
-        stats.degenerate_surfaces_dropped += outcome.dropped_surfaces.len();
+        stats.degenerate_rings_dropped += dropped_rings;
+        stats.degenerate_surfaces_dropped += dropped_surfaces.len();
 
         // Writer owns consistency: per-surface appearance arrays must index
         // the STORED surfaces, so the writer-dropped positions are removed
@@ -872,8 +961,13 @@ fn accumulate_geometry(
         // indices are rewritten to dataset-global ids — both handled by the
         // shared pipeline in `rewrite_geometry_appearance` (also used by the
         // geometry-templates sidecar, see its doc comment).
-        let (material, texture, props) =
-            rewrite_geometry_appearance(geom, &outcome, interner, defs, &format!("object {id}"))?;
+        let (material, texture, props) = rewrite_geometry_appearance(
+            geom,
+            &dropped_surfaces,
+            interner,
+            defs,
+            &format!("object {id}"),
+        )?;
 
         // The LoD lives only in the column name (spec "Levels of detail") —
         // every geometry column, including LoD0, is suffixed, so there is no
@@ -881,7 +975,7 @@ fn accumulate_geometry(
         acc.slots.insert(
             slot_key,
             GeometrySlotData {
-                bytes: outcome.bytes,
+                payload,
                 properties: props,
                 material,
                 texture,
@@ -901,10 +995,17 @@ fn accumulate_geometry(
 /// (spec "LoD0 synthesis"): `geometry_properties`'s struct shape has no slot
 /// for it. `None` when the object has no footprint-able geometry or no
 /// acceptable ground is found.
+///
+/// `encoding` picks the returned slot's [`GeometryPayload`] variant, exactly
+/// like [`accumulate_geometry`]'s own `encoding` parameter — a synthesised
+/// footprint is just another `geometry_lod0_0` slot value, so it must match
+/// whichever encoding the rest of this `RowWriter`'s slots use (this plan's
+/// Task 6; see [`RowWriter::push_object`]'s call site).
 fn synthesize_footprint(
     co: &CityObject,
     pool: &VertexPool,
     opts: &crate::lod0::Lod0Options,
+    encoding: GeometryEncoding,
 ) -> Result<Option<(GeometrySlotData, [f64; 6], String)>> {
     use crate::lod0::{faces_from_geometry, footprint_to_geometry, synthesize_lod0};
 
@@ -947,19 +1048,43 @@ fn synthesize_footprint(
     };
     let (verts, ms) = footprint_to_geometry(&fp);
     let raw = VertexPool::raw(&verts);
-    let Some(outcome) = geometry_to_wkb(&ms, &raw)? else {
-        return Ok(None);
+
+    let (payload, bbox, dropped_surfaces): (GeometryPayload, [f64; 6], Vec<usize>) = match encoding
+    {
+        GeometryEncoding::Wkb => {
+            let Some(outcome) = geometry_to_wkb(&ms, &raw)? else {
+                return Ok(None);
+            };
+            (
+                GeometryPayload::Wkb(outcome.bytes),
+                outcome.bbox,
+                outcome.dropped_surfaces,
+            )
+        }
+        GeometryEncoding::ArrowNative => {
+            let Some(decoded) = geometry_to_compacted(&ms, &raw)? else {
+                return Ok(None);
+            };
+            let bbox = bbox_of(&decoded);
+            // `geometry_to_compacted` does not surface dropped-surface
+            // positions (see `accumulate_geometry`'s arrow-native branch),
+            // but `&[]` is exact here rather than an approximation:
+            // `footprint_to_geometry` already drops any collapsed ring/face
+            // itself (its own de-dup pass), so neither encoder ever sees a
+            // degenerate surface to drop from a synthesised footprint.
+            (GeometryPayload::ArrowNative(decoded), bbox, Vec::new())
+        }
     };
 
-    let props = compute_geometry_properties(&ms, &outcome.dropped_surfaces)?;
+    let props = compute_geometry_properties(&ms, &dropped_surfaces)?;
     let data = GeometrySlotData {
-        bytes: outcome.bytes,
+        payload,
         properties: props,
         material: None,
         texture: None,
     };
     let source_column = geometry_column_name("geometry", &source_lod);
-    Ok(Some((data, outcome.bbox, source_column)))
+    Ok(Some((data, bbox, source_column)))
 }
 
 /// One typed builder per inferred attribute column.
@@ -1096,13 +1221,24 @@ fn push_attribute_value(
     Ok(())
 }
 
-/// The four columns of a single LoD (or the un-suffixed set when the dataset
-/// has no LoDs): geometry WKB, geometry_properties, material, texture (§9,
-/// §11.1). Appearance builders live here so a LoD's appearance is paired to
-/// its geometry by the shared column suffix, never by a JSON key.
+/// The geometry-column builder for one [`GeometrySlot`], in whichever shape
+/// this `RowWriter`'s [`GeometryEncoding`] renders (this plan's Task 6): a
+/// plain WKB `BinaryBuilder`, or the arrow-native nested-List builder pair
+/// wrapped by [`ArrowGeomBuilders`]. Every [`GeometrySlot`] in a given
+/// `RowWriter` carries the SAME variant — see [`RowWriter::new`].
+enum GeometryBuilder {
+    Wkb(BinaryBuilder),
+    ArrowNative(ArrowGeomBuilders),
+}
+
+/// The columns of a single LoD (or the un-suffixed set when the dataset has
+/// no LoDs): geometry (WKB or arrow-native), geometry_properties, material,
+/// texture (§9, §11.1). Appearance builders live here so a LoD's appearance
+/// is paired to its geometry by the shared column suffix, never by a JSON
+/// key.
 struct GeometrySlot {
     key: String,
-    geometry: BinaryBuilder,
+    geometry: GeometryBuilder,
     properties: GeometryPropertiesBuilder,
     material: StringBuilder,
     texture: StringBuilder,
@@ -1125,6 +1261,11 @@ struct RowWriter {
     bbox_cols: [Vec<f64>; 6],
     bbox_nulls: NullBufferBuilder,
     per_lod: bool,
+    /// The [`GeometryEncoding`] every [`GeometrySlot`] in [`Self::geometry_slots`]
+    /// was built for (this plan's Task 6) — read from [`ScanResult::encoding`]
+    /// in [`Self::new`], never re-derived, so it can never desync from the
+    /// schema `encode`/`encode_buffered` declared for the SAME `ScanResult`.
+    encoding: GeometryEncoding,
     geometry_slots: Vec<GeometrySlot>,
     template_id: StringBuilder,
     template_point: BinaryBuilder,
@@ -1152,9 +1293,15 @@ struct RowWriter {
 impl RowWriter {
     fn new(scan: &ScanResult) -> Self {
         let per_lod = !scan.lods.is_empty();
+        let encoding = scan.encoding();
         let new_slot = |key: String| GeometrySlot {
             key,
-            geometry: BinaryBuilder::new(),
+            geometry: match encoding {
+                GeometryEncoding::Wkb => GeometryBuilder::Wkb(BinaryBuilder::new()),
+                GeometryEncoding::ArrowNative => {
+                    GeometryBuilder::ArrowNative(ArrowGeomBuilders::new())
+                }
+            },
             properties: GeometryPropertiesBuilder::new(),
             material: StringBuilder::new(),
             texture: StringBuilder::new(),
@@ -1187,6 +1334,7 @@ impl RowWriter {
             bbox_cols: Default::default(),
             bbox_nulls: NullBufferBuilder::new(0),
             per_lod,
+            encoding,
             geometry_slots,
             template_id: StringBuilder::new(),
             template_point: BinaryBuilder::new(),
@@ -1403,6 +1551,7 @@ impl RowWriter {
             interner,
             &defs,
             id,
+            self.encoding,
         )?;
 
         // Synthesise an LoD0 footprint into the `geometry_lod0_0` slot when
@@ -1415,7 +1564,8 @@ impl RowWriter {
                 .expect("literal 0 is a valid LoD")
                 .column_suffix();
             if !acc.slots.contains_key(&key)
-                && let Some((data, bbox, source_column)) = synthesize_footprint(co, &pool, opts)?
+                && let Some((data, bbox, source_column)) =
+                    synthesize_footprint(co, &pool, opts, self.encoding)?
             {
                 union_bbox(&mut acc.own_bbox, bbox);
                 acc.slots.insert(key, data);
@@ -1464,7 +1614,21 @@ impl RowWriter {
         for slot in &mut self.geometry_slots {
             match acc.slots.get(&slot.key) {
                 Some(data) => {
-                    slot.geometry.append_value(&data.bytes);
+                    match (&mut slot.geometry, &data.payload) {
+                        (GeometryBuilder::Wkb(b), GeometryPayload::Wkb(bytes)) => {
+                            b.append_value(bytes)
+                        }
+                        (
+                            GeometryBuilder::ArrowNative(b),
+                            GeometryPayload::ArrowNative(decoded),
+                        ) => b.append_value(decoded),
+                        _ => unreachable!(
+                            "GeometryBuilder/GeometryPayload variant mismatch — encoding is \
+                             fixed per RowWriter (self.encoding), so accumulate_geometry and \
+                             synthesize_footprint always produce the SAME variant this slot's \
+                             builder holds; cannot happen"
+                        ),
+                    }
                     slot.properties.append_value(&data.properties)?;
                     match &data.material {
                         Some(m) => slot.material.append_value(serde_json::to_string(m)?),
@@ -1476,7 +1640,10 @@ impl RowWriter {
                     }
                 }
                 None => {
-                    slot.geometry.append_null();
+                    match &mut slot.geometry {
+                        GeometryBuilder::Wkb(b) => b.append_null(),
+                        GeometryBuilder::ArrowNative(b) => b.append_null(),
+                    }
                     slot.properties.append_null();
                     slot.material.append_null();
                     slot.texture.append_null();
@@ -1546,7 +1713,26 @@ impl RowWriter {
             self.finish_bbox(),
         ];
         for slot in &mut self.geometry_slots {
-            arrays.push(Arc::new(slot.geometry.finish()));
+            match &mut slot.geometry {
+                GeometryBuilder::Wkb(b) => arrays.push(Arc::new(b.finish())),
+                GeometryBuilder::ArrowNative(b) => {
+                    // `ArrowGeomBuilders::finish` takes `self` by value; `b`
+                    // is only a `&mut` here (this loop runs over every slot,
+                    // and `GeometrySlot` is reused across batches), so its
+                    // contents are swapped out for a fresh, empty builder —
+                    // exactly what every OTHER builder in this function's
+                    // `finish()` calls does implicitly (they reset their own
+                    // internal buffers on `finish`).
+                    let (geometry_array, vertices_array) = std::mem::take(b).finish();
+                    // Order matters: `geometry_lod*` immediately followed by
+                    // `geometry_vertices_lod*`, matching
+                    // `to_arrow_schema_tagged`'s field order exactly (Task 1)
+                    // — swapping these would silently misalign every later
+                    // column against the declared schema.
+                    arrays.push(geometry_array);
+                    arrays.push(vertices_array);
+                }
+            }
             arrays.push(slot.properties.finish());
             arrays.push(Arc::new(slot.material.finish()));
             arrays.push(Arc::new(slot.texture.finish()));
@@ -1734,10 +1920,10 @@ impl Iterator for BatchIter<'_> {
 }
 
 /// Encode `source` into `RecordBatch`es matching
-/// `scan.schema.to_arrow_schema_tagged(geoarrow, GeometryEncoding::Wkb)`
-/// exactly, `batch_size` rows per batch (the schema was already computed by
-/// `scan`; this pass never re-infers it). `geoarrow` must be the SAME flag
-/// the caller feeds the writer's schema/`writer_properties`, or Arrow rejects
+/// `scan.schema.to_arrow_schema_tagged(geoarrow, scan.encoding())` exactly,
+/// `batch_size` rows per batch (the schema was already computed by `scan`;
+/// this pass never re-infers it). `geoarrow` must be the SAME flag the
+/// caller feeds the writer's schema/`writer_properties`, or Arrow rejects
 /// the batches at write time (mismatched field metadata).
 pub fn encode<'a>(
     source: &'a Source,
@@ -1745,12 +1931,13 @@ pub fn encode<'a>(
     batch_size: usize,
     geoarrow: bool,
 ) -> Result<BatchIter<'a>> {
-    // Hardcoded to `Wkb`: `RowWriter` (below) only knows how to encode
-    // geometry through `wkb_write::geometry_to_wkb` — there is no
-    // arrow-native row-writing path until Task 6 lands.
+    // `scan.encoding()`, never a hardcoded `GeometryEncoding::Wkb`: the
+    // declared schema and `RowWriter`'s actual row-writing path (picked from
+    // the SAME `scan` in `RowWriter::new`) must always agree, or Arrow
+    // rejects the batches at write time (this plan's Task 6).
     let schema = Arc::new(
         scan.schema
-            .to_arrow_schema_tagged(geoarrow, GeometryEncoding::Wkb)?,
+            .to_arrow_schema_tagged(geoarrow, scan.encoding())?,
     );
     let features = source.features()?;
     let transform = source.header().transform.clone();
@@ -1794,11 +1981,11 @@ pub fn encode_buffered<'a>(
     batch_size: usize,
     geoarrow: bool,
 ) -> Result<BatchIter<'a>> {
-    // Hardcoded to `Wkb`: same `RowWriter`/`geometry_to_wkb` writer path as
-    // `encode` above — no arrow-native row-writing support until Task 6.
+    // `scan.encoding()`, never a hardcoded `GeometryEncoding::Wkb` — see
+    // `encode`'s matching comment above.
     let schema = Arc::new(
         scan.schema
-            .to_arrow_schema_tagged(geoarrow, GeometryEncoding::Wkb)?,
+            .to_arrow_schema_tagged(geoarrow, scan.encoding())?,
     );
     let transform = header.transform.clone();
     let writer = RowWriter::new(scan);
@@ -2025,6 +2212,7 @@ mod tests {
             &mut interner,
             &defs,
             "obj1",
+            GeometryEncoding::Wkb,
         )
         .unwrap();
 
@@ -2140,6 +2328,7 @@ mod tests {
             &mut interner,
             &defs,
             "obj1",
+            GeometryEncoding::Wkb,
         )
         .unwrap();
 
@@ -2263,6 +2452,7 @@ mod tests {
             &mut interner,
             &defs,
             "obj1",
+            GeometryEncoding::Wkb,
         )
         .unwrap();
 

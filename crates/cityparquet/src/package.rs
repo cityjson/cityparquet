@@ -106,12 +106,10 @@ pub struct ConvertOptions {
     pub geoarrow: bool,
     /// Which physical Arrow encoding `geometry_lod*` columns use. `Wkb` (the
     /// default) is normative; `ArrowNative` is the experimental
-    /// `arrow-native-type` branch encoding — see
+    /// `arrow-native-type` branch encoding (nested Arrow `List`/`Struct`
+    /// columns plus a `geometry_vertices_lod*` sibling, instead of a WKB
+    /// `BLOB`) — see
     /// `docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`.
-    /// Only the DECLARED schema (footer + Arrow `DataType`) responds to this
-    /// so far — the row-encoder (`crate::encode`) still only knows how to
-    /// write WKB bytes, so `ArrowNative` fails at write time until Task 6
-    /// gives it a matching arrow-native row-building path.
     pub geometry_encoding: GeometryEncoding,
     /// Synthesise an LoD0 footprint into the `geometry_lod0_0` column when an
     /// object has no source LoD0 (§9 "LoD0 synthesis"). A synthesised footprint
@@ -360,7 +358,7 @@ pub(crate) fn build_template_rows(
         };
         let (material, texture, props) = rewrite_geometry_appearance(
             tpl,
-            &outcome,
+            &outcome.dropped_surfaces,
             interner,
             &defs,
             &format!("geometry template {i}"),
@@ -522,8 +520,17 @@ fn module_geo_by_file(
 /// dataset's attribute columns in scan order. Mirrors
 /// `CityParquetSchema::to_arrow_schema`'s non-empty-lods field order exactly,
 /// so every name here is guaranteed to resolve in the dataset-wide (wide)
-/// rendered schema.
-fn module_column_names(file_lods: &[Lod], attributes: &[(String, AttributeType)]) -> Vec<String> {
+/// rendered schema — including the `geometry_vertices_lod*` sibling
+/// [`CityParquetSchema::to_arrow_schema_tagged`] adds right after each
+/// `geometry_lod*` column under [`GeometryEncoding::ArrowNative`] (this
+/// plan's Task 6): omitting it here would silently prune the arrow-native
+/// geometry column's only vertex data out of every by-module table, leaving
+/// `geometry_lod*` behind with indices into nothing.
+fn module_column_names(
+    file_lods: &[Lod],
+    attributes: &[(String, AttributeType)],
+    encoding: GeometryEncoding,
+) -> Vec<String> {
     let mut names: Vec<String> = [
         "id",
         "feature_id",
@@ -539,6 +546,9 @@ fn module_column_names(file_lods: &[Lod], attributes: &[(String, AttributeType)]
     .collect();
     for lod in file_lods {
         names.push(geometry_column_name("geometry", lod));
+        if encoding == GeometryEncoding::ArrowNative {
+            names.push(geometry_column_name("geometry_vertices", lod));
+        }
         names.push(geometry_column_name("geometry_properties", lod));
         names.push(geometry_column_name("material", lod));
         names.push(geometry_column_name("texture", lod));
@@ -746,7 +756,7 @@ impl TableWriters {
         }
         let empty = Vec::new();
         let file_lods = self.module_lods_by_file.get(name).unwrap_or(&empty);
-        module_column_names(file_lods, &self.attributes)
+        module_column_names(file_lods, &self.attributes, self.geometry_encoding)
             .iter()
             .map(|column| {
                 self.wide_schema.index_of(column).map_err(|e| {
@@ -1243,14 +1253,11 @@ pub(crate) fn convert_source_impl(
     // from this one `to_arrow_schema_tagged` call, never hand-duplicated —
     // and it must use the SAME `opts.geoarrow` flag `encode`/`encode_buffered`
     // feed their batch schema, or Arrow rejects the batches at write time.
-    // `opts.geometry_encoding` (this plan's Task 2) is the DECLARED schema
-    // only — `encode`/`encode_buffered` (called below) still only ever know
-    // how to WRITE WKB geometry bytes (this crate's row-writer has no
-    // arrow-native row-building path until Task 6 lands), so choosing
-    // `GeometryEncoding::ArrowNative` here desyncs the declared writer
-    // schema from what the batches actually contain and `write_batch` below
-    // fails at write time — expected and tracked until Task 6 gives the
-    // encoder a matching arrow-native path.
+    // `opts.geometry_encoding` also has to match what `encode`/`encode_buffered`
+    // (called below) actually write: they read it back off `scan_result`
+    // itself (`ScanResult::encoding`, set from this SAME `opts.geometry_encoding`
+    // by the `scan` call above), so `RowWriter` can never pick a different
+    // encoding than the schema declared here.
     let arrow_schema = Arc::new(
         scan_result
             .schema

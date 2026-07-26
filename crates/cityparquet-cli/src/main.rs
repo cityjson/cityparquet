@@ -100,10 +100,9 @@ enum Commands {
         geoarrow: bool,
 
         /// Physical geometry column encoding: "wkb" (default, normative) or
-        /// "arrow-native" (experimental nested Arrow List/Struct columns —
+        /// "arrow-native" (experimental nested Arrow List/Struct columns plus
+        /// a geometry_vertices_lod* sibling column, instead of a WKB BLOB —
         /// see docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md).
-        /// Only the DECLARED schema responds to this so far (the row-encoder
-        /// still only writes WKB bytes; see `Task 6`).
         #[arg(long, default_value = "wkb")]
         geometry_encoding: String,
 

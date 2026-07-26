@@ -444,6 +444,16 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
 }
 
 impl ScanResult {
+    /// The [`GeometryEncoding`] this scan was performed for (see
+    /// [`Self::encoding`]'s field doc comment) — `crate::encode`'s
+    /// `RowWriter` reads this to pick which builder (and which row-writing
+    /// path, WKB or arrow-native) each geometry slot uses, so the row-writer
+    /// can never desync from the schema `encode`/`encode_buffered` declare
+    /// for the very same [`ScanResult`] (this plan's Task 6).
+    pub(crate) fn encoding(&self) -> GeometryEncoding {
+        self.encoding
+    }
+
     /// The GeoParquet-legal geometry columns as `(column name, geometry_types)`
     /// pairs, ascending by LoD (§13.3, G1) — the writer declares exactly these
     /// in `geo.columns`, and the highest-LoD one is the `primary_column`.
