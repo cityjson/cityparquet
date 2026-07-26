@@ -456,8 +456,13 @@ impl ScanResult {
 
     /// Reserve a synthesised LoD0 footprint column (spec "LoD0 synthesis"):
     /// add LoD0 to `lods`/`schema` so the `geometry_lod0_0` column exists,
-    /// and declare it GeoParquet-legal (`MultiPolygon Z`). No-op when the
-    /// dataset has no analysis geometry (nothing to synthesise from) or
+    /// and — ONLY under [`GeometryEncoding::Wkb`] — declare it GeoParquet-legal
+    /// (`MultiPolygon Z`); under [`GeometryEncoding::ArrowNative`] the
+    /// synthesised column is exactly as GeoParquet-illegal as every other
+    /// arrow-native column (see [`is_geoparquet_legal_type`]'s doc comment —
+    /// nothing is legal under that encoding regardless of CM type name), so
+    /// it is deliberately NOT added to `geoparquet_columns` in that case. No-op
+    /// when the dataset has no analysis geometry (nothing to synthesise from) or
     /// already carries some `0.*` LoD. Because `geometry_lod0_0`/`material_lod0_0`/…
     /// become reserved once LoD0 is present (§5.2, G12), any attribute that
     /// now collides is diverted into `other` here, mirroring `scan`'s own
@@ -517,10 +522,16 @@ impl ScanResult {
         }
         self.schema.attributes = kept;
 
-        // Declare the LoD0 footprint column as GeoParquet-legal, ascending.
-        self.geoparquet_columns
-            .push((lod0, vec!["MultiPolygon Z".to_string()]));
-        self.geoparquet_columns.sort_by_key(|(lod, _)| *lod);
+        // Declare the LoD0 footprint column as GeoParquet-legal, ascending —
+        // but ONLY when `self.encoding` actually makes it so (see this
+        // method's doc comment): an arrow-native scan must never mark ANY
+        // column GeoParquet-legal, synthesised or not, regardless of CM type
+        // name.
+        if is_geoparquet_legal_type("MultiPolygon Z", self.encoding) {
+            self.geoparquet_columns
+                .push((lod0, vec!["MultiPolygon Z".to_string()]));
+            self.geoparquet_columns.sort_by_key(|(lod, _)| *lod);
+        }
     }
 
     /// Build the DATASET-WIDE portion of `city` — the fields genuinely

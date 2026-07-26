@@ -331,6 +331,63 @@ fn railway_scan_is_representable() {
     assert!(s.schema.to_arrow_schema().is_ok());
 }
 
+/// Regression: `add_synthesized_lod0_column` must gate its GeoParquet-legal
+/// declaration on the SCAN's OWN encoding (`ScanResult::encoding`), never
+/// mark the synthesised LoD0 footprint legal unconditionally. railway
+/// carries only LoD3 natively (no `0.*` LoD), so `add_synthesized_lod0_column`
+/// actually synthesises a column here rather than no-op'ing — exercising the
+/// exact code path the review flagged. Contrasts WKB vs arrow-native on the
+/// SAME fixture/synthesised column so the before/after difference is
+/// explicit, not a single-sided assertion.
+#[test]
+fn synthesized_lod0_is_geoparquet_legal_only_under_wkb() {
+    let (_dir, path) = railway_source_with_crs();
+
+    // WKB: the synthesised LoD0 footprint IS declared GeoParquet-legal —
+    // unchanged, pre-existing behaviour.
+    let src = Source::open(&path).unwrap();
+    let mut wkb_scan = scan(&src, GeometryEncoding::Wkb).unwrap();
+    assert!(
+        !wkb_scan.lods.iter().any(|l| l.major() == 0),
+        "railway must carry no native LoD0 for this test to exercise synthesis, got {:?}",
+        wkb_scan.lods
+    );
+    wkb_scan.add_synthesized_lod0_column();
+    let wkb_legal_names: Vec<String> = wkb_scan
+        .geoparquet_geo_columns()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        wkb_legal_names.contains(&"geometry_lod0_0".to_string()),
+        "under Wkb, the synthesised LoD0 footprint must be GeoParquet-legal: {wkb_legal_names:?}"
+    );
+
+    // ArrowNative: the SAME synthesis, on the SAME fixture, must NOT mark
+    // the column legal — its physical column isn't WKB at all, so a
+    // GeoParquet reader could not parse it even though the CM type name
+    // (`MultiPolygon Z`) alone would suggest it can. This is the exact
+    // invariant this task exists to establish, now also covering the LoD0
+    // synthesis path (not just natively-scanned columns).
+    let src = Source::open(&path).unwrap();
+    let mut arrow_scan = scan(&src, GeometryEncoding::ArrowNative).unwrap();
+    arrow_scan.add_synthesized_lod0_column();
+    let arrow_legal_names: Vec<String> = arrow_scan
+        .geoparquet_geo_columns()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        !arrow_legal_names.contains(&"geometry_lod0_0".to_string()),
+        "under ArrowNative, the synthesised LoD0 footprint must NEVER be \
+         GeoParquet-legal, regardless of CM type name: {arrow_legal_names:?}"
+    );
+    assert!(
+        arrow_legal_names.is_empty(),
+        "under ArrowNative, nothing is GeoParquet-legal at all: {arrow_legal_names:?}"
+    );
+}
+
 /// spec-alignment M3, checklist item 5: a CRS-less coordinate-bearing input
 /// (the real railway fixture, unmodified) must error cleanly at `scan` time,
 /// never silently omit `city.crs`.
