@@ -202,7 +202,7 @@ fn coord(buf: &mut Vec<u8>, c: [f64; 3], bbox: &mut Bbox) {
     bbox.add(c);
 }
 
-fn boundaries<T: serde::de::DeserializeOwned>(geom: &Geometry) -> Result<T> {
+pub(crate) fn boundaries<T: serde::de::DeserializeOwned>(geom: &Geometry) -> Result<T> {
     serde_json::from_value(geom.boundaries.clone()).map_err(|e| {
         CityParquetError::Geometry(format!(
             "boundaries do not match {:?} shape: {e}",
@@ -213,13 +213,13 @@ fn boundaries<T: serde::de::DeserializeOwned>(geom: &Geometry) -> Result<T> {
 
 /// Structural drops performed while normalising one geometry's rings.
 #[derive(Debug, Default)]
-struct Drops {
+pub(crate) struct Drops {
     /// Rings dropped because they cannot form a valid WKB ring (< 3
     /// effective vertices after stripping a pre-baked closure).
-    rings: usize,
+    pub(crate) rings: usize,
     /// Original flat surface/face positions (within the geometry) of
     /// surfaces dropped because their EXTERIOR ring was degenerate.
-    surfaces: Vec<usize>,
+    pub(crate) surfaces: Vec<usize>,
 }
 
 /// Structural ring normalisation (narrow by design — this is NOT zero-area
@@ -238,7 +238,7 @@ struct Drops {
 /// as a structurally valid zero-area ring (a→b→a). The narrow policy only
 /// drops rings that cannot form a structural WKB ring at all;
 /// coordinate-level degeneracy is data quality, out of scope.
-fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
+pub(crate) fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
     let mut stripped = ring;
     // Fixpoint, not single-strip: sources in the wild bake the closure more
     // than once ([0,1,0,0]); a single strip left a still-closed [0,1,0] that
@@ -257,7 +257,7 @@ fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
 /// dropped anyway — so the reported ring total is exact. `pos` is the
 /// surface's original flat position within the geometry, recorded so the
 /// encoder can realign per-surface semantics/material/texture arrays.
-fn normalise_surface<'r>(
+pub(crate) fn normalise_surface<'r>(
     rings: &'r [Vec<usize>],
     pos: usize,
     drops: &mut Drops,
@@ -326,7 +326,7 @@ fn write_polyhedral(
 /// Normalise a Solid's shells into a flat kept-face list, advancing `pos`
 /// (the flat face position within the whole geometry) across every source
 /// face — dropped or kept — so recorded drop positions stay original.
-fn normalise_shells<'r>(
+pub(crate) fn normalise_shells<'r>(
     shells: &'r [Vec<Vec<Vec<usize>>>],
     pos: &mut usize,
     drops: &mut Drops,
