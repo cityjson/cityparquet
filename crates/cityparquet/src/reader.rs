@@ -16,19 +16,56 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
-use arrow_schema::{Schema, SchemaRef};
+use arrow_schema::{DataType, Schema, SchemaRef};
 use parquet::arrow::arrow_reader::{ArrowReaderBuilder, ParquetRecordBatchReader};
 use parquet::file::metadata::RowGroupMetaData;
 use parquet::file::statistics::Statistics;
 use parquet::schema::types::ColumnPath;
 
 use cityparquet_schema::{
-    AttributeType, CityMetadata, CityParquetError, CityParquetSchema, GeoMetadata, Lod, Result,
+    AttributeType, CityMetadata, CityParquetError, CityParquetSchema, GeoMetadata,
+    GeometryEncoding, Lod, Result, geometry_column_name,
 };
 
 /// The six fixed `bbox` struct leaves, matching [`crate::recipe::WriterRecipe`]
 /// and [`cityparquet_schema::model::bbox_data_type`].
 const BBOX_LEAVES: [&str; 6] = ["xmin", "ymin", "zmin", "xmax", "ymax", "zmax"];
+
+/// The [`GeometryEncoding`] a file's geometry columns were actually written
+/// under, read directly off one sample geometry column's `DataType` in
+/// `actual` (`parquet`'s own reconstruction of the file's physical/embedded
+/// schema) — `Binary` is [`GeometryEncoding::Wkb`], the nested `List` is
+/// [`GeometryEncoding::ArrowNative`] (Task 1 made the two shapes
+/// structurally distinguishable; no separate metadata flag needed). Samples
+/// the first LoD's `geometry_<suffix>` column when the table has LoDs, else
+/// the legacy bare `geometry` column when present; a table with neither
+/// carries no geometry at all, so the encoding is moot and `Wkb` is returned
+/// as an arbitrary, harmless default.
+fn detect_geometry_encoding(
+    actual: &Schema,
+    lods: &[Lod],
+    has_bare_geometry: bool,
+) -> Result<GeometryEncoding> {
+    let sample_name = match lods.first() {
+        Some(lod) => geometry_column_name("geometry", lod),
+        None if has_bare_geometry => "geometry".to_string(),
+        None => return Ok(GeometryEncoding::Wkb),
+    };
+    let field = actual.field_with_name(&sample_name).map_err(|_| {
+        CityParquetError::Metadata(format!(
+            "geometry column '{sample_name}' listed in the derived LoD set but absent from the \
+             file's actual schema"
+        ))
+    })?;
+    match field.data_type() {
+        DataType::Binary => Ok(GeometryEncoding::Wkb),
+        DataType::List(_) => Ok(GeometryEncoding::ArrowNative),
+        other => Err(CityParquetError::Metadata(format!(
+            "geometry column '{sample_name}' has an arrow type neither encoding renders: {other:?} \
+             (expected Binary for WKB or List for arrow-native)"
+        ))),
+    }
+}
 
 /// Extension type name tagging a Utf8 column whose values are JSON text —
 /// see [`cityparquet_schema::model`]'s `json_field` helper.
@@ -215,13 +252,28 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             attributes,
             crs: None,
         };
-        // Tagged (zero-arg `to_arrow_schema`): this rendered schema is the
-        // CANONICAL, self-describing view, not a reflection of the physical
-        // file's on-disk self-description — a plain-BLOB file (written with
-        // `--geoarrow` off) still reports its geometry columns here as
-        // `geoarrow.wkb`-tagged. Harmless: the underlying Arrow data type is
-        // `Binary` either way, so callers reading values see no difference.
-        Ok(Arc::new(schema.to_arrow_schema()?))
+        // Encoding-aware (this plan's Task 8 — `to_arrow_schema`'s own doc
+        // comment: "Task 6+ gives them their own encoding-aware entry
+        // point rather than silently defaulting this one"): the geometry
+        // columns' actual on-disk shape — `Binary` (WKB) or the nested
+        // `List` (arrow-native) — decides which `GeometryEncoding` to
+        // render, since a file written under `GeometryEncoding::ArrowNative`
+        // also carries `geometry_vertices_lod*` sibling columns that a
+        // hardcoded `Wkb` rendering would omit, desyncing the rendered
+        // schema's field count from the physical file's actual column count
+        // (`CityParquetRecordBatchReader::next` reapplies this schema to
+        // every batch verbatim, so that mismatch is a hard `RecordBatch`
+        // construction error, not a silent misread). `geoarrow = true`:
+        // this rendered schema is the CANONICAL, self-describing view, not a
+        // reflection of the physical file's on-disk self-description — a
+        // plain-BLOB WKB file (written with `--geoarrow` off) still reports
+        // its geometry columns here as `geoarrow.wkb`-tagged (harmless: the
+        // underlying Arrow data type is `Binary` either way, so callers
+        // reading values see no difference), and the tag is a no-op under
+        // `ArrowNative` (`CityParquetSchema::geometry_field` only applies it
+        // in the `Wkb` arm).
+        let encoding = detect_geometry_encoding(actual, &schema.lods, has_bare_geometry)?;
+        Ok(Arc::new(schema.to_arrow_schema_tagged(true, encoding)?))
     }
 
     fn with_bbox_row_groups(self, bbox: [f64; 6]) -> Result<Self> {

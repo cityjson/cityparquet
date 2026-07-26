@@ -780,11 +780,10 @@ pub(crate) struct LocalDefs<'a> {
 /// [`crate::wkb_write::WkbOutcome::dropped_surfaces`]) — under
 /// [`GeometryEncoding::Wkb`] the caller passes the real ones straight from
 /// its `WkbOutcome`; under [`GeometryEncoding::ArrowNative`] the caller
-/// currently always passes `&[]`, because [`geometry_to_compacted`] reuses
-/// the same ring/surface normalisation internally but does not (yet) surface
-/// which positions it dropped — so an arrow-native geometry with a genuinely
-/// degenerate surface gets no realignment here (a known, documented gap; see
-/// [`accumulate_geometry`]'s arrow-native branch).
+/// passes [`crate::arrow_geom_write::CompactedOutcome::dropped_surfaces`]
+/// (Task 8 — [`geometry_to_compacted`] now surfaces exactly the positions its
+/// internal ring/surface normalisation dropped, so both encodings realign
+/// identically here).
 pub(crate) fn rewrite_geometry_appearance(
     geom: &Geometry,
     dropped_surfaces: &[usize],
@@ -904,21 +903,22 @@ fn accumulate_geometry(
                 )
             }
             GeometryEncoding::ArrowNative => {
-                let Some(decoded) = geometry_to_compacted(geom, pool)? else {
+                let Some(outcome) = geometry_to_compacted(geom, pool)? else {
                     continue;
                 };
-                let bbox = bbox_of(&decoded);
-                // `geometry_to_compacted` reuses the same ring/surface
-                // normalisation `geometry_to_wkb` uses internally, but does
-                // not (yet) surface how much it dropped — so both
-                // diagnostics below are under-reported (never
-                // over-reported) for this encoding. See
-                // `rewrite_geometry_appearance`'s doc comment for the same
-                // gap's effect on material/texture/semantics realignment.
-                // Extend `geometry_to_compacted`'s return type with a
-                // `Drops` (mirroring `WkbOutcome`) if a later task's
-                // round-trip proof needs exact parity here.
-                (GeometryPayload::ArrowNative(decoded), bbox, 0, Vec::new())
+                let bbox = bbox_of(&outcome.geometry);
+                // `geometry_to_compacted` now surfaces the same drop counts
+                // `geometry_to_wkb`'s `WkbOutcome` does (Task 8), so both
+                // diagnostics below, and the appearance realignment via
+                // `rewrite_geometry_appearance` below, are exact for this
+                // encoding too — no longer the under-reported gap this
+                // comment used to flag.
+                (
+                    GeometryPayload::ArrowNative(outcome.geometry),
+                    bbox,
+                    outcome.dropped_rings,
+                    outcome.dropped_surfaces,
+                )
             }
         };
         // Row bbox deliberately covers ALL of the object's analysis geometry,
@@ -1066,17 +1066,21 @@ fn synthesize_footprint(
             )
         }
         GeometryEncoding::ArrowNative => {
-            let Some(decoded) = geometry_to_compacted(&ms, &raw)? else {
+            let Some(outcome) = geometry_to_compacted(&ms, &raw)? else {
                 return Ok(None);
             };
-            let bbox = bbox_of(&decoded);
-            // `geometry_to_compacted` does not surface dropped-surface
-            // positions (see `accumulate_geometry`'s arrow-native branch),
-            // but `&[]` is exact here rather than an approximation:
-            // `footprint_to_geometry` already drops any collapsed ring/face
-            // itself (its own de-dup pass), so neither encoder ever sees a
-            // degenerate surface to drop from a synthesised footprint.
-            (GeometryPayload::ArrowNative(decoded), bbox, Vec::new())
+            let bbox = bbox_of(&outcome.geometry);
+            // `outcome.dropped_surfaces` is expected to always be empty here
+            // (not merely approximated as `&[]` any more — Task 8 makes it a
+            // real, surfaced count): `footprint_to_geometry` already drops
+            // any collapsed ring/face itself (its own de-dup pass), so
+            // neither encoder ever sees a degenerate surface to drop from a
+            // synthesised footprint.
+            (
+                GeometryPayload::ArrowNative(outcome.geometry),
+                bbox,
+                outcome.dropped_surfaces,
+            )
         }
     };
 

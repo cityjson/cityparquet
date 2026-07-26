@@ -14,11 +14,6 @@
 //! or silently reads the wrong indices, which is exactly the bug this
 //! module's tests are written to catch.
 
-// `decode_row` and its helpers are only exercised by this module's own tests
-// until Task 8 wires them into `decode.rs` — mirrors `arrow_geom_write.rs`'s
-// own `#![allow(dead_code)]` between Task 4 and Task 6.
-#![allow(dead_code)]
-
 use arrow_array::{Array, Float64Array, Int32Array, ListArray, StructArray};
 use cityparquet_schema::{CityParquetError, Result};
 

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use arrow_array::types::Int32Type;
 use arrow_array::{Array, DictionaryArray, Float64Array, ListArray, StringArray, StructArray};
 use cityparquet::CityParquetError;
-use cityparquet::compare::{CompareOptions, compare_datasets};
+use cityparquet::compare::{CompareOptions, Exclusions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::order::hilbert_index;
 use cityparquet::package::{ConvertOptions, RowOrder, convert};
@@ -1667,5 +1667,211 @@ fn geometryless_dataset_round_trips() {
         report.equal,
         "a geometry-less dataset must export losslessly; differences: {:#?}",
         report.differences
+    );
+}
+
+/// Task 8 (arrow-native geometry): the plan's main correctness gate. A real,
+/// ~2231-object fixture converted under `--geometry-encoding arrow-native`
+/// (so `geometry_lod*` is the nested-`List` shape `arrow_geom_write` produces,
+/// never `Binary` WKB), exported back to CityJSONSeq via
+/// `decode_batch`/`crate::arrow_geom_read::decode_row`, and compared against
+/// the ORIGINAL source for full semantic equality — proving the whole
+/// write -> read pipeline for the new encoding, end to end, not just the
+/// writer (Task 6) or reader (Task 7) in isolation.
+///
+/// delft carries Solid (lod1.2/1.3/2.2, exercising `decode_row`'s "Solid"
+/// dispatch, including any multi-face solids) and MultiSurface/
+/// CompositeSurface (lod0, exercising the padding-dimension strip) geometry,
+/// no appearance and no GeometryInstances, so `CompareOptions::default()` (no
+/// exclusions) is the correct comparison — exactly the same profile
+/// `delft_compatibility_round_trips_losslessly_with_only_header_exclusions`
+/// (roundtrip_real_data.rs) already pins for the WKB path, so the exclusion
+/// counts here must match it: the encoding is a pure write/read format
+/// change, `arrow_geom_write` reuses `wkb_write`'s own ring/shell
+/// normalisation (see that module's doc comment), so the same 16 pinned
+/// coordinate-degenerate-ring drops (8 objects, source + export side each)
+/// must appear here too — anything else would mean the arrow-native path
+/// diverges from WKB on data it must handle identically.
+#[test]
+fn arrow_native_roundtrip_decodes_back_to_the_same_semantic_geometry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), dir.path().to_path_buf());
+    opts.geometry_encoding = cityparquet_schema::types::GeometryEncoding::ArrowNative;
+    let report = convert(&opts).unwrap();
+    assert_eq!(report.object_count, 2231);
+
+    // Physical-schema sanity check: the geometry columns really did render as
+    // the arrow-native nested-List shape, not plain WKB Binary — otherwise
+    // this test would exercise the unchanged WKB path and prove nothing new.
+    let file = std::fs::File::open(dir.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let schema = builder.schema();
+    let geom_field = schema.field_with_name("geometry_lod0_0").unwrap();
+    assert!(
+        matches!(geom_field.data_type(), arrow_schema::DataType::List(_)),
+        "geometry_lod0_0 must be the arrow-native List shape, got {:?}",
+        geom_field.data_type()
+    );
+    assert!(
+        schema.field_with_name("geometry_vertices_lod0_0").is_ok(),
+        "arrow-native encoding must add the geometry_vertices_lod0_0 sibling column"
+    );
+
+    let exported = dir.path().join("roundtrip.city.jsonl");
+    export(&ExportOptions {
+        package_dir: dir.path().to_path_buf(),
+        output: exported.clone(),
+    })
+    .unwrap();
+
+    let report = compare_datasets(
+        &fixture("delft.city.jsonl"),
+        &exported,
+        &CompareOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.equal,
+        "arrow-native round trip must be semantically equal to the source; differences: {:#?}",
+        report.differences
+    );
+    assert!(
+        report.differences.is_empty(),
+        "expected zero differences, got: {:#?}",
+        report.differences
+    );
+
+    // Same rigour as `hilbert_ordering_never_changes_delft_semantics`: split
+    // header-metadata exclusions (documented, unbounded) from everything
+    // else, and pin the non-header set to exactly the 16 coordinate-
+    // degenerate-ring drops already established for delft under the WKB
+    // path — proving the arrow-native reader/writer pair diverges from WKB
+    // on nothing.
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    let degenerate = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    assert_eq!(
+        (degenerate, non_header_excluded.len()),
+        (16, 16),
+        "arrow-native delft's only non-header exclusions must be the 16 pinned coordinate-\
+         degenerate-ring drops, exactly matching the WKB path's own pin; got: {:#?}",
+        non_header_excluded
+    );
+    assert!(
+        !header_excluded.is_empty(),
+        "delft's header sets metadata members; expected at least one documented header-metadata \
+         exclusion, got none. Full excluded: {:#?}",
+        report.excluded
+    );
+}
+
+/// The equivalent round trip for `lod3_railway.city.json`: MultiSurface/
+/// CompositeSurface geometry only (no `Solid` at all), independently
+/// confirming `decode_row`'s padding-dimension strip path (the `"Solid"`
+/// path is already proven by the delft test above). Railway also carries
+/// `GeometryInstance`s, which neither the WKB nor the arrow-native encoding
+/// stores as WKB/arrow-native geometry at all (they route through the
+/// `template` column + `geometry_templates.parquet` sidecar instead, always
+/// WKB, untouched by `--geometry-encoding`) — excluded from comparison here
+/// (`exclusions.geometry_instances`) exactly as the brief's `--exclude-
+/// instances` intent describes, so this test stays scoped to what this task
+/// actually changed rather than re-proving the (unrelated, already-covered)
+/// GeometryInstance/template round trip.
+///
+/// Appearance (material/texture) is NOT excluded: arrow-native only changes
+/// the `geometry_lod*`/`geometry_vertices_lod*` columns, so railway's
+/// material/texture maps must still restore losslessly, exactly like
+/// `railway_compatibility_round_trips_losslessly_with_no_exclusions`
+/// (roundtrip_real_data.rs) pins for the WKB path.
+#[test]
+fn arrow_native_roundtrip_railway_multisurface_only_decodes_back_to_the_same_semantic_geometry() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let mut opts = ConvertOptions::new(railway_path.clone(), dir.path().to_path_buf());
+    opts.geometry_encoding = cityparquet_schema::types::GeometryEncoding::ArrowNative;
+    let report = convert(&opts).unwrap();
+    assert_eq!(report.object_count, 121);
+
+    // Physical-schema sanity check, mirroring the delft test above: railway's
+    // LoD3 geometry columns must really be the arrow-native List shape.
+    let tables = manifest_tables(dir.path());
+    let building_table = tables
+        .iter()
+        .find(|t| t.as_str() == "building.parquet")
+        .expect("railway writes a building.parquet table");
+    let file = std::fs::File::open(dir.path().join(building_table)).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let schema = builder.schema();
+    let geom_field = schema.field_with_name("geometry_lod3_0").unwrap();
+    assert!(
+        matches!(geom_field.data_type(), arrow_schema::DataType::List(_)),
+        "geometry_lod3_0 must be the arrow-native List shape, got {:?}",
+        geom_field.data_type()
+    );
+    assert!(schema.field_with_name("geometry_vertices_lod3_0").is_ok());
+
+    let exported = dir.path().join("roundtrip.city.jsonl");
+    export(&ExportOptions {
+        package_dir: dir.path().to_path_buf(),
+        output: exported.clone(),
+    })
+    .unwrap();
+
+    let compare_opts = CompareOptions {
+        coord_tolerance: [0.0; 3],
+        exclusions: Exclusions {
+            appearance: false,
+            geometry_instances: true,
+        },
+    };
+    let report = compare_datasets(&railway_path, &exported, &compare_opts).unwrap();
+    assert!(
+        report.equal,
+        "arrow-native railway round trip (instances excluded) must be semantically equal to the \
+         source; differences: {:#?}",
+        report.differences
+    );
+    assert!(
+        report.differences.is_empty(),
+        "expected zero differences, got: {:#?}",
+        report.differences
+    );
+
+    // Same breakdown discipline as the delft test: pin the non-header
+    // exclusions to exactly the 23 coordinate-degenerate-ring drops plus the
+    // 30 geometry-instance exclusions (15 objects, source + export side
+    // each) already established for railway under the WKB path — appearance
+    // contributes zero exclusions here because it round-trips, not because
+    // it was excluded.
+    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
+        .excluded
+        .iter()
+        .partition(|e| e.starts_with("header: metadata member"));
+    let degenerate = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("degenerate ring"))
+        .count();
+    let instances = non_header_excluded
+        .iter()
+        .filter(|e| e.contains("exclusions.geometry_instances"))
+        .count();
+    assert_eq!(
+        (degenerate, instances, non_header_excluded.len()),
+        (23, 30, 53),
+        "arrow-native railway's only non-header exclusions must be the 23 pinned degenerate-ring \
+         drops plus the 30 pinned geometry-instance exclusions, exactly matching the WKB path's \
+         own pins; got: {:#?}",
+        non_header_excluded
+    );
+    assert!(
+        !header_excluded.is_empty(),
+        "railway's header sets metadata members; expected at least one documented \
+         header-metadata exclusion, got none. Full excluded: {:#?}",
+        report.excluded
     );
 }

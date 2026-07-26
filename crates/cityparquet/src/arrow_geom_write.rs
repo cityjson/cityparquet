@@ -66,18 +66,40 @@ impl<'a, 'p> Compactor<'a, 'p> {
     }
 }
 
-/// `cjseq::Geometry` -> `Option<DecodedGeometry>`, phase-1 types only
+/// Outcome of [`geometry_to_compacted`]: the compacted geometry plus how much
+/// its ring/surface normalisation dropped — mirrors
+/// [`crate::wkb_write::WkbOutcome`]'s `dropped_rings`/`dropped_surfaces`
+/// fields exactly, so a caller (`crate::encode::accumulate_geometry`) can
+/// realign stored material/texture/semantics identically regardless of which
+/// [`cityparquet_schema::GeometryEncoding`] produced the payload (this
+/// plan's Task 8 — the round-trip proof needs exact parity here; this used
+/// to be a documented gap — see git history — where this shape's drops were
+/// silently discarded).
+pub(crate) struct CompactedOutcome {
+    pub(crate) geometry: DecodedGeometry,
+    /// Structurally degenerate rings dropped (the [a,b,a] closure shape:
+    /// fewer than 3 effective vertices) — see
+    /// [`crate::wkb_write::WkbOutcome::dropped_rings`].
+    pub(crate) dropped_rings: usize,
+    /// Original flat surface/face positions (within this geometry) of
+    /// surfaces dropped because their exterior ring was degenerate — see
+    /// [`crate::wkb_write::WkbOutcome::dropped_surfaces`].
+    pub(crate) dropped_surfaces: Vec<usize>,
+}
+
+/// `cjseq::Geometry` -> `Option<CompactedOutcome>`, phase-1 types only
 /// (`MultiSurface`/`CompositeSurface`/`Solid`/`MultiSolid`/`CompositeSolid`
 /// — design doc "Type coverage (v1)"). Mirrors `wkb_write::geometry_to_wkb`'s
 /// dispatch and degenerate-ring/-surface handling exactly (same `Drops`
-/// tracking, same `normalise_surface`/`normalise_shells` calls) — differs
-/// only in the output shape. Returns `Ok(None)` for `GeometryInstance`
-/// (no geometry cell, same as WKB) and for an empty/fully-degenerate result
-/// (same "no coordinates written" rule as `wkb_write`).
+/// tracking, same `normalise_surface`/`normalise_shells` calls, and now the
+/// same drop counts surfaced to the caller) — differs only in the output
+/// shape. Returns `Ok(None)` for `GeometryInstance` (no geometry cell, same
+/// as WKB) and for an empty/fully-degenerate result (same "no coordinates
+/// written" rule as `wkb_write`).
 pub(crate) fn geometry_to_compacted(
     geom: &Geometry,
     pool: &VertexPool,
-) -> Result<Option<DecodedGeometry>> {
+) -> Result<Option<CompactedOutcome>> {
     let mut drops = Drops::default();
     let mut c = Compactor::new(pool);
     let kind = match geom.thetype {
@@ -130,9 +152,13 @@ pub(crate) fn geometry_to_compacted(
     if c.coords.is_empty() {
         return Ok(None);
     }
-    Ok(Some(DecodedGeometry {
-        coords: c.coords,
-        kind,
+    Ok(Some(CompactedOutcome {
+        geometry: DecodedGeometry {
+            coords: c.coords,
+            kind,
+        },
+        dropped_rings: drops.rings,
+        dropped_surfaces: drops.surfaces,
     }))
 }
 
@@ -415,7 +441,10 @@ mod tests {
             vec![vec![0, 0, 0], vec![1, 0, 0], vec![1, 1, 0], vec![0, 1, 0]];
         let pool = VertexPool::new(&vertices, &transform_identity());
         let geom = multisurface_geom(serde_json::json!([[[0, 1, 2]], [[0, 2, 3]]]));
-        let decoded = geometry_to_compacted(&geom, &pool).unwrap().unwrap();
+        let decoded = geometry_to_compacted(&geom, &pool)
+            .unwrap()
+            .unwrap()
+            .geometry;
         assert_eq!(
             decoded.coords.len(),
             4,
@@ -437,7 +466,10 @@ mod tests {
         let vertices: Vec<Vec<i64>> = vec![vec![0, 0, 0], vec![0, 0, 0], vec![1, 0, 0]];
         let pool = VertexPool::new(&vertices, &transform_identity());
         let geom = multisurface_geom(serde_json::json!([[[0, 1, 2]]]));
-        let decoded = geometry_to_compacted(&geom, &pool).unwrap().unwrap();
+        let decoded = geometry_to_compacted(&geom, &pool)
+            .unwrap()
+            .unwrap()
+            .geometry;
         assert_eq!(
             decoded.coords.len(),
             3,
@@ -469,7 +501,10 @@ mod tests {
             template: None,
             transformation_matrix: None,
         };
-        let decoded = geometry_to_compacted(&geom, &pool).unwrap().unwrap();
+        let decoded = geometry_to_compacted(&geom, &pool)
+            .unwrap()
+            .unwrap()
+            .geometry;
         assert_eq!(decoded.coords.len(), 6);
         match &decoded.kind {
             // Flattened to 2 faces, shell boundary NOT represented here —
@@ -478,6 +513,36 @@ mod tests {
             // unchanged, design doc "Face traversal order").
             DecodedKind::PolyhedralSurface(faces) => assert_eq!(faces.len(), 2),
             other => panic!("expected PolyhedralSurface, got {other:?}"),
+        }
+    }
+
+    /// Task 8: `geometry_to_compacted` must report the SAME drop counts
+    /// `geometry_to_wkb` does for identical input — mirrors
+    /// `wkb_write::tests::degenerate_ring_drops_with_its_surface` exactly
+    /// (same boundaries shape). This used to be a documented gap (the
+    /// function tracked drops internally via `Drops` but never returned
+    /// them, so `crate::encode::accumulate_geometry`'s arrow-native branch
+    /// always saw `(0, Vec::new())` regardless of what was actually
+    /// dropped) — real-fixture evidence: railway's `--geometry-encoding
+    /// arrow-native` round trip silently desynced a dropped surface's
+    /// stored `material_lod*` length from its stored geometry's face count.
+    #[test]
+    fn geometry_to_compacted_reports_the_same_drops_as_geometry_to_wkb() {
+        // Surface 0's exterior ring is the structural [a,b,a] closure shape
+        // (2 effective vertices): the ring is dropped, and with it the whole
+        // surface. Surface 1 is fine and must survive as the ONLY polygon.
+        let vertices: Vec<Vec<i64>> =
+            vec![vec![0, 0, 0], vec![1, 0, 0], vec![0, 1, 0], vec![0, 0, 1]];
+        let pool = VertexPool::new(&vertices, &transform_identity());
+        let geom = multisurface_geom(serde_json::json!([[[0, 1, 0]], [[0, 1, 2, 3]]]));
+        let outcome = geometry_to_compacted(&geom, &pool).unwrap().unwrap();
+        assert_eq!(outcome.dropped_rings, 1);
+        assert_eq!(outcome.dropped_surfaces, vec![0]);
+        match &outcome.geometry.kind {
+            DecodedKind::MultiPolygon(surfaces) => {
+                assert_eq!(surfaces.len(), 1, "only the surviving surface is kept");
+            }
+            other => panic!("expected MultiPolygon, got {other:?}"),
         }
     }
 
