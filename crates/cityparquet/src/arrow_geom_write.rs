@@ -519,15 +519,29 @@ mod tests {
     /// Task 8: `geometry_to_compacted` must report the SAME drop counts
     /// `geometry_to_wkb` does for identical input — mirrors
     /// `wkb_write::tests::degenerate_ring_drops_with_its_surface` exactly
-    /// (same boundaries shape). This used to be a documented gap (the
-    /// function tracked drops internally via `Drops` but never returned
-    /// them, so `crate::encode::accumulate_geometry`'s arrow-native branch
-    /// always saw `(0, Vec::new())` regardless of what was actually
-    /// dropped) — real-fixture evidence: railway's `--geometry-encoding
-    /// arrow-native` round trip silently desynced a dropped surface's
-    /// stored `material_lod*` length from its stored geometry's face count.
+    /// (same boundaries shapes, both sub-cases). This used to be a
+    /// documented gap (the function tracked drops internally via `Drops`
+    /// but never returned them, so `crate::encode::accumulate_geometry`'s
+    /// arrow-native branch always saw `(0, Vec::new())` regardless of what
+    /// was actually dropped) — real-fixture evidence: railway's
+    /// `--geometry-encoding arrow-native` round trip silently desynced a
+    /// dropped surface's stored `material_lod*` length from its stored
+    /// geometry's face count.
+    ///
+    /// Codex round-2 review finding (Important): an earlier version of this
+    /// test asserted only hardcoded literal values against
+    /// `geometry_to_compacted`'s own output — it never called
+    /// `geometry_to_wkb` at all, so it would have kept passing even if the
+    /// two encoders' drop-reporting silently diverged (the actual parity
+    /// this test's name, and `CompactedOutcome` mirroring `WkbOutcome` in
+    /// the first place, exist to prove). Fixed: both encoders now run on
+    /// the SAME `geom`/`pool`, and their outcomes are asserted equal to
+    /// each other directly, not each merely equal to a separately-chosen
+    /// literal.
     #[test]
     fn geometry_to_compacted_reports_the_same_drops_as_geometry_to_wkb() {
+        use crate::wkb_write::geometry_to_wkb;
+
         // Surface 0's exterior ring is the structural [a,b,a] closure shape
         // (2 effective vertices): the ring is dropped, and with it the whole
         // surface. Surface 1 is fine and must survive as the ONLY polygon.
@@ -535,15 +549,55 @@ mod tests {
             vec![vec![0, 0, 0], vec![1, 0, 0], vec![0, 1, 0], vec![0, 0, 1]];
         let pool = VertexPool::new(&vertices, &transform_identity());
         let geom = multisurface_geom(serde_json::json!([[[0, 1, 0]], [[0, 1, 2, 3]]]));
-        let outcome = geometry_to_compacted(&geom, &pool).unwrap().unwrap();
-        assert_eq!(outcome.dropped_rings, 1);
-        assert_eq!(outcome.dropped_surfaces, vec![0]);
-        match &outcome.geometry.kind {
+
+        let wkb_outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
+        let compacted_outcome = geometry_to_compacted(&geom, &pool).unwrap().unwrap();
+
+        // The actual parity requirement: identical input, directly compared
+        // against each other — not against separately hardcoded literals,
+        // which could not catch the two encoders drifting apart.
+        assert_eq!(
+            compacted_outcome.dropped_rings, wkb_outcome.dropped_rings,
+            "arrow-native and WKB must report the same dropped_rings count for identical input"
+        );
+        assert_eq!(
+            compacted_outcome.dropped_surfaces, wkb_outcome.dropped_surfaces,
+            "arrow-native and WKB must report the same dropped_surfaces positions for identical \
+             input"
+        );
+
+        // Additional coverage: the concrete expected values, pinning the
+        // fixture's own intent (and catching both encoders drifting
+        // together in the same wrong direction, which the cross-comparison
+        // above alone could not).
+        assert_eq!(wkb_outcome.dropped_rings, 1);
+        assert_eq!(wkb_outcome.dropped_surfaces, vec![0]);
+        match &compacted_outcome.geometry.kind {
             DecodedKind::MultiPolygon(surfaces) => {
                 assert_eq!(surfaces.len(), 1, "only the surviving surface is kept");
             }
             other => panic!("expected MultiPolygon, got {other:?}"),
         }
+
+        // Second sub-case (mirrors `wkb_write`'s own test exactly): a
+        // dropped surface's interior degenerate ring is still counted in
+        // dropped_rings (surface drop unchanged) — proves the parity holds
+        // even when dropped_rings and dropped_surfaces.len() diverge, not
+        // just in the trivial 1-dropped-ring-equals-1-dropped-surface case
+        // above.
+        let geom2 = multisurface_geom(serde_json::json!([[[0, 1, 0], [2, 3, 2]], [[0, 1, 2, 3]]]));
+        let wkb_outcome2 = geometry_to_wkb(&geom2, &pool).unwrap().unwrap();
+        let compacted_outcome2 = geometry_to_compacted(&geom2, &pool).unwrap().unwrap();
+        assert_eq!(compacted_outcome2.dropped_rings, wkb_outcome2.dropped_rings);
+        assert_eq!(
+            compacted_outcome2.dropped_surfaces,
+            wkb_outcome2.dropped_surfaces
+        );
+        assert_eq!(
+            wkb_outcome2.dropped_rings, 2,
+            "degenerate exterior AND degenerate interior must both be counted"
+        );
+        assert_eq!(wkb_outcome2.dropped_surfaces, vec![0]);
     }
 
     #[test]
