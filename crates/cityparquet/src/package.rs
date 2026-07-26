@@ -1207,7 +1207,7 @@ pub(crate) fn convert_source_impl(
         )));
     }
 
-    let mut scan_result = scan(source)?;
+    let mut scan_result = scan(source, opts.geometry_encoding)?;
     if let Some(canon) = schema_override {
         scan_result.schema = canon.schema.clone();
         scan_result.lods = canon.lods.clone();

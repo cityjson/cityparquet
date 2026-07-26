@@ -76,7 +76,8 @@ fn lodless_non_instance_geometry_is_rejected() {
     .unwrap();
 
     let src = Source::open(&path).unwrap();
-    let err = scan(&src).expect_err("lod-less non-instance geometry must be rejected");
+    let err = scan(&src, GeometryEncoding::Wkb)
+        .expect_err("lod-less non-instance geometry must be rejected");
     assert!(
         matches!(err, cityparquet::CityParquetError::Lod(_)),
         "must be a Lod error, got {err:?}"
@@ -131,7 +132,8 @@ fn uniformly_lodless_dataset_is_rejected() {
     .unwrap();
 
     let src = Source::open(&path).unwrap();
-    let err = scan(&src).expect_err("a uniformly lod-less dataset must be rejected");
+    let err = scan(&src, GeometryEncoding::Wkb)
+        .expect_err("a uniformly lod-less dataset must be rejected");
     assert!(
         matches!(err, cityparquet::CityParquetError::Lod(_)),
         "must be a Lod error, got {err:?}"
@@ -148,13 +150,14 @@ fn uniformly_lodless_dataset_is_rejected() {
 fn geometry_instances_are_not_rejected_as_lodless() {
     let (_dir, path) = railway_source_with_crs();
     let src = Source::open(&path).unwrap();
-    scan(&src).expect("GeometryInstance geometries are lod-less by design, not an error");
+    scan(&src, GeometryEncoding::Wkb)
+        .expect("GeometryInstance geometries are lod-less by design, not an error");
 }
 
 #[test]
 fn delft_scan_matches_known_content() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     assert_eq!(s.object_count, 2231);
     let lod_strings: Vec<String> = s.lods.iter().map(ToString::to_string).collect();
     // "0" canonicalises to "0.0" — the LoD string always carries its minor
@@ -188,7 +191,7 @@ fn delft_scan_matches_known_content() {
 #[test]
 fn delft_city_and_geo_for_file_has_independent_primaries() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     assert_eq!(
         s.module_geo.len(),
         1,
@@ -246,7 +249,7 @@ fn extensions_declarations_reach_metadata() {
     std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
 
     let src = Source::open(&path).unwrap();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     let meta = s.base_city_metadata().unwrap();
     let extensions = meta
         .extensions
@@ -259,7 +262,10 @@ fn extensions_declarations_reach_metadata() {
     // The delft header carries no extensions key at all; that absence must be
     // preserved as None, not fabricated.
     let delft = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let delft_meta = scan(&delft).unwrap().base_city_metadata().unwrap();
+    let delft_meta = scan(&delft, GeometryEncoding::Wkb)
+        .unwrap()
+        .base_city_metadata()
+        .unwrap();
     assert!(delft_meta.extensions.is_none());
 }
 
@@ -282,7 +288,7 @@ fn source_metadata_and_appearance_defaults_reach_scan_metadata() {
     std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
 
     let src = Source::open(&path).unwrap();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     let meta = s.base_city_metadata().unwrap();
 
     let appearance_defaults = meta
@@ -308,7 +314,10 @@ fn source_metadata_and_appearance_defaults_reach_scan_metadata() {
     // delft's header carries no appearance key at all: that absence must be
     // preserved as None, not fabricated.
     let delft = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let delft_meta = scan(&delft).unwrap().base_city_metadata().unwrap();
+    let delft_meta = scan(&delft, GeometryEncoding::Wkb)
+        .unwrap()
+        .base_city_metadata()
+        .unwrap();
     assert!(delft_meta.appearance_defaults.is_none());
 }
 
@@ -316,7 +325,7 @@ fn source_metadata_and_appearance_defaults_reach_scan_metadata() {
 fn railway_scan_is_representable() {
     let (_dir, path) = railway_source_with_crs();
     let src = Source::open(&path).unwrap();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     assert_eq!(s.object_count, 121);
     assert!(!s.lods.is_empty());
     assert!(s.schema.to_arrow_schema().is_ok());
@@ -328,7 +337,8 @@ fn railway_scan_is_representable() {
 #[test]
 fn railway_without_a_crs_is_a_hard_conversion_error() {
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
-    let err = scan(&src).expect_err("coordinate-bearing input with no CRS must fail the scan");
+    let err = scan(&src, GeometryEncoding::Wkb)
+        .expect_err("coordinate-bearing input with no CRS must fail the scan");
     assert!(
         matches!(err, cityparquet::CityParquetError::Schema(_)),
         "expected a Schema error, got {err:?}"

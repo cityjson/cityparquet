@@ -139,7 +139,7 @@ fn citygml2_scan_infers_lod2_and_bbox() {
     use cityparquet_schema::GeometryEncoding;
 
     let src = source_with_crs(&fixture("b1_lod2_s.gml"));
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     assert_eq!(s.object_count, 1);
     let lods: Vec<String> = s.lods.iter().map(ToString::to_string).collect();
     assert_eq!(lods, ["2.0"]);
@@ -345,8 +345,10 @@ fn citygml2_composite_solid_with_semantics_and_xlinks() {
 #[test]
 fn citygml2_composite_solid_scans_to_correct_bbox() {
     use cityparquet::scan::scan;
+    use cityparquet_schema::GeometryEncoding;
+
     let src = source_with_crs(&fixture("b1_lod2_cs_w_sem.gml"));
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     assert_eq!(s.object_count, 1);
     assert_eq!(
         s.lods.iter().map(ToString::to_string).collect::<Vec<_>>(),
@@ -423,9 +425,10 @@ fn citygml2_real_building_attributes_and_crs() {
 fn citygml2_attributes_infer_columns() {
     use cityparquet::scan::scan;
     use cityparquet::schema::AttributeType;
+    use cityparquet_schema::GeometryEncoding;
 
     let src = Source::open(&data_fixture("savenow_ingolstadt_lod2.gml")).unwrap();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     let cols: std::collections::BTreeMap<String, AttributeType> =
         s.schema.attributes.iter().cloned().collect();
     assert_eq!(cols.get("measuredHeight"), Some(&AttributeType::Float64));

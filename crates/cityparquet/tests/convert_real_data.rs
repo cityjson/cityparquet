@@ -741,7 +741,8 @@ fn hilbert_ordering_keeps_features_contiguous_and_visits_them_in_non_decreasing_
     // itself computed (via `crate::scan::scan`) and used to key every
     // feature's Hilbert index during the sort.
     let src = cityparquet::source::Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let scan_result = cityparquet::scan::scan(&src).unwrap();
+    let scan_result =
+        cityparquet::scan::scan(&src, cityparquet_schema::GeometryEncoding::Wkb).unwrap();
     let dataset_bbox = scan_result
         .dataset_bbox
         .expect("delft has geometry, so a dataset bbox");

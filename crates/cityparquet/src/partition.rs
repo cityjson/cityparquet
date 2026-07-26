@@ -195,7 +195,7 @@ pub fn convert_partitioned(
         merged.doc_appearance.clone(),
         SourceFormat::CityJsonSeq,
     );
-    let mut full_scan = scan(&full)?;
+    let mut full_scan = scan(&full, opts.geometry_encoding)?;
     if opts.generate_lod0 {
         // Reserve the synthesised LoD0 column on the whole-dataset scan so every
         // partition shares it (§9); per-partition synthesis is switched on via
