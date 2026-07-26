@@ -82,6 +82,19 @@ fn read_vertices(vertices: &ListArray, row: usize) -> Result<Vec<[f64; 3]>> {
         row_values.as_ref(),
         "geometry_vertices_lod* item type Struct<x,y,z>",
     )?;
+    // `crate::geometry_encoding` verifies the declared column type before any
+    // row reaches here, so a three-field struct is guaranteed on every path
+    // through `decode_batch`. This check keeps the guarantee local anyway:
+    // `column(0..=2)` panics on a shorter struct, and this module's contract
+    // (see the module docs) is that malformed input NEVER crashes the reader
+    // process, whichever entry point reached it.
+    if structs.num_columns() < 3 {
+        return Err(geometry_err(format!(
+            "arrow-native geometry decode: vertex-pool items must be a Struct<x,y,z> with 3 \
+             fields, found {} (corrupt or foreign file)",
+            structs.num_columns()
+        )));
+    }
     let x = downcast::<Float64Array>(
         structs.column(0).as_ref(),
         "vertex struct field 0 (x: Float64)",

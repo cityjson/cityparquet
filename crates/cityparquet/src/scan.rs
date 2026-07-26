@@ -144,6 +144,42 @@ fn is_geoparquet_legal_type(type_name: &str, encoding: GeometryEncoding) -> bool
         && !matches!(type_name, "PolyhedralSurface Z" | "GeometryCollection Z")
 }
 
+/// Validate one source geometry against the encoding the eventual write will
+/// actually use, returning its bbox (`None` for a `GeometryInstance` or a
+/// fully-degenerate geometry, which contribute no coordinates).
+///
+/// This is the scan's ONLY geometry validation, and it runs in the first,
+/// read-only pass — before [`crate::partition::convert_partitioned`] purges a
+/// previous run's partitions. Validating everything through the WKB encoder
+/// regardless of `encoding` was therefore a data-loss bug: a `MultiPoint`/
+/// `MultiLineString` source is perfectly valid WKB but outside the
+/// arrow-native encoding's phase-1 type scope, so under
+/// [`GeometryEncoding::ArrowNative`] it passed this scan, complete prior
+/// partitions were deleted, and only THEN did the encode pass reject it.
+///
+/// - [`GeometryEncoding::Wkb`]: exactly the previous behaviour, unchanged —
+///   [`geometry_to_wkb`] both validates and yields the bbox.
+/// - [`GeometryEncoding::ArrowNative`]: the same phase-1 type rejection
+///   `arrow_geom_write::geometry_to_compacted` applies at encode time, from
+///   the SAME helper so the two can never diverge, and THEN the WKB pass for
+///   the bbox. Deriving the bbox from WKB stays correct under either
+///   encoding: `geometry_to_compacted` reuses `wkb_write`'s own ring/shell
+///   normalisation and dereferences the same [`VertexPool`], so both encoders
+///   write the identical coordinate set for a given geometry — the arrow-native
+///   payload only indexes it differently. Every non-type failure mode
+///   (malformed `boundaries`, out-of-range vertex index) is likewise shared
+///   verbatim between the two encoders, so the WKB pass catches it for both.
+fn validate_geometry(
+    geom: &cjseq::Geometry,
+    pool: &VertexPool,
+    encoding: GeometryEncoding,
+) -> Result<Option<[f64; 6]>> {
+    if encoding == GeometryEncoding::ArrowNative {
+        crate::arrow_geom_write::ensure_arrow_native_type_supported(&geom.thetype)?;
+    }
+    Ok(geometry_to_wkb(geom, pool)?.map(|outcome| outcome.bbox))
+}
+
 fn to_schema_source_format(format: SourceFormat) -> SchemaSourceFormat {
     match format {
         SourceFormat::CityJson => SchemaSourceFormat::CityJson,
@@ -227,7 +263,7 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
                 continue;
             };
             for geom in geoms {
-                let bbox = geometry_to_wkb(geom, &pool)?.map(|outcome| outcome.bbox);
+                let bbox = validate_geometry(geom, &pool, encoding)?;
                 match &geom.lod {
                     Some(lod) => {
                         let parsed = Lod::parse(lod).map_err(|_| {

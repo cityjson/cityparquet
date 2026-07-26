@@ -119,11 +119,10 @@ impl CityColumnEntry {
     ) -> Self {
         Self {
             name: name.into(),
-            encoding: match encoding {
-                GeometryEncoding::Wkb => "WKB",
-                GeometryEncoding::ArrowNative => "CityParquetArrowNative-v1",
-            }
-            .to_string(),
+            // The SAME token vocabulary a reader resolves the encoding back
+            // out of (`GeometryEncoding::from_footer_token`) — one source of
+            // truth, so writer and reader can never drift apart on spelling.
+            encoding: encoding.footer_token().to_string(),
             geometry_types,
             crs: None,
             orientation_3d: Orientation3d::RightHanded,

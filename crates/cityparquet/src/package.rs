@@ -1269,7 +1269,13 @@ pub(crate) fn convert_source_impl(
     // table's own realised column set is settled, post-encode — see
     // `write_package` -> `TableWriters::finish`. `writer_properties` is now
     // purely the per-column compression/encoding recipe.
-    let props = opts.recipe.writer_properties(&scan_result.schema)?;
+    // Same `opts.geometry_encoding` the arrow schema above was rendered
+    // under, so the recipe's per-column rules are keyed to the physical
+    // column paths this file will ACTUALLY carry (see
+    // `WriterRecipe::writer_properties`).
+    let props = opts
+        .recipe
+        .writer_properties(&scan_result.schema, opts.geometry_encoding)?;
 
     // Everything above is fallible but never touches `opts.output_dir` at
     // all, so none of it needs any cleanup. From here on, every new file

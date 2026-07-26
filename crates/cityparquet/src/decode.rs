@@ -202,40 +202,18 @@ fn downcast<'a, T: 'static>(array: &'a dyn Array, name: &str) -> Result<&'a T> {
 }
 
 /// One physical geometry column set for one LoD (or the legacy `None`-LoD
-/// case): its own [`GeometryEncoding`] — read once here, straight off the
-/// column's `DataType`, never inferred per row — plus its
+/// case): its own [`GeometryEncoding`] — resolved once here from the file's
+/// FOOTER declaration and checked against the physical column
+/// ([`crate::geometry_encoding`]), never inferred per row — plus its
 /// `geometry_properties_lod*` sibling and, named by the same convention but
-/// only ever populated (via [`geometry_columns`]'s schema lookup) when
-/// `encoding == GeometryEncoding::ArrowNative`, its `geometry_vertices_lod*`
-/// vertex-pool sibling.
+/// only ever populated when `encoding == GeometryEncoding::ArrowNative`, its
+/// `geometry_vertices_lod*` vertex-pool sibling.
 struct GeometryColumnSpec {
     lod: Option<Lod>,
     geometry_name: String,
     properties_name: String,
     vertices_name: String,
     encoding: GeometryEncoding,
-}
-
-/// The [`GeometryEncoding`] the `geometry_name` column in `schema` was
-/// rendered under, read directly off its `DataType`: `Binary` is
-/// [`GeometryEncoding::Wkb`], the nested `List` is
-/// [`GeometryEncoding::ArrowNative`] — Task 1 made the two shapes
-/// structurally distinguishable, so no separate metadata flag is needed to
-/// tell them apart.
-fn column_geometry_encoding(schema: &Schema, geometry_name: &str) -> Result<GeometryEncoding> {
-    let field = schema.field_with_name(geometry_name).map_err(|_| {
-        err(format!(
-            "record batch missing expected column '{geometry_name}'"
-        ))
-    })?;
-    match field.data_type() {
-        DataType::Binary => Ok(GeometryEncoding::Wkb),
-        DataType::List(_) => Ok(GeometryEncoding::ArrowNative),
-        other => Err(err(format!(
-            "geometry column '{geometry_name}' has an arrow type neither encoding renders: \
-             {other:?} (expected Binary for WKB or List for arrow-native)"
-        ))),
-    }
 }
 
 /// One [`GeometryColumnSpec`] per geometry column present in `schema`,
@@ -250,7 +228,7 @@ fn column_geometry_encoding(schema: &Schema, geometry_name: &str) -> Result<Geom
 /// `None`-LoD entry; the two shapes are mutually exclusive by construction,
 /// but both are checked unconditionally so a file carrying both would still
 /// decode every geometry column.
-fn geometry_columns(schema: &Schema) -> Result<Vec<GeometryColumnSpec>> {
+fn geometry_columns(schema: &Schema, meta: &CityMetadata) -> Result<Vec<GeometryColumnSpec>> {
     let mut cols: Vec<(Option<Lod>, String, String, String)> = schema
         .fields()
         .iter()
@@ -277,7 +255,12 @@ fn geometry_columns(schema: &Schema) -> Result<Vec<GeometryColumnSpec>> {
     }
     cols.into_iter()
         .map(|(lod, geometry_name, properties_name, vertices_name)| {
-            let encoding = column_geometry_encoding(schema, &geometry_name)?;
+            let encoding = crate::geometry_encoding::resolve_geometry_encoding(
+                meta,
+                schema,
+                &geometry_name,
+                &vertices_name,
+            )?;
             Ok(GeometryColumnSpec {
                 lod,
                 geometry_name,
@@ -491,7 +474,7 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         "template.transformationMatrix",
     )?;
 
-    let geometry_cols = geometry_columns(&schema)?;
+    let geometry_cols = geometry_columns(&schema, meta)?;
     let geometry_arrays: Vec<(Option<Lod>, GeometryColumnArrays<'_>, &StructArray)> = geometry_cols
         .iter()
         .map(|col| {

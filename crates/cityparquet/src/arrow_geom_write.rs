@@ -87,6 +87,49 @@ pub(crate) struct CompactedOutcome {
     pub(crate) dropped_surfaces: Vec<usize>,
 }
 
+/// Refuses `thetype` when it falls outside the arrow-native encoding's phase-1
+/// type scope (design doc "Type coverage (v1)"): `MultiPoint`/
+/// `MultiLineString` do; `GeometryInstance` is accepted here because it needs
+/// no geometry cell at all under either encoding.
+///
+/// THE single source of truth for that rejection, shared by
+/// [`geometry_to_compacted`] (write time) and [`crate::scan`] (scan time), so
+/// an arrow-native conversion refuses an unsupported source in its FIRST,
+/// read-only pass rather than only once the encoder reaches the geometry.
+/// That ordering is load-bearing, not cosmetic:
+/// [`crate::partition::convert_partitioned`] deletes a previous run's
+/// partitions between the canonical scan and the encode pass, so a type this
+/// scan waved through would cost the user complete, valid output before the
+/// encoder ever got to reject it.
+///
+/// A pure type check by design — it needs no [`VertexPool`] and allocates
+/// nothing, so the scan pays nothing for it; every OTHER way
+/// [`geometry_to_compacted`] can fail (a malformed `boundaries` array, an
+/// out-of-range vertex index) is shared verbatim with `wkb_write` and is
+/// therefore already caught by the scan's existing WKB validation pass.
+pub(crate) fn ensure_arrow_native_type_supported(thetype: &GeometryType) -> Result<()> {
+    match thetype {
+        GeometryType::MultiPoint | GeometryType::MultiLineString => {
+            Err(unsupported_arrow_native_type(thetype))
+        }
+        GeometryType::GeometryInstance
+        | GeometryType::MultiSurface
+        | GeometryType::CompositeSurface
+        | GeometryType::Solid
+        | GeometryType::MultiSolid
+        | GeometryType::CompositeSolid => Ok(()),
+    }
+}
+
+/// The single wording of the phase-1 type rejection, so the scan-time and
+/// encode-time refusals of the same source read identically.
+fn unsupported_arrow_native_type(thetype: &GeometryType) -> CityParquetError {
+    CityParquetError::Geometry(format!(
+        "{thetype:?} is not supported by the arrow-native encoding in phase 1 \
+         (design doc \"Type coverage (v1)\") — use --geometry-encoding wkb for this source"
+    ))
+}
+
 /// `cjseq::Geometry` -> `Option<CompactedOutcome>`, phase-1 types only
 /// (`MultiSurface`/`CompositeSurface`/`Solid`/`MultiSolid`/`CompositeSolid`
 /// — design doc "Type coverage (v1)"). Mirrors `wkb_write::geometry_to_wkb`'s
@@ -100,16 +143,20 @@ pub(crate) fn geometry_to_compacted(
     geom: &Geometry,
     pool: &VertexPool,
 ) -> Result<Option<CompactedOutcome>> {
+    // The phase-1 type check lives in `ensure_arrow_native_type_supported` so
+    // the scan can apply the IDENTICAL rejection one pass earlier — see that
+    // function's doc comment.
+    ensure_arrow_native_type_supported(&geom.thetype)?;
     let mut drops = Drops::default();
     let mut c = Compactor::new(pool);
     let kind = match geom.thetype {
         GeometryType::GeometryInstance => return Ok(None),
         GeometryType::MultiPoint | GeometryType::MultiLineString => {
-            return Err(CityParquetError::Geometry(format!(
-                "{:?} is not supported by the arrow-native encoding in phase 1 \
-                 (design doc \"Type coverage (v1)\") — use --geometry-encoding wkb for this source",
-                geom.thetype
-            )));
+            // Unreachable: the guard above already refused these. Written as
+            // a returning arm rather than `unreachable!` so that if the guard
+            // and this dispatch ever drift apart, an encoder in a library
+            // degrades into a clean error instead of panicking mid-write.
+            return Err(unsupported_arrow_native_type(&geom.thetype));
         }
         GeometryType::MultiSurface | GeometryType::CompositeSurface => {
             let surfaces: Vec<Vec<Vec<usize>>> = boundaries(geom)?;
