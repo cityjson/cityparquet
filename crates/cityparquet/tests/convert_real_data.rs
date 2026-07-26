@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use arrow_array::types::Int32Type;
-use arrow_array::{Array, DictionaryArray, Float64Array, StringArray, StructArray};
+use arrow_array::{Array, DictionaryArray, Float64Array, ListArray, StringArray, StructArray};
 use cityparquet::CityParquetError;
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
@@ -1405,14 +1405,13 @@ fn geoarrow_opt_in_restores_tag_and_geo_key() {
     );
 }
 
-/// `ConvertOptions::geometry_encoding = ArrowNative` (this plan's Task 2) —
-/// STILL EXPECTED TO FAIL at this stage: only the DECLARED schema
-/// (`CityParquetSchema::to_arrow_schema_tagged`, Task 1) responds to the
-/// chosen encoding so far. `crate::encode`'s row-writer has no arrow-native
-/// row-building path until Task 6, so it still only ever produces WKB bytes
-/// — desyncing the writer's declared (arrow-native) schema from what the
-/// encoded batches actually contain. This test documents that gap; revisit
-/// it once Task 6 lands the matching encoder.
+/// `ConvertOptions::geometry_encoding = ArrowNative` (this plan's Task 2) end
+/// to end: the row-writer (this plan's Task 6) now actually builds the
+/// nested `geometry_lod*` / `geometry_vertices_lod*` columns the declared
+/// (arrow-native) schema promises, so this checks both the DECLARED shape
+/// (field types/names) and, below, that at least one row's cells actually
+/// carry real, non-empty geometry — not just an all-null column of the
+/// right shape.
 #[test]
 fn geometry_encoding_arrow_native_writes_nested_geometry_column() {
     let out = tempfile::tempdir().unwrap();
@@ -1441,6 +1440,100 @@ fn geometry_encoding_arrow_native_writes_nested_geometry_column() {
     assert!(
         schema.field_with_name("geometry_vertices_lod1_2").is_ok(),
         "arrow-native encoding must write the vertices sibling column"
+    );
+
+    // Field TYPES/NAMES alone don't prove the encoder actually wrote real
+    // data — an all-null column of the right shape would pass every
+    // assertion above too. Read the batches back and confirm at least one
+    // row's `geometry_lod1_2` cell is non-null with a non-empty solid list,
+    // AND that its `geometry_vertices_lod1_2` sibling is non-null with a
+    // non-empty vertex-pool list — the pair a reader needs to dereference
+    // the geometry's vertex indices at all.
+    let reader = builder.build().unwrap();
+    let mut checked_a_non_empty_row = false;
+    for batch in reader {
+        let batch = batch.unwrap();
+        let geom_col: &ListArray = batch
+            .column_by_name("geometry_lod1_2")
+            .expect("geometry_lod1_2 column present in every batch")
+            .as_any()
+            .downcast_ref()
+            .expect("arrow-native geometry_lod1_2 is a ListArray");
+        let vert_col: &ListArray = batch
+            .column_by_name("geometry_vertices_lod1_2")
+            .expect("geometry_vertices_lod1_2 column present in every batch")
+            .as_any()
+            .downcast_ref()
+            .expect("arrow-native geometry_vertices_lod1_2 is a ListArray");
+        for row in 0..batch.num_rows() {
+            if geom_col.is_valid(row) && geom_col.value_length(row) > 0 {
+                assert!(
+                    vert_col.is_valid(row) && vert_col.value_length(row) > 0,
+                    "row {row} has non-empty geometry_lod1_2 but a null/empty \
+                     geometry_vertices_lod1_2 sibling — the geometry's vertex \
+                     indices would dereference nothing"
+                );
+                checked_a_non_empty_row = true;
+            }
+        }
+    }
+    assert!(
+        checked_a_non_empty_row,
+        "expected at least one row with real, non-empty geometry_lod1_2 / \
+         geometry_vertices_lod1_2 data — delft has real Solids at this LoD"
+    );
+}
+
+/// Regression (Task 6 review): `RowWriter::finish_arrays`'s arrow-native
+/// slot used to unconditionally push BOTH the geometry array and its
+/// vertices sibling — but `CityParquetSchema::to_arrow_schema_tagged`'s
+/// empty-`lods` (bare, un-suffixed) branch never declares a bare
+/// `geometry_vertices` field, only the per-LoD loop adds
+/// `geometry_vertices_lod*` (`cityparquet-schema/src/model.rs`). A
+/// geometry-less dataset converted under `GeometryEncoding::ArrowNative`
+/// therefore built one array too many for the declared (empty-lods) schema,
+/// and `RecordBatch::try_new` failed inside `BatchIter::finish_batch` before
+/// per-module pruning ever ran. Must convert cleanly under arrow-native
+/// exactly like the WKB path already does — see
+/// `geometryless_dataset_writes_no_geometry_columns` just below, whose
+/// assertions this mirrors.
+#[test]
+fn geometry_encoding_arrow_native_handles_a_geometryless_dataset() {
+    let (_src_dir, src) = geometryless_delft_fixture();
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(src, out.path().to_path_buf());
+    opts.geometry_encoding = cityparquet_schema::GeometryEncoding::ArrowNative;
+    let report = convert(&opts).unwrap();
+    assert_eq!(report.object_count, 2231);
+
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let schema = builder.schema();
+
+    // No geometry column of ANY shape — neither the bare quartet (nor its
+    // arrow-native `geometry_vertices` sibling) nor a suffixed
+    // geometry_lod*/geometry_vertices_lod*/material_lod*/texture_lod* one.
+    for col in [
+        "geometry",
+        "geometry_vertices",
+        "geometry_properties",
+        "material",
+        "texture",
+    ] {
+        assert!(
+            schema.field_with_name(col).is_err(),
+            "a geometry-less table must not carry the bare '{col}' column"
+        );
+    }
+    assert!(
+        !schema.fields().iter().any(|f| {
+            let n = f.name();
+            n.starts_with("geometry_lod")
+                || n.starts_with("geometry_vertices_lod")
+                || n.starts_with("material_lod")
+                || n.starts_with("texture_lod")
+        }),
+        "a geometry-less table must not carry any per-LoD geometry/appearance column"
     );
 }
 

@@ -665,8 +665,10 @@ fn build_address_rows(co: &CityObject, pool: &VertexPool) -> Result<Option<Vec<A
 #[derive(Default)]
 struct GeometryAccumulator {
     /// Column slot key (LoD suffix, or `""` for the un-suffixed `geometry`
-    /// column) -> (WKB bytes, bbox, geometry_properties JSON, material JSON,
-    /// texture JSON). Appearance is keyed by the SAME canonical slot key as
+    /// column) -> ([`GeometryPayload`] (WKB bytes or a compacted
+    /// arrow-native [`DecodedGeometry`], depending on the `RowWriter`'s
+    /// encoding), bbox, geometry_properties JSON, material JSON, texture
+    /// JSON). Appearance is keyed by the SAME canonical slot key as
     /// the geometry it decorates (§11.1), so the raw-vs-canonical LoD-key
     /// mismatch that the old single-column layout had to guard against
     /// cannot arise: a LoD's geometry, semantics and appearance share one key.
@@ -987,9 +989,11 @@ fn accumulate_geometry(
 
 /// Synthesise an LoD0 footprint slot for `co` from its lowest higher-LoD
 /// boundary geometry (§9 "LoD0 synthesis"). Returns the `geometry_lod0_0`
-/// slot payload (WKB `MultiPolygonZ` + `geometry_properties`, with no
-/// `"lod"` field — the struct carries no such field, and the LoD lives only
-/// in the column name), the footprint bbox, and the SOURCE column the
+/// slot payload (a `MultiPolygonZ`-shaped [`GeometryPayload`] — WKB bytes or
+/// a compacted arrow-native [`DecodedGeometry`], depending on `encoding` —
+/// plus `geometry_properties`, with no `"lod"` field — the struct carries no
+/// such field, and the LoD lives only in the column name), the footprint
+/// bbox, and the SOURCE column the
 /// footprint was derived from (e.g. `"geometry_lod2_2"`) — the caller
 /// records that as the row's `other.cityparquet:lod0_0_source` provenance
 /// (spec "LoD0 synthesis"): `geometry_properties`'s struct shape has no slot
@@ -1730,7 +1734,25 @@ impl RowWriter {
                     // — swapping these would silently misalign every later
                     // column against the declared schema.
                     arrays.push(geometry_array);
-                    arrays.push(vertices_array);
+                    // Reviewer-found regression: `to_arrow_schema_tagged`'s
+                    // empty-`lods` (bare, un-suffixed) branch — this
+                    // `RowWriter`'s single slot when `!self.per_lod` — never
+                    // declares a bare `geometry_vertices` field, only the
+                    // per-LoD loop adds `geometry_vertices_lod*`
+                    // (cityparquet-schema/src/model.rs). Pushing
+                    // `vertices_array` unconditionally therefore built one
+                    // array too many for that schema and
+                    // `RecordBatch::try_new` failed. Safe to drop here: a
+                    // `!self.per_lod` `RowWriter` can never populate ANY
+                    // geometry slot with real data in the first place (see
+                    // `accumulate_geometry`'s `per_lod` guard — a
+                    // non-instance geometry reaching it when `per_lod` is
+                    // false is itself an invariant-violation error), so this
+                    // slot's `vertices_array` would have been all-null
+                    // padding regardless.
+                    if self.per_lod {
+                        arrays.push(vertices_array);
+                    }
                 }
             }
             arrays.push(slot.properties.finish());

@@ -7,12 +7,12 @@
 //! dedup (design doc round-2 correction — two different source indices
 //! with identical coordinates stay two separate pool entries).
 //!
-//! Nothing in this crate calls [`geometry_to_compacted`] yet — Task 6 wires
-//! it into `encode.rs` wherever it currently calls
-//! `wkb_write::geometry_to_wkb`. Until then the module is otherwise inert,
-//! hence the blanket `dead_code` allow below.
-
-#![allow(dead_code)]
+//! `crate::encode`'s `RowWriter` calls [`geometry_to_compacted`] and drives
+//! [`ArrowGeomBuilders`] wherever it would otherwise call
+//! `wkb_write::geometry_to_wkb` and append to a plain `BinaryBuilder`,
+//! whenever `ConvertOptions.geometry_encoding == GeometryEncoding::ArrowNative`
+//! (this plan's Task 6) — the WKB path remains the default and is otherwise
+//! untouched.
 
 use std::collections::HashMap;
 use std::sync::Arc;
