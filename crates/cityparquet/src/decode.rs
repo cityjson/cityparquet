@@ -20,7 +20,7 @@ use arrow_schema::{DataType, Schema, TimeUnit};
 use chrono::{SecondsFormat, TimeZone, Utc};
 use serde_json::{Map, Value};
 
-use cityparquet_schema::{CityMetadata, CityParquetError, Lod, Result};
+use cityparquet_schema::{CityMetadata, CityParquetError, GeometryEncoding, Lod, Result};
 
 use crate::wkb_read::{self, DecodedGeometry};
 
@@ -201,20 +201,35 @@ fn downcast<'a, T: 'static>(array: &'a dyn Array, name: &str) -> Result<&'a T> {
         .ok_or_else(|| err(format!("column '{name}' has an unexpected array type")))
 }
 
-/// `(lod, geometry column name, geometry_properties column name)` triples
-/// present in `schema`, ascending by LoD. Mirrors
-/// `CityParquetReaderBuilder::cityparquet_arrow_schema`'s LoD derivation:
-/// only `geometry_lod*` names parse as a LoD suffix — `geometry_properties_lod*`
-/// also starts with `geometry_` but is excluded because `"properties_lod1"`
-/// does not parse as one. A geometry-less table carries no geometry column at
-/// all (the current writer prunes them; spec "Levels of detail"), so it yields
-/// no entries here. A LEGACY/FOREIGN file may still carry the single unsuffixed
-/// `geometry`/`geometry_properties` pair, read defensively as a `None`-LoD
-/// entry; the two shapes are mutually exclusive by construction, but both are
-/// checked unconditionally so a file carrying both would still decode every
-/// geometry column.
-fn geometry_columns(schema: &Schema) -> Vec<(Option<Lod>, String, String)> {
-    let mut cols: Vec<(Option<Lod>, String, String)> = schema
+/// One physical geometry column set for one LoD (or the legacy `None`-LoD
+/// case): its own [`GeometryEncoding`] — resolved once here from the file's
+/// FOOTER declaration and checked against the physical column
+/// ([`crate::geometry_encoding`]), never inferred per row — plus its
+/// `geometry_properties_lod*` sibling and, named by the same convention but
+/// only ever populated when `encoding == GeometryEncoding::ArrowNative`, its
+/// `geometry_vertices_lod*` vertex-pool sibling.
+struct GeometryColumnSpec {
+    lod: Option<Lod>,
+    geometry_name: String,
+    properties_name: String,
+    vertices_name: String,
+    encoding: GeometryEncoding,
+}
+
+/// One [`GeometryColumnSpec`] per geometry column present in `schema`,
+/// ascending by LoD. Mirrors `CityParquetReaderBuilder::cityparquet_arrow_schema`'s
+/// LoD derivation: only `geometry_lod*` names parse as a LoD suffix —
+/// `geometry_properties_lod*`/`geometry_vertices_lod*` also start with
+/// `geometry_` but are excluded because `"properties_lod1"`/`"vertices_lod1"`
+/// do not parse as one. A geometry-less table carries no geometry column at
+/// all (the current writer prunes them; spec "Levels of detail"), so it
+/// yields no entries here. A LEGACY/FOREIGN file may still carry the single
+/// unsuffixed `geometry`/`geometry_properties` pair, read defensively as a
+/// `None`-LoD entry; the two shapes are mutually exclusive by construction,
+/// but both are checked unconditionally so a file carrying both would still
+/// decode every geometry column.
+fn geometry_columns(schema: &Schema, meta: &CityMetadata) -> Result<Vec<GeometryColumnSpec>> {
+    let mut cols: Vec<(Option<Lod>, String, String, String)> = schema
         .fields()
         .iter()
         .filter_map(|f| {
@@ -225,18 +240,57 @@ fn geometry_columns(schema: &Schema) -> Vec<(Option<Lod>, String, String)> {
                 Some(lod),
                 name.clone(),
                 format!("geometry_properties_{suffix}"),
+                format!("geometry_vertices_{suffix}"),
             ))
         })
         .collect();
-    cols.sort_by_key(|(lod, _, _)| *lod);
+    cols.sort_by_key(|(lod, ..)| *lod);
     if schema.field_with_name("geometry").is_ok() {
         cols.push((
             None,
             "geometry".to_string(),
             "geometry_properties".to_string(),
+            "geometry_vertices".to_string(),
         ));
     }
-    cols
+    cols.into_iter()
+        .map(|(lod, geometry_name, properties_name, vertices_name)| {
+            let encoding = crate::geometry_encoding::resolve_geometry_encoding(
+                meta,
+                schema,
+                &geometry_name,
+                &vertices_name,
+            )?;
+            Ok(GeometryColumnSpec {
+                lod,
+                geometry_name,
+                properties_name,
+                vertices_name,
+                encoding,
+            })
+        })
+        .collect()
+}
+
+/// One geometry column's decoded array handle: either the WKB `BinaryArray`,
+/// or the arrow-native `geometry_lod*`/`geometry_vertices_lod*` `ListArray`
+/// pair — resolved once per column (via [`GeometryColumnSpec::encoding`]),
+/// never re-inferred per row.
+enum GeometryColumnArrays<'a> {
+    Wkb(&'a BinaryArray),
+    ArrowNative {
+        geometry: &'a ListArray,
+        vertices: &'a ListArray,
+    },
+}
+
+impl GeometryColumnArrays<'_> {
+    fn is_null(&self, row: usize) -> bool {
+        match self {
+            Self::Wkb(geom) => geom.is_null(row),
+            Self::ArrowNative { geometry, .. } => geometry.is_null(row),
+        }
+    }
 }
 
 /// A nullable `List<Utf8>` cell: `None` when the column is null at `row`,
@@ -420,14 +474,32 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         "template.transformationMatrix",
     )?;
 
-    let geometry_cols = geometry_columns(&schema);
-    let geometry_arrays: Vec<(Option<Lod>, &BinaryArray, &StructArray)> = geometry_cols
+    let geometry_cols = geometry_columns(&schema, meta)?;
+    let geometry_arrays: Vec<(Option<Lod>, GeometryColumnArrays<'_>, &StructArray)> = geometry_cols
         .iter()
-        .map(|(lod, geom_name, props_name)| {
-            let geom = downcast::<BinaryArray>(get_column(batch, geom_name)?.as_ref(), geom_name)?;
-            let props =
-                downcast::<StructArray>(get_column(batch, props_name)?.as_ref(), props_name)?;
-            Ok((*lod, geom, props))
+        .map(|col| {
+            let props = downcast::<StructArray>(
+                get_column(batch, &col.properties_name)?.as_ref(),
+                &col.properties_name,
+            )?;
+            let arrays = match col.encoding {
+                GeometryEncoding::Wkb => GeometryColumnArrays::Wkb(downcast::<BinaryArray>(
+                    get_column(batch, &col.geometry_name)?.as_ref(),
+                    &col.geometry_name,
+                )?),
+                GeometryEncoding::ArrowNative => {
+                    let geometry = downcast::<ListArray>(
+                        get_column(batch, &col.geometry_name)?.as_ref(),
+                        &col.geometry_name,
+                    )?;
+                    let vertices = downcast::<ListArray>(
+                        get_column(batch, &col.vertices_name)?.as_ref(),
+                        &col.vertices_name,
+                    )?;
+                    GeometryColumnArrays::ArrowNative { geometry, vertices }
+                }
+            };
+            Ok((col.lod, arrays, props))
         })
         .collect::<Result<_>>()?;
 
@@ -495,12 +567,36 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         let address = decode_address_column(address_col, row)?;
 
         let mut geometries = Vec::with_capacity(geometry_arrays.len());
-        for (lod, geom_arr, props_arr) in &geometry_arrays {
-            if geom_arr.is_null(row) {
+        for (lod, arrays, props_arr) in &geometry_arrays {
+            if arrays.is_null(row) {
                 continue;
             }
-            let decoded = wkb_read::wkb_to_geometry(geom_arr.value(row))?;
             let props = crate::geometry_properties::read_geometry_properties(props_arr, row)?;
+            let decoded = match arrays {
+                GeometryColumnArrays::Wkb(geom_arr) => {
+                    wkb_read::wkb_to_geometry(geom_arr.value(row))?
+                }
+                GeometryColumnArrays::ArrowNative { geometry, vertices } => {
+                    // `decode_row` dispatches on `geometry_properties.type`
+                    // to know how to interpret/strip the physical shape's
+                    // padding dimensions (design doc "Critical invariant" —
+                    // never inferred from nesting depth), so that field must
+                    // be present whenever the geometry cell itself is
+                    // non-null (checked above) — its absence means a
+                    // corrupt/hand-rolled file, an error rather than a panic.
+                    let type_name = props
+                        .as_ref()
+                        .and_then(|p| p.get("type"))
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            err(format!(
+                                "object '{id}': arrow-native geometry has no \
+                                 geometry_properties.type to dispatch decode on"
+                            ))
+                        })?;
+                    crate::arrow_geom_read::decode_row(geometry, vertices, row, type_name)?
+                }
+            };
             // Every geometry column, including LoD0, is suffixed (spec
             // "Levels of detail") — `lod` already carries the geometry's LoD
             // straight from the column name. The only `None` case left is the

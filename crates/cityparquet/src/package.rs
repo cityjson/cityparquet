@@ -22,8 +22,8 @@ use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
 use cityparquet_schema::{
-    AttributeType, CityMetadata, CityParquetError, CityParquetSchema, ExtensionRegistry, Lod,
-    ModuleKey, ModuleKeyResolver, Result, geometry_column_name,
+    AttributeType, CityMetadata, CityParquetError, CityParquetSchema, ExtensionRegistry,
+    GeometryEncoding, Lod, ModuleKey, ModuleKeyResolver, Result, geometry_column_name,
 };
 use cjseq::CityJSONFeature;
 
@@ -104,6 +104,13 @@ pub struct ConvertOptions {
     /// `three_d` extension's `ST_3DFromWKB(BLOB)` with zero setup); ON for
     /// GeoPandas/QGIS/GDAL interop.
     pub geoarrow: bool,
+    /// Which physical Arrow encoding `geometry_lod*` columns use. `Wkb` (the
+    /// default) is normative; `ArrowNative` is the experimental
+    /// `arrow-native-type` branch encoding (nested Arrow `List`/`Struct`
+    /// columns plus a `geometry_vertices_lod*` sibling, instead of a WKB
+    /// `BLOB`) — see
+    /// `docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`.
+    pub geometry_encoding: GeometryEncoding,
     /// Synthesise an LoD0 footprint into the `geometry_lod0_0` column when an
     /// object has no source LoD0 (§9 "LoD0 synthesis"). A synthesised footprint
     /// is marked in `geometry_properties` and exported with the canonical
@@ -135,6 +142,7 @@ impl ConvertOptions {
             recipe: WriterRecipe::default(),
             ordering: RowOrder::default(),
             geoarrow: false,
+            geometry_encoding: GeometryEncoding::default(),
             // Off here (source-faithful library default); the CLI turns it on.
             generate_lod0: false,
             lod0: Lod0Options::default(),
@@ -350,7 +358,7 @@ pub(crate) fn build_template_rows(
         };
         let (material, texture, props) = rewrite_geometry_appearance(
             tpl,
-            &outcome,
+            &outcome.dropped_surfaces,
             interner,
             &defs,
             &format!("geometry template {i}"),
@@ -512,8 +520,17 @@ fn module_geo_by_file(
 /// dataset's attribute columns in scan order. Mirrors
 /// `CityParquetSchema::to_arrow_schema`'s non-empty-lods field order exactly,
 /// so every name here is guaranteed to resolve in the dataset-wide (wide)
-/// rendered schema.
-fn module_column_names(file_lods: &[Lod], attributes: &[(String, AttributeType)]) -> Vec<String> {
+/// rendered schema — including the `geometry_vertices_lod*` sibling
+/// [`CityParquetSchema::to_arrow_schema_tagged`] adds right after each
+/// `geometry_lod*` column under [`GeometryEncoding::ArrowNative`] (this
+/// plan's Task 6): omitting it here would silently prune the arrow-native
+/// geometry column's only vertex data out of every by-module table, leaving
+/// `geometry_lod*` behind with indices into nothing.
+fn module_column_names(
+    file_lods: &[Lod],
+    attributes: &[(String, AttributeType)],
+    encoding: GeometryEncoding,
+) -> Vec<String> {
     let mut names: Vec<String> = [
         "id",
         "feature_id",
@@ -529,6 +546,9 @@ fn module_column_names(file_lods: &[Lod], attributes: &[(String, AttributeType)]
     .collect();
     for lod in file_lods {
         names.push(geometry_column_name("geometry", lod));
+        if encoding == GeometryEncoding::ArrowNative {
+            names.push(geometry_column_name("geometry_vertices", lod));
+        }
         names.push(geometry_column_name("geometry_properties", lod));
         names.push(geometry_column_name("material", lod));
         names.push(geometry_column_name("texture", lod));
@@ -657,6 +677,13 @@ struct TableWriters {
     /// collide with a core file) — that is a hard `Schema` error, never a
     /// silent merge of two distinct modules into one table.
     claimed_by: HashMap<String, ModuleKey>,
+    /// The REAL [`GeometryEncoding`] `wide_schema`'s geometry columns were
+    /// rendered under — [`Self::finish`] feeds it to
+    /// [`crate::scan::city_and_geo_for_file`] so each table's
+    /// `city.columns[].encoding` agrees with the physical schema, rather
+    /// than the old hardcoded `"WKB"` regardless of caller (this plan's
+    /// Task 2, step 4b).
+    geometry_encoding: GeometryEncoding,
     writers: Vec<ArrowWriter<fs::File>>,
     /// Per-writer-index projection: `wide_schema` field indices selecting
     /// that table's own pruned column set, in that table's own column order
@@ -693,6 +720,7 @@ impl TableWriters {
         base_city: CityMetadata,
         attributes: Vec<(String, AttributeType)>,
         force_identity_projection: bool,
+        geometry_encoding: GeometryEncoding,
     ) -> Result<Self> {
         Ok(Self {
             tmp_dir: tmp_dir.to_path_buf(),
@@ -700,6 +728,7 @@ impl TableWriters {
             module_lods_by_file,
             module_geo_by_file,
             base_city,
+            geometry_encoding,
             attributes,
             force_identity_projection,
             props,
@@ -727,7 +756,7 @@ impl TableWriters {
         }
         let empty = Vec::new();
         let file_lods = self.module_lods_by_file.get(name).unwrap_or(&empty);
-        module_column_names(file_lods, &self.attributes)
+        module_column_names(file_lods, &self.attributes, self.geometry_encoding)
             .iter()
             .map(|column| {
                 self.wide_schema.index_of(column).map_err(|e| {
@@ -860,7 +889,7 @@ impl TableWriters {
         for (name, writer) in self.order.iter().zip(self.writers.iter_mut()) {
             let per_lod = self.module_geo_by_file.get(name).unwrap_or(&empty);
             let (columns, primary_column, geo) =
-                city_and_geo_for_file(per_lod, self.base_city.crs.as_ref());
+                city_and_geo_for_file(per_lod, self.base_city.crs.as_ref(), self.geometry_encoding);
             let mut city = self.base_city.clone();
             city.columns = columns;
             city.primary_column = primary_column;
@@ -924,6 +953,7 @@ fn write_package(
         // per-module) carries no geometry columns. Identity projection is a
         // test-only escape — see `TableWriters::force_identity_projection`.
         false,
+        opts.geometry_encoding,
     )?;
 
     // `RowOrder::Hilbert` buffers every feature and re-sorts it BEFORE
@@ -1187,7 +1217,7 @@ pub(crate) fn convert_source_impl(
         )));
     }
 
-    let mut scan_result = scan(source)?;
+    let mut scan_result = scan(source, opts.geometry_encoding)?;
     if let Some(canon) = schema_override {
         scan_result.schema = canon.schema.clone();
         scan_result.lods = canon.lods.clone();
@@ -1223,14 +1253,29 @@ pub(crate) fn convert_source_impl(
     // from this one `to_arrow_schema_tagged` call, never hand-duplicated —
     // and it must use the SAME `opts.geoarrow` flag `encode`/`encode_buffered`
     // feed their batch schema, or Arrow rejects the batches at write time.
-    let arrow_schema = Arc::new(scan_result.schema.to_arrow_schema_tagged(opts.geoarrow)?);
+    // `opts.geometry_encoding` also has to match what `encode`/`encode_buffered`
+    // (called below) actually write: they read it back off `scan_result`
+    // itself (`ScanResult::encoding`, set from this SAME `opts.geometry_encoding`
+    // by the `scan` call above), so `RowWriter` can never pick a different
+    // encoding than the schema declared here.
+    let arrow_schema = Arc::new(
+        scan_result
+            .schema
+            .to_arrow_schema_tagged(opts.geoarrow, opts.geometry_encoding)?,
+    );
     // `city`/`geo` footer key-value metadata is NOT built here any more
     // (spec-alignment M3, per-module footer emission): each by-module
     // table's `columns`/`primary_column`/`geo` can only be known once that
     // table's own realised column set is settled, post-encode — see
     // `write_package` -> `TableWriters::finish`. `writer_properties` is now
     // purely the per-column compression/encoding recipe.
-    let props = opts.recipe.writer_properties(&scan_result.schema)?;
+    // Same `opts.geometry_encoding` the arrow schema above was rendered
+    // under, so the recipe's per-column rules are keyed to the physical
+    // column paths this file will ACTUALLY carry (see
+    // `WriterRecipe::writer_properties`).
+    let props = opts
+        .recipe
+        .writer_properties(&scan_result.schema, opts.geometry_encoding)?;
 
     // Everything above is fallible but never touches `opts.output_dir` at
     // all, so none of it needs any cleanup. From here on, every new file
@@ -1342,6 +1387,7 @@ mod tests {
             CityMetadata::new(),
             Vec::new(),
             true,
+            GeometryEncoding::Wkb,
         )
         .unwrap()
     }

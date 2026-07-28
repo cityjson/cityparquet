@@ -6,6 +6,7 @@ use arrow_array::{
 use cityparquet::encode::encode;
 use cityparquet::scan::scan;
 use cityparquet::source::Source;
+use cityparquet_schema::GeometryEncoding;
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -95,7 +96,7 @@ fn railway_source_with_crs() -> (tempfile::TempDir, Source) {
 #[test]
 fn delft_encodes_all_objects_in_batches() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     let batches: Vec<_> = encode(&src, &s, 512, false)
         .unwrap()
         .collect::<Result<_, _>>()
@@ -103,7 +104,13 @@ fn delft_encodes_all_objects_in_batches() {
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 2231);
     assert!(batches.len() >= 2231 / 512);
-    let schema = s.schema.to_arrow_schema_tagged(false).unwrap();
+    // Explicit `Wkb`: `encode` (under test) only ever produces WKB batches
+    // today, so the comparison schema must match that, not some future
+    // arrow-native shape.
+    let schema = s
+        .schema
+        .to_arrow_schema_tagged(false, GeometryEncoding::Wkb)
+        .unwrap();
     assert_eq!(batches[0].schema().fields(), schema.fields());
     // Spot checks on real content:
     let b = &batches[0];
@@ -126,7 +133,7 @@ fn delft_encodes_all_objects_in_batches() {
 #[test]
 fn delft_lod0_lands_in_a_suffixed_column_with_no_lod_in_properties() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     let batches: Vec<_> = encode(&src, &s, 4096, false)
         .unwrap()
         .collect::<Result<_, _>>()
@@ -162,7 +169,7 @@ fn delft_lod0_lands_in_a_suffixed_column_with_no_lod_in_properties() {
 #[test]
 fn railway_encodes_with_semantics_and_templates() {
     let (_crs_dir, src) = railway_source_with_crs();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     let batches: Vec<_> = encode(&src, &s, 1024, false)
         .unwrap()
         .collect::<Result<_, _>>()
@@ -179,7 +186,7 @@ fn railway_encodes_with_semantics_and_templates() {
 #[test]
 fn railway_realigns_material_values_for_dropped_surfaces() {
     let (_crs_dir, src) = railway_source_with_crs();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     let batches: Vec<_> = encode(&src, &s, 1024, false)
         .unwrap()
         .collect::<Result<_, _>>()
@@ -256,7 +263,7 @@ fn delft_records_per_shell_face_partition_for_solids() {
     // SAME row, letting us check `shells` against ground truth
     // without re-deriving it from the CityJSON boundaries.
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     let batches: Vec<_> = encode(&src, &s, 512, false)
         .unwrap()
         .collect::<Result<_, _>>()
@@ -399,7 +406,7 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
     std::fs::write(&path, format!("{header_line}\n{mutated_line}\n")).unwrap();
 
     let src = Source::open(&path).unwrap();
-    let s = scan(&src).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     let batches: Vec<_> = encode(&src, &s, 64, false)
         .unwrap()
         .collect::<Result<_, _>>()
@@ -511,7 +518,7 @@ fn batch_iter_fuses_after_first_error() {
     let path = dir.path().join("delft_corrupt.city.jsonl");
     std::fs::write(&path, lines.join("\n")).unwrap();
 
-    let s = scan(&Source::open(&clean).unwrap()).unwrap();
+    let s = scan(&Source::open(&clean).unwrap(), GeometryEncoding::Wkb).unwrap();
     let src = Source::open(&path).unwrap();
     let mut it = encode(&src, &s, 64, false).unwrap();
     // Error-tolerant consumption: keep pulling after the Err, like a caller

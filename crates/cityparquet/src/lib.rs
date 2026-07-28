@@ -2,6 +2,8 @@
 
 mod address;
 pub mod appearance;
+mod arrow_geom_read;
+mod arrow_geom_write;
 pub mod citygml;
 pub mod compare;
 #[cfg(feature = "object-store")]
@@ -9,6 +11,7 @@ pub mod counting_store;
 pub mod decode;
 pub mod encode;
 pub mod export;
+mod geometry_encoding;
 mod geometry_properties;
 pub mod inputs;
 pub mod lod0;

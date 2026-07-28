@@ -11,6 +11,7 @@ use cityparquet::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader
 use cityparquet::recipe::WriterRecipe;
 use cityparquet::scan::scan;
 use cityparquet::source::Source;
+use cityparquet_schema::GeometryEncoding;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 /// Field metadata key CityParquet tags every reserved/attribute/extension
@@ -110,7 +111,7 @@ fn cityparquet_metadata_matches_the_writer_side_scan() {
     // `scan_real_data.rs::delft_city_and_geo_for_file_has_independent_primaries`
     // for that half).
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let scan_result = scan(&src).unwrap();
+    let scan_result = scan(&src, GeometryEncoding::Wkb).unwrap();
     let writer_meta = scan_result.base_city_metadata().unwrap();
 
     let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
@@ -132,7 +133,7 @@ fn cityparquet_arrow_schema_matches_the_writers_rendered_schema() {
     let out = convert_delft_small_row_groups();
 
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let scan_result = scan(&src).unwrap();
+    let scan_result = scan(&src, GeometryEncoding::Wkb).unwrap();
     let writer_schema = scan_result.schema.to_arrow_schema().unwrap();
 
     let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
@@ -304,7 +305,7 @@ fn with_bbox_row_groups_prunes_a_tight_corner_query_but_keeps_the_whole_extent()
     let out = convert_delft_small_row_groups();
 
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let scan_result = scan(&src).unwrap();
+    let scan_result = scan(&src, GeometryEncoding::Wkb).unwrap();
     let dataset_bbox = scan_result
         .dataset_bbox
         .expect("delft has geometry, so a dataset bbox");
@@ -397,7 +398,7 @@ fn with_bbox_row_groups_selects_a_strict_subset_for_a_partial_band_query() {
     let out = convert_delft_small_row_groups();
 
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let scan_result = scan(&src).unwrap();
+    let scan_result = scan(&src, GeometryEncoding::Wkb).unwrap();
     let dataset_bbox = scan_result.dataset_bbox.unwrap();
 
     let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
@@ -588,7 +589,7 @@ fn hilbert_ordering_prunes_more_row_groups_than_source_ordering_on_a_real_neighb
     assert_eq!(hilbert_report.object_count, 2231);
 
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let scan_result = scan(&src).unwrap();
+    let scan_result = scan(&src, GeometryEncoding::Wkb).unwrap();
     let dataset_bbox = scan_result
         .dataset_bbox
         .expect("delft has geometry, so a dataset bbox");

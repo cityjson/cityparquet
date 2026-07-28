@@ -2,6 +2,58 @@ use std::collections::HashMap;
 
 use crate::error::{CityParquetError, Result};
 
+/// Which physical Arrow encoding a `geometry_lod*` column uses. `Wkb` is the
+/// only encoding CityParquet supports normatively today; `ArrowNative` is the
+/// experimental alternative from the `arrow-native-type` branch (design doc
+/// in the PARENT workspace repo, at
+/// `docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md` —
+/// i.e. `../docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`
+/// relative to this `cityparquet-rs` repo's own root) — nested indexed
+/// `List`/`Struct` columns instead of a WKB `BLOB`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GeometryEncoding {
+    #[default]
+    Wkb,
+    ArrowNative,
+}
+
+impl GeometryEncoding {
+    /// `city.columns[].encoding` for [`GeometryEncoding::Wkb`].
+    pub const WKB_TOKEN: &'static str = "WKB";
+    /// `city.columns[].encoding` for [`GeometryEncoding::ArrowNative`]. The
+    /// `-v1` suffix is load-bearing: a later revision of the nested shape is
+    /// a DIFFERENT encoding and must get its own token, so a reader that only
+    /// understands v1 refuses it outright rather than misreading it (see
+    /// [`Self::from_footer_token`]).
+    pub const ARROW_NATIVE_V1_TOKEN: &'static str = "CityParquetArrowNative-v1";
+    /// Every `city.columns[].encoding` token this build understands — the
+    /// vocabulary an error message quotes when it meets one it does not.
+    pub const KNOWN_FOOTER_TOKENS: [&'static str; 2] =
+        [Self::WKB_TOKEN, Self::ARROW_NATIVE_V1_TOKEN];
+
+    /// The `city.columns[].encoding` token declaring this encoding in a
+    /// Parquet footer (spec `05-metadata.mdx`).
+    pub const fn footer_token(self) -> &'static str {
+        match self {
+            GeometryEncoding::Wkb => Self::WKB_TOKEN,
+            GeometryEncoding::ArrowNative => Self::ARROW_NATIVE_V1_TOKEN,
+        }
+    }
+
+    /// The inverse of [`Self::footer_token`]: `None` for any token this build
+    /// does not understand. A reader MUST treat that `None` as an error, never
+    /// as licence to guess the encoding from the column's physical Arrow
+    /// shape — a future list-based encoding would otherwise be silently
+    /// misread as [`GeometryEncoding::ArrowNative`] v1.
+    pub fn from_footer_token(token: &str) -> Option<Self> {
+        match token {
+            Self::WKB_TOKEN => Some(GeometryEncoding::Wkb),
+            Self::ARROW_NATIVE_V1_TOKEN => Some(GeometryEncoding::ArrowNative),
+            _ => None,
+        }
+    }
+}
+
 /// A CityJSON Level of Detail such as `1`, `2`, or `2.2` (major, minor —
 /// defaulting to `0` when the source string carried none, e.g. `"1"` and
 /// `"1.0"` both parse to the same value). This is a canonicalisation of the
