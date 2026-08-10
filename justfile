@@ -105,19 +105,14 @@ bench FOLDER OUT='bench/read_results':
 
         pkg="bench/data/readbench/${name}.parquet"
         # By-type is the only, mandatory table layout: resolve the package's
-        # single main table from its own metadata.json manifest rather than
-        # assuming the pre-by-type "cityobjects.parquet" name (only true for
-        # a single-family dataset; `readbench_duckdb.sh` below still hard-
-        # fails clearly for a multi-family/multi-table package).
-        main_table="$(python3 -c "
-import json, sys
-try:
-    with open(sys.argv[1]) as fh:
-        tables = json.load(fh).get('tables', [])
-    print(tables[0] if len(tables) == 1 else '')
-except OSError:
-    print('')
-" "${pkg}/metadata.json")"
+        # single main table from its own metadata.json STAC Item (the
+        # `cityparquet-objects` asset role) rather than assuming the
+        # pre-by-type "cityobjects.parquet" name. `package_tables.py --single`
+        # succeeds only for a single-family dataset; an empty `main_table`
+        # here just skips the optional attr-stats column detection, and
+        # `readbench_duckdb.sh` below still hard-fails clearly for a
+        # multi-family/multi-table package.
+        main_table="$(./scripts/package_tables.py "$pkg" --single 2>/dev/null || true)"
         numeric_col=""
         if [[ -n "$main_table" ]]; then
             numeric_col="$(duckdb -csv -noheader -c "
