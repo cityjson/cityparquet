@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import csv
+import errno
+import gzip
 import json
 import os
 import re
@@ -17,6 +20,7 @@ import stat
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -25,7 +29,7 @@ import pytest
 from catalog2cityparquet import __main__ as driver
 from catalog2cityparquet import convert
 from catalog2cityparquet.discover import Item
-from catalog2cityparquet.ledger import Ledger
+from catalog2cityparquet.ledger import HostFailure, Ledger
 
 #: A port nothing listens on, so a request fails instantly with ECONNREFUSED.
 #: Loopback only: the suite never leaves the machine.
@@ -36,6 +40,26 @@ def _config(tmp_path, **overrides):
     """A Config pointing at throwaway paths; the binaries never run."""
     overrides.setdefault("out", tmp_path / "out")
     return driver.Config(binary=tmp_path / "b", tool=tmp_path / "t", **overrides)
+
+
+def _write_package(config, item, collection=None) -> Path:
+    """Leave behind what a successful conversion leaves behind.
+
+    A package is what aggregation looks for, and the driver now declines to
+    aggregate a collection that produced none — so a stub that converts without
+    writing anything would exercise the wrong branch. `collection` overrides
+    the item's own, exactly as `convert_items` does: the id we asked for is the
+    id the package is written under.
+    """
+    if collection is not None:
+        item = replace(item, collection=collection)
+    pkg = driver.package_dir(config, item)
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "metadata.json").write_text(
+        json.dumps({"type": "Feature", "stac_version": "1.1.0", "id": item.item_id}),
+        encoding="utf-8",
+    )
+    return pkg
 
 
 def _stub_conversion(monkeypatch, *, run_convert=None, seen=None):
@@ -51,6 +75,12 @@ def _stub_conversion(monkeypatch, *, run_convert=None, seen=None):
     def default_run_convert(binary, inputs, out_dir, crs, timeout):
         record["out_dir"] = out_dir
         out_dir.mkdir(parents=True, exist_ok=True)
+        # The real converter writes the package's STAC Item last; the driver
+        # reads that file both to resume and to decide whether there is
+        # anything to aggregate.
+        (out_dir / "metadata.json").write_text(
+            json.dumps({"type": "Feature", "stac_version": "1.1.0"}), encoding="utf-8"
+        )
         return 3
 
     monkeypatch.setattr(driver.fetch, "download", fake_download)
@@ -310,7 +340,9 @@ def test_failure_reasons_are_attributed_separately(tmp_path, monkeypatch):
     # converter's count, and a classified ConvertError must keep its own reason.
     failures = {
         "transport": httpx.ConnectError("no route to host"),
-        "disk": OSError("no space left on device"),
+        # A real full volume carries ENOSPC; the errno is what tells it from a
+        # corrupt payload, which raises an `OSError` with no errno at all.
+        "disk": OSError(errno.ENOSPC, "No space left on device"),
         "crs": convert.ConvertError("no_crs", "the source declares no CRS"),
         "odd": ValueError("something else entirely"),
     }
@@ -459,11 +491,15 @@ def _stub_collection(monkeypatch, items, note=None, indexed=True):
     monkeypatch.setattr(
         driver.discover,
         "enumerate_items",
-        lambda base, api, cid, collection, client: (list(items), note),
+        lambda base, api, cid, collection, client, dropped=None: (list(items), note),
     )
-    monkeypatch.setattr(
-        driver, "convert_items", lambda items, **k: calls.setdefault("items", items)
-    )
+
+    def fake_convert_items(items, **kwargs):
+        calls.setdefault("items", items)
+        for item in items:
+            _write_package(kwargs["config"], item, kwargs.get("collection"))
+
+    monkeypatch.setattr(driver, "convert_items", fake_convert_items)
     monkeypatch.setattr(driver.aggregate, "write_config", lambda config, dest: dest)
 
     def fake_update_collection(tool, items_dir, config, out, **kwargs):
@@ -576,9 +612,11 @@ def test_the_summary_reports_counts_reasons_and_missing_indexes(tmp_path, monkey
     out = capsys.readouterr().out
     # Rendered values, not merely the labels: a hard-coded zero must not pass.
     # The trailing column is the environment tally, which a clean run leaves 0.
-    assert re.search(r"^alpha\s+1\s+1\s+0\s+0$", out, re.M), out
-    assert re.search(r"^beta\s+1\s+1\s+0\s+0$", out, re.M), out
-    assert re.search(r"^TOTAL\s+2\s+2\s+0\s+0$", out, re.M), out
+    # The leading column is what enumeration discovered; this stub records
+    # outcomes without going through it, so it stays 0 while the tallies do not.
+    assert re.search(r"^alpha\s+0\s+1\s+1\s+0\s+0$", out, re.M), out
+    assert re.search(r"^beta\s+0\s+1\s+1\s+0\s+0$", out, re.M), out
+    assert re.search(r"^TOTAL\s+0\s+2\s+2\s+0\s+0$", out, re.M), out
     assert re.search(r"^\s+2\s+no_crs$", out, re.M), out
     assert "collections without a GeoParquet index: 1" in out
     assert re.search(r"^\s+- beta$", out, re.M), out
@@ -726,7 +764,7 @@ def test_a_summary_write_failure_still_prints_the_tallies(tmp_path, monkeypatch,
     driver.print_summary(ledger, driver.RunState())
 
     captured = capsys.readouterr()
-    assert re.search(r"^c\s+1\s+0\s+0\s+0$", captured.out, re.M), captured.out
+    assert re.search(r"^c\s+0\s+1\s+0\s+0\s+0$", captured.out, re.M), captured.out
     assert "Read-only file system" in captured.err
 
 
@@ -792,11 +830,18 @@ def test_a_failing_stdout_does_not_fabricate_a_collection_failure(tmp_path, monk
     monkeypatch.setattr(
         driver.discover,
         "enumerate_items",
-        lambda base, api, cid, collection, client: ([Item(cid, "i", "u", None, None)], None),
+        lambda base, api, cid, collection, client, dropped=None: (
+            [Item(cid, "i", "u", None, None)],
+            None,
+        ),
     )
-    monkeypatch.setattr(
-        driver, "convert_items", lambda items, **k: converted.append(k.get("collection"))
-    )
+
+    def convert_items(items, **kwargs):
+        converted.append(kwargs.get("collection"))
+        for item in items:
+            _write_package(kwargs["config"], item, kwargs.get("collection"))
+
+    monkeypatch.setattr(driver, "convert_items", convert_items)
     monkeypatch.setattr(driver.aggregate, "write_config", lambda config, dest: dest)
     monkeypatch.setattr(driver.aggregate, "update_collection", lambda *a, **k: True)
     ledger = Ledger(tmp_path / "_reports")
@@ -1261,9 +1306,17 @@ def _converting_collection(monkeypatch):
     monkeypatch.setattr(
         driver.discover,
         "enumerate_items",
-        lambda base, api, cid, collection, client: ([Item(cid, "it0", "u", None, None)], None),
+        lambda base, api, cid, collection, client, dropped=None: (
+            [Item(cid, "it0", "u", None, None)],
+            None,
+        ),
     )
-    monkeypatch.setattr(driver, "process_item", lambda item, **k: 1)
+
+    def fake_process_item(item, *, config, **kwargs):
+        _write_package(config, item)
+        return 1
+
+    monkeypatch.setattr(driver, "process_item", fake_process_item)
     monkeypatch.setattr(driver.aggregate, "update_collection", lambda *a, **k: True)
 
 
@@ -1513,7 +1566,7 @@ def test_the_summary_segregates_environment_failures(tmp_path, monkeypatch, caps
 
     captured = capsys.readouterr()
     # The tallies keep the two apart, column by column...
-    assert re.search(r"^c0\s+1\s+0\s+0\s+1$", captured.out, re.M), captured.out
+    assert re.search(r"^c0\s+1\s+1\s+0\s+0\s+1$", captured.out, re.M), captured.out
     # ...the reasons histogram stays empty of them...
     assert "convert_failed" not in captured.out
     # ...and the run says loudly that it was the machine, on both streams.
@@ -1799,7 +1852,7 @@ from catalog2cityparquet.discover import Item
 
 driver.discover.collection_ids = lambda base, client: (["c0", "c1", "c2"], "a note for stderr")
 driver.discover.fetch_collection = lambda base, cid, client: {"id": cid}
-driver.discover.enumerate_items = lambda base, api, cid, collection, client: (
+driver.discover.enumerate_items = lambda base, api, cid, collection, client, dropped=None: (
     [Item(cid, "it0", "u", None, None)],
     None,
 )
@@ -1825,7 +1878,17 @@ if os.environ.get("C2CP_FULL_VOLUME"):
 
     driver.fetch.download = _download
 else:
-    driver.process_item = lambda item, **kwargs: 1
+    # A conversion that leaves a package behind, since that is what the driver
+    # looks for before it aggregates anything.
+    def _process_item(item, *, config, **kwargs):
+        pkg = driver.package_dir(config, item)
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / "metadata.json").write_text(
+            '{"type": "Feature", "stac_version": "1.1.0"}', encoding="utf-8"
+        )
+        return 1
+
+    driver.process_item = _process_item
 
 if not os.environ.get("C2CP_REAL_AGGREGATION"):
     driver.aggregate.update_collection = lambda *a, **k: True
@@ -1976,3 +2039,307 @@ def test_a_full_volume_during_a_download_is_never_a_download_failure(tmp_path, b
     assert rows, "the run must still have recorded what happened"
     assert not [r for r in rows if r[3] == "download_failed"], f"the origin was never asked: {rows}"
     assert {r[2] for r in rows} == {driver.ENVIRONMENT}, rows
+
+
+# --- the final review's fix wave ---------------------------------------------
+
+
+def test_a_root_that_resolves_no_collections_is_a_non_zero_exit(tmp_path, monkeypatch):
+    # "Reports success while having measured nothing": the root was reachable
+    # and yielded nothing, so the run has no measurement to stand behind — and
+    # an operator piping the summary somewhere sees an empty table and a 0.
+    monkeypatch.setattr(driver.discover, "collection_ids", lambda base, client: ([], None))
+    monkeypatch.setattr(driver, "aggregate_all", lambda config, state: None)
+
+    assert driver.run(_config(tmp_path)) == 1
+
+
+def test_explicit_collections_are_still_run_when_the_root_lists_none(tmp_path, monkeypatch):
+    # The zero-collection guard is about *resolution*; an operator who named the
+    # collections has already said what to measure.
+    monkeypatch.setattr(driver, "aggregate_all", lambda config, state: None)
+    seen = []
+    monkeypatch.setattr(driver, "convert_collection", lambda cid, **k: seen.append(cid))
+
+    assert driver.run(_config(tmp_path), collections=["alpha"]) == 0
+    assert seen == ["alpha"]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(gzip.BadGzipFile("Not a gzipped file (b'<!')"), id="corrupt-gzip"),
+        pytest.param(OSError(errno.ENAMETOOLONG, "File name too long"), id="over-long-member-name"),
+        pytest.param(OSError(errno.EISDIR, "Is a directory"), id="member-shaped-like-a-directory"),
+    ],
+)
+def test_a_broken_payload_is_a_data_failure_not_an_environment_one(tmp_path, monkeypatch, exc):
+    # `gzip.BadGzipFile` IS an `OSError` (with no errno at all), and a zip
+    # member with a 400-character name raises ENAMETOOLONG. Both are facts about
+    # the payload, and routing them to the environment withholds real data
+    # failures from the histogram — all 8,941 `netherlands-3d-bag` items are
+    # `.json.gz`, so this is not a rare shape.
+    monkeypatch.setattr(driver, "process_item", lambda item, **k: (_ for _ in ()).throw(exc))
+    ledger = Ledger(tmp_path / "_reports")
+    state = driver.RunState()
+
+    driver.convert_items(
+        [Item("c", "i", "u", None, None)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=1),
+        state=state,
+    )
+
+    assert ledger.histogram() == {"convert_failed": 1}
+    assert ledger.environment_failures() == {}
+    assert state.environment_seen == 0
+
+
+@pytest.mark.parametrize(
+    "code", [errno.ECONNRESET, errno.EPIPE, errno.ETIMEDOUT, errno.ECONNREFUSED, errno.EHOSTUNREACH]
+)
+def test_a_raw_socket_failure_is_a_download_failure(tmp_path, monkeypatch, code):
+    # Under an errno gate a socket `OSError` that `httpx` did not wrap would
+    # fall through to the catch-all and be published as the converter's fault.
+    # The origin dropping the connection is the origin's fault.
+    def refused(item, **kwargs):
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(driver, "process_item", refused)
+    ledger = Ledger(tmp_path / "_reports")
+    state = driver.RunState()
+
+    driver.convert_items(
+        [Item("c", "i", "u", None, None)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=1),
+        state=state,
+    )
+
+    assert ledger.histogram() == {"download_failed": 1}
+    assert state.environment_seen == 0
+
+
+@pytest.mark.parametrize(
+    "code",
+    [errno.ENOSPC, errno.EROFS, errno.EDQUOT, errno.EMFILE, errno.ENFILE, errno.EFBIG, errno.EIO],
+)
+def test_a_host_errno_is_still_an_environment_failure(tmp_path, monkeypatch, code):
+    def host(item, **kwargs):
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(driver, "process_item", host)
+    ledger = Ledger(tmp_path / "_reports")
+    state = driver.RunState()
+
+    driver.convert_items(
+        [Item("c", "i", "u", None, None)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=1),
+        state=state,
+    )
+
+    assert ledger.histogram() == {}
+    assert ledger.environment_failures() == {"c": 1}
+    assert state.environment_seen == 1
+
+
+def test_a_converter_that_ran_out_of_disk_is_not_a_conversion_failure(tmp_path, monkeypatch):
+    # The converter writes effectively all of the multi-terabyte output, so it
+    # is what meets a full volume first. Recording that as `convert_failed`
+    # stamps every remaining item unconvertible, with no banner and no
+    # environment column to give the operator a clue.
+    def out_of_disk(binary, inputs, out_dir, crs, timeout):
+        raise HostFailure("update-cityparquet failed: No space left on device (os error 28)")
+
+    _stub_conversion(monkeypatch, run_convert=out_of_disk)
+    ledger = Ledger(tmp_path / "_reports")
+    state = driver.RunState()
+
+    driver.convert_items(
+        [Item("c", "i", "https://example.invalid/a.gml", None, None)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=1),
+        state=state,
+    )
+
+    assert ledger.histogram() == {}, "the converter's full disk says nothing about this dataset"
+    assert ledger.environment_failures() == {"c": 1}
+    assert state.environment_seen == 1
+    written = json.loads((tmp_path / "_reports" / "c.jsonl").read_text())
+    assert written["status"] == driver.ENVIRONMENT
+    assert written["bytes"] == 2, "what the run moved before the volume filled is still a cost"
+
+
+def test_a_collection_that_converted_nothing_is_never_aggregated(tmp_path, monkeypatch):
+    # `city3dstac` exits "No STAC item files provided" for an empty items dir,
+    # and the orchestrator ledgered that as a second, collection-level
+    # `convert_failed`. Roughly half the catalogue would gain one phantom
+    # conformance record — a fact about the driver, not about the data.
+    monkeypatch.setattr(driver.discover, "fetch_collection", lambda base, cid, client: {"id": cid})
+    monkeypatch.setattr(
+        driver.discover,
+        "enumerate_items",
+        lambda base, api, cid, collection, client, dropped=None: (
+            [Item(cid, "it0", "u", None, None)],
+            None,
+        ),
+    )
+
+    def always_fails(item, **kwargs):
+        raise convert.ConvertError("no_crs", "declares no CRS")
+
+    monkeypatch.setattr(driver, "process_item", always_fails)
+    aggregated = []
+    monkeypatch.setattr(
+        driver.aggregate, "write_config", lambda config, dest: aggregated.append(dest) or dest
+    )
+    monkeypatch.setattr(
+        driver.aggregate,
+        "update_collection",
+        lambda *a, **k: aggregated.append("update") or True,
+    )
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.run_collections(["lux"], ledger=ledger, config=_config(tmp_path, jobs=1))
+
+    assert aggregated == [], "there is nothing on disk to aggregate"
+    assert ledger.histogram() == {"no_crs": 1}, "one item failed, so one record"
+    assert ledger.counts("lux") == {"failed": 1}
+
+
+def test_the_documents_the_listing_lost_each_reach_the_ledger(tmp_path, monkeypatch):
+    # Reproduced by the reviewer: listed 5, returned 2 — and the other three
+    # reached no record at all, so the histogram's denominator shrank silently.
+    monkeypatch.setattr(driver.discover, "fetch_collection", lambda base, cid, client: {"id": cid})
+
+    def enumerate_items(base, api, cid, collection, client, dropped=None):
+        if dropped is not None:
+            dropped.extend([f"{cid}/items/lost{n}.json" for n in range(3)])
+        return [Item(cid, f"i{n}", "u", None, None) for n in range(2)], None
+
+    monkeypatch.setattr(driver.discover, "enumerate_items", enumerate_items)
+    monkeypatch.setattr(driver, "process_item", lambda item, **k: 1)
+    monkeypatch.setattr(driver.aggregate, "write_config", lambda config, dest: dest)
+    monkeypatch.setattr(driver.aggregate, "update_collection", lambda *a, **k: True)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.run_collections(["c"], ledger=ledger, config=_config(tmp_path, jobs=1))
+
+    assert ledger.histogram() == {"download_failed": 3}
+    assert ledger.counts("c") == {"converted": 2, "failed": 3}
+    rows = [
+        json.loads(line) for line in (tmp_path / "_reports" / "c.jsonl").read_text().splitlines()
+    ]
+    assert {r["item_id"] for r in rows if r["status"] == "failed"} == {
+        "lost0.json",
+        "lost1.json",
+        "lost2.json",
+    }
+
+
+def test_the_summary_reports_what_was_discovered(tmp_path, monkeypatch, capsys):
+    # A collection whose enumeration was truncated must not be able to look
+    # complete: five discovered against two recorded says so at a glance.
+    monkeypatch.setattr(driver, "aggregate_all", lambda config, state: None)
+    monkeypatch.setattr(driver.discover, "fetch_collection", lambda base, cid, client: {"id": cid})
+    monkeypatch.setattr(
+        driver.discover,
+        "enumerate_items",
+        lambda base, api, cid, collection, client, dropped=None: (
+            [Item(cid, f"i{n}", "u", None, None) for n in range(5)],
+            None,
+        ),
+    )
+    monkeypatch.setattr(driver, "process_item", lambda item, **k: 1)
+    monkeypatch.setattr(driver.aggregate, "write_config", lambda config, dest: dest)
+    monkeypatch.setattr(driver.aggregate, "update_collection", lambda *a, **k: True)
+
+    config = _config(tmp_path, limit_per_collection=2)
+    assert driver.run(config, collections=["c"]) == 0
+
+    out = capsys.readouterr().out
+    assert re.search(r"^c\s+5\s+2\s+0\s+0\s+0$", out, re.M), out
+    rows = list(csv.DictReader((config.out / "_reports" / "summary.csv").open()))
+    assert rows[0]["discovered"] == "5"
+
+
+def test_the_environment_banner_survives_a_ledger_that_could_not_record_it(
+    tmp_path, monkeypatch, capsys
+):
+    # The case the summary's docstring names loudest: the reports volume fills,
+    # so the ledger cannot record the environment failure that filled it and
+    # `totals[ENVIRONMENT]` is 0. The in-process count is then the only thing
+    # standing between the operator and a clean-looking table.
+    ledger = Ledger(tmp_path / "_reports")
+    _break_ledger(monkeypatch, ledger)
+    state = driver.RunState()
+
+    driver.convert_items(
+        [Item("c", "i", "u", None, None)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=1),
+        state=state,
+    )
+    assert state.environment_seen == 1
+    assert ledger.counts("c") == {}, "the ledger is the thing that failed"
+
+    driver.print_summary(ledger, state)
+
+    out = capsys.readouterr().out
+    assert "1 environment failure" in out, out
+    assert "this run is incomplete" in out, out
+
+
+def test_a_crs_override_for_an_unusable_collection_id_is_rejected():
+    # One typo silently turns a whole collection into `no_crs` conformance
+    # facts — 8,941 items for 3DBAG.
+    for bad in ["netherlands 3dbag=EPSG:28992", "../../etc=EPSG:1"]:
+        with pytest.raises(SystemExit, match="--crs"):
+            driver.config_from_args(driver.parse_args(["--crs", bad]))
+
+
+@pytest.mark.parametrize("bad", ["rotterdam-3d=banana", "rotterdam-3d=epsg:28992", "a=EPSG:"])
+def test_a_crs_override_that_is_not_an_epsg_code_is_rejected(bad):
+    with pytest.raises(SystemExit, match="--crs"):
+        driver.config_from_args(driver.parse_args(["--crs", bad]))
+
+
+def test_a_valid_crs_override_still_reaches_the_config():
+    config = driver.config_from_args(driver.parse_args(["--crs", "rotterdam-3d=EPSG:28992"]))
+    assert config.crs_by_collection == {"rotterdam-3d": "EPSG:28992"}
+
+
+def test_a_crs_override_naming_no_attempted_collection_is_reported(tmp_path, monkeypatch, capsys):
+    # A `--crs` that matches nothing is a typo that will not be noticed for
+    # hours, and its collection converts as `no_crs` throughout.
+    monkeypatch.setattr(driver, "aggregate_all", lambda config, state: None)
+    monkeypatch.setattr(driver, "convert_collection", lambda cid, **k: None)
+    config = _config(tmp_path, crs_by_collection={"typo-3d": "EPSG:1234"})
+
+    assert driver.run(config, collections=["rotterdam-3d"]) == 0
+    assert "typo-3d" in capsys.readouterr().err
+
+
+def test_the_histogram_subcommand_reduces_the_cumulative_ledger(tmp_path, capsys):
+    # The README names the JSONL as the coverage evidence and tells the reader
+    # to roll it up themselves; a resumed run appends a SECOND record for a
+    # previously failed item, so an ad-hoc roll-up double-counts. The published
+    # number must come from reviewed code.
+    reports = tmp_path / "_reports"
+    first = Ledger(reports)
+    first.record(driver.Record("a", "1", "failed", reason="download_failed"))
+    first.record(driver.Record("a", "2", "failed", reason="no_crs"))
+    Ledger(reports).record(driver.Record("a", "1", "converted"))
+
+    assert driver.main(["histogram", str(reports)]) == 0
+
+    out = capsys.readouterr().out
+    assert re.search(r"^\s+1\s+no_crs$", out, re.M), out
+    assert "download_failed" not in out, "the retried item's stale failure must not be counted"
+    assert re.search(r"^\s*items\s+2$", out, re.M), out
+
+
+def test_the_histogram_subcommand_reports_a_missing_reports_directory(tmp_path, capsys):
+    assert driver.main(["histogram", str(tmp_path / "nowhere")]) == 1
+    assert "nowhere" in capsys.readouterr().err

@@ -37,6 +37,7 @@ to the root):
 just catalog-tools                                    # build the two binaries
 just catalog-convert-collection rotterdam-3d out/e2e  # one small collection
 just catalog-convert                                  # the whole catalogue (hours)
+just catalog-histogram out/e2e                        # the measurement, rolled up
 just catalog-test                                     # the driver's own tests
 ```
 
@@ -137,6 +138,13 @@ carries no `geometry` and no `bbox`, and none is invented here.
 A non-zero exit is classified against the ledger's vocabulary by reading the converter's
 own stderr. Classification is the point of the run: "it failed" measures nothing.
 
+Before the classifier runs, that stderr is checked for the kernel's own wording — "no
+space left", "read-only file system", "disk quota exceeded", "too many open files". The
+converter writes ~74,000 packages and effectively all of the output, so it is the process
+that meets a full volume first, and its exit code alone cannot tell a refusal about the
+data from a host that ran out of room. A host failure is routed to the environment path
+(as `city3dstac`'s already is), never into the histogram.
+
 ### 5. Aggregate — `aggregate.py`
 
 Run the vendored `city3dstac` over the packages on disk to write `collection.json` and,
@@ -176,11 +184,24 @@ Order of preference, in full:
 
 1. `items.parquet`, **iff** its row count equals the object listing's count of `.json`
    items.
-2. Otherwise the object listing, with a `stale_item_index` note if an index existed and
-   disagreed.
+2. Otherwise the object listing, with a `stale_item_index` note recording both counts.
 3. If nothing is listable, an index that could not be cross-checked (better than
-   nothing).
+   nothing) — **still** carrying the `stale_item_index` note, because an empty listing
+   beside an index of N items is a disagreement like any other. There is no "unless the
+   listing came back empty" escape: that escape is precisely what would let a failed
+   listing request pass for an empty collection.
 4. Failing that, the `rel=item` links in `collection.json`.
+
+Two more things guard the denominator here:
+
+- **Every catalogue request checks its status.** The GCS JSON API reports a failure as a
+  JSON body (`{"error": {...}}`), so a 503 during a listing decodes cleanly and merely
+  has no `items` key — indistinguishable from an empty collection unless the status is
+  read.
+- **An item document that was listed but could not be read is recorded**, as
+  `download_failed`, one record per name. Dropping it silently would shrink the
+  histogram's denominator with nothing to show for it; the `discovered` column in
+  `summary.csv` is the cross-check.
 
 ## What the run records
 
@@ -240,10 +261,15 @@ admitting typos would make the histogram meaningless.
 
 - **`_reports/<collection>.jsonl`** — append-only, one JSON object per outcome, with the
   item id, status, reason, the error text (truncated to 2,000 characters), bytes
-  downloaded and seconds spent. **This is the durable record**, and it accumulates
-  across runs.
+  downloaded, seconds spent, and the `run_id`/`timestamp` of the run that wrote it.
+  **This is the durable record**, and it accumulates across runs. Do not tally it by
+  hand — see [Reading the cumulative ledger](#reading-the-cumulative-ledger).
 - **`_reports/summary.csv`** — a per-collection roll-up of *this run only*, rewritten
-  wholesale at the end of each run. See the caveat under [Resuming](#resuming).
+  wholesale at the end of each run. Its `discovered` column is what enumeration found
+  for that collection, which is **not** the sum of the other columns: a collection whose
+  enumeration was truncated (by `--limit-per-collection`, or by item documents the
+  origin would not serve) shows more discovered than recorded. See the caveat under
+  [Resuming](#resuming).
 - **stdout** — the summary table, the reasons histogram, the environment block if any,
   and the count of collections that ended without a GeoParquet index. The stdout report
   is the primary artefact; the CSV is a convenience, and it is written best-effort
@@ -267,14 +293,47 @@ and counting it would make a resumed run look like a fresh success.
 > **Caveat — `summary.csv` is per-run, not cumulative.** It is written from what the
 > current process observed, so a fully resumed run (every item already done) rewrites it
 > with nothing but a header, while `_reports/*.jsonl` keeps every line ever recorded.
-> **After a multi-session run, the coverage evidence is the JSONL files, not the CSV.**
-> Roll them up yourself, or force a single measuring pass with `--no-skip-existing`
-> (which re-converts everything, at full cost).
+> **After a multi-session run, the coverage evidence is the JSONL files, not the CSV** —
+> read them with the `histogram` subcommand below, never by hand.
 
 Working directories are swept at the *start* of a run rather than at the end, because the
 run that made the mess is by definition not around to clean it up. `--keep-downloads`
 suppresses the sweep as well as the per-item cleanup: an operator who asked to keep them
 means across runs too.
+
+## Reading the cumulative ledger
+
+```bash
+just catalog-histogram out/cityparquet-catalog
+# or: uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
+#         histogram out/cityparquet-catalog/_reports
+```
+
+**An item can legitimately appear twice in the JSONL.** Resumption skips only
+*successes*, so an item that failed in an earlier run is re-attempted and appends a
+second record — with a different outcome. Counting the lines therefore over-counts
+failures, and a `grep -c` roll-up of a multi-session run is simply wrong.
+
+The subcommand reduces the files to **one outcome per `(collection, item_id)` — the last
+one**, the file being append-only — and prints the status totals, the conformance
+histogram, and, kept apart as always, the environment failures. Every record carries the
+`run_id` and `timestamp` of the run that wrote it, so a roll-up can be audited against
+the runs that produced it.
+
+It also *counts* lines it could not parse rather than skipping them: a run that died
+mid-write leaves a torn line behind, and dropping it in silence would shrink the
+denominator the published number is a fraction of.
+
+```
+       items  4
+   converted  1
+ environment  1
+      failed  2
+
+reasons (what the data did):
+        1  geographic_crs
+        1  no_crs
+```
 
 ## Locking
 
@@ -309,7 +368,7 @@ rm -f OUT/.c2cp-lock OUT/_work/.c2cp-lock   # or WORKDIR/.c2cp-lock if you used 
 | Code | Meaning |
 |---|---|
 | `0` | The run measured something. **However many items failed**, and however badly the report itself fared. |
-| `1` | Nothing could be attempted: the output directory could not be prepared, another run holds a directory this one needs, or the catalogue root was unreachable. |
+| `1` | Nothing could be attempted: the output directory could not be prepared, another run holds a directory this one needs, the catalogue root was unreachable, or it was reachable and **resolved no collections at all** (a root that answers with an error body would otherwise exit 0 with an empty summary, reporting success for a run that measured nothing). |
 
 There is no exit code for "some items failed". That is the normal, expected outcome and
 it is what the ledger is for.
@@ -322,7 +381,7 @@ it is what the ledger is for.
 | `--collection` | all | Repeatable; restrict to these collection ids |
 | `--limit-per-collection` | none | Convert at most N items per collection |
 | `--jobs` | 8 | Concurrent items; bounded out of politeness to origins |
-| `--crs` | none | Repeatable `COLLECTION=EPSG:xxxx` override for CRS-less sources |
+| `--crs` | none | Repeatable `COLLECTION=EPSG:xxxx` override for CRS-less sources. Both halves are validated at startup, and a key naming no attempted collection is reported on stderr — a typo here would otherwise record a whole collection as `no_crs` |
 | `--keep-downloads` | off | Retain temp downloads for debugging |
 | `--no-skip-existing` | off | Reconvert items that already have a package |
 | `--aggregate-only` | off | Rebuild STAC from an existing tree, no downloads |
@@ -387,46 +446,26 @@ re-downloading, there is no shortcut: the ledger records outcomes, not a cache.
 
 ## Known limitations
 
-Four, all of them affecting how the measurement should be read. The first two are queued
-for the whole-branch review; the last two were found by the first end-to-end runs against
-the live catalogue.
+Two, both affecting how the measurement should be read. (The four listed here before —
+a converter host failure misclassified as conformance, a corrupt `.json.gz` charged to
+the host, a fully-failing collection recorded twice, and a hand-rolled cumulative
+roll-up — were the findings of the whole-branch review and are fixed: see
+[Conformance versus environment](#conformance-versus-environment--read-this-first) and
+[Reading the cumulative ledger](#reading-the-cumulative-ledger).)
 
-1. **A converter host failure is misclassified as conformance.** If the `cityparquet`
-   subprocess fails because of *its* environment — its disk filling as it writes a
-   package, say — the driver sees only a non-zero exit and an unrecognised stderr, and
-   records `convert_failed`: a conformance reason. A volume that filled mid-run would
-   therefore stamp every remaining item as unconvertible, with no warning anywhere in the
-   summary. (The aggregation subprocess already gets this right — `aggregate.HostFailure`
-   reads `city3dstac`'s stderr for kernel wording — and the converter needs the same
-   treatment.)
+1. **`summary.csv` is per-run, not cumulative** — see [Resuming](#resuming). Harmless
+   once known; badly misleading if not. The `histogram` subcommand is the cumulative
+   answer.
 
-2. **A corrupt `.json.gz` is recorded as an environment failure.** `gzip.BadGzipFile`
-   subclasses `OSError`, and the item loop treats `OSError` as "this machine". A
-   genuinely truncated or corrupt gzip payload — a fact about the data — is therefore
-   routed away from the histogram and counted against the host. This matters more than it
-   sounds: `netherlands-3d-bag` is 8,941 items and *entirely* `.json.gz`.
-
-3. **A collection in which every item failed is recorded twice.** After the items are
-   attempted, aggregation runs unconditionally; with no package on disk, `city3dstac`
-   exits with "No STAC item files provided" and the orchestrator ledgers a *second*,
-   collection-level record with the catch-all reason `convert_failed`. Observed on
-   `luxembourg-3d`, whose single item fails `no_crs`: `summary.csv` reports 2 failures for
-   a 1-item collection, and the histogram gains a `convert_failed` that describes the
-   driver rather than the data. Aggregation should be skipped when nothing converted.
-
-4. **`summary.csv` is per-run, not cumulative** — see [Resuming](#resuming). Harmless
-   once known; badly misleading if not.
-
-> **Do not run the full ~74,000-item measurement until (1) and (2) are fixed.** Between
-> them they can move a large number of items across the one line that the published
-> result depends on — (1) can silently convert a local disk problem into thousands of
-> conformance failures, and (2) can hide a real data failure in the largest gzipped
-> collection in the catalogue. A run made now would have to be thrown away and repeated.
+2. **No retries.** A transport failure is recorded as `download_failed` on the first
+   attempt. Some of the catalogue's origins are small national portals having a bad day,
+   so a fraction of that reason is upstream flakiness rather than a durable fact — re-run
+   to re-measure it (resumption means only the failures are re-attempted).
 
 ## Tests
 
 ```bash
-just catalog-test          # 219 tests, no network, no binaries
+just catalog-test          # 266 tests, no network, no binaries
 ```
 
 Every origin, subprocess and catalogue document is faked, so the suite is safe to run

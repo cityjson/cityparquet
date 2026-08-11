@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import threading
+import time
+import uuid
 from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -55,12 +58,54 @@ CONFORMANCE_REASONS = frozenset(
 #: silently admitting typos would make the histogram meaningless.
 REASONS = CONFORMANCE_REASONS | {ENVIRONMENT}
 
+#: Substrings (lower-cased) of a subprocess failure that is *this machine's*,
+#: not the data's. Every tool this driver runs — the `cityparquet` converter
+#: and the `city3dstac` aggregator alike — exits non-zero either way, so its
+#: stderr is the only thing that tells the two apart. The list lives here, with
+#: the vocabulary it decides between, because two copies of it would drift and
+#: a drifted copy silently republishes a full disk as unconvertible data.
+#: Deliberately short, matching the kernel's own wording as it reaches a Rust
+#: `std::io::Error`, so it does not depend on either tool's phrasing.
+HOST_FAILURE_MARKERS = (
+    "no space left",
+    "read-only file system",
+    "disk quota exceeded",
+    "too many open files",
+)
+
+
+class HostFailure(RuntimeError):
+    """A tool ran and failed because this *machine* could not do the work.
+
+    A `RuntimeError` like any other tool failure — every existing caller keeps
+    working — but a distinct type, so the orchestrator can route it to the
+    environment path instead of the conformance histogram. What it says is
+    "nothing was learned about this dataset", never "this dataset does not
+    convert".
+    """
+
+
+def is_host_failure(stderr: str) -> bool:
+    """Whether a tool's stderr names a failure of the host rather than the data."""
+    text = stderr.lower()
+    return any(marker in text for marker in HOST_FAILURE_MARKERS)
+
 
 #: Collection ids are slugs such as ``japan-plateau-3d``. They come from a
 #: published catalogue, not from us, and are interpolated into a ledger
 #: filename, so the pattern is deliberately narrow: no separators, no dots, and
 #: therefore no way to write outside the reports directory.
 COLLECTION_ID_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[._-]?[A-Za-z0-9]+)*")
+
+
+def new_run_id() -> str:
+    """An identifier for one process's records in the cumulative ledger.
+
+    Readable rather than opaque — the time and pid are what an operator has to
+    hand when matching a run to a log — with a random tail so two runs started
+    in the same second on different hosts cannot collide.
+    """
+    return f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
 def validate_collection_id(cid: str) -> str:
@@ -78,6 +123,14 @@ class Record:
 
     ``bytes`` deliberately shadows the builtin inside this namespace: it is the
     field name the ledger's readers and the JSONL schema are written against.
+
+    ``run_id`` and ``timestamp`` are stamped by :meth:`Ledger.record`, so no
+    caller has to remember them. They exist because the JSONL accumulates
+    across runs and ``--skip-existing`` skips only *successes*: a previously
+    failed item is re-attempted and appends a SECOND record. Without a way to
+    tell the attempts apart, any roll-up of the cumulative file double-counts
+    that item — see :func:`roll_up`, which is the roll-up this project
+    publishes from.
     """
 
     collection: str
@@ -87,6 +140,8 @@ class Record:
     error: str | None = None
     bytes: int = 0
     seconds: float = 0.0
+    run_id: str = ""
+    timestamp: float = 0.0
 
 
 @dataclass
@@ -98,12 +153,27 @@ class Ledger:
     """
 
     reports_dir: Path
+    #: Identifies this process's records in the cumulative JSONL. Generated per
+    #: `Ledger`, so a resumed run's second record for an item is
+    #: distinguishable from the first.
+    run_id: str = field(default_factory=lambda: new_run_id())
     _counts: dict[str, Counter] = field(default_factory=lambda: defaultdict(Counter))
     _reasons: Counter = field(default_factory=Counter)
+    _discovered: Counter = field(default_factory=Counter)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
+
+    def note_discovered(self, collection: str, count: int) -> None:
+        """Record how many items enumeration found for `collection`.
+
+        Reported beside the outcomes because they are not the same number: a
+        collection whose enumeration was truncated — by a limit, or by item
+        documents the origin would not serve — would otherwise look complete.
+        """
+        with self._lock:
+            self._discovered[collection] = count
 
     def record(self, rec: Record) -> None:
         """Append one outcome, rejecting any reason outside the closed set.
@@ -122,6 +192,9 @@ class Ledger:
                 f"got status {rec.status!r} with reason {rec.reason!r}"
             )
         validate_collection_id(rec.collection)
+        # Stamped here rather than at 20 call sites: a record with no run
+        # identity is one the cumulative roll-up cannot place.
+        rec = replace(rec, run_id=self.run_id, timestamp=time.time())
         line = json.dumps(asdict(rec), ensure_ascii=False) + "\n"
         path = self.reports_dir / f"{rec.collection}.jsonl"
         with self._lock:
@@ -166,17 +239,103 @@ class Ledger:
                 if counter[ENVIRONMENT]
             }
 
+    def discovered(self, collection: str) -> int:
+        """How many items enumeration found for `collection` (0 if unrecorded)."""
+        with self._lock:
+            return self._discovered.get(collection, 0)
+
     def write_summary(self) -> Path:
         """Overwrite ``summary.csv`` with the current per-collection roll-up."""
         with self._lock:
             snapshot = {collection: Counter(c) for collection, c in self._counts.items()}
+            discovered = Counter(self._discovered)
         path = self.reports_dir / "summary.csv"
         with path.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.writer(fh)
-            writer.writerow(["collection", "converted", "failed", "skipped", ENVIRONMENT])
+            writer.writerow(
+                ["collection", "discovered", "converted", "failed", "skipped", ENVIRONMENT]
+            )
             for collection in sorted(snapshot):
                 c = snapshot[collection]
                 writer.writerow(
-                    [collection, c["converted"], c["failed"], c["skipped"], c[ENVIRONMENT]]
+                    [
+                        collection,
+                        discovered.get(collection, 0),
+                        c["converted"],
+                        c["failed"],
+                        c["skipped"],
+                        c[ENVIRONMENT],
+                    ]
                 )
         return path
+
+
+@dataclass(frozen=True)
+class Rollup:
+    """What the cumulative ledger says, once every item is counted exactly once."""
+
+    #: Items counted, i.e. distinct `(collection, item_id)` pairs.
+    items: int
+    #: Status tallies across every collection.
+    statuses: Counter
+    #: The conformance histogram — the number this project publishes.
+    reasons: Counter
+    #: Times this machine, not the data, was what failed.
+    environment: int
+    #: Per-collection status tallies.
+    per_collection: dict[str, Counter]
+    #: Lines that could not be parsed — a run that died mid-write leaves one.
+    #: Counted rather than skipped: silently dropping them would shrink the
+    #: denominator exactly as the bugs this roll-up exists to survive did.
+    unreadable: int
+
+
+def roll_up(reports_dir: Path) -> Rollup:
+    """Reduce the cumulative JSONL to one outcome per item, then tally it.
+
+    The JSONL is append-only and accumulates across runs, and a resumed run
+    re-attempts a previously failed item — so the same item legitimately
+    appears twice with two different outcomes. **The last record wins**: the
+    file is append-only, so the last line for an item is that item's current
+    state. Anything else double-counts, which is why this exists as reviewed
+    code rather than as an instruction to roll the files up by hand.
+    """
+    latest: dict[tuple[str, str], dict] = {}
+    unreadable = 0
+    for path in sorted(Path(reports_dir).glob("*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                unreadable += 1
+                continue
+            if not isinstance(rec, dict) or "collection" not in rec or "item_id" not in rec:
+                unreadable += 1
+                continue
+            latest[(str(rec["collection"]), str(rec["item_id"]))] = rec
+
+    statuses: Counter = Counter()
+    reasons: Counter = Counter()
+    per_collection: dict[str, Counter] = defaultdict(Counter)
+    environment = 0
+    for (collection, _item), rec in latest.items():
+        status = str(rec.get("status", ""))
+        statuses[status] += 1
+        per_collection[collection][status] += 1
+        reason = rec.get("reason")
+        if reason == ENVIRONMENT:
+            environment += 1
+        elif reason is not None:
+            # The same exclusion `Ledger.record` makes: the histogram is the
+            # published artefact and must be clean by construction.
+            reasons[str(reason)] += 1
+    return Rollup(
+        items=len(latest),
+        statuses=statuses,
+        reasons=reasons,
+        environment=environment,
+        per_collection=dict(per_collection),
+        unreadable=unreadable,
+    )

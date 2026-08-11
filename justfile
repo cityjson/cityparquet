@@ -332,6 +332,16 @@ catalog-aggregate OUT='out/cityparquet-catalog': catalog-tools
     uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
         --out {{OUT}} --aggregate-only
 
+# Reduce a run's cumulative ledger (OUT/_reports) to one outcome per item and
+# print the conformance histogram. This — not a hand roll-up of the JSONL — is
+# how the published number is produced: the files are append-only and
+# resumption re-attempts a previously FAILED item, so an item legitimately
+# appears twice with two different outcomes and counting lines over-counts
+# failures. Needs no network and no binaries.
+catalog-histogram OUT='out/cityparquet-catalog':
+    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
+        histogram {{OUT}}/_reports
+
 # The driver's own test suite. No network and no binaries: every origin,
 # subprocess and catalogue document is faked, so this is safe to run anywhere.
 # Not part of `just check`, which is the Rust workspace's gate — run both.

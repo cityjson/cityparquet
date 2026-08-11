@@ -1,9 +1,18 @@
 import csv
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from catalog2cityparquet.ledger import CONFORMANCE_REASONS, ENVIRONMENT, REASONS, Ledger, Record
+from catalog2cityparquet.ledger import (
+    CONFORMANCE_REASONS,
+    ENVIRONMENT,
+    HOST_FAILURE_MARKERS,
+    REASONS,
+    Ledger,
+    Record,
+    roll_up,
+)
 
 
 def test_records_are_appended_as_jsonl_per_collection(tmp_path):
@@ -100,6 +109,91 @@ def test_summary_csv_keeps_environment_out_of_the_failed_column(tmp_path):
     assert rows[0]["converted"] == "1"
     assert rows[0]["failed"] == "0", "the machine failing is not the data failing"
     assert rows[0][ENVIRONMENT] == "1"
+
+
+def test_the_summary_reports_how_many_items_were_discovered(tmp_path):
+    # Without it a collection whose enumeration was silently truncated looks
+    # complete: five items discovered, two recorded, and nothing to say so.
+    ledger = Ledger(tmp_path)
+    ledger.note_discovered("a", 5)
+    ledger.record(Record("a", "1", "converted"))
+    ledger.record(Record("a", "2", "converted"))
+
+    rows = list(csv.DictReader(ledger.write_summary().open()))
+    assert rows[0]["discovered"] == "5"
+    assert rows[0]["converted"] == "2"
+
+
+def test_a_collection_with_records_but_no_discovery_count_reports_zero(tmp_path):
+    # `note_discovered` is the orchestrator's to call; a ledger written without
+    # it must still roll up rather than raise.
+    ledger = Ledger(tmp_path)
+    ledger.record(Record("a", "1", "converted"))
+    rows = list(csv.DictReader(ledger.write_summary().open()))
+    assert rows[0]["discovered"] == "0"
+
+
+def test_every_record_carries_the_run_that_wrote_it(tmp_path):
+    # The JSONL accumulates across runs and `skip_existing` skips only
+    # successes, so a previously failed item is re-attempted and appends a
+    # SECOND record. Nothing on the record said which run wrote it, so the
+    # cumulative file could not be de-duplicated at all.
+    first = Ledger(tmp_path)
+    first.record(Record("a", "1", "failed", reason="download_failed"))
+    second = Ledger(tmp_path)
+    second.record(Record("a", "1", "converted"))
+
+    written = [json.loads(line) for line in (tmp_path / "a.jsonl").read_text().splitlines()]
+    assert written[0]["run_id"] and written[1]["run_id"]
+    assert written[0]["run_id"] != written[1]["run_id"], "two runs must be distinguishable"
+    assert written[1]["timestamp"] >= written[0]["timestamp"] > 0
+
+
+def test_the_roll_up_keeps_only_the_last_record_per_item(tmp_path):
+    # The published number must be computed by reviewed code, not by an ad-hoc
+    # roll-up of a file that legitimately holds an item twice.
+    ledger = Ledger(tmp_path)
+    ledger.record(Record("a", "1", "failed", reason="download_failed"))
+    ledger.record(Record("a", "2", "failed", reason="no_crs"))
+    Ledger(tmp_path).record(Record("a", "1", "converted"))
+
+    rolled = roll_up(tmp_path)
+    assert rolled.items == 2, "one line per item, not per attempt"
+    assert rolled.reasons == {"no_crs": 1}, "the retried item's stale failure must not be counted"
+    assert rolled.statuses == {"converted": 1, "failed": 1}
+    assert rolled.per_collection["a"]["converted"] == 1
+
+
+def test_the_roll_up_keeps_environment_failures_out_of_the_histogram(tmp_path):
+    ledger = Ledger(tmp_path)
+    ledger.record(Record("a", "1", "failed", reason="no_crs"))
+    ledger.record(Record("a", "-", ENVIRONMENT, reason=ENVIRONMENT, error="disk full"))
+
+    rolled = roll_up(tmp_path)
+    assert rolled.reasons == {"no_crs": 1}
+    assert rolled.environment == 1
+
+
+def test_the_roll_up_counts_a_torn_line_rather_than_dropping_it(tmp_path):
+    # A run whose volume filled mid-write leaves a half line behind. Skipping it
+    # in silence would shrink the denominator the same way the bug above did.
+    ledger = Ledger(tmp_path)
+    ledger.record(Record("a", "1", "converted"))
+    with (tmp_path / "a.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write('{"collection": "a", "item_id": "2", "sta')
+
+    rolled = roll_up(tmp_path)
+    assert rolled.items == 1
+    assert rolled.unreadable == 1
+
+
+def test_the_host_failure_markers_have_one_home():
+    # Two subprocesses read stderr for the same kernel wording; two copies of
+    # the list would drift, and a drifted copy silently reclassifies a full
+    # disk as unconvertible data.
+    from catalog2cityparquet import aggregate
+
+    assert aggregate.HOST_FAILURE_MARKERS is HOST_FAILURE_MARKERS
 
 
 @pytest.mark.parametrize("cid", ["../escape", "a/b", "..", "", "a\\b"])

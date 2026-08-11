@@ -205,13 +205,18 @@ fn resolve_and_open(inputs: &[PathBuf]) -> Result<Vec<Source>, String> {
 /// CRS and requantises onto one transform).
 ///
 /// An operator-supplied CRS is a property of the header, so it travels onto
-/// the merged source: `merge_sources` enforces one shared CRS, so if any input
-/// got its CRS from `--crs`, so did the merged header.
+/// the merged source — but only when EVERY input got its CRS from `--crs`.
+/// `merge_sources` enforces one shared CRS across the inputs, so a single
+/// input that declared that CRS itself makes the merged CRS source-declared:
+/// the operator's value was, for that input, a no-op. Asking `any` instead
+/// would stamp a whole mixed batch `crs_source: "operator-supplied"` and strip
+/// the genuine `referenceSystem` out of the verbatim `source_metadata`,
+/// leaving a footer that denies a declaration the source did make.
 fn merge_to_one(sources: Vec<Source>) -> Result<Source, String> {
     if sources.len() == 1 {
         return Ok(sources.into_iter().next().expect("one source"));
     }
-    let crs_is_operator_supplied = sources.iter().any(Source::crs_is_operator_supplied);
+    let crs_is_operator_supplied = sources.iter().all(Source::crs_is_operator_supplied);
     let merged = merge_sources(&sources).map_err(|e| e.to_string())?;
     Ok(Source::from_parts(
         merged.header,
@@ -401,17 +406,21 @@ fn main() -> std::process::ExitCode {
             // scan both see an ordinary, resolvable CRS. Each source records
             // for itself whether the declaration took effect, and the footer's
             // `crs_source` stamp is read from there — a source that declares
-            // its own CRS is left untouched and claims nothing. `crs_override`
-            // carries the value onward for validation only, so it is set only
-            // when there is something to validate.
+            // its own CRS is left untouched and claims nothing.
+            //
+            // `crs_override` carries the value onward for validation, and is
+            // set whenever the flag was given — NOT only when applying it did
+            // something. A value that was ignored is still a value the
+            // operator typed, and gating validation on applied-ness meant
+            // `--crs banana`, `--crs EPSG:4326` and `--crs ""` all exited 0
+            // with no message at all on a source that declares its own CRS.
+            // No false stamp can follow: the provenance is read from the
+            // `Source`, never from this option.
             if let Some(code) = &crs {
-                let mut applied = false;
                 for source in &mut sources {
-                    applied |= source.set_reference_system(code);
+                    source.set_reference_system(code);
                 }
-                if applied {
-                    opts.crs_override = Some(code.clone());
-                }
+                opts.crs_override = Some(code.clone());
             }
 
             match partition {

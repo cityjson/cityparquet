@@ -25,7 +25,7 @@ import subprocess
 from pathlib import Path
 
 from .discover import Item
-from .ledger import CONFORMANCE_REASONS
+from .ledger import CONFORMANCE_REASONS, HostFailure, is_host_failure
 
 #: Longest converter stderr kept on a `ConvertError`. Some failures run to
 #: thousands of lines, and every one of them ends up on a single ledger line.
@@ -96,8 +96,18 @@ def run_convert(
     is what a multi-tile archive needs. `crs` is the operator-supplied fallback
     the converter honours only for a source that declares none.
 
-    Raises `ConvertError` on a non-zero exit and on timeout. No retry happens
-    here — retries belong to the orchestrator, which alone knows the budget.
+    Raises `ConvertError` on a non-zero exit and on timeout — except where the
+    converter's stderr names a failure of the *host* (a full volume, a
+    read-only mirror), which raises `HostFailure` instead. That split matters
+    more here than anywhere else in the driver: this process writes ~74,000
+    packages and effectively all of the output, so it is the one that meets a
+    full volume first, and its exit code alone cannot tell "this dataset does
+    not convert" from "this machine ran out of room". Without the split, a
+    volume that filled mid-run stamps every remaining item `convert_failed`
+    with no banner and no environment column to say otherwise.
+
+    No retry happens here — retries belong to the orchestrator, which alone
+    knows the budget.
     """
     cmd = [str(binary), "convert", *[str(p) for p in inputs], "-o", str(out_dir), "--overwrite"]
     if crs:
@@ -107,7 +117,14 @@ def run_convert(
     except subprocess.TimeoutExpired as exc:
         raise ConvertError(_FALLBACK_REASON, f"timed out after {timeout}s") from exc
     if proc.returncode != 0:
-        raise ConvertError(classify_error(proc.stderr), proc.stderr.strip()[:MAX_DETAIL_CHARS])
+        detail = proc.stderr.strip()[:MAX_DETAIL_CHARS]
+        # Ahead of the classifier, which reads the same stderr for statements
+        # about the DATA. `classify_error` must never be able to return the
+        # environment reason (its import-time guard proves it cannot), so the
+        # host/data split has to happen before it, not inside it.
+        if is_host_failure(detail):
+            raise HostFailure(f"cityparquet convert failed: {detail}")
+        raise ConvertError(classify_error(proc.stderr), detail)
     # The report's first token is the object count. A conversion that succeeded
     # while printing nothing countable is still a success, so it reports 0
     # rather than raising.

@@ -1,3 +1,5 @@
+import sys
+
 import duckdb
 import httpx
 import pytest
@@ -14,6 +16,83 @@ from catalog2cityparquet import discover
 def client():
     with httpx.Client(timeout=10) as c:
         yield c
+
+
+class _ErrorClient:
+    """A catalogue stand-in that answers every request with a JSON error body.
+
+    This is how the GCS JSON API reports a failure: a non-2xx status whose body
+    is `{"error": {...}}`. `.json()` therefore succeeds and the payload merely
+    has no `items`/`links` key — which reads exactly like an empty collection
+    unless the status itself is checked.
+    """
+
+    def __init__(self, status: int = 503) -> None:
+        self.status = status
+        self.calls: list[str] = []
+
+    def get(self, url, **kwargs):
+        self.calls.append(url)
+        return httpx.Response(
+            self.status,
+            json={"error": {"code": self.status, "message": "backend error"}},
+            request=httpx.Request("GET", url),
+        )
+
+
+def test_a_failed_listing_request_is_raised_not_read_as_an_empty_collection():
+    # A 503 whose body is a JSON error object yields `payload.get("items", [])`
+    # == [] and no `nextPageToken`, so the listing returns cleanly empty. The
+    # collection is then recorded `empty_collection` — a fabricated conformance
+    # fact about a collection that was never listed.
+    client = _ErrorClient()
+    with pytest.raises(httpx.HTTPStatusError):
+        discover.list_item_objects(bucket_api="http://x/o", cid="jp", client=client)
+
+
+def test_a_failed_collection_request_is_raised_not_read_as_an_empty_document():
+    client = _ErrorClient()
+    with pytest.raises(httpx.HTTPStatusError):
+        discover.fetch_collection("http://x", "jp", client)
+
+
+def test_a_failed_catalogue_root_request_is_raised_not_read_as_no_collections():
+    # Reported by the reviewer as the worst shape of all: the root answers with
+    # an error body, no `links` key is found, and the run reports success while
+    # having measured nothing at all.
+    client = _ErrorClient()
+    with pytest.raises(httpx.HTTPStatusError):
+        discover.collection_ids("http://x", client)
+
+
+def test_an_empty_listing_beside_a_non_empty_index_is_a_recorded_discrepancy(
+    served_dir, client, monkeypatch
+):
+    # Two counts that disagree is a discrepancy whichever way round it is. An
+    # empty listing beside an index of N items used to prefer the index in
+    # silence, which is exactly how japan-plateau-3d's 306-of-60,471 index came
+    # to be trusted.
+    _root, base = served_dir
+    fast = [discover.Item("x", f"i{n}", f"{base}/d/i{n}.json", None, None) for n in range(3)]
+    monkeypatch.setattr(discover, "items_from_parquet", lambda url: fast)
+    monkeypatch.setattr(discover, "list_item_objects", lambda bucket_api, cid, client: [])
+
+    items, note = discover.enumerate_items(
+        base_url=base, bucket_api=f"{base}/o", cid="x", collection={}, client=client
+    )
+
+    assert items == fast, "an index we cannot cross-check still beats nothing"
+    assert note is not None, "but preferring it must never be silent"
+    assert "3" in note and "0" in note, f"the note must record both counts: {note}"
+
+
+def test_a_missing_duckdb_is_one_absent_index_not_a_catalogue_wide_failure(monkeypatch):
+    # `import duckdb` sat outside the guard, so an ImportError escaped to the
+    # orchestrator's broad handler and stamped every collection `convert_failed`
+    # — the "one absent binary publishes half the catalogue as unconvertible"
+    # mode already fixed for `city3dstac`.
+    monkeypatch.setitem(sys.modules, "duckdb", None)
+    assert discover.items_from_parquet("https://example.invalid/items.parquet") is None
 
 
 def write_index_parquet(path, rows) -> str:
@@ -336,6 +415,51 @@ def test_items_from_listing_ignores_objects_that_are_not_items(served_dir, clien
     assert items[0].source_item_url == f"{base}/jp/items/i0.json"
 
 
+def test_items_from_listing_reports_the_documents_it_could_not_use(served_dir, client, monkeypatch):
+    # An item document that cannot be fetched (or carries no `data` asset) used
+    # to be dropped in silence, so it reached NO ledger record at all and the
+    # histogram's denominator shrank with no trace. The names come back so the
+    # caller can record one outcome per listed item.
+    root, base = served_dir
+    write_json(root / "jp" / "items" / "i0.json", stac_item("i0", f"{base}/data/i0.json"))
+    # Present but useless: a document with no `data` asset at all.
+    write_json(root / "jp" / "items" / "i1.json", {"id": "i1", "assets": {}})
+    names = [f"jp/items/i{n}.json" for n in range(4)]  # i2/i3 are never served
+    monkeypatch.setattr(discover, "list_item_objects", lambda bucket_api, cid, client: names)
+
+    dropped: list[str] = []
+    items = discover.items_from_listing(base, f"{base}/o", "jp", client, dropped=dropped)
+
+    assert [i.item_id for i in items] == ["i0"]
+    assert dropped == ["jp/items/i1.json", "jp/items/i2.json", "jp/items/i3.json"]
+
+
+def test_enumerate_items_hands_back_the_documents_the_listing_lost(served_dir, client, monkeypatch):
+    # The reconciliation the count comparison implies: `listed_count` was held
+    # and never compared against the items actually returned.
+    root, base = served_dir
+    write_json(root / "jp" / "items" / "i0.json", stac_item("i0", f"{base}/data/i0.json"))
+    monkeypatch.setattr(discover, "items_from_parquet", lambda url: None)
+    monkeypatch.setattr(
+        discover,
+        "list_item_objects",
+        lambda bucket_api, cid, client: [f"jp/items/i{n}.json" for n in range(3)],
+    )
+
+    dropped: list[str] = []
+    items, _note = discover.enumerate_items(
+        base_url=base,
+        bucket_api=f"{base}/o",
+        cid="jp",
+        collection={},
+        client=client,
+        dropped=dropped,
+    )
+
+    assert [i.item_id for i in items] == ["i0"]
+    assert dropped == ["jp/items/i1.json", "jp/items/i2.json"]
+
+
 def test_non_item_objects_do_not_count_towards_the_comparison(served_dir, client, monkeypatch):
     # The `items/` prefix may hold other files; counting them would fake a
     # discrepancy and force the slow path for every collection.
@@ -354,16 +478,28 @@ def test_non_item_objects_do_not_count_towards_the_comparison(served_dir, client
     assert note is None
 
 
-def test_an_unlistable_collection_falls_back_to_its_parquet_index(served_dir, client, monkeypatch):
-    _root, base = served_dir
-    fast = [discover.Item("x", "i0", f"{base}/d/i0.json", None, None)]
-    monkeypatch.setattr(discover, "items_from_parquet", lambda url: fast)
+def test_an_empty_index_beside_an_empty_listing_still_consults_the_collection_links(
+    served_dir, client, monkeypatch
+):
+    # The two sources agree the collection holds nothing, which is agreement,
+    # not a discrepancy — but a zero-row index is no evidence that the
+    # collection document's own item links are wrong, so they are still the
+    # last resort here exactly as they are when no index exists at all.
+    root, base = served_dir
+    write_json(root / "fr" / "items" / "i0.json", stac_item("i0", f"{base}/data/i0.json"))
+    monkeypatch.setattr(discover, "items_from_parquet", lambda url: [])
     monkeypatch.setattr(discover, "list_item_objects", lambda bucket_api, cid, client: [])
+
     items, note = discover.enumerate_items(
-        base_url=base, bucket_api=f"{base}/o", cid="x", collection={}, client=client
+        base_url=base,
+        bucket_api=f"{base}/o",
+        cid="fr",
+        collection={"links": [{"rel": "item", "href": "./items/i0.json"}]},
+        client=client,
     )
-    assert items == fast
-    assert note is None
+
+    assert [i.item_id for i in items] == ["i0"]
+    assert note is None, "0 against 0 is agreement; there is no discrepancy to report"
 
 
 def test_without_an_index_or_a_listing_the_collection_links_are_used(

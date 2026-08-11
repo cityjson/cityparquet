@@ -4,7 +4,7 @@ import pytest
 
 from catalog2cityparquet import convert
 from catalog2cityparquet.discover import Item
-from catalog2cityparquet.ledger import REASONS
+from catalog2cityparquet.ledger import HOST_FAILURE_MARKERS, REASONS, HostFailure
 
 
 def test_converter_errors_map_to_ledger_reasons():
@@ -134,6 +134,43 @@ def test_run_convert_raises_a_classified_error(tmp_path):
     with pytest.raises(convert.ConvertError) as excinfo:
         convert.run_convert(fake, [tmp_path / "in.gml"], tmp_path / "out", None, timeout=30)
     assert excinfo.value.reason == "unsupported_citygml_version"
+
+
+def test_a_converter_that_ran_out_of_disk_is_not_a_conversion_failure(tmp_path):
+    # `cityparquet` writes ~74,000 packages and effectively all of the output,
+    # so it is the process that meets a full volume first. Its non-zero exit is
+    # indistinguishable from a refusal about the data until its stderr is read
+    # — and reading it wrong stamps every remaining item `convert_failed`.
+    fake = tmp_path / "fake-cityparquet"
+    fake.write_text(
+        "#!/bin/sh\necho 'Error: I/O error: No space left on device (os error 28)' >&2\nexit 1\n"
+    )
+    fake.chmod(0o755)
+
+    with pytest.raises(HostFailure):
+        convert.run_convert(fake, [tmp_path / "in.json"], tmp_path / "out", None, timeout=30)
+
+
+def test_a_converter_that_ran_and_refused_is_still_a_conversion_failure(tmp_path):
+    # The other side of the split: a refusal about the data keeps its place in
+    # the published histogram.
+    fake = tmp_path / "fake-cityparquet"
+    fake.write_text("#!/bin/sh\necho 'error: schema error: declares no CRS' >&2\nexit 1\n")
+    fake.chmod(0o755)
+
+    with pytest.raises(convert.ConvertError) as excinfo:
+        convert.run_convert(fake, [tmp_path / "in.json"], tmp_path / "out", None, timeout=30)
+    assert excinfo.value.reason == "no_crs"
+
+
+def test_the_classifier_can_never_return_the_environment_reason():
+    # `classify_error` reads the converter's own stderr about the DATA; the
+    # host-failure split happens before it, so nothing it returns may leave the
+    # conformance vocabulary.
+    from catalog2cityparquet.ledger import CONFORMANCE_REASONS
+
+    for marker in HOST_FAILURE_MARKERS:
+        assert convert.classify_error(f"Error: I/O error: {marker}") in CONFORMANCE_REASONS
 
 
 def test_run_convert_returns_the_object_count(tmp_path):

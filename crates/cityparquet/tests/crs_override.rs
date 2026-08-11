@@ -267,6 +267,46 @@ fn the_provenance_survives_partitioning() {
     }
 }
 
+/// The partitioned path asks the same question of the same inputs, so it must
+/// reach the same answer: a batch in which ANY input declared its own CRS has
+/// a source-declared merged CRS, because `merge_sources` enforces one shared
+/// CRS across them all. Under `.any()` every partition of a mixed batch was
+/// stamped operator-supplied and lost the source's `referenceSystem` from its
+/// verbatim passthrough.
+#[test]
+fn a_mixed_batch_of_partitions_is_not_stamped_operator_supplied() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out");
+    // The real fixture declares EPSG:7415; its CRS-less twin is given the same
+    // code by an operator, which is what lets the two merge at all.
+    let declared = Source::open(&delft()).expect("fixture must exist; run `just fixtures`");
+    let input = crs_less_fixture(tmp.path());
+    let mut supplied = Source::open(&input).unwrap();
+    assert!(supplied.set_reference_system("EPSG:7415"));
+
+    let mut opts = ConvertOptions::new(input, out.clone());
+    opts.crs_override = Some("EPSG:7415".to_string());
+    let report = convert_partitioned(&[declared, supplied], &PartitionSpec::Count(2), &opts)
+        .expect("partitioned conversion must succeed");
+
+    for (label, _) in &report.partitions {
+        let other = footer(&out.join(label).join("building.parquet"))
+            .other
+            .expect("city.other must exist");
+        assert!(
+            other.get("crs_source").is_none(),
+            "partition {label} claims an operator supplied a CRS an input declared: {other}"
+        );
+        assert!(
+            other
+                .get("source_metadata")
+                .and_then(|m| m.get("referenceSystem"))
+                .is_some(),
+            "partition {label} dropped the source's own referenceSystem: {other}"
+        );
+    }
+}
+
 /// A bad `--crs` must be caught BEFORE `convert_partitioned` purges the
 /// previous run's partitions — the invariant `ensure_parent_ready` documents
 /// (a bad-input failure never destroys a prior complete output).

@@ -37,6 +37,24 @@ pub fn is_geographic_epsg(code: &str) -> bool {
     GEOGRAPHIC_EPSG.contains(&code)
 }
 
+/// Whether `source` — a CRS identifier in any spelling [`lookup_key`] accepts
+/// (`4326`, `EPSG:4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC CRS URL,
+/// `OGC:CRS84`) — names a known geographic CRS.
+///
+/// The identifier-level companion to [`is_geographic_epsg`], for the consumers
+/// that hold a CRS *string* rather than a bare code: a CityJSON
+/// `referenceSystem` is an OGC EPSG URL, not a code. `OGC:CRS84` is included
+/// because it is lon/lat degrees expressed as a name and so carries no EPSG
+/// code to test. An identifier we cannot parse at all is not claimed to be
+/// geographic — [`resolve_to_projjson`] refuses it separately, which is the
+/// right error for it.
+pub fn is_geographic_crs(source: &str) -> bool {
+    match lookup_key(source) {
+        Some(key) => key.starts_with("OGC:CRS84") || is_geographic_epsg(&key),
+        None => false,
+    }
+}
+
 /// The committed EPSG -> PROJJSON table, gzipped. Regenerate with
 /// `tools/gen_projjson.py` when the pinned PROJ/EPSG dataset is bumped (the
 /// version pins live in the asset's `_meta`).
@@ -181,6 +199,31 @@ mod tests {
         assert!(!is_geographic_epsg("28992"));
         assert!(!is_geographic_epsg("7415"));
         assert!(!is_geographic_epsg("31256"));
+    }
+
+    #[test]
+    fn geographic_identifiers_are_recognised_in_every_accepted_spelling() {
+        // What a CityJSON `referenceSystem` actually looks like, plus the
+        // shorthands the same resolver accepts.
+        assert!(is_geographic_crs(
+            "https://www.opengis.net/def/crs/EPSG/0/4326"
+        ));
+        assert!(is_geographic_crs("urn:ogc:def:crs:EPSG::4979"));
+        assert!(is_geographic_crs("EPSG:4258"));
+        assert!(is_geographic_crs("4267"));
+        // CRS84 is lon/lat degrees under a name, with no EPSG code to test.
+        assert!(is_geographic_crs("OGC:CRS84"));
+        assert!(is_geographic_crs(
+            "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+        ));
+        // Projected/compound national CRS must pass through untouched.
+        assert!(!is_geographic_crs(
+            "https://www.opengis.net/def/crs/EPSG/0/7415"
+        ));
+        assert!(!is_geographic_crs("EPSG:28992"));
+        // An identifier we cannot parse is not claimed to be geographic;
+        // `resolve_to_projjson` refuses it with the right error instead.
+        assert!(!is_geographic_crs("some-local-engineering-crs"));
     }
 
     #[test]

@@ -357,6 +357,28 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
         })
         .transpose()?;
 
+    // A degree-valued CRS is unrepresentable for this writer, whoever declared
+    // it. The CityGML `srsName` resolver and the operator's `--crs` both
+    // refuse one already; the CityJSON `referenceSystem` reached the writer
+    // unchecked, and the writer then quantised degrees at millimetre scale
+    // (0.001° ~ 111 m), collapsing a whole dataset onto a handful of vertices
+    // and exiting 0. A failure written as a success is the worst outcome this
+    // pipeline can produce, so the check lives HERE — in the scan, before any
+    // output is touched — rather than in the writer.
+    //
+    // The wording deliberately matches the CityGML resolver's, since a
+    // downstream classifier reads these messages to tell one refusal from
+    // another.
+    if let Some(url) = &crs_url
+        && cityparquet_schema::crs::is_geographic_crs(url)
+    {
+        return Err(CityParquetError::Schema(format!(
+            "source CRS {url:?} resolves to geographic CRS; this writer only supports \
+             projected (metre-based) CRS (coordinates are quantised at millimetre scale, \
+             which would destroy degrees) — reproject the source first"
+        )));
+    }
+
     let transform = serde_json::to_value(&header.transform)?;
 
     // `city.other.source_metadata` is the source header `metadata` VERBATIM.

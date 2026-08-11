@@ -863,3 +863,83 @@ fn convert_with_crs_flag_keeps_the_provenance_across_a_merge() {
         "the merged package lost the CRS provenance: {other}"
     );
 }
+
+/// Several inputs, only SOME of which declare their own CRS. `merge_sources`
+/// enforces one shared CRS, so if ANY input declared one the merged CRS IS
+/// source-declared — which makes `.all()`, not `.any()`, the question to ask.
+/// Under `.any()` one CRS-less input in a batch stamped the WHOLE package
+/// `crs_source: "operator-supplied"` and stripped the genuine
+/// `referenceSystem` out of the "verbatim" `source_metadata`: a footer
+/// implying the source did not declare a CRS it did carry, which is the exact
+/// inverse of the guarantee the stamp exists to give.
+#[test]
+fn a_mixed_batch_is_not_stamped_operator_supplied() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    // One input declaring EPSG:7415 (the real fixture) beside one declaring
+    // nothing, and a `--crs` that supplies the same code to the latter so the
+    // merge's shared-CRS check passes.
+    let declared = fixture("delft.city.jsonl");
+    let silent = crs_less_delft(dir.path(), "no_crs.city.jsonl");
+    let out = dir.path().join("pkg");
+    let output = Command::new(binary)
+        .args(["convert".as_ref(), declared.as_os_str(), silent.as_os_str()])
+        .arg("-o")
+        .arg(&out)
+        .args(["--overwrite", "--crs", "EPSG:7415"])
+        .output()
+        .expect("failed to run convert");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let other = city_footer(&out.join("building.parquet"))
+        .other
+        .expect("city.other must exist");
+    assert!(
+        other.get("crs_source").is_none(),
+        "an input declared this CRS itself, so nothing may claim an operator supplied it: {other}"
+    );
+    assert!(
+        other
+            .get("source_metadata")
+            .and_then(|m| m.get("referenceSystem"))
+            .is_some(),
+        "the source's own referenceSystem must survive in the verbatim passthrough: {other}"
+    );
+}
+
+/// `--crs` used to be swallowed whenever it happened to be ignored: the CLI
+/// set `crs_override` only when the declaration was actually applied, so on a
+/// source that declares its own CRS an unusable value exited 0 with no
+/// message at all. The value is validated because it was given, not because it
+/// took effect — the provenance stamp reads the SOURCE, never the option, so
+/// validating unconditionally cannot produce a false stamp.
+#[test]
+fn an_unusable_crs_is_reported_even_when_the_source_declares_its_own() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    for (spec, needle) in [
+        ("banana", "EPSG"),
+        ("EPSG:4326", "geographic"),
+        ("", "EPSG"),
+    ] {
+        let out = tempfile::tempdir().unwrap();
+        let output = Command::new(binary)
+            .arg("convert")
+            .arg(fixture("delft.city.jsonl"))
+            .arg("-o")
+            .arg(out.path())
+            .args(["--overwrite", "--crs", spec])
+            .output()
+            .expect("failed to run convert");
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        assert!(
+            !output.status.success(),
+            "--crs {spec:?} must not be swallowed; stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(stderr.contains(needle), "--crs {spec:?}: stderr: {stderr}");
+    }
+}

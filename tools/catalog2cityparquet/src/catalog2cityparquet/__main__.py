@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import json
 import os
+import re
 import shutil
 import socket
 import sys
@@ -33,7 +35,7 @@ import httpx
 
 from . import aggregate, convert, discover, fetch
 from .discover import Item
-from .ledger import ENVIRONMENT, Ledger, Record, validate_collection_id
+from .ledger import ENVIRONMENT, HostFailure, Ledger, Record, roll_up, validate_collection_id
 
 BASE_URL = "https://storage.googleapis.com/city3d-stac"
 BUCKET_API = "https://storage.googleapis.com/storage/v1/b/city3d-stac/o"
@@ -78,6 +80,45 @@ HOSTNAME = socket.gethostname()
 OUTPUT_DIRECTORY = "output directory"
 WORKING_DIRECTORY = "working directory"
 _ALTERNATIVE = {OUTPUT_DIRECTORY: "--out", WORKING_DIRECTORY: "--work-dir"}
+
+#: The only spelling `--crs` accepts. The converter takes `EPSG:<code>` (or a
+#: bare code) and refuses anything else, so a typo here would not fail until
+#: the collection had been attempted — and its every item would be recorded
+#: `no_crs`, a conformance fact about data that in truth was never given the
+#: CRS the operator meant to supply.
+CRS_PATTERN = re.compile(r"EPSG:\d+")
+
+#: `errno`s that mean *this machine* could not do the work: no room, no
+#: permission to write, no descriptors left, an unreadable device. An `OSError`
+#: carrying one of these says nothing about whether the dataset converts.
+#: Everything else that happens to be an `OSError` — a corrupt gzip
+#: (`gzip.BadGzipFile`, which carries no errno at all), an archive member with
+#: a 400-character name (ENAMETOOLONG) — is a fact about the *payload* and
+#: belongs in the histogram like any other data failure.
+ENVIRONMENT_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in ("ENOSPC", "EROFS", "EDQUOT", "EMFILE", "ENFILE", "EFBIG", "EIO")
+    if hasattr(errno, name)
+)
+
+#: `errno`s of a raw socket failure. `httpx` wraps almost everything, but a
+#: socket error that reached us unwrapped is still the origin's doing, and
+#: under the gate above it would otherwise fall through to `convert_failed` —
+#: blaming the converter for an origin that dropped the connection.
+TRANSPORT_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in (
+        "ECONNRESET",
+        "EPIPE",
+        "ETIMEDOUT",
+        "ECONNREFUSED",
+        "EHOSTUNREACH",
+        "ENETUNREACH",
+        "ENETDOWN",
+        "ECONNABORTED",
+    )
+    if hasattr(errno, name)
+)
 
 
 class LockBusy(RuntimeError):
@@ -484,6 +525,20 @@ def already_converted(config: Config, item: Item) -> bool:
     return isinstance(doc, dict) and doc.get("type") == "Feature" and "stac_version" in doc
 
 
+def has_packages(config: Config, cid: str) -> bool:
+    """Whether `cid`'s items directory holds at least one package to aggregate.
+
+    Mirrors exactly what `city3dstac` looks for, so the driver's decision to
+    call it and the tool's decision to refuse can never disagree.
+    """
+    try:
+        return any((config.out / cid / "items").glob("*/metadata.json"))
+    except OSError:
+        # An unreadable items directory is this machine's problem, and the
+        # aggregation attempt below is where it gets reported as such.
+        return True
+
+
 def process_item(
     item: Item, *, config: Config, client: httpx.Client, stats: ItemStats | None = None
 ) -> int:
@@ -579,12 +634,11 @@ def convert_items(
             # reclassified as this machine would delete a measured fact from
             # the published histogram.
             _fail(ledger, item, "download_failed", _describe(exc), started, stats, state)
-        except OSError as exc:
-            # This machine, not the origin: a full working volume, a read-only
-            # mirror, a host out of descriptors. `download_failed` is the
-            # conformance reason most likely to be read as "the publisher was
-            # unavailable", so recording a local failure there states something
-            # about the catalogue that the run never observed.
+        except HostFailure as exc:
+            # The converter ran and *its* host is what failed — a full volume
+            # under the mirror it was writing. It writes effectively all of the
+            # output, so it meets a full volume before this process does, and
+            # its non-zero exit reads exactly like a refusal about the data.
             _environment_failure(
                 ledger,
                 item.collection,
@@ -594,6 +648,34 @@ def convert_items(
                 bytes_moved=stats.downloaded,
                 seconds=time.monotonic() - started,
             )
+        except OSError as exc:
+            # Only a host `errno` is this machine: a full working volume, a
+            # read-only mirror, a host out of descriptors. `download_failed` is
+            # the conformance reason most likely to be read as "the publisher
+            # was unavailable", so recording a local failure there states
+            # something about the catalogue that the run never observed.
+            #
+            # The gate is on the errno, not on the type, because `OSError` is
+            # also what a corrupt payload raises: `gzip.BadGzipFile` IS an
+            # `OSError` (with no errno), and every one of the 8,941
+            # `netherlands-3d-bag` items is a `.json.gz`. Routing those to the
+            # environment withholds real data failures from the histogram,
+            # which is the same fabrication in the opposite direction.
+            if exc.errno in ENVIRONMENT_ERRNOS:
+                _environment_failure(
+                    ledger,
+                    item.collection,
+                    item.item_id,
+                    _describe(exc),
+                    state,
+                    bytes_moved=stats.downloaded,
+                    seconds=time.monotonic() - started,
+                )
+            elif exc.errno in TRANSPORT_ERRNOS:
+                _fail(ledger, item, "download_failed", _describe(exc), started, stats, state)
+            else:
+                # A fact about the payload, classified like any other.
+                _fail(ledger, item, "convert_failed", _describe(exc), started, stats, state)
         # Deliberately broad: one item must never stop the run.
         except Exception as exc:
             _fail(ledger, item, "convert_failed", _describe(exc), started, stats, state)
@@ -682,9 +764,30 @@ def convert_collection(
     converted.
     """
     collection = discover.fetch_collection(config.base_url, cid, client)
+    # Item documents enumeration listed but could not turn into items. They are
+    # collected rather than counted so each one can be recorded by name: an
+    # item that reaches no record at all shrinks the histogram's denominator
+    # with nothing to show for it.
+    dropped: list[str] = []
     items, note = discover.enumerate_items(
-        config.base_url, config.bucket_api, cid, collection, client
+        config.base_url, config.bucket_api, cid, collection, client, dropped=dropped
     )
+    ledger.note_discovered(cid, len(items) + len(dropped))
+    for name in dropped:
+        # The origin listed this document and then would not serve it (or served
+        # one with no `data` asset). That is the publisher's availability, which
+        # is what `download_failed` says.
+        _record_safely(
+            ledger,
+            Record(
+                cid,
+                PurePosixPath(name).name or name,
+                "failed",
+                reason="download_failed",
+                error=f"listed item document {name!r} could not be read",
+            ),
+            state,
+        )
     if note:
         # A published index disagreeing with the object listing is a fact about
         # the catalogue worth recording, not just a log line.
@@ -695,16 +798,31 @@ def convert_collection(
             state,
         )
     if not items:
-        # 20 of the 53 collections publish only a collection.json.
-        _record_safely(
-            ledger, Record(cid, COLLECTION_LEVEL, "skipped", reason="empty_collection"), state
-        )
+        if not dropped:
+            # 20 of the 53 collections publish only a collection.json. A
+            # collection whose every listed document was unreadable is a
+            # different fact, already recorded above — calling it empty would
+            # invent a conformance statement about data nobody could read.
+            _record_safely(
+                ledger, Record(cid, COLLECTION_LEVEL, "skipped", reason="empty_collection"), state
+            )
         _say(f"==> {cid}: no items")
         return
     if config.limit_per_collection is not None:
         items = items[: config.limit_per_collection]
     _say(f"==> {cid}: {len(items)} item(s)")
     convert_items(items, ledger=ledger, config=config, collection=cid, state=state)
+
+    if not has_packages(config, cid):
+        # `city3dstac` refuses an items directory with no Item in it ("No STAC
+        # item files provided"), and that non-zero exit used to be ledgered as
+        # a SECOND, collection-level `convert_failed` — a phantom conformance
+        # record describing this driver rather than the data. Roughly half the
+        # catalogue would gain one. The condition is the directory, not this
+        # run's successes, because aggregation is over the directory: a resumed
+        # run whose items were all skipped still has packages to aggregate.
+        _say(f"==> {cid}: nothing converted; skipping aggregation")
+        return
 
     try:
         config_path = aggregate.write_config(
@@ -827,19 +945,28 @@ def print_summary(ledger: Ledger, state: RunState) -> None:
     except Exception as exc:
         _warn(f"  ! summary.csv could not be written: {_describe(exc)}")
     _say("\n--- summary ---")
-    _say(f"{'collection':<32} {'converted':>9} {'failed':>7} {'skipped':>8} {'environment':>11}")
+    _say(
+        f"{'collection':<32} {'discovered':>10} {'converted':>9} "
+        f"{'failed':>7} {'skipped':>8} {'environment':>11}"
+    )
     totals = {"converted": 0, "failed": 0, "skipped": 0, ENVIRONMENT: 0}
+    discovered_total = 0
     for collection in ledger.collections():
         counts = ledger.counts(collection)
         for status in totals:
             totals[status] += counts.get(status, 0)
+        # What enumeration found, beside what was recorded. They are not the
+        # same number, and a collection whose enumeration was truncated must
+        # not be able to look complete.
+        discovered = ledger.discovered(collection)
+        discovered_total += discovered
         _say(
-            f"{collection:<32} {counts.get('converted', 0):>9} "
+            f"{collection:<32} {discovered:>10} {counts.get('converted', 0):>9} "
             f"{counts.get('failed', 0):>7} {counts.get('skipped', 0):>8} "
             f"{counts.get(ENVIRONMENT, 0):>11}"
         )
     _say(
-        f"{'TOTAL':<32} {totals['converted']:>9} {totals['failed']:>7} "
+        f"{'TOTAL':<32} {discovered_total:>10} {totals['converted']:>9} {totals['failed']:>7} "
         f"{totals['skipped']:>8} {totals[ENVIRONMENT]:>11}"
     )
 
@@ -894,6 +1021,23 @@ def resolve_collections(config: Config) -> list[str]:
     return cids
 
 
+def _report_unmatched_crs(config: Config, cids: list[str]) -> None:
+    """Say so when a `--crs` names a collection this run will never attempt.
+
+    The spelling is validated at startup, but a well-formed id for a collection
+    that is not in the catalogue (or not in this run) is still a typo — and a
+    silent one: the collection it was meant for converts as `no_crs` from end
+    to end, which for `netherlands-3d-bag` would be 8,941 fabricated
+    conformance facts.
+    """
+    unmatched = sorted(set(config.crs_by_collection) - set(cids))
+    if unmatched:
+        _warn(
+            "  ! --crs names collection(s) this run does not attempt, so the override will "
+            "have no effect: " + ", ".join(repr(cid) for cid in unmatched)
+        )
+
+
 def run(
     config: Config, collections: list[str] | None = None, *, aggregate_only: bool = False
 ) -> int:
@@ -938,6 +1082,18 @@ def run(
                 except Exception as exc:
                     _warn(f"catalogue root unreachable: {_describe(exc)}")
                     return 1
+                if not cids:
+                    # The root answered and named no collection. Nothing can be
+                    # attempted, so this is the same outcome as an unreachable
+                    # root — and reporting success here would be the worst
+                    # shape of all: exit 0, an empty summary, and a run that
+                    # measured nothing claiming to have measured a catalogue.
+                    _warn(
+                        f"catalogue root {config.base_url}/catalog.json resolved no collections; "
+                        f"nothing could be attempted"
+                    )
+                    return 1
+            _report_unmatched_crs(config, cids)
             # Claimed after the root is known to be reachable, so a run that
             # never starts leaves no empty working directory behind. Skipped
             # when the working directory *is* the output directory, which this
@@ -1042,6 +1198,20 @@ def config_from_args(args: argparse.Namespace) -> Config:
         collection, separator, code = pair.partition("=")
         if not separator or not collection or not code:
             raise SystemExit(f"--crs expects COLLECTION=EPSG:xxxx, got {pair!r}")
+        # Both halves, not just the shape. An unusable id names no collection
+        # and a code the converter refuses fails every item of the one it does
+        # name — and either way the failure is a whole collection's worth of
+        # `no_crs` conformance facts about data that was never given the CRS
+        # the operator meant to supply.
+        try:
+            validate_collection_id(collection)
+        except ValueError as exc:
+            raise SystemExit(f"--crs: {exc}") from exc
+        if not CRS_PATTERN.fullmatch(code):
+            raise SystemExit(
+                f"--crs: {code!r} is not an EPSG code (expected e.g. 'EPSG:28992') "
+                f"for collection {collection!r}"
+            )
         crs_by_collection[collection] = code
     for cid in args.collections or []:
         try:
@@ -1063,10 +1233,70 @@ def config_from_args(args: argparse.Namespace) -> Config:
     )
 
 
+#: The one subcommand. Everything else is the default conversion run, whose
+#: flag-only invocation predates it and must keep working unchanged.
+HISTOGRAM = "histogram"
+
+
+def histogram_main(argv: list[str]) -> int:
+    """Print the conformance histogram of a cumulative ledger. Returns an exit code.
+
+    The JSONL accumulates across runs and a resumed run re-attempts a
+    previously failed item, appending a second record for it. Rolling the files
+    up by hand therefore double-counts, and the README used to ask the reader
+    to do exactly that. This subcommand exists so the published number is
+    produced by reviewed, tested code: one outcome per item, the last one.
+    """
+    parser = argparse.ArgumentParser(
+        prog=f"catalog2cityparquet {HISTOGRAM}",
+        description=(
+            "Reduce a cumulative ledger (<out>/_reports) to one outcome per item "
+            "and print the conformance histogram."
+        ),
+    )
+    parser.add_argument("reports_dir", type=Path, help="the run's _reports directory")
+    args = parser.parse_args(argv)
+    if not args.reports_dir.is_dir():
+        _warn(f"no reports directory at {args.reports_dir}")
+        return 1
+    try:
+        rolled = roll_up(args.reports_dir)
+    except OSError as exc:
+        _warn(f"cannot read {args.reports_dir}: {exc}")
+        return 1
+
+    _say(f"--- {args.reports_dir} ---")
+    _say(f"{'items':>12}  {rolled.items}")
+    for status, count in sorted(rolled.statuses.items()):
+        _say(f"{status:>12}  {count}")
+    _say("\nreasons (what the data did):")
+    if rolled.reasons:
+        for reason, count in sorted(rolled.reasons.items(), key=lambda kv: (-kv[1], kv[0])):
+            _say(f"  {count:>7}  {reason}")
+    else:
+        _say("  (none)")
+    if rolled.environment:
+        _say(
+            f"\n!! {rolled.environment} environment failure(s): this machine, not the data.\n"
+            "   They are excluded from the reasons above; the runs that produced\n"
+            "   this ledger are incomplete."
+        )
+    if rolled.unreadable:
+        _say(
+            f"\n!! {rolled.unreadable} unreadable ledger line(s) — a run that died mid-write\n"
+            "   leaves one behind. They are counted, not skipped, because dropping\n"
+            "   them would shrink the denominator in silence."
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """The process entry point: a run, and streams that cannot outlive it."""
-    args = parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
     try:
+        if argv and argv[0] == HISTOGRAM:
+            return histogram_main(argv[1:])
+        args = parse_args(argv)
         return run(
             config_from_args(args),
             args.collections,

@@ -23,6 +23,24 @@ from .ledger import COLLECTION_ID_PATTERN
 _REMOTE_SCHEMES = ("http://", "https://", "s3://", "gs://", "gcs://", "r2://", "az://")
 
 
+def _get_json(client, url: str):
+    """Fetch `url` and decode it, refusing to read an error page as content.
+
+    The status check is not a formality. The GCS JSON API reports a failure as
+    a **JSON body** — `{"error": {...}}` — so `.json()` succeeds and the
+    payload merely lacks the key the caller wanted: a 503 during a listing
+    yields no `items` and no `nextPageToken`, and the collection comes back
+    cleanly empty. That is recorded as `empty_collection`, a fabricated
+    conformance fact about a collection nobody ever managed to list; and where
+    a stale `items.parquet` also exists, the index is preferred instead. Every
+    request in this module goes through here so no reader can be added without
+    the check.
+    """
+    response = client.get(url)
+    response.raise_for_status()
+    return response.json()
+
+
 @dataclass(frozen=True)
 class Item:
     collection: str
@@ -50,7 +68,7 @@ def collection_ids(base_url: str, client) -> tuple[list[str], str | None]:
     must not cost the other 52 collections. Strictness stays where it matters,
     in `Ledger.record`, which still refuses to write a file for a bad id.
     """
-    catalog = client.get(f"{base_url}/catalog.json").json()
+    catalog = _get_json(client, f"{base_url}/catalog.json")
     ids: list[str] = []
     rejected: list[str] = []
     for link in catalog.get("links", []):
@@ -70,7 +88,7 @@ def collection_ids(base_url: str, client) -> tuple[list[str], str | None]:
 
 
 def fetch_collection(base_url: str, cid: str, client) -> dict:
-    return client.get(f"{base_url}/{cid}/collection.json").json()
+    return _get_json(client, f"{base_url}/{cid}/collection.json")
 
 
 def list_item_objects(bucket_api: str, cid: str, client) -> list[str]:
@@ -86,7 +104,7 @@ def list_item_objects(bucket_api: str, cid: str, client) -> list[str]:
         url = f"{bucket_api}?prefix={quote(cid + '/items/', safe='')}&maxResults=1000"
         if token:
             url += f"&pageToken={quote(token, safe='')}"
-        payload = client.get(url).json()
+        payload = _get_json(client, url)
         names.extend(obj["name"] for obj in payload.get("items", []))
         token = payload.get("nextPageToken")
         if not token:
@@ -110,11 +128,17 @@ def items_from_parquet(url: str) -> list[Item] | None:
 
     `assets` is a struct whose keys differ per collection, so it is read
     generically as JSON rather than by a fixed schema.
-    """
-    import duckdb
 
+    The import sits INSIDE the guard: an absent or broken `duckdb` is one more
+    reason there is no usable index here, and letting its `ImportError` escape
+    would reach the orchestrator's broad handler and stamp all 53 collections
+    `convert_failed` — the "one absent binary publishes half the catalogue as
+    unconvertible" mode.
+    """
     con = None
     try:
+        import duckdb
+
         con = duckdb.connect()
         # httpfs is what lets DuckDB range-read a remote index, and INSTALL
         # fetches it from extensions.duckdb.org on a clean machine — so it is
@@ -148,12 +172,24 @@ def items_from_parquet(url: str) -> list[Item] | None:
 
 
 def items_from_listing(
-    base_url: str, bucket_api: str, cid: str, client, names: list[str] | None = None
+    base_url: str,
+    bucket_api: str,
+    cid: str,
+    client,
+    names: list[str] | None = None,
+    dropped: list[str] | None = None,
 ) -> list[Item]:
     """Fetch every listed item document and read its single `data` asset.
 
     `names` lets a caller that has already paginated the listing hand it over
     rather than pay for 61 more requests on the largest collection.
+
+    `dropped` collects the name of every listed item document that yielded no
+    `Item` — one the origin would not serve, or one carrying no `data` asset.
+    It is an out-parameter for the same reason [`__main__.ItemStats`] is: the
+    names must survive however the loop ends. Without it those documents reach
+    NO ledger record at all, and the histogram's denominator shrinks with no
+    trace of what it lost.
     """
     items: list[Item] = []
     for name in list_item_objects(bucket_api, cid, client) if names is None else names:
@@ -161,12 +197,16 @@ def items_from_listing(
             continue
         url = f"{base_url}/{name}"
         try:
-            doc = client.get(url).json()
+            doc = _get_json(client, url)
         except Exception:
+            if dropped is not None:
+                dropped.append(name)
             continue
         asset = (doc.get("assets") or {}).get("data") or {}
         href = asset.get("href")
         if not href:
+            if dropped is not None:
+                dropped.append(name)
             continue
         items.append(
             Item(
@@ -198,17 +238,30 @@ def items_from_collection_links(base_url: str, cid: str, collection: dict, clien
 
 
 def enumerate_items(
-    base_url: str, bucket_api: str, cid: str, collection: dict, client
+    base_url: str,
+    bucket_api: str,
+    cid: str,
+    collection: dict,
+    client,
+    dropped: list[str] | None = None,
 ) -> tuple[list[Item], str | None]:
-    """Return this collection's items, plus a note when the index was stale.
+    """Return this collection's items, plus a note when the two sources disagreed.
 
     Policy: use `items.parquet` only when its row count agrees with the object
     listing. On any disagreement the listing wins and the discrepancy is
     reported, so a stale index can never silently truncate a run. The note is
     returned rather than logged; the caller decides what to do with it.
 
+    The agreement test is a plain equality of the two counts, with no "unless
+    the listing is empty" escape: an empty listing beside an index of N items
+    is a disagreement like any other, and the index used in its place is used
+    knowingly. Preferring it in silence is how a 306-row index for a
+    60,471-item collection came to be trusted.
+
     A collection that publishes nothing is not an error — 20 of the 53 hold
     only a `collection.json` — so an empty list comes back instead.
+
+    `dropped` is handed to :func:`items_from_listing`; see its docstring.
     """
     fast = items_from_parquet(f"{base_url}/{cid}/items.parquet")
     listed_names = list_item_objects(bucket_api, cid, client)
@@ -216,19 +269,35 @@ def enumerate_items(
     # counting them would fake a discrepancy.
     listed_count = sum(1 for n in listed_names if n.endswith(".json"))
 
-    if fast is not None and listed_count and len(fast) == listed_count:
-        return fast, None
+    if fast is not None and len(fast) == listed_count:
+        if fast:
+            return fast, None
+        # Both sources agree the collection holds nothing. The collection
+        # document's own `rel=item` links are the last-resort source, consulted
+        # here for the same reason they are consulted when neither source
+        # exists at all — a zero-row index is not evidence that they are wrong.
+        return items_from_collection_links(base_url, cid, collection, client), None
+
+    def discrepancy(using: str) -> str | None:
+        if fast is None:
+            return None
+        return (
+            f"stale item index: items.parquet lists {len(fast)} item(s) "
+            f"but the object listing has {listed_count}; using {using}"
+        )
 
     if listed_count:
-        note = None
-        if fast is not None and len(fast) != listed_count:
-            note = (
-                f"stale item index: items.parquet lists {len(fast)} item(s) "
-                f"but the object listing has {listed_count}; using the listing"
-            )
-        return items_from_listing(base_url, bucket_api, cid, client, names=listed_names), note
+        return (
+            items_from_listing(
+                base_url, bucket_api, cid, client, names=listed_names, dropped=dropped
+            ),
+            discrepancy("the listing"),
+        )
 
-    # Nothing listable: an index we cannot cross-check still beats nothing.
+    # Nothing listable: an index we cannot cross-check still beats nothing —
+    # but the disagreement that made it uncheckable travels with it.
     if fast:
-        return fast, None
-    return items_from_collection_links(base_url, cid, collection, client), None
+        return fast, discrepancy("the index, unverified")
+    return items_from_collection_links(base_url, cid, collection, client), discrepancy(
+        "the collection's own item links"
+    )

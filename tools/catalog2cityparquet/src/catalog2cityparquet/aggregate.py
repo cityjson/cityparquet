@@ -26,6 +26,8 @@ from pathlib import Path
 
 import yaml
 
+from .ledger import HOST_FAILURE_MARKERS, HostFailure, is_host_failure
+
 #: Fields `city3dstac`'s `CollectionConfigFile` accepts. It carries no
 #: `deny_unknown_fields`, so anything else is silently DROPPED rather than
 #: rejected — quiet metadata loss, which is why the emitter is tested against
@@ -81,30 +83,19 @@ _GEOPARQUET_FAILED = "geoparquet encode error"
 #: The sidecar the tool writes beside the collection it is given.
 _INDEX_NAME = "items.parquet"
 
-#: Substrings (lower-cased) of a tool failure that is *this machine's*, not the
-#: data's. The tool exits non-zero either way, so its stderr is the only thing
-#: that tells them apart — the same reading `convert.classify_error` does for
-#: the converter, and for the same reason: a run whose mirror volume filled
-#: would otherwise publish every collection it touched as unconvertible.
-#: Deliberately short, matching the kernel's own wording as it reaches a Rust
-#: `std::io::Error`, so the list does not depend on the tool's phrasing.
-HOST_FAILURE_MARKERS = (
-    "no space left",
-    "read-only file system",
-    "disk quota exceeded",
-    "too many open files",
-)
-
-
-class HostFailure(RuntimeError):
-    """The tool ran and failed because this *machine* could not do the work.
-
-    A `RuntimeError` like any other tool failure — every existing caller keeps
-    working — but a distinct type, so the orchestrator can route it to the
-    environment path instead of the conformance histogram. What it says is
-    "nothing was learned about this collection", never "this collection does
-    not convert".
-    """
+#: Re-exported for the callers that read them as `aggregate.*`. Their home is
+#: `ledger.py`, beside the conformance/environment vocabulary they decide
+#: between, because the `cityparquet` converter needs exactly the same reading
+#: of exactly the same kernel wording — and two copies of the list would drift.
+__all__ = [
+    "HOST_FAILURE_MARKERS",
+    "HostFailure",
+    "catalog_config",
+    "collection_config",
+    "update_catalog",
+    "update_collection",
+    "write_config",
+]
 
 
 def collection_config(collection_json: dict) -> dict:
@@ -234,7 +225,7 @@ def _run(cmd: list[str], what: str, timeout: float, tolerate: str | None = None)
     if proc.returncode == 0:
         return None
     detail = proc.stderr.strip()[:MAX_DETAIL_CHARS]
-    if any(marker in detail.lower() for marker in HOST_FAILURE_MARKERS):
+    if is_host_failure(detail):
         # Ahead of `tolerate`, so a sidecar the kernel refused to write is
         # never mistaken for one the encoder declined to build: tolerating it
         # would have `update_collection` return True for an index that does not
