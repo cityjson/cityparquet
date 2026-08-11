@@ -1,5 +1,6 @@
 import contextlib
 import gzip
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -178,6 +179,110 @@ def test_like_named_members_of_different_archives_do_not_overwrite(tmp_path):
     assert len({p.parent for p in found}) == 2
 
 
+def _office_document(path: Path) -> Path:
+    """A minimal OOXML file: a ZIP by content, a document by every other measure."""
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+    return path
+
+
+def test_duplicate_member_names_within_one_archive_are_refused(tmp_path):
+    # ZIP permits a repeated entry name. Extracting both into one directory
+    # loses the first payload while the returned list still looks right.
+    archive = tmp_path / "dupes.zip"
+    with warnings.catch_warnings():
+        # zipfile warns when *writing* a repeated name; reading one is silent,
+        # which is the whole problem.
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("udx/1.gml", "<first/>")
+            zf.writestr("udx/1.gml", "<second/>")
+
+    with pytest.raises(ValueError, match="duplicate member"):
+        fetch.normalise(archive, tmp_path / "work")
+
+
+def test_office_documents_beside_the_data_are_not_unpacked(tmp_path):
+    # PLATEAU and several German packages ship .xlsx/.docx metadata beside the
+    # GML. Those begin with PK\x03\x04 too, so a pure content sniff would feed
+    # the converter their OOXML parts and fail the whole item.
+    src = FIXTURES / "b1_lod2_s.gml"
+    archive = tmp_path / "pkg.zip"
+    doc = _office_document(tmp_path / "book.xlsx")
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.write(src, "udx/bldg/real.gml")
+        zf.write(doc, "metadata/book.xlsx")
+
+    found = fetch.normalise(archive, tmp_path / "work")
+    assert [p.name for p in found] == ["real.gml"]
+
+
+def test_a_document_deeper_than_the_limit_does_not_abort_the_payload(tmp_path):
+    # An innocuous spreadsheet three levels down must not discard the GML that
+    # was already found.
+    src = FIXTURES / "b1_lod2_s.gml"
+    doc = _office_document(tmp_path / "book.xlsx")
+    level1 = tmp_path / "l1.zip"
+    with zipfile.ZipFile(level1, "w") as zf:
+        zf.write(doc, "book.xlsx")
+    level2 = tmp_path / "l2.zip"
+    with zipfile.ZipFile(level2, "w") as zf:
+        zf.write(level1, "l1.zip")
+    outer = tmp_path / "l3.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(src, "good.gml")
+        zf.write(level2, "l2.zip")
+
+    found = fetch.normalise(outer, tmp_path / "work")
+    assert [p.name for p in found] == ["good.gml"]
+
+
+def test_an_over_deep_archive_holding_nothing_convertible_is_skipped(tmp_path):
+    src = FIXTURES / "b1_lod2_s.gml"
+    inner = tmp_path / "inner.zip"
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("readme.txt", "nothing to convert")
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(src, "good.gml")
+        zf.write(inner, "inner.zip")
+
+    found = fetch.normalise(outer, tmp_path / "work", max_depth=1)
+    assert [p.name for p in found] == ["good.gml"]
+
+
+def test_an_over_deep_archive_that_could_contribute_still_raises(tmp_path):
+    # Silently dropping this one would report a partial conversion as complete.
+    src = FIXTURES / "b1_lod2_s.gml"
+    inner = tmp_path / "inner.zip"
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.write(src, "model.gml")
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(src, "good.gml")
+        zf.write(inner, "inner.zip")
+
+    with pytest.raises(ValueError, match="nesting depth"):
+        fetch.normalise(outer, tmp_path / "work", max_depth=1)
+
+
+def test_the_declared_size_refusal_writes_nothing_at_all(tmp_path):
+    # The header check earns its place by refusing before any byte is written;
+    # without it the budget would still refuse, but only after filling the disk
+    # up to the cap.
+    archive = tmp_path / "many.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i in range(50):
+            zf.writestr(f"{i}.gml", "0" * 100_000)
+    workdir = tmp_path / "work"
+
+    with pytest.raises(ValueError, match="declared uncompressed size"):
+        fetch.normalise(archive, workdir, max_bytes=1 << 20)
+
+    assert [p for p in workdir.rglob("*") if p.is_file()] == []
+
+
 class _FakeResponse:
     def __init__(self, chunks, error=None):
         self._chunks = chunks
@@ -243,6 +348,20 @@ def test_local_name_prefers_the_query_filename_when_the_path_has_none():
     # download saved without a suffix would look unconvertible afterwards.
     url = "https://example.invalid/api/download?ds=ehr&f=lod2_44_tartu.gml&fmt=citygml"
     assert fetch.local_name(url) == "lod2_44_tartu.gml"
+
+
+def test_local_name_prefers_the_query_over_a_script_endpoint_name():
+    # The commonest shape: the path ends in a handler, not a filename. Saving
+    # a CityJSON as `dl.ashx` would have `normalise` discard it as unconvertible.
+    assert fetch.local_name("https://example.invalid/api/dl.ashx?f=lod2_tartu.gml") == (
+        "lod2_tartu.gml"
+    )
+    assert fetch.local_name("https://example.invalid/download.php?f=city.json") == "city.json"
+
+
+def test_local_name_keeps_an_archive_name_from_the_path():
+    assert fetch.local_name("https://example.invalid/d/city.zip?token=1") == "city.zip"
+    assert fetch.local_name("https://example.invalid/d/tile.json.gz") == "tile.json.gz"
 
 
 def test_local_name_uses_the_path_when_there_is_one():

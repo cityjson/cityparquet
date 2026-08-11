@@ -41,6 +41,24 @@ _CHUNK = 1 << 20
 #: Query parameters that carry a filename when the URL path does not.
 _FILENAME_PARAMS = ("f", "filename", "file", "name")
 
+#: Wrappers a payload may legitimately arrive in.
+_ARCHIVE_SUFFIXES = frozenset({".zip", ".gz"})
+
+#: Suffixes that make a saved name self-describing enough for `normalise`.
+_USEFUL_SUFFIXES = CONVERTIBLE_SUFFIXES | _ARCHIVE_SUFFIXES
+
+#: Document formats that are ZIP containers underneath. PLATEAU and several
+#: German packages ship these beside the GML, and unpacking one would hand the
+#: converter its OOXML parts and fail the whole item.
+#:
+#: This is the one place where the *name* is consulted rather than the content,
+#: and deliberately so: the question here is not "what format is this?" (that
+#: is always answered by magic bytes) but "should this be opened at all?".
+#: Restoring pure content sniffing here would reintroduce the bug.
+CONTAINER_SUFFIXES = frozenset(
+    {".xlsx", ".xlsm", ".docx", ".pptx", ".odt", ".ods", ".odp", ".jar", ".kmz", ".epub"}
+)
+
 
 def sniff(head: bytes) -> str:
     """Classify by magic bytes. Never trust a declared media type."""
@@ -54,14 +72,19 @@ def sniff(head: bytes) -> str:
 def local_name(url: str, fallback: str = "download") -> str:
     """A safe local filename for `url`'s payload.
 
-    estonia-3d publishes hrefs whose path has no filename at all and whose
-    real name sits in a query parameter. The saved name matters beyond
-    tidiness: `normalise` decides convertibility from the suffix, so a payload
-    stored as an extensionless blob would be discarded as unconvertible.
+    estonia-3d publishes hrefs whose real name sits in a query parameter. The
+    saved name matters beyond tidiness: `normalise` decides convertibility
+    from the suffix, so a payload stored as `dl.ashx` — or with no suffix at
+    all — would be discarded as unconvertible.
+
+    The query is therefore consulted whenever the path does not already end in
+    a suffix that says what the payload is, which covers the commonest shape
+    of all: a path ending in a handler (`download.php`, `dl.ashx`) rather than
+    a filename.
     """
     parts = urlsplit(url)
     name = PurePosixPath(parts.path).name
-    if not Path(name).suffix:
+    if PurePosixPath(name).suffix.lower() not in _USEFUL_SUFFIXES:
         params = parse_qs(parts.query)
         for key in _FILENAME_PARAMS:
             candidates = [v for v in params.get(key, []) if v]
@@ -161,12 +184,19 @@ def _safe_extract(archive: Path, into: Path, budget: _Budget) -> list[Path]:
                 f"{archive.name}: declared uncompressed size {declared} exceeds "
                 f"the {budget.limit} byte limit"
             )
+        seen: set[Path] = set()
         for info in zf.infolist():
             if info.is_dir():
                 continue
             target = (into / info.filename).resolve()
             if not target.is_relative_to(root):
                 raise ValueError(f"{archive.name}: unsafe member {info.filename!r}")
+            if target in seen:
+                # ZIP permits a repeated entry name. Writing both to one path
+                # would drop the first payload while the returned list still
+                # looked the right length.
+                raise ValueError(f"{archive.name}: duplicate member {info.filename!r}")
+            seen.add(target)
             target.parent.mkdir(parents=True, exist_ok=True)
             # Members are always written as plain files: a member marked as a
             # symlink becomes a file holding its target path, never a link out
@@ -177,21 +207,54 @@ def _safe_extract(archive: Path, into: Path, budget: _Budget) -> list[Path]:
     return extracted
 
 
+def _is_container_document(path: Path) -> bool:
+    """Whether a ZIP-by-content file is really a document that must stay shut."""
+    return path.suffix.lower() in CONTAINER_SUFFIXES
+
+
+def _could_contribute(archive: Path) -> bool:
+    """Whether a ZIP we may not open could still have held convertible data.
+
+    Only the central directory is read — no member is extracted — so this is
+    cheap and cannot itself be a decompression bomb. It exists so that an
+    ordinary archive sitting past the depth limit with nothing convertible in
+    it does not abort a payload whose real data was already found.
+    """
+    with zipfile.ZipFile(archive) as zf:
+        names = zf.namelist()
+    for name in names:
+        suffix = PurePosixPath(name).suffix.lower()
+        if suffix in CONVERTIBLE_SUFFIXES:
+            return True
+        if suffix in _ARCHIVE_SUFFIXES:
+            return True
+    return False
+
+
 def normalise(
     path: Path, workdir: Path, max_depth: int = 3, max_bytes: int = 20 * 2**30
 ) -> list[Path]:
     """Decompress/extract `path` and return the convertible files inside.
 
-    Recurses into nested archives up to `max_depth`. The result may hold many
-    files: `cityparquet convert` accepts several inputs and merges them, which
-    is what a multi-tile archive needs — Japan's whole-city ZIPs hold 136 GMLs
-    under `udx/`, beside codelists and a spec PDF that are dropped here.
+    Recurses into nested archives. The result may hold many files:
+    `cityparquet convert` accepts several inputs and merges them, which is what
+    a multi-tile archive needs — Japan's whole-city ZIPs hold 136 GMLs under
+    `udx/`, beside codelists and a spec PDF that are dropped here. Documents
+    that merely happen to be ZIPs (`.xlsx`, `.docx`, …) are left shut.
+
+    `max_depth` counts unpacking rounds, not directory levels: the downloaded
+    payload is depth 0, whatever comes out of it is depth 1, and an archive at
+    depth `max_depth` is not opened. An unopened ZIP is skipped when its
+    listing shows it could not have contributed anything convertible, and
+    raises otherwise; an unopened gzip always raises, since its content cannot
+    be inspected without decompressing it.
 
     An empty list means the payload holds nothing convertible, which the
-    caller ledgers. Hostile input — a member escaping the working directory, a
-    payload larger than `max_bytes`, an archive nested past `max_depth` —
-    raises `ValueError` instead, because quietly skipping it would report a
-    partial conversion as a complete one.
+    caller ledgers. Hostile or lossy input — a member escaping the working
+    directory, a duplicate member name, a payload larger than `max_bytes`,
+    convertible data stranded past `max_depth` — raises `ValueError` instead,
+    because quietly skipping it would report a partial conversion as a
+    complete one.
     """
     workdir.mkdir(parents=True, exist_ok=True)
     budget = _Budget(max_bytes)
@@ -207,9 +270,17 @@ def normalise(
         with current.open("rb") as fh:
             kind = sniff(fh.read(4))
 
+        if kind == "zip" and _is_container_document(current):
+            # A document, not a package: judged shut and treated as ordinary
+            # content, which the suffix check below then discards.
+            kind = "plain"
+
         if kind in ("zip", "gzip") and depth >= max_depth:
+            if kind == "zip" and not _could_contribute(current):
+                continue
             raise ValueError(
-                f"{current.name}: archive exceeds the maximum nesting depth of {max_depth}"
+                f"{current.name}: archive exceeds the maximum nesting depth of {max_depth} "
+                f"and may hold convertible data"
             )
 
         if kind == "zip":
