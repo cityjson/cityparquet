@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import threading
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
@@ -33,6 +34,22 @@ REASONS = frozenset(
         "stale_item_index",
     }
 )
+
+
+#: Collection ids are slugs such as ``japan-plateau-3d``. They come from a
+#: published catalogue, not from us, and are interpolated into a ledger
+#: filename, so the pattern is deliberately narrow: no separators, no dots, and
+#: therefore no way to write outside the reports directory.
+COLLECTION_ID_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[._-]?[A-Za-z0-9]+)*")
+
+
+def validate_collection_id(cid: str) -> str:
+    """Return `cid` unchanged, or raise if it is not a conservative slug."""
+    if not isinstance(cid, str) or not COLLECTION_ID_PATTERN.fullmatch(cid):
+        raise ValueError(
+            f"invalid collection id {cid!r}: expected a slug such as 'japan-plateau-3d'"
+        )
+    return cid
 
 
 @dataclass(frozen=True)
@@ -69,9 +86,14 @@ class Ledger:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
     def record(self, rec: Record) -> None:
-        """Append one outcome, rejecting any reason outside the closed set."""
+        """Append one outcome, rejecting any reason outside the closed set.
+
+        The collection id is validated here too, because this is where it
+        becomes a path.
+        """
         if rec.reason is not None and rec.reason not in REASONS:
             raise ValueError(f"unknown reason {rec.reason!r}; expected one of {sorted(REASONS)}")
+        validate_collection_id(rec.collection)
         line = json.dumps(asdict(rec), ensure_ascii=False) + "\n"
         path = self.reports_dir / f"{rec.collection}.jsonl"
         with self._lock:

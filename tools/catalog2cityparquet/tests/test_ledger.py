@@ -62,6 +62,17 @@ def test_the_vocabulary_is_the_documented_closed_set():
     }
 
 
+@pytest.mark.parametrize("cid", ["../escape", "a/b", "..", "", "a\\b"])
+def test_a_collection_id_cannot_escape_the_reports_dir(tmp_path, cid):
+    # The collection id is interpolated into `<collection>.jsonl`, and it comes
+    # from a published catalogue rather than from us; a separator or `..` must
+    # fail loudly instead of writing outside the reports directory.
+    ledger = Ledger(tmp_path / "reports")
+    with pytest.raises(ValueError, match="collection id"):
+        ledger.record(Record(cid, "1", "converted"))
+    assert list((tmp_path / "reports").iterdir()) == []
+
+
 def test_concurrent_records_are_not_interleaved(tmp_path):
     # Items are converted through a thread pool, so every worker writes into
     # the same collection log; each record must land as one intact line.
