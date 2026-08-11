@@ -8,10 +8,12 @@ isolated.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -324,7 +326,10 @@ def test_failure_reasons_are_attributed_separately(tmp_path, monkeypatch):
         config=_config(tmp_path, jobs=1),
     )
 
-    assert ledger.histogram() == {"download_failed": 2, "no_crs": 1, "convert_failed": 1}
+    # The full disk is *not* among them: it is this machine, and it is counted
+    # in the environment column instead (see the environment section below).
+    assert ledger.histogram() == {"download_failed": 1, "no_crs": 1, "convert_failed": 1}
+    assert ledger.counts("c")[driver.ENVIRONMENT] == 1
 
 
 # --- one item, end to end ----------------------------------------------------
@@ -1364,6 +1369,120 @@ def test_a_tool_that_ran_and_refused_is_still_a_conversion_failure(tmp_path, mon
     assert ledger.histogram() == {"convert_failed": 1}
 
 
+def test_a_tool_that_ran_out_of_disk_is_not_a_conversion_failure(tmp_path, monkeypatch):
+    # `city3dstac` ran, and failed because *its* volume filled. It exits
+    # non-zero exactly as it does when it refuses the data, so the tool's own
+    # environment failure used to arrive here as a `RuntimeError` and be
+    # published as `convert_failed`. This is the likelier shape of ENOSPC than
+    # an unwritable `_configs`: a volume with room for a 200-byte YAML but not
+    # for a multi-gigabyte items.parquet takes exactly this path.
+    _converting_collection(monkeypatch)
+    monkeypatch.setattr(driver.aggregate, "write_config", lambda config, dest: dest)
+
+    def out_of_disk(*args, **kwargs):
+        raise driver.aggregate.HostFailure(
+            "update-collection failed: I/O error: No space left on device (os error 28)"
+        )
+
+    monkeypatch.setattr(driver.aggregate, "update_collection", out_of_disk)
+    ledger = Ledger(tmp_path / "_reports")
+    state = driver.RunState()
+
+    driver.run_collections(["c0", "c1"], ledger=ledger, config=_config(tmp_path), state=state)
+
+    assert ledger.histogram() == {}, "the tool's full disk says nothing about these datasets"
+    for cid in ("c0", "c1"):
+        assert ledger.counts(cid) == {"converted": 1, driver.ENVIRONMENT: 1}
+    assert state.environment_seen == 2
+    last = json.loads((tmp_path / "_reports" / "c0.jsonl").read_text().splitlines()[-1])
+    assert last["error"].startswith("aggregation:"), last
+
+
+def test_a_local_failure_during_an_item_is_not_a_download_failure(tmp_path, monkeypatch):
+    # A full volume under the working directory is this machine, not the
+    # origin — and `download_failed` is the conformance reason most likely to
+    # be read as "the publisher was unavailable", which is precisely the claim
+    # the run must not fabricate.
+    def full_volume(item, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(driver, "process_item", full_volume)
+    ledger = Ledger(tmp_path / "_reports")
+    state = driver.RunState()
+
+    driver.convert_items(
+        [Item("c", f"i{n}", "u", None, None) for n in range(3)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=1),
+        state=state,
+    )
+
+    assert ledger.histogram() == {}
+    assert ledger.counts("c") == {driver.ENVIRONMENT: 3}
+    assert state.environment_seen == 3
+
+
+def test_a_transport_failure_during_an_item_is_still_a_download_failure(tmp_path, monkeypatch):
+    # The other side of the split: an origin that is down is a fact about the
+    # catalogue and keeps its place in the published histogram.
+    def unreachable(item, **kwargs):
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(driver, "process_item", unreachable)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.convert_items(
+        [Item("c", "i", "u", None, None)], ledger=ledger, config=_config(tmp_path, jobs=1)
+    )
+
+    assert ledger.histogram() == {"download_failed": 1}
+    assert ledger.environment_failures() == {}
+
+
+class _TransportErrorOnALocalFile(httpx.HTTPError, OSError):
+    """A transport failure that is also an `OSError`.
+
+    `httpx` wraps lower-level failures, so the two catches can overlap; the
+    clause order decides which wins. A genuine network error reclassified as
+    this machine would silently delete measured failures from the histogram.
+    """
+
+
+def test_a_transport_error_that_is_also_local_stays_a_download_failure(tmp_path, monkeypatch):
+    def wrapped(item, **kwargs):
+        raise _TransportErrorOnALocalFile("connection reset while reading")
+
+    monkeypatch.setattr(driver, "process_item", wrapped)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.convert_items(
+        [Item("c", "i", "u", None, None)], ledger=ledger, config=_config(tmp_path, jobs=1)
+    )
+
+    assert ledger.histogram() == {"download_failed": 1}, "the httpx clause must come first"
+
+
+def test_bytes_moved_before_an_environment_failure_are_still_recorded(tmp_path, monkeypatch):
+    # Routing to the environment must not cost the cost measurement: how much
+    # the run moved before the volume filled is exactly as interesting as how
+    # much a successful item moved.
+    def full_volume(binary, inputs, out_dir, crs, timeout):
+        raise OSError(28, "No space left on device")
+
+    _stub_conversion(monkeypatch, run_convert=full_volume)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.convert_items(
+        [Item("c", "i", "https://example.invalid/a.gml", None, None)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=1),
+    )
+
+    written = json.loads((tmp_path / "_reports" / "c.jsonl").read_text())
+    assert written["status"] == driver.ENVIRONMENT
+    assert written["bytes"] == 2
+
+
 def test_a_lost_record_is_counted_as_environment_trouble(tmp_path, monkeypatch):
     # When the ledger itself is what failed there is nowhere to write the fact,
     # so it is counted in process: a run that could not record its outcomes must
@@ -1419,7 +1538,49 @@ def test_a_broken_ledger_accessor_does_not_cost_the_exit_code(tmp_path, monkeypa
     assert driver.run(_config(tmp_path), collections=["alpha"]) == 0
 
 
+def test_an_unprintable_summary_failure_does_not_cost_the_exit_code(tmp_path, monkeypatch):
+    # The same guard, with the exception the guard itself cannot render. The
+    # message is built at the call site, outside `_warn` — so on this path, an
+    # isolation path reached *after* a fully measured run, an unrenderable
+    # error turned the whole measurement into a traceback and rc=1.
+    monkeypatch.setattr(driver, "aggregate_all", lambda config, state: None)
+    monkeypatch.setattr(driver, "convert_collection", lambda cid, **k: None)
+
+    class _BrokenLedger(Ledger):
+        def collections(self):
+            raise _UnprintableError("the ledger's own accessor is broken")
+
+    monkeypatch.setattr(driver, "Ledger", _BrokenLedger)
+
+    assert driver.run(_config(tmp_path), collections=["alpha"]) == 0
+
+
 # --- nothing may be built outside a guard ------------------------------------
+
+
+def test_every_report_goes_through_the_guarded_helpers():
+    # The invariant behind the whole class, asserted on the source rather than
+    # on behaviour: a `print` added inside an isolation `try` — for debugging,
+    # for progress, for anything — reopens it instantly, and a sink added
+    # inside a function the subprocess falsifier stubs out is invisible to
+    # every other test here. `_warn` and `_say` are the only writers.
+    tree = ast.parse(Path(driver.__file__).read_text(encoding="utf-8"))
+    prints = {
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "print"
+    }
+    guarded = {
+        node.lineno
+        for helper in ast.walk(tree)
+        if isinstance(helper, ast.FunctionDef) and helper.name in ("_warn", "_say")
+        for node in ast.walk(helper)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "print"
+    }
+    assert prints == guarded, (
+        f"unguarded print() in __main__.py at line(s) {sorted(prints - guarded)}: "
+        "every report must go through _warn or _say"
+    )
 
 
 def test_an_unprintable_collection_failure_does_not_stop_the_run(tmp_path, monkeypatch):
@@ -1630,6 +1791,7 @@ def test_main_neutralises_both_streams(tmp_path, monkeypatch):
 #: The whole driver with only the network stubbed out, so a subprocess can run
 #: it end to end against a real interpreter, real files and real descriptors.
 _DRIVER_SCRIPT = """
+import os
 import sys
 
 from catalog2cityparquet import __main__ as driver
@@ -1641,9 +1803,32 @@ driver.discover.enumerate_items = lambda base, api, cid, collection, client: (
     [Item(cid, "it0", "u", None, None)],
     None,
 )
-driver.process_item = lambda item, **kwargs: 1
-driver.aggregate.update_collection = lambda *a, **k: True
 driver.aggregate_all = lambda config, state: None
+
+if os.environ.get("C2CP_FULL_VOLUME"):
+    # The working volume fills mid-download: a real write of a real payload,
+    # refused by a real kernel, through the real `process_item`. SIGXFSZ is
+    # ignored so the write raises EFBIG rather than killing the process, which
+    # is how a full volume behaves. The ledger's own files stay far below the
+    # limit, so what fails is the download and only the download.
+    import resource
+    import signal
+
+    signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+    LIMIT = 4096
+    resource.setrlimit(resource.RLIMIT_FSIZE, (LIMIT, LIMIT))
+
+    def _download(url, dest, client, timeout):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"x" * (LIMIT * 8))
+        return LIMIT * 8
+
+    driver.fetch.download = _download
+else:
+    driver.process_item = lambda item, **kwargs: 1
+
+if not os.environ.get("C2CP_REAL_AGGREGATION"):
+    driver.aggregate.update_collection = lambda *a, **k: True
 
 raise SystemExit(driver.main(sys.argv[1:]))
 """
@@ -1665,12 +1850,14 @@ def _ledger_rows(out: Path):
     return sorted(rows)
 
 
-def _run_driver(tmp_path, out, *, stdout, stderr, unbuffered=False):
+def _run_driver(tmp_path, out, *, stdout, stderr, unbuffered=False, tool=None, env=None):
     argv = [sys.executable]
     if unbuffered:
         argv.append("-u")
     argv += [str(_driver_script(tmp_path)), "--out", str(out), "--jobs", "1"]
-    proc = subprocess.run(argv, stdout=stdout, stderr=stderr)
+    if tool is not None:
+        argv += ["--tool", str(tool)]
+    proc = subprocess.run(argv, stdout=stdout, stderr=stderr, env=env)
     return proc.returncode
 
 
@@ -1732,3 +1919,60 @@ def test_an_unwritable_config_changes_no_conversion_outcome(tmp_path, baseline):
     assert converted == [r for r in baseline_rows if r[2] == "converted"]
     assert not [r for r in rows if r[2] == "failed"], f"no conversion failed: {rows}"
     assert {r[3] for r in rows if r[2] == driver.ENVIRONMENT} == {driver.ENVIRONMENT}
+
+
+def test_a_tool_that_ran_out_of_disk_changes_no_conversion_outcome(tmp_path, baseline):
+    # The same property one process further out, end to end: the real
+    # `update_collection` runs a `city3dstac` stand-in that reports a full
+    # volume and exits 1, exactly as the real tool would. Every item still
+    # converts, and the collections it could not aggregate must not be
+    # published as unconvertible.
+    baseline_code, baseline_rows = baseline
+    tool = tmp_path / "fake-city3dstac"
+    tool.write_text(
+        "#!/usr/bin/env python3\nimport sys\n"
+        "sys.stderr.write('Error: I/O error: No space left on device (os error 28)\\n')\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
+    out = tmp_path / "tool-enospc"
+
+    code = _run_driver(
+        tmp_path,
+        out,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        tool=tool,
+        env={**os.environ, "C2CP_REAL_AGGREGATION": "1"},
+    )
+
+    assert code == baseline_code
+    rows = _ledger_rows(out)
+    assert [r for r in rows if r[2] == "converted"] == [
+        r for r in baseline_rows if r[2] == "converted"
+    ]
+    assert not [r for r in rows if r[2] == "failed"], f"no conversion failed: {rows}"
+    assert {r[3] for r in rows if r[2] == driver.ENVIRONMENT} == {driver.ENVIRONMENT}
+
+
+def test_a_full_volume_during_a_download_is_never_a_download_failure(tmp_path, baseline):
+    # Nothing stubbed but the catalogue: real `process_item`, real writes, a
+    # real kernel refusing them. `download_failed` here would be a published
+    # claim that three origins were unavailable, on a run where none was asked.
+    baseline_code, _ = baseline
+    out = tmp_path / "full-volume"
+
+    code = _run_driver(
+        tmp_path,
+        out,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, "C2CP_FULL_VOLUME": "1"},
+    )
+
+    assert code == baseline_code
+    rows = _ledger_rows(out)
+    assert rows, "the run must still have recorded what happened"
+    assert not [r for r in rows if r[3] == "download_failed"], f"the origin was never asked: {rows}"
+    assert {r[2] for r in rows} == {driver.ENVIRONMENT}, rows

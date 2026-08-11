@@ -278,6 +278,9 @@ def _environment_failure(
     item_id: str,
     detail: str,
     state: RunState | None = None,
+    *,
+    bytes_moved: int = 0,
+    seconds: float = 0.0,
 ) -> None:
     """Record that *this machine* failed here — never that the data is unconvertible.
 
@@ -290,6 +293,12 @@ def _environment_failure(
     `state` is notified first and `_record_safely` is deliberately called
     *without* it, so one environment failure is counted once even when the
     ledger is itself the thing that failed.
+
+    `bytes_moved` and `seconds` carry an *item's* cost, as `_fail` does for a
+    conformance failure: what the run moved before the volume filled is as
+    worth keeping as what a successful item moved, and routing a failure here
+    must not quietly zero it. Both default to 0 for the collection-level
+    callers, which have no item to cost.
     """
     if state is not None:
         state.note_environment(f"{collection}/{item_id}: {detail}")
@@ -302,6 +311,8 @@ def _environment_failure(
             ENVIRONMENT,
             reason=ENVIRONMENT,
             error=detail[:MAX_ERROR_CHARS],
+            bytes=bytes_moved,
+            seconds=seconds,
         ),
     )
 
@@ -559,11 +570,30 @@ def convert_items(
         except convert.ConvertError as exc:
             # Already classified against the ledger's closed vocabulary.
             _fail(ledger, item, exc.reason, exc.detail, started, stats, state)
-        except (httpx.HTTPError, OSError) as exc:
-            # Transport and filesystem problems are the origin's fault, not the
-            # converter's; keeping them a separate reason stops upstream
-            # flakiness from inflating the converter's failure count.
+        except httpx.HTTPError as exc:
+            # Transport problems are the origin's fault, not the converter's;
+            # keeping them a separate reason stops upstream flakiness from
+            # inflating the converter's failure count. First of the two
+            # clauses on purpose: `httpx` wraps lower-level failures, so an
+            # exception can satisfy both, and a genuine network failure
+            # reclassified as this machine would delete a measured fact from
+            # the published histogram.
             _fail(ledger, item, "download_failed", _describe(exc), started, stats, state)
+        except OSError as exc:
+            # This machine, not the origin: a full working volume, a read-only
+            # mirror, a host out of descriptors. `download_failed` is the
+            # conformance reason most likely to be read as "the publisher was
+            # unavailable", so recording a local failure there states something
+            # about the catalogue that the run never observed.
+            _environment_failure(
+                ledger,
+                item.collection,
+                item.item_id,
+                _describe(exc),
+                state,
+                bytes_moved=stats.downloaded,
+                seconds=time.monotonic() - started,
+            )
         # Deliberately broad: one item must never stop the run.
         except Exception as exc:
             _fail(ledger, item, "convert_failed", _describe(exc), started, stats, state)
@@ -686,10 +716,13 @@ def convert_collection(
             config_path,
             config.out / cid / "collection.json",
         )
-    except OSError as exc:
+    except (OSError, aggregate.HostFailure) as exc:
         # Writing the config and starting `city3dstac` are this machine's
         # business: an unwritable `_configs`, a full volume, a tool that was
-        # never built. The items above have already converted and their
+        # never built. `HostFailure` is the same statement one process further
+        # out — the tool ran and *its* disk was full — which arrives as a
+        # non-zero exit indistinguishable from a refusal about the data until
+        # its stderr is read. The items above have already converted and their
         # packages are on disk — publishing the collection as a conversion
         # failure on the strength of this would be a fabricated measurement.
         _environment_failure(ledger, cid, COLLECTION_LEVEL, f"aggregation: {_describe(exc)}", state)
@@ -925,7 +958,7 @@ def run(
         # printed must not turn a completed measurement into a traceback. The
         # ledger on disk is the durable copy.
         except Exception as exc:
-            _warn(f"  ! the summary could not be printed: {exc}")
+            _warn(f"  ! the summary could not be printed: {_describe(exc)}")
     return 0
 
 

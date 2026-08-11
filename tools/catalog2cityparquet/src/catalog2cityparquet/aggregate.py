@@ -81,6 +81,31 @@ _GEOPARQUET_FAILED = "geoparquet encode error"
 #: The sidecar the tool writes beside the collection it is given.
 _INDEX_NAME = "items.parquet"
 
+#: Substrings (lower-cased) of a tool failure that is *this machine's*, not the
+#: data's. The tool exits non-zero either way, so its stderr is the only thing
+#: that tells them apart — the same reading `convert.classify_error` does for
+#: the converter, and for the same reason: a run whose mirror volume filled
+#: would otherwise publish every collection it touched as unconvertible.
+#: Deliberately short, matching the kernel's own wording as it reaches a Rust
+#: `std::io::Error`, so the list does not depend on the tool's phrasing.
+HOST_FAILURE_MARKERS = (
+    "no space left",
+    "read-only file system",
+    "disk quota exceeded",
+    "too many open files",
+)
+
+
+class HostFailure(RuntimeError):
+    """The tool ran and failed because this *machine* could not do the work.
+
+    A `RuntimeError` like any other tool failure — every existing caller keeps
+    working — but a distinct type, so the orchestrator can route it to the
+    environment path instead of the conformance histogram. What it says is
+    "nothing was learned about this collection", never "this collection does
+    not convert".
+    """
+
 
 def collection_config(collection_json: dict) -> dict:
     """Translate a published collection into the tool's `--config` shape.
@@ -143,7 +168,8 @@ def update_collection(
     the tool's stderr — including the one collection that genuinely cannot be
     aggregated, whose Items are *all* unlocated so no spatial extent exists.
     The orchestrator catches it and ledgers the collection as failed; nothing
-    is printed here.
+    is printed here. A failure that is the *host's* raises `HostFailure`, which
+    the orchestrator ledgers as an environment failure instead.
     """
     cmd = [
         str(tool),
@@ -195,6 +221,11 @@ def _run(cmd: list[str], what: str, timeout: float, tolerate: str | None = None)
 
     `tolerate` is a lower-cased substring of the one failure the caller intends
     to recover from; anything else still raises, as does a timeout.
+
+    A failure whose stderr names a host failure raises `HostFailure` instead of
+    a plain `RuntimeError`: the subprocess having no disk left is no more a
+    fact about the data than this process having none, and only the tool's
+    stderr can say which of the two happened.
     """
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -203,6 +234,12 @@ def _run(cmd: list[str], what: str, timeout: float, tolerate: str | None = None)
     if proc.returncode == 0:
         return None
     detail = proc.stderr.strip()[:MAX_DETAIL_CHARS]
+    if any(marker in detail.lower() for marker in HOST_FAILURE_MARKERS):
+        # Ahead of `tolerate`, so a sidecar the kernel refused to write is
+        # never mistaken for one the encoder declined to build: tolerating it
+        # would have `update_collection` return True for an index that does not
+        # exist, and the run would report a degraded collection as complete.
+        raise HostFailure(f"{what} failed: {detail}")
     if tolerate and tolerate in detail.lower():
         return detail
     if _NO_EXTENT in detail.lower():

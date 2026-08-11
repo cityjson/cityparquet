@@ -288,6 +288,15 @@ out/cityparquet-catalog/
   gets its own column in `summary.csv`; without it every environment failure
   has to be recorded as `convert_failed`, which is how a run with a full log
   volume comes to publish half a catalogue as unconvertible.
+- **How a local failure is recognised**: an `OSError` raised in this process,
+  whether it reaches the item handler or the collection handler; and a
+  host-failure marker in a *tool's* stderr (`no space left`, `read-only file
+  system`, `disk quota exceeded`, `too many open files`), because a subprocess
+  whose own volume filled exits non-zero exactly as it does when it refuses the
+  data, and only its stderr tells the two apart. An `httpx` failure is always
+  the origin's and is classified *before* the `OSError` test, so a transport
+  failure wrapping a lower-level error keeps its conformance reason
+  (`download_failed`) rather than being reclassified as this machine.
 
 ## 8. Changes to `cityparquet-rs`
 

@@ -311,6 +311,81 @@ def test_the_fallback_does_not_hide_an_unrelated_failure(tmp_path):
     assert len(log.read_text().splitlines()) == 1, "only a GeoParquet failure is retried"
 
 
+# --- the tool's own machine failing is not the data failing -------------------
+
+
+#: Verbatim shapes of the four host failures the tool reports through its
+#: stderr. Each is what a Rust `std::io::Error` renders to, which is what
+#: `city3dstac` prints when *its* volume, quota or descriptor table runs out.
+_HOST_FAILURES = [
+    "Error: I/O error: No space left on device (os error 28)",
+    "Error: failed to write collection.json: Read-only file system (os error 30)",
+    "Error: I/O error: Disk quota exceeded (os error 122)",
+    "Error: failed to open items.parquet: Too many open files (os error 24)",
+]
+
+
+@pytest.mark.parametrize("stderr", _HOST_FAILURES)
+def test_a_tool_that_ran_out_of_host_is_not_a_statement_about_the_data(tmp_path, stderr):
+    # The likelier shape of a full volume than an unwritable config: a mirror
+    # with room for a 200-byte YAML but not for a multi-gigabyte items.parquet.
+    # The tool exits non-zero, so nothing distinguishes it from a refusal about
+    # the data unless its stderr is read — and a plain `RuntimeError` is
+    # recorded as `convert_failed`, which publishes the collection as
+    # unconvertible on the strength of this machine's disk.
+    tool = _fake_tool(tmp_path, f"sys.stderr.write({stderr!r} + '\\n')\nsys.exit(1)\n")
+    with pytest.raises(aggregate.HostFailure):
+        aggregate.update_collection(
+            tool, tmp_path / "items", tmp_path / "c.yaml", tmp_path / "collection.json"
+        )
+
+
+def test_a_tool_that_refused_the_data_is_not_a_host_failure(tmp_path):
+    # The boundary, in the direction that matters just as much: sweeping real
+    # refusals into the environment would be the same defect with its sign
+    # flipped, and would empty the histogram the paper quotes.
+    tool = _fake_tool(
+        tmp_path,
+        "sys.stderr.write('Error: STAC generation error: "
+        "Spatial extent bbox is required\\n')\nsys.exit(1)\n",
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        aggregate.update_collection(
+            tool, tmp_path / "items", tmp_path / "c.yaml", tmp_path / "collection.json"
+        )
+    assert not isinstance(excinfo.value, aggregate.HostFailure)
+
+
+def test_a_full_disk_is_never_tolerated_as_a_degraded_index(tmp_path):
+    # The GeoParquet retry exists for an unlocated Item, not for a full volume.
+    # Tolerating this one would have `update_collection` return True — "the
+    # index was written" — for a sidecar the kernel refused to write.
+    tool, log = _counting_tool(
+        tmp_path,
+        "sys.stderr.write('Error: GeoParquet encode error: "
+        "No space left on device (os error 28)\\n')\nsys.exit(1)\n",
+    )
+    with pytest.raises(aggregate.HostFailure):
+        aggregate.update_collection(
+            tool, tmp_path / "items", tmp_path / "c.yaml", tmp_path / "collection.json"
+        )
+    assert len(log.read_text().splitlines()) == 1, "a host failure is not retried either"
+
+
+def test_a_host_failure_from_the_catalogue_step_is_distinguished_too(tmp_path):
+    # Both callers of `_run` go through the same classification: the catalogue
+    # is aggregated on the same volume the collections are.
+    tool = _fake_tool(
+        tmp_path,
+        "sys.stderr.write('Error: I/O error: No space left on device (os error 28)\\n')"
+        "\nsys.exit(1)\n",
+    )
+    with pytest.raises(aggregate.HostFailure):
+        aggregate.update_catalog(
+            tool, [tmp_path / "collection.json"], tmp_path, tmp_path / "c.yaml"
+        )
+
+
 def test_update_catalog_passes_every_collection(tmp_path):
     argv_log = tmp_path / "argv.txt"
     tool = _fake_tool(tmp_path, f"open({str(argv_log)!r}, 'w').write('\\n'.join(sys.argv[1:]))\n")
