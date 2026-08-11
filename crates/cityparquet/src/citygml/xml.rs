@@ -18,6 +18,12 @@ pub const NS_APP: &str = "http://www.opengis.net/citygml/appearance/2.0";
 /// this exact version (not the `.../citygml` family) means a 1.0/3.0 document is
 /// not misclassified as CityGML 2.0 and then silently yielding no features.
 pub const NS_CORE: &str = "http://www.opengis.net/citygml/2.0";
+/// The CityGML core namespace *family* — every version shares this prefix
+/// (`.../citygml/1.0`, `.../citygml/2.0`, `.../citygml/3.0`). Matched to
+/// recognise a CityGML document of ANY version so an unsupported one can be
+/// reported as such, rather than falling through to the CityJSON sniff and
+/// failing as malformed JSON.
+pub const NS_CITYGML_FAMILY: &str = "http://www.opengis.net/citygml";
 
 /// True when a resolved namespace starts with `prefix`.
 pub fn ns_is(rr: &ResolveResult, prefix: &str) -> bool {

@@ -43,6 +43,12 @@ fixtures:
     # b1_lod2_cs_w_sem = lod2 Solid + boundedBy Wall/Roof/Ground via xlink (semantics).
     curl -sSfo tests/fixtures/b1_lod2_s.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_s.gml
     curl -sSfo tests/fixtures/b1_lod2_cs_w_sem.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_cs_w_sem.gml
+    # Real CityGML 1.0 fixture (jklimke/libcitygml, same pinned commit as the
+    # 2.0 fixtures above): a Berlin open-data sample whose root <CityModel>
+    # binds the default namespace to .../citygml/1.0. Used by
+    # `citygml_version_error` to prove a non-2.0 document fails with a clear
+    # version message instead of a bogus "invalid CityJSON" JSON parse error.
+    curl -sSfo tests/fixtures/berlin_citygml1.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/berlin_open_data_sample_data.citygml
     # Zero-object CityJSONSeq fixture (synthetic, no network fetch needed):
     # a single CityJSON header line, empty CityObjects/vertices, no feature
     # lines — the minimal input that scans to zero city-object rows. Used by

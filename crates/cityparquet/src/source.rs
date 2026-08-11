@@ -49,19 +49,30 @@ fn io_err(msg: String) -> CityParquetError {
 
 impl Source {
     pub fn open(path: &Path) -> Result<Self> {
-        // CityGML 2.0 is XML, not JSON — detect it by its root element before
-        // the CityJSON/Seq sniff below (a `<?xml ...` file would otherwise fall
-        // through and fail JSON parsing). The reader synthesises a CityJSON
-        // header (transform + CRS) and streams `bldg:Building`s as features.
-        if crate::citygml::is_citygml(path) {
-            let header = crate::citygml::parse_header(path)?;
-            return Ok(Self {
-                path: path.to_path_buf(),
-                format: SourceFormat::CityGml,
-                header,
-                doc: None,
-                buffered: None,
-            });
+        // CityGML is XML, not JSON — detect it by its root element before the
+        // CityJSON/Seq sniff below. A CityGML document of an unsupported
+        // version is reported as such: letting it fall through to the JSON
+        // branch produced "invalid CityJSON: expected value at line 1 column 1"
+        // for an XML file, which is actively misleading. For 2.0 the reader
+        // synthesises a CityJSON header (transform + CRS) and streams
+        // `bldg:Building`s as features.
+        match crate::citygml::sniff_citygml(path) {
+            Some(crate::citygml::CityGmlVersion::V2_0) => {
+                let header = crate::citygml::parse_header(path)?;
+                return Ok(Self {
+                    path: path.to_path_buf(),
+                    format: SourceFormat::CityGml,
+                    header,
+                    doc: None,
+                    buffered: None,
+                });
+            }
+            Some(crate::citygml::CityGmlVersion::Other(version)) => {
+                return Err(err(format!(
+                    "unsupported CityGML version {version} (only CityGML 2.0 is supported)"
+                )));
+            }
+            None => {}
         }
 
         // CityJSONSeq: first line is a CityJSON header, later lines are features.
