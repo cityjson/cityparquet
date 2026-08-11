@@ -43,7 +43,51 @@ def test_collection_ids_follow_child_links(served_dir, client):
             ],
         },
     )
-    assert discover.collection_ids(base, client) == ["alpha", "beta"]
+    ids, note = discover.collection_ids(base, client)
+    assert ids == ["alpha", "beta"]
+    assert note is None
+
+
+def test_an_absolute_child_href_still_yields_its_collection_id(served_dir, client):
+    # An absolute href is legal in STAC 1.1. Treating one as fatal would lose
+    # every other collection with it, so the id is taken from the href's path.
+    root, base = served_dir
+    write_json(
+        root / "catalog.json",
+        {
+            "type": "Catalog",
+            "id": "c",
+            "links": [
+                {"rel": "child", "href": "./alpha/collection.json"},
+                {"rel": "child", "href": f"{base}/beta/collection.json"},
+                {"rel": "child", "href": "./gamma/collection.json"},
+            ],
+        },
+    )
+    ids, note = discover.collection_ids(base, client)
+    assert ids == ["alpha", "beta", "gamma"]
+    assert note is None
+
+
+def test_an_unusable_child_href_is_skipped_rather_than_fatal(served_dir, client):
+    # One odd entry must not cost the whole catalogue: the id is dropped and
+    # reported, and its siblings still come back.
+    root, base = served_dir
+    write_json(
+        root / "catalog.json",
+        {
+            "type": "Catalog",
+            "id": "c",
+            "links": [
+                {"rel": "child", "href": "./alpha/collection.json"},
+                {"rel": "child", "href": "./a%2Fb/collection.json"},
+                {"rel": "child", "href": "./gamma/collection.json"},
+            ],
+        },
+    )
+    ids, note = discover.collection_ids(base, client)
+    assert ids == ["alpha", "gamma"]
+    assert note is not None and "a%2Fb" in note
 
 
 def test_listing_is_fully_paginated(served_dir, client, monkeypatch):
@@ -148,9 +192,38 @@ def test_the_listing_request_carries_the_collection_prefix(served_dir, client):
     assert "prefix=jp%2Fitems%2F" in calls[0], calls[0]
 
 
-def test_a_collection_id_that_could_escape_the_reports_dir_is_rejected(served_dir, client):
-    # `Record.collection` is interpolated into `<collection>.jsonl`, so a child
-    # link bearing a path separator must not survive discovery.
+def test_a_repeated_page_token_stops_the_listing_loop(served_dir, client):
+    # A server that hands back the same token forever would hang discovery of
+    # the largest collection with no error, no ledger record and no timeout —
+    # indistinguishable from slow progress.
+    root, base = served_dir
+    write_json(
+        root / "page1.json",
+        {"items": [{"name": "jp/items/i0.json"}], "nextPageToken": "TOK"},
+    )
+    write_json(root / "last.json", {"items": [{"name": "jp/items/i1.json"}]})
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        # Relents after ten pages, so a driver without the guard finishes (with
+        # duplicates) instead of hanging this test for ever.
+        target = "last.json" if len(calls) > 10 else "page1.json"
+        return client.get(f"{base}/{target}")
+
+    with pytest.raises(RuntimeError, match="pageToken"):
+        discover.list_item_objects(
+            bucket_api=f"{base}/o",
+            cid="jp",
+            client=type("C", (), {"get": staticmethod(fake_get)})(),
+        )
+    assert len(calls) == 2, "the loop must stop the moment a token repeats"
+
+
+def test_a_traversing_child_href_cannot_escape_the_reports_dir(served_dir, client):
+    # `Record.collection` is interpolated into `<collection>.jsonl`. The href is
+    # normalised to a single path component before it is validated, so a
+    # traversal collapses to a harmless slug instead of a writable path.
     root, base = served_dir
     write_json(
         root / "catalog.json",
@@ -160,8 +233,9 @@ def test_a_collection_id_that_could_escape_the_reports_dir_is_rejected(served_di
             "links": [{"rel": "child", "href": "./../../etc/passwd/collection.json"}],
         },
     )
-    with pytest.raises(ValueError, match="collection id"):
-        discover.collection_ids(base, client)
+    ids, _note = discover.collection_ids(base, client)
+    assert ids == ["passwd"]
+    assert all("/" not in cid and ".." not in cid for cid in ids)
 
 
 def test_items_from_parquet_reads_the_generic_asset_struct(tmp_path):
@@ -208,10 +282,50 @@ def test_items_from_parquet_is_none_when_the_columns_are_unexpected(tmp_path):
     assert discover.items_from_parquet(str(path)) is None
 
 
+class _RecordingConnection:
+    """A DuckDB connection stand-in that records SQL instead of running it."""
+
+    def __init__(self):
+        self.statements = []
+
+    def execute(self, sql, parameters=None):
+        self.statements.append(" ".join(sql.split()))
+        raise RuntimeError("this stub never executes")
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def recorded_connection(monkeypatch):
+    con = _RecordingConnection()
+    monkeypatch.setattr(duckdb, "connect", lambda *a, **k: con)
+    return con
+
+
+def test_a_local_index_never_reaches_for_the_httpfs_extension(tmp_path, recorded_connection):
+    # INSTALL httpfs contacts extensions.duckdb.org. The suite must not touch
+    # the network, and a local path has no use for the extension anyway.
+    assert discover.items_from_parquet(str(tmp_path / "items.parquet")) is None
+    assert not [s for s in recorded_connection.statements if s.startswith(("INSTALL", "LOAD"))]
+
+
+def test_a_remote_index_does_load_httpfs(recorded_connection):
+    # It is what lets DuckDB range-read the index over HTTPS.
+    assert discover.items_from_parquet("https://example.invalid/items.parquet") is None
+    assert [s for s in recorded_connection.statements if s.startswith(("INSTALL", "LOAD"))] == [
+        "INSTALL httpfs",
+        "LOAD httpfs",
+    ]
+
+
 def test_items_from_listing_ignores_objects_that_are_not_items(served_dir, client, monkeypatch):
     root, base = served_dir
     write_json(root / "jp" / "items" / "i0.json", stac_item("i0", f"{base}/data/i0.json"))
-    (root / "jp" / "items" / "notes.txt").write_text("ignore me", encoding="utf-8")
+    # Deliberately *valid* JSON with a usable asset: only the `.json` extension
+    # filter can exclude it, so this test cannot pass by accident on a parse
+    # failure the way an "ignore me" text file would.
+    write_json(root / "jp" / "items" / "notes.txt", stac_item("notes", f"{base}/data/n.json"))
     monkeypatch.setattr(
         discover,
         "list_item_objects",

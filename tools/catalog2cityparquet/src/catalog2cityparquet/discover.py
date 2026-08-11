@@ -13,9 +13,14 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
-from urllib.parse import quote
+from pathlib import PurePosixPath
+from urllib.parse import quote, urlsplit
 
-from .ledger import validate_collection_id
+from .ledger import COLLECTION_ID_PATTERN
+
+#: Schemes for which DuckDB needs the httpfs extension. A local path does not,
+#: and asking for it there would contact extensions.duckdb.org for nothing.
+_REMOTE_SCHEMES = ("http://", "https://", "s3://", "gs://", "gcs://", "r2://", "az://")
 
 
 @dataclass(frozen=True)
@@ -27,20 +32,41 @@ class Item:
     source_item_url: str | None
 
 
-def collection_ids(base_url: str, client) -> list[str]:
-    """The ids of every child collection of the root catalogue.
+def collection_id_from_href(href: str) -> str:
+    """The collection id a `child` href points at, as a single path component.
 
-    Each id is validated as a slug: it later names a ledger file, and the
-    catalogue is not ours to trust.
+    An absolute href is legal in STAC 1.1, so the id is taken from the href's
+    *path* rather than from the string as published. Normalising through
+    `PurePosixPath` also means a traversal collapses to one component — the id
+    later names a ledger file, and the catalogue is not ours to trust.
+    """
+    return PurePosixPath(urlsplit(href or "").path).parent.name
+
+
+def collection_ids(base_url: str, client) -> tuple[list[str], str | None]:
+    """Every child collection id, plus a note naming any href that was unusable.
+
+    An odd entry is skipped rather than raised: one hostile or malformed link
+    must not cost the other 52 collections. Strictness stays where it matters,
+    in `Ledger.record`, which still refuses to write a file for a bad id.
     """
     catalog = client.get(f"{base_url}/catalog.json").json()
-    ids = []
+    ids: list[str] = []
+    rejected: list[str] = []
     for link in catalog.get("links", []):
         if link.get("rel") != "child":
             continue
-        href = link.get("href", "")
-        ids.append(validate_collection_id(href.removeprefix("./").removesuffix("/collection.json")))
-    return ids
+        cid = collection_id_from_href(link.get("href", ""))
+        if COLLECTION_ID_PATTERN.fullmatch(cid):
+            ids.append(cid)
+        else:
+            rejected.append(link.get("href", ""))
+    note = None
+    if rejected:
+        note = "skipped child link(s) with an unusable collection id: " + ", ".join(
+            repr(h) for h in rejected
+        )
+    return ids, note
 
 
 def fetch_collection(base_url: str, cid: str, client) -> dict:
@@ -54,6 +80,7 @@ def list_item_objects(bucket_api: str, cid: str, client) -> list[str]:
     objects and the largest collection has 60,471 items.
     """
     names: list[str] = []
+    seen: set[str] = set()
     token: str | None = None
     while True:
         url = f"{bucket_api}?prefix={quote(cid + '/items/', safe='')}&maxResults=1000"
@@ -64,6 +91,13 @@ def list_item_objects(bucket_api: str, cid: str, client) -> list[str]:
         token = payload.get("nextPageToken")
         if not token:
             return names
+        if token in seen:
+            # A server repeating a token would otherwise spin here for ever,
+            # which reads exactly like slow progress: no error, no record.
+            raise RuntimeError(
+                f"the listing API repeated pageToken {token!r} for {cid!r}; refusing to loop"
+            )
+        seen.add(token)
 
 
 def items_from_parquet(url: str) -> list[Item] | None:
@@ -82,13 +116,15 @@ def items_from_parquet(url: str) -> list[Item] | None:
     con = None
     try:
         con = duckdb.connect()
-        # httpfs is what lets DuckDB range-read an https:// index. INSTALL is
-        # attempted for a clean machine; both statements are allowed to fail,
-        # since a local file needs neither and a remote read without them
-        # simply raises below and yields `None`.
-        for statement in ("INSTALL httpfs", "LOAD httpfs"):
-            with contextlib.suppress(Exception):
-                con.execute(statement)
+        # httpfs is what lets DuckDB range-read a remote index, and INSTALL
+        # fetches it from extensions.duckdb.org on a clean machine — so it is
+        # asked for only when the url is actually remote. Both statements are
+        # allowed to fail: a read that truly needs them raises below and yields
+        # `None`.
+        if isinstance(url, str) and url.startswith(_REMOTE_SCHEMES):
+            for statement in ("INSTALL httpfs", "LOAD httpfs"):
+                with contextlib.suppress(Exception):
+                    con.execute(statement)
         rows = con.execute(
             """
             SELECT id,
