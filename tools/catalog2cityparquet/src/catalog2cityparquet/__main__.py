@@ -62,16 +62,29 @@ COLLECTION_LEVEL = "-"
 #: the working directory.
 WORK_PREFIX = "c2cp-"
 
-#: Claim on a working directory, held for the length of a converting run.
+#: Name of the file by which a run claims a directory it must not share.
 LOCK_NAME = ".c2cp-lock"
 
 #: Read once: the lock records it so a lock file seen over a shared filesystem
 #: is never mistaken for a local pid.
 HOSTNAME = socket.gethostname()
 
+#: What a lock protects, and the flag that gives a second run its own.
+OUTPUT_DIRECTORY = "output directory"
+WORKING_DIRECTORY = "working directory"
+_ALTERNATIVE = {OUTPUT_DIRECTORY: "--out", WORKING_DIRECTORY: "--work-dir"}
 
-class WorkRootBusy(RuntimeError):
-    """Another live run holds the working directory."""
+
+class LockBusy(RuntimeError):
+    """Another live run holds a directory this one needs."""
+
+
+@dataclass(frozen=True)
+class Claim:
+    """A lock this run holds, and the exact bytes proving it is ours."""
+
+    path: Path
+    owner: str
 
 
 def _warn(message: str) -> None:
@@ -85,6 +98,44 @@ def _warn(message: str) -> None:
     """
     with contextlib.suppress(Exception):
         print(message, file=sys.stderr)
+
+
+def _say(message: str) -> None:
+    """Write a line of progress or report, best-effort.
+
+    Progress lines are written from *inside* the per-collection isolation
+    handler, so an unguarded failure here would be caught by that handler and
+    recorded as a data failure: a run whose log volume filled would report
+    every collection as `convert_failed` and exit 0. The deliverable of this
+    project is a measured statement about which collections convert, and a
+    fabricated one is worse than a crash.
+    """
+    with contextlib.suppress(Exception):
+        print(message)
+
+
+def _flush_stdout() -> None:
+    """Empty the stdout buffer before the interpreter tries to.
+
+    CPython flushes `sys.stdout` while finalising, and a failure there sets
+    exit status 120 — a non-zero exit for a run that measured everything, which
+    would contradict the contract that non-zero means nothing was measured.
+    `_say` cannot prevent it: with a buffered stdout the writes succeed into
+    the buffer and only the final flush fails.
+
+    A failed flush leaves the data in the buffer, so the descriptor is pointed
+    at the null device and the flush retried; the bytes are already lost, and
+    the ledger on disk is the durable copy of everything printed here.
+    """
+    try:
+        sys.stdout.flush()
+        return
+    except Exception as exc:
+        _warn(f"  ! stdout could not be flushed ({exc}); the report was lost, the ledger was not")
+    with contextlib.suppress(Exception):
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    with contextlib.suppress(Exception):
+        sys.stdout.flush()
 
 
 @dataclass
@@ -217,17 +268,20 @@ def _lock_holder_is_live(info: dict) -> bool:
     return True
 
 
-def acquire_work_root(config: Config) -> Path:
-    """Claim the working directory for this run, or raise `WorkRootBusy`.
+def acquire_lock(directory: Path, purpose: str) -> Claim:
+    """Claim `directory` for this run, or raise `LockBusy`.
 
-    Two runs sharing one working directory would sweep each other's live
-    downloads, and this driver is built for multi-day runs where opening a
-    second shell against the same `--out` is the natural thing to do. The
-    corrupted measurement that would follow is worth a startup error.
+    Both of a run's shared resources are claimed, not just one. The working
+    directory matters because two runs would sweep each other's live downloads;
+    the output directory matters more, because two runs write two ledger lines
+    per collection while `summary.csv` — rewritten wholesale by whichever
+    finishes last — reports one. Locking only the working directory would let
+    an operator follow the advice in this very message and produce exactly the
+    corrupted measurement the lock exists to prevent.
     """
-    root = work_root(config)
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / LOCK_NAME
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / LOCK_NAME
+    owner = json.dumps({"pid": os.getpid(), "host": HOSTNAME, "started": time.time()}) + "\n"
     try:
         handle = path.open("x", encoding="utf-8")
     except FileExistsError:
@@ -236,10 +290,11 @@ def acquire_work_root(config: Config) -> Path:
             loaded = json.loads(path.read_text(encoding="utf-8"))
             info = loaded if isinstance(loaded, dict) else {}
         if _lock_holder_is_live(info):
-            raise WorkRootBusy(
-                f"another run holds the working directory {root} "
+            raise LockBusy(
+                f"another run holds the {purpose} {directory} "
                 f"(pid {info.get('pid', '?')} on {info.get('host', '?')}). "
-                f"Use --work-dir for a second run, or delete {path} if no other run is active."
+                f"Wait for it to finish, use a different {_ALTERNATIVE[purpose]}, "
+                f"or delete {path} if no other run is active."
             ) from None
         # The holder is gone; its claim is not.
         with contextlib.suppress(OSError):
@@ -247,18 +302,38 @@ def acquire_work_root(config: Config) -> Path:
         try:
             handle = path.open("x", encoding="utf-8")
         except FileExistsError:
-            raise WorkRootBusy(f"another run claimed {root} while this one was starting") from None
+            raise LockBusy(f"another run claimed {directory} while this one was starting") from None
     with handle:
-        handle.write(
-            json.dumps({"pid": os.getpid(), "host": HOSTNAME, "started": time.time()}) + "\n"
-        )
-    return path
+        handle.write(owner)
+    return Claim(path=path, owner=owner)
 
 
-def release_work_root(lock: Path) -> None:
-    """Drop this run's claim. Never raises: the run is over either way."""
+def release_lock(claim: Claim) -> None:
+    """Drop this run's claim, and only this run's.
+
+    An operator who follows the busy message and deletes a lock they believe is
+    stale may already have started a replacement run. Unlinking whatever file
+    happens to be there would then have this run's exit revoke that run's live
+    claim — so the contents are checked first.
+    """
+    try:
+        if claim.path.read_text(encoding="utf-8") != claim.owner:
+            _warn(f"  ! not releasing {claim.path}: it is another run's claim now")
+            return
+    except OSError:
+        return
     with contextlib.suppress(OSError):
-        lock.unlink()
+        claim.path.unlink()
+
+
+@contextlib.contextmanager
+def locked(directory: Path, purpose: str):
+    """Hold `directory`'s lock for the duration of the block."""
+    claim = acquire_lock(directory, purpose)
+    try:
+        yield claim
+    finally:
+        release_lock(claim)
 
 
 def sweep_work_root(config: Config) -> None:
@@ -472,11 +547,11 @@ def convert_collection(
     if not items:
         # 20 of the 53 collections publish only a collection.json.
         _record_safely(ledger, Record(cid, COLLECTION_LEVEL, "skipped", reason="empty_collection"))
-        print(f"==> {cid}: no items")
+        _say(f"==> {cid}: no items")
         return
     if config.limit_per_collection is not None:
         items = items[: config.limit_per_collection]
-    print(f"==> {cid}: {len(items)} item(s)")
+    _say(f"==> {cid}: {len(items)} item(s)")
     convert_items(items, ledger=ledger, config=config, collection=cid)
 
     config_path = aggregate.write_config(
@@ -568,32 +643,32 @@ def print_summary(ledger: Ledger, state: RunState) -> None:
     # Deliberately broad: a lost roll-up must not cost the report.
     except Exception as exc:
         _warn(f"  ! summary.csv could not be written: {exc}")
-    print("\n--- summary ---")
-    print(f"{'collection':<32} {'converted':>9} {'failed':>7} {'skipped':>8}")
+    _say("\n--- summary ---")
+    _say(f"{'collection':<32} {'converted':>9} {'failed':>7} {'skipped':>8}")
     totals = {"converted": 0, "failed": 0, "skipped": 0}
     for collection in ledger.collections():
         counts = ledger.counts(collection)
         for status in totals:
             totals[status] += counts.get(status, 0)
-        print(
+        _say(
             f"{collection:<32} {counts.get('converted', 0):>9} "
             f"{counts.get('failed', 0):>7} {counts.get('skipped', 0):>8}"
         )
-    print(f"{'TOTAL':<32} {totals['converted']:>9} {totals['failed']:>7} {totals['skipped']:>8}")
+    _say(f"{'TOTAL':<32} {totals['converted']:>9} {totals['failed']:>7} {totals['skipped']:>8}")
 
     histogram = ledger.histogram()
-    print("\nreasons:")
+    _say("\nreasons:")
     if histogram:
         for reason, count in sorted(histogram.items(), key=lambda kv: (-kv[1], kv[0])):
-            print(f"  {count:>7}  {reason}")
+            _say(f"  {count:>7}  {reason}")
     else:
-        print("  (none)")
+        _say("  (none)")
 
-    print(f"\ncollections without a GeoParquet index: {len(state.no_index)}")
+    _say(f"\ncollections without a GeoParquet index: {len(state.no_index)}")
     for cid in state.no_index:
-        print(f"  - {cid}")
+        _say(f"  - {cid}")
     if summary is not None:
-        print(f"\nledger: {summary.parent}")
+        _say(f"\nledger: {summary.parent}")
 
 
 def resolve_collections(config: Config) -> list[str]:
@@ -620,13 +695,12 @@ def run(
     """Execute a whole run. Returns the process exit code.
 
     Non-zero means nothing was measured: the output directory could not be
-    prepared, another run holds the working directory, or the catalogue root is
-    unreachable. Once items start being attempted the answer is 0, however many
-    of them failed.
+    prepared, another run holds a directory this one needs, or the catalogue
+    root is unreachable. Once items start being attempted the answer is 0,
+    however many of them failed — and however badly the report itself fared.
     """
     try:
         config.out.mkdir(parents=True, exist_ok=True)
-        ledger = Ledger(config.out / "_reports")
     except OSError as exc:
         # Nothing can be recorded, so there is nothing to run. Reported like the
         # other startup errors rather than as a bare traceback.
@@ -634,13 +708,23 @@ def run(
         return 1
     state = RunState()
 
-    if not aggregate_only:
+    with contextlib.ExitStack() as stack:
+        # The output directory is claimed even for `--aggregate-only`, which
+        # would otherwise index a package another run is halfway through
+        # writing. Claimed before the ledger is opened, so a refused run adds
+        # nothing to a directory that is not its own.
         try:
-            work_lock = acquire_work_root(config)
-        except (WorkRootBusy, OSError) as exc:
+            stack.enter_context(locked(config.out, OUTPUT_DIRECTORY))
+        except (LockBusy, OSError) as exc:
             _warn(f"cannot start: {exc}")
             return 1
         try:
+            ledger = Ledger(config.out / "_reports")
+        except OSError as exc:
+            _warn(f"cannot prepare the output directory {config.out}: {exc}")
+            return 1
+
+        if not aggregate_only:
             cids = list(collections) if collections else None
             if cids is None:
                 try:
@@ -649,19 +733,27 @@ def run(
                 except Exception as exc:
                     _warn(f"catalogue root unreachable: {exc}")
                     return 1
+            # Claimed after the root is known to be reachable, so a run that
+            # never starts leaves no empty working directory behind. Skipped
+            # when the working directory *is* the output directory, which this
+            # run already holds.
+            try:
+                if work_root(config).resolve() != config.out.resolve():
+                    stack.enter_context(locked(work_root(config), WORKING_DIRECTORY))
+            except (LockBusy, OSError) as exc:
+                _warn(f"cannot start: {exc}")
+                return 1
             sweep_work_root(config)
             run_collections(cids, ledger=ledger, config=config, state=state)
-        finally:
-            release_work_root(work_lock)
 
-    aggregate_all(config, state)
-    try:
-        print_summary(ledger, state)
-    # Deliberately broad: the run is over, and a report that cannot be printed
-    # (a closed stdout, say) must not turn a completed measurement into a
-    # traceback. The ledger on disk is the durable copy.
-    except Exception as exc:
-        _warn(f"  ! the summary could not be printed: {exc}")
+        aggregate_all(config, state)
+        try:
+            print_summary(ledger, state)
+        # Deliberately broad: the run is over, and a report that cannot be
+        # printed must not turn a completed measurement into a traceback. The
+        # ledger on disk is the durable copy.
+        except Exception as exc:
+            _warn(f"  ! the summary could not be printed: {exc}")
     return 0
 
 
@@ -767,12 +859,17 @@ def config_from_args(args: argparse.Namespace) -> Config:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """The process entry point: a run, and a stdout that cannot outlive it."""
     args = parse_args(argv)
-    return run(
-        config_from_args(args),
-        args.collections,
-        aggregate_only=args.aggregate_only,
-    )
+    try:
+        return run(
+            config_from_args(args),
+            args.collections,
+            aggregate_only=args.aggregate_only,
+        )
+    finally:
+        # Every return path, so the exit code is only ever this function's.
+        _flush_stdout()
 
 
 if __name__ == "__main__":

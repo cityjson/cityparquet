@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
 import httpx
 import pytest
@@ -56,21 +57,33 @@ def _stub_conversion(monkeypatch, *, run_convert=None, seen=None):
 
 
 class _FailingStream:
-    """A stderr whose every write fails.
+    """A stream whose every write fails.
 
-    The shape of a full volume (ENOSPC), a read-only one, and of the
-    `BrokenPipeError` raised when a run is piped through `head`.
+    The shape of a full volume (ENOSPC — what `/dev/full` gives), a read-only
+    one, and of the `BrokenPipeError` raised when a run is piped through
+    `head`.
     """
 
     def write(self, text):
         raise OSError("[Errno 28] No space left on device")
 
     def flush(self):
-        pass
+        raise OSError("[Errno 28] No space left on device")
+
+
+class _UnprintableError(Exception):
+    """An exception that cannot even be rendered into a message."""
+
+    def __str__(self):
+        raise RuntimeError("even the message is broken")
 
 
 def _break_stderr(monkeypatch):
     monkeypatch.setattr(sys, "stderr", _FailingStream())
+
+
+def _break_stdout(monkeypatch):
+    monkeypatch.setattr(sys, "stdout", _FailingStream())
 
 
 def _break_ledger(monkeypatch, ledger, when=lambda rec: True):
@@ -750,6 +763,108 @@ def test_a_failing_stderr_does_not_stop_the_whole_run(tmp_path, monkeypatch):
     assert driver.run(_config(tmp_path)) == 0
 
 
+def test_a_failing_stdout_does_not_fabricate_a_collection_failure(tmp_path, monkeypatch):
+    # The gravest shape of this bug: the progress line is written inside the
+    # collection's isolation try, so a full log volume was caught and recorded
+    # as a *data* failure. The deliverable of this project is a measured
+    # statement about which collections convert; inventing failures for all of
+    # them is worse than crashing.
+    converted = []
+    monkeypatch.setattr(driver.discover, "fetch_collection", lambda base, cid, client: {"id": cid})
+    monkeypatch.setattr(
+        driver.discover,
+        "enumerate_items",
+        lambda base, api, cid, collection, client: ([Item(cid, "i", "u", None, None)], None),
+    )
+    monkeypatch.setattr(
+        driver, "convert_items", lambda items, **k: converted.append(k.get("collection"))
+    )
+    monkeypatch.setattr(driver.aggregate, "write_config", lambda config, dest: dest)
+    monkeypatch.setattr(driver.aggregate, "update_collection", lambda *a, **k: True)
+    ledger = Ledger(tmp_path / "_reports")
+    _break_stdout(monkeypatch)
+
+    driver.run_collections(["c0", "c1", "c2"], ledger=ledger, config=_config(tmp_path))
+
+    assert converted == ["c0", "c1", "c2"], "every collection must still be converted"
+    assert ledger.histogram() == {}, "a broken log must not be recorded as a data failure"
+
+
+def test_a_failing_stdout_does_not_stop_the_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(driver.discover, "collection_ids", lambda base, client: (["alpha"], None))
+    monkeypatch.setattr(driver, "convert_collection", lambda cid, **k: None)
+    monkeypatch.setattr(driver, "aggregate_all", lambda config, state: None)
+    _break_stdout(monkeypatch)
+
+    assert driver.run(_config(tmp_path)) == 0
+
+
+def test_the_last_resort_report_survives_an_unprintable_error(tmp_path, monkeypatch):
+    # `_record_safely`'s message is built inside its guard, so an exception
+    # whose __str__ raises is caught there and nowhere else.
+    processed = []
+    monkeypatch.setattr(driver, "process_item", lambda item, **k: processed.append(item.item_id))
+    ledger = Ledger(tmp_path / "_reports")
+
+    def exploding(rec):
+        raise _UnprintableError()
+
+    monkeypatch.setattr(ledger, "record", exploding)
+
+    driver.convert_items(
+        [Item("c", f"i{n}", "u", None, None) for n in range(3)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=1),
+    )
+
+    assert processed == ["i0", "i1", "i2"]
+
+
+@pytest.mark.skipif(not Path("/dev/full").exists(), reason="needs Linux /dev/full")
+@pytest.mark.parametrize("unbuffered", [False, True])
+def test_a_full_stdout_never_makes_a_measured_run_exit_non_zero(tmp_path, unbuffered):
+    # Only a real interpreter shows this: CPython flushes sys.stdout while
+    # finalising, and a failure there sets exit status 120 — a non-zero exit
+    # for a run that measured everything, breaking the contract that non-zero
+    # means nothing was measured.
+    argv = [sys.executable]
+    if unbuffered:
+        argv.append("-u")
+    argv += [
+        "-m",
+        "catalog2cityparquet",
+        "--out",
+        str(tmp_path / "out"),
+        "--aggregate-only",
+        "--base-url",
+        UNREACHABLE,
+    ]
+    with Path("/dev/full").open("w") as full:
+        proc = subprocess.run(argv, stdout=full, stderr=subprocess.PIPE, text=True)
+
+    assert proc.returncode == 0, f"rc={proc.returncode} stderr={proc.stderr}"
+
+
+@pytest.mark.skipif(not Path("/dev/full").exists(), reason="needs a POSIX shell pipeline")
+def test_a_closed_stdout_pipe_never_makes_a_measured_run_exit_non_zero(tmp_path):
+    argv = [
+        sys.executable,
+        "-m",
+        "catalog2cityparquet",
+        "--out",
+        str(tmp_path / "out"),
+        "--aggregate-only",
+        "--base-url",
+        UNREACHABLE,
+    ]
+    head = subprocess.Popen(["head", "-1"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+    proc = subprocess.run(argv, stdout=head.stdin, stderr=subprocess.PIPE, text=True)
+    head.stdin.close()
+    head.wait()
+
+    assert proc.returncode == 0, f"rc={proc.returncode} stderr={proc.stderr}"
+
+
 # --- the thread pool itself --------------------------------------------------
 
 
@@ -825,49 +940,107 @@ def test_a_second_run_refuses_a_busy_working_directory(tmp_path, monkeypatch, ca
     # and a vanished multi-gigabyte download resurfaces as `download_failed` —
     # indistinguishable from origin flakiness. Better a startup error.
     config = _config(tmp_path)
+    other = _config(tmp_path, out=tmp_path / "other-out", work_dir=driver.work_root(config))
     monkeypatch.setattr(driver, "aggregate_all", lambda c, state: None)
     monkeypatch.setattr(driver, "convert_collection", lambda cid, **k: None)
-    holder = driver.acquire_work_root(config)
+    holder = driver.acquire_lock(driver.work_root(config), driver.WORKING_DIRECTORY)
     (driver.work_root(config) / "c2cp-live").mkdir()
 
-    code = driver.run(config, collections=["alpha"])
+    code = driver.run(other, collections=["alpha"])
 
     assert code == 1
-    assert "another run" in capsys.readouterr().err.lower()
+    err = capsys.readouterr().err.lower()
+    assert "another run" in err
+    assert "--work-dir" in err, "here the advice is sound: the output directories differ"
     assert (driver.work_root(config) / "c2cp-live").exists(), "a live download must survive"
-    driver.release_work_root(holder)
+    driver.release_lock(holder)
+
+
+def test_a_second_run_on_the_same_output_is_refused_whatever_its_work_dir(
+    tmp_path, monkeypatch, capsys
+):
+    # The ledger, not the work root, is the resource that gets corrupted: two
+    # runs write two JSONL lines per collection while summary.csv — rewritten
+    # wholesale by whichever finishes last — says one.
+    config = _config(tmp_path)
+    monkeypatch.setattr(driver, "aggregate_all", lambda c, state: None)
+    monkeypatch.setattr(driver, "convert_collection", lambda cid, **k: None)
+    config.out.mkdir(parents=True)
+    holder = driver.acquire_lock(config.out, driver.OUTPUT_DIRECTORY)
+
+    code = driver.run(_config(tmp_path, work_dir=tmp_path / "elsewhere"), collections=["alpha"])
+
+    assert code == 1
+    err = capsys.readouterr().err.lower()
+    assert "another run" in err
+    assert "--work-dir" not in err, "a second work dir does not make a shared ledger safe"
+    driver.release_lock(holder)
+
+
+def test_aggregate_only_also_claims_the_output(tmp_path, monkeypatch, capsys):
+    # Aggregating while another run is mid-package would index half a package.
+    config = _config(tmp_path)
+    config.out.mkdir(parents=True)
+    monkeypatch.setattr(driver, "aggregate_all", lambda c, state: None)
+    holder = driver.acquire_lock(config.out, driver.OUTPUT_DIRECTORY)
+
+    assert driver.run(config, aggregate_only=True) == 1
+    driver.release_lock(holder)
 
 
 def test_a_lock_left_by_a_dead_run_is_reclaimed(tmp_path):
-    config = _config(tmp_path)
-    root = driver.work_root(config)
+    root = driver.work_root(_config(tmp_path))
     root.mkdir(parents=True)
     (root / driver.LOCK_NAME).write_text(
         json.dumps({"pid": _dead_pid(), "host": driver.HOSTNAME, "started": 0})
     )
 
-    holder = driver.acquire_work_root(config)
+    holder = driver.acquire_lock(root, driver.WORKING_DIRECTORY)
 
     assert holder is not None
-    driver.release_work_root(holder)
+    driver.release_lock(holder)
     assert not (root / driver.LOCK_NAME).exists()
 
 
-def test_the_lock_is_released_when_the_run_ends(tmp_path, monkeypatch):
+def test_a_lock_is_released_only_by_its_owner(tmp_path):
+    # An operator who follows the busy message and deletes a stale-looking lock
+    # must not have this run's exit delete their new run's live claim.
+    root = tmp_path / "work"
+    root.mkdir()
+    holder = driver.acquire_lock(root, driver.WORKING_DIRECTORY)
+    (root / driver.LOCK_NAME).write_text(
+        json.dumps({"pid": 4242, "host": "someone-else", "started": 1})
+    )
+
+    driver.release_lock(holder)
+
+    assert (root / driver.LOCK_NAME).exists(), "someone else's claim is not ours to drop"
+
+
+def test_the_locks_are_released_when_the_run_ends(tmp_path, monkeypatch):
     config = _config(tmp_path)
     monkeypatch.setattr(driver, "aggregate_all", lambda c, state: None)
     monkeypatch.setattr(driver, "convert_collection", lambda cid, **k: None)
 
     assert driver.run(config, collections=["alpha"]) == 0
     assert not (driver.work_root(config) / driver.LOCK_NAME).exists()
+    assert not (config.out / driver.LOCK_NAME).exists()
 
 
-def test_the_lock_is_released_even_when_the_root_is_unreachable(tmp_path, monkeypatch):
+def test_the_locks_are_released_even_when_the_root_is_unreachable(tmp_path, monkeypatch):
     config = _config(tmp_path, base_url=UNREACHABLE)
     monkeypatch.setattr(driver, "aggregate_all", lambda c, state: None)
 
     assert driver.run(config) == 1
-    assert not (driver.work_root(config) / driver.LOCK_NAME).exists()
+    assert not (config.out / driver.LOCK_NAME).exists()
+
+
+def test_an_unreachable_root_leaves_no_working_directory(tmp_path, monkeypatch):
+    config = _config(tmp_path, base_url=UNREACHABLE)
+    monkeypatch.setattr(driver, "aggregate_all", lambda c, state: None)
+
+    assert driver.run(config) == 1
+    assert not driver.work_root(config).exists(), "nothing ran, so nothing should be left behind"
 
 
 # --- catalogue aggregation ---------------------------------------------------
