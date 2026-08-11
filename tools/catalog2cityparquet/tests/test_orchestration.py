@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 import threading
 
 import httpx
@@ -51,6 +53,24 @@ def _stub_conversion(monkeypatch, *, run_convert=None, seen=None):
     monkeypatch.setattr(driver.convert, "run_convert", run_convert or default_run_convert)
     monkeypatch.setattr(driver.convert, "stamp", lambda pkg_dir, item: None)
     return record
+
+
+class _FailingStream:
+    """A stderr whose every write fails.
+
+    The shape of a full volume (ENOSPC), a read-only one, and of the
+    `BrokenPipeError` raised when a run is piped through `head`.
+    """
+
+    def write(self, text):
+        raise OSError("[Errno 28] No space left on device")
+
+    def flush(self):
+        pass
+
+
+def _break_stderr(monkeypatch):
+    monkeypatch.setattr(sys, "stderr", _FailingStream())
 
 
 def _break_ledger(monkeypatch, ledger, when=lambda rec: True):
@@ -677,6 +697,177 @@ def test_a_summary_write_failure_still_prints_the_tallies(tmp_path, monkeypatch,
     captured = capsys.readouterr()
     assert re.search(r"^c\s+1\s+0\s+0$", captured.out, re.M), captured.out
     assert "Read-only file system" in captured.err
+
+
+def test_a_failing_stderr_does_not_stop_the_collection_run(tmp_path, monkeypatch):
+    # The handler's diagnostic goes to the same place its record does. Piping a
+    # run through `head` closes stderr, and the report of a failure must not
+    # become a bigger failure than the one it reports.
+    attempted = []
+
+    def fake_convert_collection(cid, **kwargs):
+        attempted.append(cid)
+        raise RuntimeError("collection exploded")
+
+    monkeypatch.setattr(driver, "convert_collection", fake_convert_collection)
+    ledger = Ledger(tmp_path / "_reports")
+    _break_stderr(monkeypatch)
+
+    driver.run_collections(["alpha", "beta", "omega"], ledger=ledger, config=_config(tmp_path))
+
+    assert attempted == ["alpha", "beta", "omega"]
+    assert ledger.counts("alpha") == {"failed": 1}
+
+
+def test_a_failing_stderr_and_ledger_together_lose_no_items(tmp_path, monkeypatch):
+    # The last-resort reporter reporting the ledger's failure is itself on the
+    # failing disk. Under the pool, an escape here takes the rest of the
+    # collection with it.
+    processed = []
+    monkeypatch.setattr(driver, "process_item", lambda item, **k: processed.append(item.item_id))
+    ledger = Ledger(tmp_path / "_reports")
+    _break_ledger(monkeypatch, ledger)
+    _break_stderr(monkeypatch)
+
+    driver.convert_items(
+        [Item("c", f"i{n}", "u", None, None) for n in range(6)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=2),
+    )
+
+    assert sorted(processed) == [f"i{n}" for n in range(6)]
+
+
+def test_a_failing_stderr_does_not_stop_the_whole_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        driver.discover, "collection_ids", lambda base, client: (["alpha"], "an unusable link")
+    )
+    monkeypatch.setattr(driver, "convert_collection", lambda cid, **k: None)
+    monkeypatch.setattr(driver, "aggregate_all", lambda config, state: None)
+    monkeypatch.setattr(driver, "print_summary", lambda ledger, state: None)
+    _break_stderr(monkeypatch)
+
+    assert driver.run(_config(tmp_path)) == 0
+
+
+# --- the thread pool itself --------------------------------------------------
+
+
+class _PoolThatDiesAfterOneItem:
+    """A pool that runs one task, then fails the way an exhausted host does."""
+
+    def __init__(self, max_workers=None):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def map(self, fn, iterable):
+        pending = list(iterable)
+        fn(pending[0])
+        raise RuntimeError("can't start new thread")
+
+
+def test_a_pool_failure_does_not_lose_the_collection(tmp_path, monkeypatch, capsys):
+    # A pool-level failure must be contained the way an item failure is: the
+    # items it never reached are finished serially rather than dropped.
+    processed = []
+    monkeypatch.setattr(driver, "process_item", lambda item, **k: processed.append(item.item_id))
+    monkeypatch.setattr(driver, "ThreadPoolExecutor", _PoolThatDiesAfterOneItem)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.convert_items(
+        [Item("c", f"i{n}", "u", None, None) for n in range(3)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=4),
+    )
+
+    assert processed == ["i0", "i1", "i2"], "no item lost, and none done twice"
+    assert ledger.counts("c") == {"converted": 3}
+    assert "can't start new thread" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad", ["0", "-5"])
+def test_a_useless_job_count_is_rejected(bad):
+    with pytest.raises(SystemExit):
+        driver.parse_args(["--jobs", bad])
+
+
+# --- startup ------------------------------------------------------------------
+
+
+def test_an_unwritable_output_directory_is_a_clean_startup_error(tmp_path, capsys):
+    # `out`'s parent is a file, so mkdir fails for any user, root included.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+
+    code = driver.run(_config(tmp_path, out=blocker / "mirror"))
+
+    assert code == 1
+    assert "output directory" in capsys.readouterr().err
+
+
+# --- the working directory lock ----------------------------------------------
+
+
+def _dead_pid():
+    """A pid that has certainly exited."""
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait()
+    return proc.pid
+
+
+def test_a_second_run_refuses_a_busy_working_directory(tmp_path, monkeypatch, capsys):
+    # Two runs sharing one work root would sweep each other's live downloads,
+    # and a vanished multi-gigabyte download resurfaces as `download_failed` —
+    # indistinguishable from origin flakiness. Better a startup error.
+    config = _config(tmp_path)
+    monkeypatch.setattr(driver, "aggregate_all", lambda c, state: None)
+    monkeypatch.setattr(driver, "convert_collection", lambda cid, **k: None)
+    holder = driver.acquire_work_root(config)
+    (driver.work_root(config) / "c2cp-live").mkdir()
+
+    code = driver.run(config, collections=["alpha"])
+
+    assert code == 1
+    assert "another run" in capsys.readouterr().err.lower()
+    assert (driver.work_root(config) / "c2cp-live").exists(), "a live download must survive"
+    driver.release_work_root(holder)
+
+
+def test_a_lock_left_by_a_dead_run_is_reclaimed(tmp_path):
+    config = _config(tmp_path)
+    root = driver.work_root(config)
+    root.mkdir(parents=True)
+    (root / driver.LOCK_NAME).write_text(
+        json.dumps({"pid": _dead_pid(), "host": driver.HOSTNAME, "started": 0})
+    )
+
+    holder = driver.acquire_work_root(config)
+
+    assert holder is not None
+    driver.release_work_root(holder)
+    assert not (root / driver.LOCK_NAME).exists()
+
+
+def test_the_lock_is_released_when_the_run_ends(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    monkeypatch.setattr(driver, "aggregate_all", lambda c, state: None)
+    monkeypatch.setattr(driver, "convert_collection", lambda cid, **k: None)
+
+    assert driver.run(config, collections=["alpha"]) == 0
+    assert not (driver.work_root(config) / driver.LOCK_NAME).exists()
+
+
+def test_the_lock_is_released_even_when_the_root_is_unreachable(tmp_path, monkeypatch):
+    config = _config(tmp_path, base_url=UNREACHABLE)
+    monkeypatch.setattr(driver, "aggregate_all", lambda c, state: None)
+
+    assert driver.run(config) == 1
+    assert not (driver.work_root(config) / driver.LOCK_NAME).exists()
 
 
 # --- catalogue aggregation ---------------------------------------------------

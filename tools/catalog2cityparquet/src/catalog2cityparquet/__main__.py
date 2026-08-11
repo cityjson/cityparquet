@@ -16,8 +16,11 @@ process — the Rust `cityparquet` binary owns every format decision, and
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import shutil
+import socket
 import sys
 import tempfile
 import threading
@@ -58,6 +61,30 @@ COLLECTION_LEVEL = "-"
 #: start-of-run sweep can tell its own leftovers from anything else that shares
 #: the working directory.
 WORK_PREFIX = "c2cp-"
+
+#: Claim on a working directory, held for the length of a converting run.
+LOCK_NAME = ".c2cp-lock"
+
+#: Read once: the lock records it so a lock file seen over a shared filesystem
+#: is never mistaken for a local pid.
+HOSTNAME = socket.gethostname()
+
+
+class WorkRootBusy(RuntimeError):
+    """Another live run holds the working directory."""
+
+
+def _warn(message: str) -> None:
+    """Say something on stderr, treating a failed say as nothing at all.
+
+    Every isolation handler ends by reporting what went wrong, and stderr is as
+    capable of failing as the ledger beside it: a full volume raises `OSError`,
+    and a run piped through `head` raises `BrokenPipeError` on the next write.
+    Either would escape the handler and take down the run the handler exists to
+    protect — so the diagnostic is best-effort by construction.
+    """
+    with contextlib.suppress(Exception):
+        print(message, file=sys.stderr)
 
 
 @dataclass
@@ -125,10 +152,13 @@ def _record_safely(ledger: Ledger, rec: Record) -> None:
         ledger.record(rec)
     # Deliberately broad: nothing about writing a record may end the run.
     except Exception as exc:
-        print(
-            f"  ! outcome for {rec.collection}/{rec.item_id} could not be recorded: {exc}",
-            file=sys.stderr,
-        )
+        # The last-resort reporter, so it swallows unconditionally: `_warn`
+        # already cannot raise, and anything this clause did raise would escape
+        # the very handler that called it. (`suppress(Exception)` rather than a
+        # bare `except: pass` only because ruff's SIM105 forbids the literal
+        # form; the guarantee is the same.)
+        with contextlib.suppress(Exception):
+            _warn(f"  ! outcome for {rec.collection}/{rec.item_id} could not be recorded: {exc}")
 
 
 def safe_item_id(item_id: str) -> str:
@@ -162,6 +192,75 @@ def work_root(config: Config) -> Path:
     return config.work_dir if config.work_dir is not None else config.out / "_work"
 
 
+def _lock_holder_is_live(info: dict) -> bool:
+    """Whether the process named in a lock file is still running.
+
+    Anything unreadable counts as live. Refusing to start is recoverable — the
+    message says which file to delete — whereas sweeping a live run's
+    directory destroys a download in progress, and that reappears in the
+    ledger as `download_failed`, indistinguishable from an origin having a bad
+    day. The safe answer to "I cannot tell" is therefore "yes".
+    """
+    if info.get("host") != HOSTNAME:
+        # A lock seen over a shared filesystem: the pid means nothing here.
+        return True
+    pid = info.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Someone else's process — running, just not ours to signal.
+        return True
+    return True
+
+
+def acquire_work_root(config: Config) -> Path:
+    """Claim the working directory for this run, or raise `WorkRootBusy`.
+
+    Two runs sharing one working directory would sweep each other's live
+    downloads, and this driver is built for multi-day runs where opening a
+    second shell against the same `--out` is the natural thing to do. The
+    corrupted measurement that would follow is worth a startup error.
+    """
+    root = work_root(config)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / LOCK_NAME
+    try:
+        handle = path.open("x", encoding="utf-8")
+    except FileExistsError:
+        info: dict = {}
+        with contextlib.suppress(OSError, ValueError):
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            info = loaded if isinstance(loaded, dict) else {}
+        if _lock_holder_is_live(info):
+            raise WorkRootBusy(
+                f"another run holds the working directory {root} "
+                f"(pid {info.get('pid', '?')} on {info.get('host', '?')}). "
+                f"Use --work-dir for a second run, or delete {path} if no other run is active."
+            ) from None
+        # The holder is gone; its claim is not.
+        with contextlib.suppress(OSError):
+            path.unlink()
+        try:
+            handle = path.open("x", encoding="utf-8")
+        except FileExistsError:
+            raise WorkRootBusy(f"another run claimed {root} while this one was starting") from None
+    with handle:
+        handle.write(
+            json.dumps({"pid": os.getpid(), "host": HOSTNAME, "started": time.time()}) + "\n"
+        )
+    return path
+
+
+def release_work_root(lock: Path) -> None:
+    """Drop this run's claim. Never raises: the run is over either way."""
+    with contextlib.suppress(OSError):
+        lock.unlink()
+
+
 def sweep_work_root(config: Config) -> None:
     """Delete working directories an earlier run abandoned.
 
@@ -171,9 +270,8 @@ def sweep_work_root(config: Config) -> None:
     clean it up. `--keep-downloads` is honoured: an operator who asked to keep
     them means across runs too.
 
-    Assumes one run per working directory at a time — two concurrent runs
-    sharing one would sweep each other's live downloads, which is what
-    `--work-dir` is for.
+    Only ever called while this run holds the working directory's lock, so what
+    it deletes is certainly abandoned and not another run's work in progress.
     """
     if config.keep_downloads:
         return
@@ -298,14 +396,38 @@ def convert_items(
                 ),
             )
 
+    # Which items have been taken up, so the serial fallback below can finish
+    # the collection without redoing — and double-recording — anything.
+    claimed: set[int] = set()
+    claim_lock = threading.Lock()
+
+    def handle_once(numbered: tuple[int, Item]) -> None:
+        index, item = numbered
+        with claim_lock:
+            if index in claimed:
+                return
+            claimed.add(index)
+        handle(item)
+
     try:
         if config.jobs <= 1:
-            for item in items:
-                handle(item)
+            for numbered in enumerate(items):
+                handle_once(numbered)
         else:
-            with ThreadPoolExecutor(max_workers=config.jobs) as pool:
-                # Consumed eagerly so the pool is drained inside the try block.
-                list(pool.map(handle, items))
+            try:
+                with ThreadPoolExecutor(max_workers=config.jobs) as pool:
+                    # Consumed eagerly so the pool is drained inside this block.
+                    list(pool.map(handle_once, list(enumerate(items))))
+            # Deliberately broad: a pool that cannot run (a host out of threads
+            # raises RuntimeError from submit) must be contained exactly as an
+            # item failure is. The remainder is finished serially rather than
+            # dropped, because silently converting half a collection and
+            # aggregating it as whole is the failure this driver exists to
+            # prevent.
+            except Exception as exc:
+                _warn(f"  ! thread pool failed ({exc}); finishing this collection serially")
+                for numbered in enumerate(items):
+                    handle_once(numbered)
     finally:
         client.close()
 
@@ -343,7 +465,7 @@ def convert_collection(
     if note:
         # A published index disagreeing with the object listing is a fact about
         # the catalogue worth recording, not just a log line.
-        print(f"  ! {cid}: {note}", file=sys.stderr)
+        _warn(f"  ! {cid}: {note}")
         _record_safely(
             ledger, Record(cid, COLLECTION_LEVEL, "skipped", reason="stale_item_index", error=note)
         )
@@ -382,7 +504,7 @@ def run_collections(
                 convert_collection(cid, ledger=ledger, config=config, client=client, state=state)
             # Deliberately broad: one collection must never stop the run.
             except Exception as exc:
-                print(f"  ! {cid} failed: {exc}", file=sys.stderr)
+                _warn(f"  ! {cid} failed: {exc}")
                 _record_safely(
                     ledger,
                     Record(
@@ -413,13 +535,13 @@ def aggregate_all(config: Config, state: RunState) -> None:
         catalog = response.json()
     # Deliberately broad: the root's identity is nice to have, not required.
     except Exception as exc:
-        print(f"  ! catalogue root metadata unavailable ({exc}); using defaults", file=sys.stderr)
+        _warn(f"  ! catalogue root metadata unavailable ({exc}); using defaults")
     finally:
         client.close()
 
     collections = sorted(config.out.glob("*/collection.json"))
     if not collections:
-        print("  ! no collection.json written; skipping catalogue aggregation", file=sys.stderr)
+        _warn("  ! no collection.json written; skipping catalogue aggregation")
         return
     try:
         config_path = aggregate.write_config(
@@ -428,7 +550,7 @@ def aggregate_all(config: Config, state: RunState) -> None:
         aggregate.update_catalog(config.tool, collections, config.out, config_path)
     # Deliberately broad: the collections stand on their own without a root.
     except Exception as exc:
-        print(f"  ! catalogue aggregation failed: {exc}", file=sys.stderr)
+        _warn(f"  ! catalogue aggregation failed: {exc}")
 
 
 def print_summary(ledger: Ledger, state: RunState) -> None:
@@ -445,7 +567,7 @@ def print_summary(ledger: Ledger, state: RunState) -> None:
         summary = ledger.write_summary()
     # Deliberately broad: a lost roll-up must not cost the report.
     except Exception as exc:
-        print(f"  ! summary.csv could not be written: {exc}", file=sys.stderr)
+        _warn(f"  ! summary.csv could not be written: {exc}")
     print("\n--- summary ---")
     print(f"{'collection':<32} {'converted':>9} {'failed':>7} {'skipped':>8}")
     totals = {"converted": 0, "failed": 0, "skipped": 0}
@@ -488,32 +610,58 @@ def resolve_collections(config: Config) -> list[str]:
     if note:
         # A child link we could not turn into a collection id is a collection
         # silently missing from the run; it must not pass unmentioned.
-        print(f"  ! {note}", file=sys.stderr)
+        _warn(f"  ! {note}")
     return cids
 
 
 def run(
     config: Config, collections: list[str] | None = None, *, aggregate_only: bool = False
 ) -> int:
-    """Execute a whole run. Returns the process exit code."""
-    config.out.mkdir(parents=True, exist_ok=True)
-    ledger = Ledger(config.out / "_reports")
+    """Execute a whole run. Returns the process exit code.
+
+    Non-zero means nothing was measured: the output directory could not be
+    prepared, another run holds the working directory, or the catalogue root is
+    unreachable. Once items start being attempted the answer is 0, however many
+    of them failed.
+    """
+    try:
+        config.out.mkdir(parents=True, exist_ok=True)
+        ledger = Ledger(config.out / "_reports")
+    except OSError as exc:
+        # Nothing can be recorded, so there is nothing to run. Reported like the
+        # other startup errors rather than as a bare traceback.
+        _warn(f"cannot prepare the output directory {config.out}: {exc}")
+        return 1
     state = RunState()
 
     if not aggregate_only:
-        cids = list(collections) if collections else None
-        if cids is None:
-            try:
-                cids = resolve_collections(config)
-            # Deliberately broad: whatever the failure, nothing could be attempted.
-            except Exception as exc:
-                print(f"catalogue root unreachable: {exc}", file=sys.stderr)
-                return 1
-        sweep_work_root(config)
-        run_collections(cids, ledger=ledger, config=config, state=state)
+        try:
+            work_lock = acquire_work_root(config)
+        except (WorkRootBusy, OSError) as exc:
+            _warn(f"cannot start: {exc}")
+            return 1
+        try:
+            cids = list(collections) if collections else None
+            if cids is None:
+                try:
+                    cids = resolve_collections(config)
+                # Deliberately broad: whatever the failure, nothing could be attempted.
+                except Exception as exc:
+                    _warn(f"catalogue root unreachable: {exc}")
+                    return 1
+            sweep_work_root(config)
+            run_collections(cids, ledger=ledger, config=config, state=state)
+        finally:
+            release_work_root(work_lock)
 
     aggregate_all(config, state)
-    print_summary(ledger, state)
+    try:
+        print_summary(ledger, state)
+    # Deliberately broad: the run is over, and a report that cannot be printed
+    # (a closed stdout, say) must not turn a completed measurement into a
+    # traceback. The ledger on disk is the durable copy.
+    except Exception as exc:
+        _warn(f"  ! the summary could not be printed: {exc}")
     return 0
 
 
@@ -551,7 +699,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--limit-per-collection", type=_positive_int)
     parser.add_argument(
         "--jobs",
-        type=int,
+        type=_positive_int,
         default=DEFAULT_JOBS,
         help=f"concurrent items (default {DEFAULT_JOBS}; a politeness bound on the origins)",
     )
