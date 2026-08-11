@@ -49,6 +49,14 @@ fixtures:
     # `citygml_version_error` to prove a non-2.0 document fails with a clear
     # version message instead of a bogus "invalid CityJSON" JSON parse error.
     curl -sSfo tests/fixtures/berlin_citygml1.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/berlin_open_data_sample_data.citygml
+    # First 400 kB of Freiburg's real LoD2 CityGML 2.0 export: a file that
+    # declares its CRS ONLY inside city objects (srsName appears 60,108 times
+    # in the full file, never before the first cityObjectMember at byte 2534).
+    # A range request, not the whole 1.86 GiB - `parse_header` stops at the
+    # first srsName, so the truncated tail is never read. Used by
+    # `citygml_srsname_fallback`; this exact shape could not be found in any
+    # smaller published CityGML 2.0 file.
+    curl -sSf -r 0-399999 -o tests/fixtures/freiburg_no_preamble_srs.gml https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
     # Zero-object CityJSONSeq fixture (synthetic, no network fetch needed):
     # a single CityJSON header line, empty CityObjects/vertices, no feature
     # lines — the minimal input that scans to zero city-object rows. Used by
