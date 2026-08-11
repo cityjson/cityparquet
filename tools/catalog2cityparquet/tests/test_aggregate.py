@@ -39,6 +39,8 @@ def test_config_is_derived_from_the_published_collection():
             {"rel": "item", "href": "./items/x.json"},
         ],
         "extent": {"spatial": {"bbox": [[0, 0, 0, 1, 1, 1]]}},
+        "summaries": {"city3d:lods": ["1.2"]},
+        "assets": {"portal": {"href": "https://data.rotterdam.nl/download"}},
     }
     config = aggregate.collection_config(published)
 
@@ -51,8 +53,11 @@ def test_config_is_derived_from_the_published_collection():
     # them over would point the mirror at the source catalogue's items.
     rels = {link["rel"] for link in config["links"]}
     assert rels == {"source"}
-    # Extent is recomputed by the tool from the generated items.
+    # Extent and summaries are recomputed by the tool from the generated items,
+    # and the source's own assets describe the origin, not the mirror.
     assert "extent" not in config
+    assert "summaries" not in config
+    assert "assets" not in config
 
 
 def test_config_round_trips_through_yaml(tmp_path):
@@ -222,6 +227,81 @@ def test_a_geoparquet_failure_falls_back_to_a_plain_collection(tmp_path):
     assert not (out.parent / "items.parquet").exists()
 
 
+def test_the_return_value_says_whether_the_index_was_written(tmp_path):
+    # A catalogue where N collections lack items.parquet must be able to state
+    # N. Both paths used to return None, so the caller could not count them.
+    for root in (tmp_path / "written", tmp_path / "degraded"):
+        (root / "out").mkdir(parents=True)
+    written, _ = _counting_tool(tmp_path / "written", "")
+    degraded, _ = _counting_tool(tmp_path / "degraded", _GEOPARQUET_CHOKES)
+
+    assert (
+        aggregate.update_collection(
+            written, tmp_path / "items", tmp_path / "c.yaml", tmp_path / "written/out/c.json"
+        )
+        is True
+    )
+    assert (
+        aggregate.update_collection(
+            degraded, tmp_path / "items", tmp_path / "c.yaml", tmp_path / "degraded/out/c.json"
+        )
+        is False
+    )
+    assert (
+        aggregate.update_collection(
+            written,
+            tmp_path / "items",
+            tmp_path / "c.yaml",
+            tmp_path / "written/out/c.json",
+            geoparquet=False,
+        )
+        is False
+    )
+
+
+def test_a_stale_index_is_removed_when_geoparquet_is_disabled(tmp_path):
+    # An index from an earlier run would otherwise outlive the collection that
+    # advertised it — the orphaned-index hazard this mirror exists to avoid.
+    tool = _fake_tool(tmp_path, "")
+    out = tmp_path / "out" / "collection.json"
+    out.parent.mkdir()
+    (out.parent / "items.parquet").write_text("stale")
+
+    aggregate.update_collection(
+        tool, tmp_path / "items", tmp_path / "c.yaml", out, geoparquet=False
+    )
+
+    assert not (out.parent / "items.parquet").exists()
+
+
+def test_a_hung_tool_does_not_stall_the_run(tmp_path):
+    # Aggregating the largest collection is the longest tool call in the run;
+    # a hang there would stall everything with no ledger line.
+    tool = _fake_tool(tmp_path, "import time\ntime.sleep(30)\n")
+    with pytest.raises(RuntimeError, match="timed out"):
+        aggregate.update_collection(
+            tool, tmp_path / "items", tmp_path / "c.yaml", tmp_path / "collection.json", timeout=0.5
+        )
+    with pytest.raises(RuntimeError, match="timed out"):
+        aggregate.update_catalog(
+            tool, [tmp_path / "collection.json"], tmp_path, tmp_path / "c.yaml", timeout=0.5
+        )
+
+
+def test_only_a_geoparquet_encode_error_is_retried(tmp_path):
+    # A loose match would delete a perfectly good items.parquet on any failure
+    # whose text happens to mention GeoParquet.
+    tool, log = _counting_tool(
+        tmp_path,
+        "sys.stderr.write('Error: cannot write the geoparquet asset href\\n')\nsys.exit(1)\n",
+    )
+    with pytest.raises(RuntimeError, match="geoparquet asset href"):
+        aggregate.update_collection(
+            tool, tmp_path / "items", tmp_path / "c.yaml", tmp_path / "collection.json"
+        )
+    assert len(log.read_text().splitlines()) == 1
+
+
 def test_the_fallback_does_not_hide_an_unrelated_failure(tmp_path):
     tool, log = _counting_tool(tmp_path, "sys.stderr.write('Error: boom\\n')\nsys.exit(1)\n")
     with pytest.raises(RuntimeError, match="boom"):
@@ -292,6 +372,13 @@ def test_real_tool_aggregates_a_partly_unlocated_collection(tmp_path):
     collection = json.loads(out.read_text())
     assert collection["id"] == "demo"
     assert collection["extent"]["spatial"]["bbox"] == [[4.3, 52.0, 0.0, 4.4, 52.1, 20.0]]
+    # Every package keeps its Item in `items/<id>/metadata.json`, so the links
+    # must carry that path: a bare `./metadata.json` is identical for every
+    # item and resolves beside the collection, where nothing is.
+    assert sorted(link["href"] for link in collection["links"] if link["rel"] == "item") == [
+        "./items/a/metadata.json",
+        "./items/b/metadata.json",
+    ]
     # The GeoParquet sidecar is dropped rather than dangling: the encoder
     # cannot write the unlocated Item's null geometry.
     assert "items-geoparquet" not in collection.get("assets", {})

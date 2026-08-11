@@ -12,6 +12,11 @@ than the source catalogue.
 Aggregation is over the *directory*, not over the current run's successes. A
 resumed run therefore rebuilds the collection from everything ever converted,
 which is what makes resumption correct.
+
+The mirror's layout — one directory per package, each holding a `metadata.json`
+— needs a `city3dstac` that derives item hrefs relative to the collection
+(`vendor/city3d-stac-tool`, `feat/items-dir`). An older binary links every item
+as `./metadata.json`.
 """
 
 from __future__ import annotations
@@ -21,9 +26,10 @@ from pathlib import Path
 
 import yaml
 
-#: Fields `city3dstac`'s `CollectionConfigFile` accepts. Emitting anything else
-#: is at best ignored and at worst rejects the whole config, so this is the
-#: contract the emitter is tested against.
+#: Fields `city3dstac`'s `CollectionConfigFile` accepts. It carries no
+#: `deny_unknown_fields`, so anything else is silently DROPPED rather than
+#: rejected — quiet metadata loss, which is why the emitter is tested against
+#: this set rather than trusted to fail loudly.
 TOOL_CONFIG_FIELDS = frozenset(
     {
         "id",
@@ -48,6 +54,11 @@ STRUCTURAL_RELS = frozenset({"self", "root", "parent", "item", "child", "collect
 #: a single line, and some tool errors run long.
 MAX_DETAIL_CHARS = 2000
 
+#: How long a single `city3dstac` call may take. Aggregating the catalogue's
+#: largest collection — tens of thousands of Items — is the longest tool call
+#: in a run, and a hang there would stall it with nothing recorded.
+DEFAULT_TIMEOUT = 3600.0
+
 #: Carried verbatim from the published collection. `extent` and `summaries` are
 #: absent on purpose (recomputed from the generated items), and so are `assets`
 #: — a source portal or download asset describes the origin, not the mirror.
@@ -62,8 +73,13 @@ _NO_EXTENT = "spatial extent bbox is required"
 #: The STAC-GeoParquet encoder refuses a null geometry, so a *single* unlocated
 #: Item is enough to fail `--geoparquet` for the whole collection — and the
 #: failure comes after collection.json has already been written advertising an
-#: `items-geoparquet` asset, leaving a zero-byte items.parquet behind.
-_GEOPARQUET_FAILED = "geoparquet"
+#: `items-geoparquet` asset, leaving a zero-byte items.parquet behind. Matched
+#: narrowly: the recovery deletes items.parquet, which must not happen for some
+#: other failure that merely mentions the sidecar.
+_GEOPARQUET_FAILED = "geoparquet encode error"
+
+#: The sidecar the tool writes beside the collection it is given.
+_INDEX_NAME = "items.parquet"
 
 
 def collection_config(collection_json: dict) -> dict:
@@ -108,14 +124,23 @@ def write_config(config: dict, dest: Path) -> Path:
 
 
 def update_collection(
-    tool: Path, items_dir: Path, config: Path, out: Path, geoparquet: bool = True
-) -> None:
+    tool: Path,
+    items_dir: Path,
+    config: Path,
+    out: Path,
+    geoparquet: bool = True,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> bool:
     """Aggregate every Item under `items_dir` into `out`.
 
-    A GeoParquet failure is retried without the sidecar: an unlocated Item is
-    honest output, and the collection matters far more than the optional
-    items.parquet. Every other failure raises `RuntimeError` carrying the
-    tool's stderr — including the one collection that genuinely cannot be
+    Returns whether the GeoParquet index was written. A caller that ignores it
+    is unaffected, but a run that degraded N collections can now say N — the
+    point of the exercise being a *measured* statement about the catalogue.
+
+    A GeoParquet encode failure is retried without the sidecar: an unlocated
+    Item is honest output, and the collection matters far more than the
+    optional items.parquet. Every other failure raises `RuntimeError` carrying
+    the tool's stderr — including the one collection that genuinely cannot be
     aggregated, whose Items are *all* unlocated so no spatial extent exists.
     The orchestrator catches it and ledgers the collection as failed; nothing
     is printed here.
@@ -130,19 +155,28 @@ def update_collection(
         "-o",
         str(out),
     ]
-    if not geoparquet:
-        _run(cmd, "update-collection")
-        return
-    tolerated = _run([*cmd, "--geoparquet"], "update-collection", tolerate=_GEOPARQUET_FAILED)
-    if tolerated is None:
-        return
-    # Written by the attempt that then failed to encode; nothing references it
-    # once the retry rewrites collection.json without the asset.
-    (out.parent / "items.parquet").unlink(missing_ok=True)
-    _run(cmd, "update-collection")
+    if geoparquet:
+        tolerated = _run(
+            [*cmd, "--geoparquet"], "update-collection", timeout, tolerate=_GEOPARQUET_FAILED
+        )
+        if tolerated is None:
+            return True
+    _run(cmd, "update-collection", timeout)
+    # Removed only after the collection that no longer advertises it has been
+    # written: an index nothing points at is untidy, one pointed at but absent
+    # is broken. Covers both the zero-byte file a failed encode leaves behind
+    # and a good index left by an earlier run.
+    (out.parent / _INDEX_NAME).unlink(missing_ok=True)
+    return False
 
 
-def update_catalog(tool: Path, collection_jsons: list[Path], out_dir: Path, config: Path) -> None:
+def update_catalog(
+    tool: Path,
+    collection_jsons: list[Path],
+    out_dir: Path,
+    config: Path,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> None:
     """Link the given collections into a catalogue written under `out_dir`."""
     cmd = [
         str(tool),
@@ -153,16 +187,19 @@ def update_catalog(tool: Path, collection_jsons: list[Path], out_dir: Path, conf
         "--config",
         str(config),
     ]
-    _run(cmd, "update-catalog")
+    _run(cmd, "update-catalog", timeout)
 
 
-def _run(cmd: list[str], what: str, tolerate: str | None = None) -> str | None:
+def _run(cmd: list[str], what: str, timeout: float, tolerate: str | None = None) -> str | None:
     """Run `cmd`, raising on failure. Returns the stderr of a tolerated failure.
 
     `tolerate` is a lower-cased substring of the one failure the caller intends
-    to recover from; anything else still raises.
+    to recover from; anything else still raises, as does a timeout.
     """
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{what} failed: timed out after {timeout}s") from exc
     if proc.returncode == 0:
         return None
     detail = proc.stderr.strip()[:MAX_DETAIL_CHARS]
