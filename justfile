@@ -7,8 +7,29 @@ lint:
 fmt:
     cargo fmt --all
 
-check: lint test isolation
+check: lint test isolation vendor-check
     cargo fmt --all --check
+
+# Lint + test the vendored submodules under vendor/ (currently just
+# city3d-stac-tool). They are deliberately kept OUT of this Cargo workspace
+# (see `exclude` in Cargo.toml) because each is an independent upstream project
+# with its own lockfile and toolchain — which also means `cargo --workspace`
+# never reaches them, so the local patches carried there (e.g. the
+# `update-collection --items-dir` flag the catalogue driver depends on) and
+# their tests would otherwise go unverified by `just check`. Mirrors the tool's
+# own verification baseline (fmt + clippy + test), and fails loudly rather than
+# skipping when the submodule has not been checked out.
+vendor-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="vendor/city3d-stac-tool"
+    if [[ ! -f "${dir}/Cargo.toml" ]]; then
+        echo "vendor-check: ${dir} is not checked out; run 'git submodule update --init'" >&2
+        exit 1
+    fi
+    cargo fmt --manifest-path "${dir}/Cargo.toml" --all --check
+    cargo clippy --manifest-path "${dir}/Cargo.toml" --all-targets --all-features -- -D warnings
+    cargo test --manifest-path "${dir}/Cargo.toml" --all-features
 
 isolation:
     cargo tree -p cityparquet-schema --prefix none | grep -E '^(arrow-array|arrow |parquet) ' && exit 1 || echo "isolation ok"
@@ -109,15 +130,11 @@ bench FOLDER OUT='bench/read_results':
         # assuming the pre-by-type "cityobjects.parquet" name (only true for
         # a single-family dataset; `readbench_duckdb.sh` below still hard-
         # fails clearly for a multi-family/multi-table package).
-        main_table="$(python3 -c "
-import json, sys
-try:
-    with open(sys.argv[1]) as fh:
-        tables = json.load(fh).get('tables', [])
-    print(tables[0] if len(tables) == 1 else '')
-except OSError:
-    print('')
-" "${pkg}/metadata.json")"
+        # Kept to a single indented line on purpose: an unindented continuation
+        # line terminates a `just` recipe body, so a block-formatted python -c
+        # here makes the whole justfile unparseable. A missing manifest yields
+        # the empty string, as the old `except OSError` branch did.
+        main_table="$(python3 -c "import json, os, sys; p = sys.argv[1]; tables = json.load(open(p)).get('tables', []) if os.path.isfile(p) else []; print(tables[0] if len(tables) == 1 else '')" "${pkg}/metadata.json")"
         numeric_col=""
         if [[ -n "$main_table" ]]; then
             numeric_col="$(duckdb -csv -noheader -c "
