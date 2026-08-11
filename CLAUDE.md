@@ -21,14 +21,18 @@ follow-up here. Known current-vs-spec deltas:
 - **File split is per 1st-level CityObject family** (`building.parquet`, `bridge.parquet`, …); the spec's target is **per CityGML module**.
 - Footer metadata is now the spec's single `city` object (plus a conditional pure-GeoParquet `geo` object), emitted per Parquet file.
 
-## Crates (Cargo workspace)
+## Components
 
-| Crate | Purpose |
+Four crates in the Cargo workspace, plus one Python driver that is deliberately outside
+it (it orchestrates the binaries rather than linking against them):
+
+| Component | Purpose |
 |---|---|
 | `cityparquet-schema` | Type system, CityGML taxonomy, Arrow schema, sidecar schemas, manifest — **the spec as code**. Kept free of `arrow-array`/`parquet` (enforced by `just isolation`) so it stays an executable specification. |
 | `cityparquet` | Parquet writer/reader, WKB, appearance interning, sidecars, export, comparator, Hilbert ordering, recipe presets. |
 | `cityparquet-cli` | The `cityparquet` binary and the benchmark harness. |
 | `cityparquet-readbench` | Read-path benchmark harness. |
+| `tools/catalog2cityparquet` | Python driver converting the published City3D STAC catalogue (53 collections, ~74k items) into a CityParquet mirror, and ledgering **why** each item did or did not convert. Shells out to `cityparquet` and to the vendored `city3dstac`; interprets no format itself. Its own suite is `just catalog-test`, not `just check`. See `tools/catalog2cityparquet/README.md`. |
 
 Status: milestones **M1–M5 complete** (schema, native writer, reader & round-trip,
 content-gated appearance/template sidecars, benchmarks) plus a native CityGML 2.0 reader/writer stack. Async
@@ -43,6 +47,17 @@ just test         # tests only
 just lint         # clippy -D warnings
 just fmt          # rustfmt
 just interop      # convert both fixtures and have DuckDB read the Parquet natively
+```
+
+Catalogue driver (`tools/catalog2cityparquet`; all but `catalog-test` need the network,
+and none of them is part of `just check`):
+
+```bash
+just catalog-tools                       # build the two binaries the driver shells out to
+just catalog-convert [OUT] [ARGS...]     # whole catalogue -> CityParquet mirror (hours; resumable)
+just catalog-convert-collection ID [OUT] # one collection, the way to prove a change on real data
+just catalog-aggregate [OUT]             # rebuild the mirror's root catalog.json, no downloads
+just catalog-test                        # the driver's own suite (219 tests, no network)
 ```
 
 CLI (add `--release` for realistic timing):

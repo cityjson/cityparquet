@@ -283,3 +283,57 @@ plot RESULTS='bench/read_results':
 # (sizes.png, compression-ratio.png). Needs `uv` on PATH.
 sizes PREPARED_DIR='bench/data/readbench' OUT='bench/read_results':
     uv run --project bench/plot python -m readbench_plot.sizes {{PREPARED_DIR}} {{OUT}}
+
+# ---------------------------------------------------------------------------
+# STAC catalogue -> CityParquet mirror (tools/catalog2cityparquet)
+# ---------------------------------------------------------------------------
+
+# Build the two release binaries the Python driver shells out to: the
+# `cityparquet` converter (one package per catalogue item) and the vendored
+# `city3dstac` aggregator (collection.json / items.parquet / catalog.json).
+# The driver's own defaults point at exactly these two paths, so building them
+# here is what makes the `catalog-*` recipes below runnable from a clean tree.
+# Compiling only; kept OUT of `just check`, which builds and tests both trees
+# anyway (see `vendor-check`).
+catalog-tools:
+    cargo build --release -p cityparquet-cli
+    cargo build --release --manifest-path vendor/city3d-stac-tool/Cargo.toml
+
+# Convert every collection of the published City3D STAC catalogue into a
+# CityParquet mirror under OUT. Resumable: an item whose package already
+# carries a valid STAC Item is skipped, so a re-run continues where the last
+# one stopped. Failures never abort the run — each is recorded in
+# OUT/_reports/ and the next item (or collection) starts, which is what makes
+# the end-of-run histogram a measurement rather than a crash report. Extra
+# driver flags go after the OUT argument (e.g. `just catalog-convert out/x
+# --jobs 4`). Network-dependent, and hours long on the whole catalogue; kept
+# OUT of `just check`/CI.
+catalog-convert OUT='out/cityparquet-catalog' *ARGS: catalog-tools
+    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
+        --out {{OUT}} {{ARGS}}
+
+# Convert a single collection (e.g. `just catalog-convert-collection
+# rotterdam-3d`), which is how a change to the driver or the converter is
+# proven against real data without paying for the whole catalogue.
+# Network-dependent; kept OUT of `just check`/CI.
+catalog-convert-collection ID OUT='out/cityparquet-catalog' *ARGS: catalog-tools
+    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
+        --out {{OUT}} --collection {{ID}} {{ARGS}}
+
+# Rebuild the mirror's ROOT catalog.json from the collection.json files an
+# earlier run left under OUT — no downloads, no conversions, no per-collection
+# re-aggregation. Reach for it when a run was interrupted after its collections
+# were written but before they were linked together. Rebuilding a single
+# collection.json/items.parquet instead needs a plain `catalog-convert` for that
+# collection (already-converted items are skipped, and the aggregation step
+# still runs). Contacts the catalogue root for the mirror's identity metadata,
+# and degrades to defaults if it cannot; kept OUT of `just check`/CI.
+catalog-aggregate OUT='out/cityparquet-catalog': catalog-tools
+    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
+        --out {{OUT}} --aggregate-only
+
+# The driver's own test suite. No network and no binaries: every origin,
+# subprocess and catalogue document is faked, so this is safe to run anywhere.
+# Not part of `just check`, which is the Rust workspace's gate — run both.
+catalog-test:
+    uv run --project tools/catalog2cityparquet --extra dev pytest -v
