@@ -103,6 +103,11 @@ class Ledger:
             if rec.reason is not None:
                 self._reasons[rec.reason] += 1
 
+    def collections(self) -> list[str]:
+        """Every collection with at least one record, in id order."""
+        with self._lock:
+            return sorted(self._counts)
+
     def counts(self, collection: str) -> dict[str, int]:
         """Status tallies for one collection, e.g. ``{"converted": 3}``."""
         with self._lock:
