@@ -132,9 +132,13 @@ bench FOLDER OUT='bench/read_results':
         # fails clearly for a multi-family/multi-table package).
         # Kept to a single indented line on purpose: an unindented continuation
         # line terminates a `just` recipe body, so a block-formatted python -c
-        # here makes the whole justfile unparseable. A missing manifest yields
-        # the empty string, as the old `except OSError` branch did.
-        main_table="$(python3 -c "import json, os, sys; p = sys.argv[1]; tables = json.load(open(p)).get('tables', []) if os.path.isfile(p) else []; print(tables[0] if len(tables) == 1 else '')" "${pkg}/metadata.json")"
+        # here makes the whole justfile unparseable. The block is therefore
+        # handed to exec() with escaped newlines, which keeps `except OSError`
+        # verbatim — any unreadable manifest (missing, mode 000, a directory)
+        # yields the empty string and exit 0, so the run degrades to "no main
+        # table" rather than aborting under `set -euo pipefail`. A malformed
+        # manifest still raises, as before.
+        main_table="$(python3 -c 'exec("import json, sys\ntry:\n    with open(sys.argv[1]) as fh:\n        tables = json.load(fh).get(\"tables\", [])\n    print(tables[0] if len(tables) == 1 else \"\")\nexcept OSError:\n    print(\"\")")' "${pkg}/metadata.json")"
         numeric_col=""
         if [[ -n "$main_table" ]]; then
             numeric_col="$(duckdb -csv -noheader -c "
