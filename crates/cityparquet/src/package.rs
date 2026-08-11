@@ -123,6 +123,19 @@ pub struct ConvertOptions {
     pub generate_lod0: bool,
     /// Thresholds for LoD0 synthesis (used only when `generate_lod0`).
     pub lod0: Lod0Options,
+    /// An operator-supplied CRS (e.g. `"EPSG:25832"`) used ONLY when the source
+    /// declares none. The spec's CRS rules forbid writing `city.crs` absent and
+    /// forbid guessing; an explicit operator declaration is neither, so the
+    /// conversion proceeds and `city.other.crs_source` records where the CRS
+    /// came from. `None` (the default) leaves the hard failure in place.
+    ///
+    /// Applying it is the caller's job — [`crate::source::Source::set_reference_system`]
+    /// on the source, BEFORE [`convert_source`], so the scan resolves an
+    /// ordinary CRS. Set this field only when that call actually took effect
+    /// (it is a no-op on a source that declares its own CRS), so the
+    /// provenance stamp never claims an operator supplied a CRS the source
+    /// carried itself.
+    pub crs_override: Option<String>,
 }
 
 impl ConvertOptions {
@@ -146,6 +159,7 @@ impl ConvertOptions {
             // Off here (source-faithful library default); the CLI turns it on.
             generate_lod0: false,
             lod0: Lod0Options::default(),
+            crs_override: None,
         }
     }
 }
@@ -926,6 +940,64 @@ fn extension_registry(_source: &Source) -> ExtensionRegistry {
     ExtensionRegistry::new()
 }
 
+/// Validate an operator-supplied CRS ([`ConvertOptions::crs_override`]) before
+/// any of it reaches the writer.
+///
+/// Accepted spellings are `EPSG:25832` and the bare `25832`; anything else is
+/// refused rather than guessed at. A code naming a known **geographic**
+/// (degree-valued) CRS is refused too: nothing in this pipeline reprojects,
+/// and the CityGML reader quantises at a fixed 1 mm, so a degree-valued
+/// override would silently destroy the coordinates. The known-geographic list
+/// is shared with the CityGML reader and is common-but-not-exhaustive (the
+/// same residual limitation documented there). Refusing loudly is the same
+/// stance the spec's CRS rules take on a source with no CRS at all — the
+/// override exists to make a CRS resolvable, never to make a bad one
+/// tolerable.
+fn validate_crs_override(spec: &str) -> Result<()> {
+    let code = spec.trim().trim_start_matches("EPSG:").trim();
+    if code.is_empty() || !code.chars().all(|c| c.is_ascii_digit()) {
+        return Err(CityParquetError::Schema(format!(
+            "operator-supplied CRS {spec:?} is not an EPSG code \
+             (expected \"EPSG:25832\" or \"25832\")"
+        )));
+    }
+    if crate::citygml::crs::is_geographic_epsg(code) {
+        return Err(CityParquetError::Schema(format!(
+            "operator-supplied CRS {spec:?} is a geographic (degree-valued) CRS; this \
+             writer never reprojects and quantises at millimetre scale, so a degree \
+             coordinate would be destroyed — supply the projected CRS the coordinates \
+             are actually in"
+        )));
+    }
+    // Fail here rather than deep in the scan: an operator typo is worth a
+    // message that names the flag.
+    cityparquet_schema::crs::resolve_to_projjson(code)?;
+    Ok(())
+}
+
+/// The footer's `city` object, plus the CRS-provenance stamp.
+///
+/// When the CRS came from `--crs` rather than the source, `city.other`
+/// records `crs_source: "operator-supplied"`. `city.other` is free-form and
+/// explicitly informational per the spec, so this cannot mislead a decoder —
+/// but it does stop the output implying the SOURCE declared a CRS it never
+/// carried.
+fn city_metadata(scan_result: &ScanResult, opts: &ConvertOptions) -> Result<CityMetadata> {
+    let mut meta = scan_result.base_city_metadata()?;
+    if opts.crs_override.is_some() {
+        let mut other = match meta.other.take() {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        other.insert(
+            "crs_source".to_string(),
+            serde_json::Value::String("operator-supplied".to_string()),
+        );
+        meta.other = Some(serde_json::Value::Object(other));
+    }
+    Ok(meta)
+}
+
 /// Writes one full package (main table, Compatibility-profile sidecars,
 /// `metadata.json` manifest) into `tmp_dir` — this is the entire body that
 /// used to run directly against `opts.output_dir` before the M5 crash-safe-
@@ -947,7 +1019,7 @@ fn write_package(
         extension_registry(source),
         module_lods_by_file(&scan_result.module_lods),
         module_geo_by_file(&scan_result.module_geo),
-        scan_result.base_city_metadata()?,
+        city_metadata(scan_result, opts)?,
         scan_result.schema.attributes.clone(),
         // Production always prunes: a geometry-less table (dataset-wide or
         // per-module) carries no geometry columns. Identity projection is a
@@ -1195,6 +1267,9 @@ pub(crate) fn convert_source_impl(
     opts: &ConvertOptions,
     schema_override: Option<&CanonicalSchema>,
 ) -> Result<ConvertReport> {
+    if let Some(spec) = &opts.crs_override {
+        validate_crs_override(spec)?;
+    }
     fs::create_dir_all(&opts.output_dir).map_err(|e| {
         io_err(format!(
             "cannot create output directory {}: {e}",

@@ -113,6 +113,16 @@ enum Commands {
         /// strictly source-faithful.
         #[arg(long, default_value_t = false)]
         no_lod0: bool,
+
+        /// Operator-supplied CRS (e.g. EPSG:25832, or the bare 25832) used
+        /// ONLY when the source declares none — it is ignored for a source
+        /// that declares its own. Without it, a source carrying CRS-bearing
+        /// coordinates but no resolvable CRS is a hard conversion error. When
+        /// it is applied, the output records
+        /// `city.other.crs_source = "operator-supplied"`. A geographic
+        /// (degree-valued) code is refused: nothing here reprojects.
+        #[arg(long, value_name = "EPSG")]
+        crs: Option<String>,
     },
 
     /// Export CityParquet package back to CityJSON/CityJSONSeq
@@ -286,6 +296,7 @@ fn main() -> std::process::ExitCode {
             geoarrow,
             geometry_encoding,
             no_lod0,
+            crs,
         } => {
             let preset = match RecipePreset::parse(&recipe) {
                 Some(preset) => preset,
@@ -347,7 +358,7 @@ fn main() -> std::process::ExitCode {
                 }
             };
 
-            let opts = ConvertOptions {
+            let mut opts = ConvertOptions {
                 input: inputs.first().cloned().unwrap_or_default(),
                 output_dir: output,
                 overwrite,
@@ -358,6 +369,7 @@ fn main() -> std::process::ExitCode {
                 geometry_encoding,
                 generate_lod0: !no_lod0,
                 lod0: cityparquet::lod0::Lod0Options::default(),
+                crs_override: None,
             };
 
             // A sizing flag only makes sense with --partition.
@@ -370,13 +382,29 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
 
-            let sources = match resolve_and_open(&inputs) {
+            let mut sources = match resolve_and_open(&inputs) {
                 Ok(sources) => sources,
                 Err(e) => {
                     eprintln!("error: {}", e);
                     return std::process::ExitCode::FAILURE;
                 }
             };
+
+            // Declare the operator's CRS on every source BEFORE they are
+            // merged or partitioned, so the merge's shared-CRS check and the
+            // scan both see an ordinary, resolvable CRS. `crs_override` — and
+            // with it the footer's `crs_source` stamp — is recorded only if
+            // the declaration actually took effect on at least one source; a
+            // source that declares its own CRS is left untouched.
+            if let Some(code) = &crs {
+                let mut applied = false;
+                for source in &mut sources {
+                    applied |= source.set_reference_system(code);
+                }
+                if applied {
+                    opts.crs_override = Some(code.clone());
+                }
+            }
 
             match partition {
                 Some(method) => {

@@ -260,6 +260,16 @@ any column not named here is a reserved structural column, so no separate
 `appearance_defaults`, and `other` (free-form producer metadata). A GeoParquet
 `geo` key is derived so GeoParquet readers recognise the geometry columns.
 
+A source carrying CRS-bearing coordinates but declaring no resolvable CRS is a
+hard conversion error — the writer neither guesses nor writes `crs` absent.
+The CLI's `--crs EPSG:<code>` is the operator's explicit declaration for such a
+source (a no-op for a source that declares its own CRS), which makes the CRS
+resolvable *before* the writer runs; when it is actually applied, `other`
+carries `crs_source: "operator-supplied"` so the footer never implies the
+source declared a CRS it did not carry. A geographic (degree-valued) code is
+refused, since nothing here reprojects and coordinates are quantised at
+millimetre scale.
+
 `metadata.json` (the `PackageManifest`) is the **authoritative** description
 of a package: profile, LoDs, the list of tables, and the list of sidecar
 files actually written. Export reads the manifest, not the directory — a

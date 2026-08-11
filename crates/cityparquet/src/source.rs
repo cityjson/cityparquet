@@ -173,6 +173,42 @@ impl Source {
         &self.header
     }
 
+    /// Declare `epsg_code` (e.g. `"EPSG:7415"`, or the bare `"7415"`) as this
+    /// source's reference system when it has none.
+    ///
+    /// An operator-supplied CRS for a source that declares none — see
+    /// [`crate::package::ConvertOptions::crs_override`]. Deliberately a no-op
+    /// when the source already declares a CRS: an override must never
+    /// silently reproject or relabel data that came with its own, correct
+    /// CRS.
+    ///
+    /// Returns whether the declaration was actually applied — `false` for that
+    /// no-op case. A caller sets
+    /// [`crate::package::ConvertOptions::crs_override`] only when this returns
+    /// `true`, so the footer's `crs_source` stamp never claims an operator
+    /// supplied a CRS the source carried itself.
+    pub fn set_reference_system(&mut self, epsg_code: &str) -> bool {
+        let code = epsg_code
+            .trim()
+            .trim_start_matches("EPSG:")
+            .trim()
+            .to_string();
+        let rs = cjseq::ReferenceSystem::new(None, "EPSG".to_string(), "0".to_string(), code);
+        let metadata = self.header.metadata.get_or_insert(cjseq::Metadata {
+            geographical_extent: None,
+            identifier: None,
+            point_of_contact: None,
+            reference_date: None,
+            reference_system: None,
+            title: None,
+        });
+        if metadata.reference_system.is_some() {
+            return false;
+        }
+        metadata.reference_system = Some(rs);
+        true
+    }
+
     /// The RAW (unsliced) appearance array that this source's
     /// `header().geometry_templates`' template `material`/`texture` maps
     /// actually index into.

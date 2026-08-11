@@ -36,6 +36,15 @@ const GEOGRAPHIC_EPSG: &[&str] = &[
     "4674", "4759", "4979", "4937", "4936", "4896", "4327", "4329",
 ];
 
+/// Whether `code` (a bare EPSG code, e.g. `"4326"`) names a known geographic
+/// CRS. Shared with the operator-supplied `--crs` override
+/// ([`crate::package::ConvertOptions::crs_override`]), which refuses one for
+/// the same reason: nothing in this pipeline reprojects, so a degree-valued
+/// CRS meets a quantiser sized for metres.
+pub fn is_geographic_epsg(code: &str) -> bool {
+    GEOGRAPHIC_EPSG.contains(&code)
+}
+
 /// Resolve a raw `srsName`. Errors only when it resolves to a known geographic
 /// CRS (an unrepresentable-for-us profile violation).
 pub fn resolve(srs_name: &str) -> Result<CrsResolution> {
@@ -47,7 +56,7 @@ pub fn resolve(srs_name: &str) -> Result<CrsResolution> {
     let Some(code) = epsg_code(name) else {
         return Ok(CrsResolution::Unresolved);
     };
-    if GEOGRAPHIC_EPSG.contains(&code.as_str()) {
+    if is_geographic_epsg(&code) {
         return Err(geographic_err(srs_name, &code));
     }
     Ok(CrsResolution::Epsg(code))
