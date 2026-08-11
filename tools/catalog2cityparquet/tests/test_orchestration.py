@@ -1387,11 +1387,12 @@ def test_a_missing_aggregation_tool_is_not_a_conversion_failure(tmp_path, monkey
     assert ledger.counts("c0") == {"converted": 1, driver.ENVIRONMENT: 1}
 
 
-def test_an_unreachable_collection_is_still_a_conversion_failure(tmp_path, monkeypatch):
+def test_an_unreachable_collection_is_the_publisher_not_this_machine(tmp_path, monkeypatch):
     # The boundary the environment reason must not creep past: no `httpx`
     # exception is an `OSError`, so a publisher being down keeps its place in
     # the histogram. Were that to change, half the measured failures would
-    # quietly leave the published number.
+    # quietly leave the published number. Which place it keeps is the point of
+    # the test below.
     def unreachable(base, cid, client):
         raise httpx.ConnectError("no route to host")
 
@@ -1400,8 +1401,35 @@ def test_an_unreachable_collection_is_still_a_conversion_failure(tmp_path, monke
 
     driver.run_collections(["c0"], ledger=ledger, config=_config(tmp_path))
 
-    assert ledger.histogram() == {"convert_failed": 1}
+    assert ledger.histogram() == {"download_failed": 1}
     assert ledger.environment_failures() == {}
+
+
+def test_a_collection_level_transport_failure_is_not_a_conversion_failure(tmp_path, monkeypatch):
+    # An origin answering 503 during enumeration now raises rather than reading
+    # as an empty collection — but `run_collections` had no clause for it, so
+    # the broad handler binned it `convert_failed`: a conversion failure of data
+    # nobody fetched, published in the histogram, with the collection's items
+    # never attempted. The item loop has told the two apart all along; this is
+    # the same clause one level out.
+    def unavailable(base, cid, client):
+        request = httpx.Request("GET", "http://x/c0/collection.json")
+        raise httpx.HTTPStatusError(
+            "Server error '503 Service Unavailable'",
+            request=request,
+            response=httpx.Response(503, request=request),
+        )
+
+    monkeypatch.setattr(driver.discover, "fetch_collection", unavailable)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.run_collections(["c0"], ledger=ledger, config=_config(tmp_path))
+
+    assert ledger.histogram() == {"download_failed": 1}
+    assert ledger.environment_failures() == {}
+    record = json.loads((tmp_path / "_reports" / "c0.jsonl").read_text().splitlines()[-1])
+    assert record["item_id"] == driver.COLLECTION_LEVEL
+    assert "503" in record["error"]
 
 
 def test_a_tool_that_ran_and_refused_is_still_a_conversion_failure(tmp_path, monkeypatch):
@@ -2228,6 +2256,11 @@ def test_the_documents_the_listing_lost_each_reach_the_ledger(tmp_path, monkeypa
 
     assert ledger.histogram() == {"download_failed": 3}
     assert ledger.counts("c") == {"converted": 2, "failed": 3}
+    # Discovery counts what enumeration FOUND, which includes the documents it
+    # then lost: five listed, two usable. Reporting two would let a collection
+    # the origin half-served look completely enumerated, and the `discovered`
+    # column exists precisely so that cannot happen.
+    assert ledger.discovered("c") == 5
     rows = [
         json.loads(line) for line in (tmp_path / "_reports" / "c.jsonl").read_text().splitlines()
     ]

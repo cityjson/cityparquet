@@ -65,6 +65,55 @@ def test_a_failed_catalogue_root_request_is_raised_not_read_as_no_collections():
         discover.collection_ids("http://x", client)
 
 
+def test_a_failed_item_link_request_is_a_lost_document_not_an_absent_one():
+    # The fourth enumeration source. It fetched with a bare `client.get(...)
+    # .json()`, so a 503 whose body is a JSON error object read as a document
+    # with no `data` asset and the link was dropped in silence — and where this
+    # is the only source (an index and a listing that agree the collection is
+    # empty), the collection was then recorded `empty_collection`: a fabricated
+    # conformance fact about a collection nobody ever managed to read.
+    client = _ErrorClient()
+    dropped: list[str] = []
+
+    items = discover.items_from_collection_links(
+        "http://x",
+        "jp",
+        {"links": [{"rel": "item", "href": "./items/i0.json"}]},
+        client,
+        dropped=dropped,
+    )
+
+    assert items == []
+    assert dropped == ["jp/items/i0.json"], "a lost document must be ledgered, not absent"
+
+
+def test_a_document_lost_by_the_collection_links_reaches_the_caller(
+    served_dir, client, monkeypatch
+):
+    # The same out-parameter the other readers have, reaching `enumerate_items`
+    # through the last-resort branch: the caller records one outcome per listed
+    # document, and cannot record what it is never told about.
+    _root, base = served_dir
+    monkeypatch.setattr(discover, "items_from_parquet", lambda url: None)
+    monkeypatch.setattr(discover, "list_item_objects", lambda bucket_api, cid, client: [])
+
+    dropped: list[str] = []
+    items, note = discover.enumerate_items(
+        base_url=base,
+        bucket_api=f"{base}/o",
+        cid="fr",
+        # Never written to `served_dir`, so the origin answers 404 exactly as
+        # one that would not serve a listed document does.
+        collection={"links": [{"rel": "item", "href": "./items/gone.json"}]},
+        client=client,
+        dropped=dropped,
+    )
+
+    assert items == []
+    assert note is None
+    assert dropped == ["fr/items/gone.json"]
+
+
 def test_an_empty_listing_beside_a_non_empty_index_is_a_recorded_discrepancy(
     served_dir, client, monkeypatch
 ):

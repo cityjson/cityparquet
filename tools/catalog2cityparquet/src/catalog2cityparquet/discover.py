@@ -33,8 +33,10 @@ def _get_json(client, url: str):
     cleanly empty. That is recorded as `empty_collection`, a fabricated
     conformance fact about a collection nobody ever managed to list; and where
     a stale `items.parquet` also exists, the index is preferred instead. Every
-    request in this module goes through here so no reader can be added without
-    the check.
+    reader in this module — all four of them — goes through here. That is a
+    convention, not a guarantee the code enforces: `items_from_collection_links`
+    was added without it and reproduced the defect verbatim, so a new reader
+    must be routed here deliberately.
     """
     response = client.get(url)
     response.raise_for_status()
@@ -220,20 +222,41 @@ def items_from_listing(
     return items
 
 
-def items_from_collection_links(base_url: str, cid: str, collection: dict, client) -> list[Item]:
-    """Last resort: the `rel=item` links the collection document carries."""
+def items_from_collection_links(
+    base_url: str,
+    cid: str,
+    collection: dict,
+    client,
+    dropped: list[str] | None = None,
+) -> list[Item]:
+    """Last resort: the `rel=item` links the collection document carries.
+
+    Reads through :func:`_get_json` and reports through `dropped` exactly as
+    :func:`items_from_listing` does, and for the same reasons. This is the one
+    branch reached when the object listing is legitimately empty, so a document
+    lost here is lost where nothing else can notice: without the status check a
+    503 is read as a document with no `data` asset, and without the
+    out-parameter the link reaches no ledger record at all — leaving the
+    collection to be published as `empty_collection`.
+    """
     items: list[Item] = []
     for link in collection.get("links", []):
         if link.get("rel") != "item":
             continue
-        url = f"{base_url}/{cid}/{link.get('href', '').removeprefix('./')}"
+        name = f"{cid}/{link.get('href', '').removeprefix('./')}"
+        url = f"{base_url}/{name}"
         try:
-            doc = client.get(url).json()
+            doc = _get_json(client, url)
         except Exception:
+            if dropped is not None:
+                dropped.append(name)
             continue
         asset = (doc.get("assets") or {}).get("data") or {}
-        if asset.get("href"):
-            items.append(Item(cid, doc.get("id", ""), asset["href"], asset.get("type"), url))
+        if not asset.get("href"):
+            if dropped is not None:
+                dropped.append(name)
+            continue
+        items.append(Item(cid, doc.get("id", ""), asset["href"], asset.get("type"), url))
     return items
 
 
@@ -261,7 +284,8 @@ def enumerate_items(
     A collection that publishes nothing is not an error — 20 of the 53 hold
     only a `collection.json` — so an empty list comes back instead.
 
-    `dropped` is handed to :func:`items_from_listing`; see its docstring.
+    `dropped` is handed to whichever reader is used — :func:`items_from_listing`
+    or :func:`items_from_collection_links`; see their docstrings.
     """
     fast = items_from_parquet(f"{base_url}/{cid}/items.parquet")
     listed_names = list_item_objects(bucket_api, cid, client)
@@ -276,7 +300,7 @@ def enumerate_items(
         # document's own `rel=item` links are the last-resort source, consulted
         # here for the same reason they are consulted when neither source
         # exists at all — a zero-row index is not evidence that they are wrong.
-        return items_from_collection_links(base_url, cid, collection, client), None
+        return items_from_collection_links(base_url, cid, collection, client, dropped), None
 
     def discrepancy(using: str) -> str | None:
         if fast is None:
@@ -298,6 +322,6 @@ def enumerate_items(
     # but the disagreement that made it uncheckable travels with it.
     if fast:
         return fast, discrepancy("the index, unverified")
-    return items_from_collection_links(base_url, cid, collection, client), discrepancy(
+    return items_from_collection_links(base_url, cid, collection, client, dropped), discrepancy(
         "the collection's own item links"
     )

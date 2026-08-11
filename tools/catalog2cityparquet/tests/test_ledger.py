@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from catalog2cityparquet.ledger import (
+    COLLECTION_LEVEL,
     CONFORMANCE_REASONS,
     ENVIRONMENT,
     HOST_FAILURE_MARKERS,
@@ -172,6 +173,63 @@ def test_the_roll_up_keeps_environment_failures_out_of_the_histogram(tmp_path):
     rolled = roll_up(tmp_path)
     assert rolled.reasons == {"no_crs": 1}
     assert rolled.environment == 1
+
+
+def test_the_roll_up_keeps_every_collection_level_fact_about_one_collection(tmp_path):
+    # Collection-level records all carry the same sentinel item id, so keying
+    # the roll-up on `(collection, item_id)` alone collapsed them into one and
+    # kept whichever was written last. Here that silently deleted
+    # `stale_item_index` — one of the two facts (with `empty_collection`) the
+    # paper quotes at collection level, and the one Japan's headline case rests
+    # on — from the number this project publishes.
+    ledger = Ledger(tmp_path)
+    ledger.record(
+        Record("a", COLLECTION_LEVEL, "skipped", reason="stale_item_index", error="306 vs 60471")
+    )
+    ledger.record(Record("a", "i0", "converted"))
+    ledger.record(
+        Record(
+            "a", COLLECTION_LEVEL, ENVIRONMENT, reason=ENVIRONMENT, error="aggregation: no space"
+        )
+    )
+
+    rolled = roll_up(tmp_path)
+    assert rolled.reasons == {"stale_item_index": 1}, "the published number lost a quoted fact"
+    assert rolled.environment == 1
+    assert rolled.statuses == {"converted": 1, "skipped": 1, ENVIRONMENT: 1}
+
+
+def test_a_later_collection_level_record_cannot_absorb_an_environment_failure(tmp_path):
+    # The same collapse the other way round, which is worse: a host failure
+    # overwritten by a conformance record moves a statement about this machine
+    # INTO the histogram, and the environment count that would have flagged the
+    # run as incomplete goes to zero.
+    first = Ledger(tmp_path)
+    first.record(
+        Record(
+            "a", COLLECTION_LEVEL, ENVIRONMENT, reason=ENVIRONMENT, error="aggregation: no space"
+        )
+    )
+    Ledger(tmp_path).record(
+        Record("a", COLLECTION_LEVEL, "skipped", reason="stale_item_index", error="306 vs 60471")
+    )
+
+    rolled = roll_up(tmp_path)
+    assert rolled.environment == 1, "an environment failure must not be absorbed"
+    assert rolled.reasons == {"stale_item_index": 1}
+
+
+def test_a_repeated_collection_level_fact_is_still_counted_once(tmp_path):
+    # The de-duplication the roll-up exists for is unchanged: a resumed run
+    # re-records the same collection-level fact, and the last one wins.
+    for error in ("306 vs 60471", "306 vs 60472"):
+        Ledger(tmp_path).record(
+            Record("a", COLLECTION_LEVEL, "skipped", reason="stale_item_index", error=error)
+        )
+
+    rolled = roll_up(tmp_path)
+    assert rolled.reasons == {"stale_item_index": 1}
+    assert rolled.items == 1
 
 
 def test_the_roll_up_counts_a_torn_line_rather_than_dropping_it(tmp_path):

@@ -91,6 +91,14 @@ def is_host_failure(stderr: str) -> bool:
     return any(marker in text for marker in HOST_FAILURE_MARKERS)
 
 
+#: Placeholder item id for a record about a whole collection rather than an
+#: item — a stale index, an empty collection, an aggregation that failed. The
+#: ledger's JSONL is read per collection, so a sentinel is clearer than an empty
+#: string. It lives here, beside :func:`roll_up`, because the roll-up has to
+#: recognise it: every collection-level record of one collection shares this id,
+#: so keying on `(collection, item_id)` alone would collapse them all into one.
+COLLECTION_LEVEL = "-"
+
 #: Collection ids are slugs such as ``japan-plateau-3d``. They come from a
 #: published catalogue, not from us, and are interpolated into a ledger
 #: filename, so the pattern is deliberately narrow: no separators, no dots, and
@@ -274,7 +282,9 @@ class Ledger:
 class Rollup:
     """What the cumulative ledger says, once every item is counted exactly once."""
 
-    #: Items counted, i.e. distinct `(collection, item_id)` pairs.
+    #: Items counted, i.e. distinct `(collection, item_id)` pairs — plus one per
+    #: distinct collection-level reason, those records sharing a sentinel id
+    #: rather than naming an item (see :func:`roll_up`).
     items: int
     #: Status tallies across every collection.
     statuses: Counter
@@ -299,8 +309,21 @@ def roll_up(reports_dir: Path) -> Rollup:
     file is append-only, so the last line for an item is that item's current
     state. Anything else double-counts, which is why this exists as reviewed
     code rather than as an instruction to roll the files up by hand.
+
+    A **collection-level** record names no item: it carries
+    :data:`COLLECTION_LEVEL` as its id, and one collection can hold several of
+    them (a stale index, an aggregation the host defeated, …). Those keep the
+    reason in the key, because "last one wins" is only right for records
+    describing the same thing: keyed on the id alone, a collection's every
+    collection-level record collapsed into one and the survivors were whichever
+    happened to be written last — silently deleting `stale_item_index` and
+    `empty_collection`, the two facts quoted at this level, and, the other way
+    round, absorbing an environment failure into the conformance histogram.
+    Keying here rather than by minting a sentinel per call site keeps the
+    property structural — no future collection-level record can be added
+    without it — and reads ledgers already written.
     """
-    latest: dict[tuple[str, str], dict] = {}
+    latest: dict[tuple[str, str, str], dict] = {}
     unreadable = 0
     for path in sorted(Path(reports_dir).glob("*.jsonl")):
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -314,13 +337,18 @@ def roll_up(reports_dir: Path) -> Rollup:
             if not isinstance(rec, dict) or "collection" not in rec or "item_id" not in rec:
                 unreadable += 1
                 continue
-            latest[(str(rec["collection"]), str(rec["item_id"]))] = rec
+            item_id = str(rec["item_id"])
+            # The reason discriminates collection-level records and nothing
+            # else: an item's own records must still collapse to the last one,
+            # whatever reasons the attempts carried.
+            discriminator = str(rec.get("reason")) if item_id == COLLECTION_LEVEL else ""
+            latest[(str(rec["collection"]), item_id, discriminator)] = rec
 
     statuses: Counter = Counter()
     reasons: Counter = Counter()
     per_collection: dict[str, Counter] = defaultdict(Counter)
     environment = 0
-    for (collection, _item), rec in latest.items():
+    for (collection, _item, _reason), rec in latest.items():
         status = str(rec.get("status", ""))
         statuses[status] += 1
         per_collection[collection][status] += 1

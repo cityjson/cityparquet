@@ -35,7 +35,20 @@ import httpx
 
 from . import aggregate, convert, discover, fetch
 from .discover import Item
-from .ledger import ENVIRONMENT, HostFailure, Ledger, Record, roll_up, validate_collection_id
+
+# `COLLECTION_LEVEL` is read here as `driver.COLLECTION_LEVEL` but lives in
+# `ledger.py`, beside the roll-up that has to recognise it: a second copy here
+# would drift, and a drifted sentinel puts every collection-level record of a
+# collection back into one bucket.
+from .ledger import (
+    COLLECTION_LEVEL,
+    ENVIRONMENT,
+    HostFailure,
+    Ledger,
+    Record,
+    roll_up,
+    validate_collection_id,
+)
 
 BASE_URL = "https://storage.googleapis.com/city3d-stac"
 BUCKET_API = "https://storage.googleapis.com/storage/v1/b/city3d-stac/o"
@@ -58,11 +71,6 @@ MAX_ERROR_CHARS = 2000
 #: however large it grows; only the listing is capped, so a run that hit the
 #: same broken volume 60,000 times does not print 60,000 identical lines.
 MAX_ENVIRONMENT_NOTES = 20
-
-#: Placeholder item id for a record about a whole collection rather than an
-#: item. The ledger's JSONL is read per collection, so a sentinel is clearer
-#: than an empty string.
-COLLECTION_LEVEL = "-"
 
 #: Prefix for this driver's per-item working directories. Distinctive so the
 #: start-of-run sweep can tell its own leftovers from anything else that shares
@@ -859,6 +867,28 @@ def run_collections(
         for cid in cids:
             try:
                 convert_collection(cid, ledger=ledger, config=config, client=client, state=state)
+            except httpx.HTTPError as exc:
+                # The origin would not serve the collection document, the
+                # listing, or an index — its availability, not the converter's
+                # competence, and the same clause the item loop has. First, as
+                # it is there: `httpx` wraps lower-level failures, so an
+                # exception can satisfy more than one of these. Without it the
+                # broad handler below published an origin having a bad day as
+                # `convert_failed` — a conversion failure of data that was never
+                # fetched, whose items were never attempted.
+                detail = _describe(exc)
+                _warn(f"  ! {cid} failed: {detail}")
+                _record_safely(
+                    ledger,
+                    Record(
+                        cid,
+                        COLLECTION_LEVEL,
+                        "failed",
+                        reason="download_failed",
+                        error=detail[:MAX_ERROR_CHARS],
+                    ),
+                    state,
+                )
             except OSError as exc:
                 # Nothing local is evidence about the data. Everything remote
                 # arrives as an `httpx` error, and every filesystem failure

@@ -316,7 +316,14 @@ failures, and a `grep -c` roll-up of a multi-session run is simply wrong.
 
 The subcommand reduces the files to **one outcome per `(collection, item_id)` — the last
 one**, the file being append-only — and prints the status totals, the conformance
-histogram, and, kept apart as always, the environment failures. Every record carries the
+histogram, and, kept apart as always, the environment failures.
+
+Records about a whole collection rather than an item (`stale_item_index`,
+`empty_collection`, an aggregation the host defeated) all carry `-` as their item id, so
+they keep their **reason** in the key as well: one outcome per
+`(collection, "-", reason)`. Without that, a collection's collection-level records
+collapse into whichever was written last — deleting a quoted fact from the histogram, or,
+the other way round, absorbing an environment failure into it. Every record carries the
 `run_id` and `timestamp` of the run that wrote it, so a roll-up can be audited against
 the runs that produced it.
 
