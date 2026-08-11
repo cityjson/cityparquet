@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from catalog2cityparquet.ledger import REASONS, Ledger, Record
+from catalog2cityparquet.ledger import CONFORMANCE_REASONS, ENVIRONMENT, REASONS, Ledger, Record
 
 
 def test_records_are_appended_as_jsonl_per_collection(tmp_path):
@@ -48,7 +48,7 @@ def test_an_unknown_reason_is_rejected(tmp_path):
 
 
 def test_the_vocabulary_is_the_documented_closed_set():
-    assert REASONS == {  # noqa: SIM300 — a set literal on the right is the plain order here
+    assert CONFORMANCE_REASONS == {  # noqa: SIM300 — a set literal on the right reads plainly
         "download_failed",
         "unsupported_archive",
         "unsupported_citygml_version",
@@ -60,6 +60,46 @@ def test_the_vocabulary_is_the_documented_closed_set():
         "duplicate_bundle",
         "stale_item_index",
     }
+    # The environment reason is in the closed set but outside the conformance
+    # vocabulary: it says what this machine did, never what the data is.
+    assert sorted(REASONS - CONFORMANCE_REASONS) == [ENVIRONMENT]
+    assert CONFORMANCE_REASONS.issubset(REASONS)
+
+
+def test_an_environment_failure_never_enters_the_conformance_histogram(tmp_path):
+    # The histogram is what the paper quotes. A full disk or a missing tool is
+    # a fact about this machine; counting it as a conversion outcome would make
+    # the published number a fabrication.
+    ledger = Ledger(tmp_path)
+    ledger.record(Record("a", "1", "failed", reason="no_crs"))
+    ledger.record(Record("a", "-", ENVIRONMENT, reason=ENVIRONMENT, error="disk full"))
+
+    assert ledger.histogram() == {"no_crs": 1}
+    assert ledger.environment_failures() == {"a": 1}
+    assert ledger.counts("a") == {"failed": 1, ENVIRONMENT: 1}
+
+
+def test_the_environment_status_and_reason_travel_together(tmp_path):
+    # Two columns, one concept: allowing them to drift would let an environment
+    # failure be tallied in the `failed` column after all.
+    ledger = Ledger(tmp_path)
+    with pytest.raises(ValueError, match="travel together"):
+        ledger.record(Record("a", "1", "failed", reason=ENVIRONMENT))
+    with pytest.raises(ValueError, match="travel together"):
+        ledger.record(Record("a", "1", ENVIRONMENT, reason="no_crs"))
+    with pytest.raises(ValueError, match="travel together"):
+        ledger.record(Record("a", "1", ENVIRONMENT))
+
+
+def test_summary_csv_keeps_environment_out_of_the_failed_column(tmp_path):
+    ledger = Ledger(tmp_path)
+    ledger.record(Record("a", "1", "converted"))
+    ledger.record(Record("a", "-", ENVIRONMENT, reason=ENVIRONMENT, error="read-only"))
+
+    rows = list(csv.DictReader(ledger.write_summary().open()))
+    assert rows[0]["converted"] == "1"
+    assert rows[0]["failed"] == "0", "the machine failing is not the data failing"
+    assert rows[0][ENVIRONMENT] == "1"
 
 
 @pytest.mark.parametrize("cid", ["../escape", "a/b", "..", "", "a\\b"])

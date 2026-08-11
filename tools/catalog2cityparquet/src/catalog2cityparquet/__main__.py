@@ -33,7 +33,7 @@ import httpx
 
 from . import aggregate, convert, discover, fetch
 from .discover import Item
-from .ledger import Ledger, Record, validate_collection_id
+from .ledger import ENVIRONMENT, Ledger, Record, validate_collection_id
 
 BASE_URL = "https://storage.googleapis.com/city3d-stac"
 BUCKET_API = "https://storage.googleapis.com/storage/v1/b/city3d-stac/o"
@@ -51,6 +51,11 @@ METADATA_TIMEOUT = 120.0
 
 #: Longest exception text kept on a ledger record — one record is one line.
 MAX_ERROR_CHARS = 2000
+
+#: How many environment failures the summary quotes in full. The count is exact
+#: however large it grows; only the listing is capped, so a run that hit the
+#: same broken volume 60,000 times does not print 60,000 identical lines.
+MAX_ENVIRONMENT_NOTES = 20
 
 #: Placeholder item id for a record about a whole collection rather than an
 #: item. The ledger's JSONL is read per collection, so a sentinel is clearer
@@ -87,6 +92,25 @@ class Claim:
     owner: str
 
 
+def _describe(exc: BaseException) -> str:
+    """Render an exception, treating an unrenderable one as news rather than an end.
+
+    `_warn` and `_record_safely` guard the *call*, but the f-string that builds
+    their argument is evaluated at the call site, outside every guard — so an
+    exception whose `__str__` raises (a third-party error carrying a broken
+    `args`, say) propagates out of the isolation handler and the remaining
+    collections are never attempted. Every message built on an isolation path
+    goes through here, so the guard covers construction as well as delivery.
+    """
+    try:
+        return f"{type(exc).__name__}: {exc}"
+    # Deliberately broad: rendering an error may not become a bigger error.
+    except Exception:
+        with contextlib.suppress(Exception):
+            return f"{type(exc).__name__}: <the exception could not be rendered>"
+        return "an exception that could not be rendered"
+
+
 def _warn(message: str) -> None:
     """Say something on stderr, treating a failed say as nothing at all.
 
@@ -114,28 +138,44 @@ def _say(message: str) -> None:
         print(message)
 
 
-def _flush_stdout() -> None:
-    """Empty the stdout buffer before the interpreter tries to.
+def _flush_stream(stream, name: str) -> None:
+    """Empty one standard stream's buffer before the interpreter tries to.
 
-    CPython flushes `sys.stdout` while finalising, and a failure there sets
-    exit status 120 — a non-zero exit for a run that measured everything, which
-    would contradict the contract that non-zero means nothing was measured.
-    `_say` cannot prevent it: with a buffered stdout the writes succeed into
-    the buffer and only the final flush fails.
+    CPython's `flush_std_files()` flushes **both** `sys.stdout` and
+    `sys.stderr` while finalising, and a failure on *either* sets exit status
+    120 — a non-zero exit for a run that measured everything, contradicting the
+    contract that non-zero means nothing was measured. `_say` and `_warn`
+    cannot prevent it: with a buffered stream the writes succeed into the
+    buffer and only the final flush fails.
 
     A failed flush leaves the data in the buffer, so the descriptor is pointed
     at the null device and the flush retried; the bytes are already lost, and
     the ledger on disk is the durable copy of everything printed here.
     """
     try:
-        sys.stdout.flush()
+        stream.flush()
         return
+    # Deliberately broad: this is the last thing the process does.
     except Exception as exc:
-        _warn(f"  ! stdout could not be flushed ({exc}); the report was lost, the ledger was not")
+        # Goes to stderr, which may be the stream that just failed — `_warn`
+        # swallows that, and the stderr pass below neutralises it either way.
+        _warn(
+            f"  ! {name} could not be flushed ({_describe(exc)}); "
+            f"the report was lost, the ledger was not"
+        )
     with contextlib.suppress(Exception):
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        os.dup2(os.open(os.devnull, os.O_WRONLY), stream.fileno())
     with contextlib.suppress(Exception):
-        sys.stdout.flush()
+        stream.flush()
+
+
+def _flush_streams() -> None:
+    """Neutralise both standard streams so neither can outlive the run.
+
+    stdout first: its failure is reported on stderr, which is flushed after.
+    """
+    _flush_stream(sys.stdout, "stdout")
+    _flush_stream(sys.stderr, "stderr")
 
 
 @dataclass
@@ -160,21 +200,35 @@ class Config:
 
 @dataclass
 class RunState:
-    """What the run learned that the ledger has no column for.
+    """What the run learned that the ledger has no column for, or could not keep.
 
-    Currently just the collections that ended up without a GeoParquet index:
+    Two things. The collections that ended up without a GeoParquet index:
     `aggregate.update_collection` degrades rather than failing when a single
     unlocated Item defeats the STAC-GeoParquet encoder, and "how many
     collections got an index" is a number this project needs to be able to
-    state.
+    state. And the environment failures, counted here as well as ledgered
+    because *the ledger is one of the things that fails*: a run whose reports
+    volume filled must still be able to say so at the end rather than print a
+    clean-looking table.
     """
 
     no_index: list[str] = field(default_factory=list)
+    #: Every environment failure this process saw, ledgered or not.
+    environment_seen: int = 0
+    #: The first few of them, in full, for the summary.
+    environment: list[str] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def note_no_index(self, cid: str) -> None:
         with self._lock:
             self.no_index.append(cid)
+
+    def note_environment(self, note: str) -> None:
+        """Remember that this machine, not the data, was what failed."""
+        with self._lock:
+            self.environment_seen += 1
+            if len(self.environment) < MAX_ENVIRONMENT_NOTES:
+                self.environment.append(note)
 
 
 @dataclass
@@ -189,15 +243,16 @@ class ItemStats:
     downloaded: int = 0
 
 
-def _record_safely(ledger: Ledger, rec: Record) -> None:
+def _record_safely(ledger: Ledger, rec: Record, state: RunState | None = None) -> None:
     """Write one record, treating a failure to write as news rather than an end.
 
     Every isolation handler in this module ends by recording what went wrong,
     on the same disk that may be the thing going wrong — and a rejected id or a
     full volume raising *here* would defeat the handler and take down the run
-    it exists to protect. The loss is reported on stderr and the run continues:
-    a missing line in the ledger is a smaller failure than a missing half of
-    the catalogue.
+    it exists to protect. The loss is reported on stderr and counted against
+    `state` (the ledger cannot count what it could not write), and the run
+    continues: a missing line in the ledger is a smaller failure than a missing
+    half of the catalogue.
     """
     try:
         ledger.record(rec)
@@ -209,7 +264,46 @@ def _record_safely(ledger: Ledger, rec: Record) -> None:
         # bare `except: pass` only because ruff's SIM105 forbids the literal
         # form; the guarantee is the same.)
         with contextlib.suppress(Exception):
-            _warn(f"  ! outcome for {rec.collection}/{rec.item_id} could not be recorded: {exc}")
+            if state is not None:
+                state.note_environment(f"{rec.collection}: an outcome could not be recorded")
+            _warn(
+                f"  ! outcome for {rec.collection}/{rec.item_id} "
+                f"could not be recorded: {_describe(exc)}"
+            )
+
+
+def _environment_failure(
+    ledger: Ledger,
+    collection: str,
+    item_id: str,
+    detail: str,
+    state: RunState | None = None,
+) -> None:
+    """Record that *this machine* failed here — never that the data is unconvertible.
+
+    The whole point of the run is a measured statement about which collections
+    convert. A full volume, an unwritable `_configs`, a `city3dstac` that was
+    never built: none of them is evidence about a dataset, and recording them
+    as `convert_failed` publishes fabricated conformance data with the real
+    packages sitting on disk beside it.
+
+    `state` is notified first and `_record_safely` is deliberately called
+    *without* it, so one environment failure is counted once even when the
+    ledger is itself the thing that failed.
+    """
+    if state is not None:
+        state.note_environment(f"{collection}/{item_id}: {detail}")
+    _warn(f"  ! {collection}: environment failure (not a conversion failure): {detail}")
+    _record_safely(
+        ledger,
+        Record(
+            collection,
+            item_id,
+            ENVIRONMENT,
+            reason=ENVIRONMENT,
+            error=detail[:MAX_ERROR_CHARS],
+        ),
+    )
 
 
 def safe_item_id(item_id: str) -> str:
@@ -315,12 +409,20 @@ def release_lock(claim: Claim) -> None:
     stale may already have started a replacement run. Unlinking whatever file
     happens to be there would then have this run's exit revoke that run's live
     claim — so the contents are checked first.
+
+    Never raises. It runs from an `ExitStack`'s unwinding in `run`'s `finally`,
+    so anything it raised would escape `main` as a traceback and a non-zero
+    exit *after* a fully measured run — the one thing the exit-code contract
+    forbids. `ValueError` is caught beside `OSError` because a lock file
+    holding invalid UTF-8 raises `UnicodeDecodeError`, which is neither an
+    `OSError` nor rare on a volume that filled mid-write.
     """
     try:
         if claim.path.read_text(encoding="utf-8") != claim.owner:
             _warn(f"  ! not releasing {claim.path}: it is another run's claim now")
             return
-    except OSError:
+    except (OSError, ValueError):
+        # Unreadable or unparseable: not provably ours, so not ours to drop.
         return
     with contextlib.suppress(OSError):
         claim.path.unlink()
@@ -413,7 +515,12 @@ def process_item(
 
 
 def convert_items(
-    items: list[Item], *, ledger: Ledger, config: Config, collection: str | None = None
+    items: list[Item],
+    *,
+    ledger: Ledger,
+    config: Config,
+    collection: str | None = None,
+    state: RunState | None = None,
 ) -> None:
     """Convert every item, isolating each failure to its own record.
 
@@ -440,6 +547,7 @@ def convert_items(
                 _record_safely(
                     ledger,
                     Record(item.collection, item.item_id, "skipped", reason="duplicate_bundle"),
+                    state,
                 )
                 return
             if config.skip_existing and already_converted(config, item):
@@ -450,15 +558,15 @@ def convert_items(
             process_item(item, config=config, client=client, stats=stats)
         except convert.ConvertError as exc:
             # Already classified against the ledger's closed vocabulary.
-            _fail(ledger, item, exc.reason, exc.detail, started, stats)
+            _fail(ledger, item, exc.reason, exc.detail, started, stats, state)
         except (httpx.HTTPError, OSError) as exc:
             # Transport and filesystem problems are the origin's fault, not the
             # converter's; keeping them a separate reason stops upstream
             # flakiness from inflating the converter's failure count.
-            _fail(ledger, item, "download_failed", str(exc), started, stats)
+            _fail(ledger, item, "download_failed", _describe(exc), started, stats, state)
         # Deliberately broad: one item must never stop the run.
         except Exception as exc:
-            _fail(ledger, item, "convert_failed", f"{type(exc).__name__}: {exc}", started, stats)
+            _fail(ledger, item, "convert_failed", _describe(exc), started, stats, state)
         else:
             _record_safely(
                 ledger,
@@ -469,6 +577,7 @@ def convert_items(
                     bytes=stats.downloaded,
                     seconds=time.monotonic() - started,
                 ),
+                state,
             )
 
     # Which items have been taken up, so the serial fallback below can finish
@@ -500,7 +609,9 @@ def convert_items(
             # aggregating it as whole is the failure this driver exists to
             # prevent.
             except Exception as exc:
-                _warn(f"  ! thread pool failed ({exc}); finishing this collection serially")
+                _warn(
+                    f"  ! thread pool failed ({_describe(exc)}); finishing this collection serially"
+                )
                 for numbered in enumerate(items):
                     handle_once(numbered)
     finally:
@@ -508,7 +619,13 @@ def convert_items(
 
 
 def _fail(
-    ledger: Ledger, item: Item, reason: str, detail: str, started: float, stats: ItemStats
+    ledger: Ledger,
+    item: Item,
+    reason: str,
+    detail: str,
+    started: float,
+    stats: ItemStats,
+    state: RunState | None = None,
 ) -> None:
     _record_safely(
         ledger,
@@ -521,6 +638,7 @@ def _fail(
             bytes=stats.downloaded,
             seconds=time.monotonic() - started,
         ),
+        state,
     )
 
 
@@ -542,29 +660,42 @@ def convert_collection(
         # the catalogue worth recording, not just a log line.
         _warn(f"  ! {cid}: {note}")
         _record_safely(
-            ledger, Record(cid, COLLECTION_LEVEL, "skipped", reason="stale_item_index", error=note)
+            ledger,
+            Record(cid, COLLECTION_LEVEL, "skipped", reason="stale_item_index", error=note),
+            state,
         )
     if not items:
         # 20 of the 53 collections publish only a collection.json.
-        _record_safely(ledger, Record(cid, COLLECTION_LEVEL, "skipped", reason="empty_collection"))
+        _record_safely(
+            ledger, Record(cid, COLLECTION_LEVEL, "skipped", reason="empty_collection"), state
+        )
         _say(f"==> {cid}: no items")
         return
     if config.limit_per_collection is not None:
         items = items[: config.limit_per_collection]
     _say(f"==> {cid}: {len(items)} item(s)")
-    convert_items(items, ledger=ledger, config=config, collection=cid)
+    convert_items(items, ledger=ledger, config=config, collection=cid, state=state)
 
-    config_path = aggregate.write_config(
-        aggregate.collection_config(collection), config.out / "_configs" / f"{cid}.yaml"
-    )
-    indexed = aggregate.update_collection(
-        config.tool,
-        config.out / cid / "items",
-        config_path,
-        config.out / cid / "collection.json",
-    )
-    if not indexed:
-        state.note_no_index(cid)
+    try:
+        config_path = aggregate.write_config(
+            aggregate.collection_config(collection), config.out / "_configs" / f"{cid}.yaml"
+        )
+        indexed = aggregate.update_collection(
+            config.tool,
+            config.out / cid / "items",
+            config_path,
+            config.out / cid / "collection.json",
+        )
+    except OSError as exc:
+        # Writing the config and starting `city3dstac` are this machine's
+        # business: an unwritable `_configs`, a full volume, a tool that was
+        # never built. The items above have already converted and their
+        # packages are on disk — publishing the collection as a conversion
+        # failure on the strength of this would be a fabricated measurement.
+        _environment_failure(ledger, cid, COLLECTION_LEVEL, f"aggregation: {_describe(exc)}", state)
+    else:
+        if not indexed:
+            state.note_no_index(cid)
 
 
 def run_collections(
@@ -577,9 +708,17 @@ def run_collections(
         for cid in cids:
             try:
                 convert_collection(cid, ledger=ledger, config=config, client=client, state=state)
+            except OSError as exc:
+                # Nothing local is evidence about the data. Everything remote
+                # arrives as an `httpx` error, and every filesystem failure
+                # inside the item loop is already handled there, so an
+                # `OSError` reaching here is this machine: a full disk, a
+                # read-only mirror, a missing `city3dstac`.
+                _environment_failure(ledger, cid, COLLECTION_LEVEL, _describe(exc), state)
             # Deliberately broad: one collection must never stop the run.
             except Exception as exc:
-                _warn(f"  ! {cid} failed: {exc}")
+                detail = _describe(exc)
+                _warn(f"  ! {cid} failed: {detail}")
                 _record_safely(
                     ledger,
                     Record(
@@ -587,8 +726,9 @@ def run_collections(
                         COLLECTION_LEVEL,
                         "failed",
                         reason="convert_failed",
-                        error=f"{type(exc).__name__}: {exc}"[:MAX_ERROR_CHARS],
+                        error=detail[:MAX_ERROR_CHARS],
                     ),
+                    state,
                 )
     finally:
         client.close()
@@ -610,7 +750,7 @@ def aggregate_all(config: Config, state: RunState) -> None:
         catalog = response.json()
     # Deliberately broad: the root's identity is nice to have, not required.
     except Exception as exc:
-        _warn(f"  ! catalogue root metadata unavailable ({exc}); using defaults")
+        _warn(f"  ! catalogue root metadata unavailable ({_describe(exc)}); using defaults")
     finally:
         client.close()
 
@@ -625,11 +765,21 @@ def aggregate_all(config: Config, state: RunState) -> None:
         aggregate.update_catalog(config.tool, collections, config.out, config_path)
     # Deliberately broad: the collections stand on their own without a root.
     except Exception as exc:
-        _warn(f"  ! catalogue aggregation failed: {exc}")
+        detail = _describe(exc)
+        _warn(f"  ! catalogue aggregation failed: {detail}")
+        # Not a ledger record — there is no collection this belongs to — but
+        # still an incomplete run, and the summary must say so rather than
+        # imply the mirror has a usable root.
+        state.note_environment(f"catalogue aggregation: {detail}")
 
 
 def print_summary(ledger: Ledger, state: RunState) -> None:
     """Print what the run measured: outcomes, reasons, and degraded indexes.
+
+    Environment failures are kept visibly apart from conversion outcomes
+    throughout — their own column, out of the reasons histogram, and a block of
+    their own at the end. A reader who cannot tell the two apart would read a
+    run that hit a full disk as a catalogue half of which does not convert.
 
     The tallies are printed whether or not `summary.csv` could be written: by
     the time this runs the conversion is over, and turning a completed
@@ -642,27 +792,49 @@ def print_summary(ledger: Ledger, state: RunState) -> None:
         summary = ledger.write_summary()
     # Deliberately broad: a lost roll-up must not cost the report.
     except Exception as exc:
-        _warn(f"  ! summary.csv could not be written: {exc}")
+        _warn(f"  ! summary.csv could not be written: {_describe(exc)}")
     _say("\n--- summary ---")
-    _say(f"{'collection':<32} {'converted':>9} {'failed':>7} {'skipped':>8}")
-    totals = {"converted": 0, "failed": 0, "skipped": 0}
+    _say(f"{'collection':<32} {'converted':>9} {'failed':>7} {'skipped':>8} {'environment':>11}")
+    totals = {"converted": 0, "failed": 0, "skipped": 0, ENVIRONMENT: 0}
     for collection in ledger.collections():
         counts = ledger.counts(collection)
         for status in totals:
             totals[status] += counts.get(status, 0)
         _say(
             f"{collection:<32} {counts.get('converted', 0):>9} "
-            f"{counts.get('failed', 0):>7} {counts.get('skipped', 0):>8}"
+            f"{counts.get('failed', 0):>7} {counts.get('skipped', 0):>8} "
+            f"{counts.get(ENVIRONMENT, 0):>11}"
         )
-    _say(f"{'TOTAL':<32} {totals['converted']:>9} {totals['failed']:>7} {totals['skipped']:>8}")
+    _say(
+        f"{'TOTAL':<32} {totals['converted']:>9} {totals['failed']:>7} "
+        f"{totals['skipped']:>8} {totals[ENVIRONMENT]:>11}"
+    )
 
     histogram = ledger.histogram()
-    _say("\nreasons:")
+    _say("\nreasons (what the data did):")
     if histogram:
         for reason, count in sorted(histogram.items(), key=lambda kv: (-kv[1], kv[0])):
             _say(f"  {count:>7}  {reason}")
     else:
         _say("  (none)")
+
+    # The in-process count is authoritative: it includes the failures the
+    # ledger could not be told about, which are exactly the ones a broken
+    # ledger would otherwise hide.
+    environment_seen = max(state.environment_seen, totals[ENVIRONMENT])
+    if environment_seen:
+        message = (
+            f"\n!! {environment_seen} environment failure(s): this machine, not the data.\n"
+            "   They are excluded from the reasons above and say nothing about\n"
+            "   whether these collections convert; this run is incomplete."
+        )
+        _say(message)
+        # Also on stderr, so a run whose stdout is piped away still says it.
+        _warn(message)
+        for note in state.environment:
+            _say(f"  - {note}")
+        if environment_seen > len(state.environment):
+            _say(f"  ... and {environment_seen - len(state.environment)} more")
 
     _say(f"\ncollections without a GeoParquet index: {len(state.no_index)}")
     for cid in state.no_index:
@@ -731,7 +903,7 @@ def run(
                     cids = resolve_collections(config)
                 # Deliberately broad: whatever the failure, nothing could be attempted.
                 except Exception as exc:
-                    _warn(f"catalogue root unreachable: {exc}")
+                    _warn(f"catalogue root unreachable: {_describe(exc)}")
                     return 1
             # Claimed after the root is known to be reachable, so a run that
             # never starts leaves no empty working directory behind. Skipped
@@ -859,7 +1031,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """The process entry point: a run, and a stdout that cannot outlive it."""
+    """The process entry point: a run, and streams that cannot outlive it."""
     args = parse_args(argv)
     try:
         return run(
@@ -869,7 +1041,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     finally:
         # Every return path, so the exit code is only ever this function's.
-        _flush_stdout()
+        _flush_streams()
 
 
 if __name__ == "__main__":

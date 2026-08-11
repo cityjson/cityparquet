@@ -276,10 +276,18 @@ out/cityparquet-catalog/
   `--items-dir` (walking the output tree) is the correct aggregation primitive
   rather than a list of this run's successes — a resumed run must aggregate
   everything ever converted.
-- **Reason vocabulary** (closed set, so the histogram is meaningful):
-  `download_failed`, `unsupported_archive`, `unsupported_citygml_version`,
-  `unsupported_cityjson_version`, `no_crs`, `geographic_crs`, `convert_failed`,
-  `empty_collection`, `duplicate_bundle`, `stale_item_index`.
+- **Conformance reason vocabulary** (closed set, so the histogram is
+  meaningful): `download_failed`, `unsupported_archive`,
+  `unsupported_citygml_version`, `unsupported_cityjson_version`, `no_crs`,
+  `geographic_crs`, `convert_failed`, `empty_collection`, `duplicate_bundle`,
+  `stale_item_index`. Every one of these is a statement about the *data*.
+- **`environment`** is a status and reason of its own, outside that vocabulary:
+  the run hit a *local* failure (a full disk, an unwritable `_configs`, a
+  missing `city3dstac`, a broken stream) and the record says nothing about
+  whether the dataset converts. It never enters the conformance histogram and
+  gets its own column in `summary.csv`; without it every environment failure
+  has to be recorded as `convert_failed`, which is how a run with a full log
+  volume comes to publish half a catalogue as unconvertible.
 
 ## 8. Changes to `cityparquet-rs`
 

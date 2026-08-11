@@ -3,6 +3,15 @@
 The run is a conformance measurement as much as a conversion: a failure is
 data, not an abort. Every item lands here with a reason drawn from a closed
 vocabulary, so the end-of-run histogram is comparable between runs.
+
+The vocabulary makes one distinction above all others: **"this dataset could
+not be converted" is not "this machine could not complete the run"**. Every
+conformance reason is a statement about the data and belongs in the histogram
+the paper quotes; :data:`ENVIRONMENT` is a statement about the host — a full
+disk, an unwritable directory, a missing tool, a broken stream — and belongs
+nowhere near it. Without that distinction every local failure has to be
+recorded as a conversion failure, which is how a run with a full log volume
+comes to publish half a catalogue as unconvertible.
 """
 
 from __future__ import annotations
@@ -16,11 +25,18 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
-Status = Literal["converted", "failed", "skipped"]
+#: The one outcome that is not an outcome of the *data*: the run hit a local
+#: failure here and this record says nothing about whether the dataset is
+#: convertible. It is both a status and a reason, and the two always travel
+#: together (see :meth:`Ledger.record`) — the status keeps it out of the
+#: `failed` column, the reason keeps it out of the histogram.
+ENVIRONMENT = "environment"
 
-#: Closed set. A reason outside it is a programming error, not a new category —
-#: silently admitting typos would make the histogram meaningless.
-REASONS = frozenset(
+Status = Literal["converted", "failed", "skipped", "environment"]
+
+#: What the *data* did. These, and only these, make the conformance histogram,
+#: which is the number this project publishes.
+CONFORMANCE_REASONS = frozenset(
     {
         "download_failed",
         "unsupported_archive",
@@ -34,6 +50,10 @@ REASONS = frozenset(
         "stale_item_index",
     }
 )
+
+#: Closed set. A reason outside it is a programming error, not a new category —
+#: silently admitting typos would make the histogram meaningless.
+REASONS = CONFORMANCE_REASONS | {ENVIRONMENT}
 
 
 #: Collection ids are slugs such as ``japan-plateau-3d``. They come from a
@@ -93,6 +113,14 @@ class Ledger:
         """
         if rec.reason is not None and rec.reason not in REASONS:
             raise ValueError(f"unknown reason {rec.reason!r}; expected one of {sorted(REASONS)}")
+        if (rec.reason == ENVIRONMENT) != (rec.status == ENVIRONMENT):
+            # Two columns, one concept. Letting them drift would put an
+            # environment failure back in the `failed` column, which is the
+            # misreport the distinction exists to prevent.
+            raise ValueError(
+                f"the {ENVIRONMENT!r} status and reason travel together: "
+                f"got status {rec.status!r} with reason {rec.reason!r}"
+            )
         validate_collection_id(rec.collection)
         line = json.dumps(asdict(rec), ensure_ascii=False) + "\n"
         path = self.reports_dir / f"{rec.collection}.jsonl"
@@ -100,7 +128,10 @@ class Ledger:
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(line)
             self._counts[rec.collection][rec.status] += 1
-            if rec.reason is not None:
+            if rec.reason is not None and rec.reason != ENVIRONMENT:
+                # Environment failures are excluded here rather than filtered
+                # by every reader: the histogram is the published artefact, and
+                # it must be clean by construction.
                 self._reasons[rec.reason] += 1
 
     def collections(self) -> list[str]:
@@ -114,9 +145,26 @@ class Ledger:
             return dict(self._counts.get(collection, Counter()))
 
     def histogram(self) -> dict[str, int]:
-        """Reason tallies across every collection seen so far."""
+        """Conformance reason tallies across every collection seen so far.
+
+        This is the conformance histogram: what the *data* did. Environment
+        failures never appear in it, whatever the run went through.
+        """
         with self._lock:
             return dict(self._reasons)
+
+    def environment_failures(self) -> dict[str, int]:
+        """Per-collection tally of the times this *machine* was what failed.
+
+        Reported separately so a run that hit local trouble cannot be mistaken
+        for one that measured unconvertible data.
+        """
+        with self._lock:
+            return {
+                collection: counter[ENVIRONMENT]
+                for collection, counter in self._counts.items()
+                if counter[ENVIRONMENT]
+            }
 
     def write_summary(self) -> Path:
         """Overwrite ``summary.csv`` with the current per-collection roll-up."""
@@ -125,8 +173,10 @@ class Ledger:
         path = self.reports_dir / "summary.csv"
         with path.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.writer(fh)
-            writer.writerow(["collection", "converted", "failed", "skipped"])
+            writer.writerow(["collection", "converted", "failed", "skipped", ENVIRONMENT])
             for collection in sorted(snapshot):
                 c = snapshot[collection]
-                writer.writerow([collection, c["converted"], c["failed"], c["skipped"]])
+                writer.writerow(
+                    [collection, c["converted"], c["failed"], c["skipped"], c[ENVIRONMENT]]
+                )
         return path

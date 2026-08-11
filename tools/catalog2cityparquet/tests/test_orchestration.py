@@ -8,7 +8,9 @@ isolated.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -76,6 +78,16 @@ class _UnprintableError(Exception):
 
     def __str__(self):
         raise RuntimeError("even the message is broken")
+
+
+class _UnprintableId:
+    """A record field that cannot be rendered into a message either."""
+
+    def __str__(self):
+        raise RuntimeError("even the id is broken")
+
+    def __repr__(self):
+        raise RuntimeError("even the id is broken")
 
 
 def _break_stderr(monkeypatch):
@@ -558,9 +570,10 @@ def test_the_summary_reports_counts_reasons_and_missing_indexes(tmp_path, monkey
 
     out = capsys.readouterr().out
     # Rendered values, not merely the labels: a hard-coded zero must not pass.
-    assert re.search(r"^alpha\s+1\s+1\s+0$", out, re.M), out
-    assert re.search(r"^beta\s+1\s+1\s+0$", out, re.M), out
-    assert re.search(r"^TOTAL\s+2\s+2\s+0$", out, re.M), out
+    # The trailing column is the environment tally, which a clean run leaves 0.
+    assert re.search(r"^alpha\s+1\s+1\s+0\s+0$", out, re.M), out
+    assert re.search(r"^beta\s+1\s+1\s+0\s+0$", out, re.M), out
+    assert re.search(r"^TOTAL\s+2\s+2\s+0\s+0$", out, re.M), out
     assert re.search(r"^\s+2\s+no_crs$", out, re.M), out
     assert "collections without a GeoParquet index: 1" in out
     assert re.search(r"^\s+- beta$", out, re.M), out
@@ -708,7 +721,7 @@ def test_a_summary_write_failure_still_prints_the_tallies(tmp_path, monkeypatch,
     driver.print_summary(ledger, driver.RunState())
 
     captured = capsys.readouterr()
-    assert re.search(r"^c\s+1\s+0\s+0$", captured.out, re.M), captured.out
+    assert re.search(r"^c\s+1\s+0\s+0\s+0$", captured.out, re.M), captured.out
     assert "Read-only file system" in captured.err
 
 
@@ -1232,3 +1245,490 @@ def test_keeping_downloads_keeps_them_across_runs(tmp_path):
     driver.sweep_work_root(config)
 
     assert (work / "c2cp-kept").exists(), "--keep-downloads means keep them"
+
+
+# --- the environment is not the data -----------------------------------------
+
+
+def _converting_collection(monkeypatch):
+    """Stub discovery and conversion so every item of every collection converts."""
+    monkeypatch.setattr(driver.discover, "fetch_collection", lambda base, cid, client: {"id": cid})
+    monkeypatch.setattr(
+        driver.discover,
+        "enumerate_items",
+        lambda base, api, cid, collection, client: ([Item(cid, "it0", "u", None, None)], None),
+    )
+    monkeypatch.setattr(driver, "process_item", lambda item, **k: 1)
+    monkeypatch.setattr(driver.aggregate, "update_collection", lambda *a, **k: True)
+
+
+def test_an_unwritable_config_is_not_a_conversion_failure(tmp_path, monkeypatch):
+    # The shape of a read-only or full volume under the mirror: `_configs`
+    # cannot be made, so `write_config` raises from *inside* the collection's
+    # isolation try. Every item converted; recording the collection as
+    # `convert_failed` would put five fabricated data failures into the
+    # histogram the paper quotes.
+    _converting_collection(monkeypatch)
+    config = _config(tmp_path)
+    config.out.mkdir(parents=True)
+    (config.out / "_configs").write_text("not a directory")
+    ledger = Ledger(tmp_path / "_reports")
+
+    state = driver.RunState()
+    driver.run_collections(["c0", "c1"], ledger=ledger, config=config, state=state)
+
+    assert ledger.histogram() == {}, "no environment failure may reach the conformance histogram"
+    for cid in ("c0", "c1"):
+        counts = ledger.counts(cid)
+        assert counts.get("failed", 0) == 0, f"{cid} converted; the machine is what failed"
+        assert counts[driver.ENVIRONMENT] == 1
+    assert state.environment_seen == 2
+    # Which step failed is the operator's remedy: a mirror that cannot be
+    # aggregated needs a different fix from one that cannot be downloaded into.
+    last = json.loads((tmp_path / "_reports" / "c0.jsonl").read_text().splitlines()[-1])
+    assert last["error"].startswith("aggregation:"), last
+
+
+def test_a_local_failure_reaching_the_collection_handler_is_not_a_conversion_failure(
+    tmp_path, monkeypatch
+):
+    # Everything remote arrives as an `httpx` error and every filesystem
+    # failure inside the item loop is handled there, so an OSError reaching the
+    # collection handler is this machine — a host out of descriptors refusing
+    # to open the next `httpx.Client`, say.
+    def out_of_descriptors(cid, **kwargs):
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(driver, "convert_collection", out_of_descriptors)
+    ledger = Ledger(tmp_path / "_reports")
+    state = driver.RunState()
+
+    driver.run_collections(["c0", "c1"], ledger=ledger, config=_config(tmp_path), state=state)
+
+    assert ledger.histogram() == {}
+    assert ledger.counts("c0") == {driver.ENVIRONMENT: 1}
+    assert state.environment_seen == 2
+
+
+def test_a_missing_aggregation_tool_is_not_a_conversion_failure(tmp_path, monkeypatch):
+    # `just catalog-tools` never run: every `city3dstac` call raises
+    # FileNotFoundError. Half the catalogue would otherwise be published as
+    # unconvertible on the strength of one absent binary.
+    _converting_collection(monkeypatch)
+    monkeypatch.setattr(driver.aggregate, "write_config", lambda config, dest: dest)
+
+    def missing_tool(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "city3dstac")
+
+    monkeypatch.setattr(driver.aggregate, "update_collection", missing_tool)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.run_collections(["c0"], ledger=ledger, config=_config(tmp_path))
+
+    assert ledger.histogram() == {}
+    assert ledger.counts("c0") == {"converted": 1, driver.ENVIRONMENT: 1}
+
+
+def test_an_unreachable_collection_is_still_a_conversion_failure(tmp_path, monkeypatch):
+    # The boundary the environment reason must not creep past: no `httpx`
+    # exception is an `OSError`, so a publisher being down keeps its place in
+    # the histogram. Were that to change, half the measured failures would
+    # quietly leave the published number.
+    def unreachable(base, cid, client):
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(driver.discover, "fetch_collection", unreachable)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.run_collections(["c0"], ledger=ledger, config=_config(tmp_path))
+
+    assert ledger.histogram() == {"convert_failed": 1}
+    assert ledger.environment_failures() == {}
+
+
+def test_a_tool_that_ran_and_refused_is_still_a_conversion_failure(tmp_path, monkeypatch):
+    # The other half of the distinction: `city3dstac` reporting that a
+    # collection has no spatial extent is a fact about the data, and must keep
+    # its place in the histogram.
+    _converting_collection(monkeypatch)
+    monkeypatch.setattr(driver.aggregate, "write_config", lambda config, dest: dest)
+
+    def refused(*args, **kwargs):
+        raise RuntimeError("update-collection failed: spatial extent bbox is required")
+
+    monkeypatch.setattr(driver.aggregate, "update_collection", refused)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.run_collections(["c0"], ledger=ledger, config=_config(tmp_path))
+
+    assert ledger.histogram() == {"convert_failed": 1}
+
+
+def test_a_lost_record_is_counted_as_environment_trouble(tmp_path, monkeypatch):
+    # When the ledger itself is what failed there is nowhere to write the fact,
+    # so it is counted in process: a run that could not record its outcomes must
+    # not print a clean-looking table at the end.
+    monkeypatch.setattr(driver, "process_item", lambda item, **k: 1)
+    ledger = Ledger(tmp_path / "_reports")
+    _break_ledger(monkeypatch, ledger)
+    state = driver.RunState()
+
+    driver.convert_items(
+        [Item("c", f"i{n}", "u", None, None) for n in range(3)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=1),
+        state=state,
+    )
+
+    assert state.environment_seen == 3
+
+
+def test_the_summary_segregates_environment_failures(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(driver, "aggregate_all", lambda config, state: None)
+    _converting_collection(monkeypatch)
+    config = _config(tmp_path)
+    config.out.mkdir(parents=True)
+    (config.out / "_configs").write_text("not a directory")
+
+    assert driver.run(config, collections=["c0"]) == 0
+
+    captured = capsys.readouterr()
+    # The tallies keep the two apart, column by column...
+    assert re.search(r"^c0\s+1\s+0\s+0\s+1$", captured.out, re.M), captured.out
+    # ...the reasons histogram stays empty of them...
+    assert "convert_failed" not in captured.out
+    # ...and the run says loudly that it was the machine, on both streams.
+    assert "environment failure" in captured.out
+    assert "not the data" in captured.out
+    assert "environment failure" in captured.err
+
+
+def test_a_broken_ledger_accessor_does_not_cost_the_exit_code(tmp_path, monkeypatch):
+    # Pins `run`'s guard around `print_summary`: everything inside it is
+    # separately guarded, so only a failure of the ledger's own accessors can
+    # reach it — and that must still not turn a measured run into a traceback.
+    monkeypatch.setattr(driver, "aggregate_all", lambda config, state: None)
+    monkeypatch.setattr(driver, "convert_collection", lambda cid, **k: None)
+
+    class _BrokenLedger(Ledger):
+        def collections(self):
+            raise RuntimeError("the ledger's own accessor is broken")
+
+    monkeypatch.setattr(driver, "Ledger", _BrokenLedger)
+
+    assert driver.run(_config(tmp_path), collections=["alpha"]) == 0
+
+
+# --- nothing may be built outside a guard ------------------------------------
+
+
+def test_an_unprintable_collection_failure_does_not_stop_the_run(tmp_path, monkeypatch):
+    # The handler's message and the record's `error=` are built *before* the
+    # guarded calls that use them, so an exception whose __str__ raises escapes
+    # the handler and the remaining collections are never attempted.
+    attempted = []
+
+    def fake_convert_collection(cid, **kwargs):
+        attempted.append(cid)
+        raise _UnprintableError()
+
+    monkeypatch.setattr(driver, "convert_collection", fake_convert_collection)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.run_collections(["alpha", "beta", "omega"], ledger=ledger, config=_config(tmp_path))
+
+    assert attempted == ["alpha", "beta", "omega"]
+    assert ledger.counts("omega")["failed"] == 1
+
+
+def test_an_unprintable_item_failure_does_not_stop_the_collection(tmp_path, monkeypatch):
+    processed = []
+
+    def fake_process(item, **kwargs):
+        processed.append(item.item_id)
+        raise _UnprintableError()
+
+    monkeypatch.setattr(driver, "process_item", fake_process)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.convert_items(
+        [Item("c", f"i{n}", "u", None, None) for n in range(3)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=1),
+    )
+
+    assert processed == ["i0", "i1", "i2"]
+    assert ledger.counts("c") == {"failed": 3}
+
+
+def test_an_unrenderable_record_does_not_stop_the_run(tmp_path, monkeypatch):
+    # What the last-resort reporter's own guard still covers now that the
+    # exception is rendered by `_describe`: the *record's* fields. `Record` is a
+    # plain dataclass and its ids come from a published catalogue read by
+    # DuckDB, so nothing guarantees the id in a lost record can be printed.
+    ledger = Ledger(tmp_path / "_reports")
+
+    def exploding(rec):
+        raise OSError("[Errno 28] No space left on device")
+
+    monkeypatch.setattr(ledger, "record", exploding)
+
+    driver._record_safely(ledger, driver.Record("c", _UnprintableId(), "converted"))
+
+
+def test_an_unprintable_download_failure_does_not_stop_the_collection(tmp_path, monkeypatch):
+    # The transport branch builds its detail outside the guard too.
+    class _UnprintableTransportError(httpx.HTTPError):
+        def __init__(self):
+            super().__init__("")
+
+        def __str__(self):
+            raise RuntimeError("even the message is broken")
+
+    processed = []
+
+    def fake_process(item, **kwargs):
+        processed.append(item.item_id)
+        raise _UnprintableTransportError()
+
+    monkeypatch.setattr(driver, "process_item", fake_process)
+    ledger = Ledger(tmp_path / "_reports")
+
+    driver.convert_items(
+        [Item("c", f"i{n}", "u", None, None) for n in range(2)],
+        ledger=ledger,
+        config=_config(tmp_path, jobs=1),
+    )
+
+    assert processed == ["i0", "i1"]
+    assert ledger.histogram() == {"download_failed": 2}
+
+
+# --- the locks, pinned -------------------------------------------------------
+
+
+def test_a_lock_holding_invalid_utf8_is_released_without_raising(tmp_path):
+    # `release_lock` runs from an ExitStack in `run`'s `finally`; anything it
+    # raises escapes `main` as a traceback and a non-zero exit *after* a fully
+    # measured run. `UnicodeDecodeError` is a ValueError, not an OSError.
+    root = tmp_path / "work"
+    root.mkdir()
+    claim = driver.acquire_lock(root, driver.WORKING_DIRECTORY)
+    (root / driver.LOCK_NAME).write_bytes(b"\xff\xfe not utf-8")
+
+    driver.release_lock(claim)
+
+    assert (root / driver.LOCK_NAME).exists(), "an unreadable claim is not ours to drop"
+
+
+def test_a_corrupted_lock_does_not_cost_a_measured_run_its_exit_code(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    monkeypatch.setattr(driver, "aggregate_all", lambda c, state: None)
+
+    def corrupt_the_lock(cid, **kwargs):
+        (config.out / driver.LOCK_NAME).write_bytes(b"\xff\xfe")
+
+    monkeypatch.setattr(driver, "convert_collection", corrupt_the_lock)
+
+    assert driver.run(config, collections=["alpha"]) == 0
+
+
+def test_a_lock_from_another_host_is_never_reclaimed(tmp_path):
+    # Over a shared filesystem the pid in a lock file means nothing here, so a
+    # foreign host's claim is always live. Guessing it dead would sweep another
+    # machine's downloads mid-run.
+    root = tmp_path / "work"
+    root.mkdir()
+    (root / driver.LOCK_NAME).write_text(
+        json.dumps({"pid": _dead_pid(), "host": "some-other-host", "started": 0})
+    )
+
+    with pytest.raises(driver.LockBusy):
+        driver.acquire_lock(root, driver.WORKING_DIRECTORY)
+
+
+@pytest.mark.parametrize("pid", [None, "not-a-pid", 0, -1])
+def test_a_lock_with_an_unusable_pid_is_never_reclaimed(tmp_path, pid):
+    root = tmp_path / "work"
+    root.mkdir()
+    info = {"host": driver.HOSTNAME, "started": 0}
+    if pid is not None:
+        info["pid"] = pid
+    (root / driver.LOCK_NAME).write_text(json.dumps(info))
+
+    with pytest.raises(driver.LockBusy):
+        driver.acquire_lock(root, driver.WORKING_DIRECTORY)
+
+
+def test_a_process_we_cannot_signal_counts_as_live(tmp_path):
+    # pid 1 exists and is not ours to signal; "cannot tell" must mean "busy".
+    root = tmp_path / "work"
+    root.mkdir()
+    (root / driver.LOCK_NAME).write_text(
+        json.dumps({"pid": 1, "host": driver.HOSTNAME, "started": 0})
+    )
+
+    with pytest.raises(driver.LockBusy):
+        driver.acquire_lock(root, driver.WORKING_DIRECTORY)
+
+
+# --- the standard streams may not outlive the run ----------------------------
+
+
+def _stream_on_a_closed_pipe():
+    """A buffered text stream whose writes reach a pipe nobody reads.
+
+    The shape of `2>&1 | tee` with `tee` killed: the buffered writes succeed and
+    only the flush fails, which is precisely what the interpreter's finalisation
+    flush turns into exit status 120.
+    """
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)
+    return os.fdopen(write_fd, "w")
+
+
+@pytest.mark.parametrize("name", ["stdout", "stderr"])
+def test_a_stream_that_cannot_be_flushed_is_neutralised(name):
+    # Needs no /dev/full, so it covers the exit-120 defence on any POSIX host:
+    # a guarded flush alone leaves the bytes in the buffer and the interpreter
+    # fails on them again while finalising.
+    stream = _stream_on_a_closed_pipe()
+    try:
+        stream.write("x" * 64)
+
+        driver._flush_stream(stream, name)
+
+        stream.write("y" * 64)
+        stream.flush()  # must not raise: the descriptor was repointed
+    finally:
+        with contextlib.suppress(Exception):
+            stream.close()
+
+
+def test_main_neutralises_both_streams(tmp_path, monkeypatch):
+    # The wiring, not just the helper: deleting either call from `main` must
+    # fail a test even on a machine without /dev/full.
+    streams = {"stdout": _stream_on_a_closed_pipe(), "stderr": _stream_on_a_closed_pipe()}
+    monkeypatch.setattr(driver, "aggregate_all", lambda config, state: None)
+    monkeypatch.setattr(sys, "stdout", streams["stdout"])
+    monkeypatch.setattr(sys, "stderr", streams["stderr"])
+    try:
+        code = driver.main(["--out", str(tmp_path / "out"), "--aggregate-only"])
+    finally:
+        monkeypatch.undo()
+
+    assert code == 0
+    for name, stream in streams.items():
+        stream.write("z" * 64)
+        stream.flush()  # must not raise
+        stream.close()
+        assert name  # names the parametrised stream in a failure
+
+
+# --- the falsifier: a broken stream may change nothing but the log -----------
+
+#: The whole driver with only the network stubbed out, so a subprocess can run
+#: it end to end against a real interpreter, real files and real descriptors.
+_DRIVER_SCRIPT = """
+import sys
+
+from catalog2cityparquet import __main__ as driver
+from catalog2cityparquet.discover import Item
+
+driver.discover.collection_ids = lambda base, client: (["c0", "c1", "c2"], "a note for stderr")
+driver.discover.fetch_collection = lambda base, cid, client: {"id": cid}
+driver.discover.enumerate_items = lambda base, api, cid, collection, client: (
+    [Item(cid, "it0", "u", None, None)],
+    None,
+)
+driver.process_item = lambda item, **kwargs: 1
+driver.aggregate.update_collection = lambda *a, **k: True
+driver.aggregate_all = lambda config, state: None
+
+raise SystemExit(driver.main(sys.argv[1:]))
+"""
+
+
+def _driver_script(tmp_path):
+    path = tmp_path / "run_driver.py"
+    path.write_text(_DRIVER_SCRIPT, encoding="utf-8")
+    return path
+
+
+def _ledger_rows(out: Path):
+    """Every recorded outcome, stripped of the fields a clock makes vary."""
+    rows = []
+    for path in sorted((out / "_reports").glob("*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            rec = json.loads(line)
+            rows.append((rec["collection"], rec["item_id"], rec["status"], rec["reason"]))
+    return sorted(rows)
+
+
+def _run_driver(tmp_path, out, *, stdout, stderr, unbuffered=False):
+    argv = [sys.executable]
+    if unbuffered:
+        argv.append("-u")
+    argv += [str(_driver_script(tmp_path)), "--out", str(out), "--jobs", "1"]
+    proc = subprocess.run(argv, stdout=stdout, stderr=stderr)
+    return proc.returncode
+
+
+@pytest.fixture
+def baseline(tmp_path):
+    """A healthy run of the same driver: the answer every broken run must match."""
+    out = tmp_path / "baseline"
+    with (tmp_path / "b.out").open("w") as o, (tmp_path / "b.err").open("w") as e:
+        code = _run_driver(tmp_path, out, stdout=o, stderr=e)
+    return code, _ledger_rows(out)
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize("failure", ["full", "pipe"])
+@pytest.mark.parametrize("unbuffered", [False, True])
+def test_a_broken_stream_changes_neither_the_ledger_nor_the_exit_code(
+    tmp_path, baseline, stream, failure, unbuffered
+):
+    # The acceptance test for the whole class: whatever the log does, the
+    # measurement and the exit code are the ones the healthy run produced.
+    if failure == "full" and not Path("/dev/full").exists():
+        pytest.skip("needs Linux /dev/full")
+    baseline_code, baseline_rows = baseline
+    assert baseline_code == 0 and baseline_rows, "the baseline run must itself be sound"
+
+    out = tmp_path / f"{stream}-{failure}-{unbuffered}"
+    handles = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    # Closed in the `finally` below; a `with` cannot span the two shapes.
+    broken = (
+        Path("/dev/full").open("w")  # noqa: SIM115
+        if failure == "full"
+        else _stream_on_a_closed_pipe()
+    )
+    handles[stream] = broken
+    try:
+        code = _run_driver(tmp_path, out, unbuffered=unbuffered, **handles)
+    finally:
+        with contextlib.suppress(Exception):
+            broken.close()
+
+    assert code == baseline_code, f"a broken {stream} changed the exit code to {code}"
+    assert _ledger_rows(out) == baseline_rows, f"a broken {stream} changed the measurement"
+
+
+def test_an_unwritable_config_changes_no_conversion_outcome(tmp_path, baseline):
+    # Instance (b) end to end: `_configs` is a regular file, the shape of a
+    # read-only or full volume under the mirror. Every item still converts, and
+    # not one collection may be published as a conversion failure.
+    baseline_code, baseline_rows = baseline
+    out = tmp_path / "blocked"
+    out.mkdir()
+    (out / "_configs").write_text("not a directory")
+
+    code = _run_driver(tmp_path, out, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    assert code == baseline_code
+    rows = _ledger_rows(out)
+    converted = [r for r in rows if r[2] == "converted"]
+    assert converted == [r for r in baseline_rows if r[2] == "converted"]
+    assert not [r for r in rows if r[2] == "failed"], f"no conversion failed: {rows}"
+    assert {r[3] for r in rows if r[2] == driver.ENVIRONMENT} == {driver.ENVIRONMENT}

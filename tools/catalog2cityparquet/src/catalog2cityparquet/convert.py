@@ -25,7 +25,7 @@ import subprocess
 from pathlib import Path
 
 from .discover import Item
-from .ledger import REASONS
+from .ledger import CONFORMANCE_REASONS
 
 #: Longest converter stderr kept on a `ConvertError`. Some failures run to
 #: thousands of lines, and every one of them ends up on a single ledger line.
@@ -51,10 +51,15 @@ _FALLBACK_REASON = "convert_failed"
 #: the collection aggregated from these Items.
 _OWNED_RELS = frozenset({"collection", "parent", "root", "via", "derived_from"})
 
-_unknown_reasons = ({reason for _, reason in _CLASSIFIERS} | {_FALLBACK_REASON}) - REASONS
+_returnable = {reason for _, reason in _CLASSIFIERS} | {_FALLBACK_REASON}
+_unknown_reasons = _returnable - CONFORMANCE_REASONS
 if _unknown_reasons:
     # Checked at import rather than per call: the ledger rejects a reason
     # outside its closed set, and discovering the drift mid-run would waste it.
+    # Checked against the *conformance* subset, not the whole vocabulary: this
+    # classifier reads the converter's own stderr, so everything it returns is
+    # a statement about the data. It must never be able to return the
+    # environment reason, which would smuggle a host failure into the histogram.
     raise RuntimeError(
         f"classify_error can return reasons the ledger rejects: {sorted(_unknown_reasons)}"
     )
