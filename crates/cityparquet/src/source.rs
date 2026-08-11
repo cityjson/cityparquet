@@ -29,6 +29,13 @@ pub struct Source {
     /// the sole feature source — `path`/`doc` are unused — so `features()`
     /// yields from it directly rather than reopening any file.
     buffered: Option<BufferedSource>,
+    /// Whether `header.metadata.reference_system` was declared by an OPERATOR
+    /// ([`Source::set_reference_system`]) rather than carried by the source
+    /// itself. The one place this fact lives: the writer's `crs_source`
+    /// provenance stamp and the verbatim `source_metadata` passthrough both
+    /// read it from here, so no caller can put the header and the provenance
+    /// out of step.
+    crs_is_operator_supplied: bool,
 }
 
 /// The backing store for an in-memory [`Source`] (see [`Source::from_parts`]):
@@ -65,6 +72,7 @@ impl Source {
                     header,
                     doc: None,
                     buffered: None,
+                    crs_is_operator_supplied: false,
                 });
             }
             Some(crate::citygml::CityGmlVersion::Other(version)) => {
@@ -120,6 +128,7 @@ impl Source {
                 header,
                 doc: None,
                 buffered: None,
+                crs_is_operator_supplied: false,
             })
         } else {
             let text = fs::read_to_string(path)
@@ -134,6 +143,7 @@ impl Source {
                 header,
                 doc: Some(doc),
                 buffered: None,
+                crs_is_operator_supplied: false,
             })
         }
     }
@@ -162,6 +172,7 @@ impl Source {
                 features,
                 doc_appearance,
             }),
+            crs_is_operator_supplied: false,
         }
     }
 
@@ -183,10 +194,11 @@ impl Source {
     /// CRS.
     ///
     /// Returns whether the declaration was actually applied — `false` for that
-    /// no-op case. A caller sets
-    /// [`crate::package::ConvertOptions::crs_override`] only when this returns
-    /// `true`, so the footer's `crs_source` stamp never claims an operator
-    /// supplied a CRS the source carried itself.
+    /// no-op case — and records the same fact on the source itself
+    /// ([`Source::crs_is_operator_supplied`]), which is what the writer stamps
+    /// its `crs_source` provenance from. The footer therefore can never claim
+    /// an operator supplied a CRS the source carried itself, whatever the
+    /// caller does with [`crate::package::ConvertOptions::crs_override`].
     pub fn set_reference_system(&mut self, epsg_code: &str) -> bool {
         let code = epsg_code
             .trim()
@@ -206,7 +218,32 @@ impl Source {
             return false;
         }
         metadata.reference_system = Some(rs);
+        self.crs_is_operator_supplied = true;
         true
+    }
+
+    /// Whether this source's declared CRS came from an operator
+    /// ([`Source::set_reference_system`]) rather than from the source itself.
+    ///
+    /// Two things in the writer key off it: the footer's
+    /// `city.other.crs_source` stamp, and the exclusion of the injected
+    /// `referenceSystem` from the verbatim `city.other.source_metadata`
+    /// passthrough (the source header `metadata` must stay exactly what the
+    /// source carried).
+    pub fn crs_is_operator_supplied(&self) -> bool {
+        self.crs_is_operator_supplied
+    }
+
+    /// Carry an established operator-supplied-CRS provenance onto a source
+    /// derived from this one.
+    ///
+    /// [`Source::from_parts`] rebuilds a `Source` around an already-merged or
+    /// already-partitioned header; the provenance is a property of THAT
+    /// header, so it has to travel with it — otherwise a merged or partitioned
+    /// run writes the operator's CRS with no record of where it came from.
+    pub fn with_crs_operator_supplied(mut self, operator_supplied: bool) -> Self {
+        self.crs_is_operator_supplied = operator_supplied;
+        self
     }
 
     /// The RAW (unsliced) appearance array that this source's

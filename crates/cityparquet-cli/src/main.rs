@@ -203,17 +203,23 @@ fn resolve_and_open(inputs: &[PathBuf]) -> Result<Vec<Source>, String> {
 /// Collapse `sources` to one [`Source`]: the lone input directly, or — for
 /// several — a merged in-memory source ([`merge_sources`] enforces a shared
 /// CRS and requantises onto one transform).
+///
+/// An operator-supplied CRS is a property of the header, so it travels onto
+/// the merged source: `merge_sources` enforces one shared CRS, so if any input
+/// got its CRS from `--crs`, so did the merged header.
 fn merge_to_one(sources: Vec<Source>) -> Result<Source, String> {
     if sources.len() == 1 {
         return Ok(sources.into_iter().next().expect("one source"));
     }
+    let crs_is_operator_supplied = sources.iter().any(Source::crs_is_operator_supplied);
     let merged = merge_sources(&sources).map_err(|e| e.to_string())?;
     Ok(Source::from_parts(
         merged.header,
         merged.features,
         merged.doc_appearance,
         SourceFormat::CityJsonSeq,
-    ))
+    )
+    .with_crs_operator_supplied(crs_is_operator_supplied))
 }
 
 /// Build a [`PartitionSpec`] from the `--partition` method and its sizing flag,
@@ -392,10 +398,12 @@ fn main() -> std::process::ExitCode {
 
             // Declare the operator's CRS on every source BEFORE they are
             // merged or partitioned, so the merge's shared-CRS check and the
-            // scan both see an ordinary, resolvable CRS. `crs_override` — and
-            // with it the footer's `crs_source` stamp — is recorded only if
-            // the declaration actually took effect on at least one source; a
-            // source that declares its own CRS is left untouched.
+            // scan both see an ordinary, resolvable CRS. Each source records
+            // for itself whether the declaration took effect, and the footer's
+            // `crs_source` stamp is read from there — a source that declares
+            // its own CRS is left untouched and claims nothing. `crs_override`
+            // carries the value onward for validation only, so it is set only
+            // when there is something to validate.
             if let Some(code) = &crs {
                 let mut applied = false;
                 for source in &mut sources {

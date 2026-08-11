@@ -129,12 +129,13 @@ pub struct ConvertOptions {
     /// conversion proceeds and `city.other.crs_source` records where the CRS
     /// came from. `None` (the default) leaves the hard failure in place.
     ///
-    /// Applying it is the caller's job — [`crate::source::Source::set_reference_system`]
-    /// on the source, BEFORE [`convert_source`], so the scan resolves an
-    /// ordinary CRS. Set this field only when that call actually took effect
-    /// (it is a no-op on a source that declares its own CRS), so the
-    /// provenance stamp never claims an operator supplied a CRS the source
-    /// carried itself.
+    /// This field carries the VALUE only; it is validated here and it never
+    /// decides what the footer says. [`convert`] applies it to the source it
+    /// opens; a caller holding its own [`Source`] applies it with
+    /// [`crate::source::Source::set_reference_system`] BEFORE
+    /// [`convert_source`], so the scan resolves an ordinary CRS. Either way
+    /// the `crs_source` provenance stamp is read from the source, so setting
+    /// this field cannot by itself make the output claim anything.
     pub crs_override: Option<String>,
 }
 
@@ -948,12 +949,13 @@ fn extension_registry(_source: &Source) -> ExtensionRegistry {
 /// (degree-valued) CRS is refused too: nothing in this pipeline reprojects,
 /// and the CityGML reader quantises at a fixed 1 mm, so a degree-valued
 /// override would silently destroy the coordinates. The known-geographic list
-/// is shared with the CityGML reader and is common-but-not-exhaustive (the
-/// same residual limitation documented there). Refusing loudly is the same
+/// ([`cityparquet_schema::crs::is_geographic_epsg`], shared with the CityGML
+/// `srsName` resolver) is common-but-not-exhaustive, the residual limitation
+/// documented there. Refusing loudly is the same
 /// stance the spec's CRS rules take on a source with no CRS at all — the
 /// override exists to make a CRS resolvable, never to make a bad one
 /// tolerable.
-fn validate_crs_override(spec: &str) -> Result<()> {
+pub(crate) fn validate_crs_override(spec: &str) -> Result<()> {
     let code = spec.trim().trim_start_matches("EPSG:").trim();
     if code.is_empty() || !code.chars().all(|c| c.is_ascii_digit()) {
         return Err(CityParquetError::Schema(format!(
@@ -961,7 +963,7 @@ fn validate_crs_override(spec: &str) -> Result<()> {
              (expected \"EPSG:25832\" or \"25832\")"
         )));
     }
-    if crate::citygml::crs::is_geographic_epsg(code) {
+    if cityparquet_schema::crs::is_geographic_epsg(code) {
         return Err(CityParquetError::Schema(format!(
             "operator-supplied CRS {spec:?} is a geographic (degree-valued) CRS; this \
              writer never reprojects and quantises at millimetre scale, so a degree \
@@ -977,14 +979,21 @@ fn validate_crs_override(spec: &str) -> Result<()> {
 
 /// The footer's `city` object, plus the CRS-provenance stamp.
 ///
-/// When the CRS came from `--crs` rather than the source, `city.other`
+/// When the CRS came from an operator rather than the source, `city.other`
 /// records `crs_source: "operator-supplied"`. `city.other` is free-form and
 /// explicitly informational per the spec, so this cannot mislead a decoder —
 /// but it does stop the output implying the SOURCE declared a CRS it never
 /// carried.
-fn city_metadata(scan_result: &ScanResult, opts: &ConvertOptions) -> Result<CityMetadata> {
+///
+/// The stamp is read from the SOURCE, never from
+/// [`ConvertOptions::crs_override`]: the option is a value to validate and
+/// apply, whereas only the source knows whether applying it did anything (it
+/// is a no-op for a source that declares its own CRS). Keying off the option
+/// would stamp a source-declared CRS as operator-supplied whenever a caller
+/// set the option without the override taking effect.
+fn city_metadata(scan_result: &ScanResult, source: &Source) -> Result<CityMetadata> {
     let mut meta = scan_result.base_city_metadata()?;
-    if opts.crs_override.is_some() {
+    if source.crs_is_operator_supplied() {
         let mut other = match meta.other.take() {
             Some(serde_json::Value::Object(map)) => map,
             _ => serde_json::Map::new(),
@@ -1019,7 +1028,7 @@ fn write_package(
         extension_registry(source),
         module_lods_by_file(&scan_result.module_lods),
         module_geo_by_file(&scan_result.module_geo),
-        city_metadata(scan_result, opts)?,
+        city_metadata(scan_result, source)?,
         scan_result.schema.attributes.clone(),
         // Production always prunes: a geometry-less table (dataset-wide or
         // per-module) carries no geometry columns. Identity projection is a
@@ -1198,7 +1207,15 @@ fn write_package(
 /// BEFORE encoding the new one, so a mid-encode failure destroyed the old
 /// package and left no usable one behind at all).
 pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport> {
-    let source = Source::open(&opts.input)?;
+    let mut source = Source::open(&opts.input)?;
+    // This entry point opens the source itself, so it must also apply
+    // `crs_override` itself — a caller has no `Source` to apply it to. A
+    // source that declares its own CRS is left alone (the call is a no-op),
+    // and the provenance stamp follows the source, not the option, so nothing
+    // is claimed for an override that did not take effect.
+    if let Some(code) = &opts.crs_override {
+        source.set_reference_system(code);
+    }
     convert_source(&source, opts)
 }
 

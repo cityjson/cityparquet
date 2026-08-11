@@ -15,6 +15,11 @@
 //!   is a documented residual limitation (no coordinate-magnitude sniffing —
 //!   real fixtures use small local metre coordinates near the origin).
 
+// The known-geographic EPSG list this reader rejects lives with the
+// EPSG->PROJJSON table in `cityparquet_schema::crs`: it governs CityJSON input
+// and the CLI's `--crs` override as much as it governs a CityGML `srsName`, so
+// it is not CityGML-specific policy.
+use cityparquet_schema::crs::is_geographic_epsg;
 use cityparquet_schema::{CityParquetError, Result};
 use cjseq::ReferenceSystem;
 
@@ -26,23 +31,6 @@ pub enum CrsResolution {
     /// A syntactically understood name we choose not to advertise (kept as
     /// provenance only).
     Unresolved,
-}
-
-/// Known geographic (degree-valued) EPSG codes; the 1 mm quantiser would
-/// destroy their coordinates, so a file that *declares* one is rejected. Common
-/// 2D/3D geographic CRS (WGS 84, ETRS89, NAD27/83, DHDN, ...); not exhaustive.
-const GEOGRAPHIC_EPSG: &[&str] = &[
-    "4326", "4258", "4269", "4267", "4283", "4171", "4173", "4207", "4230", "4312", "4314", "4619",
-    "4674", "4759", "4979", "4937", "4936", "4896", "4327", "4329",
-];
-
-/// Whether `code` (a bare EPSG code, e.g. `"4326"`) names a known geographic
-/// CRS. Shared with the operator-supplied `--crs` override
-/// ([`crate::package::ConvertOptions::crs_override`]), which refuses one for
-/// the same reason: nothing in this pipeline reprojects, so a degree-valued
-/// CRS meets a quantiser sized for metres.
-pub fn is_geographic_epsg(code: &str) -> bool {
-    GEOGRAPHIC_EPSG.contains(&code)
 }
 
 /// Resolve a raw `srsName`. Errors only when it resolves to a known geographic

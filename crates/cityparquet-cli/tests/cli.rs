@@ -703,3 +703,163 @@ fn convert_synthesises_lod0_by_default_and_no_lod0_suppresses_it() {
         "--no-lod0 must suppress synthesis"
     );
 }
+
+/// A real CityJSON fixture copied with its `referenceSystem` removed — the
+/// shape of the catalogue collections whose CityJSON carries no CRS at all.
+/// Written under `dir` with the given `name` so two DISTINCT such inputs can
+/// be merged in one run.
+fn crs_less_delft(dir: &std::path::Path, name: &str) -> PathBuf {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = text.lines();
+    let mut header: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    header
+        .get_mut("metadata")
+        .and_then(|m| m.as_object_mut())
+        .expect("delft header has metadata")
+        .remove("referenceSystem");
+    let mut out = serde_json::to_string(&header).unwrap();
+    for line in lines {
+        out.push('\n');
+        out.push_str(line);
+    }
+    let dest = dir.join(name);
+    std::fs::write(&dest, out).unwrap();
+    dest
+}
+
+/// The footer `city` object of one table in a written package.
+fn city_footer(table: &std::path::Path) -> cityparquet_schema::CityMetadata {
+    use cityparquet::reader::CityParquetReaderBuilder;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(table).unwrap()).unwrap();
+    builder.cityparquet_metadata().expect("footer must parse")
+}
+
+/// End-to-end at the binary: `--crs` is what unblocks a CRS-less source, and
+/// the package it writes says so. The applied-ness → stamp linkage is CLI-side
+/// wiring (open, apply, merge), so it is proven here against the real binary,
+/// not only at the library level.
+#[test]
+fn convert_with_crs_flag_supplies_the_crs_and_stamps_its_provenance() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    let input = crs_less_delft(dir.path(), "no_crs.city.jsonl");
+    let out = dir.path().join("pkg");
+
+    // Without the flag the CRS-less source is still a hard error.
+    let output = Command::new(binary)
+        .args(["convert".as_ref(), input.as_os_str()])
+        .arg("-o")
+        .arg(&out)
+        .output()
+        .expect("failed to run convert");
+    assert!(
+        !output.status.success(),
+        "a CRS-less source must still fail without --crs"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("declares no CRS"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // With it, the conversion succeeds and records where the CRS came from.
+    let output = Command::new(binary)
+        .args(["convert".as_ref(), input.as_os_str()])
+        .arg("-o")
+        .arg(&out)
+        .args(["--overwrite", "--crs", "EPSG:7415"])
+        .output()
+        .expect("failed to run convert");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let meta = city_footer(&out.join("building.parquet"));
+    assert!(meta.crs.is_some(), "city.crs must be populated");
+    let other = meta.other.expect("city.other must exist");
+    assert_eq!(
+        other.get("crs_source").and_then(|v| v.as_str()),
+        Some("operator-supplied"),
+        "footer: {other}"
+    );
+    assert!(
+        other
+            .get("source_metadata")
+            .and_then(|m| m.get("referenceSystem"))
+            .is_none(),
+        "the operator's CRS must not leak into the verbatim source metadata: {other}"
+    );
+}
+
+/// `--crs` is ignored for a source that declares its own CRS, so the footer
+/// must keep that source's CRS and claim nothing about an operator.
+#[test]
+fn convert_with_crs_flag_on_a_source_that_declares_one_stamps_nothing() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let out = tempfile::tempdir().unwrap();
+    let output = Command::new(binary)
+        .arg("convert")
+        .arg(fixture("delft.city.jsonl"))
+        .arg("-o")
+        .arg(out.path())
+        .args(["--overwrite", "--crs", "EPSG:28992"])
+        .output()
+        .expect("failed to run convert");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let meta = city_footer(&out.path().join("building.parquet"));
+    assert_eq!(
+        meta.crs.as_ref().and_then(|c| c.pointer("/id/code")),
+        Some(&serde_json::json!(7415)),
+        "delft's own CRS must be the one written"
+    );
+    assert!(
+        meta.other
+            .as_ref()
+            .and_then(|o| o.get("crs_source"))
+            .is_none(),
+        "a source-declared CRS must never be stamped operator-supplied: {:?}",
+        meta.other
+    );
+}
+
+/// Several inputs are merged into ONE in-memory source before conversion, so
+/// the provenance has to survive that rebuild — otherwise a merged run writes
+/// the operator's CRS with no record of where it came from.
+#[test]
+fn convert_with_crs_flag_keeps_the_provenance_across_a_merge() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let dir = tempfile::tempdir().unwrap();
+    let a = crs_less_delft(dir.path(), "a.city.jsonl");
+    let b = crs_less_delft(dir.path(), "b.city.jsonl");
+    let out = dir.path().join("pkg");
+    let output = Command::new(binary)
+        .args(["convert".as_ref(), a.as_os_str(), b.as_os_str()])
+        .arg("-o")
+        .arg(&out)
+        .args(["--overwrite", "--crs", "EPSG:7415"])
+        .output()
+        .expect("failed to run convert");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let other = city_footer(&out.join("building.parquet"))
+        .other
+        .expect("city.other must exist");
+    assert_eq!(
+        other.get("crs_source").and_then(|v| v.as_str()),
+        Some("operator-supplied"),
+        "the merged package lost the CRS provenance: {other}"
+    );
+}

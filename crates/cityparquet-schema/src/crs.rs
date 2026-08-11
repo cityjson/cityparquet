@@ -16,6 +16,27 @@ use serde_json::Value;
 
 use crate::error::{CityParquetError, Result};
 
+/// Known geographic (degree-valued) EPSG codes. Nothing in this stack
+/// reprojects, and coordinates are quantised at millimetre scale (the CityGML
+/// reader at a fixed 1 mm), so a degree coordinate would be destroyed —
+/// declaring one of these is refused rather than silently mis-encoded. Common
+/// 2D/3D geographic CRS (WGS 84, ETRS89, NAD27/83, DHDN, ...); not exhaustive,
+/// so an unlisted geographic code is a documented residual limitation (no
+/// coordinate-magnitude sniffing: guessing is exactly what the spec's CRS
+/// rules forbid).
+const GEOGRAPHIC_EPSG: &[&str] = &[
+    "4326", "4258", "4269", "4267", "4283", "4171", "4173", "4207", "4230", "4312", "4314", "4619",
+    "4674", "4759", "4979", "4937", "4936", "4896", "4327", "4329",
+];
+
+/// Whether `code` (a bare EPSG code, e.g. `"4326"`) names a known geographic
+/// CRS — see [`GEOGRAPHIC_EPSG`]. Used by the CityGML `srsName` resolver and by
+/// the operator-supplied `--crs` override alike, which is why it lives here
+/// beside the EPSG table rather than in either consumer.
+pub fn is_geographic_epsg(code: &str) -> bool {
+    GEOGRAPHIC_EPSG.contains(&code)
+}
+
 /// The committed EPSG -> PROJJSON table, gzipped. Regenerate with
 /// `tools/gen_projjson.py` when the pinned PROJ/EPSG dataset is bumped (the
 /// version pins live in the asset's `_meta`).
@@ -147,6 +168,19 @@ mod tests {
             Some("OGC:CRS84")
         );
         assert_eq!(lookup_key("not a crs").as_deref(), None);
+    }
+
+    #[test]
+    fn known_geographic_codes_are_recognised_as_such() {
+        // Degree-valued: WGS 84, ETRS89, NAD27 — refused by every consumer,
+        // since nothing here reprojects and the quantiser is sized for metres.
+        assert!(is_geographic_epsg("4326"));
+        assert!(is_geographic_epsg("4258"));
+        assert!(is_geographic_epsg("4267"));
+        // Projected/compound national CRS must NOT be caught by it.
+        assert!(!is_geographic_epsg("28992"));
+        assert!(!is_geographic_epsg("7415"));
+        assert!(!is_geographic_epsg("31256"));
     }
 
     #[test]
