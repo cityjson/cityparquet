@@ -1238,7 +1238,10 @@ import httpx
 import pytest
 
 from catalog2cityparquet import discover
-from tests.conftest import stac_item, write_json
+# pytest's default prepend import mode puts `tests/` on sys.path (it has no
+# __init__.py), so the helpers are imported as top-level `conftest`, NOT as
+# `tests.conftest` — the latter raises ModuleNotFoundError.
+from conftest import stac_item, write_json
 
 
 @pytest.fixture
@@ -2264,7 +2267,6 @@ def test_a_failing_collection_does_not_stop_the_next(tmp_path, monkeypatch):
             raise RuntimeError("collection exploded")
 
     monkeypatch.setattr(driver, "convert_collection", fake_convert_collection)
-    monkeypatch.setattr(driver, "aggregate_all", lambda *a, **k: None)
 
     ledger = Ledger(tmp_path / "_reports")
     driver.run_collections(["alpha", "boom", "omega"], ledger=ledger, config=driver.Config(
