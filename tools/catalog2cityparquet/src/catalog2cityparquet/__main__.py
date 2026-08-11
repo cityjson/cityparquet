@@ -23,14 +23,14 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PurePosixPath
 
 import httpx
 
 from . import aggregate, convert, discover, fetch
 from .discover import Item
-from .ledger import Ledger, Record
+from .ledger import Ledger, Record, validate_collection_id
 
 BASE_URL = "https://storage.googleapis.com/city3d-stac"
 BUCKET_API = "https://storage.googleapis.com/storage/v1/b/city3d-stac/o"
@@ -54,6 +54,11 @@ MAX_ERROR_CHARS = 2000
 #: than an empty string.
 COLLECTION_LEVEL = "-"
 
+#: Prefix for this driver's per-item working directories. Distinctive so the
+#: start-of-run sweep can tell its own leftovers from anything else that shares
+#: the working directory.
+WORK_PREFIX = "c2cp-"
+
 
 @dataclass
 class Config:
@@ -69,6 +74,8 @@ class Config:
     crs_by_collection: dict[str, str] = field(default_factory=dict)
     base_url: str = BASE_URL
     bucket_api: str = BUCKET_API
+    #: Where per-item working directories are made. `None` means `out/_work`.
+    work_dir: Path | None = None
     download_timeout: float = 1800.0
     convert_timeout: float = 3600.0
 
@@ -104,8 +111,75 @@ class ItemStats:
     downloaded: int = 0
 
 
+def _record_safely(ledger: Ledger, rec: Record) -> None:
+    """Write one record, treating a failure to write as news rather than an end.
+
+    Every isolation handler in this module ends by recording what went wrong,
+    on the same disk that may be the thing going wrong — and a rejected id or a
+    full volume raising *here* would defeat the handler and take down the run
+    it exists to protect. The loss is reported on stderr and the run continues:
+    a missing line in the ledger is a smaller failure than a missing half of
+    the catalogue.
+    """
+    try:
+        ledger.record(rec)
+    # Deliberately broad: nothing about writing a record may end the run.
+    except Exception as exc:
+        print(
+            f"  ! outcome for {rec.collection}/{rec.item_id} could not be recorded: {exc}",
+            file=sys.stderr,
+        )
+
+
+def safe_item_id(item_id: str) -> str:
+    """The single path component `item_id` may safely become.
+
+    Item ids come from a published catalogue and are interpolated into an
+    output path, so they get the same treatment as collection ids and asset
+    filenames: reduced to a last component, which cannot climb out of the
+    package directory. An id with no usable component raises, and the caller
+    ledgers that one item rather than trusting it.
+    """
+    name = PurePosixPath(str(item_id).replace("\\", "/")).name
+    if name in ("", ".", ".."):
+        raise ValueError(f"unusable item id {item_id!r}: no safe path component")
+    return name
+
+
 def package_dir(config: Config, item: Item) -> Path:
-    return config.out / item.collection / "items" / item.item_id
+    """Where this item's package lives — from ids that are never trusted.
+
+    Both components are catalogue-supplied, so both are validated here rather
+    than at the call sites: this is the one place where they become a path.
+    """
+    return (
+        config.out / validate_collection_id(item.collection) / "items" / safe_item_id(item.item_id)
+    )
+
+
+def work_root(config: Config) -> Path:
+    """The directory per-item working directories are made in."""
+    return config.work_dir if config.work_dir is not None else config.out / "_work"
+
+
+def sweep_work_root(config: Config) -> None:
+    """Delete working directories an earlier run abandoned.
+
+    A run killed mid-item leaves its partial download behind, and by default
+    that sits inside the deliverable mirror. Swept at the start rather than at
+    the end, because the run that made the mess is by definition not around to
+    clean it up. `--keep-downloads` is honoured: an operator who asked to keep
+    them means across runs too.
+
+    Assumes one run per working directory at a time — two concurrent runs
+    sharing one would sweep each other's live downloads, which is what
+    `--work-dir` is for.
+    """
+    if config.keep_downloads:
+        return
+    for path in sorted(work_root(config).glob(f"{WORK_PREFIX}*")):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def already_converted(config: Config, item: Item) -> bool:
@@ -129,16 +203,16 @@ def process_item(
 ) -> int:
     """Download, normalise, convert and stamp one item. Returns object count.
 
-    The working directory lives under `--out` rather than in the system
-    temporary directory: payloads reach gigabytes, and `/tmp` is a small tmpfs
-    on many machines. It is removed per item unless `--keep-downloads`,
-    *including* when the item failed — the failure is already in the ledger,
-    and hundreds of abandoned downloads would fill the volume long before the
-    run ended.
+    The working directory lives under `--work-dir` (by default `<out>/_work`)
+    rather than in the system temporary directory: payloads reach gigabytes,
+    and `/tmp` is a small tmpfs on many machines. It is removed per item unless
+    `--keep-downloads`, *including* when the item failed — the failure is
+    already in the ledger, and hundreds of abandoned downloads would fill the
+    volume long before the run ended.
     """
-    work_root = config.out / "_work"
-    work_root.mkdir(parents=True, exist_ok=True)
-    workdir = Path(tempfile.mkdtemp(prefix="c2cp-", dir=work_root))
+    root = work_root(config)
+    root.mkdir(parents=True, exist_ok=True)
+    workdir = Path(tempfile.mkdtemp(prefix=WORK_PREFIX, dir=root))
     try:
         # The saved name matters: `normalise` decides convertibility from the
         # suffix, and several origins hide the real filename in a query
@@ -165,25 +239,41 @@ def process_item(
             shutil.rmtree(workdir, ignore_errors=True)
 
 
-def convert_items(items: list[Item], *, ledger: Ledger, config: Config) -> None:
-    """Convert every item, isolating each failure to its own record."""
+def convert_items(
+    items: list[Item], *, ledger: Ledger, config: Config, collection: str | None = None
+) -> None:
+    """Convert every item, isolating each failure to its own record.
+
+    `collection` is the id being converted, and it overrides whatever the
+    catalogue put in `Item.collection`. That field is not authoritative:
+    `discover.items_from_parquet` reads it straight out of a published
+    `items.parquet` and falls back to `""` on a null cell, and one such cell
+    would otherwise send the packages to `out//items/` where aggregation (which
+    reads `out/<cid>/items`) cannot see them, defeat the duplicate-bundle
+    filter, and have the ledger reject the record — losing the whole collection
+    over one null. The id we asked for is the id we record against.
+    """
     client = httpx.Client(timeout=config.download_timeout, follow_redirects=True)
 
     def handle(item: Item) -> None:
-        if fetch.is_duplicate_bundle(item):
-            # Skipped before the download, which is the whole point: these are
-            # hundreds of gigabytes of data we convert from its tiles instead.
-            ledger.record(
-                Record(item.collection, item.item_id, "skipped", reason="duplicate_bundle")
-            )
-            return
-        if config.skip_existing and already_converted(config, item):
-            # No record at all: this is not an outcome of *this* run, and
-            # counting it would make a resumed run look like a fresh success.
-            return
+        if collection is not None:
+            item = replace(item, collection=collection)
         started = time.monotonic()
         stats = ItemStats()
         try:
+            if fetch.is_duplicate_bundle(item):
+                # Skipped before the download, which is the whole point: these
+                # are hundreds of gigabytes of data we convert from its tiles.
+                _record_safely(
+                    ledger,
+                    Record(item.collection, item.item_id, "skipped", reason="duplicate_bundle"),
+                )
+                return
+            if config.skip_existing and already_converted(config, item):
+                # No record at all: this is not an outcome of *this* run, and
+                # counting it would make a resumed run look like a fresh
+                # success.
+                return
             process_item(item, config=config, client=client, stats=stats)
         except convert.ConvertError as exc:
             # Already classified against the ledger's closed vocabulary.
@@ -197,14 +287,15 @@ def convert_items(items: list[Item], *, ledger: Ledger, config: Config) -> None:
         except Exception as exc:
             _fail(ledger, item, "convert_failed", f"{type(exc).__name__}: {exc}", started, stats)
         else:
-            ledger.record(
+            _record_safely(
+                ledger,
                 Record(
                     item.collection,
                     item.item_id,
                     "converted",
                     bytes=stats.downloaded,
                     seconds=time.monotonic() - started,
-                )
+                ),
             )
 
     try:
@@ -222,7 +313,8 @@ def convert_items(items: list[Item], *, ledger: Ledger, config: Config) -> None:
 def _fail(
     ledger: Ledger, item: Item, reason: str, detail: str, started: float, stats: ItemStats
 ) -> None:
-    ledger.record(
+    _record_safely(
+        ledger,
         Record(
             item.collection,
             item.item_id,
@@ -231,7 +323,7 @@ def _fail(
             error=detail[:MAX_ERROR_CHARS],
             bytes=stats.downloaded,
             seconds=time.monotonic() - started,
-        )
+        ),
     )
 
 
@@ -252,18 +344,18 @@ def convert_collection(
         # A published index disagreeing with the object listing is a fact about
         # the catalogue worth recording, not just a log line.
         print(f"  ! {cid}: {note}", file=sys.stderr)
-        ledger.record(
-            Record(cid, COLLECTION_LEVEL, "skipped", reason="stale_item_index", error=note)
+        _record_safely(
+            ledger, Record(cid, COLLECTION_LEVEL, "skipped", reason="stale_item_index", error=note)
         )
     if not items:
         # 20 of the 53 collections publish only a collection.json.
-        ledger.record(Record(cid, COLLECTION_LEVEL, "skipped", reason="empty_collection"))
+        _record_safely(ledger, Record(cid, COLLECTION_LEVEL, "skipped", reason="empty_collection"))
         print(f"==> {cid}: no items")
         return
-    if config.limit_per_collection:
+    if config.limit_per_collection is not None:
         items = items[: config.limit_per_collection]
     print(f"==> {cid}: {len(items)} item(s)")
-    convert_items(items, ledger=ledger, config=config)
+    convert_items(items, ledger=ledger, config=config, collection=cid)
 
     config_path = aggregate.write_config(
         aggregate.collection_config(collection), config.out / "_configs" / f"{cid}.yaml"
@@ -291,14 +383,15 @@ def run_collections(
             # Deliberately broad: one collection must never stop the run.
             except Exception as exc:
                 print(f"  ! {cid} failed: {exc}", file=sys.stderr)
-                ledger.record(
+                _record_safely(
+                    ledger,
                     Record(
                         cid,
                         COLLECTION_LEVEL,
                         "failed",
                         reason="convert_failed",
                         error=f"{type(exc).__name__}: {exc}"[:MAX_ERROR_CHARS],
-                    )
+                    ),
                 )
     finally:
         client.close()
@@ -339,8 +432,20 @@ def aggregate_all(config: Config, state: RunState) -> None:
 
 
 def print_summary(ledger: Ledger, state: RunState) -> None:
-    """Print what the run measured: outcomes, reasons, and degraded indexes."""
-    summary = ledger.write_summary()
+    """Print what the run measured: outcomes, reasons, and degraded indexes.
+
+    The tallies are printed whether or not `summary.csv` could be written: by
+    the time this runs the conversion is over, and turning a completed
+    measurement into a traceback because a roll-up file could not be saved
+    would throw away the run's whole point. The stdout report is the primary
+    artefact; the CSV is a convenience.
+    """
+    summary: Path | None = None
+    try:
+        summary = ledger.write_summary()
+    # Deliberately broad: a lost roll-up must not cost the report.
+    except Exception as exc:
+        print(f"  ! summary.csv could not be written: {exc}", file=sys.stderr)
     print("\n--- summary ---")
     print(f"{'collection':<32} {'converted':>9} {'failed':>7} {'skipped':>8}")
     totals = {"converted": 0, "failed": 0, "skipped": 0}
@@ -365,7 +470,8 @@ def print_summary(ledger: Ledger, state: RunState) -> None:
     print(f"\ncollections without a GeoParquet index: {len(state.no_index)}")
     for cid in state.no_index:
         print(f"  - {cid}")
-    print(f"\nledger: {summary.parent}")
+    if summary is not None:
+        print(f"\nledger: {summary.parent}")
 
 
 def resolve_collections(config: Config) -> list[str]:
@@ -403,11 +509,25 @@ def run(
             except Exception as exc:
                 print(f"catalogue root unreachable: {exc}", file=sys.stderr)
                 return 1
+        sweep_work_root(config)
         run_collections(cids, ledger=ledger, config=config, state=state)
 
     aggregate_all(config, state)
     print_summary(ledger, state)
     return 0
+
+
+def _positive_int(text: str) -> int:
+    """An argparse type for counts, so `0` cannot quietly mean "everything".
+
+    The old truthiness test read `--limit-per-collection 0` as "no limit" and a
+    negative value as "silently drop the tail"; both are typos, and both would
+    have produced a plausible-looking run that measured the wrong thing.
+    """
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"expected a count of 1 or more, got {value}")
+    return value
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -428,7 +548,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="collections",
         help="convert only this collection; repeatable",
     )
-    parser.add_argument("--limit-per-collection", type=int)
+    parser.add_argument("--limit-per-collection", type=_positive_int)
     parser.add_argument(
         "--jobs",
         type=int,
@@ -436,6 +556,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"concurrent items (default {DEFAULT_JOBS}; a politeness bound on the origins)",
     )
     parser.add_argument("--keep-downloads", action="store_true")
+    parser.add_argument(
+        "--work-dir",
+        type=Path,
+        help="where downloads are unpacked (default <out>/_work); needs room for the "
+        "largest single payload, and must not be shared with a concurrent run",
+    )
     parser.add_argument(
         "--no-skip-existing",
         action="store_true",
@@ -459,10 +585,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def config_from_args(args: argparse.Namespace) -> Config:
-    """Turn parsed arguments into a `Config`, rejecting a malformed `--crs`.
+    """Turn parsed arguments into a validated `Config`.
 
-    Rejected here rather than at first use: a typo that only surfaced after
-    forty collections had been converted would waste the whole run.
+    Both checks below happen here rather than at first use: a typo that only
+    surfaced after forty collections had been converted would waste the whole
+    run, and a collection id reaching the ledger unchecked used to abort it
+    outright.
     """
     crs_by_collection: dict[str, str] = {}
     for pair in args.crs:
@@ -470,6 +598,11 @@ def config_from_args(args: argparse.Namespace) -> Config:
         if not separator or not collection or not code:
             raise SystemExit(f"--crs expects COLLECTION=EPSG:xxxx, got {pair!r}")
         crs_by_collection[collection] = code
+    for cid in args.collections or []:
+        try:
+            validate_collection_id(cid)
+        except ValueError as exc:
+            raise SystemExit(f"--collection: {exc}") from exc
     return Config(
         out=args.out,
         binary=args.binary,
@@ -481,6 +614,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         crs_by_collection=crs_by_collection,
         base_url=args.base_url,
         bucket_api=args.bucket_api,
+        work_dir=args.work_dir,
     )
 
 
