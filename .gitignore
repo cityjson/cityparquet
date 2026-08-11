@@ -40,5 +40,10 @@ target
 /bench/plot/.venv/
 **/__pycache__/
 
+# tools/catalog2cityparquet/'s own uv-managed venv + pytest cache — its source
+# (pyproject.toml, *.py, uv.lock) IS committed.
+/tools/catalog2cityparquet/.venv/
+**/.pytest_cache/
+
 
 .DS_Store
