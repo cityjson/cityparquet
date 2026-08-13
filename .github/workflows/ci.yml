@@ -6,7 +6,15 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # `just check` now covers vendor/city3d-stac-tool (see the vendor-check
+      # recipe), so the submodule must be present. Our .gitmodules URL is the
+      # https form deliberately: the git@github.com: form needs a key the
+      # runner does not have. One level only, NOT recursive — the vendored tool
+      # has its own nested submodules (stac-spec, stac-cityjson-extension) whose
+      # upstream .gitmodules still uses git@github.com:, so recursing fails on a
+      # runner. Its test suite does not need them.
       - uses: actions/checkout@v4
+        with: { submodules: true }
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
       - uses: Swatinem/rust-cache@v2
@@ -16,3 +24,7 @@ jobs:
       - run: just fixtures
       - run: cargo test --workspace
       - run: just isolation
+      # The steps above open-code `just check` for the workspace only; vendor/
+      # is excluded from it, so this is what actually exercises the vendored
+      # tool's local patches (fmt + clippy + tests against its own manifest).
+      - run: just vendor-check

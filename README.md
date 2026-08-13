@@ -77,6 +77,18 @@ a meaningless single-Item Collection.
 | `--row-group-size` | `65536` | Parquet row-group size |
 | `--zstd-level` | `3` | zstd level (ignored by `--recipe snappy`) |
 | `--batch-size` | `4096` | encode batch size |
+| `--crs` | unset | operator-supplied CRS (`EPSG:25832` or bare `25832`) for a source that declares none; ignored for a source that declares its own |
+
+A source that carries CRS-bearing coordinates but declares no CRS a writer can
+resolve is a **hard conversion error** (spec "CRS rules"): the writer never
+guesses, and never writes the package with `city.crs` absent. `--crs` is the
+operator's way out — an explicit declaration is neither a guess nor an absent
+CRS, so it makes the CRS resolvable before the writer runs, exactly as an EPSG
+code in the source would. When it is actually applied, the footer records
+`city.other.crs_source = "operator-supplied"`, so the output never implies the
+source declared a CRS it did not carry. A geographic (degree-valued) code is
+refused: nothing in this pipeline reprojects, and coordinates are quantised at
+millimetre scale.
 
 Sidecars (`materials.parquet`/`textures.parquet`/`geometry_templates.parquet`)
 are written automatically whenever the source has that kind of content —

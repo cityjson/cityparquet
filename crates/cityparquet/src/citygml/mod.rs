@@ -32,4 +32,4 @@ mod xml;
 
 pub use header::parse_header;
 pub use reader::FeatureReader;
-pub use sniff::is_citygml;
+pub use sniff::{CityGmlVersion, is_citygml, sniff_citygml};

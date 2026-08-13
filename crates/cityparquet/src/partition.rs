@@ -183,7 +183,24 @@ pub fn convert_partitioned(
     spec: &PartitionSpec,
     opts: &ConvertOptions,
 ) -> Result<PartitionReport> {
+    // An unusable `--crs` is bad INPUT, so it must be rejected before
+    // `ensure_parent_ready`/the purge below, not inside the per-partition
+    // `convert_source_impl` that runs after it: a failure there would have
+    // destroyed a prior complete output, the very invariant
+    // [`ensure_parent_ready`] documents.
+    if let Some(spec) = &opts.crs_override {
+        crate::package::validate_crs_override(spec)?;
+    }
     let merged = merge_sources(sources)?;
+    // The provenance of the merged header's CRS: `merge_sources` enforces one
+    // shared CRS across the inputs, so the merged header's CRS is the
+    // operator's only if EVERY input's was — one input that declared that CRS
+    // itself makes it source-declared, the operator's value having been a
+    // no-op there. `from_parts` builds a fresh `Source`, so the fact has to be
+    // carried over explicitly or every partition would write the operator's
+    // CRS with no record of its origin.
+    let crs_is_operator_supplied =
+        !sources.is_empty() && sources.iter().all(Source::crs_is_operator_supplied);
     // Fail fast if the parent is non-empty without overwrite; the stale
     // partitions are only purged AFTER the scan below succeeds.
     let stale = ensure_parent_ready(&opts.output_dir, opts.overwrite)?;
@@ -194,7 +211,8 @@ pub fn convert_partitioned(
         merged.features.clone(),
         merged.doc_appearance.clone(),
         SourceFormat::CityJsonSeq,
-    );
+    )
+    .with_crs_operator_supplied(crs_is_operator_supplied);
     let mut full_scan = scan(&full, opts.geometry_encoding)?;
     if opts.generate_lod0 {
         // Reserve the synthesised LoD0 column on the whole-dataset scan so every
@@ -236,7 +254,8 @@ pub fn convert_partitioned(
             subset,
             merged.doc_appearance.clone(),
             SourceFormat::CityJsonSeq,
-        );
+        )
+        .with_crs_operator_supplied(crs_is_operator_supplied);
         let mut sub_opts = opts.clone();
         sub_opts.output_dir = opts.output_dir.join(&label);
         // The parent was prepared above; each partition subdir is fresh, so the

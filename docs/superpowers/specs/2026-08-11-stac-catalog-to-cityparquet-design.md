@@ -276,10 +276,27 @@ out/cityparquet-catalog/
   `--items-dir` (walking the output tree) is the correct aggregation primitive
   rather than a list of this run's successes — a resumed run must aggregate
   everything ever converted.
-- **Reason vocabulary** (closed set, so the histogram is meaningful):
-  `download_failed`, `unsupported_archive`, `unsupported_citygml_version`,
-  `unsupported_cityjson_version`, `no_crs`, `geographic_crs`, `convert_failed`,
-  `empty_collection`, `duplicate_bundle`, `stale_item_index`.
+- **Conformance reason vocabulary** (closed set, so the histogram is
+  meaningful): `download_failed`, `unsupported_archive`,
+  `unsupported_citygml_version`, `unsupported_cityjson_version`, `no_crs`,
+  `geographic_crs`, `convert_failed`, `empty_collection`, `duplicate_bundle`,
+  `stale_item_index`. Every one of these is a statement about the *data*.
+- **`environment`** is a status and reason of its own, outside that vocabulary:
+  the run hit a *local* failure (a full disk, an unwritable `_configs`, a
+  missing `city3dstac`, a broken stream) and the record says nothing about
+  whether the dataset converts. It never enters the conformance histogram and
+  gets its own column in `summary.csv`; without it every environment failure
+  has to be recorded as `convert_failed`, which is how a run with a full log
+  volume comes to publish half a catalogue as unconvertible.
+- **How a local failure is recognised**: an `OSError` raised in this process,
+  whether it reaches the item handler or the collection handler; and a
+  host-failure marker in a *tool's* stderr (`no space left`, `read-only file
+  system`, `disk quota exceeded`, `too many open files`), because a subprocess
+  whose own volume filled exits non-zero exactly as it does when it refuses the
+  data, and only its stderr tells the two apart. An `httpx` failure is always
+  the origin's and is classified *before* the `OSError` test, so a transport
+  failure wrapping a lower-level error keeps its conformance reason
+  (`download_failed`) rather than being reclassified as this machine.
 
 ## 8. Changes to `cityparquet-rs`
 

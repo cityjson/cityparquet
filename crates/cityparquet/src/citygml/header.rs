@@ -59,7 +59,11 @@ pub fn parse_header(path: &Path) -> Result<CityJSON> {
 }
 
 /// Read the preamble and return `(srsName, [minx,miny,minz,maxx,maxy,maxz])`.
-/// Stops at the first `cityObjectMember` — the envelope always precedes it.
+///
+/// Corners are read from the preamble only. When the preamble declares no
+/// `srsName`, the scan continues into city objects looking for one — and for
+/// nothing else — because real exports declare the CRS per object and never
+/// ahead of the first `cityObjectMember`.
 fn scan_envelope(path: &Path) -> Result<(Option<String>, Option<[f64; 6]>)> {
     let file = File::open(path)
         .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
@@ -69,6 +73,19 @@ fn scan_envelope(path: &Path) -> Result<(Option<String>, Option<[f64; 6]>)> {
     let mut srs_name: Option<String> = None;
     let mut lower: Option<[f64; 3]> = None;
     let mut upper: Option<[f64; 3]> = None;
+
+    // Once past the preamble we keep scanning for an `srsName` ONLY — never
+    // for corners. Real exports (e.g. Freiburg's 1.86 GiB file) declare the CRS
+    // on every object's own `gml:boundedBy` and never in the preamble; adopting
+    // one of those envelopes as the DATASET extent would report a single
+    // building's extent and skew the quantisation origin, so corners stay
+    // preamble-only.
+    let mut past_preamble = false;
+    // Bound the fallback: a real file declares its CRS on the first object, so
+    // this stops almost immediately. The cap keeps a pathological CRS-less file
+    // from being read end-to-end just to fail.
+    let mut fallback_events = 0usize;
+    const MAX_FALLBACK_EVENTS: usize = 100_000;
 
     loop {
         buf.clear();
@@ -82,13 +99,26 @@ fn scan_envelope(path: &Path) -> Result<(Option<String>, Option<[f64; 6]>)> {
                     && let Some(s) = get_attr(&e, b"srsName")
                 {
                     srs_name = Some(s);
+                    if past_preamble {
+                        break; // fallback satisfied
+                    }
+                }
+                if past_preamble {
+                    fallback_events += 1;
+                    if fallback_events >= MAX_FALLBACK_EVENTS {
+                        break;
+                    }
+                    continue;
                 }
                 if ns_is(&rr, NS_GML) && name == b"lowerCorner" {
                     lower = parse_corner(&read_text(&mut reader, &mut buf)?);
                 } else if ns_is(&rr, NS_GML) && name == b"upperCorner" {
                     upper = parse_corner(&read_text(&mut reader, &mut buf)?);
                 } else if name == b"cityObjectMember" {
-                    break; // past the preamble
+                    if srs_name.is_some() {
+                        break; // preamble gave us everything
+                    }
+                    past_preamble = true;
                 }
             }
             Event::Eof => break,

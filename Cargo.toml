@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/cityparquet-schema", "crates/cityparquet", "crates/cityparquet-cli", "crates/cityparquet-readbench"]
+# Vendored submodules are independent Cargo projects with their own lockfiles and
+# toolchains; they must not be pulled into this workspace.
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"

@@ -7,8 +7,29 @@ lint:
 fmt:
     cargo fmt --all
 
-check: lint test isolation
+check: lint test isolation vendor-check
     cargo fmt --all --check
+
+# Lint + test the vendored submodules under vendor/ (currently just
+# city3d-stac-tool). They are deliberately kept OUT of this Cargo workspace
+# (see `exclude` in Cargo.toml) because each is an independent upstream project
+# with its own lockfile and toolchain — which also means `cargo --workspace`
+# never reaches them, so the local patches carried there (e.g. the
+# `update-collection --items-dir` flag the catalogue driver depends on) and
+# their tests would otherwise go unverified by `just check`. Mirrors the tool's
+# own verification baseline (fmt + clippy + test), and fails loudly rather than
+# skipping when the submodule has not been checked out.
+vendor-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="vendor/city3d-stac-tool"
+    if [[ ! -f "${dir}/Cargo.toml" ]]; then
+        echo "vendor-check: ${dir} is not checked out; run 'git submodule update --init'" >&2
+        exit 1
+    fi
+    cargo fmt --manifest-path "${dir}/Cargo.toml" --all --check
+    cargo clippy --manifest-path "${dir}/Cargo.toml" --all-targets --all-features -- -D warnings
+    cargo test --manifest-path "${dir}/Cargo.toml" --all-features
 
 isolation:
     cargo tree -p cityparquet-schema --prefix none | grep -E '^(arrow-array|arrow |parquet) ' && exit 1 || echo "isolation ok"
@@ -22,6 +43,20 @@ fixtures:
     # b1_lod2_cs_w_sem = lod2 Solid + boundedBy Wall/Roof/Ground via xlink (semantics).
     curl -sSfo tests/fixtures/b1_lod2_s.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_s.gml
     curl -sSfo tests/fixtures/b1_lod2_cs_w_sem.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_cs_w_sem.gml
+    # Real CityGML 1.0 fixture (jklimke/libcitygml, same pinned commit as the
+    # 2.0 fixtures above): a Berlin open-data sample whose root <CityModel>
+    # binds the default namespace to .../citygml/1.0. Used by
+    # `citygml_version_error` to prove a non-2.0 document fails with a clear
+    # version message instead of a bogus "invalid CityJSON" JSON parse error.
+    curl -sSfo tests/fixtures/berlin_citygml1.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/berlin_open_data_sample_data.citygml
+    # First 400 kB of Freiburg's real LoD2 CityGML 2.0 export: a file that
+    # declares its CRS ONLY inside city objects (srsName appears 60,108 times
+    # in the full file, never before the first cityObjectMember at byte 2534).
+    # A range request, not the whole 1.86 GiB - `parse_header` stops at the
+    # first srsName, so the truncated tail is never read. Used by
+    # `citygml_srsname_fallback`; this exact shape could not be found in any
+    # smaller published CityGML 2.0 file.
+    curl -sSf -r 0-399999 -o tests/fixtures/freiburg_no_preamble_srs.gml https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
     # Zero-object CityJSONSeq fixture (synthetic, no network fetch needed):
     # a single CityJSON header line, empty CityObjects/vertices, no feature
     # lines — the minimal input that scans to zero city-object rows. Used by
@@ -243,3 +278,67 @@ plot RESULTS='bench/read_results':
 # (sizes.png, compression-ratio.png). Needs `uv` on PATH.
 sizes PREPARED_DIR='bench/data/readbench' OUT='bench/read_results':
     uv run --project bench/plot python -m readbench_plot.sizes {{PREPARED_DIR}} {{OUT}}
+
+# ---------------------------------------------------------------------------
+# STAC catalogue -> CityParquet mirror (tools/catalog2cityparquet)
+# ---------------------------------------------------------------------------
+
+# Build the two release binaries the Python driver shells out to: the
+# `cityparquet` converter (one package per catalogue item) and the vendored
+# `city3dstac` aggregator (collection.json / items.parquet / catalog.json).
+# The driver's own defaults point at exactly these two paths, so building them
+# here is what makes the `catalog-*` recipes below runnable from a clean tree.
+# Compiling only; kept OUT of `just check`, which builds and tests both trees
+# anyway (see `vendor-check`).
+catalog-tools:
+    cargo build --release -p cityparquet-cli
+    cargo build --release --manifest-path vendor/city3d-stac-tool/Cargo.toml
+
+# Convert every collection of the published City3D STAC catalogue into a
+# CityParquet mirror under OUT. Resumable: an item whose package already
+# carries a valid STAC Item is skipped, so a re-run continues where the last
+# one stopped. Failures never abort the run — each is recorded in
+# OUT/_reports/ and the next item (or collection) starts, which is what makes
+# the end-of-run histogram a measurement rather than a crash report. Extra
+# driver flags go after the OUT argument (e.g. `just catalog-convert out/x
+# --jobs 4`). Network-dependent, and hours long on the whole catalogue; kept
+# OUT of `just check`/CI.
+catalog-convert OUT='out/cityparquet-catalog' *ARGS: catalog-tools
+    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
+        --out {{OUT}} {{ARGS}}
+
+# Convert a single collection (e.g. `just catalog-convert-collection
+# rotterdam-3d`), which is how a change to the driver or the converter is
+# proven against real data without paying for the whole catalogue.
+# Network-dependent; kept OUT of `just check`/CI.
+catalog-convert-collection ID OUT='out/cityparquet-catalog' *ARGS: catalog-tools
+    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
+        --out {{OUT}} --collection {{ID}} {{ARGS}}
+
+# Rebuild the mirror's ROOT catalog.json from the collection.json files an
+# earlier run left under OUT — no downloads, no conversions, no per-collection
+# re-aggregation. Reach for it when a run was interrupted after its collections
+# were written but before they were linked together. Rebuilding a single
+# collection.json/items.parquet instead needs a plain `catalog-convert` for that
+# collection (already-converted items are skipped, and the aggregation step
+# still runs). Contacts the catalogue root for the mirror's identity metadata,
+# and degrades to defaults if it cannot; kept OUT of `just check`/CI.
+catalog-aggregate OUT='out/cityparquet-catalog': catalog-tools
+    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
+        --out {{OUT}} --aggregate-only
+
+# Reduce a run's cumulative ledger (OUT/_reports) to one outcome per item and
+# print the conformance histogram. This — not a hand roll-up of the JSONL — is
+# how the published number is produced: the files are append-only and
+# resumption re-attempts a previously FAILED item, so an item legitimately
+# appears twice with two different outcomes and counting lines over-counts
+# failures. Needs no network and no binaries.
+catalog-histogram OUT='out/cityparquet-catalog':
+    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
+        histogram {{OUT}}/_reports
+
+# The driver's own test suite. No network and no binaries: every origin,
+# subprocess and catalogue document is faked, so this is safe to run anywhere.
+# Not part of `just check`, which is the Rust workspace's gate — run both.
+catalog-test:
+    uv run --project tools/catalog2cityparquet --extra dev pytest -v

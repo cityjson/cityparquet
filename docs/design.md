@@ -256,9 +256,38 @@ metadata and to `metadata.json` for package-level discovery. Keys include
 `transform`, `extensions`, `attributes` (the inferred attribute-column list;
 any column not named here is a reserved structural column, so no separate
 `reserved_columns` key is written), `default_geometry`, `bbox_column`,
-`sidecar_files`, `source_metadata` (the source header `metadata`, verbatim),
-`appearance_defaults`, and `other` (free-form producer metadata). A GeoParquet
-`geo` key is derived so GeoParquet readers recognise the geometry columns.
+`sidecar_files`, `source_metadata` (the source header `metadata`, verbatim —
+with the one exclusion described below), `appearance_defaults`, and `other`
+(free-form producer metadata). A GeoParquet `geo` key is derived so GeoParquet
+readers recognise the geometry columns.
+
+A source carrying CRS-bearing coordinates but declaring no resolvable CRS is a
+hard conversion error — the writer neither guesses nor writes `crs` absent.
+The CLI's `--crs EPSG:<code>` is the operator's explicit declaration for such a
+source (a no-op for a source that declares its own CRS), which makes the CRS
+resolvable *before* the writer runs; when it is actually applied, `other`
+carries `crs_source: "operator-supplied"` so the footer never implies the
+source declared a CRS it did not carry.
+
+**The one exclusion from `source_metadata`'s verbatim passthrough** follows
+from that: an applied `--crs` is injected into the *in-memory* header so the
+scan can resolve it, and is removed again before the header's `metadata` is
+written out — otherwise the passthrough would assert the source declared a CRS
+it never carried, exactly the untruth `crs_source` exists to prevent. Nothing
+else is ever removed, and for a source that declared its own CRS (including
+one input of several in a merge — `merge_sources` enforces a single shared
+CRS, so one declaring input makes the merged CRS source-declared) the
+`referenceSystem` stays put and no `crs_source` is stamped.
+
+A geographic (degree-valued) CRS is refused wherever it comes from — a CityJSON
+`referenceSystem`, a CityGML `srsName`, or `--crs` — and refused at scan time,
+before any output is touched. Nothing here reprojects and coordinates are
+quantised at millimetre scale, so a degree coordinate (0.001° ≈ 111 m) would be
+destroyed by the encoding: converting such a source "successfully" would write
+a corrupt package and report a success, which is worse than any refusal. The
+known-geographic EPSG list is common-but-not-exhaustive (an unlisted geographic
+code is a documented residual limitation): the writer refuses what it can
+recognise and never guesses from coordinate magnitudes.
 
 `metadata.json` (the `PackageManifest`) is the **authoritative** description
 of a package: profile, LoDs, the list of tables, and the list of sidecar

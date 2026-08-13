@@ -1,0 +1,3 @@
+[submodule "vendor/city3d-stac-tool"]
+	path = vendor/city3d-stac-tool
+	url = https://github.com/cityjson/city3d-stac-tool.git

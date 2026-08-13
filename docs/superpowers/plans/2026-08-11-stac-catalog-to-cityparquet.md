@@ -466,70 +466,38 @@ Sniff the CityModel root in any citygml namespace and name the version."
 
 **Critical detail:** the fallback scan must collect **only** `srsName`, never `lowerCorner`/`upperCorner`. Per-object `gml:boundedBy` envelopes exist in these files, and adopting one as the dataset envelope would set `geographical_extent` to a single building's extent and skew the quantisation origin. Vertices are `i64`, so a `[0,0,0]` translate cannot overflow even for large projected coordinates — leaving the envelope absent is safe.
 
-- [ ] **Step 1: Add a preamble-less CityGML fixture**
+- [ ] **Step 1: Add the real preamble-less CityGML fixture**
 
-The real-world case is Freiburg's 1.86 GiB export, far too large for a fixture. Derive a small one from a fixture already present, by stripping its root envelope:
+This shape is genuinely rare: a survey of German AdV state exports, Luxembourg, PLATEAU and the OGC samples found that every one emits a root `gml:Envelope` carrying `srsName`. The one confirmed real example is Freiburg's own 1.86 GiB export — the very file this fix exists for — so the fixture is a **byte-prefix of that real file**, fetched with an HTTP range request. The bytes are unaltered published data; only the tail is absent, and `parse_header` stops at the first `srsName` (byte ~2,600) so it never reads that far.
 
 Append to the `fixtures` recipe in `justfile`:
 
 ```
-    # A CityGML 2.0 file whose CRS is declared ONLY inside city objects, never
-    # in the preamble — derived from b1_lod2_s.gml by deleting the root
-    # gml:boundedBy and adding srsName to the first building's own boundedBy.
-    # Mirrors Freiburg's 1.86 GiB export (60,108 in-object srsName, none in the
-    # preamble), which is far too large to vendor. Used by
-    # `citygml_srsname_fallback`.
-    python3 scripts/make_preamble_less_fixture.py \
-        tests/fixtures/b1_lod2_s.gml tests/fixtures/no_preamble_srs.gml
-```
-
-Create `scripts/make_preamble_less_fixture.py`:
-
-```python
-"""Derive a CityGML fixture whose CRS appears only inside city objects.
-
-Reads a real CityGML 2.0 file, removes any root-level ``gml:boundedBy`` (the
-preamble envelope) and ensures the first ``cityObjectMember`` carries an
-``srsName``. This reproduces the Freiburg shape — a valid file that declares
-its CRS thousands of times, never before the first city object — without
-vendoring a 1.86 GiB download.
-"""
-
-import re
-import sys
-
-SRS = "urn:ogc:def:crs:EPSG::25832"
-
-
-def main(src: str, dest: str) -> None:
-    text = open(src, encoding="utf-8").read()
-
-    # Drop the root envelope, so nothing before the first cityObjectMember
-    # carries an srsName.
-    head, sep, tail = text.partition("<cityObjectMember")
-    if not sep:
-        raise SystemExit(f"{src}: no cityObjectMember found")
-    head = re.sub(r"<gml:boundedBy>.*?</gml:boundedBy>", "", head, flags=re.S)
-    head = re.sub(r'\s+srsName="[^"]*"', "", head)
-
-    # Give the first city object an envelope that does declare the CRS.
-    inner = (
-        f'<gml:boundedBy><gml:Envelope srsName="{SRS}" srsDimension="3">'
-        "<gml:lowerCorner>0 0 0</gml:lowerCorner>"
-        "<gml:upperCorner>1 1 1</gml:upperCorner>"
-        "</gml:Envelope></gml:boundedBy>"
-    )
-    open(dest, "w", encoding="utf-8").write(head + sep + tail.replace(">", ">" + inner, 1))
-
-
-if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    # First 400 kB of Freiburg's real LoD2 CityGML 2.0 export: a file that
+    # declares its CRS ONLY inside city objects (srsName appears 60,108 times
+    # in the full file, never before the first cityObjectMember at byte 2534).
+    # A range request, not the whole 1.86 GiB - `parse_header` stops at the
+    # first srsName, so the truncated tail is never read. Used by
+    # `citygml_srsname_fallback`; this exact shape could not be found in any
+    # smaller published CityGML 2.0 file.
+    curl -sSf -r 0-399999 -o tests/fixtures/freiburg_no_preamble_srs.gml https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
 ```
 
 Run: `just fixtures`
-Then confirm the shape is what the test needs:
-Run: `python3 -c "t=open('tests/fixtures/no_preamble_srs.gml').read(); i=t.index('<cityObjectMember'); print('srsName in preamble:', 'srsName' in t[:i]); print('srsName after:', 'srsName' in t[i:])"`
-Expected: `srsName in preamble: False` and `srsName after: True`
+Then confirm the shape is what both tests need:
+```bash
+python3 -c "
+t=open('tests/fixtures/freiburg_no_preamble_srs.gml',encoding='utf8',errors='replace').read()
+k=t.find('cityObjectMember')
+print('root 2.0      :', 'xmlns=\"http://www.opengis.net/citygml/2.0\"' in t[:3000])
+print('first COM byte:', k)
+print('srsName before:', 'srsName' in t[:k])
+print('srsName after :', 'srsName' in t[k:])
+print('corners before:', 'lowerCorner' in t[:k])
+print('corners after :', 'lowerCorner' in t[k:])
+"
+```
+Expected (verified 2026-08-11): `root 2.0: True`, `first COM byte: 2534`, `srsName before: False`, `srsName after: True`, `corners before: False`, `corners after: True`. The last two are what make the second test meaningful — there are per-object envelopes to be wrongly adopted.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -551,7 +519,7 @@ use cityparquet::citygml::parse_header;
 #[test]
 fn srs_name_is_found_when_declared_only_inside_city_objects() {
     let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/no_preamble_srs.gml");
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/freiburg_no_preamble_srs.gml");
     let header = parse_header(&path).expect("header must parse");
     let metadata = header
         .metadata
@@ -572,7 +540,7 @@ fn a_per_object_envelope_does_not_become_the_dataset_extent() {
     // adopted as the dataset envelope would set geographical_extent to one
     // building's extent and skew the quantisation origin.
     let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/no_preamble_srs.gml");
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/freiburg_no_preamble_srs.gml");
     let header = parse_header(&path).expect("header must parse");
     assert_eq!(
         header.transform.translate,
@@ -673,8 +641,7 @@ Expected: PASS
 
 ```bash
 git add crates/cityparquet/src/citygml/header.rs \
-        crates/cityparquet/tests/citygml_srsname_fallback.rs \
-        scripts/make_preamble_less_fixture.py justfile
+        crates/cityparquet/tests/citygml_srsname_fallback.rs justfile
 git commit -m "fix(citygml): find srsName declared only inside city objects
 
 scan_envelope stopped at the first cityObjectMember, so a file declaring its
@@ -1238,7 +1205,10 @@ import httpx
 import pytest
 
 from catalog2cityparquet import discover
-from tests.conftest import stac_item, write_json
+# pytest's default prepend import mode puts `tests/` on sys.path (it has no
+# __init__.py), so the helpers are imported as top-level `conftest`, NOT as
+# `tests.conftest` — the latter raises ModuleNotFoundError.
+from conftest import stac_item, write_json
 
 
 @pytest.fixture
@@ -2264,7 +2234,6 @@ def test_a_failing_collection_does_not_stop_the_next(tmp_path, monkeypatch):
             raise RuntimeError("collection exploded")
 
     monkeypatch.setattr(driver, "convert_collection", fake_convert_collection)
-    monkeypatch.setattr(driver, "aggregate_all", lambda *a, **k: None)
 
     ledger = Ledger(tmp_path / "_reports")
     driver.run_collections(["alpha", "boom", "omega"], ledger=ledger, config=driver.Config(
