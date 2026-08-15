@@ -1,0 +1,272 @@
+# CityParquet benchmark corpus — download URLs
+# ============================================
+#
+# Source: the city3d STAC catalogue at
+#   https://storage.googleapis.com/city3d-stac/catalog.json
+# 53 collections; 33 publish items, 20 publish only a collection.json (no items,
+# therefore no downloadable URL) and are skipped entirely.
+#
+# Generated: 2026-08-15. Every URL below was verified live on that date
+# (HTTP status + size via HEAD, or a ranged/streamed GET where the origin
+# rejects HEAD or omits content-length). Sizes are the on-the-wire bytes of
+# the download itself (compressed size for .zip / .gz).
+#
+# Usage — the usable list is exactly:
+#   grep -v '^#' bench/catalogue_benchmark_urls.txt
+#
+# Ordering: smallest and quickest first, multi-gigabyte last, so the list can be
+# truncated at any point and still give a spread of formats and geographies.
+#
+# Sampling: single-item collections contribute their one URL. Large collections
+# contribute a small representative sample (Amsterdam for netherlands-3d-bag,
+# Tokyo for japan-plateau-3d, Manhattan for american-cities-3d). japan-plateau-3d
+# is sampled by CityGML *module* rather than by volume, so the corpus covers a
+# spread of CityObject types (buildings, roads, bridges, vegetation, city
+# furniture, land use, terrain, ...) rather than 15 building tiles.
+#
+# CONVERTER SUPPORT: the CityParquet converter currently cannot read CityGML 1.0
+# or 3.0, CityJSON 1.0, or geographic (degree-valued) CRS. Collections known to
+# be blocked on one of those grounds are listed in the "BLOCKED" section at the
+# very end with their URLs COMMENTED OUT. They are valid CityGML/CityJSON and are
+# retained as a conformance corpus; uncomment them once the reader supports them.
+# The default grep above therefore yields only data the converter can ingest today.
+#
+# ---------------------------------------------------------------------------
+# USABLE — converter-ingestible today
+# ---------------------------------------------------------------------------
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; central Tokyo (Arakawa-ku sheet),
+#   lsld (landslide-risk areas), CityGML 2.0, .gml, 312 KB
+https://assets.cms.plateau.reearth.io/assets/28/eeb030-dcd5-407b-b18e-16cf2e50054c/13118_arakawa-ku_pref_2023_citygml_2_op/udx/lsld/533946_lsld_6697_op.gml
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo (Tachikawa-shi),
+#   trk (Track / footpaths), CityGML 2.0, .gml, 535 KB
+https://assets.cms.plateau.reearth.io/assets/0f/dbc1ba-d722-455f-8193-bc6ed930fd0e/13202_tachikawa-shi_pref_2023_citygml_2_op/udx/trk/53394343_trk_6697_op.gml
+#
+# netherlands-3d-bag — Netherlands 3D BAG Building Models (v20250903); Amsterdam
+#   centre tile 10-432-718, CityJSON 1.1, .city.json.gz, 923 KB
+https://data.3dbag.nl/v20250903/tiles/10/432/718/10-432-718.city.json.gz
+#
+# netherlands-3d-bag — Netherlands 3D BAG Building Models (v20250903); Amsterdam
+#   centre tile 10-432-720, CityJSON 1.1, .city.json.gz, 1.6 MB
+https://data.3dbag.nl/v20250903/tiles/10/432/720/10-432-720.city.json.gz
+#
+# estonia-3d — Estonia 3D Building Models; Anija vald LoD2, CityGML, .zip, 2.5 MB
+#   (note: href is a query-string URL, filename is in the f= parameter)
+https://geoportaal.maaamet.ee/index.php?lang_id=2&plugin_act=otsing&andmetyyp=hooned_lod2&dl=1&f=hooned_lod2-Anija_vald-citygml.zip&page_id=837
+#
+# estonia-3d — Estonia 3D Building Models; national LoD1 canopies/carports,
+#   CityGML, .zip, 11 MB
+https://geoportaal.maaamet.ee/index.php?lang_id=2&plugin_act=otsing&andmetyyp=katusealused_lod1&dl=1&f=katusealused_lod1-eesti-citygml.zip&page_id=837
+#
+# rotterdam-3d — Rotterdam 3D City Model; Delfshaven district, CityJSON, .city.json, 2.6 MB
+https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo Chuo-ku (Tokyo Station tile
+#   53394611), brid (Bridge), CityGML 2.0, .gml, 2.7 MB
+https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/brid/53394611_brid_6697_op.gml
+#
+# the-hague-3d — The Hague 3D City Model (with Terrain); tile 01, CityJSON, .city.json, 3.0 MB
+https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DenHaag_01.city.json
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo Chuo-ku (tile 53394611),
+#   fld (flood inundation areas -> WaterBody), CityGML 2.0, .gml, 5.2 MB
+https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/fld/pref/kandagawa-ryuiki/53394611_fld_6697_l2_op.gml
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; Yokohama (no Tokyo squr tile exists),
+#   squr (Square / plaza), CityGML 2.0, .gml, 5.3 MB
+https://assets.cms.plateau.reearth.io/assets/04/96d45a-a30b-4c9f-88c0-c1323b5a0f86/14100_yokohama-shi_city_2024_citygml_2_op/udx/squr/53391368_squr_6697_op.gml
+#
+# vienna-3d — Vienna 3D City Model; tile 102081, CityJSON, .city.json, 5.4 MB
+https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json
+#
+# georiga-riga-2022 — Riga 3D Building Models; Atgazene neighbourhood LoD2,
+#   CityGML, .gml, 10 MB
+https://data.gov.lv/dati/dataset/rigas-apkaimju-lod2-modeli/resource/2e00bb17-0c84-4ec4-9626-48002d0a47c8/download/atgazene_lod2.gml
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; central Tokyo (Edogawa-ku sheet),
+#   urf (urban planning zones), CityGML 2.0, .gml, 10 MB
+https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/urf/533946_urf_6697_08_op.gml
+#
+# craig-aura-zae-2024 — Auvergne-Rhône-Alpes Economic Activity Zones; Valence LoD3
+#   part 1 (of 21 items), CityGML, .gml, 15 MB
+https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_ZAE%2F26_Valence_Romans_Agglo&files=02_Valence_LOD3_1.gml
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo Chuo-ku (tile 53394611),
+#   ubld (underground buildings — rare, only 5 items nationwide), CityGML 2.0, .gml, 22 MB
+https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/ubld/53394611_ubld_6697_op.gml
+#
+# craig-aura-eleven-sectors-2021 — Auvergne-Rhône-Alpes Eleven Sectors (Experimental);
+#   Sector 5 Clermont, textured, CityGML, .gml, 22 MB
+https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2F2021_aura_3d%2F02_Bati3D%2FCityGML%2FSecteur_05_Clermont&files=Secteur_5_Textured_L93.gml
+#
+# craig-isere-2025 — Isère 3D Building Models (2025); Pays Voironnais LoD2 solar,
+#   CityGML, .zip, 27 MB
+https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d_isere%2F02_CIM%2FCityGML%2FCA_Pays_Voironnais&files=2024_BC2_Voironnais_2020_LoD2_solaire.zip
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo Chuo-ku (tile 53394611),
+#   tran (Road), CityGML 2.0, .gml, 35 MB
+https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/tran/53394611_tran_6697_op.gml
+#
+# craig-aura-zae-2024 — Auvergne-Rhône-Alpes Economic Activity Zones; Vichy 2016 LoD3,
+#   CityGML, .gml, 50 MB
+https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_ZAE%2F03_Vichy_Communaute&files=10_Vichy_2016_LOD3.gml
+#
+# luxembourg-3d — Luxembourg 3D Building Models (Pilot); Diekirch/Bastendorf LoD2,
+#   CityGML, .gml, 55 MB
+https://download.data.public.lu/resources/batiments-3d-lod-2-3-level-of-detail-2-3/20190603-110058/lod2-batiments-diekirch-bastendorf.gml
+#
+# craig-chatel-guyon-riom-2024 — Châtel-Guyon and Riom 3D Building Models (2024);
+#   Riom LoD2 part 2 (of 6 items), CityGML, .gml, 57 MB
+https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FRiom_Chatel-Guyon&files=14_Riom_LOD2_2.gml
+#
+# craig-chatel-guyon-riom-2024 — Châtel-Guyon and Riom 3D Building Models (2024);
+#   Riom LoD2 part 1 (of 6 items), CityGML, .gml, 75 MB
+https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FRiom_Chatel-Guyon&files=14_Riom_LOD2_1.gml
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo Chuo-ku (tile 53394611),
+#   veg (vegetation: PlantCover + SolitaryVegetationObject), CityGML 2.0, .gml, 61 MB
+https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/veg/53394611_veg_6697_op.gml
+#
+# new-york-doitt-3d — New York City 3D Building Models (NYC OTI); merged district DA13,
+#   CityJSON, .city.json, 105 MB
+https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo Chuo-ku (tile 53394611),
+#   frn (CityFurniture), CityGML 2.0, .gml, 112 MB
+https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/frn/53394611_frn_6697_op.gml
+#
+# craig-aura-zae-2024 — Auvergne-Rhône-Alpes Economic Activity Zones; Clermont LoD3
+#   part 1 (of 21 items), CityGML, .gml, 154 MB
+https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_ZAE%2F63_Clermont_Auvergne_Metropole&files=03_Clermont_LOD3_1.gml
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo Chuo-ku (tile 53394611),
+#   bldg (Building, LoD1-2 with textures), CityGML 2.0, .gml, 161 MB
+https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/bldg/53394611_bldg_6697_op.gml
+#
+# craig-vichy-unesco-2024 — Vichy UNESCO Perimeter 3D Building Models (2024); LoD3,
+#   CityGML, .gml, 205 MB
+https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FVichy_UNESCO&files=2024_BC1_Vichy_UNESCO_2021_LoD3.gml
+#
+# zurich-3d — Zürich 3D City Model; building LoD2 v10, CityJSON, .city.json, 279 MB
+https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json
+#
+# stadt-hannover-2024 — Hannover 3D Building Models; city-wide LoD2, CityGML, .zip, 300 MB
+https://opengeodata.hannover-stadt.de/Stadtmodell_Hannover_CityGML_LOD2.zip
+#
+# craig-clermont-ferrand-2024 — Clermont-Ferrand Area 3D Building Models (2024);
+#   LoD2 textured part 1, CityGML, .gml, 306 MB
+https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FClermont&files=Clermont_LoD2_texture_1.gml
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo Nakano-ku WHOLE-CITY BUNDLE.
+#   NOTE: 320 MB COMPRESSED — a .zip containing a udx/<module>/ directory tree of many
+#   GMLs across all modules, i.e. a multi-input merge rather than a single tile.
+#   Smallest of the Tokyo ward bundles (Chiyoda 1.8 GB, Chuo 2.2 GB, Toshima 1.2 GB).
+#   CityGML 2.0, .zip, 320 MB compressed
+https://assets.cms.plateau.reearth.io/assets/f1/25d769-7ac9-4aca-ba2a-d1d266d08805/13114_nakano-ku_pref_2023_citygml_2_op.zip
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; central Tokyo (Edogawa-ku sheet),
+#   htd (high-tide inundation -> WaterBody), CityGML 2.0, .gml, 508 MB
+https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/htd/13_1/533946_htd_6697_op.gml
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; central Tokyo (Edogawa-ku sheet),
+#   luse (LandUse), CityGML 2.0, .gml, 535 MB
+https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/luse/533946_luse_6697_op.gml
+#
+# japan-plateau-3d — Japan PLATEAU 3D City Models; central Tokyo (Edogawa-ku sheet),
+#   dem (ReliefFeature / TIN terrain), CityGML 2.0, .gml, 599 MB
+https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/dem/533946_dem_6697_op.gml
+#
+# municipal-kuopio-2021 — Kuopio 3D Building Models (Textured); LoD2.2 2022 textured,
+#   CityGML, .zip, 1.43 GB. NOTE: HEAD returns 403 — the URL 302-redirects, so fetch
+#   with `curl -L` (or wget) and a browser User-Agent.
+https://avoindata.suomi.fi/data/dataset/1cda485e-0c0a-4f77-9f7d-185bae9144f7/resource/b4aa97c2-f41c-4863-82f0-aaa88687a20b/download/kuopion_3d_rakennukset_citygml_lod2_2_2022_textured.zip
+#
+# stadt-freiburg-2024 — 3D Building Model LoD2 Freiburg; city-wide, CityGML, .gml, 1.86 GB
+https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
+#
+# ---------------------------------------------------------------------------
+# BLOCKED — valid CityGML/CityJSON, NOT ingestible by the converter today.
+# URLs deliberately commented out so the default grep skips them.
+# Reasons: CityGML 1.0/3.0, CityJSON 1.0, or a geographic (degree-valued) CRS.
+# ---------------------------------------------------------------------------
+#
+# laiv-mecklenburg-vorpommern — Mecklenburg-Vorpommern 3D Building Models (CityGML version),
+#   .zip, 658 BYTES — a real but essentially empty tile (1.5 KB GML inside)
+# https://www.geodaten-mv.de/dienste/gebaeude_download?index=0&dataset=8397b554-5cb9-4274-8be8-c20490d9a6e8&file=lod2_33_206_5920_2_gml.zip
+#
+# lgb-brandenburg — Brandenburg 3D Building Models (CityGML version), .zip, 13 KB
+#   (tiny but valid: 66 KB GML + metadata HTML inside)
+# https://data.geobasis-bb.de/geobasis/daten/3d_gebaeude/lod2_gml/lod2_33250-5889.zip
+#
+# american-cities-3d — American Cities 3D Building Models (EPSG:4979 geographic CRS);
+#   Manhattan / New York County tile 001, CityGML, .zip, 938 KB
+# https://s3.dualstack.us-east-1.amazonaws.com/opencitymodel/2019-jun/gml/NewYork/36061/NewYork-36061-001.zip
+#
+# american-cities-3d — American Cities 3D Building Models (EPSG:4979 geographic CRS);
+#   Manhattan / New York County tile 000, CityGML, .zip, 13 MB
+# https://s3.dualstack.us-east-1.amazonaws.com/opencitymodel/2019-jun/gml/NewYork/36061/NewYork-36061-000.zip
+#
+# geobasis-nrw — North Rhine-Westphalia 3D Building Models (CityGML version),
+#   LoD2 tile 32_280_5657_1, .gml, 1.4 MB
+# https://www.opengeodata.nrw.de/produkte/geobasis/3dg/lod2_gml/lod2_gml/LoD2_32_280_5657_1_NW.gml
+#
+# montreal-3d — Montréal 3D City Model (CityGML version); VM05 2009 CityJSON conversion,
+#   .city.json, 5.4 MB
+# https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/VM05_2009.city.json
+#
+# montreal-3d — Montréal 3D City Model (CityGML version); Ville-Marie sheet vm01 2013,
+#   CityGML, .zip, 129 MB. NOTE: this origin returns HTTP 403 without a browser
+#   User-Agent — send one when downloading.
+# https://donnees.montreal.ca/dataset/58dd9b17-8242-4013-bf9d-0c8d3d93f081/resource/14a3571e-9d55-43fb-ada4-4428403cf8bc/download/vm012013.zip
+#
+# lgln-niedersachsen — Lower Saxony 3D Building Models (CityGML version),
+#   LoD2 tile 32_598_5897_1, .gml, 18 MB
+# https://lod2.s3.eu-de.cloud-object-storage.appdomain.cloud/LoD2_32_598_5897_1_ni.gml
+#
+# lvermgeo-rheinland-pfalz — Rhineland-Palatinate 3D Building Models (CityGML version),
+#   LoD2 tile 32_388_5490_2, .gml, 24 MB
+# https://geobasis-rlp.de/data/geb3dlo/current/gml/LoD2_32_388_5490_2_RP.gml
+#
+# ingolstadt-3d — Ingolstadt 3D Road Space Model (CityGML version); combined LoD2
+#   buildings, .gml.gz, 29 MB
+# https://github.com/savenow/lod3-road-space-models/raw/refs/heads/main/models/building/lod2/combined/citygml/lod2_building_models__v3.gml.gz
+#
+# ingolstadt-3d — Ingolstadt 3D Road Space Model (CityGML version); combined LoD3
+#   buildings, .gml, 58 MB
+# https://raw.githubusercontent.com/savenow/lod3-road-space-models/main/models/building/lod3/combined/citygml/lod3_building_models__v3.gml
+#
+# singapore-hdb-3d — Singapore HDB 3D Building Models (CityJSON 1.0),
+#   .json, 87 MB
+# https://raw.githubusercontent.com/ualsg/hdb3d-data/master/hdb.json
+#
+# stadt-leipzig — Leipzig 3D Building Models (CityGML version); city-wide LoD2,
+#   .zip, 128 MB
+# https://geodaten.leipzig.de/open_data/organisationseinheit/Amt_fuer_Geoinformation_und_Bodenordnung/3d/LoD2/GEB3D_Leipzig_LoD2_CityGML.zip
+#
+# geobremen-bremen — Bremen 3D Building Models (CityGML version); city-wide LoD2,
+#   .zip, 385 MB
+# https://gdi2.geo.bremen.de/inspire/download/LoD/data/LOD2_CITYGML_HB.zip
+#
+# hamburg-3d — Hamburg 3D City Model LoD1/LoD2 (CityGML version); city-wide snapshot,
+#   .GML, 446 MB. NOTE: plain HTTP origin (no TLS).
+# http://archiv.transparenz.hamburg.de/hmbtgarchive/HMDK/lod2-de_hh_2016-11-22_21283_snap_1.GML
+#
+# lvermgeo-sachsen-anhalt — Saxony-Anhalt 3D Building Models (CityGML version);
+#   LoD2 bundle 1, .zip, 838 MB
+# https://www.geodatenportal.sachsen-anhalt.de/gfds_webshare/download/LVermGeo/Geodatenportal/Online-Bereitstellung-LVermGeo/3D/LoD2-1.zip
+#
+# ---------------------------------------------------------------------------
+# EXCLUDED — collection publishes items but every asset URL is dead
+# ---------------------------------------------------------------------------
+# linz-3d — Linz 3D City Model, 156 items, all hrefs under
+#   https://geo.data.linz.gv.at/katalog/geodata/3d_geo_daten_lod2/2018/ return HTTP 404.
+#   No usable URL; excluded entirely.
+#
+# ---------------------------------------------------------------------------
+# SKIPPED — 20 collections publish only a collection.json, no items, no URLs:
+#   berlin-3d, bordeaux-3d, brussels-3d, bvv-bavaria, dresden-3d, espoo-3d,
+#   geopoz-poznan, geosn-sachsen, helsinki-3d, hvbg-hessen, ipr-prague-2020,
+#   lgl-baden-wurttemberg-2024, lvermgeo-schleswig-holstein, lyon-3d, melbourne-3d,
+#   new-york-tum-3d, potsdam-3d, toronto-3d, vantaa-3d, wellington-3d
+# ---------------------------------------------------------------------------
