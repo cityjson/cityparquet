@@ -33,7 +33,7 @@ use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder};
 use crate::scan::ScanResult;
 use crate::source::{FeatureIter, Source};
 use crate::wkb_read::DecodedGeometry;
-use crate::wkb_write::{VertexPool, geometry_to_wkb, point_to_wkb};
+use crate::wkb_write::{VertexPool, geometry_bbox, geometry_to_wkb, point_to_wkb};
 
 /// CityObject members carried by a dedicated column, and therefore stripped
 /// from the catch-all `other` column (§5.1, G9). `children_roles` has its own
@@ -135,13 +135,15 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
     });
 }
 
-/// Union of bboxes over an object's own geometries only (no descendant walk).
+/// Union of bboxes over an object's own geometries only (no descendant
+/// walk) — via the bbox-only walker, not a full WKB encode whose bytes were
+/// discarded (review P4; the walker's bbox is bitwise-equal by test).
 fn own_geometry_bbox(co: &CityObject, pool: &VertexPool) -> Result<Option<[f64; 6]>> {
     let mut acc = None;
     if let Some(geoms) = &co.geometry {
         for geom in geoms {
-            if let Some(outcome) = geometry_to_wkb(geom, pool)? {
-                union_bbox(&mut acc, outcome.bbox);
+            if let Some(bbox) = geometry_bbox(geom, pool)? {
+                union_bbox(&mut acc, bbox);
             }
         }
     }
