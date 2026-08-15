@@ -1403,8 +1403,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         let mut local_appearance =
             restore_appearance.then(|| LocalAppearance::new(&global_materials, &global_textures));
 
-        for (obj, material, texture) in &entries {
-            let mut co = obj.object.clone();
+        for (obj, material, texture) in entries {
+            let mut co = obj.object;
             let mut geoms = Vec::with_capacity(obj.geometries.len());
             for (lod, decoded, props) in &obj.geometries {
                 let gtype: GeometryType = props
@@ -1460,8 +1460,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                         // Core profile (no appearance-definition sidecars):
                         // the index maps must be dropped, not re-attached —
                         // see `has_appearance_for_lod`'s docs.
-                        if has_appearance_for_lod(material, &lod_key)
-                            || has_appearance_for_lod(texture, &lod_key)
+                        if has_appearance_for_lod(&material, &lod_key)
+                            || has_appearance_for_lod(&texture, &lod_key)
                         {
                             appearance_refs_dropped += 1;
                         }
@@ -1520,7 +1520,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 }
                 co = serde_json::from_value(co_value)?;
             }
-            feature.add_co(obj.id.clone(), co);
+            feature.add_co(obj.id, co);
         }
 
         feature.vertices = interner.finish();
