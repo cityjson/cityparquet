@@ -334,11 +334,26 @@ fn build_attr_pred(eq: Option<&str>, ge: Option<f64>, le: Option<f64>) -> Result
     })
 }
 
-/// `getrusage(RUSAGE_SELF).ru_maxrss`, in BYTES. On macOS `ru_maxrss` is
-/// natively reported in bytes (a real cross-platform gotcha: Linux reports
-/// it in KiB instead — the milestone's methodology doc discloses this;
-/// this crate targets macOS development machines, so no `cfg`-gated
-/// conversion is applied here).
+/// Convert a raw `getrusage(RUSAGE_SELF).ru_maxrss` reading into BYTES.
+///
+/// The unit is platform-defined: Linux reports **KiB** (`getrusage(2)`:
+/// "expressed in kilobytes"); macOS/BSD reports **bytes**. Kept as a pure
+/// function so the conversion itself is unit-testable. Non-Linux, non-macOS
+/// platforms fall through to the raw value (BSD-lineage bytes) — this crate
+/// only ever runs on the two.
+fn rss_to_bytes(raw: i64) -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        (raw as u64).saturating_mul(1024)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        raw as u64
+    }
+}
+
+/// `getrusage(RUSAGE_SELF).ru_maxrss`, normalised to BYTES on every
+/// platform via [`rss_to_bytes`].
 fn max_rss_bytes() -> Result<u64> {
     // SAFETY: `usage` is zero-initialized and only read after `getrusage`
     // returns success; `RUSAGE_SELF` and a valid `&mut rusage` are exactly
@@ -351,5 +366,22 @@ fn max_rss_bytes() -> Result<u64> {
         }
         usage
     };
-    Ok(usage.ru_maxrss as u64)
+    Ok(rss_to_bytes(usage.ru_maxrss))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rss_to_bytes;
+
+    /// P1 regression: `ru_maxrss`'s unit is platform-defined — KiB on Linux
+    /// (`getrusage(2)`), bytes on macOS/BSD. Before `rss_to_bytes` existed
+    /// the raw value was reported as bytes unconditionally, under-reporting
+    /// Linux peak RSS 1024x in every Linux-produced results CSV.
+    #[test]
+    fn rss_to_bytes_converts_the_platform_unit_to_bytes() {
+        #[cfg(target_os = "linux")]
+        assert_eq!(rss_to_bytes(2048), 2048 * 1024, "Linux ru_maxrss is KiB");
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(rss_to_bytes(2048), 2048, "macOS/BSD ru_maxrss is bytes");
+    }
 }
