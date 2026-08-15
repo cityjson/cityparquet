@@ -239,21 +239,21 @@ const WRAP_MODES: [&str; 5] = ["none", "wrap", "mirror", "clamp", "border"];
 const TEXTURE_TYPES: [&str; 3] = ["unknown", "specific", "typical"];
 
 /// Read one `LIST<DOUBLE>` column value back as a `serde_json::Value` array
-/// (`None` when the row is null). The inverse of [`push_opt_double_list`].
-fn opt_double_list_json(arr: &ListArray, row: usize) -> Option<Value> {
+/// (`Ok(None)` when the row is null). The inverse of
+/// [`push_opt_double_list`]. A non-`Float64` child array — a corrupt or
+/// foreign file — is a `Schema` error naming the column, never a panic
+/// (same policy as [`downcast`] everywhere else on this read path).
+fn opt_double_list_json(arr: &ListArray, row: usize, name: &str) -> Result<Option<Value>> {
     if arr.is_null(row) {
-        return None;
+        return Ok(None);
     }
     let values = arr.value(row);
-    let floats: &Float64Array = values
-        .as_any()
-        .downcast_ref()
-        .expect("LIST<DOUBLE> column's child array must be Float64");
-    Some(Value::Array(
+    let floats: &Float64Array = downcast(values.as_ref(), name)?;
+    Ok(Some(Value::Array(
         (0..floats.len())
             .map(|i| serde_json::json!(floats.value(i)))
             .collect(),
-    ))
+    )))
 }
 
 /// The remaining members of `obj` not in `known`, as a JSON object (`None`
@@ -812,13 +812,13 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
             if let Some(v) = opt_f64(ambient_intensity, row) {
                 map.insert("ambientIntensity".to_string(), serde_json::json!(v));
             }
-            if let Some(v) = opt_double_list_json(diffuse_color, row) {
+            if let Some(v) = opt_double_list_json(diffuse_color, row, "diffuseColor")? {
                 map.insert("diffuseColor".to_string(), v);
             }
-            if let Some(v) = opt_double_list_json(specular_color, row) {
+            if let Some(v) = opt_double_list_json(specular_color, row, "specularColor")? {
                 map.insert("specularColor".to_string(), v);
             }
-            if let Some(v) = opt_double_list_json(emissive_color, row) {
+            if let Some(v) = opt_double_list_json(emissive_color, row, "emissiveColor")? {
                 map.insert("emissiveColor".to_string(), v);
             }
             if let Some(v) = opt_f64(transparency, row) {
@@ -921,7 +921,7 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
             if let Some(v) = opt_str(texture_type, row) {
                 map.insert("textureType".to_string(), Value::String(v));
             }
-            if let Some(v) = opt_double_list_json(border_color, row) {
+            if let Some(v) = opt_double_list_json(border_color, row, "borderColor")? {
                 map.insert("borderColor".to_string(), v);
             }
             // Our own writer no longer emits this column (§11.3, G16), but a
@@ -1061,6 +1061,87 @@ mod tests {
                 "materials.{col} must be LIST<DOUBLE>"
             );
         }
+    }
+
+    /// P2 regression: a corrupt/foreign materials.parquet whose LIST<DOUBLE>
+    /// column carries a non-Float64 child must surface as the crate's Schema
+    /// error, never a panic (the read path used to `.expect(...)` the child
+    /// downcast).
+    #[test]
+    fn foreign_materials_with_wrong_list_child_type_errors_not_panics() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materials.parquet");
+
+        // The real schema, with diffuseColor's child swapped Float64 -> Int64.
+        let base = sidecar_schemas::materials_schema();
+        let fields: Vec<Arc<Field>> = base
+            .fields()
+            .iter()
+            .map(|f| {
+                if f.name() == "diffuseColor" {
+                    Arc::new(Field::new(
+                        "diffuseColor",
+                        DataType::List(Arc::new(Field::new("item", DataType::Int64, false))),
+                        true,
+                    ))
+                } else {
+                    Arc::clone(f)
+                }
+            })
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+
+        let mut id = Int64Builder::new();
+        id.append_value(0);
+        let mut name = StringBuilder::new();
+        name.append_null();
+        let mut ambient = Float64Builder::new();
+        ambient.append_null();
+        // The corrupt column: a NON-NULL Int64 list cell, so the read path
+        // reaches the child downcast.
+        let mut diffuse = ListBuilder::new(Int64Builder::new()).with_field(Arc::new(Field::new(
+            "item",
+            DataType::Int64,
+            false,
+        )));
+        diffuse.values().append_value(1);
+        diffuse.append(true);
+        let mut specular = double_list_builder();
+        specular.append(false);
+        let mut emissive = double_list_builder();
+        emissive.append(false);
+        let mut transparency = Float64Builder::new();
+        transparency.append_null();
+        let mut shininess = Float64Builder::new();
+        shininess.append_null();
+        let mut is_smooth = BooleanBuilder::new();
+        is_smooth.append_null();
+        let mut other = StringBuilder::new();
+        other.append_null();
+
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(id.finish()),
+                Arc::new(name.finish()),
+                Arc::new(ambient.finish()),
+                Arc::new(diffuse.finish()),
+                Arc::new(specular.finish()),
+                Arc::new(emissive.finish()),
+                Arc::new(transparency.finish()),
+                Arc::new(shininess.finish()),
+                Arc::new(is_smooth.finish()),
+                Arc::new(other.finish()),
+            ],
+        )
+        .unwrap();
+        write_batch(&path, schema, batch).unwrap();
+
+        let err = read_materials(&path).expect_err("wrong LIST child type must be an error");
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected a Schema error, got {err:?}"
+        );
     }
 
     #[test]
