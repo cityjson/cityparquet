@@ -442,6 +442,83 @@ pub fn geometry_to_wkb(geom: &Geometry, pool: &VertexPool) -> Result<Option<WkbO
     }))
 }
 
+/// Every kept coordinate of one normalised polygon, unioned into `bbox` —
+/// the walker's mirror of [`write_polygon`], minus the byte writing. The
+/// closing coordinate `write_polygon` re-emits is `ring[0]` again, so it
+/// can never change the bbox and is deliberately not re-added here.
+fn walk_polygon(rings: &[&[usize]], pool: &VertexPool, bbox: &mut Bbox) -> Result<()> {
+    for ring in rings {
+        for &idx in *ring {
+            bbox.add(pool.coord(idx)?);
+        }
+    }
+    Ok(())
+}
+
+/// Bbox-and-validation-only walker: the exact coordinate walk
+/// [`geometry_to_wkb`] performs — the same [`boundaries`] shape checks, the
+/// same [`normalise_surface`]/[`normalise_shells`] structural drops, the
+/// same [`VertexPool::coord`] index-range and 2^53 guards — without ever
+/// materialising WKB bytes. Same `Ok(None)` cases (`GeometryInstance`;
+/// nothing kept after drops/empty boundaries), same errors, and its bbox is
+/// bitwise-equal to [`WkbOutcome::bbox`] for every geometry (guarded by
+/// this module's unit tests and the `wkb_real_data` fixture sweep).
+///
+/// This is what lets the scan's validation pass and the encoder's
+/// parent-bbox fallback stop paying for a full WKB encode whose bytes they
+/// immediately discard (review P4).
+pub fn geometry_bbox(geom: &Geometry, pool: &VertexPool) -> Result<Option<[f64; 6]>> {
+    let mut bbox = Bbox::new();
+    let mut drops = Drops::default();
+    match geom.thetype {
+        GeometryType::GeometryInstance => return Ok(None),
+        GeometryType::MultiPoint => {
+            let idxs: Vec<usize> = boundaries(geom)?;
+            for idx in idxs {
+                bbox.add(pool.coord(idx)?);
+            }
+        }
+        GeometryType::MultiLineString => {
+            let lines: Vec<Vec<usize>> = boundaries(geom)?;
+            for line in lines {
+                for idx in line {
+                    bbox.add(pool.coord(idx)?);
+                }
+            }
+        }
+        GeometryType::MultiSurface | GeometryType::CompositeSurface => {
+            let surfaces: Vec<Vec<Vec<usize>>> = boundaries(geom)?;
+            for (pos, surface) in surfaces.iter().enumerate() {
+                if let Some(kept) = normalise_surface(surface, pos, &mut drops) {
+                    walk_polygon(&kept, pool, &mut bbox)?;
+                }
+            }
+        }
+        GeometryType::Solid => {
+            let shells: Vec<Vec<Vec<Vec<usize>>>> = boundaries(geom)?;
+            let mut pos = 0;
+            for face in normalise_shells(&shells, &mut pos, &mut drops) {
+                walk_polygon(&face, pool, &mut bbox)?;
+            }
+        }
+        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
+            let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> = boundaries(geom)?;
+            let mut pos = 0;
+            for solid in &solids {
+                for face in normalise_shells(solid, &mut pos, &mut drops) {
+                    walk_polygon(&face, pool, &mut bbox)?;
+                }
+            }
+        }
+    }
+    if bbox.count == 0 {
+        // Mirrors geometry_to_wkb: no coordinates kept means no bbox — an
+        // infinite placeholder bbox is worse than none.
+        return Ok(None);
+    }
+    Ok(Some(bbox.bounds))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -882,5 +959,84 @@ mod tests {
             16,
             "first face's ring must round-trip its source coordinate count"
         );
+    }
+
+    /// P4: the bbox/validate-only walker must agree with the WKB encoder —
+    /// same Some/None outcome, bitwise-equal bbox — for every representative
+    /// geometry type, including drop-normalised cases.
+    #[test]
+    fn geometry_bbox_matches_wkb_bbox_for_representative_geometries() {
+        let (v, t) = pool_and(1.0);
+        let pool = VertexPool::new(&v, &t);
+        let cases: Vec<(cjseq::GeometryType, serde_json::Value)> = vec![
+            // MultiSurface with an interior ring (hole) AND a degenerate surface
+            // that geometry_to_wkb drops — the walker must drop it identically.
+            (
+                cjseq::GeometryType::MultiSurface,
+                serde_json::json!([[[0, 1, 2, 3], [0, 1, 4]], [[0, 1, 0]]]),
+            ),
+            (
+                cjseq::GeometryType::Solid,
+                serde_json::json!([[[[0, 1, 2, 3]], [[0, 1, 4]]]]),
+            ),
+            (
+                cjseq::GeometryType::MultiSolid,
+                serde_json::json!([[[[[0, 1, 2]]]], [[[[1, 2, 4]]]]]),
+            ),
+            (cjseq::GeometryType::MultiPoint, serde_json::json!([0, 4])),
+            (
+                cjseq::GeometryType::MultiLineString,
+                serde_json::json!([[0, 1], [2, 3]]),
+            ),
+            // Everything degenerate: both paths must agree on None.
+            (
+                cjseq::GeometryType::MultiSurface,
+                serde_json::json!([[[0, 1, 0]]]),
+            ),
+            // Empty boundaries: both paths must agree on None.
+            (cjseq::GeometryType::MultiPoint, serde_json::json!([])),
+        ];
+        for (thetype, boundaries) in cases {
+            let geom = cjseq::Geometry {
+                thetype,
+                lod: Some("2".into()),
+                boundaries,
+                semantics: None,
+                material: None,
+                texture: None,
+                template: None,
+                transformation_matrix: None,
+            };
+            let via_wkb = geometry_to_wkb(&geom, &pool).unwrap().map(|o| o.bbox);
+            let via_walker = geometry_bbox(&geom, &pool).unwrap();
+            assert_eq!(
+                via_walker, via_wkb,
+                "walker/WKB bbox mismatch for {:?}",
+                geom.thetype
+            );
+        }
+    }
+
+    /// The walker must reject exactly what the encoder rejects: an
+    /// out-of-range vertex index errors on both paths.
+    #[test]
+    fn geometry_bbox_errors_where_the_encoder_errors() {
+        let (v, t) = pool_and(1.0);
+        let pool = VertexPool::new(&v, &t);
+        let geom = cjseq::Geometry {
+            thetype: cjseq::GeometryType::MultiPoint,
+            lod: Some("1".into()),
+            boundaries: serde_json::json!([99]),
+            semantics: None,
+            material: None,
+            texture: None,
+            template: None,
+            transformation_matrix: None,
+        };
+        assert!(geometry_to_wkb(&geom, &pool).is_err());
+        assert!(matches!(
+            geometry_bbox(&geom, &pool),
+            Err(CityParquetError::Geometry(_))
+        ));
     }
 }
