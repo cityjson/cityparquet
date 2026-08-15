@@ -231,8 +231,7 @@ fn face_count_i32(n: usize) -> Result<i32> {
 fn solid_shells(geom: &Geometry, dropped: &[usize]) -> Result<Option<Vec<Vec<i32>>>> {
     match geom.thetype {
         GeometryType::Solid => {
-            let shells: Vec<Vec<Vec<Vec<usize>>>> =
-                serde_json::from_value(geom.boundaries.clone())?;
+            let shells: Vec<Vec<Vec<Vec<usize>>>> = crate::wkb_write::boundaries(geom)?;
             let mut pos = 0;
             let faces: Vec<i32> = shells
                 .iter()
@@ -245,8 +244,7 @@ fn solid_shells(geom: &Geometry, dropped: &[usize]) -> Result<Option<Vec<Vec<i32
             Ok(Some(vec![faces]))
         }
         GeometryType::MultiSolid | GeometryType::CompositeSolid => {
-            let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> =
-                serde_json::from_value(geom.boundaries.clone())?;
+            let solids: Vec<Vec<Vec<Vec<Vec<usize>>>>> = crate::wkb_write::boundaries(geom)?;
             let mut pos = 0;
             let faces: Vec<Vec<i32>> = solids
                 .iter()

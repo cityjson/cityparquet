@@ -203,7 +203,10 @@ fn coord(buf: &mut Vec<u8>, c: [f64; 3], bbox: &mut Bbox) {
 }
 
 pub(crate) fn boundaries<T: serde::de::DeserializeOwned>(geom: &Geometry) -> Result<T> {
-    serde_json::from_value(geom.boundaries.clone()).map_err(|e| {
+    // Deserialize BY REFERENCE (`impl Deserializer for &Value`): the old
+    // `from_value(geom.boundaries.clone())` deep-cloned the whole boundary
+    // tree per geometry only to consume the clone immediately (review P5a).
+    T::deserialize(&geom.boundaries).map_err(|e| {
         CityParquetError::Geometry(format!(
             "boundaries do not match {:?} shape: {e}",
             geom.thetype
