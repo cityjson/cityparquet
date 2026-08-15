@@ -1566,8 +1566,12 @@ fn write_output(
         fs::create_dir_all(parent)
             .map_err(|e| io_err(format!("cannot create {}: {e}", parent.display())))?;
     }
-    let mut file = fs::File::create(output)
+    let file = fs::File::create(output)
         .map_err(|e| io_err(format!("cannot create {}: {e}", output.display())))?;
+    // One buffered writer for the whole output: the Seq arm writes one line
+    // per feature, and an unbuffered `writeln!` per feature was one write
+    // syscall per feature (review P5c).
+    let mut file = std::io::BufWriter::new(file);
     match format {
         OutputFormat::Seq => {
             writeln!(file, "{}", serde_json::to_string(&header)?)
@@ -1583,6 +1587,10 @@ fn write_output(
                 .map_err(|e| io_err(format!("write error: {e}")))?;
         }
     }
+    // Explicit: `BufWriter`'s `Drop` swallows flush errors, so a full disk
+    // would otherwise truncate the export silently.
+    file.flush()
+        .map_err(|e| io_err(format!("write error: {e}")))?;
     Ok(())
 }
 
