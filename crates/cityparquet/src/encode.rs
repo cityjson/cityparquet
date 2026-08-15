@@ -54,17 +54,38 @@ pub(crate) const OTHER_RESERVED_MEMBERS: [&str; 7] = [
     "address",
 ];
 
+/// The object serialised to its JSON member map — computed ONCE per row by
+/// [`RowWriter::push_object`] and shared by every consumer needing members
+/// cjseq has no typed field for (`children_roles`, `address`, the `other`
+/// leftovers), instead of each consumer re-serialising the whole object
+/// (review P5b: three whole-object serialisations per row).
+pub(crate) fn object_json(co: &CityObject) -> Result<serde_json::Map<String, Value>> {
+    match serde_json::to_value(co)? {
+        Value::Object(map) => Ok(map),
+        _ => Ok(serde_json::Map::new()),
+    }
+}
+
+/// The `other` payload from an already-serialised member map: every member
+/// not carried by a dedicated column (§5.1, G9). Consumes the map — the
+/// leftovers ARE the return value, no clone.
+pub(crate) fn unmapped_from_json(
+    mut co_json: serde_json::Map<String, Value>,
+) -> serde_json::Map<String, Value> {
+    for key in OTHER_RESERVED_MEMBERS {
+        co_json.remove(key);
+    }
+    co_json
+}
+
 /// The source object's unmapped members — every member not carried by a
 /// dedicated column — as the `other` payload (§5.1, G9). Empty when the object
 /// has none; cjseq skips `None` typed fields, so no null members appear.
+/// Standalone convenience over [`object_json`] + [`unmapped_from_json`] for
+/// callers outside the row loop (the comparator); `push_object` uses the split
+/// pieces to serialise the object exactly once per row.
 pub(crate) fn unmapped_object_members(co: &CityObject) -> Result<serde_json::Map<String, Value>> {
-    let Value::Object(mut map) = serde_json::to_value(co)? else {
-        return Ok(serde_json::Map::new());
-    };
-    for key in OTHER_RESERVED_MEMBERS {
-        map.remove(key);
-    }
-    Ok(map)
+    Ok(unmapped_from_json(object_json(co)?))
 }
 
 /// Collect an object's diverted attributes (those whose name is in
@@ -630,13 +651,19 @@ fn build_location_wkb(location: &Value, pool: &VertexPool) -> Option<Vec<u8>> {
 /// distinct from `None`: an explicit empty array is a genuine (if unusual)
 /// value, not "no address at all".
 pub(crate) fn raw_address_members(co: &CityObject) -> Result<Option<Vec<Value>>> {
-    let Value::Object(map) = serde_json::to_value(co)? else {
-        return Ok(None);
-    };
-    Ok(match map.get("address") {
+    Ok(address_members_from_json(&object_json(co)?))
+}
+
+/// [`raw_address_members`]'s core over an already-serialised member map — the
+/// form [`RowWriter::push_object`] uses, so the row loop serialises the object
+/// only once (review P5b).
+pub(crate) fn address_members_from_json(
+    co_json: &serde_json::Map<String, Value>,
+) -> Option<Vec<Value>> {
+    match co_json.get("address") {
         Some(Value::Array(arr)) => Some(arr.clone()),
         _ => None,
-    })
+    }
 }
 
 /// Build the reserved `address` column's row value: one [`AddressRow`] per
@@ -644,8 +671,11 @@ pub(crate) fn raw_address_members(co: &CityObject) -> Result<Option<Vec<Value>>>
 /// to nothing recognised (an all-`None` struct still occupies its list
 /// position), since "how many addresses" is itself meaningful. `None` when
 /// the object carries no `address` member at all (column cell null).
-fn build_address_rows(co: &CityObject, pool: &VertexPool) -> Result<Option<Vec<AddressRow>>> {
-    let Some(entries) = raw_address_members(co)? else {
+fn build_address_rows(
+    co_json: &serde_json::Map<String, Value>,
+    pool: &VertexPool,
+) -> Result<Option<Vec<AddressRow>>> {
+    let Some(entries) = address_members_from_json(co_json) else {
         return Ok(None);
     };
     let rows = entries
@@ -1461,20 +1491,26 @@ impl RowWriter {
     /// CityJSON's `children_roles`: the role of each child in a
     /// `CityObjectGroup`, one per child. The CityJSON 2.0.1 schema permits it
     /// ONLY on `CityObjectGroup` (§2.5), so only those objects are inspected —
-    /// spec-correct, and it keeps the (necessarily whole-object) serialize off
-    /// the hot path for the common `Building`/`BuildingPart` hierarchy, whose
-    /// parents carry `children` but never `children_roles`. cjseq 0.4.1 has no
-    /// typed field for it (it is captured in `CityObject`'s private
-    /// `#[serde(flatten)]` member), hence the serialize round-trip.
+    /// spec-correct, and it keeps the lookup off the hot path for the common
+    /// `Building`/`BuildingPart` hierarchy, whose parents carry `children` but
+    /// never `children_roles`. cjseq 0.4.1 has no typed field for it (it is
+    /// captured in `CityObject`'s private `#[serde(flatten)]` member), so it
+    /// has to be read off the serialised member map — which arrives
+    /// pre-serialised from [`RowWriter::push_object`] ([`object_json`]), once
+    /// per row and shared with the `address` and `other` paths.
     ///
     /// A present `children_roles` MUST be an array of strings with exactly one
     /// entry per child (CityJSON 2.0.1 §2.5); anything else is rejected, not
     /// silently coerced, so a corrupt role list can never be stored.
-    fn children_roles(co: &CityObject, id: &str) -> Result<Option<Vec<String>>> {
+    fn children_roles(
+        co: &CityObject,
+        co_json: &serde_json::Map<String, Value>,
+        id: &str,
+    ) -> Result<Option<Vec<String>>> {
         if co.thetype != "CityObjectGroup" {
             return Ok(None);
         }
-        let Some(roles) = serde_json::to_value(co)?.get("children_roles").cloned() else {
+        let Some(roles) = co_json.get("children_roles").cloned() else {
             return Ok(None);
         };
         let Value::Array(roles) = roles else {
@@ -1517,6 +1553,9 @@ impl RowWriter {
             .get(id)
             .expect("id came from this feature's own city_objects keys");
         let pool = VertexPool::new(&feature.vertices, transform);
+        // The ONE whole-object serialisation this row performs (review P5b);
+        // children_roles / address / other all read from this map.
+        let co_json = object_json(co)?;
 
         self.id.append_value(id);
         self.feature_id.append_value(&feature.id);
@@ -1537,7 +1576,7 @@ impl RowWriter {
         self.object_type.append(object_type)?;
         Self::push_string_list(&mut self.parents, co.parents.as_deref());
         Self::push_string_list(&mut self.children, co.children.as_deref());
-        let children_roles = Self::children_roles(co, id)?;
+        let children_roles = Self::children_roles(co, &co_json, id)?;
         Self::push_string_list(&mut self.children_roles, children_roles.as_deref());
         // Geometry accumulation (incl. optional LoD0 synthesis) runs BEFORE
         // `other` is finalised below: a synthesised footprint's provenance
@@ -1582,6 +1621,10 @@ impl RowWriter {
             }
         }
 
+        // Address rows must be derived BEFORE `co_json` is consumed for
+        // `other` below (they are pushed further down, with the column).
+        let address_rows = build_address_rows(&co_json, &pool)?;
+
         // `other`: the source object's members that have no dedicated column
         // (§5.1, G9) — a per-object `geographicalExtent`, Extension
         // `+members`, plus the LoD0-synthesis provenance marker above, if
@@ -1589,7 +1632,7 @@ impl RowWriter {
         // excluded here (`OTHER_RESERVED_MEMBERS`). Stored verbatim as a
         // JSON object string; null when the object has no such members (so a
         // null count = rows carrying unmapped members).
-        let mut unmapped = unmapped_object_members(co)?;
+        let mut unmapped = unmapped_from_json(co_json);
         if let Some(source_column) = lod0_source_column {
             unmapped.insert(
                 "cityparquet:lod0_0_source".to_string(),
@@ -1617,7 +1660,7 @@ impl RowWriter {
         }
 
         // `address`: the reserved struct column (spec "Addresses", gap 10).
-        self.push_address(build_address_rows(co, &pool)?);
+        self.push_address(address_rows);
 
         for slot in &mut self.geometry_slots {
             match acc.slots.get(&slot.key) {
@@ -2080,7 +2123,9 @@ mod tests {
         }))
         .unwrap();
         let pool = VertexPool::raw(&[]);
-        let rows = build_address_rows(&co, &pool).unwrap().unwrap();
+        let rows = build_address_rows(&object_json(&co).unwrap(), &pool)
+            .unwrap()
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].postal.city.as_deref(), Some("Helsinki"));
         assert_eq!(
@@ -2095,7 +2140,11 @@ mod tests {
         let co: CityObject =
             serde_json::from_value(serde_json::json!({"type": "Building"})).unwrap();
         let pool = VertexPool::raw(&[]);
-        assert!(build_address_rows(&co, &pool).unwrap().is_none());
+        assert!(
+            build_address_rows(&object_json(&co).unwrap(), &pool)
+                .unwrap()
+                .is_none()
+        );
     }
 
     // spec "Appearance & templates": transformationMatrix MUST have exactly
