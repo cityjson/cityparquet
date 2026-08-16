@@ -10,6 +10,21 @@
 
 **Design spec:** `docs/superpowers/specs/2026-08-16-format-comparison-benchmark-design.md`
 
+## Execution order (revised 2026-08-16)
+
+Tasks are **executed** in this order, which differs from the numbering below:
+
+> 1 → 2 → 3 → 4 → **6 → 7 → 5** → 8 → 9 → 10 → 11
+
+Task 5 changes `DEFAULT_FORMATS` to include `citygml` and `cityjson`, but
+`Format::artefact` maps those to `<base>.gml` / `<base>.city.json` and
+**nothing produces those files until Tasks 6-7**. Running 5 first would make
+every default run silently skip two of its five formats with only a warning —
+fewer rows, and a run that still looks successful. Producers before consumers.
+
+The task numbering is left unchanged so the briefs and this document stay in
+correspondence; only the dispatch order moves.
+
 ## Global Constraints
 
 - **Strict red-green TDD**: failing test first, run it, confirm it fails for the right reason, then the smallest change to pass, then refactor.
