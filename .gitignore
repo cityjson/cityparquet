@@ -28,6 +28,11 @@ target
 # paper's measurement artefacts.
 /bench/data/
 
+# External converters fetched by scripts/fetch_tools.sh (citygml-tools). The
+# PINS live in that script, which IS committed; the unpacked ~28 MB of JARs
+# does not.
+/bench/tools/
+
 # CityParquet packages produced by `just convert-all` (default OUT root)
 /out/
 

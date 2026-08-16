@@ -1,21 +1,47 @@
 #!/usr/bin/env bash
 # Prepare the per-format inputs for the read-benchmark milestone: given one
-# CityJSON/CityJSONSeq INPUT, produce a same-content package in each format
-# the read benchmark compares (`just readbench-prepare`). Which formats are
-# built is chosen with `--formats`; by default every artefact this script
+# CityGML/CityJSON/CityJSONSeq INPUT, produce a same-content package in each
+# format the read benchmark compares (`just readbench-prepare`). Which formats
+# are built is chosen with `--formats`; by default every artefact this script
 # knows how to build:
 #
+#   citygml              OUTDIR/<x>.gml               the CityGML source itself (only from a CityGML INPUT)
+#   cityjson             OUTDIR/<x>.city.json         one whole-document CityJSON
+#   cityjsonseq          OUTDIR/<x>.city.jsonl        CityJSONSeq (only when INPUT is CityGML; see below)
 #   cityparquet          OUTDIR/<x>.parquet/          core-profile CityParquet package (source order)
 #   cityparquet-hilbert  OUTDIR/<x>-hilbert.parquet/  CityParquet package, Hilbert-ordered rows
 #   flatcitybuf          OUTDIR/<x>.fcb               FlatCityBuf, spatial index + ALL-attribute B+Tree index
-#   cityjsonseq-gz       OUTDIR/<x>.jsonl.gz          the original input, gzip -9
+#   cityjsonseq-gz       OUTDIR/<x>.jsonl.gz          the CityJSONSeq, gzip -9
 #
-# `cityjsonseq` is also a valid request and is a no-op: that format's
+# From a CityJSON/CityJSONSeq INPUT, `cityjsonseq` is a no-op: that format's
 # "artefact" is INPUT itself, which the benchmark reads in place.
 #
-# `<x>` is INPUT's basename minus its .city.jsonl/.city.json/.jsonl/.json
-# extension (same stripping rule as the justfile's bench-fixtures/convert-all
-# recipes).
+# `<x>` is INPUT's basename minus its .gml/.citygml/.city.jsonl/.city.json/
+# .jsonl/.json extension (the CityJSON rule is the same one the justfile's
+# bench-fixtures/convert-all recipes use).
+#
+# THE CONVERSION CHAIN, AND WHY IT RUNS FORWARDS ONLY:
+#
+#   CityGML --citygml-tools to-cityjson--> CityJSON --cjseq cat--> CityJSONSeq
+#                                                             |--fcb ser -A--------> FlatCityBuf
+#                                                             |--cityparquet convert-> CityParquet
+#
+# Each artefact derives from the one before it, and FlatCityBuf and
+# CityParquet derive from the SAME CityJSONSeq — that is what makes their
+# comparison fair. NOTHING derives from CityParquet: `cityparquet export`
+# could emit the CityJSON artefacts and it would be tempting, but deriving a
+# competitor's input from the format under test would favour it.
+#
+# citygml-tools cannot emit CityJSONSeq, so `cjseq` performs that hop; from a
+# CityJSON/CityJSONSeq INPUT the CityJSON artefact is likewise cut by `cjseq
+# collect`, never by a CityParquet export.
+#
+# CITYGML IS NOT SYNTHESISED. From a CityJSON/CityJSONSeq INPUT the `citygml`
+# artefact is reported as not derivable and skipped — the only way to produce
+# one would be a reverse conversion, and a round-trip artefact is not the
+# source data, so measuring it would be dishonest. This is the ONE exception
+# to the "a requested format that cannot be built is an error here" rule
+# below; it is reported in full, never silent.
 #
 # The `-A` (index-all-attributes) flag on `fcb ser` is REQUIRED, not
 # cosmetic: the later attribute-filter benchmark needs FCB's B+-tree
@@ -23,10 +49,15 @@
 # so both of FCB's indexed-query paths are available for comparison.
 #
 # EXTERNAL TOOLS ARE GUARDED PER FORMAT, not up front: `fcb` is only required
-# when `flatcitybuf` was requested, and the release CityParquet CLI is only
-# built when a CityParquet artefact was requested. A missing `fcb` used to
-# kill every run of this script, including runs that never asked for
+# when `flatcitybuf` was requested, `citygml-tools`/`cjseq`/`jq` only when the
+# request actually needs that hop of the chain, and the release CityParquet
+# CLI is only built when a CityParquet artefact was requested. A missing `fcb`
+# used to kill every run of this script, including runs that never asked for
 # FlatCityBuf.
+#
+# citygml-tools comes from `just fetch-tools` (scripts/fetch_tools.sh, which
+# owns the pinned version and its sha256) and is resolved via bench/tools/,
+# $CITYGML_TOOLS or PATH — this script never repeats the version pin.
 #
 # A REQUESTED FORMAT THAT CANNOT BE BUILT IS AN ERROR HERE, never a silent
 # skip: this script's job is to build what was asked for or say precisely why
@@ -55,19 +86,21 @@ set -euo pipefail
 # says the same with `Artefact::NotCoordinated`).
 VALID_FORMATS=(citygml cityjson cityjsonseq cityjsonseq-gz flatcitybuf cityparquet cityparquet-hilbert)
 
-# What `--formats` defaults to: everything this script can currently produce.
-# TASK 7 HOOK: widen this as the citygml/cityjson build steps land, so a bare
-# run builds the full format-comparison set.
+# What `--formats` defaults to: the full format-comparison set, i.e. every
+# artefact this script can produce. `duckdb-parquet` is absent for the reason
+# given above (no artefact of its own); `citygml` is present but is skipped
+# with a report, not built, when INPUT is not CityGML.
 # NOT the same list as the coordinator's `DEFAULT_FORMATS` (which is what the
 # benchmark MEASURES by default) — this one can only ever name formats a
 # build step below exists for, so that a bare run never fails on its own
 # default.
-DEFAULT_BUILD_FORMATS=(cityparquet cityparquet-hilbert flatcitybuf cityjsonseq-gz)
+DEFAULT_BUILD_FORMATS=(citygml cityjson cityjsonseq cityjsonseq-gz flatcitybuf cityparquet cityparquet-hilbert)
 
 usage() {
   cat >&2 <<EOF
 usage: $0 [--formats a,b,c] INPUT [OUTDIR]
-  INPUT      CityJSON (.city.json) or CityJSONSeq (.city.jsonl) file
+  INPUT      CityGML (.gml/.citygml), CityJSON (.city.json) or CityJSONSeq
+             (.city.jsonl) file
   OUTDIR     default: bench/data/readbench
   --formats  comma-separated formats to build, from: ${VALID_FORMATS[*]}
              (default: ${DEFAULT_BUILD_FORMATS[*]})
@@ -172,17 +205,84 @@ require_tool() {
 # the tools the request actually needs. Everything below this point is
 # expected to succeed.
 
-# Formats the read benchmark knows but this script cannot yet produce.
-# TASK 7 HOOK: delete this loop as the `citygml`/`cityjson` build steps land,
-# and put their tool guards (java/citygml-tools, cjseq) here instead. Grep this
-# file for `TASK 7 HOOK:` to find every place that change touches.
-for fmt in citygml cityjson; do
-  if want "$fmt"; then
-    echo "error: format '$fmt' is a valid read-benchmark format, but this script has" >&2
-    echo "       no build step for it yet; drop it from --formats" >&2
+# What kind of document INPUT is. Only a CityGML input starts the chain at its
+# head; a CityJSON/CityJSONSeq input joins it midway.
+INPUT_KIND="cityjson"   # any of: citygml | cityjson | cityjsonseq
+case "$INPUT" in
+  *.gml|*.citygml) INPUT_KIND="citygml" ;;
+  *.city.jsonl|*.jsonl) INPUT_KIND="cityjsonseq" ;;
+esac
+
+# `citygml` from a non-CityGML input: reported, never synthesised (see the
+# header). Every later `want citygml` is paired with this flag.
+BUILD_CITYGML=0
+SKIP_CITYGML_REASON=""
+if want citygml; then
+  if [[ "$INPUT_KIND" == "citygml" ]]; then
+    BUILD_CITYGML=1
+  else
+    SKIP_CITYGML_REASON="not derivable from a CityJSON input"
+  fi
+fi
+
+# Which hops of the chain this request needs.
+#
+# NEED_SEQ: a CityGML input carries no CityJSONSeq, so one must be cut before
+# anything downstream of it (gz / fcb / cityparquet) can be built. From a
+# CityJSON/CityJSONSeq input the downstream steps read INPUT directly, exactly
+# as they always have.
+NEED_SEQ=0
+if [[ "$INPUT_KIND" == "citygml" ]]; then
+  if want cityjsonseq || want cityjsonseq-gz || want flatcitybuf \
+    || want cityparquet || want cityparquet-hilbert; then
+    NEED_SEQ=1
+  fi
+fi
+# NEED_CITYJSON: requested outright, or needed as the stage the CityJSONSeq is
+# cut from.
+NEED_CITYJSON=0
+if want cityjson || [[ "$NEED_SEQ" -eq 1 ]]; then
+  NEED_CITYJSON=1
+fi
+
+# citygml-tools is resolved, never version-pinned here: the pin lives in
+# scripts/fetch_tools.sh, which unpacks it under bench/tools/ behind a
+# version-independent symlink. $CITYGML_TOOLS overrides, PATH is the fallback
+# for a system-wide install.
+CITYGML_TOOLS_BIN=""
+resolve_citygml_tools() {
+  if [[ -n "${CITYGML_TOOLS:-}" ]]; then
+    if [[ ! -x "$CITYGML_TOOLS" ]]; then
+      echo "error: \$CITYGML_TOOLS is set to '$CITYGML_TOOLS', which is not executable" >&2
+      exit 1
+    fi
+    CITYGML_TOOLS_BIN="$CITYGML_TOOLS"
+  elif [[ -x "$REPO_ROOT/bench/tools/citygml-tools/citygml-tools" ]]; then
+    CITYGML_TOOLS_BIN="$REPO_ROOT/bench/tools/citygml-tools/citygml-tools"
+  elif command -v citygml-tools >/dev/null 2>&1; then
+    CITYGML_TOOLS_BIN="$(command -v citygml-tools)"
+  else
+    echo "error: citygml-tools not found (needed to convert the CityGML input to CityJSON)" >&2
+    echo "       run \`just fetch-tools\`, or point \$CITYGML_TOOLS at an install" >&2
     exit 1
   fi
-done
+}
+
+if [[ "$INPUT_KIND" == "citygml" && "$NEED_CITYJSON" -eq 1 ]]; then
+  resolve_citygml_tools
+fi
+# cjseq performs whichever CityJSON <-> CityJSONSeq hop this request needs:
+# `cat` down from the CityJSON the chain just produced, or `collect` up from a
+# CityJSONSeq input.
+if [[ "$NEED_SEQ" -eq 1 ]] \
+  || [[ "$NEED_CITYJSON" -eq 1 && "$INPUT_KIND" == "cityjsonseq" ]]; then
+  require_tool cjseq "the CityJSON <-> CityJSONSeq conversion"
+fi
+# jq reads the CityJSON artefact's object count back out; a converter that
+# writes a well-formed but object-less document is worse than one that fails.
+if [[ "$NEED_CITYJSON" -eq 1 ]]; then
+  require_tool jq "the CityJSON object-count check"
+fi
 
 NEED_CLI=0
 if want cityparquet || want cityparquet-hilbert; then
@@ -198,12 +298,16 @@ fi
 mkdir -p "$OUTDIR"
 
 BASE="$(basename "$INPUT")"
+BASE="${BASE%.gml}"; BASE="${BASE%.citygml}"
 BASE="${BASE%.city.jsonl}"; BASE="${BASE%.city.json}"
 BASE="${BASE%.jsonl}"; BASE="${BASE%.json}"
 
-# TASK 7 HOOK: `GML_OUT="$OUTDIR/${BASE}.gml"` and
-# `CITYJSON_OUT="$OUTDIR/${BASE}.city.json"` belong here — the names come from
-# `Format::artefact` in crates/cityparquet-readbench/src/format.rs.
+# Artefact names come from `Format::artefact` in
+# crates/cityparquet-readbench/src/format.rs — the coordinator resolves them
+# relative to its --prepared-dir, so they must match exactly.
+GML_OUT="$OUTDIR/${BASE}.gml"
+CITYJSON_OUT="$OUTDIR/${BASE}.city.json"
+SEQ_OUT="$OUTDIR/${BASE}.city.jsonl"
 PARQUET_OUT="$OUTDIR/${BASE}.parquet"
 HILBERT_OUT="$OUTDIR/${BASE}-hilbert.parquet"
 FCB_OUT="$OUTDIR/${BASE}.fcb"
@@ -220,6 +324,55 @@ dir_is_valid() {
 # Non-empty regular file.
 file_is_valid() {
   [[ -f "$1" ]] && [[ -s "$1" ]]
+}
+
+# Do two paths name the same file? (INPUT may already BE an artefact path when
+# OUTDIR happens to hold it, in which case copying it onto itself would fail.)
+same_file() {
+  [[ -e "$1" && -e "$2" ]] && [[ "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")" \
+    == "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")" ]]
+}
+
+# --- object counts ---------------------------------------------------------
+# Cheap, per-format counts of the same quantity: TOP-LEVEL city objects. They
+# serve two purposes — proving an artefact is not merely non-empty but
+# non-vacuous, and surfacing conversion loss across the chain, which the
+# design spec's fairness caveats say must be asserted rather than assumed (a
+# CityGML row and a CityParquet row are only comparable if the conversion
+# between them was lossless).
+#
+# `fcb info`'s feature count is deliberately NOT folded into the comparison:
+# it is checked separately below, and CityParquet's own object_count counts
+# descendants (BuildingParts) too, so neither is the same quantity.
+
+# Top-level <cityObjectMember> elements. Matches an opening tag with or
+# without a namespace prefix; `</core:cityObjectMember>` cannot match, because
+# the optional prefix may not begin with '/'.
+citygml_object_count() {
+  { grep -oE '<([A-Za-z_][A-Za-z0-9_.-]*:)?cityObjectMember[ />]' "$1" || true; } | wc -l | tr -d ' '
+}
+
+# CityObjects with no "parents" member, i.e. the first-level ones — the same
+# quantity a CityJSONSeq counts as features.
+cityjson_object_count() {
+  jq '[.CityObjects[] | select(has("parents") | not)] | length' "$1"
+}
+
+# One CityJSONFeature per line.
+cityjsonseq_feature_count() {
+  { grep -c '"CityJSONFeature"' "$1" || true; } | tr -d ' '
+}
+
+# Report (never fail on) a count that changed across a conversion: real
+# CityGML routinely carries ADE content citygml-tools skips, so this is
+# evidence for the write-up, not a gate.
+report_count_drift() {
+  local from_label=$1 from_count=$2 to_label=$3 to_count=$4
+  if [[ "$from_count" != "$to_count" ]]; then
+    echo "warn: conversion loss: $from_label has $from_count top-level object(s) but" \
+      "$to_label has $to_count -- the cross-format comparison is only fair where the" \
+      "conversion was lossless" >&2
+  fi
 }
 
 echo "== readbench_prepare: $INPUT -> $OUTDIR (base: $BASE) =="
@@ -243,19 +396,96 @@ fi
 # summary.
 BUILT=()
 
-# TASK 7 HOOK: the citygml/cityjson blocks go here, BEFORE the blocks below —
-# artefacts derive forward from the source (CityGML -> CityJSON -> CityJSONSeq
-# -> fcb | cityparquet), never through CityParquet, and the blocks below
-# consume what that chain produces. Each new block keeps the shape used
-# throughout this section: `if want <fmt>` / `*_is_valid` -> skip or build ->
-# `BUILT+=(…)`.
+# The CityJSONSeq every downstream artefact (gz / fcb / cityparquet) is cut
+# from. It is INPUT itself unless INPUT is CityGML, in which case block 3
+# below derives one; either way all three read the SAME bytes, which is what
+# makes their comparison fair.
+SEQ_INPUT="$INPUT"
 
-# 1. Core-profile CityParquet package (source row order).
+# 1. CityGML: the source document itself, placed where the coordinator looks
+# for it (--prepared-dir/<base>.gml). Copied, not converted: this artefact is
+# the input data, and the moment it were round-tripped out of another format
+# it would stop being that.
+if [[ "$BUILD_CITYGML" -eq 1 ]]; then
+  if file_is_valid "$GML_OUT" && same_file "$INPUT" "$GML_OUT"; then
+    echo "skip $GML_OUT (the input is already the artefact)"
+  elif file_is_valid "$GML_OUT"; then
+    echo "skip $GML_OUT (already present)"
+  else
+    echo "-- copy $INPUT -> $GML_OUT"
+    cp "$INPUT" "$GML_OUT"
+  fi
+  BUILT+=("$GML_OUT")
+elif [[ -n "$SKIP_CITYGML_REASON" ]]; then
+  echo "-- citygml: $SKIP_CITYGML_REASON; synthesising one by reverse conversion"
+  echo "   would measure a round-trip artefact rather than the source data, so it"
+  echo "   is skipped rather than faked"
+fi
+
+# 2. CityJSON: one whole document. From CityGML via citygml-tools (the head
+# of the chain); from a CityJSONSeq input via `cjseq collect` (up the chain,
+# but still from the source data — never out of a CityParquet package).
+if [[ "$NEED_CITYJSON" -eq 1 ]]; then
+  if file_is_valid "$CITYJSON_OUT" && same_file "$INPUT" "$CITYJSON_OUT"; then
+    echo "skip $CITYJSON_OUT (the input is already the artefact)"
+  elif file_is_valid "$CITYJSON_OUT"; then
+    echo "skip $CITYJSON_OUT (already present)"
+  elif [[ "$INPUT_KIND" == "citygml" ]]; then
+    echo "-- citygml-tools to-cityjson $INPUT -> $CITYJSON_OUT"
+    # citygml-tools writes <basename>.json into an output DIRECTORY, not to a
+    # path of our choosing, so it converts into a scratch directory that is
+    # cleaned up whatever happens, and the single result is moved into place.
+    CJ_TMP="$(mktemp -d "$OUTDIR/.cityjson.XXXXXX")"
+    trap 'rm -rf "$CJ_TMP"' EXIT
+    "$CITYGML_TOOLS_BIN" to-cityjson -o "$CJ_TMP" "$INPUT"
+    CJ_PRODUCED=()
+    while IFS= read -r -d '' produced; do
+      CJ_PRODUCED+=("$produced")
+    done < <(find "$CJ_TMP" -maxdepth 1 -type f -name '*.json' -print0)
+    if [[ ${#CJ_PRODUCED[@]} -ne 1 ]]; then
+      echo "error: citygml-tools produced ${#CJ_PRODUCED[@]} .json files for $INPUT (expected exactly 1)" >&2
+      exit 1
+    fi
+    mv "${CJ_PRODUCED[0]}" "$CITYJSON_OUT"
+    rm -rf "$CJ_TMP"
+    trap - EXIT
+  elif [[ "$INPUT_KIND" == "cityjsonseq" ]]; then
+    echo "-- cjseq collect $INPUT -> $CITYJSON_OUT"
+    # Via a temporary: a `cjseq` that dies midway must not leave a truncated
+    # document that the next run's validity check would happily accept.
+    cjseq collect -f "$INPUT" >"$CITYJSON_OUT.tmp"
+    mv "$CITYJSON_OUT.tmp" "$CITYJSON_OUT"
+  else
+    echo "-- copy $INPUT -> $CITYJSON_OUT"
+    cp "$INPUT" "$CITYJSON_OUT"
+  fi
+  if want cityjson; then
+    BUILT+=("$CITYJSON_OUT")
+  fi
+fi
+
+# 3. CityJSONSeq, cut from the CityJSON above. Only from a CityGML input:
+# otherwise INPUT already IS the CityJSONSeq (see block 8).
+if [[ "$NEED_SEQ" -eq 1 ]]; then
+  if file_is_valid "$SEQ_OUT"; then
+    echo "skip $SEQ_OUT (already present)"
+  else
+    echo "-- cjseq cat $CITYJSON_OUT -> $SEQ_OUT"
+    cjseq cat -f "$CITYJSON_OUT" >"$SEQ_OUT.tmp"
+    mv "$SEQ_OUT.tmp" "$SEQ_OUT"
+  fi
+  SEQ_INPUT="$SEQ_OUT"
+  if want cityjsonseq; then
+    BUILT+=("$SEQ_OUT")
+  fi
+fi
+
+# 4. Core-profile CityParquet package (source row order).
 if want cityparquet; then
   if dir_is_valid "$PARQUET_OUT"; then
     echo "skip $PARQUET_OUT (already present)"
   else
-    echo "-- convert -> $PARQUET_OUT"
+    echo "-- convert $SEQ_INPUT -> $PARQUET_OUT"
     # By-type is the only, mandatory table layout (2026-07-21): one
     # `<snake>.parquet` table per 1st-level CityObject family. The
     # read-benchmark's CityParquetRunner only supports a package whose
@@ -263,48 +493,49 @@ if want cityparquet; then
     # single-family dataset (e.g. a Building-only 3D BAG tile) — a
     # multi-family INPUT prepares fine here but the read-benchmark itself
     # rejects it later with a clear error.
-    "$CITYPARQUET" convert "$INPUT" -o "$PARQUET_OUT" --overwrite
+    "$CITYPARQUET" convert "$SEQ_INPUT" -o "$PARQUET_OUT" --overwrite
   fi
   BUILT+=("$PARQUET_OUT")
 fi
 
-# 2. Hilbert-ordered CityParquet package.
+# 5. Hilbert-ordered CityParquet package.
 if want cityparquet-hilbert; then
   if dir_is_valid "$HILBERT_OUT"; then
     echo "skip $HILBERT_OUT (already present)"
   else
-    echo "-- convert --ordering hilbert -> $HILBERT_OUT"
-    "$CITYPARQUET" convert "$INPUT" -o "$HILBERT_OUT" --ordering hilbert --overwrite
+    echo "-- convert --ordering hilbert $SEQ_INPUT -> $HILBERT_OUT"
+    "$CITYPARQUET" convert "$SEQ_INPUT" -o "$HILBERT_OUT" --ordering hilbert --overwrite
   fi
   BUILT+=("$HILBERT_OUT")
 fi
 
-# 3. FlatCityBuf, spatial index (default-on) + all-attribute B+Tree index.
+# 6. FlatCityBuf, spatial index (default-on) + all-attribute B+Tree index.
 if want flatcitybuf; then
   if file_is_valid "$FCB_OUT"; then
     echo "skip $FCB_OUT (already present)"
   else
-    echo "-- fcb ser -> $FCB_OUT"
-    fcb ser -i "$INPUT" -o "$FCB_OUT" -A
+    echo "-- fcb ser $SEQ_INPUT -> $FCB_OUT"
+    fcb ser -i "$SEQ_INPUT" -o "$FCB_OUT" -A
   fi
   BUILT+=("$FCB_OUT")
 fi
 
-# 4. Gzip of the original input, for a whole-document-gzip baseline.
+# 7. Gzip of the CityJSONSeq, for a whole-document-gzip baseline.
 if want cityjsonseq-gz; then
   if file_is_valid "$GZ_OUT"; then
     echo "skip $GZ_OUT (already present)"
   else
-    echo "-- gzip -9 -> $GZ_OUT"
-    gzip -9 -c "$INPUT" > "$GZ_OUT"
+    echo "-- gzip -9 $SEQ_INPUT -> $GZ_OUT"
+    gzip -9 -c "$SEQ_INPUT" > "$GZ_OUT"
   fi
   BUILT+=("$GZ_OUT")
 fi
 
-# 5. Plain CityJSONSeq needs no artefact at all: the benchmark reads INPUT
-# itself (`Artefact::TheInputItself`). Requesting it is a no-op, NOT a
-# "cannot build" error.
-if want cityjsonseq; then
+# 8. From a CityJSON/CityJSONSeq input, plain CityJSONSeq needs no artefact
+# at all: the benchmark reads INPUT itself (`Artefact::TheInputItself`).
+# Requesting it is a no-op, NOT a "cannot build" error. (From a CityGML input
+# it is a real artefact, built by block 3 above.)
+if want cityjsonseq && [[ "$NEED_SEQ" -eq 0 ]]; then
   echo "-- cityjsonseq: no artefact needed (the benchmark reads $INPUT in place)"
 fi
 
@@ -315,9 +546,62 @@ fi
 # counts top-level features while cityparquet's object_count includes
 # descendant CityObjects such as BuildingParts).
 echo "-- verifying artefacts"
-# TASK 7 HOOK: add `if want citygml` / `if want cityjson` arms here, each with
-# a non-zero object-count check mirroring the `fcb info` "Features: N > 0" one
-# below.
+# The chain's own artefacts are checked for CONTENT, not just existence: an
+# artefact that exists but holds no city objects is worse than one that is
+# missing, because the benchmark would happily measure it. The counts are then
+# compared to each other, so a lossy hop shows up as a warning rather than as
+# an unexplained gap in the results table.
+GML_OBJECTS=""
+CITYJSON_OBJECTS=""
+SEQ_FEATURES=""
+
+if [[ "$BUILD_CITYGML" -eq 1 ]]; then
+  file_is_valid "$GML_OUT" || { echo "error: missing/empty file: $GML_OUT" >&2; exit 1; }
+fi
+# Counted from whichever CityGML document this run has — the artefact when one
+# was built, otherwise the input it would have been copied from. The head of
+# the chain is the baseline every later count is compared against, so it is
+# read even by a run that did not ask for the `citygml` artefact: the
+# CityGML -> CityJSON hop is where loss is likeliest (citygml-tools skips ADE
+# content it has no extension for), and that is precisely the hop that would
+# otherwise go unmeasured.
+if [[ "$INPUT_KIND" == "citygml" ]] \
+  && { [[ "$BUILD_CITYGML" -eq 1 ]] || [[ "$NEED_CITYJSON" -eq 1 ]]; }; then
+  if [[ "$BUILD_CITYGML" -eq 1 ]]; then
+    GML_COUNTED="$GML_OUT"
+  else
+    GML_COUNTED="$INPUT"
+  fi
+  GML_OBJECTS="$(citygml_object_count "$GML_COUNTED")"
+  if [[ "$GML_OBJECTS" -le 0 ]]; then
+    echo "error: $GML_COUNTED contains no <cityObjectMember> elements (expected > 0)" >&2
+    exit 1
+  fi
+  echo "  citygml: $GML_OBJECTS top-level object(s) in $GML_COUNTED"
+fi
+if [[ "$NEED_CITYJSON" -eq 1 ]]; then
+  file_is_valid "$CITYJSON_OUT" || { echo "error: missing/empty file: $CITYJSON_OUT" >&2; exit 1; }
+  CITYJSON_OBJECTS="$(cityjson_object_count "$CITYJSON_OUT")"
+  if [[ "$CITYJSON_OBJECTS" -le 0 ]]; then
+    echo "error: $CITYJSON_OUT contains no top-level CityObjects (expected > 0)" >&2
+    exit 1
+  fi
+  echo "  cityjson: $CITYJSON_OBJECTS top-level object(s) in $CITYJSON_OUT"
+  if [[ -n "$GML_OBJECTS" ]]; then
+    report_count_drift "$GML_COUNTED" "$GML_OBJECTS" "$CITYJSON_OUT" "$CITYJSON_OBJECTS"
+  fi
+fi
+if [[ "$NEED_SEQ" -eq 1 ]]; then
+  file_is_valid "$SEQ_OUT" || { echo "error: missing/empty file: $SEQ_OUT" >&2; exit 1; }
+  SEQ_FEATURES="$(cityjsonseq_feature_count "$SEQ_OUT")"
+  if [[ "$SEQ_FEATURES" -le 0 ]]; then
+    echo "error: $SEQ_OUT contains no CityJSONFeature lines (expected > 0)" >&2
+    exit 1
+  fi
+  echo "  cityjsonseq: $SEQ_FEATURES feature(s) in $SEQ_OUT"
+  report_count_drift "$CITYJSON_OUT" "$CITYJSON_OBJECTS" "$SEQ_OUT" "$SEQ_FEATURES"
+fi
+
 if want cityparquet; then
   dir_is_valid "$PARQUET_OUT" || { echo "error: missing/empty package: $PARQUET_OUT" >&2; exit 1; }
 fi

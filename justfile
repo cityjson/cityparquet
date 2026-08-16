@@ -76,6 +76,15 @@ interop:
 fetch-data DEST='bench/data/benchmark':
     ./scripts/fetch_benchmark.sh {{DEST}}
 
+# Fetch the pinned external converters the read benchmark's conversion chain
+# needs: citygml-tools (CityGML -> CityJSON) into bench/tools/ (gitignored,
+# sha256-verified) and cjseq (CityJSON -> CityJSONSeq) via `cargo install`.
+# Needs java 17+; network-dependent; kept OUT of `just check`/CI. The exact
+# versions used are written to bench/tools/tool_versions.txt for
+# bench/READ_BENCHMARK.md's Environment block.
+fetch-tools:
+    ./scripts/fetch_tools.sh
+
 # Convert every CityJSON/CityJSONSeq file found under FOLDER (recursive)
 # into a CityParquet package under OUT (default out/cityparquet), one
 # OUT/<name>/ package directory per input where <name> is the input's
