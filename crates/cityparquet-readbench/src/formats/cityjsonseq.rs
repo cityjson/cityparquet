@@ -271,7 +271,12 @@ pub(super) fn column_value(co: &CityObject, column: &str) -> Option<serde_json::
 /// deserialized them into a [`serde_json::Value`] tree. The result itself is
 /// discarded — [`Scenario::FullRead`]'s returned metric stays feature-level,
 /// per this module's own counting-unit ruling above.
-fn count_boundary_leaves(value: &serde_json::Value) -> u64 {
+///
+/// `pub(super)` because [`super::citygml`] reuses it: that runner's
+/// [`Scenario::FullRead`] is deliberately the SAME operation as this one's, so
+/// the two rows stay comparable — sharing the traversal is what makes that
+/// true by construction rather than by two copies happening to agree.
+pub(super) fn count_boundary_leaves(value: &serde_json::Value) -> u64 {
     match value {
         serde_json::Value::Array(items) => items.iter().map(count_boundary_leaves).sum(),
         serde_json::Value::Number(_) => 1,
@@ -285,7 +290,15 @@ fn count_boundary_leaves(value: &serde_json::Value) -> u64 {
 /// `scale`/`translate` convention specifies. `None` if the feature carries
 /// no vertices at all (never true for a real geometry-bearing feature, but
 /// guards against a division-by-nothing rather than panicking).
-fn feature_bbox(feature: &CityJSONFeature, transform: &Transform) -> Option<([f64; 3], [f64; 3])> {
+///
+/// `pub(super)` because [`super::citygml`] reuses it: a CityGML feature is
+/// built with feature-local, transform-quantised vertices exactly like a
+/// CityJSONSeq one, so both runners' `bbox-query` windows must mean the same
+/// thing.
+pub(super) fn feature_bbox(
+    feature: &CityJSONFeature,
+    transform: &Transform,
+) -> Option<([f64; 3], [f64; 3])> {
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     let mut any = false;

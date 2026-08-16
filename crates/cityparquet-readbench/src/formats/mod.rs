@@ -2,6 +2,7 @@
 //! implements, plus [`resolve`] — the `--format <name>` dispatch the
 //! `--child` process (`main.rs`) uses.
 
+pub mod citygml;
 pub mod cityjson;
 pub mod cityjsonseq;
 pub mod cityparquet;
@@ -81,9 +82,9 @@ pub trait FormatRunner {
 /// feature-local vertices — different parse shape, different counting grain,
 /// so its own runner (see [`cityjson`]'s module doc).
 ///
-/// [`Format::CityGml`] is declared in the enum but has no runner yet; it
-/// errors clearly rather than being absent, so adding its runner is purely
-/// additive.
+/// [`Format::CityGml`] has its own runner (see [`citygml`]'s module doc): the
+/// format the source data ships in, read with this repository's own CityGML
+/// 2.0 reader, with no index and therefore a full parse per scenario.
 /// [`Format::DuckDbParquet`] is a SQL-engine baseline driven entirely by
 /// `scripts/readbench_duckdb.sh`; it is not, and never will be, a `--child`
 /// format (see [`Format::is_child_format`]).
@@ -96,9 +97,7 @@ pub fn resolve(format: Format) -> Result<Box<dyn FormatRunner>> {
         Format::CityJsonSeq => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::plain())),
         Format::CityJsonSeqGz => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::gzip())),
         Format::FlatCityBuf => Ok(Box::new(flatcitybuf::FlatCityBufRunner)),
-        Format::CityGml => {
-            bail!("format '{format}' has no read-benchmark runner yet (not implemented)")
-        }
+        Format::CityGml => Ok(Box::new(citygml::CityGmlRunner)),
         Format::DuckDbParquet => bail!(
             "format 'duckdb-parquet' is a SQL-engine baseline driven by \
              scripts/readbench_duckdb.sh, not this binary's --child path"
@@ -118,23 +117,14 @@ mod tests {
             let resolved = resolve(format);
             match format {
                 // Implemented today.
-                Format::CityParquet
+                Format::CityGml
+                | Format::CityParquet
                 | Format::CityParquetHilbert
                 | Format::CityJson
                 | Format::CityJsonSeq
                 | Format::CityJsonSeqGz
                 | Format::FlatCityBuf => {
                     assert!(resolved.is_ok(), "{format} should resolve to a runner");
-                }
-                // Declared, runner still to come.
-                Format::CityGml => {
-                    let err = resolved
-                        .err()
-                        .unwrap_or_else(|| panic!("{format} has no runner yet and must say so"));
-                    assert!(
-                        err.to_string().contains("not implemented"),
-                        "{format} should report a clear not-implemented error, got: {err}"
-                    );
                 }
                 // Never a `--child` format at all.
                 Format::DuckDbParquet => {
