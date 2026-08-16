@@ -368,6 +368,30 @@ fn parse_partition_spec(
     }
 }
 
+/// Render `e` and its whole `source()` chain as `"top: cause: cause"`.
+///
+/// `CityParquetError::Io`/`Parquet` carry the underlying `std::io::Error` /
+/// `ParquetError` as a real `#[source]` rather than flattening it into the
+/// message (review P7), so the Display string alone is only the context half
+/// ("cannot open <path>"). This is the exit boundary where a human reads the
+/// error, so it walks the chain and appends every cause — the errno text an
+/// operator needs is on the chain, not in the top-level message.
+fn render_error(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        // A source whose Display the context already quotes verbatim would
+        // just stutter; `parquet_from` deliberately builds such a pair.
+        let text = c.to_string();
+        if !out.ends_with(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        cur = c.source();
+    }
+    out
+}
+
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
@@ -449,7 +473,7 @@ fn main() -> std::process::ExitCode {
             let mut sources = match resolve_and_open(&inputs) {
                 Ok(sources) => sources,
                 Err(e) => {
-                    eprintln!("error: {}", e);
+                    eprintln!("error: {}", render_error(&e));
                     return std::process::ExitCode::FAILURE;
                 }
             };
@@ -480,8 +504,10 @@ fn main() -> std::process::ExitCode {
                 Some(method) => {
                     let spec = match parse_partition_spec(&method, number, feature_num, cell_size) {
                         Ok(spec) => spec,
+                        // `parse_partition_spec` yields a plain String, not a
+                        // CityParquetError — there is no chain to render.
                         Err(e) => {
-                            eprintln!("error: {}", e);
+                            eprintln!("error: {e}");
                             return std::process::ExitCode::FAILURE;
                         }
                     };
@@ -498,7 +524,7 @@ fn main() -> std::process::ExitCode {
                             std::process::ExitCode::SUCCESS
                         }
                         Err(e) => {
-                            eprintln!("error: {}", e);
+                            eprintln!("error: {}", render_error(&e));
                             std::process::ExitCode::FAILURE
                         }
                     }
@@ -507,7 +533,7 @@ fn main() -> std::process::ExitCode {
                     let source = match merge_to_one(sources) {
                         Ok(source) => source,
                         Err(e) => {
-                            eprintln!("error: {}", e);
+                            eprintln!("error: {}", render_error(&e));
                             return std::process::ExitCode::FAILURE;
                         }
                     };
@@ -528,7 +554,7 @@ fn main() -> std::process::ExitCode {
                             std::process::ExitCode::SUCCESS
                         }
                         Err(e) => {
-                            eprintln!("error: {}", e);
+                            eprintln!("error: {}", render_error(&e));
                             std::process::ExitCode::FAILURE
                         }
                     }
@@ -565,7 +591,7 @@ fn main() -> std::process::ExitCode {
                         std::process::ExitCode::SUCCESS
                     }
                     Err(e) => {
-                        eprintln!("error: {}", e);
+                        eprintln!("error: {}", render_error(&e));
                         std::process::ExitCode::FAILURE
                     }
                 }
@@ -587,7 +613,7 @@ fn main() -> std::process::ExitCode {
                         std::process::ExitCode::SUCCESS
                     }
                     Err(e) => {
-                        eprintln!("error: {}", e);
+                        eprintln!("error: {}", render_error(&e));
                         std::process::ExitCode::FAILURE
                     }
                 }
@@ -634,7 +660,7 @@ fn main() -> std::process::ExitCode {
                     }
                 }
                 Err(e) => {
-                    eprintln!("error: {}", e);
+                    eprintln!("error: {}", render_error(&e));
                     std::process::ExitCode::FAILURE
                 }
             }
@@ -670,7 +696,7 @@ fn main() -> std::process::ExitCode {
             match bench::run(&opts) {
                 Ok(()) => std::process::ExitCode::SUCCESS,
                 Err(e) => {
-                    eprintln!("error: {}", e);
+                    eprintln!("error: {}", render_error(&e));
                     std::process::ExitCode::FAILURE
                 }
             }
@@ -680,7 +706,8 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
+    use super::{Cli, render_error};
+    use cityparquet_schema::CityParquetError;
     use clap::CommandFactory;
 
     /// clap's own debug assertions catch conflicting/invalid arg
@@ -688,5 +715,25 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    /// P7 moved the OS detail off the Display string and onto `source()`.
+    /// The exit boundary must therefore walk the chain, or the operator
+    /// loses the errno text that used to be interpolated into the message.
+    #[test]
+    fn rendered_error_shows_the_whole_source_chain() {
+        let e = CityParquetError::io_source(
+            "cannot open /tmp/nope",
+            std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory"),
+        );
+        let rendered = render_error(&e);
+        assert!(rendered.contains("cannot open /tmp/nope"), "{rendered}");
+        assert!(rendered.contains("No such file or directory"), "{rendered}");
+    }
+
+    #[test]
+    fn rendered_error_without_a_source_is_just_its_display() {
+        let e = CityParquetError::io("no input files resolved");
+        assert_eq!(render_error(&e), "io error: no input files resolved");
     }
 }
