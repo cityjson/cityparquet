@@ -169,7 +169,10 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
         .map_err(|e| CityParquetError::parquet_source("cannot open parquet reader", e))?;
     let meta = first_builder.cityparquet_metadata()?;
     let schema = first_builder.cityparquet_arrow_schema()?;
-    let srs_name = srs_name_for(meta.crs.as_ref())?;
+    // Both no-CRS states (explicit `null`, absent key) advertise no `srsName`
+    // — the CityGML writer, like every other consumer, only ever states a CRS
+    // it actually has.
+    let srs_name = srs_name_for(meta.crs.known())?;
     // Stored attribute column types drive attribute routing (not value shapes).
     let attr_types = attributes::attribute_types(&schema, &meta.attributes);
 

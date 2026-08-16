@@ -327,7 +327,11 @@ fn package_crs(tables: &PackageTables) -> Result<Option<CRS>> {
     })?;
     let meta = builder.cityparquet_metadata()?;
 
-    let Some(id) = meta.crs.as_ref().and_then(|c| c.get("id")) else {
+    // `known()` collapses both no-CRS states (an explicit `null`, and an
+    // absent key): the Projection extension can only state a CRS it has, so a
+    // file whose CRS is declared unknown carries no `proj:*` fields at all —
+    // the same "None over guessing" discipline as an unresolvable authority.
+    let Some(id) = meta.crs.known().and_then(|c| c.get("id")) else {
         return Ok(None);
     };
 

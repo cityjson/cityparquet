@@ -1,10 +1,11 @@
 //! `--crs` lets an operator supply a CRS a source does not declare.
 //!
-//! Without it, a CRS-less source is a hard conversion error (spec
-//! "CRS rules"). The override is not a guess and not an absent CRS: it makes
-//! the CRS resolvable before the writer runs, and is stamped as
-//! operator-supplied in `city.other` so the output never implies the SOURCE
-//! declared it.
+//! Without it, a CRS-less source still converts — with an explicit
+//! `city.crs: null` and no georeference (spec "CRS rules": "an unresolvable
+//! CRS is declared, not fatal"). The override is what turns that unknown into
+//! a real CRS. It is not a guess and not an absent CRS: it makes the CRS
+//! resolvable before the writer runs, and is stamped as operator-supplied in
+//! `city.other` so the output never implies the SOURCE declared it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use cityparquet::package::{ConvertOptions, convert, convert_source};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::source::Source;
-use cityparquet_schema::CityMetadata;
+use cityparquet_schema::{CityMetadata, CrsState};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 fn delft() -> PathBuf {
@@ -41,14 +42,101 @@ fn crs_less_fixture(dir: &Path) -> PathBuf {
     dest
 }
 
+/// RED (spec §metadata "CRS rules", as amended): a CRS-less source converts
+/// WITHOUT the override, writing an explicit `city.crs: null` plus a report
+/// diagnostic — it is no longer a hard conversion error.
+///
+/// This replaces `a_crs_less_source_still_fails_without_the_override`. The
+/// state that matters is `null`, not absence: per GeoParquet an absent `crs`
+/// asserts OGC:CRS84, which over Delft's RD New coordinates would place the
+/// city off the coast of Africa.
 #[test]
-fn a_crs_less_source_still_fails_without_the_override() {
+fn a_crs_less_source_converts_to_an_explicit_null_crs_and_reports_it() {
     let tmp = tempfile::tempdir().unwrap();
     let input = crs_less_fixture(tmp.path());
+    let out = tmp.path().join("out");
     let source = Source::open(&input).unwrap();
-    let opts = ConvertOptions::new(input.clone(), tmp.path().join("out"));
-    let err = convert_source(&source, &opts).expect_err("no CRS and no override must fail");
-    assert!(err.to_string().contains("declares no CRS"), "got: {err}");
+    let opts = ConvertOptions::new(input.clone(), out.clone());
+    let report = convert_source(&source, &opts)
+        .expect("a CRS-less source is declared, not fatal (spec CRS rules)");
+
+    let diagnostic = report
+        .crs_diagnostic
+        .as_deref()
+        .expect("the writer SHOULD surface a conversion diagnostic");
+    assert!(
+        diagnostic.contains("declares no CRS") && diagnostic.contains("null"),
+        "the diagnostic must explain the explicit null, got: {diagnostic}"
+    );
+
+    let table = out.join("building.parquet");
+    let meta = footer(&table);
+    assert_eq!(
+        meta.crs,
+        CrsState::Unknown,
+        "city.crs must be an explicit null, never absent"
+    );
+
+    // The footer BYTES, not just the parsed shape: absence and null are the
+    // two states `Option<Value>` used to conflate, and only the raw JSON can
+    // tell them apart.
+    let city: serde_json::Value = serde_json::from_str(&raw_footer_key(&table, "city")).unwrap();
+    let members = city.as_object().unwrap();
+    assert!(
+        members.contains_key("crs"),
+        "the `crs` key MUST be written: {members:?}"
+    );
+    assert!(members["crs"].is_null(), "{members:?}");
+
+    // And the GeoParquet mirror says the same — a GeoParquet-only consumer
+    // cannot read the foreign `city` key, so an absent `geo.columns[].crs`
+    // would silently assert CRS84 to it.
+    let geo: serde_json::Value = serde_json::from_str(&raw_footer_key(&table, "geo")).unwrap();
+    let column = geo["columns"]["geometry_lod0_0"].as_object().unwrap();
+    assert!(column.contains_key("crs"), "{column:?}");
+    assert!(
+        column["crs"].is_null(),
+        "geo mirrors the null (GeoParquet-legal): {column:?}"
+    );
+}
+
+/// A package written with an unknown CRS carries no `proj:*` STAC fields —
+/// the Item can only state a CRS the package actually has.
+#[test]
+fn an_unknown_crs_writes_no_projection_extension_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = crs_less_fixture(tmp.path());
+    let out = tmp.path().join("out");
+    let source = Source::open(&input).unwrap();
+    convert_source(&source, &ConvertOptions::new(input, out.clone()))
+        .expect("a CRS-less source converts");
+
+    let item: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("metadata.json")).unwrap()).unwrap();
+    let props = item["properties"].as_object().unwrap();
+    let proj: Vec<&String> = props.keys().filter(|k| k.starts_with("proj:")).collect();
+    assert!(
+        proj.is_empty(),
+        "an unknown CRS must claim no projection fields: {proj:?}"
+    );
+}
+
+/// One raw Parquet footer key-value entry, as the writer wrote it. The typed
+/// `footer` accessor below cannot answer "absent or null?" — that distinction
+/// only exists in the bytes.
+fn raw_footer_key(table: &Path, key: &str) -> String {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(table).unwrap()).unwrap();
+    builder
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .expect("footer key-value metadata")
+        .iter()
+        .find(|kv| kv.key == key)
+        .unwrap_or_else(|| panic!("footer must carry a {key:?} key"))
+        .value
+        .clone()
+        .unwrap_or_else(|| panic!("{key:?} must have a value"))
 }
 
 #[test]
@@ -107,7 +195,7 @@ fn the_override_supplies_the_crs_and_records_its_provenance() {
 
     let meta = footer(&out.join("building.parquet"));
     assert!(
-        meta.crs.is_some(),
+        meta.crs.is_known(),
         "city.crs must be populated from the override"
     );
     let other = meta.other.expect("city.other must exist");
@@ -175,7 +263,7 @@ fn an_override_a_source_ignored_is_never_stamped_as_provenance() {
 
     let meta = footer(&out.join("building.parquet"));
     assert_eq!(
-        meta.crs.as_ref().and_then(|c| c.pointer("/id/code")),
+        meta.crs.known().and_then(|c| c.pointer("/id/code")),
         Some(&serde_json::json!(7415)),
         "the source's own CRS must be the one written"
     );
@@ -203,7 +291,7 @@ fn the_library_convert_entry_point_applies_the_override_itself() {
     convert(&opts).expect("convert() must apply the override it was given");
 
     let meta = footer(&out.join("building.parquet"));
-    assert!(meta.crs.is_some(), "city.crs must be populated");
+    assert!(meta.crs.is_known(), "city.crs must be populated");
     assert_eq!(
         meta.other
             .as_ref()

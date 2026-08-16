@@ -12,8 +12,8 @@ pub mod types;
 pub use attributes::{AttributeInferer, AttributeType};
 pub use error::{CityParquetError, Result};
 pub use metadata::{
-    CITYPARQUET_VERSION, CityColumnEntry, CityMetadata, GEOPARQUET_VERSION, GeoColumnEntry,
-    GeoMetadata, Orientation3d, SourceFormat,
+    CITYPARQUET_VERSION, CityColumnEntry, CityMetadata, CrsState, GEOPARQUET_VERSION,
+    GeoColumnEntry, GeoMetadata, Orientation3d, SourceFormat,
 };
 pub use model::{CityParquetSchema, normalise_attribute_name};
 pub use types::{

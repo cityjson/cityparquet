@@ -10,12 +10,13 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 /// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
-/// all. Since `scan` now hard-fails on coordinate-bearing input with no
-/// resolvable CRS (spec "CRS rules"), tests below that convert (or compare
-/// against) railway use a small on-disk COPY with a CRS injected via JSON
-/// mutation of the real fixture — never hand-written CityJSON. Used both as
-/// the conversion INPUT and, where a test also compares against "the
-/// source", as that comparison baseline.
+/// all. Coordinate-bearing input with no resolvable CRS converts to an
+/// explicit `city.crs: null` rather than failing (spec "CRS rules": "an
+/// unresolvable CRS is declared, not fatal"), so tests below that want a
+/// GEOREFERENCED railway conversion (or comparison) use a small on-disk COPY
+/// with a CRS injected via JSON mutation of the real fixture — never
+/// hand-written CityJSON. Used both as the conversion INPUT and, where a test
+/// also compares against "the source", as that comparison baseline.
 fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
     let mut doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
@@ -747,7 +748,10 @@ fn convert_with_crs_flag_supplies_the_crs_and_stamps_its_provenance() {
     let input = crs_less_delft(dir.path(), "no_crs.city.jsonl");
     let out = dir.path().join("pkg");
 
-    // Without the flag the CRS-less source is still a hard error.
+    // Without the flag the CRS-less source still converts — with an explicit
+    // `city.crs: null` and a warning on stderr (spec "CRS rules": an
+    // unresolvable CRS is declared, not fatal). The stdout report keeps its
+    // stable positional shape, so the diagnostic goes to stderr.
     let output = Command::new(binary)
         .args(["convert".as_ref(), input.as_os_str()])
         .arg("-o")
@@ -755,13 +759,19 @@ fn convert_with_crs_flag_supplies_the_crs_and_stamps_its_provenance() {
         .output()
         .expect("failed to run convert");
     assert!(
-        !output.status.success(),
-        "a CRS-less source must still fail without --crs"
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("declares no CRS"),
-        "stderr: {}",
+        output.status.success(),
+        "a CRS-less source must convert; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning:") && stderr.contains("declares no CRS"),
+        "the CLI must warn about the unknown CRS; stderr: {stderr}"
+    );
+    assert_eq!(
+        city_footer(&out.join("building.parquet")).crs,
+        cityparquet_schema::CrsState::Unknown,
+        "city.crs must be an explicit null without --crs"
     );
 
     // With it, the conversion succeeds and records where the CRS came from.
@@ -779,7 +789,7 @@ fn convert_with_crs_flag_supplies_the_crs_and_stamps_its_provenance() {
     );
 
     let meta = city_footer(&out.join("building.parquet"));
-    assert!(meta.crs.is_some(), "city.crs must be populated");
+    assert!(meta.crs.is_known(), "city.crs must be populated");
     let other = meta.other.expect("city.other must exist");
     assert_eq!(
         other.get("crs_source").and_then(|v| v.as_str()),
@@ -817,7 +827,7 @@ fn convert_with_crs_flag_on_a_source_that_declares_one_stamps_nothing() {
 
     let meta = city_footer(&out.path().join("building.parquet"));
     assert_eq!(
-        meta.crs.as_ref().and_then(|c| c.pointer("/id/code")),
+        meta.crs.known().and_then(|c| c.pointer("/id/code")),
         Some(&serde_json::json!(7415)),
         "delft's own CRS must be the one written"
     );

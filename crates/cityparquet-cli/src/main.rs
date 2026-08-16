@@ -118,8 +118,9 @@ enum Commands {
         /// Operator-supplied CRS (e.g. EPSG:25832, or the bare 25832) used
         /// ONLY when the source declares none — it is ignored for a source
         /// that declares its own. Without it, a source carrying CRS-bearing
-        /// coordinates but no resolvable CRS is a hard conversion error. When
-        /// it is applied, the output records
+        /// coordinates but no resolvable CRS still converts, but the package
+        /// is written with `city.crs: null` (CRS unknown) and warns. When the
+        /// override is applied, the output records
         /// `city.other.crs_source = "operator-supplied"`. A geographic
         /// (degree-valued) code is refused: nothing here reprojects.
         #[arg(long, value_name = "EPSG")]
@@ -513,6 +514,17 @@ fn main() -> std::process::ExitCode {
                     };
                     match convert_partitioned(&sources, &spec, &opts) {
                         Ok(report) => {
+                            // Every partition scans the same merged source, so
+                            // the CRS diagnostic is one dataset-level fact, not
+                            // a per-partition one — printed once rather than
+                            // repeated per output directory.
+                            if let Some(message) = report
+                                .partitions
+                                .iter()
+                                .find_map(|(_, r)| r.crs_diagnostic.as_deref())
+                            {
+                                eprintln!("warning: {message}");
+                            }
                             println!(
                                 "partitions={} duplicate_ids={}",
                                 report.partitions.len(),
@@ -539,6 +551,14 @@ fn main() -> std::process::ExitCode {
                     };
                     match convert_source(&source, &opts) {
                         Ok(report) => {
+                            // A diagnostic, not a failure (spec "CRS rules":
+                            // an unresolvable CRS is declared, not fatal).
+                            // stderr keeps the stdout report a stable
+                            // positional line — the same idiom as the
+                            // `skipped_non_files` warning above.
+                            if let Some(message) = &report.crs_diagnostic {
+                                eprintln!("warning: {message}");
+                            }
                             println!(
                                 "{} {} {} {} {} {} {} {} {}",
                                 report.object_count,
