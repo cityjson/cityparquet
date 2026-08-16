@@ -20,9 +20,38 @@ everywhere and demonstrated nothing — re-ruled to rg512 after the first
 re-run exposed that). See "Row-group pruning" under Observations for what
 the committed rg512 rows show.
 
-`bench/results/*.csv` and this README are committed (they are the paper's
-measurement artefacts); `bench/data/` (the downloaded 3DBAG tiles) is
-gitignored and reproducible via `just bench-data`.
+> ## ⚠ RESULTS STATUS — the CSVs behind these tables are gone. Re-run before quoting.
+>
+> **This document's methodology is current; its numbers are unbacked.** The
+> `bench/results/*.csv` every table below aggregates were **deleted in
+> `adb35ee`**, so nothing here can be checked against its own artefacts, and
+> `bench/data/` (the three pinned 3DBAG tiles) is gitignored and no longer
+> present either. Three further caveats on the figures:
+>
+> - The geometry-encoding default changed after this run (see the note below):
+>   these numbers were produced with GeoArrow tagging on, the CLI now defaults
+>   to plain-BLOB WKB.
+> - The `just bench-data` / `just bench-all` recipes this document was written
+>   around were removed in `16880cf`; the M5 write benchmark is now
+>   `just write-bench FOLDER`, over a *folder* rather than five hardcoded
+>   inputs. The Reproduce block below has been corrected accordingly, but it
+>   has not been re-executed.
+> - Unlike `bench/READ_BENCHMARK.md` and `bench/CORPUS_REPORT.md`, this
+>   document is **not** invalidated by the read-side corpus replacement
+>   (`fdfc1c1`) or by the three new read-benchmark format tags: the M5 write
+>   benchmark measures the two committed CityJSON fixtures plus three pinned
+>   3DBAG tiles, and those inputs are unchanged. Its staleness is the missing
+>   CSVs and the encoding-default change, not the corpus.
+>
+> Retained as **provenance** — the observations below (codec/ordering/layout
+> trade-offs, row-group pruning, the baseline's geometry-coverage gaps) are
+> the findings a re-run should confirm. **Nothing numeric here may be cited in
+> the paper until `bench/results/` is repopulated.**
+
+This README is committed as one of the paper's measurement artefacts;
+`bench/results/*.csv` were committed alongside it until `adb35ee` and must be
+regenerated (see Reproduce). `bench/data/` (the downloaded 3DBAG tiles) is
+gitignored and reproducible via `./scripts/fetch_3dbag.sh`.
 
 **Note:** the geometry-encoding default changed after this M5 run — these
 numbers were produced with GeoArrow tagging on (the then-default), whereas
@@ -63,21 +92,34 @@ cargo:    cargo 1.93.1 (083ac5135 2025-12-15)
 rustc:    rustc 1.93.1 (01f6ddf75 2026-02-11)
 ```
 
-Full `just bench-all` wall time on this machine: ~120 s (excluding the
+Full wall time on this machine, over all five datasets: ~120 s (excluding the
 one-off release build and tile downloads; the original 8-variant repeat-3
 run took 71 s — the increase is the two extra variants and repeat 3 → 5).
+This was measured with the since-removed `just bench-all`; the equivalent
+today is the two `just write-bench` invocations under Reproduce below.
 
 ## Reproduce
 
 ```sh
-just fixtures     # CityJSON fixtures into tests/fixtures/ (network)
-just bench-data   # pinned 3DBAG tiles into bench/data/ (network)
-just bench-all    # rewrites bench/results/*.csv (network: duckdb community ext)
+just fixtures                # CityJSON fixtures into tests/fixtures/ (network)
+./scripts/fetch_3dbag.sh     # pinned 3DBAG tiles into bench/data/ (network)
+just write-bench tests/fixtures   # rewrites bench/results/*.csv (network: duckdb community ext)
+just write-bench bench/data       # ... and the three 3DBAG tiles
 ```
 
-`bench-all` deletes and rewrites the five result CSVs, so a run is always
-one machine, one sitting. Per-dataset runs:
-`cityparquet bench --input <file> --out <csv>` and
+`just bench-data` and `just bench-all` no longer exist — they were removed in
+`16880cf`, which replaced the per-dataset recipes with folder-recursive ones.
+`write-bench FOLDER` walks every CityJSON/CityJSONSeq file under FOLDER,
+removing each `bench/results/<name>.csv` before writing it, so a run is always
+one machine, one sitting, per dataset; the fixtures and the 3DBAG tiles live
+in two folders, hence the two invocations. `fetch_3dbag.sh` has no recipe
+wrapping it (also since `16880cf`) and is called directly.
+
+Do **not** confuse `just write-bench` with `just bench`: the latter is the
+cross-format *read* benchmark documented in `bench/READ_BENCHMARK.md`, writes
+to `bench/read_results/`, and has nothing to do with the M5 variant matrix.
+
+Per-dataset runs: `cityparquet bench --input <file> --out <csv>` and
 `./scripts/bench_duckdb.sh <file> <csv>`.
 
 ## Resolved: 9-284-556 round-trip

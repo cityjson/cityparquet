@@ -3,16 +3,57 @@
 A full-corpus run of the three benchmarks — cross-format **read** performance
 (`just bench`), **file size / compression ratio** (`just sizes`), and the
 **compression-codec / row-group-size** sweep (`just compression-bench`) —
-over the CityJSON benchmark corpus. This aggregates the per-dataset artefacts
-in `bench/read_results/*.csv`, `bench/read_results/sizes.csv`, and
-`bench/compression_results/*.csv`; the referenced charts are regenerable with
-`just plot` / `just sizes` / `just compression-plot`.
+over the **legacy CityJSONSeq benchmark corpus**. This aggregates the
+per-dataset artefacts in `bench/read_results/*.csv`,
+`bench/read_results/sizes.csv`, and `bench/compression_results/*.csv`; the
+referenced charts are regenerable with `just plot` / `just sizes` /
+`just compression-plot`.
 
 Captured 2026-07-09 on the machine in `bench/READ_BENCHMARK.md`'s environment
 block (Apple M4 Max, macOS, duckdb 1.5.3). Read the caveats there — they all
 apply here — plus the corpus-specific ones at the end of this document.
 
+> ## ⚠ RESULTS STATUS — this whole report describes a corpus that is no longer the corpus
+>
+> **Every read and size figure below is stale, and must not be quoted without
+> a re-run.** Three things changed after it was captured:
+>
+> 1. **The corpus was replaced** (`fdfc1c1`). `just fetch-data` now fetches 30
+>    real published CityGML 2.0 / CityJSON 2.0 documents from the city3d STAC
+>    catalogue. **Not one of the datasets named below is in it** — Rotterdam,
+>    Ingolstadt, Railway, Montreal, Vienna, 3DBAG, NYC and Zurich were the 11
+>    pre-converted CityJSONSeq files of the *legacy* corpus, which now lives
+>    behind `just fetch-seq-data` and in a different directory. Two of those
+>    names survive as *different* data: the new corpus carries a Rotterdam
+>    Delfshaven `.city.json`, a Vienna tile and two 3DBAG tiles, but they are
+>    not these files and their numbers will not match.
+> 2. **Three format tags were added** — `citygml`, `cityjson` and
+>    `cityparquet-hilbert`. Every table below is missing rows that now exist,
+>    and §1's whole framing ("CityJSONSeq must scan and parse every feature")
+>    is now measurable against the two formats the data actually *ships* in
+>    rather than against one pre-converted intermediate. That is the headline
+>    the re-run should make, and this report cannot make it.
+> 3. **The source CSVs were deleted** (`84a2b38`): there are no
+>    `bench/read_results/*.csv` at HEAD, so nothing below can even be checked
+>    against its own artefacts. `bench/compression_results/*.csv` (§3) *are*
+>    still committed — but they were produced on the legacy corpus too, and
+>    §3's own datasets (NYC, Zurich, ...) are not in the default corpus.
+>
+> The figures are retained as **provenance**, so the re-run has a prior to be
+> compared against, and because the *shapes* they show (metadata queries O(1)
+> vs O(n); size ratios; the codec and row-group trade-offs) are the findings
+> the re-run is expected to confirm at larger scale. **Treat every number as a
+> prior, never as evidence, until `bench/read_results/` is repopulated and
+> this report rewritten.**
+
 ## Datasets
+
+> **These eight datasets are the LEGACY corpus** (`just fetch-seq-data`,
+> `bench/data/benchmark_seq`), not the current one. See the results-status
+> banner above; the current corpus is 30 published CityGML/CityJSON documents
+> pinned in `bench/catalogue_benchmark_urls.txt`, spanning 923 KB to 1.86 GB,
+> whose own restrictions are documented in `bench/READ_BENCHMARK.md`
+> Caveats 15–18.
 
 Eight corpus datasets spanning three orders of magnitude, plus the two
 committed fixtures and one 3DBAG tile already benchmarked:
@@ -162,11 +203,23 @@ Row-group size is the lever for spatially-selective query performance.
   Rotterdam fine; only the Compatibility path trips. Worth confirming whether
   this is malformed source data or a writer slicing bug before it reaches the
   paper.
+- **This corpus cannot produce a `citygml` or a `cityjson` row at all.** Every
+  one of these 11 datasets is already CityJSONSeq, i.e. a *pre-converted
+  intermediate* rather than a format any of them was published in. CityGML is
+  never synthesised by reverse conversion (`bench/READ_BENCHMARK.md`
+  Caveat 14), so a default-set run over this folder measures four of the five
+  format-comparison tags and warns loudly that it did. That limitation — not
+  a machine, not a codebase change — is the reason the corpus was replaced.
 - All the `bench/READ_BENCHMARK.md` caveats apply: counting granularity
-  (feature vs CityObject for count/full-read/bbox), `time_s` is end-to-end
-  read latency, `id-lookup` samples a table-order-first id (a lower bound for
-  scan formats), FlatCityBuf `bbox` is 2D, `duckdb-parquet` has no heap
-  figure.
+  (feature vs CityObject for count/full-read/bbox — note it is now a **two-
+  grain** split across eight tags, see Caveat 1 there), `time_s` is end-to-end
+  read latency, FlatCityBuf `bbox` is 2D, `duckdb-parquet` has no heap figure.
+  **One of them has since been corrected**: `id-lookup`'s table-order-first
+  sampled id is a lower bound for `cityjsonseq`(+gz) and for FlatCityBuf's
+  fallback walk, but **not** for `citygml` or `cityjson`, neither of which can
+  take the early exit (Caveat 9 there). The sentence this list used to carry —
+  that the sampling flatters every full-scan format — is false for the two
+  formats added since.
 
 ## Reproduce
 
@@ -177,11 +230,23 @@ Row-group size is the lever for spatially-selective query performance.
 # documents into a different directory. Reproducing these figures needs the
 # bytes they were measured on.
 just fetch-seq-data                   # legacy corpus → bench/data/benchmark_seq (network)
-just bench <folder>                   # cross-format read benchmark + charts
+just bench <folder> bench/read_results "cityjson,cityjsonseq,cityjsonseq-gz,flatcitybuf,cityparquet,duckdb-parquet"
 just compression-bench <folder>       # codec / row-group sweep + charts
 just sizes                            # size + compression-ratio report + charts
 ```
 
-The committed CSVs under `bench/read_results/` and `bench/compression_results/`
-are this run's measurement artefacts; the PNGs under `*/plots/` are gitignored
-and regenerated by the plot recipes.
+The explicit `FORMATS` list is not decoration. A bare `just bench <folder>`
+now measures `Format::DEFAULT_SET`, which (a) asks for a `citygml` row this
+corpus cannot provide, so the run warns that it is not a complete format
+comparison, and (b) represents CityParquet by `cityparquet-hilbert` rather
+than the source-ordered `cityparquet` these figures were measured with. The
+list above reproduces the series this report actually contains. The ordering
+question is now asked separately by `just ordering-bench <folder>`, into
+`bench/ordering_results/`.
+
+**The read CSVs this report aggregates no longer exist**: `bench/read_results/
+*.csv` and `sizes.csv` were deleted in `84a2b38`, so §1 and §2 above cannot be
+checked against their own artefacts and must be re-measured before being
+quoted. `bench/compression_results/*.csv` (§3) *are* still committed and do
+still back their tables — on the legacy corpus. The PNGs under `*/plots/` are
+gitignored and regenerated by the plot recipes.

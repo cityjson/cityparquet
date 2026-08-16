@@ -213,6 +213,37 @@ convert-all FOLDER OUT='out/cityparquet':
     fi
     echo "convert-all: ${found} file(s) converted into {{OUT}}"
 
+# Prepare the per-format artefacts for ONE input, WITHOUT measuring anything
+# (`just bench FOLDER` runs exactly this as its first step, for every input
+# under FOLDER). A thin wrapper over `scripts/readbench_prepare.sh`, which
+# owns the conversion chain, its per-format tool guards and its refusals.
+#
+# It exists because four of the coordinator's own error messages
+# (crates/cityparquet-readbench/src/coordinator.rs) tell the operator to run
+# `just readbench-prepare <input>` when an artefact is missing, and
+# bench/READ_BENCHMARK.md documents it as the per-dataset manual path — a
+# recipe named by an error message has to be a recipe that exists. (It was
+# dropped in 16880cf when the bench recipes were consolidated; those four
+# strings were not.)
+#
+# FORMATS is a comma-separated list of artefact-BEARING format names
+# (`Format::ALL` minus `duckdb-parquet`, which has no artefact of its own —
+# see crates/cityparquet-readbench/src/format.rs); empty (the default) builds
+# every artefact the script knows how to build. Needs whichever external
+# tools the requested hop of the chain uses (`just fetch-tools` for
+# citygml-tools + cjseq; `fcb`, `jq`, `gzip`); network-independent given
+# already-fetched inputs and tools; kept OUT of `just check`/CI.
+readbench-prepare INPUT OUTDIR='bench/data/readbench' FORMATS='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # `${a[@]+"${a[@]}"}`, never a bare `"${a[@]}"`: see the same note in
+    # `bench` below — under `set -u` an EMPTY array is unbound in bash 3.2.
+    args=()
+    if [[ -n "{{FORMATS}}" ]]; then
+        args=(--formats "{{FORMATS}}")
+    fi
+    ./scripts/readbench_prepare.sh ${args[@]+"${args[@]}"} "{{INPUT}}" "{{OUTDIR}}"
+
 # Cross-format READ benchmark (see bench/READ_BENCHMARK.md): for every
 # CityGML/CityJSON/CityJSONSeq file found under FOLDER (recursive), prepare
 # every compared format (`scripts/readbench_prepare.sh`), run the
@@ -463,8 +494,19 @@ plot RESULTS='bench/read_results':
 # Render the file-size / compression-ratio report from PREPARED_DIR (default
 # bench/data/readbench, the same per-format artefacts `readbench_prepare.sh`
 # populates): OUT/sizes.csv (dataset, format, bytes, mb,
-# ratio_vs_cityjsonseq) plus two grouped bar charts under OUT/plots/
-# (sizes.png, compression-ratio.png). Needs `uv` on PATH.
+# ratio_vs_cityjsonseq, baseline_format, ratio_vs_baseline) plus two grouped
+# bar charts under OUT/plots/ (sizes.png, compression-ratio.png). Needs `uv`
+# on PATH.
+#
+# TWO ratio columns, not one: `ratio_vs_cityjsonseq` keeps its literal
+# meaning and is EMPTY for a CityGML-native dataset that no run ever cut a
+# raw CityJSONSeq from, while (`baseline_format`, `ratio_vs_baseline`) is
+# always populated and self-describing — `baseline_format` names the
+# denominator actually used (raw CityJSONSeq where one exists, otherwise the
+# least-processed form the dataset exists in). The chart plots
+# `ratio_vs_baseline`. See bench/plot/readbench_plot/sizes.py's own module
+# doc for why answering "how much smaller than raw CityJSONSeq?" with a
+# CityGML size would be a lie in a measurement artefact.
 sizes PREPARED_DIR='bench/data/readbench' OUT='bench/read_results':
     uv run --project bench/plot python -m readbench_plot.sizes {{PREPARED_DIR}} {{OUT}}
 
