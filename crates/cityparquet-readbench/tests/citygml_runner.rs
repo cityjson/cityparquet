@@ -224,8 +224,10 @@ fn every_scenario_answers_the_single_building_fixture() {
     // bbox-query: the fixture's gml:pos coordinates span (0,0,0)-(100,100,150)
     // and it declares no gml:Envelope, so the reader quantises against a
     // [0,0,0] origin and the window is in raw coordinates.
-    // (A negative lower corner would be swallowed by clap as a flag, so the
-    // window starts at the fixture's own origin — which its geometry touches.)
+    // (The window starts at the fixture's own origin, which its geometry
+    // touches. A negative lower corner is expressible — `--bbox=-1,-1,...`,
+    // with `=` — but the space-separated form clap sees here would read the
+    // leading `-` as a flag; that is pre-existing and format-independent.)
     assert_eq!(
         run_child(
             "citygml",
@@ -302,14 +304,120 @@ fn count_is_member_level_while_attr_scenarios_reach_nested_city_objects() {
         "exactly one of the four members is a Building"
     );
 
-    // The grain difference itself: those two installations are inside ONE of
-    // the four members, so the object-level total (6) exceeds `count` (4).
-    // Stated as an assertion so the disclosure cannot rot into a lie.
+    // The grain difference itself, asked of the RUNNER rather than of
+    // arithmetic: `project --attr-column object_type` counts every CityObject
+    // (the reserved column is never null), so it reports the object-level
+    // total directly. `members + installations == 6` would have been an inert
+    // tautology — true by construction once the two assertions above pass, and
+    // still green if a seventh CityObject appeared.
+    let city_objects = run_child(
+        "citygml",
+        "project",
+        &input,
+        &["--attr-column", "object_type"],
+    );
     assert_eq!(
-        members + installations,
-        6,
-        "4 members + 2 nested installations = 6 CityObjects; the two grains are \
-         deliberately different numbers"
+        city_objects, 6,
+        "6 CityObjects (4 members + 2 nested BuildingInstallations) against 4 \
+         members — the two grains are deliberately different numbers, and this \
+         asks the runner for the second one rather than deriving it"
+    );
+    assert!(
+        city_objects > members,
+        "the object-level grain must stay strictly larger on this fixture, or \
+         it no longer demonstrates anything"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Unmapped member types: a silent zero is worse than a loud failure.
+// ---------------------------------------------------------------------------
+
+/// **The measurement-integrity guard.** The reader maps `bldg:Building` plus a
+/// fixed list of 1st-level non-building types; a `cityObjectMember` of any
+/// other type used to be skipped silently, so a real PLATEAU `trk` tile
+/// (`tran:Track`), a `dem` tile (`dem:ReliefFeature`), an `lsld` or a `urf`
+/// tile all returned `count = 0` with exit status 0 — in a fraction of the
+/// time a real read takes, because nothing was ever materialised.
+///
+/// That is not a defensible benchmark row. Every other format's artefact for
+/// the same tile is produced by citygml-tools, which DOES map
+/// `dem:ReliefFeature` to CityJSON `TINRelief` (a type this repository treats
+/// as first class — it writes `relief.parquet`), so the CSV would print
+/// `citygml 0` beside `cityjsonseq N`, with CityGML's timing flattered by the
+/// work it never did. The CityGML 1.0 refusal already in this file exists for
+/// exactly this failure mode; an unmapped member type is the same failure.
+///
+/// So the runner now hard-fails, naming the offending types and counts. The
+/// fixture is three `tran:Track` members lifted verbatim from the real
+/// Tachikawa `trk` tile named in `bench/catalogue_benchmark_urls.txt`.
+#[test]
+fn an_unmapped_member_type_fails_loudly_instead_of_counting_zero() {
+    let input = data_fixture("plateau_trk_fragment.gml");
+
+    // Every scenario, not just `count`: a guard that only covered the counting
+    // scenarios would still publish a silently-truncated `attr-filter` or
+    // `bbox-query` row.
+    let scenarios: [(&str, &[&str]); 7] = [
+        ("count", &[]),
+        ("full-read", &[]),
+        ("bbox-query", &["--bbox", "0,0,0,1,1,1"]),
+        (
+            "attr-filter",
+            &["--attr-column", "object_type", "--attr-eq", "Road"],
+        ),
+        ("attr-stats", &["--attr-column", "function"]),
+        ("project", &["--attr-column", "object_type"]),
+        ("id-lookup", &["--target-id", "no-such-id"]),
+    ];
+
+    for (scenario, extra) in scenarios {
+        let stderr = run_child_expect_failure("citygml", scenario, &input, extra);
+        assert!(
+            stderr.contains("does not map"),
+            "scenario '{scenario}' must refuse a document with unmapped \
+             cityObjectMembers, got stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("tran:Track"),
+            "the refusal must NAME the offending element type so the operator \
+             can act on it ({scenario}); got stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("3 of 3"),
+            "the refusal must report how many of the document's members were \
+             skipped ({scenario}); got stderr:\n{stderr}"
+        );
+    }
+}
+
+/// The documents the guard must still accept, spelled out so the guard cannot
+/// be over-tightened into refusing valid input. All four of
+/// `railway_lod3_fragment.gml`'s members and all three of the Ingolstadt
+/// fragment's are mapped types, so both must keep answering.
+#[test]
+fn fully_mapped_documents_are_unaffected_by_the_guard() {
+    assert_eq!(
+        run_child(
+            "citygml",
+            "count",
+            &data_fixture("railway_lod3_fragment.gml"),
+            &[]
+        ),
+        4
+    );
+    assert_eq!(
+        run_child(
+            "citygml",
+            "count",
+            &data_fixture("savenow_ingolstadt_lod2.gml"),
+            &[]
+        ),
+        3
+    );
+    assert_eq!(
+        run_child("citygml", "count", &fixture("b1_lod2_cs_w_sem.gml"), &[]),
+        1
     );
 }
 
@@ -512,6 +620,10 @@ fn the_module_doc_discloses_the_full_parse_and_disclaims_a_format_ceiling() {
         "different parser",
         "different numbers",
         "cityObjectMember",
+        // The two measurement-integrity disclosures: what is refused, and the
+        // one pass this runner deliberately does NOT make.
+        "refused rather than measured",
+        "appearance pre-pass is skipped",
     ] {
         assert!(
             module_doc.contains(needle),

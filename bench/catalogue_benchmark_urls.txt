@@ -25,7 +25,10 @@
 # furniture, land use, terrain, ...) rather than 15 building tiles.
 #
 # CONVERTER SUPPORT: the CityParquet converter currently cannot read CityGML 1.0
-# or 3.0, CityJSON 1.0, or geographic (degree-valued) CRS. Collections known to
+# or 3.0, CityJSON 1.0, or geographic (degree-valued) CRS. A SECOND blocked
+# section lists CityGML modules whose 1st-level CityObject types the reader does
+# not map — valid, ingestible-looking files that would otherwise yield a
+# silently truncated (often zero) object count. Collections known to
 # be blocked on one of those grounds are listed in the "BLOCKED" section at the
 # very end with their URLs COMMENTED OUT. They are valid CityGML/CityJSON and are
 # retained as a conformance corpus; uncomment them once the reader supports them.
@@ -34,14 +37,6 @@
 # ---------------------------------------------------------------------------
 # USABLE — converter-ingestible today
 # ---------------------------------------------------------------------------
-#
-# japan-plateau-3d — Japan PLATEAU 3D City Models; central Tokyo (Arakawa-ku sheet),
-#   lsld (landslide-risk areas), CityGML 2.0, .gml, 312 KB
-https://assets.cms.plateau.reearth.io/assets/28/eeb030-dcd5-407b-b18e-16cf2e50054c/13118_arakawa-ku_pref_2023_citygml_2_op/udx/lsld/533946_lsld_6697_op.gml
-#
-# japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo (Tachikawa-shi),
-#   trk (Track / footpaths), CityGML 2.0, .gml, 535 KB
-https://assets.cms.plateau.reearth.io/assets/0f/dbc1ba-d722-455f-8193-bc6ed930fd0e/13202_tachikawa-shi_pref_2023_citygml_2_op/udx/trk/53394343_trk_6697_op.gml
 #
 # netherlands-3d-bag — Netherlands 3D BAG Building Models (v20250903); Amsterdam
 #   centre tile 10-432-718, CityJSON 1.1, .city.json.gz, 923 KB
@@ -64,6 +59,11 @@ https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.js
 #
 # japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo Chuo-ku (Tokyo Station tile
 #   53394611), brid (Bridge), CityGML 2.0, .gml, 2.7 MB
+#   NOTE: the CityGML reader HARD-ERRORS on this tile ("CityGML solid references
+#   #poly-..., which is not defined in this building (cross-building/shared
+#   geometry is out of scope)"). Kept here deliberately: a loud failure is a
+#   correct outcome — unlike the silent zeros in the CITYGML READER PROFILE
+#   block below — and every other format reads the tile fine.
 https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/brid/53394611_brid_6697_op.gml
 #
 # the-hague-3d — The Hague 3D City Model (with Terrain); tile 01, CityJSON, .city.json, 3.0 MB
@@ -84,17 +84,9 @@ https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json
 #   CityGML, .gml, 10 MB
 https://data.gov.lv/dati/dataset/rigas-apkaimju-lod2-modeli/resource/2e00bb17-0c84-4ec4-9626-48002d0a47c8/download/atgazene_lod2.gml
 #
-# japan-plateau-3d — Japan PLATEAU 3D City Models; central Tokyo (Edogawa-ku sheet),
-#   urf (urban planning zones), CityGML 2.0, .gml, 10 MB
-https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/urf/533946_urf_6697_08_op.gml
-#
 # craig-aura-zae-2024 — Auvergne-Rhône-Alpes Economic Activity Zones; Valence LoD3
 #   part 1 (of 21 items), CityGML, .gml, 15 MB
 https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_ZAE%2F26_Valence_Romans_Agglo&files=02_Valence_LOD3_1.gml
-#
-# japan-plateau-3d — Japan PLATEAU 3D City Models; Tokyo Chuo-ku (tile 53394611),
-#   ubld (underground buildings — rare, only 5 items nationwide), CityGML 2.0, .gml, 22 MB
-https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/ubld/53394611_ubld_6697_op.gml
 #
 # craig-aura-eleven-sectors-2021 — Auvergne-Rhône-Alpes Eleven Sectors (Experimental);
 #   Sector 5 Clermont, textured, CityGML, .gml, 22 MB
@@ -173,10 +165,6 @@ https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a72
 #   luse (LandUse), CityGML 2.0, .gml, 535 MB
 https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/luse/533946_luse_6697_op.gml
 #
-# japan-plateau-3d — Japan PLATEAU 3D City Models; central Tokyo (Edogawa-ku sheet),
-#   dem (ReliefFeature / TIN terrain), CityGML 2.0, .gml, 599 MB
-https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/dem/533946_dem_6697_op.gml
-#
 # municipal-kuopio-2021 — Kuopio 3D Building Models (Textured); LoD2.2 2022 textured,
 #   CityGML, .zip, 1.43 GB. NOTE: HEAD returns 403 — the URL 302-redirects, so fetch
 #   with `curl -L` (or wget) and a browser User-Agent.
@@ -184,6 +172,69 @@ https://avoindata.suomi.fi/data/dataset/1cda485e-0c0a-4f77-9f7d-185bae9144f7/res
 #
 # stadt-freiburg-2024 — 3D Building Model LoD2 Freiburg; city-wide, CityGML, .gml, 1.86 GB
 https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
+#
+# ---------------------------------------------------------------------------
+# BLOCKED — CityGML modules whose 1st-level CityObject types the CityGML
+# READER DOES NOT MAP. Valid CityGML 2.0, downloadable, readable by other
+# tools; URLs deliberately commented out so the default grep skips them.
+# ---------------------------------------------------------------------------
+#
+# The reader (crates/cityparquet/src/citygml/reader.rs) streams bldg:Building
+# plus a fixed list of 1st-level non-building types (WaterBody, LandUse,
+# CityFurniture, SolitaryVegetationObject, PlantCover, Bridge, Tunnel,
+# GenericCityObject, CityObjectGroup, Road, Railway, TransportSquare). A
+# cityObjectMember of any OTHER type is skipped.
+#
+# For the converter that is a partial ingest. For a BENCHMARK it is worse: the
+# readbench `citygml` runner used to report `count = 0`, exit 0, in a fraction
+# of a real read's time — while every other format's artefact for the same tile,
+# produced by citygml-tools, reported N (citygml-tools maps dem:ReliefFeature to
+# CityJSON TINRelief, which this repository treats as first class and writes to
+# relief.parquet). The runner now REFUSES such a document outright, naming the
+# offending types, so these tiles cannot be measured at all until the reader's
+# type map is extended. Verified against each tile below on 2026-08-16.
+#
+# Do not re-admit these to the USABLE list without either extending the reader's
+# 1st-level type map or converting the tile with citygml-tools first.
+#
+# japan-plateau-3d — central Tokyo (Arakawa-ku sheet), lsld (landslide-risk
+#   areas), CityGML 2.0, .gml, 312 KB
+#   -> 134 of 134 members are urf:SedimentDisasterProneArea (was: count = 0)
+# https://assets.cms.plateau.reearth.io/assets/28/eeb030-dcd5-407b-b18e-16cf2e50054c/13118_arakawa-ku_pref_2023_citygml_2_op/udx/lsld/533946_lsld_6697_op.gml
+#
+# japan-plateau-3d — Tokyo (Tachikawa-shi), trk (Track / footpaths),
+#   CityGML 2.0, .gml, 535 KB
+#   -> 11 of 11 members are tran:Track (was: count = 0)
+#   A three-member verbatim fragment of this tile is committed as
+#   crates/cityparquet/tests/data/plateau_trk_fragment.gml, and is the fixture
+#   that pins the refusal.
+# https://assets.cms.plateau.reearth.io/assets/0f/dbc1ba-d722-455f-8193-bc6ed930fd0e/13202_tachikawa-shi_pref_2023_citygml_2_op/udx/trk/53394343_trk_6697_op.gml
+#
+# japan-plateau-3d — central Tokyo (Edogawa-ku sheet), urf (urban planning
+#   zones), CityGML 2.0, .gml, 10 MB
+#   -> 2158 of 2158 members: urf:UseDistrict x1395, urf:HeightControlDistrict
+#      x537, urf:FirePreventionDistrict x226 (was: count = 0)
+# https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/urf/533946_urf_6697_08_op.gml
+#
+# japan-plateau-3d — Tokyo Chuo-ku (tile 53394611), ubld (underground buildings
+#   — rare, only 5 items nationwide), CityGML 2.0, .gml, 22 MB
+#   -> 1 of 2 members is uro:UndergroundBuilding (25 Rooms). The PARTIAL case,
+#      and the reason the guard's threshold is "zero members skipped" rather
+#      than "zero features read": this tile used to report a plausible,
+#      plausibly-wrong count = 1.
+# https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/ubld/53394611_ubld_6697_op.gml
+#
+# japan-plateau-3d — central Tokyo (Edogawa-ku sheet), dem (ReliefFeature / TIN
+#   terrain), CityGML 2.0, .gml, 599 MB
+#   -> dem:ReliefFeature is explicitly unmapped (see the comment in
+#      reader.rs::citygml_object_type: a ReliefFeature may be raster, breakline,
+#      mass-point or TIN, and only a TIN maps cleanly to CityJSON TINRelief).
+#      The widest cross-format divergence of the five: citygml-tools DOES
+#      convert it, so every other row reports N.
+# https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/dem/533946_dem_6697_op.gml
+#
+# Modules verified as fully mapped (all members read): bldg, brid (loud geometry
+# error, see its entry above), fld, frn, htd, luse, squr, tran, veg.
 #
 # ---------------------------------------------------------------------------
 # BLOCKED — valid CityGML/CityJSON, NOT ingestible by the converter today.
