@@ -51,7 +51,10 @@ use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// This runner's `--attr-column`/params error for a scenario missing a
 /// required field — mirrors [`super::cityparquet`]'s own `require` helper.
-fn require<'a, T>(opt: &'a Option<T>, flag: &str, scenario: Scenario) -> Result<&'a T> {
+///
+/// `pub(super)` because [`super::cityjson`] reuses it verbatim: the two
+/// JSON-shaped runners must never drift on what a scenario requires.
+pub(super) fn require<'a, T>(opt: &'a Option<T>, flag: &str, scenario: Scenario) -> Result<&'a T> {
     opt.as_ref()
         .ok_or_else(|| anyhow!("scenario '{scenario}' requires --{flag}"))
 }
@@ -215,7 +218,13 @@ impl Backend {
 /// raw `serde_json::Value` cell instead of an Arrow column, since a
 /// CityJSONSeq attribute has no columnar type to dispatch on. A missing or
 /// JSON-`null` `value` never matches any variant.
-fn matches_predicate(value: Option<&serde_json::Value>, pred: &AttrPred) -> bool {
+///
+/// `pub(super)` because [`super::cityjson`] reuses it: a plain CityJSON
+/// document and a CityJSONSeq stream carry the very same
+/// `serde_json::Value` attribute cells, so sharing this is what makes the
+/// two runners' `attr-filter` answers comparable by construction rather
+/// than by coincidence (see `tests/attr_consistency.rs`).
+pub(super) fn matches_predicate(value: Option<&serde_json::Value>, pred: &AttrPred) -> bool {
     let Some(value) = value.filter(|v| !v.is_null()) else {
         return false;
     };
@@ -240,7 +249,11 @@ fn matches_predicate(value: Option<&serde_json::Value>, pred: &AttrPred) -> bool
 /// object's `"type"` field, never the `attributes` map); every other column
 /// name is looked up in `co.attributes` (a JSON attribute name -> value
 /// map), with a JSON-`null` entry treated the same as an absent one.
-fn column_value(co: &CityObject, column: &str) -> Option<serde_json::Value> {
+///
+/// `pub(super)` for the same reason as [`matches_predicate`]: shared with
+/// [`super::cityjson`] so both JSON runners resolve a column name
+/// identically.
+pub(super) fn column_value(co: &CityObject, column: &str) -> Option<serde_json::Value> {
     if column == "object_type" {
         return Some(serde_json::Value::String(co.thetype.clone()));
     }
@@ -290,8 +303,10 @@ fn feature_bbox(feature: &CityJSONFeature, transform: &Transform) -> Option<([f6
 /// Axis-aligned 3D interval-overlap test, identical in spirit to
 /// `cityparquet::reader::box_intersects_query` (that function is
 /// `pub(crate)` inside the `cityparquet` crate, so this runner keeps its own
-/// copy rather than depending on a private item).
-fn intersects(min: [f64; 3], max: [f64; 3], query: &[f64; 6]) -> bool {
+/// copy rather than depending on a private item). Shared with
+/// [`super::cityjson`] so the two JSON runners' `bbox-query` windows mean
+/// exactly the same thing.
+pub(super) fn intersects(min: [f64; 3], max: [f64; 3], query: &[f64; 6]) -> bool {
     for axis in 0..3 {
         if max[axis] < query[axis] || min[axis] > query[axis + 3] {
             return false;
