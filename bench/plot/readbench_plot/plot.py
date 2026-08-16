@@ -1,15 +1,17 @@
 """Render grouped-bar charts from cityparquet-readbench result CSVs.
 
-Each CSV in a results directory is expected to match the 11-column
+Each CSV in a results directory is expected to begin with the 13-column
 read-benchmark contract `cityparquet-readbench`'s coordinator writes (see
 `CSV_HEADER` in the package `__init__`, mirroring
 `crates/cityparquet-readbench/src/coordinator.rs`):
 
     dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,
-    peak_heap_bytes,peak_rss_bytes,repeat,notes
+    peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests
 
-Files whose header doesn't match (e.g. the M5 write-benchmark's own,
-differently-shaped CSVs under bench/results/) are skipped, not errored on.
+The match is a prefix check, so a coordinator that later grows further
+trailing columns still plots; files whose leading columns don't match (e.g.
+the M5 write-benchmark's own, differently-shaped CSVs under bench/results/)
+are skipped, not errored on.
 
 For each matching CSV, two PNGs are written under `<results_dir>/plots/`:
 `<name>-time.png` (median `time_s` per scenario, grouped by format, log
@@ -77,7 +79,12 @@ def load_csv(path: Path) -> pd.DataFrame | None:
     """
     with path.open(newline="") as fh:
         header = fh.readline().strip().split(",")
-    if header != CSV_HEADER:
+    # Prefix check, not equality: the coordinator may add trailing columns
+    # (it added bytes_read/http_requests for the HTTP transport). A strict
+    # `!=` silently skipped every CSV and produced empty charts - a wrong
+    # picture is worse than a loud failure here, because the charts go in the
+    # paper.
+    if header[: len(CSV_HEADER)] != CSV_HEADER:
         return None
 
     df = pd.read_csv(path)

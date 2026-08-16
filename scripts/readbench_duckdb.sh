@@ -4,7 +4,8 @@
 # `cityparquet-readbench` coordinator (`crates/cityparquet-readbench`) owns,
 # using the EXACT header contract:
 #   dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,
-#   peak_heap_bytes,peak_rss_bytes,repeat,notes
+#   peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests
+# The last two are always emitted empty here (see `append_row` below).
 #
 # UNLIKE `scripts/bench_duckdb.sh` (M5's write-side baseline, which reads
 # CityJSON/CityJSONSeq through the community `cityjson` extension's
@@ -123,7 +124,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 DUCKDB=${DUCKDB:-duckdb}
 
-CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes"
+# Must stay identical to the coordinator's own `CSV_HEADER`
+# (`crates/cityparquet-readbench/src/coordinator.rs`), which is the single
+# authority on this contract — this script appends rows to CSVs the
+# coordinator wrote. `bench/plot/tests/test_csv_contract.py` reads both
+# literals out of their sources and asserts they agree.
+CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests"
 
 usage() {
   cat >&2 <<EOF
@@ -313,12 +319,20 @@ print(f'{num / den:.6f}' if den > 0 else '')
 " "$1" "$2"
 }
 
+# The trailing bytes_read/http_requests columns are always EMPTY for this
+# baseline, and deliberately so: `duckdb` runs out-of-process over a local
+# file, so this script can neither tally its bytes read nor make any HTTP
+# request to count. Empty is an absence of measurement; a zero would be a
+# measurement claim, and a false one. The columns are still emitted so every
+# row in the CSV has the coordinator's shape — which is why the callers below
+# pass only the 11 fields they can actually measure.
 append_row() {
   local dataset="$1" format="$2" scenario="$3" selectivity="$4" result_count="$5" \
     time_s="$6" time_mad_s="$7" peak_heap_bytes="$8" peak_rss_bytes="$9" repeat="${10}" notes="${11}"
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$dataset" "$format" "$scenario" "$selectivity" "$result_count" \
     "$time_s" "$time_mad_s" "$peak_heap_bytes" "$peak_rss_bytes" "$repeat" "$notes" \
+    "" "" \
     >> "$OUT_CSV"
 }
 
