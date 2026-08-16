@@ -74,8 +74,8 @@ enum Commands {
         /// no-dictionary, no-bss, no-delta, snappy. Selects the per-column
         /// tuning rules; --row-group-size and --zstd-level still apply on
         /// top where meaningful.
-        #[arg(long, default_value = "cityparquet")]
-        recipe: String,
+        #[arg(long, value_enum, default_value = "cityparquet")]
+        recipe: RecipeArg,
 
         /// Compression codec, overriding whichever codec --recipe would
         /// otherwise pick: uncompressed, snappy, gzip, lz4, brotli, zstd.
@@ -89,8 +89,8 @@ enum Commands {
         /// stream yields features) or "hilbert" (buffer every feature and
         /// sort by bbox-centroid Hilbert index, improving bbox row-group
         /// pruning at the cost of holding the whole dataset in memory).
-        #[arg(long, default_value = "source")]
-        ordering: String,
+        #[arg(long, value_enum, default_value = "source")]
+        ordering: OrderingArg,
 
         /// Emit GeoParquet/GeoArrow self-description (the geoarrow.wkb field
         /// extension + the file-level `geo` key). Off by default: default
@@ -104,8 +104,8 @@ enum Commands {
         /// "arrow-native" (experimental nested Arrow List/Struct columns plus
         /// a geometry_vertices_lod* sibling column, instead of a WKB BLOB —
         /// see docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md).
-        #[arg(long, default_value = "wkb")]
-        geometry_encoding: String,
+        #[arg(long, value_enum, default_value = "wkb")]
+        geometry_encoding: GeometryEncodingArg,
 
         /// Do NOT synthesise an LoD0 footprint into the primary `geometry`
         /// column for objects lacking a source LoD0. By default a footprint is
@@ -189,6 +189,74 @@ enum Commands {
         #[arg(long)]
         skip_roundtrip: bool,
     },
+}
+
+/// CLI mirror of [`RecipePreset`], so clap itself validates `--recipe` and
+/// lists the accepted values. The library type stays clap-free.
+///
+/// Two names are pinned with `#[value(name)]` because clap's kebab-casing
+/// would rename them: `CityParquet` would render `city-parquet`, and
+/// `NoByteStreamSplit` would render `no-byte-stream-split` — the established
+/// value is `no-bss` ([`RecipePreset::name`] is the same vocabulary, shared
+/// with the benchmark variant identifiers).
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum RecipeArg {
+    #[value(name = "cityparquet")]
+    CityParquet,
+    ParquetDefaults,
+    NoDictionary,
+    #[value(name = "no-bss")]
+    NoByteStreamSplit,
+    NoDelta,
+    Snappy,
+}
+
+impl RecipeArg {
+    fn preset(self) -> RecipePreset {
+        match self {
+            RecipeArg::CityParquet => RecipePreset::CityParquet,
+            RecipeArg::ParquetDefaults => RecipePreset::ParquetDefaults,
+            RecipeArg::NoDictionary => RecipePreset::NoDictionary,
+            RecipeArg::NoByteStreamSplit => RecipePreset::NoByteStreamSplit,
+            RecipeArg::NoDelta => RecipePreset::NoDelta,
+            RecipeArg::Snappy => RecipePreset::Snappy,
+        }
+    }
+}
+
+/// CLI mirror of [`RowOrder`] (`--ordering`).
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum OrderingArg {
+    Source,
+    Hilbert,
+}
+
+impl OrderingArg {
+    fn row_order(self) -> RowOrder {
+        match self {
+            OrderingArg::Source => RowOrder::Source,
+            OrderingArg::Hilbert => RowOrder::Hilbert,
+        }
+    }
+}
+
+/// CLI mirror of [`cityparquet_schema::types::GeometryEncoding`]
+/// (`--geometry-encoding`).
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum GeometryEncodingArg {
+    Wkb,
+    ArrowNative, // clap renders this "arrow-native"
+}
+
+impl GeometryEncodingArg {
+    fn encoding(self) -> cityparquet_schema::types::GeometryEncoding {
+        match self {
+            GeometryEncodingArg::Wkb => cityparquet_schema::types::GeometryEncoding::Wkb,
+            GeometryEncodingArg::ArrowNative => {
+                cityparquet_schema::types::GeometryEncoding::ArrowNative
+            }
+        }
+    }
 }
 
 /// Resolve `inputs` (files/dirs/globs) and open each as a [`Source`].
@@ -323,19 +391,11 @@ fn main() -> std::process::ExitCode {
             no_lod0,
             crs,
         } => {
-            let preset = match RecipePreset::parse(&recipe) {
-                Some(preset) => preset,
-                None => {
-                    let valid: Vec<&str> = RecipePreset::ALL.iter().map(|p| p.name()).collect();
-                    eprintln!(
-                        "error: invalid recipe '{}' (expected one of: {})",
-                        recipe,
-                        valid.join(", ")
-                    );
-                    return std::process::ExitCode::FAILURE;
-                }
-            };
-
+            // `--compression` deliberately keeps its hand-rolled parse: its
+            // "error: invalid compression '<v>' (expected one of: …)" text and
+            // its exit code are pinned by the CLI smoke tests, and clap's own
+            // value validation would replace both. The other three flags are
+            // clap `ValueEnum`s above.
             let compression = match compression {
                 Some(s) => match Codec::parse(&s) {
                     Some(codec) => Some(codec),
@@ -356,32 +416,11 @@ fn main() -> std::process::ExitCode {
                 row_group_size,
                 zstd_level,
                 statistics_for_json: false,
-                preset,
+                preset: recipe.preset(),
                 compression,
             };
-
-            let ordering = match ordering.as_str() {
-                "source" => RowOrder::Source,
-                "hilbert" => RowOrder::Hilbert,
-                _ => {
-                    eprintln!(
-                        "error: invalid ordering '{}' (expected 'source' or 'hilbert')",
-                        ordering
-                    );
-                    return std::process::ExitCode::FAILURE;
-                }
-            };
-
-            let geometry_encoding = match geometry_encoding.as_str() {
-                "wkb" => cityparquet_schema::types::GeometryEncoding::Wkb,
-                "arrow-native" => cityparquet_schema::types::GeometryEncoding::ArrowNative,
-                other => {
-                    eprintln!(
-                        "error: --geometry-encoding must be \"wkb\" or \"arrow-native\", got {other:?}"
-                    );
-                    return std::process::ExitCode::FAILURE;
-                }
-            };
+            let ordering = ordering.row_order();
+            let geometry_encoding = geometry_encoding.encoding();
 
             let mut opts = ConvertOptions {
                 input: inputs.first().cloned().unwrap_or_default(),
@@ -636,5 +675,18 @@ fn main() -> std::process::ExitCode {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::CommandFactory;
+
+    /// clap's own debug assertions catch conflicting/invalid arg
+    /// definitions (including the ValueEnum names) at test time.
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
     }
 }
