@@ -351,34 +351,63 @@ fn decode_address_column(col: &ListArray, row: usize) -> Result<Option<Vec<Addre
     Ok(Some(out))
 }
 
+/// One attribute column's per-batch constants — name lookup, array, arrow
+/// type, and the `arrow.json` extension tag — resolved ONCE by
+/// [`decode_batch`] before its row loop. These used to be re-derived per
+/// (row x attribute) (review P5e); the geometry columns at the top of
+/// `decode_batch` already follow this hoisted pattern.
+struct AttributeColumn<'a> {
+    name: &'a str,
+    array: &'a arrow_array::ArrayRef,
+    data_type: &'a DataType,
+    is_json: bool,
+}
+
+/// Resolve every `names` attribute column against `batch`/`schema` once, in
+/// the order given, so the row loop only indexes.
+fn resolve_attribute_columns<'a>(
+    batch: &'a RecordBatch,
+    schema: &'a Schema,
+    names: &'a [String],
+) -> Result<Vec<AttributeColumn<'a>>> {
+    names
+        .iter()
+        .map(|name| {
+            let field = schema.field_with_name(name).map_err(|_| {
+                err(format!(
+                    "attribute column '{name}' missing from batch schema"
+                ))
+            })?;
+            let array = get_column(batch, name)?;
+            let is_json = field
+                .metadata()
+                .get(EXTENSION_TYPE_NAME_KEY)
+                .map(String::as_str)
+                == Some(ARROW_JSON_EXTENSION);
+            Ok(AttributeColumn {
+                name: name.as_str(),
+                array,
+                data_type: field.data_type(),
+                is_json,
+            })
+        })
+        .collect()
+}
+
 /// One reconstructed attribute value at `row`, per the binding rules: `Date32`
 /// -> `"%Y-%m-%d"` string; `Timestamp(ms, UTC)` -> RFC3339 `Z` string;
 /// `List<Utf8>` -> JSON array; a Utf8 column tagged `arrow.json` -> the parsed
 /// `Value`; `Boolean`/`Int64`/`Float64`/plain `Utf8` -> the matching JSON
 /// scalar. `None` when the cell is null (nulls are omitted from the
 /// attributes object entirely by the caller).
-fn attribute_value(
-    batch: &RecordBatch,
-    schema: &Schema,
-    name: &str,
-    row: usize,
-) -> Result<Option<Value>> {
-    let field = schema.field_with_name(name).map_err(|_| {
-        err(format!(
-            "attribute column '{name}' missing from batch schema"
-        ))
-    })?;
-    let array = get_column(batch, name)?;
+fn attribute_value(col: &AttributeColumn<'_>, row: usize) -> Result<Option<Value>> {
+    let name = col.name;
+    let array = col.array;
     if array.is_null(row) {
         return Ok(None);
     }
-    let is_json = field
-        .metadata()
-        .get(EXTENSION_TYPE_NAME_KEY)
-        .map(String::as_str)
-        == Some(ARROW_JSON_EXTENSION);
 
-    let value = match field.data_type() {
+    let value = match col.data_type {
         DataType::Boolean => {
             let a = downcast::<BooleanArray>(array.as_ref(), name)?;
             Value::from(a.value(row))
@@ -406,7 +435,7 @@ fn attribute_value(
             let dt = Utc.from_utc_datetime(&naive);
             Value::String(dt.to_rfc3339_opts(SecondsFormat::Millis, true))
         }
-        DataType::Utf8 if is_json => {
+        DataType::Utf8 if col.is_json => {
             let a = downcast::<StringArray>(array.as_ref(), name)?;
             serde_json::from_str(a.value(row))?
         }
@@ -503,6 +532,8 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         })
         .collect::<Result<_>>()?;
 
+    let attribute_cols = resolve_attribute_columns(batch, &schema, &meta.attributes)?;
+
     let mut out = Vec::with_capacity(batch.num_rows());
     for row in 0..batch.num_rows() {
         let id = id_col.value(row).to_string();
@@ -525,9 +556,9 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         let children = string_list_value(children_col, row)?;
 
         let mut attrs = Map::new();
-        for name in &meta.attributes {
-            if let Some(value) = attribute_value(batch, &schema, name, row)? {
-                attrs.insert(name.clone(), value);
+        for col in &attribute_cols {
+            if let Some(value) = attribute_value(col, row)? {
+                attrs.insert(col.name.to_string(), value);
             }
         }
 
