@@ -10,9 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cityparquet_schema::{
     AttributeInferer, CITYPARQUET_VERSION, CityColumnEntry, CityMetadata, CityParquetError,
-    CityParquetSchema, ExtensionRegistry, GeoColumnEntry, GeoMetadata, GeometryEncoding, Lod,
-    ModuleKey, ModuleKeyResolver, Result, SourceFormat as SchemaSourceFormat, geometry_column_name,
-    normalise_attribute_name,
+    CityParquetSchema, CrsState, ExtensionRegistry, GeoColumnEntry, GeoMetadata, GeometryEncoding,
+    Lod, ModuleKey, ModuleKeyResolver, Result, SourceFormat as SchemaSourceFormat,
+    geometry_column_name, normalise_attribute_name,
 };
 
 use cjseq::GeometryType;
@@ -39,10 +39,20 @@ pub struct ScanResult {
     /// The dataset's reference system as the raw OGC CRS URL string (from
     /// CityJSON header metadata), before PROJJSON resolution.
     pub crs_url: Option<String>,
-    /// The dataset CRS resolved to **PROJJSON** (§13.3, G1), `None` when the
-    /// source declared no CRS. This is what the `geo` metadata and the
-    /// top-level `crs` mirror carry.
-    pub crs: Option<serde_json::Value>,
+    /// The dataset CRS as the footer's **tri-state** `crs`
+    /// ([`CrsState`], spec §metadata "CRS rules"): the resolved PROJJSON when
+    /// the source declared a CRS this writer could resolve, an explicit
+    /// `null` ([`CrsState::Unknown`]) when it carries CRS-bearing coordinates
+    /// but no resolvable CRS, and absent ([`CrsState::Unspecified`]) only when
+    /// it carries no CRS-bearing coordinate at all. This is what `city.crs`
+    /// and the `geo.columns[].crs` mirror carry.
+    pub crs: CrsState,
+    /// Set when [`Self::crs`] came out [`CrsState::Unknown`]: the human-facing
+    /// explanation of *why* the file was written with an explicit null CRS
+    /// (spec: a writer "SHOULD surface a conversion diagnostic"). Carried
+    /// onward on [`crate::package::ConvertReport::crs_diagnostic`], which the
+    /// CLI prints as a warning — the conversion itself succeeds.
+    pub crs_diagnostic: Option<String>,
     /// The CityJSON header's `transform`, kept for the writer's requantisation.
     pub transform: serde_json::Value,
     /// The CityJSON header's `extensions` declarations, verbatim (absent
@@ -439,28 +449,55 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
 
     // Resolve the source CRS to PROJJSON once (§metadata "CRS rules") — used
     // for both the per-column `geo`/`city` CRS and the geoarrow.wkb field
-    // extension. An identifier that fails to resolve is already a hard error
-    // via `?` below. A source with NO crs identifier at all, but that DOES
-    // carry a CRS-bearing coordinate (analysis geometry, or a
-    // `GeometryInstance` template placement point — bbox and address
-    // `location` are the other two named sources, tracked once those land),
-    // is likewise a hard conversion error, never a silent `crs: None`
-    // (spec "CRS rules": "No-CRS source is a conversion error, not a silent
-    // omission").
-    let crs = crs_url
-        .as_deref()
-        .map(cityparquet_schema::crs::resolve_to_projjson)
-        .transpose()?;
+    // extension.
+    //
+    // An unresolvable CRS is DECLARED, not fatal (spec "CRS rules": "An
+    // unresolvable CRS is declared, not fatal", which amends the earlier
+    // draft's hard conversion error). Two shapes reach the same place: a
+    // source with no CRS identifier at all, and one whose identifier this
+    // writer cannot resolve to PROJJSON. When such a source carries any
+    // CRS-bearing coordinate (analysis geometry, or a `GeometryInstance`
+    // template placement point — `bbox` and an address `location` are the
+    // other two named sources, tracked once those land) the footer says so
+    // explicitly, with `city.crs: null`. Never an ABSENT key: per GeoParquet
+    // absence asserts OGC:CRS84, which would silently mis-georeference a
+    // projected national city model — the very failure the old hard error
+    // existed to prevent, now prevented by declaring the truth instead.
+    //
+    // A degree-valued CRS remains a hard error (above): that is not "we
+    // cannot name the CRS" but "this writer cannot represent these
+    // coordinates at all".
+    let mut crs_diagnostic = None;
+    let resolved = match crs_url.as_deref() {
+        Some(url) => match cityparquet_schema::crs::resolve_to_projjson(url) {
+            Ok(projjson) => Some(projjson),
+            Err(e) => {
+                crs_diagnostic = Some(format!(
+                    "source CRS {url:?} could not be resolved to PROJJSON ({e}); \
+                     `city.crs` is written as an explicit null (CRS unknown) and the \
+                     coordinates carry no georeference — supply the CRS explicitly to \
+                     georeference them"
+                ));
+                None
+            }
+        },
+        None => None,
+    };
     let has_crs_bearing_coordinate = geometries_with_lod > 0 || has_geometry_instance;
-    if crs.is_none() && has_crs_bearing_coordinate {
-        return Err(CityParquetError::Schema(
+    let crs = CrsState::from_resolution(resolved, has_crs_bearing_coordinate);
+    if crs.is_unknown() && crs_diagnostic.is_none() {
+        crs_diagnostic = Some(
             "source carries a CRS-bearing coordinate (geometry, or a GeometryInstance \
-             template placement) but declares no CRS a writer can resolve to PROJJSON; \
-             a CityParquet writer MUST fail the conversion rather than write the file with \
-             `city.crs` absent (spec 05-metadata.mdx, \"CRS rules\")"
+             template placement) but declares no CRS; `city.crs` is written as an \
+             explicit null (CRS unknown) and the coordinates carry no georeference — \
+             supply the CRS explicitly to georeference them"
                 .to_string(),
-        ));
+        );
     }
+    // The converse never happens by construction, but the two fields are read
+    // independently downstream (the report prints one, the footer writes the
+    // other), so keep them from ever disagreeing.
+    debug_assert_eq!(crs.is_unknown(), crs_diagnostic.is_some());
 
     // Divert an attribute whose (normalised) name collides with a realised
     // reserved/geometry column name into `other_attributes` rather than
@@ -499,7 +536,11 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
     let schema = CityParquetSchema {
         lods: lods.clone(),
         attributes,
-        crs: crs.clone(),
+        // The `geoarrow.wkb` field extension can only carry a CRS it can
+        // name, so both no-CRS states collapse to `None` here — the
+        // three-way distinction lives in the footer's `city`/`geo` objects,
+        // which is where a reader looks for it.
+        crs: crs.known().cloned(),
     };
 
     let module_lods: BTreeMap<ModuleKey, Vec<Lod>> = module_lod_sets
@@ -514,6 +555,7 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
         dataset_bbox,
         crs_url,
         crs,
+        crs_diagnostic,
         transform,
         extensions: header.extensions.clone(),
         source_metadata,
@@ -685,15 +727,16 @@ impl ScanResult {
 ///   and `geo.primary_column` can differ"). `None` when the file has zero
 ///   legal columns (a solid-only table) — no `geo` key is written at all.
 ///
-/// `crs` is the dataset's `city.crs` (PROJJSON). `city.columns[].crs` is left
-/// absent (per the spec, it "defaults to the file-level `city.crs`", a
-/// sibling in the SAME object, so a CityParquet reader never needs it
-/// repeated). `geo.columns[].crs`, however, IS populated from it whenever
-/// present: GeoParquet's own rule treats an absent column `crs` as
-/// `OGC:CRS84`, and a GeoParquet-only consumer has no access to the foreign
-/// `city` key to fall back to — the spec's CRS rules "Absent-CRS caveat"
-/// requires a writer to state it explicitly there to avoid silently
-/// mis-georeferencing a projected city model.
+/// `crs` is the dataset's tri-state `city.crs`. `city.columns[].crs` is left
+/// [`CrsState::Unspecified`] (per the spec, it "defaults to the file-level
+/// `city.crs`", a sibling in the SAME object, so a CityParquet reader never
+/// needs it repeated). `geo.columns[].crs`, however, MIRRORS the file-level
+/// state verbatim — **including a `null`**: GeoParquet's own rule treats an
+/// absent column `crs` as `OGC:CRS84`, and a GeoParquet-only consumer has no
+/// access to the foreign `city` key to fall back to, so leaving it absent
+/// over an unknown CRS would silently mis-georeference a projected city
+/// model. GeoParquet defines `null` to mean exactly "unknown", so the mirror
+/// is legal in all three states.
 ///
 /// `encoding` is the REAL physical [`GeometryEncoding`] this file's geometry
 /// columns were rendered under — it feeds [`CityColumnEntry::new`] directly
@@ -707,7 +750,7 @@ impl ScanResult {
 /// empty and no `geo` object is emitted for that file at all.
 pub fn city_and_geo_for_file(
     per_lod: &std::collections::BTreeMap<Lod, BTreeSet<String>>,
-    crs: Option<&serde_json::Value>,
+    crs: &CrsState,
     encoding: GeometryEncoding,
 ) -> (Vec<CityColumnEntry>, Option<String>, Option<GeoMetadata>) {
     if per_lod.is_empty() {
@@ -735,7 +778,7 @@ pub fn city_and_geo_for_file(
                 GeoColumnEntry {
                     encoding: "WKB".to_string(),
                     geometry_types,
-                    crs: crs.cloned(),
+                    crs: crs.clone(),
                     edges: Some("planar".to_string()),
                     bbox: None,
                     epoch: None,

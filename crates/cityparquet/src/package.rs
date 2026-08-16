@@ -124,10 +124,13 @@ pub struct ConvertOptions {
     /// Thresholds for LoD0 synthesis (used only when `generate_lod0`).
     pub lod0: Lod0Options,
     /// An operator-supplied CRS (e.g. `"EPSG:25832"`) used ONLY when the source
-    /// declares none. The spec's CRS rules forbid writing `city.crs` absent and
-    /// forbid guessing; an explicit operator declaration is neither, so the
-    /// conversion proceeds and `city.other.crs_source` records where the CRS
-    /// came from. `None` (the default) leaves the hard failure in place.
+    /// declares none. The spec's CRS rules forbid writing `city.crs` absent
+    /// over CRS-bearing coordinates, and forbid guessing; an explicit operator
+    /// declaration is neither, so `city.other.crs_source` records where the
+    /// CRS came from. `None` (the default) still converts — the package is
+    /// simply written with an explicit `city.crs: null` (CRS unknown) and a
+    /// [`ConvertReport::crs_diagnostic`], per the spec's "an unresolvable CRS
+    /// is declared, not fatal".
     ///
     /// This field carries the VALUE only; it is validated here and it never
     /// decides what the footer says. [`convert`] applies it to the source it
@@ -188,6 +191,15 @@ pub struct ConvertReport {
     /// profile, or a Compatibility dataset with no geometry templates at
     /// all).
     pub templates_written: usize,
+    /// Set when the source carried CRS-bearing coordinates but no CRS this
+    /// writer could resolve to PROJJSON, so `city.crs` was written as an
+    /// explicit `null` (spec §metadata "CRS rules": an unresolvable CRS is
+    /// declared, not fatal, and a writer "SHOULD surface a conversion
+    /// diagnostic"). The conversion succeeded; the package is simply not
+    /// georeferenced. The CLI prints this as a `warning:` line — the same
+    /// report-diagnostic idiom as
+    /// [`crate::inputs::ResolvedInputs::skipped_non_files`].
+    pub crs_diagnostic: Option<String>,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -915,7 +927,7 @@ impl TableWriters {
         for (name, writer) in self.order.iter().zip(self.writers.iter_mut()) {
             let per_lod = self.module_geo_by_file.get(name).unwrap_or(&empty);
             let (columns, primary_column, geo) =
-                city_and_geo_for_file(per_lod, self.base_city.crs.as_ref(), self.geometry_encoding);
+                city_and_geo_for_file(per_lod, &self.base_city.crs, self.geometry_encoding);
             let mut city = self.base_city.clone();
             city.columns = columns;
             city.primary_column = primary_column;
@@ -1274,6 +1286,18 @@ pub struct CanonicalSchema {
         ModuleKey,
         std::collections::BTreeMap<Lod, std::collections::BTreeSet<String>>,
     >,
+    /// The whole-merged-dataset tri-state `city.crs` (spec §metadata "CRS
+    /// rules") and its diagnostic, canonicalised for the same reason the
+    /// column sets above are: the [`cityparquet_schema::CrsState::Unknown`]
+    /// (explicit-null) state is decided by whether the file holds any
+    /// CRS-bearing coordinate, so a partition that happened to receive only
+    /// geometry-less features would otherwise write `crs` ABSENT while its
+    /// siblings wrote `null` — one dataset, two contradictory CRS claims, and
+    /// per GeoParquet the absent one silently asserts OGC:CRS84.
+    pub crs: cityparquet_schema::CrsState,
+    /// See [`Self::crs`]: reported once per partition, from the whole-dataset
+    /// answer rather than the partition's local one.
+    pub crs_diagnostic: Option<String>,
 }
 
 /// Convert an already-open `source` into a package at `opts.output_dir` —
@@ -1345,6 +1369,9 @@ pub(crate) fn convert_source_impl(
         // the file it lives in"): every partition's shared module must
         // report the SAME `city.columns`/`geo`, not just the same LoD set.
         scan_result.module_geo = canon.module_geo.clone();
+        // The tri-state CRS too — see `CanonicalSchema::crs`.
+        scan_result.crs = canon.crs.clone();
+        scan_result.crs_diagnostic = canon.crs_diagnostic.clone();
     } else if opts.generate_lod0 {
         // Non-partitioned convert: reserve the synthesised LoD0 column here (a
         // partitioned run does this once on the whole-dataset scan, so the
@@ -1445,6 +1472,7 @@ pub(crate) fn convert_source_impl(
         materials_written: written.materials_written,
         textures_written: written.textures_written,
         templates_written: written.templates_written,
+        crs_diagnostic: scan_result.crs_diagnostic.clone(),
     })
 }
 

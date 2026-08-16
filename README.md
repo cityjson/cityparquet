@@ -79,12 +79,20 @@ a meaningless single-Item Collection.
 | `--batch-size` | `4096` | encode batch size |
 | `--crs` | unset | operator-supplied CRS (`EPSG:25832` or bare `25832`) for a source that declares none; ignored for a source that declares its own |
 
-A source that carries CRS-bearing coordinates but declares no CRS a writer can
-resolve is a **hard conversion error** (spec "CRS rules"): the writer never
-guesses, and never writes the package with `city.crs` absent. `--crs` is the
-operator's way out — an explicit declaration is neither a guess nor an absent
-CRS, so it makes the CRS resolvable before the writer runs, exactly as an EPSG
-code in the source would. When it is actually applied, the footer records
+`city.crs` is **tri-state**, exactly as in GeoParquet (spec "CRS rules"): a
+PROJJSON object when the CRS is known, an explicit **`null`** when the file
+holds CRS-bearing coordinates whose CRS is unknown or unresolvable, and absent
+only when it holds no CRS-bearing coordinate at all. So a source that carries
+CRS-bearing coordinates but declares no CRS this writer can resolve still
+converts — with `city.crs: null`, a matching `geo.columns[].crs: null`, no
+`proj:*` STAC fields, no `referenceSystem` on export, and a `warning:` line
+naming the problem. The writer never guesses, and never omits the key over
+CRS-bearing coordinates (per GeoParquet an absent `crs` asserts OGC:CRS84,
+which would silently mis-georeference a projected national city model).
+`--crs` is the operator's way to turn that unknown into a real CRS — an
+explicit declaration is neither a guess nor an absent CRS, so it makes the CRS
+resolvable before the writer runs, exactly as an EPSG code in the source
+would. When it is actually applied, the footer records
 `city.other.crs_source = "operator-supplied"`, so the output never implies the
 source declared a CRS it did not carry. A geographic (degree-valued) code is
 refused: nothing in this pipeline reprojects, and coordinates are quantised at

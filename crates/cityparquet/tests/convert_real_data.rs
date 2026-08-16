@@ -354,6 +354,28 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
                 "geometry_templates.parquet must not carry column '{col}'"
             );
         }
+
+        // Spec "CRS rules": absence is legitimate precisely here. A template's
+        // geometry is stored in template-LOCAL, unplaced coordinates, so the
+        // sidecar holds NO CRS-bearing coordinate and writes no `crs` key at
+        // all — the third state, distinct from the explicit `null` a
+        // coordinate-bearing table with an unknown CRS gets.
+        let city: serde_json::Value = serde_json::from_str(
+            builder
+                .metadata()
+                .file_metadata()
+                .key_value_metadata()
+                .expect("footer key-value metadata")
+                .iter()
+                .find(|kv| kv.key == "city")
+                .and_then(|kv| kv.value.as_deref())
+                .expect("the sidecar carries a city footer key"),
+        )
+        .unwrap();
+        assert!(
+            !city.as_object().unwrap().contains_key("crs"),
+            "the templates sidecar's unplaced local coordinates carry no CRS key: {city}"
+        );
     }
 }
 

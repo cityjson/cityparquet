@@ -534,10 +534,11 @@ fn datetime_falls_back_to_a_conversion_timestamp_when_nothing_else_is_available(
 /// schema — not a wrong extent, and not a failed conversion either.
 #[test]
 fn a_package_with_no_crs_converts_to_an_unlocated_but_schema_valid_item() {
-    // `helsinki_address` now carries a CRS (spec-alignment M3: coordinate-
-    // bearing input with none is a hard conversion error, per "CRS rules") —
-    // an "unlocated" Item is only still legitimate for a source with NO
-    // CRS-bearing coordinate at all. Derived from the real CityJSONSeq
+    // `helsinki_address` now carries a CRS, and coordinate-bearing input with
+    // none would in any case convert to an explicit `city.crs: null` (spec
+    // "CRS rules") — the ABSENT `crs` state this test is about is only
+    // legitimate for a source with NO CRS-bearing coordinate at all. Derived
+    // from the real CityJSONSeq
     // fixture: strip `geometry`/`address` from every feature's objects
     // (attributes-only) and the header's own CRS, so the source genuinely
     // carries none — never hand-written CityJSON, the same "mutate the real
@@ -565,8 +566,48 @@ fn a_package_with_no_crs_converts_to_an_unlocated_but_schema_valid_item() {
     std::fs::write(&input, out_lines.join("\n")).unwrap();
 
     let out = dir.path().join("pkg");
-    convert(&ConvertOptions::new(input, out.clone()))
+    let report = convert(&ConvertOptions::new(input, out.clone()))
         .expect("convert must succeed: an attributes-only source has no CRS-bearing coordinate");
+
+    // The third `crs` state, end to end: with no CRS-bearing coordinate to
+    // georeference, the key is legitimately ABSENT — not the explicit `null`
+    // a coordinate-bearing source with no CRS gets, and no diagnostic either
+    // (there is nothing wrong with this file). Spec "CRS rules": "Absence is
+    // legitimate only for files with no CRS-bearing coordinates at all."
+    assert!(
+        report.crs_diagnostic.is_none(),
+        "a file with no CRS-bearing coordinate needs no CRS diagnostic: {:?}",
+        report.crs_diagnostic
+    );
+    let parquet_files: Vec<&std::path::PathBuf> = report
+        .files
+        .iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("parquet"))
+        .collect();
+    assert!(!parquet_files.is_empty(), "the package has tables");
+    for table in parquet_files {
+        let builder = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+            std::fs::File::open(table).unwrap_or_else(|e| panic!("{}: {e}", table.display())),
+        )
+        .unwrap();
+        let city: serde_json::Value = serde_json::from_str(
+            &builder
+                .metadata()
+                .file_metadata()
+                .key_value_metadata()
+                .unwrap()
+                .iter()
+                .find(|kv| kv.key == "city")
+                .and_then(|kv| kv.value.clone())
+                .expect("city footer key"),
+        )
+        .unwrap();
+        assert!(
+            !city.as_object().unwrap().contains_key("crs"),
+            "{}: no CRS-bearing coordinate means NO crs key at all: {city}",
+            table.display()
+        );
+    }
 
     let text = std::fs::read_to_string(out.join("metadata.json")).unwrap();
     let instance: serde_json::Value = serde_json::from_str(&text).unwrap();

@@ -619,8 +619,45 @@ pub(crate) fn source_metadata_from_other(meta: &CityMetadata) -> Option<Value> {
 /// rebuilt from its `id.{authority, code}` (e.g. `EPSG` + `7415` ->
 /// `https://www.opengis.net/def/crs/EPSG/0/7415`). A legacy raw-URL-string
 /// entry is still accepted. A CRS with no usable `id` yields no header field.
+///
+/// Both **non-`Known`** states of the tri-state `crs` (spec §metadata "CRS
+/// rules") export **no** `referenceSystem`:
+///
+/// - [`cityparquet_schema::CrsState::Unknown`] (explicit `null`) — the spec is
+///   direct about it: "on export the reconstructed model carries no reference
+///   system — matching the source".
+/// - [`cityparquet_schema::CrsState::Unspecified`] (absent) — a *reader* takes
+///   an absent `crs` to mean OGC:CRS84, but stamping that URL onto the export
+///   would be a claim, not a passthrough: in a file **this crate wrote**, the
+///   state is reachable only where there is **no CRS-bearing coordinate at
+///   all** (an attributes-only object table; the `geometry_templates.parquet`
+///   sidecar), so a georeference would describe nothing, and asserting one
+///   would break the round trip against a source that carried none. So the
+///   CRS84 default stays a *reading* rule and is never materialised into an
+///   exported header.
+///
+/// # Known gap: a foreign coordinates-plus-absent-`crs` file
+///
+/// The `Unspecified` reasoning above argues from **this writer's** output
+/// space, and that is not the whole input space. A *foreign* file — conforming
+/// GeoParquet, **non**conforming CityParquet, since the spec requires a writer
+/// to state the key whenever any CRS-bearing coordinate exists — may carry real
+/// coordinates *and* an absent `crs`. For that file the spec's reading rule
+/// does apply: its coordinates are OGC:CRS84, and this function nevertheless
+/// exports no `referenceSystem`, silently dropping a georeference the file did
+/// (by omission) declare.
+///
+/// Deliberately left as-is this round: honouring CRS84 here would also stamp it
+/// onto the no-coordinate files above, where it is meaningless and round-trip
+/// breaking, so telling the two apart needs a coordinate-presence check whose
+/// exact obligation is a **spec** question — is an absent `crs` over
+/// coordinates a file to reject, to read as CRS84, or to treat as unknown? A
+/// spec clarification is being added; this comment is the placeholder its
+/// resolution replaces. Referenced from the two sibling CRS consumers that
+/// inherit the same gap: `crate::citygml::writer`'s `srsName` and
+/// `crate::stac`'s `epsg_crs`.
 fn reference_system(meta: &CityMetadata) -> Result<Option<ReferenceSystem>> {
-    let Some(crs) = &meta.crs else {
+    let Some(crs) = meta.crs.known() else {
         return Ok(None);
     };
     // Legacy: a raw OGC CRS URL string.
@@ -1819,7 +1856,7 @@ mod tests {
         // OGC:CRS84 (a lon/lat dataset) with no source_metadata must still
         // export a `referenceSystem`, not silently drop it.
         let meta = CityMetadata {
-            crs: Some(serde_json::json!({
+            crs: cityparquet_schema::CrsState::Known(serde_json::json!({
                 "type": "GeographicCRS",
                 "name": "WGS 84 (CRS84)",
                 "id": { "authority": "OGC", "code": "CRS84" }
@@ -1830,6 +1867,39 @@ mod tests {
             .expect("resolution must not error")
             .expect("OGC:CRS84 must yield a referenceSystem");
         assert_eq!(rs.to_url(), "https://www.opengis.net/def/crs/OGC/1.3/CRS84");
+    }
+
+    /// Spec §metadata "CRS rules": a package whose `city.crs` is an explicit
+    /// `null` (CRS unknown/unresolvable) exports **no** `referenceSystem` —
+    /// "on export the reconstructed model carries no reference system —
+    /// matching the source". Emitting one would invent a georeference the
+    /// stored coordinates were never given.
+    #[test]
+    fn an_unknown_crs_exports_no_reference_system() {
+        let meta = CityMetadata {
+            crs: cityparquet_schema::CrsState::Unknown,
+            ..CityMetadata::new()
+        };
+        assert!(
+            reference_system(&meta)
+                .expect("an unknown CRS is not an export error")
+                .is_none(),
+            "an explicit null CRS must export no referenceSystem"
+        );
+    }
+
+    /// The absent state exports nothing either — see [`reference_system`]'s
+    /// doc comment: GeoParquet's absent-means-CRS84 is a *reading* rule, and
+    /// materialising it here would assert a georeference onto the one kind of
+    /// file that has no CRS-bearing coordinate to georeference, breaking the
+    /// round trip against a source that declared none.
+    #[test]
+    fn an_unspecified_crs_exports_no_reference_system() {
+        assert!(
+            reference_system(&CityMetadata::new())
+                .expect("an absent CRS is not an export error")
+                .is_none(),
+        );
     }
 
     /// M4 final-review Fix 4: a legal `[null, [u, v], ...]` texture ring —

@@ -14,10 +14,14 @@ fn fixture(name: &str) -> PathBuf {
 
 /// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
 /// all (a genuine open-data limitation, not something this crate may
-/// hand-fabricate). Since `scan` now hard-fails on coordinate-bearing input
-/// with no resolvable CRS (spec `05-metadata.mdx` "CRS rules"), every test
-/// below that needs a clean railway scan writes a small on-disk COPY with a
-/// CRS injected via JSON mutation of the real fixture — the same technique
+/// hand-fabricate). Coordinate-bearing input with no resolvable CRS now
+/// converts to an explicit `city.crs: null` rather than failing (spec
+/// `05-metadata.mdx` "CRS rules": "an unresolvable CRS is declared, not
+/// fatal") — pinned by
+/// [`railway_without_a_crs_scans_to_an_explicit_null_crs_and_a_diagnostic`] —
+/// so every test below that wants a GEOREFERENCED railway scan writes a small
+/// on-disk COPY with a CRS injected via JSON mutation of the real fixture —
+/// the same technique
 /// [`extensions_declarations_reach_metadata`] already used for extensions,
 /// never hand-written CityJSON. EPSG:7415 (Amersfoort/RD New + NAP), the same
 /// CRS delft already carries, so railway-derived fixtures stay resolvable
@@ -167,7 +171,7 @@ fn delft_scan_matches_known_content() {
     // attribute names, not the 47 in the original brief.
     assert_eq!(s.schema.attributes.len(), 50);
     let meta = s.base_city_metadata().unwrap();
-    assert!(meta.crs.is_some());
+    assert!(meta.crs.is_known());
     // `columns`/`primary_column` are no longer part of the dataset-wide
     // metadata (spec-alignment M3: they only exist per FILE, from that
     // file's own realised column set — see `city_and_geo_for_file`, exercised
@@ -199,7 +203,7 @@ fn delft_city_and_geo_for_file_has_independent_primaries() {
     );
     let per_lod = s.module_geo.values().next().unwrap();
     let (columns, primary_column, geo) =
-        city_and_geo_for_file(per_lod, s.crs.as_ref(), GeometryEncoding::Wkb);
+        city_and_geo_for_file(per_lod, &s.crs, GeometryEncoding::Wkb);
     assert!(!columns.is_empty());
     assert_eq!(
         primary_column.as_deref(),
@@ -221,9 +225,9 @@ fn delft_city_and_geo_for_file_has_independent_primaries() {
         !geo.columns.contains_key("geometry_lod2_2"),
         "the Solid column must NOT be declared in geo.columns"
     );
-    let footprint_crs = geo.columns["geometry_lod0_0"].crs.as_ref().expect(
+    let footprint_crs = geo.columns["geometry_lod0_0"].crs.known().expect(
         "geo.columns[].crs must be explicit (GeoParquet's own absent-crs-means-CRS84 \
-                 rule, spec CRS rules \"Absent-CRS caveat\")",
+                 rule, spec CRS rules \"A writer never relies on the absent-CRS default\")",
     );
     assert_eq!(footprint_crs["id"]["code"], serde_json::json!(7415));
 }
@@ -388,20 +392,69 @@ fn synthesized_lod0_is_geoparquet_legal_only_under_wkb() {
     );
 }
 
-/// spec-alignment M3, checklist item 5: a CRS-less coordinate-bearing input
-/// (the real railway fixture, unmodified) must error cleanly at `scan` time,
-/// never silently omit `city.crs`.
+/// Spec §metadata "CRS rules", as amended: a CRS-less coordinate-bearing input
+/// (the real railway fixture, unmodified) is **declared, not fatal**. The scan
+/// succeeds, `city.crs` becomes an explicit `null` — never absent, which per
+/// GeoParquet would assert OGC:CRS84 over coordinates that have no
+/// georeference — and a conversion diagnostic explains it.
+///
+/// This replaces `railway_without_a_crs_is_a_hard_conversion_error`, which
+/// pinned the earlier draft's hard-error rule.
 #[test]
-fn railway_without_a_crs_is_a_hard_conversion_error() {
+fn railway_without_a_crs_scans_to_an_explicit_null_crs_and_a_diagnostic() {
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
-    let err = scan(&src, GeometryEncoding::Wkb)
-        .expect_err("coordinate-bearing input with no CRS must fail the scan");
-    assert!(
-        matches!(err, cityparquet::CityParquetError::Schema(_)),
-        "expected a Schema error, got {err:?}"
+    let s = scan(&src, GeometryEncoding::Wkb)
+        .expect("a CRS-less coordinate-bearing input is declared, not fatal");
+    assert_eq!(
+        s.crs,
+        cityparquet_schema::CrsState::Unknown,
+        "a CRS-bearing-coordinate source with no CRS is `null`, never absent"
     );
+    let diagnostic = s
+        .crs_diagnostic
+        .as_deref()
+        .expect("the writer SHOULD surface a conversion diagnostic");
     assert!(
-        err.to_string().contains("CRS"),
-        "error must explain the missing CRS, got: {err}"
+        diagnostic.contains("declares no CRS"),
+        "the diagnostic must say what is missing, got: {diagnostic}"
+    );
+
+    // ... and the footer it feeds says the same thing.
+    let meta = s.base_city_metadata().unwrap();
+    assert_eq!(meta.crs, cityparquet_schema::CrsState::Unknown);
+}
+
+/// The other unresolvable shape: the source DOES declare a reference system,
+/// but under an authority this writer has no PROJJSON for (IGNF, the French
+/// national registry — the resolver deliberately refuses a numeric code under
+/// a non-EPSG authority rather than mis-reading it as EPSG). Same outcome — an
+/// explicit `null` plus a diagnostic that names the identifier — because the
+/// spec's rule is about what the writer can resolve, not about whether the
+/// source said anything at all. Derived from the real Delft fixture rather
+/// than hand-written CityJSON.
+#[test]
+fn an_unresolvable_reference_system_scans_to_an_explicit_null_crs() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = text.lines();
+    let mut header: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    header["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/IGNF/0/5490");
+    let mut out = serde_json::to_string(&header).unwrap();
+    for line in lines {
+        out.push('\n');
+        out.push_str(line);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ignf_crs.city.jsonl");
+    std::fs::write(&path, out).unwrap();
+
+    let src = Source::open(&path).unwrap();
+    let s = scan(&src, GeometryEncoding::Wkb)
+        .expect("an unresolvable CRS is declared, not fatal (spec CRS rules)");
+    assert_eq!(s.crs, cityparquet_schema::CrsState::Unknown);
+    let diagnostic = s.crs_diagnostic.as_deref().expect("a diagnostic");
+    assert!(
+        diagnostic.contains("IGNF") && diagnostic.contains("could not be resolved"),
+        "the diagnostic must name the identifier it could not resolve, got: {diagnostic}"
     );
 }

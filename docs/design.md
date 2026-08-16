@@ -261,13 +261,21 @@ with the one exclusion described below), `appearance_defaults`, and `other`
 (free-form producer metadata). A GeoParquet `geo` key is derived so GeoParquet
 readers recognise the geometry columns.
 
-A source carrying CRS-bearing coordinates but declaring no resolvable CRS is a
-hard conversion error — the writer neither guesses nor writes `crs` absent.
-The CLI's `--crs EPSG:<code>` is the operator's explicit declaration for such a
-source (a no-op for a source that declares its own CRS), which makes the CRS
-resolvable *before* the writer runs; when it is actually applied, `other`
-carries `crs_source: "operator-supplied"` so the footer never implies the
-source declared a CRS it did not carry.
+`crs` is tri-state, following GeoParquet: PROJJSON when known, an explicit
+`null` when the file holds CRS-bearing coordinates whose CRS is unknown or
+unresolvable, and absent only for a file with no CRS-bearing coordinate at all
+(the `geometry_templates.parquet` sidecar, an attributes-only object table).
+A source carrying CRS-bearing coordinates but declaring no resolvable CRS
+therefore converts to `crs: null` plus a conversion diagnostic on
+`ConvertReport::crs_diagnostic` (the CLI prints it as a `warning:`) — the
+writer neither guesses nor omits the key, since an absent `crs` is read as
+OGC:CRS84 and would silently mis-georeference the data. Such a package exports
+with no `referenceSystem` at all, matching the source, and declares no
+`proj:*` STAC fields. The CLI's `--crs EPSG:<code>` is the operator's explicit
+declaration for such a source (a no-op for a source that declares its own
+CRS), which makes the CRS resolvable *before* the writer runs; when it is
+actually applied, `other` carries `crs_source: "operator-supplied"` so the
+footer never implies the source declared a CRS it did not carry.
 
 **The one exclusion from `source_metadata`'s verbatim passthrough** follows
 from that: an applied `--crs` is injected into the *in-memory* header so the

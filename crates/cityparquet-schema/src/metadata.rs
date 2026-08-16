@@ -70,6 +70,118 @@ impl<'de> Deserialize<'de> for SourceFormat {
     }
 }
 
+/// The **tri-state** `crs` key (spec §metadata "CRS rules"), shared by
+/// `city.crs`, `city.columns[].crs` and `geo.columns[].crs` — exactly
+/// GeoParquet's own convention, which is why one type serves both objects:
+///
+/// - [`CrsState::Known`] — the key holds a **PROJJSON** object.
+/// - [`CrsState::Unknown`] — the key is present and **`null`**: the file holds
+///   CRS-bearing coordinates whose CRS is unknown or unresolvable. A reader
+///   treats them as bare Cartesian values; export carries no reference system.
+/// - [`CrsState::Unspecified`] — the key is **absent**. Per GeoParquet an
+///   absent `crs` is read as OGC:CRS84, so a conforming writer never relies on
+///   it: absence is legitimate **only** for a file with no CRS-bearing
+///   coordinate at all (the `geometry_templates.parquet` sidecar, whose
+///   templates are unplaced local coordinates, and the attributes-only object
+///   table).
+///
+/// `Option<Value>` cannot express this: it collapses "absent" and "null" onto
+/// the same `None`, and a writer that omitted the key where it meant `null`
+/// would silently assert CRS84 over a projected national city model. The three
+/// states are therefore a type of their own, with hand-rolled serde (no
+/// `serde_with` double-option dependency) so the distinction survives a footer
+/// round trip byte-for-byte.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum CrsState {
+    /// The key is absent from the object entirely.
+    #[default]
+    Unspecified,
+    /// The key is present and `null` — CRS unknown or unresolvable.
+    Unknown,
+    /// The key is present and holds PROJJSON.
+    Known(Value),
+}
+
+impl CrsState {
+    /// The PROJJSON, when the CRS is known — the accessor every consumer that
+    /// only cares about a *usable* CRS (export's `referenceSystem`, the
+    /// CityGML writer's `srsName`, the STAC proj extension, the `geoarrow.wkb`
+    /// field extension) reads, so `Unknown` and `Unspecified` alike degrade to
+    /// "no CRS to state" without any of them having to know the difference.
+    pub fn known(&self) -> Option<&Value> {
+        match self {
+            CrsState::Known(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Whether the key is absent (the serde `skip_serializing_if` predicate).
+    pub fn is_unspecified(&self) -> bool {
+        matches!(self, CrsState::Unspecified)
+    }
+
+    /// Whether the key is an explicit `null` — CRS unknown/unresolvable.
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, CrsState::Unknown)
+    }
+
+    /// Whether the key holds PROJJSON.
+    pub fn is_known(&self) -> bool {
+        matches!(self, CrsState::Known(_))
+    }
+
+    /// The spec's writer rule as code: a CRS the writer resolved to PROJJSON
+    /// is [`CrsState::Known`]; otherwise the key is an explicit `null`
+    /// whenever the file holds **any** CRS-bearing coordinate (object
+    /// geometry, an address `location`, a `bbox`, a geometry-template
+    /// instance's `point`), and absent only when it holds none.
+    ///
+    /// "A writer never relies on the absent-CRS default": the
+    /// `has_crs_bearing_coordinate` argument is the whole of that rule, so no
+    /// caller can accidentally omit the key over data that needs
+    /// georeferencing.
+    pub fn from_resolution(resolved: Option<Value>, has_crs_bearing_coordinate: bool) -> Self {
+        match resolved {
+            Some(projjson) => CrsState::Known(projjson),
+            None if has_crs_bearing_coordinate => CrsState::Unknown,
+            None => CrsState::Unspecified,
+        }
+    }
+}
+
+impl Serialize for CrsState {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            CrsState::Known(value) => value.serialize(serializer),
+            // `Unspecified` never reaches a serialiser through the footer
+            // objects (every `crs` field carries
+            // `skip_serializing_if = "CrsState::is_unspecified"`); serialising
+            // the value standalone renders it as the `null` it is closest to,
+            // since a self-describing format has no way to spell "absent".
+            CrsState::Unknown | CrsState::Unspecified => serializer.serialize_none(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CrsState {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // A present key: `null` -> `Unknown`, anything else -> `Known`. An
+        // ABSENT key never reaches here at all — the field's `#[serde(default)]`
+        // supplies `Unspecified` instead, which is precisely how the third
+        // state is recovered.
+        Ok(match Option::<Value>::deserialize(deserializer)? {
+            None | Some(Value::Null) => CrsState::Unknown,
+            Some(value) => CrsState::Known(value),
+        })
+    }
+}
+
 /// 3D surface winding a `city.columns` entry declares (spec
 /// `city.columns[].orientation_3d`) — **always** stated explicitly by a
 /// conforming writer, never relying on an absent-field default.
@@ -92,9 +204,12 @@ pub struct CityColumnEntry {
     /// [`CityColumnEntry::new`].
     pub encoding: String,
     pub geometry_types: Vec<String>,
-    /// PROJJSON; defaults to the file-level `city.crs` when absent.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub crs: Option<Value>,
+    /// Tri-state, mirroring the file-level `city.crs` ([`CrsState`]).
+    /// [`CrsState::Unspecified`] — this writer's own choice for every entry —
+    /// means "defaults to the file-level `city.crs`", a sibling in the SAME
+    /// object, so a CityParquet reader never needs it repeated.
+    #[serde(skip_serializing_if = "CrsState::is_unspecified", default)]
+    pub crs: CrsState,
     pub orientation_3d: Orientation3d,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub edges: Option<String>,
@@ -124,7 +239,7 @@ impl CityColumnEntry {
             // truth, so writer and reader can never drift apart on spelling.
             encoding: encoding.footer_token().to_string(),
             geometry_types,
-            crs: None,
+            crs: CrsState::Unspecified,
             orientation_3d: Orientation3d::RightHanded,
             edges: None,
             bbox: None,
@@ -152,11 +267,13 @@ pub struct CityMetadata {
     pub source_format: Option<SourceFormat>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub source_version: Option<String>,
-    /// The file CRS as PROJJSON — present whenever the file holds any
-    /// CRS-bearing coordinate (object geometry, an address `location`, a
-    /// `bbox`, or a geometry-template instance's `point`).
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub crs: Option<Value>,
+    /// The file CRS, **tri-state** ([`CrsState`]): PROJJSON when known, an
+    /// explicit `null` when the file holds CRS-bearing coordinates (object
+    /// geometry, an address `location`, a `bbox`, a geometry-template
+    /// instance's `point`) whose CRS is unknown or unresolvable, and absent
+    /// only when the file holds no CRS-bearing coordinate at all.
+    #[serde(skip_serializing_if = "CrsState::is_unspecified", default)]
+    pub crs: CrsState,
     /// Name of the primary geometry column — the one a reader uses with no
     /// LoD preference. MAY name a `Solid` column; independent of
     /// `GeoMetadata::primary_column`.
@@ -192,7 +309,7 @@ impl CityMetadata {
             version: CITYPARQUET_VERSION.to_string(),
             source_format: None,
             source_version: None,
-            crs: None,
+            crs: CrsState::Unspecified,
             primary_column: None,
             columns: Vec::new(),
             attributes: Vec::new(),
@@ -250,8 +367,14 @@ impl Default for CityMetadata {
 pub struct GeoColumnEntry {
     pub encoding: String,
     pub geometry_types: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub crs: Option<Value>,
+    /// Tri-state, exactly as GeoParquet defines it ([`CrsState`]) and always
+    /// mirroring the file-level `city.crs` — **including** a `null`, which is
+    /// GeoParquet-legal and means "unknown". A GeoParquet-only consumer cannot
+    /// see the foreign `city` key, so this must be stated explicitly rather
+    /// than left absent (absence would assert OGC:CRS84 over a projected city
+    /// model).
+    #[serde(skip_serializing_if = "CrsState::is_unspecified", default)]
+    pub crs: CrsState,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub edges: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -288,7 +411,9 @@ mod tests {
             version: CITYPARQUET_VERSION.to_string(),
             source_format: Some(SourceFormat::CityJsonSeq),
             source_version: Some("2.0".to_string()),
-            crs: Some(json!({"type": "ProjectedCRS", "id": {"authority": "EPSG", "code": 28992}})),
+            crs: CrsState::Known(
+                json!({"type": "ProjectedCRS", "id": {"authority": "EPSG", "code": 28992}}),
+            ),
             primary_column: Some("geometry_lod2_2".to_string()),
             columns: vec![CityColumnEntry::new(
                 "geometry_lod2_2",
@@ -446,5 +571,152 @@ mod tests {
         let kvs = city.to_key_values(None).unwrap();
         let parsed: Value = serde_json::from_str(&kvs[0].1).unwrap();
         assert!(parsed.get("source_format").is_none());
+    }
+
+    /// The serialised `city` object, as a raw `serde_json::Map` — so a test
+    /// can tell an ABSENT key from one present and `null`, which
+    /// `Value::get(...).is_none()` alone cannot (it answers `None` for both).
+    fn city_members(city: &CityMetadata) -> serde_json::Map<String, Value> {
+        let kvs = city.to_key_values(None).unwrap();
+        match serde_json::from_str::<Value>(&kvs[0].1).unwrap() {
+            Value::Object(map) => map,
+            other => panic!("city must serialise to an object, got {other}"),
+        }
+    }
+
+    /// RED (spec §metadata "CRS rules"): `city.crs` is tri-state and all three
+    /// states must survive a footer round trip. `Option<Value>` collapsed
+    /// "absent" and "null" onto one `None`, so a writer that meant `null`
+    /// silently emitted absence — which per GeoParquet asserts OGC:CRS84 over
+    /// a projected national city model.
+    #[test]
+    fn crs_known_serialises_as_the_projjson_object_and_round_trips() {
+        let city = sample_city();
+        let members = city_members(&city);
+        assert!(
+            members["crs"].is_object(),
+            "a known CRS is a PROJJSON object: {:?}",
+            members["crs"]
+        );
+        assert_eq!(members["crs"]["id"]["code"], 28992);
+
+        let kvs = city.to_key_values(None).unwrap();
+        let (back, _) =
+            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                .unwrap();
+        assert_eq!(back.crs, city.crs);
+        assert!(back.crs.is_known());
+    }
+
+    #[test]
+    fn crs_unknown_serialises_as_an_explicit_null_and_round_trips() {
+        let mut city = sample_city();
+        city.crs = CrsState::Unknown;
+        let members = city_members(&city);
+        assert!(
+            members.contains_key("crs"),
+            "an unknown CRS is DECLARED, never omitted: {members:?}"
+        );
+        assert_eq!(
+            members["crs"],
+            Value::Null,
+            "an unknown CRS is an explicit JSON null"
+        );
+
+        let kvs = city.to_key_values(None).unwrap();
+        let (back, _) =
+            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                .unwrap();
+        assert_eq!(
+            back.crs,
+            CrsState::Unknown,
+            "null must not decode as absent"
+        );
+    }
+
+    #[test]
+    fn crs_unspecified_stays_absent_and_round_trips() {
+        let mut city = sample_city();
+        city.crs = CrsState::Unspecified;
+        let members = city_members(&city);
+        assert!(
+            !members.contains_key("crs"),
+            "an unspecified CRS writes NO key at all: {members:?}"
+        );
+
+        let kvs = city.to_key_values(None).unwrap();
+        let (back, _) =
+            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                .unwrap();
+        assert_eq!(
+            back.crs,
+            CrsState::Unspecified,
+            "absent must not decode as null"
+        );
+    }
+
+    /// The three states are genuinely distinguishable at the byte level —
+    /// pinned as one assertion so a regression that collapses any two of them
+    /// cannot pass by satisfying the individual tests above in isolation.
+    #[test]
+    fn the_three_crs_states_serialise_to_three_different_footers() {
+        let known = sample_city();
+        let mut unknown = sample_city();
+        unknown.crs = CrsState::Unknown;
+        let mut unspecified = sample_city();
+        unspecified.crs = CrsState::Unspecified;
+
+        let json = |c: &CityMetadata| c.to_key_values(None).unwrap()[0].1.clone();
+        let (k, u, a) = (json(&known), json(&unknown), json(&unspecified));
+        assert!(k != u && u != a && k != a, "\n{k}\n{u}\n{a}");
+        assert!(u.contains("\"crs\":null"), "{u}");
+        assert!(!a.contains("\"crs\""), "{a}");
+    }
+
+    /// `geo`'s mirror is GeoParquet's OWN tri-state, so a `null` there is
+    /// legal and must be written explicitly: a GeoParquet-only consumer
+    /// cannot fall back to the foreign `city` key, and an absent column `crs`
+    /// means OGC:CRS84 to it.
+    #[test]
+    fn geo_column_crs_carries_the_explicit_null_too() {
+        let mut geo = sample_geo();
+        geo.columns.get_mut("geometry_lod2_2").unwrap().crs = CrsState::Unknown;
+        let kvs = sample_city().to_key_values(Some(&geo)).unwrap();
+        let parsed: Value = serde_json::from_str(&kvs[1].1).unwrap();
+        let column = parsed["columns"]["geometry_lod2_2"].as_object().unwrap();
+        assert!(column.contains_key("crs"), "{column:?}");
+        assert_eq!(column["crs"], Value::Null);
+
+        let (_, back) =
+            CityMetadata::from_key_values(kvs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                .unwrap();
+        assert_eq!(
+            back.unwrap().columns["geometry_lod2_2"].crs,
+            CrsState::Unknown
+        );
+    }
+
+    /// The spec's writer rule, as the schema crate encodes it: resolved ->
+    /// `Known`; unresolved WITH CRS-bearing coordinates -> `Unknown` (never
+    /// absent, which would assert CRS84); unresolved WITHOUT them -> absent.
+    #[test]
+    fn from_resolution_implements_the_specs_writer_rule() {
+        let projjson = json!({"type": "ProjectedCRS"});
+        assert_eq!(
+            CrsState::from_resolution(Some(projjson.clone()), true),
+            CrsState::Known(projjson.clone())
+        );
+        // A resolved CRS is declared whether or not this file has coordinates
+        // of its own (a partition's empty module table still shares the
+        // dataset CRS).
+        assert_eq!(
+            CrsState::from_resolution(Some(projjson.clone()), false),
+            CrsState::Known(projjson)
+        );
+        assert_eq!(CrsState::from_resolution(None, true), CrsState::Unknown);
+        assert_eq!(
+            CrsState::from_resolution(None, false),
+            CrsState::Unspecified
+        );
     }
 }

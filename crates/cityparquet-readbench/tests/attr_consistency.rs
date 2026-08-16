@@ -53,10 +53,12 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 /// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
-/// all. Since `scan` now hard-fails on coordinate-bearing input with no
-/// resolvable CRS (spec "CRS rules"), tests below that convert (or compare
-/// against) railway use a small on-disk COPY with a CRS injected via JSON
-/// mutation of the real fixture — never hand-written CityJSON.
+/// all. Coordinate-bearing input with no resolvable CRS converts to an
+/// explicit `city.crs: null` rather than failing (spec "CRS rules": "an
+/// unresolvable CRS is declared, not fatal"), so tests below that want a
+/// GEOREFERENCED railway conversion (or comparison) use a small on-disk COPY
+/// with a CRS injected via JSON mutation of the real fixture — never
+/// hand-written CityJSON.
 fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
     let mut doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())

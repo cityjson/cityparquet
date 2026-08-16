@@ -223,6 +223,8 @@ pub fn convert_partitioned(
         diverted_attribute_names: full_scan.diverted_attribute_names.clone(),
         geoparquet_columns: full_scan.geoparquet_columns.clone(),
         module_geo: full_scan.module_geo.clone(),
+        crs: full_scan.crs.clone(),
+        crs_diagnostic: full_scan.crs_diagnostic.clone(),
     };
     drop(full);
 

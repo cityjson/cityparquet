@@ -176,7 +176,7 @@ mod tests {
             version: CITYPARQUET_VERSION.to_string(),
             source_format: None,
             source_version: None,
-            crs: None,
+            crs: cityparquet_schema::CrsState::Unspecified,
             primary_column: None,
             columns: Vec::new(),
             attributes: Vec::new(),

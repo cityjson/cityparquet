@@ -63,10 +63,12 @@ fn convert_and_export_path(input: &Path) -> (PathBuf, tempfile::TempDir, tempfil
 }
 
 /// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
-/// all. Since `scan` now hard-fails on coordinate-bearing input with no
-/// resolvable CRS (spec "CRS rules"), tests below that convert (or compare
-/// against) railway use a small on-disk COPY with a CRS injected via JSON
-/// mutation of the real fixture — never hand-written CityJSON. Used both as
+/// all. Coordinate-bearing input with no resolvable CRS converts to an
+/// explicit `city.crs: null` rather than failing (spec "CRS rules": "an
+/// unresolvable CRS is declared, not fatal"), so tests below that want a
+/// GEOREFERENCED railway conversion (or comparison) use a small on-disk COPY
+/// with a CRS injected via JSON mutation of the real fixture — never
+/// hand-written CityJSON. Used both as
 /// the conversion INPUT and, where a test also compares against "the
 /// source", as that comparison baseline.
 fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
@@ -1283,4 +1285,94 @@ fn colliding_attribute_is_diverted_and_round_trips() {
         }
     }
     assert_eq!(other_attributes_seen, 2);
+}
+
+/// Spec §metadata "CRS rules", as amended: the whole unknown-CRS path, on a
+/// real fixture that genuinely carries no `referenceSystem` — convert ->
+/// footer `city.crs: null` -> export -> **no** `referenceSystem` -> compare
+/// clean against the source.
+///
+/// `lod3_railway.city.json` is used **unmodified** here (every other railway
+/// test injects a CRS via [`railway_fixture_with_crs`]): the missing CRS is
+/// the property under test, so the fixture is the evidence rather than
+/// something to work around. The round trip is what proves the null state is
+/// *faithful* and not merely tolerated — a writer that guessed CRS84, or an
+/// exporter that materialised the absent-means-CRS84 reading, would show up
+/// here as a `header: referenceSystem differs` difference.
+#[test]
+fn a_crs_less_source_round_trips_through_an_explicit_null_crs() {
+    let source = fixture("lod3_railway.city.json");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&source).unwrap())
+            .unwrap()["metadata"]
+            .get("referenceSystem")
+            .is_none(),
+        "this test's premise: the real fixture declares no referenceSystem"
+    );
+
+    let package_dir = tempfile::tempdir().unwrap();
+    let report = convert(&ConvertOptions::new(
+        source.clone(),
+        package_dir.path().to_path_buf(),
+    ))
+    .expect("a CRS-less source is declared, not fatal (spec CRS rules)");
+    assert!(
+        report.crs_diagnostic.is_some(),
+        "the writer SHOULD surface a conversion diagnostic"
+    );
+
+    // Every object table's footer says `null` — explicitly, not by omission.
+    let tables = PackageTables::open(package_dir.path()).unwrap();
+    for table in &tables.tables {
+        let builder =
+            ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(table).unwrap()).unwrap();
+        let city = builder
+            .metadata()
+            .file_metadata()
+            .key_value_metadata()
+            .unwrap()
+            .iter()
+            .find(|kv| kv.key == "city")
+            .and_then(|kv| kv.value.clone())
+            .expect("every table carries a city footer key");
+        let city: serde_json::Value = serde_json::from_str(&city).unwrap();
+        let members = city.as_object().unwrap();
+        assert!(
+            members.contains_key("crs") && members["crs"].is_null(),
+            "{}: city.crs must be an explicit null: {members:?}",
+            table.display()
+        );
+    }
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let exported = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: exported.clone(),
+    })
+    .unwrap();
+
+    let header: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(&exported)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        header
+            .get("metadata")
+            .and_then(|m| m.get("referenceSystem"))
+            .is_none(),
+        "an unknown CRS exports NO referenceSystem — the model carries no \
+         georeference, matching the source: {header}"
+    );
+
+    let compared = compare_datasets(&source, &exported, &CompareOptions::default()).unwrap();
+    assert!(
+        compared.equal,
+        "the unknown-CRS round trip must still be semantically equal; differences: {:#?}",
+        compared.differences
+    );
 }

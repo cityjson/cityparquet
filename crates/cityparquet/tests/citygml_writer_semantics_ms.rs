@@ -28,9 +28,10 @@ fn fixture() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/railway_lod3_fragment.gml")
 }
 
-/// `railway_lod3_fragment.gml` has no `srsName`/envelope at all. Since `scan`
-/// now hard-fails on coordinate-bearing input with no resolvable CRS (spec
-/// "CRS rules"), a CRS is injected onto the REAL parsed header before
+/// `railway_lod3_fragment.gml` has no `srsName`/envelope at all, and would
+/// therefore convert to an explicit `city.crs: null` (spec "CRS rules": "an
+/// unresolvable CRS is declared, not fatal"). This test needs a GEOREFERENCED
+/// package, so a CRS is injected onto the REAL parsed header before
 /// converting — the writer (`crate::citygml::writer`) then emits `srsName`
 /// into the round-tripped `.gml`'s own envelope, so the SECOND convert below
 /// resolves a CRS from that file natively, without needing a second
