@@ -56,6 +56,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Schema};
 use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet_readbench::format::{Artefact, Format};
 use cityparquet_schema::CityMetadata;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -79,9 +80,8 @@ pub struct RunOptions {
     /// Warm repeats per measurement (a further, discarded warmup precedes
     /// every one). Must be >= 1.
     pub repeat: usize,
-    /// Requested `--format` names; `None`/empty selects
-    /// [`DEFAULT_FORMATS`].
-    pub formats: Option<Vec<String>>,
+    /// Requested formats; `None`/empty selects [`DEFAULT_FORMATS`].
+    pub formats: Option<Vec<Format>>,
     /// Requested scenario names (canonical [`Scenario::as_str`] spelling,
     /// case-insensitive); `None`/empty selects every [`Scenario::ALL`].
     pub scenarios: Option<Vec<String>>,
@@ -105,15 +105,15 @@ pub enum Transport {
 }
 
 /// Formats this coordinator drives when `--formats` is omitted.
-/// `duckdb-parquet` is deliberately excluded — it is a separate SQL-engine
-/// baseline driven entirely by `scripts/readbench_duckdb.sh` (Task 12), never
-/// a `--child` format.
-const DEFAULT_FORMATS: [&str; 5] = [
-    "cityparquet",
-    "cityparquet-hilbert",
-    "flatcitybuf",
-    "cityjsonseq",
-    "cityjsonseq-gz",
+/// [`Format::DuckDbParquet`] is deliberately excluded — it is a separate
+/// SQL-engine baseline driven entirely by `scripts/readbench_duckdb.sh`
+/// (Task 12), never a `--child` format.
+const DEFAULT_FORMATS: [Format; 5] = [
+    Format::CityParquet,
+    Format::CityParquetHilbert,
+    Format::FlatCityBuf,
+    Format::CityJsonSeq,
+    Format::CityJsonSeqGz,
 ];
 
 /// `(fraction of the dataset bbox's x/y extent, notes tag)` for
@@ -161,13 +161,13 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // comment).
     let cp_table = locate_cityparquet_table(&opts.prepared_dir, base)?;
 
-    let requested_formats: Vec<String> = match &opts.formats {
+    let requested_formats: Vec<Format> = match &opts.formats {
         Some(v) if !v.is_empty() => v.clone(),
-        _ => DEFAULT_FORMATS.iter().map(|s| s.to_string()).collect(),
+        _ => DEFAULT_FORMATS.to_vec(),
     };
 
-    let mut resolved_formats: Vec<(String, Source)> = Vec::new();
-    for format in &requested_formats {
+    let mut resolved_formats: Vec<(Format, Source)> = Vec::new();
+    for &format in &requested_formats {
         match resolve_format_artefact(
             format,
             &opts.input,
@@ -177,7 +177,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
             opts.base_url.as_deref(),
         ) {
             ArtefactResolution::Source(Source::Local(path)) if path.exists() => {
-                resolved_formats.push((format.clone(), Source::Local(path)));
+                resolved_formats.push((format, Source::Local(path)));
             }
             ArtefactResolution::Source(Source::Local(path)) => eprintln!(
                 "cityparquet-readbench: skipping format '{format}': missing artefact {} \
@@ -189,15 +189,16 @@ pub fn run(opts: &RunOptions) -> Result<()> {
             // surfaces as a natural child-process error, not a preflight
             // HEAD request this coordinator would otherwise need to make.
             ArtefactResolution::Source(source @ Source::Http { .. }) => {
-                resolved_formats.push((format.clone(), source));
+                resolved_formats.push((format, source));
             }
             ArtefactResolution::NotCoordinated => eprintln!(
                 "cityparquet-readbench: skipping format '{format}': driven by \
                  scripts/readbench_duckdb.sh, not this coordinator"
             ),
-            ArtefactResolution::Unknown => {
-                eprintln!("cityparquet-readbench: skipping unknown format '{format}'")
-            }
+            ArtefactResolution::NonUtf8Key => eprintln!(
+                "cityparquet-readbench: skipping format '{format}': its artefact path is not \
+                 valid UTF-8, so no HTTP key can be derived from it"
+            ),
         }
     }
     if resolved_formats.is_empty() {
@@ -236,7 +237,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // own `Count` is exactly that total (one row per CityObject), and the
     // cityparquet package is already required/located above regardless of
     // `--formats`.
-    let cp_object_total = total_count_for("cityparquet", &Source::Local(cp_table.clone()))
+    let cp_object_total = total_count_for(Format::CityParquet, &Source::Local(cp_table.clone()))
         .context("deriving the dataset-global CityObject total from the cityparquet package")?;
 
     eprintln!(
@@ -260,9 +261,9 @@ pub fn run(opts: &RunOptions) -> Result<()> {
 
     // AttrFilter's result_count per format, collected for the
     // self-consistency check below.
-    let mut attr_filter_counts: HashMap<String, u64> = HashMap::new();
+    let mut attr_filter_counts: HashMap<Format, u64> = HashMap::new();
 
-    for (format, source) in &resolved_formats {
+    for &(format, ref source) in &resolved_formats {
         let total = total_count_for(format, source)
             .with_context(|| format!("deriving total count for format '{format}'"))?;
 
@@ -320,7 +321,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         Some(cp_object_total),
                         &notes,
                     )?;
-                    attr_filter_counts.insert(format.clone(), count);
+                    attr_filter_counts.insert(format, count);
                 }
                 Scenario::AttrStats | Scenario::Project => match &numeric_attr {
                     Some(column) => {
@@ -432,52 +433,56 @@ fn strip_known_extension(name: &str) -> &str {
 /// coordinator's scope.
 enum ArtefactResolution {
     Source(Source),
-    /// `duckdb-parquet`: a separate SQL-engine baseline (Task 12).
+    /// [`Artefact::NotCoordinated`] — `duckdb-parquet`, a separate
+    /// SQL-engine baseline (Task 12).
     NotCoordinated,
-    /// Not one of the five formats this coordinator knows.
-    Unknown,
+    /// The artefact has no valid-UTF-8 relative key, so no HTTP URL can be
+    /// built from it (only reachable under [`Transport::Http`]).
+    NonUtf8Key,
 }
 
 /// Maps `format` onto its artefact [`Source`] — for [`Transport::Local`], a
-/// local path under `prepared_dir` (or `input` itself, for `cityjsonseq`),
-/// the exact naming convention `scripts/readbench_prepare.sh` produces; for
-/// [`Transport::Http`], the same artefact's relative key under `base_url`
-/// (`prepared_dir` uploaded wholesale — see `scripts/readbench_upload.md`).
+/// local path under `prepared_dir` (or `input` itself, for
+/// [`Format::CityJsonSeq`]), the exact naming convention
+/// `scripts/readbench_prepare.sh` produces; for [`Transport::Http`], the
+/// same artefact's relative key under `base_url` (`prepared_dir` uploaded
+/// wholesale — see `scripts/readbench_upload.md`).
 ///
-/// `cityjsonseq`'s own local artefact is `input` itself, which normally
-/// lives OUTSIDE `prepared_dir` (e.g. a committed fixture); there is no
-/// `prepared_dir`-relative path to strip for it, so its HTTP key is instead
-/// `input`'s own file name — the upload step is expected to have placed a
-/// copy of the original CityJSONSeq file at that name alongside the other
-/// artefacts on the served root.
+/// The per-format NAMING itself lives on [`Format::artefact`]; this function
+/// only turns the resulting [`Artefact`] into a path or an HTTP key. The
+/// [`Artefact::TheInputItself`] special case below is therefore an
+/// exhaustive match rather than the string comparison it used to be.
+///
+/// [`Artefact::TheInputItself`] (today only [`Format::CityJsonSeq`]) reads
+/// `input` itself, which normally lives OUTSIDE `prepared_dir` (e.g. a
+/// committed fixture); there is no `prepared_dir`-relative path to strip for
+/// it, so its HTTP key is instead `input`'s own file name — the upload step
+/// is expected to have placed a copy of the original CityJSONSeq file at
+/// that name alongside the other artefacts on the served root.
 fn resolve_format_artefact(
-    format: &str,
+    format: Format,
     input: &Path,
     prepared_dir: &Path,
     base: &str,
     transport: Transport,
     base_url: Option<&str>,
 ) -> ArtefactResolution {
-    let local_path = match format {
-        "cityparquet" => prepared_dir.join(format!("{base}.parquet")),
-        "cityparquet-hilbert" => prepared_dir.join(format!("{base}-hilbert.parquet")),
-        "flatcitybuf" => prepared_dir.join(format!("{base}.fcb")),
-        "cityjsonseq" => input.to_path_buf(),
-        "cityjsonseq-gz" => prepared_dir.join(format!("{base}.jsonl.gz")),
-        "duckdb-parquet" => return ArtefactResolution::NotCoordinated,
-        _ => return ArtefactResolution::Unknown,
+    let artefact = format.artefact(base);
+    let local_path = match &artefact {
+        Artefact::Prepared(name) => prepared_dir.join(name),
+        Artefact::TheInputItself => input.to_path_buf(),
+        Artefact::NotCoordinated => return ArtefactResolution::NotCoordinated,
     };
 
     match transport {
         Transport::Local => ArtefactResolution::Source(Source::Local(local_path)),
         Transport::Http => {
-            let key = if format == "cityjsonseq" {
-                input.file_name().and_then(|n| n.to_str())
-            } else {
-                local_path
+            let key = match &artefact {
+                Artefact::TheInputItself => input.file_name().and_then(|n| n.to_str()),
+                _ => local_path
                     .strip_prefix(prepared_dir)
                     .ok()
-                    .and_then(|p| p.to_str())
+                    .and_then(|p| p.to_str()),
             };
             match key {
                 Some(key) => ArtefactResolution::Source(Source::Http {
@@ -486,7 +491,7 @@ fn resolve_format_artefact(
                         .to_string(),
                     key: key.to_string(),
                 }),
-                None => ArtefactResolution::Unknown,
+                None => ArtefactResolution::NonUtf8Key,
             }
         }
     }
@@ -785,7 +790,7 @@ struct ChildLine {
 /// doc comment): independent cache state and an independent `peak_alloc`
 /// high-water mark for every single sample.
 fn spawn_child(
-    format: &str,
+    format: Format,
     scenario: Scenario,
     source: &Source,
     params: &QueryParams,
@@ -795,7 +800,7 @@ fn spawn_child(
     let mut cmd = Command::new(&self_exe);
     cmd.arg("--child")
         .arg("--format")
-        .arg(format)
+        .arg(format.as_str())
         .arg("--scenario")
         .arg(scenario.as_str());
     match source {
@@ -908,7 +913,7 @@ fn spawn_child(
 /// — as a SHARED denominator across every format, so those scenarios'
 /// selectivity is directly comparable and always in `(0, 1]` (see this
 /// module's own doc comment).
-fn total_count_for(format: &str, source: &Source) -> Result<u64> {
+fn total_count_for(format: Format, source: &Source) -> Result<u64> {
     let line = spawn_child(format, Scenario::Count, source, &QueryParams::default())?;
     Ok(line.result_count)
 }
@@ -925,7 +930,7 @@ fn total_count_for(format: &str, source: &Source) -> Result<u64> {
 fn run_measurement(
     csv: &mut File,
     dataset: &str,
-    format: &str,
+    format: Format,
     source: &Source,
     scenario: Scenario,
     params: &QueryParams,
@@ -1012,7 +1017,7 @@ fn mad(values: &[f64], med: f64) -> f64 {
 fn write_row(
     csv: &mut File,
     dataset: &str,
-    format: &str,
+    format: Format,
     scenario: Scenario,
     selectivity: Option<f64>,
     result_count: u64,

@@ -4,9 +4,11 @@ mod formats;
 mod scenario;
 
 use std::path::PathBuf;
+use std::str::FromStr as _;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
+use cityparquet_readbench::format::Format;
 use clap::{Args, Parser, Subcommand};
 
 use scenario::{AttrPred, QueryParams, Scenario};
@@ -36,11 +38,11 @@ struct Cli {
     #[arg(long)]
     child: bool,
 
-    /// Format backend: `cityparquet` (implemented), or
-    /// `cityjsonseq`/`cityjsonseq-gz`/`flatcitybuf`/`duckdb-parquet`
-    /// (reserved for later tasks).
-    #[arg(long)]
-    format: Option<String>,
+    /// Format backend — one of `Format::ALL`'s canonical names, which
+    /// `Format::from_str` validates (and whose error lists them all), so no
+    /// list is repeated here to drift out of date.
+    #[arg(long, value_parser = parse_format)]
+    format: Option<Format>,
 
     /// Scenario to run: full-read, count, bbox-query, attr-filter,
     /// attr-stats, id-lookup, project.
@@ -132,11 +134,12 @@ struct RunArgs {
     #[arg(long, default_value_t = 7)]
     repeat: usize,
 
-    /// Comma-separated format names (`cityparquet`, `cityparquet-hilbert`,
-    /// `flatcitybuf`, `cityjsonseq`, `cityjsonseq-gz`); omit for the default
-    /// set (every format except the separate `duckdb-parquet` SQL baseline).
-    #[arg(long, value_delimiter = ',')]
-    formats: Option<Vec<String>>,
+    /// Comma-separated format names — one of `Format::ALL`'s canonical
+    /// names each, validated by `Format::from_str` (an unknown name is
+    /// rejected here, never silently skipped); omit for
+    /// `coordinator::DEFAULT_FORMATS`.
+    #[arg(long, value_delimiter = ',', value_parser = parse_format)]
+    formats: Option<Vec<Format>>,
 
     /// Comma-separated scenario names (`full-read`, `count`, `bbox-query`,
     /// `attr-filter`, `attr-stats`, `id-lookup`, `project`, or their
@@ -237,7 +240,7 @@ fn run(cli: Cli) -> Result<()> {
         other => bail!("unknown --transport '{other}'; expected 'local' or 'http'"),
     };
     let is_http = matches!(source, formats::Source::Http { .. });
-    let runner = formats::resolve(&format)?;
+    let runner = formats::resolve(format)?;
 
     alloc::reset();
     let start = Instant::now();
@@ -286,6 +289,15 @@ fn run(cli: Cli) -> Result<()> {
         ),
     }
     Ok(())
+}
+
+/// clap's value parser for `--format`/`--formats`: [`Format`]'s own
+/// `FromStr`, so an unknown name is REJECTED at parse time with the enum's
+/// own every-variant error message. Previously an unknown `--formats` entry
+/// was silently skipped with a warning deep inside the coordinator, which
+/// hid a typo behind a benchmark that quietly measured less than asked.
+fn parse_format(raw: &str) -> Result<Format, String> {
+    Format::from_str(raw)
 }
 
 /// Builds a single [`AttrPred`] from the `--attr-eq`/`--attr-ge`/`--attr-le`
