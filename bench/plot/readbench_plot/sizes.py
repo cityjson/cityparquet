@@ -1,29 +1,51 @@
 """On-disk size + compression-ratio report from the readbench prepared dir.
 
-`readbench_prepare.sh` (see `scripts/readbench_prepare.sh`) leaves, for
-every benchmarked dataset `<name>`, four (or five, once Hilbert-ordering is
-counted separately) per-format artefacts under a "prepared dir" (default
-`bench/data/readbench/`):
+`readbench_prepare.sh` (see `scripts/readbench_prepare.sh`) leaves, for every
+benchmarked dataset `<name>`, one artefact per format it was asked to build
+under a "prepared dir" (default `bench/data/readbench/`) — the same names
+`Format::artefact` resolves in
+`crates/cityparquet-readbench/src/format.rs`:
 
+    <name>.gml               CityGML 2.0 source (only for a CityGML input)
+    <name>.city.json         whole-document CityJSON
+    <name>.city.jsonl        CityJSONSeq (only when the input was CityGML;
+                             otherwise the CityJSONSeq *is* the input, and
+                             lives outside the prepared dir)
+    <name>.jsonl.gz          gzip -9 of the CityJSONSeq
+    <name>.fcb               FlatCityBuf file
     <name>.parquet/          CityParquet package directory (source order)
     <name>-hilbert.parquet/  CityParquet package directory, Hilbert-ordered
-    <name>.fcb               FlatCityBuf file
-    <name>.jsonl.gz          gzip -9 of the original CityJSON/CityJSONSeq input
 
-This module measures on-disk bytes for each artefact and adds a fifth,
-synthetic "format": raw (uncompressed) CityJSONSeq. Decompressing the whole
-`.jsonl.gz` just to get its size would be wasteful (this corpus has 600 MB+
-inputs), so instead we read the ISIZE trailer gzip stores in the last 4
-bytes of the stream: the uncompressed size modulo 2**32, per RFC 1952 §2.3.1.
-Every input in this benchmark is well under 4 GiB, and `gzip -9 -c SOURCE >
-*.jsonl.gz` in `readbench_prepare.sh` always writes a single-member stream,
-so the modulo never wraps and ISIZE is exactly the raw size.
+Which of these exist depends on the `--formats` the prepare run was given, so
+every block below is conditional and a missing artefact is a skip, not an
+error. `duckdb-parquet` has no artefact of its own — it is an SQL engine
+reading the CityParquet package — so it never appears in this report.
 
-Output: `<out_dir>/sizes.csv` (`dataset,format,bytes,mb,ratio_vs_cityjsonseq`)
+Raw (uncompressed) CityJSONSeq is measured from `<name>.city.jsonl` when the
+prepare run left one. When it did not, but a `.jsonl.gz` exists, the raw size
+comes from that file's ISIZE trailer instead of decompressing 600 MB+ of
+input: the last 4 bytes of a gzip stream hold the uncompressed size modulo
+2**32 (RFC 1952 §2.3.1), and since `readbench_prepare.sh` writes a
+single-member stream from an input well under 4 GiB, the modulo never wraps.
+
+THE BASELINE, AND WHY THERE ARE TWO RATIO COLUMNS: the report's original
+question was "how much smaller than raw CityJSONSeq is this?", which a
+CityGML-native dataset built without any CityJSONSeq artefact simply cannot
+answer — and answering it with the CityGML's size under a column named
+`ratio_vs_cityjsonseq` would be a lie in the paper's own measurement
+artefact. So `ratio_vs_cityjsonseq` keeps its exact meaning and is left empty
+when no raw CityJSONSeq size is knowable, and a self-describing pair
+(`baseline_format`, `ratio_vs_baseline`) carries the ratio that is always
+computable: `baseline_format` names what the denominator actually was — raw
+CityJSONSeq when there is one, otherwise the least-processed form the dataset
+exists in (its CityGML, say).
+
+Output: `<out_dir>/sizes.csv`
+(`dataset,format,bytes,mb,ratio_vs_cityjsonseq,baseline_format,ratio_vs_baseline`)
 and two PNGs under `<out_dir>/plots/`: a grouped bar chart of size in MB per
-dataset x format, and one of `ratio_vs_cityjsonseq` (bytes of raw
-CityJSONSeq / bytes of the format; >1 means smaller than raw, i.e. better
-compression) with a reference line at 1.0.
+dataset x format, and one of `ratio_vs_baseline` (baseline bytes / format
+bytes; >1 means smaller than the baseline, i.e. better compression) with a
+reference line at 1.0.
 """
 
 from __future__ import annotations
@@ -40,22 +62,25 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-# Same left-to-right preference as plot.py's FORMAT_ORDER, plus the
-# synthetic raw-size format; anything unrecognised is appended afterwards
-# (alphabetically) rather than dropped.
-FORMAT_ORDER = [
-    "cityjsonseq",
-    "cityjsonseq-gz",
-    "flatcitybuf",
-    "cityparquet",
-    "cityparquet-hilbert",
-]
+from readbench_plot import FORMAT_COLORS, FORMAT_ORDER, bar_style
 
-# Consistent per-format colors, shared with plot.py's bar charts where the
-# format names overlap (matplotlib's default "tab10" cycle, assigned by
-# FORMAT_ORDER position so a given format keeps the same color across every
-# figure this project renders).
-FORMAT_COLORS = dict(zip(FORMAT_ORDER, plt.get_cmap("tab10").colors, strict=False))
+# `FORMAT_ORDER` and `FORMAT_COLORS` are the package's, shared with plot.py.
+# This module used to carry a five-entry ordering of its own (plot.py had a
+# six-entry one) and a colour map derived from tab10 *by position*, which
+# claimed consistency across figures while guaranteeing the opposite: plot.py
+# passed no colour at all, and inserting a format here shifted every colour
+# after it. Re-exported so `sizes.FORMAT_ORDER` keeps working for anything
+# that already reads it.
+__all__ = ["FORMAT_COLORS", "FORMAT_ORDER", "build_report", "run"]
+
+# Display names for the baseline a ratio was computed against, for chart
+# titles and axis labels.
+_BASELINE_LABELS = {
+    "citygml": "raw CityGML",
+    "cityjson": "raw CityJSON",
+    "cityjsonseq": "raw CityJSONSeq",
+    "cityjsonseq-gz": "gzipped CityJSONSeq",
+}
 
 
 def _ordered(seen: list[str], preferred: list[str]) -> list[str]:
@@ -84,67 +109,136 @@ def dir_size(path: Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
 
-def discover_datasets(prepared_dir: Path) -> list[str]:
-    """Dataset names in `prepared_dir`, one per `<name>.fcb` or `<name>.jsonl.gz`.
+# Every artefact suffix a dataset name can be recovered from, longest first
+# so `.city.jsonl` is never mistaken for `.city.json` plus a stray `l`.
+# `-hilbert.parquet` is deliberately absent: a Hilbert-ordered package is a
+# per-format artefact of an already-named dataset, not a dataset of its own,
+# and is stripped separately below.
+_NAME_SUFFIXES = [
+    ".city.jsonl",
+    ".city.json",
+    ".jsonl.gz",
+    ".parquet",
+    ".fcb",
+    ".gml",
+]
 
-    `<name>-hilbert.parquet` directories are a per-format artefact of an
-    already-discovered dataset, not a dataset of their own, so they're
-    excluded from the name set (only `.fcb`/`.jsonl.gz` seed discovery).
+
+def discover_datasets(prepared_dir: Path) -> list[str]:
+    """Dataset names in `prepared_dir`, one per recognised artefact.
+
+    Seeded from EVERY artefact `Format::artefact` can produce, not just
+    `.fcb`/`.jsonl.gz`: a dataset prepared from CityGML may legitimately have
+    neither (its artefacts are `<name>.gml` and `<name>.city.json`), and such
+    a dataset used to be invisible to this report entirely.
     """
     names: set[str] = set()
-    for p in prepared_dir.glob("*.fcb"):
-        names.add(p.stem)
-    for p in prepared_dir.glob("*.jsonl.gz"):
-        names.add(p.name[: -len(".jsonl.gz")])
+    for path in prepared_dir.iterdir():
+        for suffix in _NAME_SUFFIXES:
+            if not path.name.endswith(suffix):
+                continue
+            base = path.name[: -len(suffix)]
+            # `<name>-hilbert.parquet` names `<name>`, not `<name>-hilbert`.
+            if suffix == ".parquet" and base.endswith("-hilbert"):
+                base = base[: -len("-hilbert")]
+            if base:
+                names.add(base)
+            break
     return sorted(names)
 
 
+def artefact_bytes(path: Path) -> int | None:
+    """On-disk bytes of one artefact, or None if it was never prepared.
+
+    A CityParquet artefact is a package *directory*, every other one a single
+    file — hence the branch rather than a bare `stat()`.
+    """
+    if path.is_dir():
+        return dir_size(path)
+    if path.is_file():
+        return path.stat().st_size
+    return None
+
+
 def measure_dataset(name: str, prepared_dir: Path) -> list[dict[str, object]]:
-    """Bytes per available format for one dataset; missing artefacts are skipped."""
-    rows: list[dict[str, object]] = []
+    """Bytes per available format for one dataset; missing artefacts are skipped.
 
+    The per-format artefact names mirror `Format::artefact`
+    (`crates/cityparquet-readbench/src/format.rs`). `duckdb-parquet` is
+    absent because it has no artefact of its own (`Artefact::NotCoordinated`
+    — it is an SQL engine reading the CityParquet package).
+    """
+    measured: dict[str, int] = {}
+
+    def measure(fmt: str, path: Path) -> None:
+        size = artefact_bytes(path)
+        if size is None:
+            print(f"warn: {name}: no {path.name}, skipping {fmt}", file=sys.stderr)
+            return
+        measured[fmt] = size
+
+    measure("citygml", prepared_dir / f"{name}.gml")
+    measure("cityjson", prepared_dir / f"{name}.city.json")
+
+    # Raw CityJSONSeq: measured directly when the prepare run left a
+    # `.city.jsonl`, otherwise inferred from the gzip trailer. Reading a real
+    # file beats inferring a size, so the file wins when both exist.
+    seq_path = prepared_dir / f"{name}.city.jsonl"
     gz_path = prepared_dir / f"{name}.jsonl.gz"
-    raw_bytes: int | None = None
-    if gz_path.is_file():
-        raw_bytes = gzip_isize(gz_path)
-        rows.append({"dataset": name, "format": "cityjsonseq", "bytes": raw_bytes})
+    if seq_path.is_file():
+        measured["cityjsonseq"] = seq_path.stat().st_size
+    elif gz_path.is_file():
+        measured["cityjsonseq"] = gzip_isize(gz_path)
+    else:
+        print(f"warn: {name}: no {seq_path.name} or {gz_path.name}, skipping cityjsonseq",
+              file=sys.stderr)
+
+    measure("cityjsonseq-gz", gz_path)
+    measure("flatcitybuf", prepared_dir / f"{name}.fcb")
+    measure("cityparquet", prepared_dir / f"{name}.parquet")
+    measure("cityparquet-hilbert", prepared_dir / f"{name}-hilbert.parquet")
+
+    baseline_format, baseline_bytes = _baseline(measured)
+    raw_seq = measured.get("cityjsonseq")
+
+    rows: list[dict[str, object]] = []
+    for fmt in FORMAT_ORDER:
+        if fmt not in measured:
+            continue
+        size = measured[fmt]
         rows.append(
-            {"dataset": name, "format": "cityjsonseq-gz", "bytes": gz_path.stat().st_size}
+            {
+                "dataset": name,
+                "format": fmt,
+                "bytes": size,
+                # Keeps its exact original meaning — bytes of raw CityJSONSeq
+                # per byte of this format — and stays empty rather than
+                # quietly changing denominator when there is no CityJSONSeq.
+                "ratio_vs_cityjsonseq": raw_seq / size if raw_seq is not None else float("nan"),
+                "baseline_format": baseline_format,
+                "ratio_vs_baseline": (
+                    baseline_bytes / size if baseline_bytes is not None else float("nan")
+                ),
+            }
         )
-    else:
-        print(f"warn: {name}: missing {gz_path.name}, skipping cityjsonseq(-gz)", file=sys.stderr)
-
-    parquet_dir = prepared_dir / f"{name}.parquet"
-    if parquet_dir.is_dir():
-        rows.append({"dataset": name, "format": "cityparquet", "bytes": dir_size(parquet_dir)})
-    else:
-        print(f"warn: {name}: missing {parquet_dir.name}, skipping cityparquet", file=sys.stderr)
-
-    hilbert_dir = prepared_dir / f"{name}-hilbert.parquet"
-    if hilbert_dir.is_dir():
-        rows.append(
-            {"dataset": name, "format": "cityparquet-hilbert", "bytes": dir_size(hilbert_dir)}
-        )
-    else:
-        print(
-            f"warn: {name}: missing {hilbert_dir.name}, skipping cityparquet-hilbert",
-            file=sys.stderr,
-        )
-
-    fcb_path = prepared_dir / f"{name}.fcb"
-    if fcb_path.is_file():
-        rows.append({"dataset": name, "format": "flatcitybuf", "bytes": fcb_path.stat().st_size})
-    else:
-        print(f"warn: {name}: missing {fcb_path.name}, skipping flatcitybuf", file=sys.stderr)
-
-    if raw_bytes is not None:
-        for row in rows:
-            row["ratio_vs_cityjsonseq"] = raw_bytes / cast(int, row["bytes"])
-    else:
-        for row in rows:
-            row["ratio_vs_cityjsonseq"] = float("nan")
-
     return rows
+
+
+def _baseline(measured: dict[str, int]) -> tuple[str, int | None]:
+    """Which measured format the compression ratio is taken against.
+
+    Raw CityJSONSeq when the dataset has one, so the number stays comparable
+    with every figure published before CityGML joined the benchmark;
+    otherwise the least-processed form the dataset exists in (the earliest
+    entry of the canonical `FORMAT_ORDER` that was measured — its CityGML,
+    typically). `("", None)` if nothing at all was measured.
+    """
+    if "cityjsonseq" in measured:
+        return "cityjsonseq", measured["cityjsonseq"]
+    for fmt in FORMAT_ORDER:
+        if fmt in measured:
+            return fmt, measured[fmt]
+    return "", None
 
 
 def build_report(prepared_dir: Path) -> pd.DataFrame:
@@ -153,14 +247,36 @@ def build_report(prepared_dir: Path) -> pd.DataFrame:
     for name in names:
         rows.extend(measure_dataset(name, prepared_dir))
 
-    df = pd.DataFrame(rows, columns=["dataset", "format", "bytes", "ratio_vs_cityjsonseq"])
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "dataset",
+            "format",
+            "bytes",
+            "ratio_vs_cityjsonseq",
+            "baseline_format",
+            "ratio_vs_baseline",
+        ],
+    )
     df["bytes"] = cast(pd.Series, pd.to_numeric(df["bytes"], errors="coerce")).astype(
         "int64"
     )
     df["mb"] = df["bytes"] / (1024 * 1024)
     df["ratio_vs_cityjsonseq"] = pd.to_numeric(df["ratio_vs_cityjsonseq"], errors="coerce")
+    df["ratio_vs_baseline"] = pd.to_numeric(df["ratio_vs_baseline"], errors="coerce")
     return cast(
-        pd.DataFrame, df[["dataset", "format", "bytes", "mb", "ratio_vs_cityjsonseq"]]
+        pd.DataFrame,
+        df[
+            [
+                "dataset",
+                "format",
+                "bytes",
+                "mb",
+                "ratio_vs_cityjsonseq",
+                "baseline_format",
+                "ratio_vs_baseline",
+            ]
+        ],
     )
 
 
@@ -172,6 +288,7 @@ def _grouped_bar(
     out_path: Path,
     *,
     ref_line: float | None = None,
+    ref_label: str | None = None,
 ) -> None:
     datasets = _ordered(list(df["dataset"].unique()), sorted(df["dataset"].unique()))
     formats = _ordered(list(df["format"].unique()), FORMAT_ORDER)
@@ -190,10 +307,12 @@ def _grouped_bar(
             continue
         offsets = [xi + (j - (n_formats - 1) / 2) * width for xi in x]
         heights = [v if pd.notna(v) else 0 for v in values]
-        ax.bar(offsets, heights, width=width, label=fmt, color=FORMAT_COLORS.get(fmt))
+        ax.bar(offsets, heights, width=width, label=fmt, **bar_style(fmt))
 
     if ref_line is not None:
-        ax.axhline(ref_line, color="black", linestyle="--", linewidth=1, label="raw CityJSONSeq")
+        ax.axhline(
+            ref_line, color="black", linestyle="--", linewidth=1, label=ref_label or "baseline"
+        )
 
     ax.set_xticks(list(x))
     ax.set_xticklabels(datasets, rotation=20, ha="right")
@@ -205,7 +324,22 @@ def _grouped_bar(
     plt.close(fig)
 
 
+def baseline_label(df: pd.DataFrame) -> str:
+    """How to name the ratio's denominator on a chart.
+
+    One label when every dataset shares a baseline; a generic one when a run
+    mixes, say, a CityJSONSeq-native dataset with a CityGML-native one — the
+    per-dataset truth is in `sizes.csv`'s `baseline_format` column, which is
+    why that column exists.
+    """
+    used = sorted({b for b in df["baseline_format"] if b})
+    if len(used) == 1:
+        return _BASELINE_LABELS.get(used[0], f"raw {used[0]}")
+    return "each dataset's source format"
+
+
 def plot_sizes(df: pd.DataFrame, plots_dir: Path) -> None:
+    label = baseline_label(df)
     _grouped_bar(
         df,
         "mb",
@@ -215,11 +349,16 @@ def plot_sizes(df: pd.DataFrame, plots_dir: Path) -> None:
     )
     _grouped_bar(
         df,
-        "ratio_vs_cityjsonseq",
-        "Compression ratio vs raw CityJSONSeq (higher = smaller)",
-        "ratio vs raw CityJSONSeq",
+        "ratio_vs_baseline",
+        # The baseline goes in the title and the "higher = smaller" hint in
+        # the y-label: with a long baseline name (a run mixing a
+        # CityGML-native dataset with a CityJSONSeq-native one) both in the
+        # title overflowed the 6-inch figure and clipped.
+        f"Compression ratio vs {label}",
+        "ratio (higher = smaller)",
         plots_dir / "compression-ratio.png",
         ref_line=1.0,
+        ref_label=label,
     )
 
 
@@ -251,8 +390,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="readbench_plot.sizes",
         description=(
-            "Measure on-disk size and compression ratio (vs raw CityJSONSeq) "
-            "per format, from a readbench prepared dir (e.g. bench/data/readbench)."
+            "Measure on-disk size and compression ratio per format, from a "
+            "readbench prepared dir (e.g. bench/data/readbench). The ratio is "
+            "taken against raw CityJSONSeq where the dataset has one and "
+            "against its least-processed form (its CityGML, say) otherwise; "
+            "sizes.csv's baseline_format column records which."
         ),
     )
     parser.add_argument(

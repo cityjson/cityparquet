@@ -25,6 +25,12 @@ median, consistent with the "median ... per scenario" framing. Rows whose
 `notes` is exactly `cold` (the separate, manual purged-cache measurement)
 are excluded before aggregating. A cross-dataset summary of `full-read`
 timings is also produced.
+
+Bars are coloured from the package-level `FORMAT_COLORS`, keyed by format
+name and shared with `sizes.py`, so one format is one colour in every figure
+this project renders and adding a format cannot recolour an existing one. A
+format the colour map has never heard of is drawn hatched in grey rather
+than dropped.
 """
 
 from __future__ import annotations
@@ -39,7 +45,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from readbench_plot import CSV_HEADER
+from readbench_plot import CSV_HEADER, FORMAT_COLORS, FORMAT_ORDER, bar_style
 
 # Preferred left-to-right ordering for readability; anything else seen in
 # the data is appended afterwards (alphabetically), so an unrecognised
@@ -53,14 +59,12 @@ SCENARIO_ORDER = [
     "attr-stats",
     "project",
 ]
-FORMAT_ORDER = [
-    "cityjsonseq",
-    "cityjsonseq-gz",
-    "flatcitybuf",
-    "cityparquet",
-    "cityparquet-hilbert",
-    "duckdb-parquet",
-]
+
+# `FORMAT_ORDER` and `FORMAT_COLORS` are the package's, shared with sizes.py:
+# this module used to carry its own six-entry ordering while sizes.py carried
+# a five-entry one, and no colour map at all. Re-exported so
+# `plot.FORMAT_ORDER` keeps working for anything that already reads it.
+__all__ = ["FORMAT_COLORS", "FORMAT_ORDER", "aggregate", "load_csv", "run"]
 
 
 def _ordered(seen: list[str], preferred: list[str]) -> list[str]:
@@ -136,7 +140,7 @@ def _grouped_bar(
             continue
         offsets = [xi + (j - (n_formats - 1) / 2) * width for xi in x]
         heights = [v if pd.notna(v) else 0 for v in values]
-        ax.bar(offsets, heights, width=width, label=fmt)
+        ax.bar(offsets, heights, width=width, label=fmt, **bar_style(fmt))
 
     ax.set_xticks(list(x))
     ax.set_xticklabels(scenarios, rotation=20, ha="right")
@@ -197,7 +201,7 @@ def plot_summary(datasets: dict[str, pd.DataFrame], plots_dir: Path) -> None:
             continue
         offsets = [xi + (j - (n_formats - 1) / 2) * width for xi in x]
         heights = [v if pd.notna(v) else 0 for v in values]
-        ax.bar(offsets, heights, width=width, label=fmt)
+        ax.bar(offsets, heights, width=width, label=fmt, **bar_style(fmt))
 
     ax.set_xticks(list(x))
     ax.set_xticklabels(dataset_order, rotation=20, ha="right")
