@@ -97,7 +97,7 @@ fn locate_main_table(input: &Path) -> Result<PathBuf> {
 }
 
 /// This runner's `--attr-column`/params error for a scenario missing a
-/// required field — every scenario branch in [`CityParquetRunner::run`]
+/// required field — every scenario branch in [`ScenarioPlan::resolve`]
 /// that reads an `Option` field routes its `None` case through here so the
 /// child process exits with a clear message instead of a panic.
 fn require<'a, T>(opt: &'a Option<T>, flag: &str, scenario: Scenario) -> Result<&'a T> {
@@ -114,6 +114,57 @@ fn to_query_predicate(pred: &AttrPred) -> AttrPredicate {
         AttrPred::Ge(bound) => AttrPredicate::Ge(*bound),
         AttrPred::Le(bound) => AttrPredicate::Le(*bound),
         AttrPred::Range(lo, hi) => AttrPredicate::Range(*lo, *hi),
+    }
+}
+
+/// One scenario's fully-resolved parameters — the single place the
+/// `--bbox`/`--attr-column`/`--target-id` requirements are checked and the
+/// CLI predicate is converted, shared by the local (sync) and HTTP (async)
+/// dispatch arms so the two transports can never drift on what a scenario
+/// requires (review P3).
+enum ScenarioPlan<'a> {
+    Count,
+    FullRead,
+    BBoxQuery([f64; 6]),
+    AttrFilter {
+        column: &'a str,
+        pred: AttrPredicate,
+    },
+    AttrStats {
+        column: &'a str,
+    },
+    IdLookup {
+        id: &'a str,
+    },
+    Project {
+        column: &'a str,
+    },
+}
+
+impl<'a> ScenarioPlan<'a> {
+    fn resolve(scenario: Scenario, params: &'a QueryParams) -> Result<Self> {
+        Ok(match scenario {
+            Scenario::Count => Self::Count,
+            Scenario::FullRead => Self::FullRead,
+            Scenario::BBoxQuery => Self::BBoxQuery(*require(&params.bbox, "bbox", scenario)?),
+            Scenario::AttrFilter => Self::AttrFilter {
+                column: require(&params.attr_column, "attr-column", scenario)?.as_str(),
+                pred: to_query_predicate(require(
+                    &params.attr_pred,
+                    "attr-eq/--attr-ge/--attr-le",
+                    scenario,
+                )?),
+            },
+            Scenario::AttrStats => Self::AttrStats {
+                column: require(&params.attr_column, "attr-column", scenario)?.as_str(),
+            },
+            Scenario::IdLookup => Self::IdLookup {
+                id: require(&params.target_id, "target-id", scenario)?.as_str(),
+            },
+            Scenario::Project => Self::Project {
+                column: require(&params.attr_column, "attr-column", scenario)?.as_str(),
+            },
+        })
     }
 }
 
@@ -187,47 +238,36 @@ async fn run_http(
     let (store, table_path) = resolve_http_main_table(base_url, key).await?;
     let dyn_store = || Arc::clone(&store) as Arc<dyn ObjectStore>;
 
-    let result_count = match scenario {
-        Scenario::Count => query_async::count_async(dyn_store(), &table_path).await?,
-        Scenario::FullRead => {
+    let plan = ScenarioPlan::resolve(scenario, params)?;
+    let result_count = match plan {
+        ScenarioPlan::Count => query_async::count_async(dyn_store(), &table_path).await?,
+        ScenarioPlan::FullRead => {
             let meta = open_metadata_http(dyn_store(), &table_path).await?;
             query_async::full_read_async(dyn_store(), &table_path, &meta)
                 .await?
                 .feature_count
         }
-        Scenario::BBoxQuery => {
-            let bbox = *require(&params.bbox, "bbox", scenario)?;
+        ScenarioPlan::BBoxQuery(bbox) => {
             query_async::bbox_query_async(dyn_store(), &table_path, bbox)
                 .await?
                 .ids
                 .len() as u64
         }
-        Scenario::AttrFilter => {
-            let column = require(&params.attr_column, "attr-column", scenario)?;
-            let pred = require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
-            query_async::attr_filter_async(
-                dyn_store(),
-                &table_path,
-                column,
-                &to_query_predicate(pred),
-            )
-            .await?
+        ScenarioPlan::AttrFilter { column, pred } => {
+            query_async::attr_filter_async(dyn_store(), &table_path, column, &pred).await?
         }
-        Scenario::AttrStats => {
-            let column = require(&params.attr_column, "attr-column", scenario)?;
+        ScenarioPlan::AttrStats { column } => {
             query_async::attr_stats_async(dyn_store(), &table_path, column)
                 .await?
                 .count
         }
-        Scenario::IdLookup => {
-            let id = require(&params.target_id, "target-id", scenario)?;
+        ScenarioPlan::IdLookup { id } => {
             let meta = open_metadata_http(dyn_store(), &table_path).await?;
             query_async::id_lookup_async(dyn_store(), &table_path, &meta, id)
                 .await?
                 .is_some() as u64
         }
-        Scenario::Project => {
-            let column = require(&params.attr_column, "attr-column", scenario)?;
+        ScenarioPlan::Project { column } => {
             query_async::project_column_async(dyn_store(), &table_path, column).await?
         }
     };
@@ -254,35 +294,25 @@ impl FormatRunner for CityParquetRunner {
         let (base_url, key) = match source {
             Source::Local(path) => {
                 let table = locate_main_table(path)?;
-                let result_count = match scenario {
-                    Scenario::Count => query::count(&table)?,
-                    Scenario::FullRead => {
+                let plan = ScenarioPlan::resolve(scenario, params)?;
+                let result_count = match plan {
+                    ScenarioPlan::Count => query::count(&table)?,
+                    ScenarioPlan::FullRead => {
                         let meta = open_metadata(&table)?;
                         query::full_read(&table, &meta)?.feature_count
                     }
-                    Scenario::BBoxQuery => {
-                        let bbox = *require(&params.bbox, "bbox", scenario)?;
+                    ScenarioPlan::BBoxQuery(bbox) => {
                         query::bbox_query(&table, bbox)?.ids.len() as u64
                     }
-                    Scenario::AttrFilter => {
-                        let column = require(&params.attr_column, "attr-column", scenario)?;
-                        let pred =
-                            require(&params.attr_pred, "attr-eq/--attr-ge/--attr-le", scenario)?;
-                        query::attr_filter(&table, column, &to_query_predicate(pred))?
+                    ScenarioPlan::AttrFilter { column, pred } => {
+                        query::attr_filter(&table, column, &pred)?
                     }
-                    Scenario::AttrStats => {
-                        let column = require(&params.attr_column, "attr-column", scenario)?;
-                        query::attr_stats(&table, column)?.count
-                    }
-                    Scenario::IdLookup => {
-                        let id = require(&params.target_id, "target-id", scenario)?;
+                    ScenarioPlan::AttrStats { column } => query::attr_stats(&table, column)?.count,
+                    ScenarioPlan::IdLookup { id } => {
                         let meta = open_metadata(&table)?;
                         query::id_lookup(&table, &meta, id)?.is_some() as u64
                     }
-                    Scenario::Project => {
-                        let column = require(&params.attr_column, "attr-column", scenario)?;
-                        query::project_column(&table, column)?
-                    }
+                    ScenarioPlan::Project { column } => query::project_column(&table, column)?,
                 };
                 return Ok(RunOutcome {
                     result_count,
