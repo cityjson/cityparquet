@@ -18,7 +18,7 @@ use chrono::{SecondsFormat, Utc};
 use city3d_stac_types::metadata::{BBox3D, CRS};
 use city3d_stac_types::stac::StacItemBuilder;
 use city3d_stac_types::stac::types::{Asset, Item};
-use cityparquet_schema::{CityParquetError, Result};
+use cityparquet_schema::{CityParquetError, CrsState, Result};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::metadata::RowGroupMetaData;
 use parquet::file::statistics::Statistics;
@@ -61,12 +61,14 @@ pub struct ItemOptions {
 /// `open` to read back.
 ///
 /// Never guesses a `bbox`/`geometry`: when the package extent cannot be
-/// expressed in WGS84 (no CRS, or one this crate cannot reproject), the Item
-/// simply carries neither — both are optional STAC fields, and an "unlocated"
-/// Item is honest where a wrong extent would not be. This is deliberate, not
-/// merely tolerated: `build_item` also runs on every [`crate::package::convert`]
-/// call, and a CRS is optional in CityJSON, so failing conversion itself over
-/// a derived, discovery-only field would be a worse outcome.
+/// expressed in WGS84 — a declared-unknown CRS (`city.crs: null`), no CRS
+/// key at all, or one this crate cannot reproject — the Item simply carries
+/// neither, and an "unlocated" Item is honest where a wrong extent would not
+/// be. This is deliberate, not merely tolerated: `build_item` also runs on
+/// every [`crate::package::convert`] call, and a CRS is optional in CityJSON,
+/// so failing conversion itself over a derived, discovery-only field would be
+/// a worse outcome. See [`build_item`] for why the declared-unknown case needs
+/// an explicit guard rather than falling out of the reprojection.
 pub fn item_for_package(dir: &Path, opts: &ItemOptions) -> Result<Item> {
     build_item(&PackageTables::open(dir)?, opts)
 }
@@ -76,7 +78,8 @@ pub fn item_for_package(dir: &Path, opts: &ItemOptions) -> Result<Item> {
 /// See [`item_for_package`] for the package-on-disk entry point this backs.
 pub fn build_item(tables: &PackageTables, opts: &ItemOptions) -> Result<Item> {
     let props = properties::derive_from_footer(tables)?;
-    let crs = package_crs(tables)?;
+    let crs_state = package_crs_state(tables)?;
+    let crs = crs_state.known().and_then(epsg_crs);
 
     let id = opts.id.clone().unwrap_or_else(|| {
         tables
@@ -112,12 +115,30 @@ pub fn build_item(tables: &PackageTables, opts: &ItemOptions) -> Result<Item> {
     // reproject), the Item simply carries no `bbox`/`geometry` rather than a
     // wrong one — both are optional STAC fields, and this is an honest "no
     // WGS84 extent available", not a guess (the same "None over guessing"
-    // discipline `package_crs`/`package_bbox` already apply themselves).
+    // discipline `package_crs_state`/`package_bbox` already apply themselves).
+    // An Item with `geometry: null` and no `bbox` is valid STAC: GeoJSON
+    // permits a null geometry, and STAC requires `bbox` only when `geometry`
+    // is non-null.
     // This function is now on `write_package`'s mandatory path (Task 4), and
     // a CRS is optional in CityJSON (`helsinki_address.city.jsonl` has none)
     // — failing the WHOLE conversion over a derived, discovery-only field
     // would be a worse outcome than an unlocated Item.
-    if let Some(bbox) = package_bbox(tables)?
+    //
+    // A DECLARED-UNKNOWN CRS (`city.crs: null`) skips the derivation entirely,
+    // and that guard is load-bearing rather than a tidy-up. `BBox3D::to_wgs84`
+    // treats a no-CRS source as "maybe these already ARE WGS84": if the extent
+    // happens to fall inside ±180/±90 it returns the coordinates UNCHANGED
+    // instead of erroring. Until the spec's CRS rules were amended, a
+    // coordinate-bearing CRS-less source was a hard conversion error, so that
+    // heuristic was unreachable here; now that `null` is the normal outcome it
+    // would be the standard path — and a model in small LOCAL coordinates (a
+    // building modelled about the origin: the commonest no-CRS shape there is)
+    // would be handed a fabricated WGS84 bbox and footprint, contradicting the
+    // footer's own `null` and the spec's no-guessing rule. Consistent with
+    // dropping the `proj:*` fields for the same state: an Item may not claim a
+    // georeference the package explicitly says it does not have.
+    if !crs_state.is_unknown()
+        && let Some(bbox) = package_bbox(tables)?
         && let Ok(wgs84) = bbox.to_wgs84(crs.as_ref().unwrap_or(&CRS::unknown()))
     {
         builder = builder.bbox(wgs84).geometry_from_bbox();
@@ -305,52 +326,63 @@ fn resolve_datetime(explicit: Option<&str>, source_metadata: Option<&Value>) -> 
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-/// The package's CRS, as an EPSG code lifted out of the stored PROJJSON.
+/// The package's declared `city.crs`, in its full tri-state form, read from
+/// the first object table's footer.
 ///
-/// The footer stores the dataset CRS as PROJJSON (§13.3). `CRS` here is
-/// EPSG-based, so the authority code is read from the PROJJSON `id`. A package
-/// with no CRS — or one this crate cannot resolve to an EPSG code (a non-EPSG
-/// authority, or a code that doesn't fit) — yields `None`, never a guess: the
-/// PROJJSON itself is untouched in the footer regardless (§13.2 authority),
-/// this is only what the discovery-only Item can additionally express. `None`
-/// here is also on [`crate::package::convert`]'s mandatory path (Task 4), so
-/// it must never be an `Err` — a CRS this crate cannot resolve to EPSG is not
-/// a corrupt package, just one `build_item` can describe less precisely.
-fn package_crs(tables: &PackageTables) -> Result<Option<CRS>> {
+/// [`build_item`] needs the *state*, not just a usable CRS: `Unknown` (an
+/// explicit `null`) and `Unspecified` (absent) look identical to
+/// [`epsg_crs`], but they mean different things to the extent derivation —
+/// see [`build_item`]. A package with no object table at all has nothing to
+/// read, and is reported as `Unspecified`.
+fn package_crs_state(tables: &PackageTables) -> Result<CrsState> {
     let Some(path) = tables.tables.first() else {
-        return Ok(None);
+        return Ok(CrsState::Unspecified);
     };
     let file = fs::File::open(path)
         .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
         CityParquetError::parquet_source(format!("cannot open {}", path.display()), e)
     })?;
-    let meta = builder.cityparquet_metadata()?;
+    Ok(builder.cityparquet_metadata()?.crs)
+}
 
-    // `known()` collapses both no-CRS states (an explicit `null`, and an
-    // absent key): the Projection extension can only state a CRS it has, so a
-    // file whose CRS is declared unknown carries no `proj:*` fields at all —
-    // the same "None over guessing" discipline as an unresolvable authority.
-    let Some(id) = meta.crs.known().and_then(|c| c.get("id")) else {
-        return Ok(None);
-    };
+/// The package's CRS, as an EPSG code lifted out of the stored PROJJSON.
+///
+/// The footer stores a known dataset CRS as PROJJSON (§13.3). `CRS` here is
+/// EPSG-based, so the authority code is read from the PROJJSON `id`. A CRS
+/// this crate cannot resolve to an EPSG code (a non-EPSG authority, or a code
+/// that doesn't fit) yields `None`, never a guess: the PROJJSON itself is
+/// untouched in the footer regardless (§13.2 authority), this is only what the
+/// discovery-only Item can additionally express. `None` here is also on
+/// [`crate::package::convert`]'s mandatory path (Task 4), so it must never be
+/// an `Err` — a CRS this crate cannot resolve to EPSG is not a corrupt
+/// package, just one `build_item` can describe less precisely.
+///
+/// Pure, so it is the *same* footer read that decides both the `proj:*` fields
+/// and the extent — the two can never disagree about what CRS the file has.
+///
+/// Only ever reached for [`CrsState::Known`], so it inherits the known gap
+/// documented on `crate::export`'s `reference_system`: a FOREIGN file carrying
+/// real coordinates under an ABSENT `crs` should, by the spec's reading rule,
+/// be described as OGC:CRS84 (and could then be given a WGS84 extent), and is
+/// instead described with no CRS and left unlocated. Pending a spec
+/// clarification — see that doc comment.
+fn epsg_crs(projjson: &Value) -> Option<CRS> {
+    let id = projjson.get("id")?;
 
     // The authority must actually be EPSG — labelling an OGC or IAU code as
     // EPSG would produce a confidently WRONG reprojection, which is worse
     // than reporting no CRS at all.
     if id.get("authority").and_then(|a| a.as_str()) != Some("EPSG") {
-        return Ok(None);
+        return None;
     }
 
     // PROJJSON permits the code as a number or a digit string.
     let code = id.get("code").and_then(|code| {
         code.as_u64()
             .or_else(|| code.as_str().and_then(|s| s.parse::<u64>().ok()))
-    });
-    let Some(code) = code.and_then(|c| u32::try_from(c).ok()) else {
-        return Ok(None);
-    };
-    Ok(Some(CRS::from_epsg(code)))
+    })?;
+    u32::try_from(code).ok().map(CRS::from_epsg)
 }
 
 /// The `bbox` struct's six leaf columns, in the order [`BBox3D`] uses.

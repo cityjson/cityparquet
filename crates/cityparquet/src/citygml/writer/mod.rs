@@ -171,7 +171,12 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     let schema = first_builder.cityparquet_arrow_schema()?;
     // Both no-CRS states (explicit `null`, absent key) advertise no `srsName`
     // — the CityGML writer, like every other consumer, only ever states a CRS
-    // it actually has.
+    // it actually has. This inherits the known gap documented on
+    // `crate::export`'s `reference_system`: a FOREIGN file carrying real
+    // coordinates under an absent `crs` should, by the spec's reading rule, be
+    // treated as OGC:CRS84, and is instead written with no `srsName`. Pending
+    // a spec clarification — see that doc comment for why the two absent-`crs`
+    // shapes cannot yet be told apart here.
     let srs_name = srs_name_for(meta.crs.known())?;
     // Stored attribute column types drive attribute routing (not value shapes).
     let attr_types = attributes::attribute_types(&schema, &meta.attributes);

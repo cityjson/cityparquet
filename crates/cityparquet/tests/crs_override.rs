@@ -100,8 +100,16 @@ fn a_crs_less_source_converts_to_an_explicit_null_crs_and_reports_it() {
     );
 }
 
-/// A package written with an unknown CRS carries no `proj:*` STAC fields —
-/// the Item can only state a CRS the package actually has.
+/// A package written with an unknown CRS carries no `proj:*` STAC fields, and
+/// no spatial extent either — the Item can only state a CRS, a `bbox` and a
+/// `geometry` the package actually has.
+///
+/// The extent half is the one that needs saying twice (see
+/// [`an_unknown_crs_in_small_local_coordinates_claims_no_wgs84_extent`]): here
+/// the source is Delft in RD New metres, whose ~85 000 easting is outside
+/// WGS84 range, so the extent would be dropped by the reprojection failing
+/// even without the fix. That is exactly why this test alone is not a
+/// sufficient pin.
 #[test]
 fn an_unknown_crs_writes_no_projection_extension_fields() {
     let tmp = tempfile::tempdir().unwrap();
@@ -118,6 +126,108 @@ fn an_unknown_crs_writes_no_projection_extension_fields() {
     assert!(
         proj.is_empty(),
         "an unknown CRS must claim no projection fields: {proj:?}"
+    );
+    assert_unlocated(&item);
+}
+
+/// RED (review Important #2): the trap the Delft test above cannot spring.
+///
+/// `BBox3D::to_wgs84` treats a **no-CRS** source as "maybe it is already
+/// WGS84": if the extent happens to fall inside ±180/±90 it returns the
+/// coordinates **unchanged** rather than erroring. Before this branch, a
+/// coordinate-bearing CRS-less package was a hard conversion error, so that
+/// heuristic was unreachable; with `city.crs: null` now the standard outcome
+/// it became the normal path — and a model in small **local** coordinates
+/// (a single building modelled about the origin, the commonest no-CRS shape
+/// there is) gets a *fabricated* WGS84 bbox and footprint on its STAC Item,
+/// flatly contradicting the footer's own `null` and the no-guessing rule.
+///
+/// Derived from the real Delft fixture: `referenceSystem` removed and the
+/// header `transform` re-quantised about the origin, which pulls the same real
+/// vertices into the ±180/±90 window. `transform` is an implementation-chosen
+/// encoding parameter, never semantic content (see `crate::compare`), so this
+/// stays a real model — no hand-written CityJSON. Delft is also the fixture
+/// that makes the trap *reachable* at all: it is single-module and every row
+/// carries geometry, so `package_bbox` yields an extent rather than the `None`
+/// a multi-table package with a geometry-less table gives.
+#[test]
+fn an_unknown_crs_in_small_local_coordinates_claims_no_wgs84_extent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let text = fs::read_to_string(delft()).expect("fixture must exist; run `just fixtures`");
+    let mut lines = text.lines();
+    let mut header: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let metadata = header["metadata"].as_object_mut().unwrap();
+    metadata.remove("referenceSystem");
+    // The geographicalExtent is stated in the ORIGINAL coordinates and would
+    // otherwise contradict the re-quantised vertices below.
+    metadata.remove("geographicalExtent");
+    // 0.1 mm quantisation about the origin: Delft's ~1.2 km extent lands in
+    // roughly ±59, inside WGS84's ±180/±90 — which is what arms the trap.
+    header["transform"] = serde_json::json!({
+        "scale": [0.0001, 0.0001, 0.0001],
+        "translate": [0.0, 0.0, 0.0],
+    });
+    let mut out_text = serde_json::to_string(&header).unwrap();
+    for line in lines {
+        out_text.push('\n');
+        out_text.push_str(line);
+    }
+    let input = tmp.path().join("local_coords_no_crs.city.jsonl");
+    fs::write(&input, out_text).unwrap();
+
+    let out = tmp.path().join("out");
+    let source = Source::open(&input).unwrap();
+    let report = convert_source(&source, &ConvertOptions::new(input, out.clone()))
+        .expect("a CRS-less source converts");
+    assert!(report.crs_diagnostic.is_some());
+    assert_eq!(footer(&out.join("building.parquet")).crs, CrsState::Unknown);
+
+    // The premise: this package's extent really does fall inside ±180/±90, so
+    // `to_wgs84` would happily hand it back unchanged. If a future change to
+    // the fixture or the quantiser moved it out of range, this test would go
+    // green for the wrong reason.
+    let tables = cityparquet::stac::properties::PackageTables::open(&out).unwrap();
+    let extent = cityparquet::stac::package_bbox(&tables)
+        .unwrap()
+        .expect("delft is single-module with geometry on every row, so it HAS an extent");
+    assert!(
+        extent.xmin >= -180.0 && extent.xmax <= 180.0,
+        "premise: x must be inside WGS84 range, got {}..{}",
+        extent.xmin,
+        extent.xmax
+    );
+    assert!(
+        extent.ymin >= -90.0 && extent.ymax <= 90.0,
+        "premise: y must be inside WGS84 range, got {}..{}",
+        extent.ymin,
+        extent.ymax
+    );
+
+    let item: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("metadata.json")).unwrap()).unwrap();
+    assert_unlocated(&item);
+}
+
+/// An "unlocated" STAC Item: `geometry` present and **null**, no `bbox` key at
+/// all. That is the valid STAC shape for an Item with no known extent (and the
+/// same shape
+/// `stac_derive_real_data::a_package_with_no_crs_converts_to_an_unlocated_but_schema_valid_item`
+/// already validates against the city3d JSON schema) — GeoJSON allows a null
+/// geometry, and STAC requires `bbox` only *when* `geometry` is non-null.
+fn assert_unlocated(item: &serde_json::Value) {
+    assert!(
+        item.get("geometry").is_some_and(serde_json::Value::is_null),
+        "an unknown CRS must yield a null geometry, never a fabricated \
+         footprint: {}",
+        item.get("geometry")
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "<<absent>>".to_string())
+    );
+    assert!(
+        item.get("bbox").is_none(),
+        "an unknown CRS must yield NO bbox — the coordinates have no \
+         georeference, so any WGS84 extent would be invented: {:?}",
+        item.get("bbox")
     );
 }
 
