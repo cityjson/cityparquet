@@ -152,6 +152,26 @@ log_mentions() {
   grep -qF -- "$1" "$LAST_LOG"
 }
 
+# Every negative case below asserts BOTH the script's own exit 1 AND the exact
+# wording of the message that arm produces. Neither half is decoration: a bare
+# "nonzero exit" also matches bash's own 127 for an unresolvable command, and a
+# loose substring ("fcb", "citygml") also matches bash's `fcb: command not
+# found` or the script's own `-- formats: citygml` echo. Asserting only those
+# weak forms makes the case pass whether the guard fired or was deleted, which
+# is precisely the regression each case exists to catch.
+expect_guard() {
+  local name=$1 needle=$2
+  if [[ $LAST_RC -ne 1 ]]; then
+    fail "$name" "expected exit 1 from the script's own guard, got $LAST_RC; log: $(cat "$LAST_LOG")"
+    return 1
+  fi
+  if ! log_mentions "$needle"; then
+    fail "$name" "expected the guard's own wording '$needle'; log: $(cat "$LAST_LOG")"
+    return 1
+  fi
+  return 0
+}
+
 # --------------------------------------------------------------------------
 # Case 1: `--formats cityparquet` builds only the CityParquet package, and
 # needs no `fcb` (the sandbox has none).
@@ -185,16 +205,19 @@ case_cityparquet_only() {
 # error to report; silently skipping is the coordinator's job.
 # --------------------------------------------------------------------------
 case_flatcitybuf_without_fcb() {
-  local name="--formats flatcitybuf without fcb fails, naming fcb"
+  local name="--formats flatcitybuf without fcb fails at the guard"
   local dir
   dir="$(new_sandbox cargo)"
   run_prepare "$dir" --formats flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
-  if [[ $LAST_RC -eq 0 ]]; then
-    fail "$name" "expected a non-zero exit, got 0"
+  # Deliberately the guard's full wording, not a bare "fcb": with fcb genuinely
+  # absent, deleting the guard makes the unguarded `fcb ser` die with bash's
+  # own "fcb: command not found" at exit 127, which a loose match would accept.
+  if ! expect_guard "$name" "error: fcb not found on PATH"; then
     return
   fi
-  if ! log_mentions "fcb"; then
-    fail "$name" "message does not name fcb; log: $(cat "$LAST_LOG")"
+  # …and nothing was built on the way to the failure.
+  if [[ -n "$(find "$dir/out" -mindepth 1 -print -quit)" ]]; then
+    fail "$name" "a run that failed its guard still built something"
     return
   fi
   pass "$name"
@@ -232,12 +255,10 @@ case_unknown_format_rejected() {
   local dir
   dir="$(new_sandbox cargo fcb)"
   run_prepare "$dir" --formats cityparquet,bogus "$dir/data/tiny.city.jsonl" "$dir/out"
-  if [[ $LAST_RC -eq 0 ]]; then
-    fail "$name" "expected a non-zero exit, got 0"
-    return
-  fi
-  if ! log_mentions "bogus"; then
-    fail "$name" "message does not name the offending format; log: $(cat "$LAST_LOG")"
+  # The offending name alone would be a weak assertion: `-- formats: …` echoes
+  # the whole request back, so "bogus" appears in the log either way. Match the
+  # rejection's own wording.
+  if ! expect_guard "$name" "error: unknown format 'bogus'"; then
     return
   fi
   local valid
@@ -309,12 +330,14 @@ case_unimplemented_format_fails_loudly() {
   local dir
   dir="$(new_sandbox cargo fcb)"
   run_prepare "$dir" --formats citygml "$dir/data/tiny.city.jsonl" "$dir/out"
-  if [[ $LAST_RC -eq 0 ]]; then
-    fail "$name" "expected a non-zero exit, got 0"
+  # "citygml" on its own proves nothing — the `-- formats: citygml` echo prints
+  # it on a successful run too. Match the rejection's own wording, and its own
+  # exit 1.
+  if ! expect_guard "$name" "no build step for it yet"; then
     return
   fi
-  if ! log_mentions "citygml"; then
-    fail "$name" "message does not name citygml; log: $(cat "$LAST_LOG")"
+  if ! log_mentions "error: format 'citygml' is a valid read-benchmark format"; then
+    fail "$name" "rejection does not name the format; log: $(cat "$LAST_LOG")"
     return
   fi
   pass "$name"
@@ -338,8 +361,10 @@ case_second_run_skips() {
     fail "$name" "second run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
     return
   fi
-  if ! log_mentions "skip"; then
-    fail "$name" "second run did not skip; log: $(cat "$LAST_LOG")"
+  # The full skip line, not a bare "skip": this must prove THIS artefact was
+  # recognised as already present, not merely that the word appeared somewhere.
+  if ! log_mentions "skip $dir/out/tiny.parquet (already present)"; then
+    fail "$name" "second run did not skip the existing package; log: $(cat "$LAST_LOG")"
     return
   fi
   pass "$name"

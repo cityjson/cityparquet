@@ -56,6 +56,8 @@ set -euo pipefail
 VALID_FORMATS=(citygml cityjson cityjsonseq cityjsonseq-gz flatcitybuf cityparquet cityparquet-hilbert)
 
 # What `--formats` defaults to: everything this script can currently produce.
+# TASK 7 HOOK: widen this as the citygml/cityjson build steps land, so a bare
+# run builds the full format-comparison set.
 # NOT the same list as the coordinator's `DEFAULT_FORMATS` (which is what the
 # benchmark MEASURES by default) — this one can only ever name formats a
 # build step below exists for, so that a bare run never fails on its own
@@ -170,8 +172,10 @@ require_tool() {
 # the tools the request actually needs. Everything below this point is
 # expected to succeed.
 
-# Formats the read benchmark knows but this script cannot yet produce. Task 7
-# adds the `citygml`/`cityjson` build steps and empties this list.
+# Formats the read benchmark knows but this script cannot yet produce.
+# TASK 7 HOOK: delete this loop as the `citygml`/`cityjson` build steps land,
+# and put their tool guards (java/citygml-tools, cjseq) here instead. Grep this
+# file for `TASK 7 HOOK:` to find every place that change touches.
 for fmt in citygml cityjson; do
   if want "$fmt"; then
     echo "error: format '$fmt' is a valid read-benchmark format, but this script has" >&2
@@ -197,6 +201,9 @@ BASE="$(basename "$INPUT")"
 BASE="${BASE%.city.jsonl}"; BASE="${BASE%.city.json}"
 BASE="${BASE%.jsonl}"; BASE="${BASE%.json}"
 
+# TASK 7 HOOK: `GML_OUT="$OUTDIR/${BASE}.gml"` and
+# `CITYJSON_OUT="$OUTDIR/${BASE}.city.json"` belong here — the names come from
+# `Format::artefact` in crates/cityparquet-readbench/src/format.rs.
 PARQUET_OUT="$OUTDIR/${BASE}.parquet"
 HILBERT_OUT="$OUTDIR/${BASE}-hilbert.parquet"
 FCB_OUT="$OUTDIR/${BASE}.fcb"
@@ -235,6 +242,13 @@ fi
 # Artefacts this run is responsible for, in build order, for the closing
 # summary.
 BUILT=()
+
+# TASK 7 HOOK: the citygml/cityjson blocks go here, BEFORE the blocks below —
+# artefacts derive forward from the source (CityGML -> CityJSON -> CityJSONSeq
+# -> fcb | cityparquet), never through CityParquet, and the blocks below
+# consume what that chain produces. Each new block keeps the shape used
+# throughout this section: `if want <fmt>` / `*_is_valid` -> skip or build ->
+# `BUILT+=(…)`.
 
 # 1. Core-profile CityParquet package (source row order).
 if want cityparquet; then
@@ -301,6 +315,9 @@ fi
 # counts top-level features while cityparquet's object_count includes
 # descendant CityObjects such as BuildingParts).
 echo "-- verifying artefacts"
+# TASK 7 HOOK: add `if want citygml` / `if want cityjson` arms here, each with
+# a non-zero object-count check mirroring the `fcb info` "Features: N > 0" one
+# below.
 if want cityparquet; then
   dir_is_valid "$PARQUET_OUT" || { echo "error: missing/empty package: $PARQUET_OUT" >&2; exit 1; }
 fi
