@@ -21,10 +21,6 @@ use super::geometry::{FaceIds, write_inline_member, write_inline_member_ids, wri
 use crate::Result;
 use crate::wkb_read::DecodedKind;
 
-fn io_err(e: std::io::Error) -> CityParquetError {
-    CityParquetError::Io(e.to_string())
-}
-
 /// A face is rings of coord indices (ring 0 exterior, 1.. holes).
 pub type Face = Vec<Vec<usize>>;
 
@@ -243,8 +239,7 @@ fn write_one_solid<W: Write>(
     shells: &[Vec<Face>],
     plan: &[FaceEmit],
 ) -> Result<()> {
-    w.write_event(Event::Start(BytesStart::new("gml:Solid")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("gml:Solid")))?;
     let mut fi = 0usize;
     for (si, shell) in shells.iter().enumerate() {
         let boundary = if si == 0 {
@@ -252,10 +247,8 @@ fn write_one_solid<W: Write>(
         } else {
             "gml:interior"
         };
-        w.write_event(Event::Start(BytesStart::new(boundary)))
-            .map_err(io_err)?;
-        w.write_event(Event::Start(BytesStart::new("gml:CompositeSurface")))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new(boundary)))?;
+        w.write_event(Event::Start(BytesStart::new("gml:CompositeSurface")))?;
         for face in shell {
             match &plan[fi] {
                 // The polygon (with its ring ids) lives in boundedBy; the solid
@@ -270,13 +263,10 @@ fn write_one_solid<W: Write>(
             }
             fi += 1;
         }
-        w.write_event(Event::End(BytesEnd::new("gml:CompositeSurface")))
-            .map_err(io_err)?;
-        w.write_event(Event::End(BytesEnd::new(boundary)))
-            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new("gml:CompositeSurface")))?;
+        w.write_event(Event::End(BytesEnd::new(boundary)))?;
     }
-    w.write_event(Event::End(BytesEnd::new("gml:Solid")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("gml:Solid")))?;
     Ok(())
 }
 
@@ -291,30 +281,23 @@ fn write_boundedby_surface<W: Write>(
     major: u8,
     polys: &[(&Face, Option<&FaceIds>)],
 ) -> Result<()> {
-    w.write_event(Event::Start(BytesStart::new("bldg:boundedBy")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("bldg:boundedBy")))?;
     let tag = format!("bldg:{ty}");
     if polys.is_empty() {
-        w.write_event(Event::Empty(BytesStart::new(tag.as_str())))
-            .map_err(io_err)?;
+        w.write_event(Event::Empty(BytesStart::new(tag.as_str())))?;
     } else {
-        w.write_event(Event::Start(BytesStart::new(tag.as_str())))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new(tag.as_str())))?;
         let ms = format!("bldg:lod{major}MultiSurface");
-        w.write_event(Event::Start(BytesStart::new(ms.as_str())))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new(ms.as_str())))?;
         for (face, ids) in polys {
             let poly_id = ids.and_then(|f| f.poly.as_deref());
             let ring_ids = ids.and_then(FaceIds::ring_slice);
             write_inline_member_ids(w, coords, face, poly_id, ring_ids)?;
         }
-        w.write_event(Event::End(BytesEnd::new(ms.as_str())))
-            .map_err(io_err)?;
-        w.write_event(Event::End(BytesEnd::new(tag.as_str())))
-            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new(ms.as_str())))?;
+        w.write_event(Event::End(BytesEnd::new(tag.as_str())))?;
     }
-    w.write_event(Event::End(BytesEnd::new("bldg:boundedBy")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("bldg:boundedBy")))?;
     Ok(())
 }
 
@@ -444,25 +427,19 @@ pub fn write_solid_with_semantics<W: Write>(
 
     // 3. Emit bldg:lod<major>Solid (xlink/inline members).
     let elem = format!("bldg:lod{major}Solid");
-    w.write_event(Event::Start(BytesStart::new(elem.as_str())))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new(elem.as_str())))?;
     if composite {
-        w.write_event(Event::Start(BytesStart::new("gml:CompositeSolid")))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new("gml:CompositeSolid")))?;
         for (m, shells) in members.iter().enumerate() {
-            w.write_event(Event::Start(BytesStart::new("gml:solidMember")))
-                .map_err(io_err)?;
+            w.write_event(Event::Start(BytesStart::new("gml:solidMember")))?;
             write_one_solid(w, coords, shells, &plans[m])?;
-            w.write_event(Event::End(BytesEnd::new("gml:solidMember")))
-                .map_err(io_err)?;
+            w.write_event(Event::End(BytesEnd::new("gml:solidMember")))?;
         }
-        w.write_event(Event::End(BytesEnd::new("gml:CompositeSolid")))
-            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new("gml:CompositeSolid")))?;
     } else {
         write_one_solid(w, coords, &members[0], &plans[0])?;
     }
-    w.write_event(Event::End(BytesEnd::new(elem.as_str())))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new(elem.as_str())))?;
 
     // 4. Emit bldg:boundedBy per surface.
     write_boundedby(w, coords, &sem.surfaces, &members, &surfaces, &plans, major)?;

@@ -174,7 +174,7 @@ pub fn build_item(tables: &PackageTables, opts: &ItemOptions) -> Result<Item> {
         // than a failed derivation. `crate::export` treats a listed-but-
         // missing sidecar the same way.
         if !path.exists() {
-            return Err(CityParquetError::Io(format!(
+            return Err(CityParquetError::io(format!(
                 "package lists sidecar '{name}' but {} is not on disk",
                 path.display()
             )));
@@ -228,9 +228,10 @@ fn source_metadata(tables: &PackageTables) -> Result<Option<Value>> {
         return Ok(None);
     };
     let file = fs::File::open(path)
-        .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|e| CityParquetError::Parquet(format!("cannot open {}: {e}", path.display())))?;
+        .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+        CityParquetError::parquet_source(format!("cannot open {}", path.display()), e)
+    })?;
     // `source_metadata` is no longer its own footer key (spec-alignment M3,
     // gap 16) — the source CityJSON header's `metadata` object, when a
     // writer chose to keep it, now lives at `city.other.source_metadata`
@@ -251,9 +252,10 @@ fn package_cityparquet_version(tables: &PackageTables) -> Result<String> {
         CityParquetError::Metadata("package has no object tables to read a version from".into())
     })?;
     let file = fs::File::open(path)
-        .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|e| CityParquetError::Parquet(format!("cannot open {}: {e}", path.display())))?;
+        .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+        CityParquetError::parquet_source(format!("cannot open {}", path.display()), e)
+    })?;
     Ok(builder.cityparquet_metadata()?.version)
 }
 
@@ -319,9 +321,10 @@ fn package_crs(tables: &PackageTables) -> Result<Option<CRS>> {
         return Ok(None);
     };
     let file = fs::File::open(path)
-        .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|e| CityParquetError::Parquet(format!("cannot open {}: {e}", path.display())))?;
+        .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+        CityParquetError::parquet_source(format!("cannot open {}", path.display()), e)
+    })?;
     let meta = builder.cityparquet_metadata()?;
 
     let Some(id) = meta.crs.as_ref().and_then(|c| c.get("id")) else {
@@ -370,10 +373,11 @@ pub fn package_bbox(tables: &PackageTables) -> Result<Option<BBox3D>> {
     let mut acc: [Option<(f64, f64)>; 6] = [None; 6];
 
     for path in &tables.tables {
-        let file = fs::File::open(path)
-            .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
+        let file = fs::File::open(path).map_err(|e| {
+            CityParquetError::io_source(format!("cannot open {}", path.display()), e)
+        })?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
-            CityParquetError::Parquet(format!("cannot open {}: {e}", path.display()))
+            CityParquetError::parquet_source(format!("cannot open {}", path.display()), e)
         })?;
 
         for rg in builder.metadata().row_groups() {

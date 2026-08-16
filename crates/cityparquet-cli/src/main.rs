@@ -8,6 +8,7 @@ use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
 use cityparquet::source::{Source, SourceFormat};
 use cityparquet_cli::bench::{self, BenchOptions};
+use cityparquet_schema::Result as CpResult;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -73,8 +74,8 @@ enum Commands {
         /// no-dictionary, no-bss, no-delta, snappy. Selects the per-column
         /// tuning rules; --row-group-size and --zstd-level still apply on
         /// top where meaningful.
-        #[arg(long, default_value = "cityparquet")]
-        recipe: String,
+        #[arg(long, value_enum, default_value = "cityparquet")]
+        recipe: RecipeArg,
 
         /// Compression codec, overriding whichever codec --recipe would
         /// otherwise pick: uncompressed, snappy, gzip, lz4, brotli, zstd.
@@ -88,8 +89,8 @@ enum Commands {
         /// stream yields features) or "hilbert" (buffer every feature and
         /// sort by bbox-centroid Hilbert index, improving bbox row-group
         /// pruning at the cost of holding the whole dataset in memory).
-        #[arg(long, default_value = "source")]
-        ordering: String,
+        #[arg(long, value_enum, default_value = "source")]
+        ordering: OrderingArg,
 
         /// Emit GeoParquet/GeoArrow self-description (the geoarrow.wkb field
         /// extension + the file-level `geo` key). Off by default: default
@@ -103,8 +104,8 @@ enum Commands {
         /// "arrow-native" (experimental nested Arrow List/Struct columns plus
         /// a geometry_vertices_lod* sibling column, instead of a WKB BLOB —
         /// see docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md).
-        #[arg(long, default_value = "wkb")]
-        geometry_encoding: String,
+        #[arg(long, value_enum, default_value = "wkb")]
+        geometry_encoding: GeometryEncodingArg,
 
         /// Do NOT synthesise an LoD0 footprint into the primary `geometry`
         /// column for objects lacking a source LoD0. By default a footprint is
@@ -190,12 +191,86 @@ enum Commands {
     },
 }
 
+/// CLI mirror of [`RecipePreset`], so clap itself validates `--recipe` and
+/// lists the accepted values. The library type stays clap-free.
+///
+/// Two names are pinned with `#[value(name)]` because clap's kebab-casing
+/// would rename them: `CityParquet` would render `city-parquet`, and
+/// `NoByteStreamSplit` would render `no-byte-stream-split` — the established
+/// value is `no-bss` ([`RecipePreset::name`] is the same vocabulary, shared
+/// with the benchmark variant identifiers).
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum RecipeArg {
+    #[value(name = "cityparquet")]
+    CityParquet,
+    ParquetDefaults,
+    NoDictionary,
+    #[value(name = "no-bss")]
+    NoByteStreamSplit,
+    NoDelta,
+    Snappy,
+}
+
+impl RecipeArg {
+    fn preset(self) -> RecipePreset {
+        match self {
+            RecipeArg::CityParquet => RecipePreset::CityParquet,
+            RecipeArg::ParquetDefaults => RecipePreset::ParquetDefaults,
+            RecipeArg::NoDictionary => RecipePreset::NoDictionary,
+            RecipeArg::NoByteStreamSplit => RecipePreset::NoByteStreamSplit,
+            RecipeArg::NoDelta => RecipePreset::NoDelta,
+            RecipeArg::Snappy => RecipePreset::Snappy,
+        }
+    }
+}
+
+/// CLI mirror of [`RowOrder`] (`--ordering`).
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum OrderingArg {
+    Source,
+    Hilbert,
+}
+
+impl OrderingArg {
+    fn row_order(self) -> RowOrder {
+        match self {
+            OrderingArg::Source => RowOrder::Source,
+            OrderingArg::Hilbert => RowOrder::Hilbert,
+        }
+    }
+}
+
+/// CLI mirror of [`cityparquet_schema::types::GeometryEncoding`]
+/// (`--geometry-encoding`).
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum GeometryEncodingArg {
+    Wkb,
+    ArrowNative, // clap renders this "arrow-native"
+}
+
+impl GeometryEncodingArg {
+    fn encoding(self) -> cityparquet_schema::types::GeometryEncoding {
+        match self {
+            GeometryEncodingArg::Wkb => cityparquet_schema::types::GeometryEncoding::Wkb,
+            GeometryEncodingArg::ArrowNative => {
+                cityparquet_schema::types::GeometryEncoding::ArrowNative
+            }
+        }
+    }
+}
+
 /// Resolve `inputs` (files/dirs/globs) and open each as a [`Source`].
-fn resolve_and_open(inputs: &[PathBuf]) -> Result<Vec<Source>, String> {
-    let resolved = resolve_inputs(inputs).map_err(|e| e.to_string())?;
-    let mut sources = Vec::with_capacity(resolved.len());
-    for p in &resolved {
-        sources.push(Source::open(p).map_err(|e| e.to_string())?);
+fn resolve_and_open(inputs: &[PathBuf]) -> CpResult<Vec<Source>> {
+    let resolved = resolve_inputs(inputs)?;
+    for p in &resolved.skipped_non_files {
+        eprintln!(
+            "warning: glob match {} is not a file; skipping",
+            p.display()
+        );
+    }
+    let mut sources = Vec::with_capacity(resolved.files.len());
+    for p in &resolved.files {
+        sources.push(Source::open(p)?);
     }
     Ok(sources)
 }
@@ -212,12 +287,19 @@ fn resolve_and_open(inputs: &[PathBuf]) -> Result<Vec<Source>, String> {
 /// would stamp a whole mixed batch `crs_source: "operator-supplied"` and strip
 /// the genuine `referenceSystem` out of the verbatim `source_metadata`,
 /// leaving a footer that denies a declaration the source did make.
-fn merge_to_one(sources: Vec<Source>) -> Result<Source, String> {
+fn merge_to_one(sources: Vec<Source>) -> CpResult<Source> {
     if sources.len() == 1 {
         return Ok(sources.into_iter().next().expect("one source"));
     }
     let crs_is_operator_supplied = sources.iter().all(Source::crs_is_operator_supplied);
-    let merged = merge_sources(&sources).map_err(|e| e.to_string())?;
+    let merged = merge_sources(&sources)?;
+    if merged.duplicate_ids > 0 {
+        eprintln!(
+            "warning: {} duplicate feature id(s) across inputs; all kept (a package with \
+             duplicate ids cannot faithfully round-trip through export)",
+            merged.duplicate_ids
+        );
+    }
     Ok(Source::from_parts(
         merged.header,
         merged.features,
@@ -286,6 +368,30 @@ fn parse_partition_spec(
     }
 }
 
+/// Render `e` and its whole `source()` chain as `"top: cause: cause"`.
+///
+/// `CityParquetError::Io`/`Parquet` carry the underlying `std::io::Error` /
+/// `ParquetError` as a real `#[source]` rather than flattening it into the
+/// message (review P7), so the Display string alone is only the context half
+/// ("cannot open <path>"). This is the exit boundary where a human reads the
+/// error, so it walks the chain and appends every cause — the errno text an
+/// operator needs is on the chain, not in the top-level message.
+fn render_error(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        // A source whose Display the context already quotes verbatim would
+        // just stutter; `parquet_from` deliberately builds such a pair.
+        let text = c.to_string();
+        if !out.ends_with(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        cur = c.source();
+    }
+    out
+}
+
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
@@ -309,19 +415,11 @@ fn main() -> std::process::ExitCode {
             no_lod0,
             crs,
         } => {
-            let preset = match RecipePreset::parse(&recipe) {
-                Some(preset) => preset,
-                None => {
-                    let valid: Vec<&str> = RecipePreset::ALL.iter().map(|p| p.name()).collect();
-                    eprintln!(
-                        "error: invalid recipe '{}' (expected one of: {})",
-                        recipe,
-                        valid.join(", ")
-                    );
-                    return std::process::ExitCode::FAILURE;
-                }
-            };
-
+            // `--compression` deliberately keeps its hand-rolled parse: its
+            // "error: invalid compression '<v>' (expected one of: …)" text and
+            // its exit code are pinned by the CLI smoke tests, and clap's own
+            // value validation would replace both. The other three flags are
+            // clap `ValueEnum`s above.
             let compression = match compression {
                 Some(s) => match Codec::parse(&s) {
                     Some(codec) => Some(codec),
@@ -342,32 +440,11 @@ fn main() -> std::process::ExitCode {
                 row_group_size,
                 zstd_level,
                 statistics_for_json: false,
-                preset,
+                preset: recipe.preset(),
                 compression,
             };
-
-            let ordering = match ordering.as_str() {
-                "source" => RowOrder::Source,
-                "hilbert" => RowOrder::Hilbert,
-                _ => {
-                    eprintln!(
-                        "error: invalid ordering '{}' (expected 'source' or 'hilbert')",
-                        ordering
-                    );
-                    return std::process::ExitCode::FAILURE;
-                }
-            };
-
-            let geometry_encoding = match geometry_encoding.as_str() {
-                "wkb" => cityparquet_schema::types::GeometryEncoding::Wkb,
-                "arrow-native" => cityparquet_schema::types::GeometryEncoding::ArrowNative,
-                other => {
-                    eprintln!(
-                        "error: --geometry-encoding must be \"wkb\" or \"arrow-native\", got {other:?}"
-                    );
-                    return std::process::ExitCode::FAILURE;
-                }
-            };
+            let ordering = ordering.row_order();
+            let geometry_encoding = geometry_encoding.encoding();
 
             let mut opts = ConvertOptions {
                 input: inputs.first().cloned().unwrap_or_default(),
@@ -396,7 +473,7 @@ fn main() -> std::process::ExitCode {
             let mut sources = match resolve_and_open(&inputs) {
                 Ok(sources) => sources,
                 Err(e) => {
-                    eprintln!("error: {}", e);
+                    eprintln!("error: {}", render_error(&e));
                     return std::process::ExitCode::FAILURE;
                 }
             };
@@ -427,8 +504,10 @@ fn main() -> std::process::ExitCode {
                 Some(method) => {
                     let spec = match parse_partition_spec(&method, number, feature_num, cell_size) {
                         Ok(spec) => spec,
+                        // `parse_partition_spec` yields a plain String, not a
+                        // CityParquetError — there is no chain to render.
                         Err(e) => {
-                            eprintln!("error: {}", e);
+                            eprintln!("error: {e}");
                             return std::process::ExitCode::FAILURE;
                         }
                     };
@@ -445,7 +524,7 @@ fn main() -> std::process::ExitCode {
                             std::process::ExitCode::SUCCESS
                         }
                         Err(e) => {
-                            eprintln!("error: {}", e);
+                            eprintln!("error: {}", render_error(&e));
                             std::process::ExitCode::FAILURE
                         }
                     }
@@ -454,7 +533,7 @@ fn main() -> std::process::ExitCode {
                     let source = match merge_to_one(sources) {
                         Ok(source) => source,
                         Err(e) => {
-                            eprintln!("error: {}", e);
+                            eprintln!("error: {}", render_error(&e));
                             return std::process::ExitCode::FAILURE;
                         }
                     };
@@ -475,7 +554,7 @@ fn main() -> std::process::ExitCode {
                             std::process::ExitCode::SUCCESS
                         }
                         Err(e) => {
-                            eprintln!("error: {}", e);
+                            eprintln!("error: {}", render_error(&e));
                             std::process::ExitCode::FAILURE
                         }
                     }
@@ -512,7 +591,7 @@ fn main() -> std::process::ExitCode {
                         std::process::ExitCode::SUCCESS
                     }
                     Err(e) => {
-                        eprintln!("error: {}", e);
+                        eprintln!("error: {}", render_error(&e));
                         std::process::ExitCode::FAILURE
                     }
                 }
@@ -534,7 +613,7 @@ fn main() -> std::process::ExitCode {
                         std::process::ExitCode::SUCCESS
                     }
                     Err(e) => {
-                        eprintln!("error: {}", e);
+                        eprintln!("error: {}", render_error(&e));
                         std::process::ExitCode::FAILURE
                     }
                 }
@@ -581,7 +660,7 @@ fn main() -> std::process::ExitCode {
                     }
                 }
                 Err(e) => {
-                    eprintln!("error: {}", e);
+                    eprintln!("error: {}", render_error(&e));
                     std::process::ExitCode::FAILURE
                 }
             }
@@ -617,10 +696,44 @@ fn main() -> std::process::ExitCode {
             match bench::run(&opts) {
                 Ok(()) => std::process::ExitCode::SUCCESS,
                 Err(e) => {
-                    eprintln!("error: {}", e);
+                    eprintln!("error: {}", render_error(&e));
                     std::process::ExitCode::FAILURE
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, render_error};
+    use cityparquet_schema::CityParquetError;
+    use clap::CommandFactory;
+
+    /// clap's own debug assertions catch conflicting/invalid arg
+    /// definitions (including the ValueEnum names) at test time.
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    /// P7 moved the OS detail off the Display string and onto `source()`.
+    /// The exit boundary must therefore walk the chain, or the operator
+    /// loses the errno text that used to be interpolated into the message.
+    #[test]
+    fn rendered_error_shows_the_whole_source_chain() {
+        let e = CityParquetError::io_source(
+            "cannot open /tmp/nope",
+            std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory"),
+        );
+        let rendered = render_error(&e);
+        assert!(rendered.contains("cannot open /tmp/nope"), "{rendered}");
+        assert!(rendered.contains("No such file or directory"), "{rendered}");
+    }
+
+    #[test]
+    fn rendered_error_without_a_source_is_just_its_display() {
+        let e = CityParquetError::io("no input files resolved");
+        assert_eq!(render_error(&e), "io error: no input files resolved");
     }
 }

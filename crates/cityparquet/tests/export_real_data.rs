@@ -1484,7 +1484,10 @@ fn export_errors_when_manifest_lists_templates_but_the_sidecar_file_is_missing()
     .unwrap_err();
 
     assert!(
-        matches!(err, CityParquetError::Io(_) | CityParquetError::Schema(_)),
+        matches!(
+            err,
+            CityParquetError::Io { .. } | CityParquetError::Schema(_)
+        ),
         "expected an Io or Schema error naming the missing manifest-listed sidecar, got {err:?}"
     );
     assert!(

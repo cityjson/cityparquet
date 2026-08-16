@@ -18,7 +18,7 @@ use cityparquet_schema::{
 use cjseq::GeometryType;
 
 use crate::source::{Source, SourceFormat};
-use crate::wkb_write::{VertexPool, geometry_to_wkb};
+use crate::wkb_write::{VertexPool, geometry_bbox};
 
 /// Outcome of scanning a [`Source`] once: the inferred schema plus the
 /// dataset-level facts ([`CityParquetMetadata`] needs) that only a full scan
@@ -150,25 +150,34 @@ fn is_geoparquet_legal_type(type_name: &str, encoding: GeometryEncoding) -> bool
 ///
 /// This is the scan's ONLY geometry validation, and it runs in the first,
 /// read-only pass — before [`crate::partition::convert_partitioned`] purges a
-/// previous run's partitions. Validating everything through the WKB encoder
+/// previous run's partitions. Validating everything through the WKB path
 /// regardless of `encoding` was therefore a data-loss bug: a `MultiPoint`/
 /// `MultiLineString` source is perfectly valid WKB but outside the
 /// arrow-native encoding's phase-1 type scope, so under
 /// [`GeometryEncoding::ArrowNative`] it passed this scan, complete prior
 /// partitions were deleted, and only THEN did the encode pass reject it.
 ///
-/// - [`GeometryEncoding::Wkb`]: exactly the previous behaviour, unchanged —
-///   [`geometry_to_wkb`] both validates and yields the bbox.
-/// - [`GeometryEncoding::ArrowNative`]: the same phase-1 type rejection
-///   `arrow_geom_write::geometry_to_compacted` applies at encode time, from
-///   the SAME helper so the two can never diverge, and THEN the WKB pass for
-///   the bbox. Deriving the bbox from WKB stays correct under either
-///   encoding: `geometry_to_compacted` reuses `wkb_write`'s own ring/shell
-///   normalisation and dereferences the same [`VertexPool`], so both encoders
-///   write the identical coordinate set for a given geometry — the arrow-native
-///   payload only indexes it differently. Every non-type failure mode
-///   (malformed `boundaries`, out-of-range vertex index) is likewise shared
-///   verbatim between the two encoders, so the WKB pass catches it for both.
+/// The validation-and-bbox walk itself is [`geometry_bbox`], NOT a full WKB
+/// encode whose bytes this pass would immediately discard (review P4): the
+/// walker applies the identical `boundaries` shape checks, the identical
+/// structural ring/surface drops, and the identical [`VertexPool`]
+/// index-range and 2^53 vertex guards as
+/// [`crate::wkb_write::geometry_to_wkb`], and its bbox is bitwise-equal to
+/// the encoder's (guarded by `wkb_write`'s unit tests and the
+/// `wkb_real_data` fixture sweep) — so this scan still raises exactly the
+/// errors, and contributes exactly the bboxes, a full encode would have.
+///
+/// The arrow-native reasoning is unchanged. Under
+/// [`GeometryEncoding::ArrowNative`] the phase-1 type gate is checked HERE
+/// first — the same rejection `arrow_geom_write::geometry_to_compacted`
+/// applies at encode time, from the SAME helper so the two can never diverge
+/// — and the coordinate walk then yields the right bbox for that encoding
+/// too: `geometry_to_compacted` reuses `wkb_write`'s own ring/shell
+/// normalisation and dereferences the same [`VertexPool`], so both encoders
+/// cover the identical coordinate set for a given geometry — the
+/// arrow-native payload only indexes it differently. Every non-type failure
+/// mode (malformed `boundaries`, out-of-range vertex index) is likewise
+/// shared verbatim between the two encoders, so one walk catches it for both.
 fn validate_geometry(
     geom: &cjseq::Geometry,
     pool: &VertexPool,
@@ -177,7 +186,7 @@ fn validate_geometry(
     if encoding == GeometryEncoding::ArrowNative {
         crate::arrow_geom_write::ensure_arrow_native_type_supported(&geom.thetype)?;
     }
-    Ok(geometry_to_wkb(geom, pool)?.map(|outcome| outcome.bbox))
+    geometry_bbox(geom, pool)
 }
 
 fn to_schema_source_format(format: SourceFormat) -> SchemaSourceFormat {

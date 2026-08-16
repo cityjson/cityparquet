@@ -389,22 +389,6 @@ pub fn is_extension_type(cityjson_type: &str) -> bool {
     cityjson_type.starts_with('+')
 }
 
-/// The 1st-level (top-level) CityObject type whose CityParquet by-type table
-/// a given `object_type` is stored in. CityJSON 2nd-level objects
-/// (BuildingPart, BridgeInstallation, TunnelConstructiveElement, …) share
-/// their 1st-level parent's table (Building/Bridge/Tunnel); a 1st-level type,
-/// or an unknown/extension type, maps to itself.
-pub fn first_level_type(object_type: &str) -> &str {
-    match class_info(object_type) {
-        Some(info) if !info.top_level => TAXONOMY
-            .iter()
-            .find(|c| c.module == info.module && c.top_level)
-            .map(|c| c.cityjson_type)
-            .unwrap_or(object_type),
-        _ => object_type,
-    }
-}
-
 /// The by-module routing key for a class (spec "extensions" — "The
 /// `ModuleKey`"): either a core CityGML 3.0 module, or the name of an
 /// extension module a class declares as its own (recursively inherited from
@@ -833,21 +817,6 @@ mod taxonomy_tests {
         assert!(is_extension_type("+NoiseBuilding"));
         assert!(!is_extension_type("Building"));
         assert!(class_info("+NoiseBuilding").is_none());
-    }
-
-    #[test]
-    fn first_level_type_maps_second_level_to_family_root() {
-        assert_eq!(first_level_type("BuildingPart"), "Building");
-        assert_eq!(first_level_type("BuildingInstallation"), "Building");
-        assert_eq!(first_level_type("BridgeConstructiveElement"), "Bridge");
-        assert_eq!(first_level_type("TunnelHollowSpace"), "Tunnel");
-    }
-
-    #[test]
-    fn first_level_type_is_identity_for_top_level_and_unknown_types() {
-        assert_eq!(first_level_type("Building"), "Building");
-        assert_eq!(first_level_type("CityFurniture"), "CityFurniture");
-        assert_eq!(first_level_type("+NoiseBuilding"), "+NoiseBuilding");
     }
 
     /// spec "object_type vocabulary": the 4 divergent CityJSON ⇄ CityGML

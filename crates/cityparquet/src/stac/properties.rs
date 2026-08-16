@@ -63,7 +63,7 @@ impl PackageTables {
     pub fn open(dir: &Path) -> Result<Self> {
         let manifest_path = dir.join("metadata.json");
         let text = fs::read_to_string(&manifest_path).map_err(|e| {
-            CityParquetError::Io(format!("cannot read {}: {e}", manifest_path.display()))
+            CityParquetError::io_source(format!("cannot read {}", manifest_path.display()), e)
         })?;
         let item: Item = serde_json::from_str(&text)?;
         let (table_names, sidecar_files) = classify_assets(&item)?;
@@ -273,10 +273,11 @@ fn file_has_semantic_surfaces(path: &Path, schema: &Schema) -> Result<bool> {
         if !is_reserved_column_for(field.name(), "geometry_properties") {
             continue;
         }
-        let file = fs::File::open(path)
-            .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
+        let file = fs::File::open(path).map_err(|e| {
+            CityParquetError::io_source(format!("cannot open {}", path.display()), e)
+        })?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
-            CityParquetError::Parquet(format!("cannot open {}: {e}", path.display()))
+            CityParquetError::parquet_source(format!("cannot open {}", path.display()), e)
         })?;
         let descr = builder.parquet_schema();
         let leaves: Vec<usize> = (0..descr.num_columns())
@@ -289,11 +290,12 @@ fn file_has_semantic_surfaces(path: &Path, schema: &Schema) -> Result<bool> {
         let reader = builder
             .with_projection(mask)
             .build()
-            .map_err(|e| CityParquetError::Parquet(format!("cannot build reader: {e}")))?;
+            .map_err(|e| CityParquetError::parquet_source("cannot build reader", e))?;
 
         for batch in reader {
-            let batch = batch
-                .map_err(|e| CityParquetError::Parquet(format!("read {}: {e}", path.display())))?;
+            let batch = batch.map_err(|e| {
+                CityParquetError::parquet_source(format!("read {}", path.display()), e)
+            })?;
             if batch.num_columns() == 0 {
                 continue;
             }
@@ -357,10 +359,11 @@ pub fn derive_co_types(tables: &PackageTables) -> Result<Vec<String>> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
 
     for path in &tables.tables {
-        let file = fs::File::open(path)
-            .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
+        let file = fs::File::open(path).map_err(|e| {
+            CityParquetError::io_source(format!("cannot open {}", path.display()), e)
+        })?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
-            CityParquetError::Parquet(format!("cannot open {}: {e}", path.display()))
+            CityParquetError::parquet_source(format!("cannot open {}", path.display()), e)
         })?;
 
         let descr = builder.parquet_schema();
@@ -377,11 +380,12 @@ pub fn derive_co_types(tables: &PackageTables) -> Result<Vec<String>> {
         let reader = builder
             .with_projection(mask)
             .build()
-            .map_err(|e| CityParquetError::Parquet(format!("cannot build reader: {e}")))?;
+            .map_err(|e| CityParquetError::parquet_source("cannot build reader", e))?;
 
         for batch in reader {
-            let batch = batch
-                .map_err(|e| CityParquetError::Parquet(format!("read {}: {e}", path.display())))?;
+            let batch = batch.map_err(|e| {
+                CityParquetError::parquet_source(format!("read {}", path.display()), e)
+            })?;
             if batch.num_columns() == 0 {
                 continue;
             }
@@ -493,10 +497,11 @@ pub fn derive_from_footer(tables: &PackageTables) -> Result<City3dProperties> {
     let mut attributes: BTreeMap<String, AttributeDefinition> = BTreeMap::new();
 
     for path in &tables.tables {
-        let file = fs::File::open(path)
-            .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
+        let file = fs::File::open(path).map_err(|e| {
+            CityParquetError::io_source(format!("cannot open {}", path.display()), e)
+        })?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
-            CityParquetError::Parquet(format!("cannot open {}: {e}", path.display()))
+            CityParquetError::parquet_source(format!("cannot open {}", path.display()), e)
         })?;
 
         // A negative row count is a corrupt footer, not something to normalise

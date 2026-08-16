@@ -8,6 +8,14 @@
 //! `ArrowReaderBuilder<AsyncReader<T>>`, and every setter/accessor those use
 //! is defined generically as `impl<T> ArrowReaderBuilder<T>` in `parquet`
 //! itself — there is no sync/async split to bridge.
+//!
+//! This module is the ASYNC transport only: opening a
+//! [`ParquetObjectReader`], awaiting a [`ParquetRecordBatchStreamBuilder`],
+//! and pulling batches off a stream (plus the per-batch `restamp` the sync
+//! reader wrapper does for itself). Every batch-level decision — predicate
+//! evaluation, projection/row-filter assembly, row-group pruning counts,
+//! aggregation — is shared verbatim with the sync path via
+//! `crate::query_core`, so the two can no longer drift.
 
 use std::sync::Arc;
 
@@ -17,18 +25,19 @@ use futures::TryStreamExt;
 use object_store::ObjectStore;
 use object_store::path::Path as ObjectPath;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
+use parquet::arrow::ProjectionMask;
 use parquet::arrow::async_reader::ParquetObjectReader;
 
 use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 
-use crate::decode::decode_batch;
-use crate::query::FullReadResult;
+use crate::query::{AttrPredicate, AttrStats, BBoxQueryResult, FullReadResult};
+use crate::query_core;
 use crate::reader::CityParquetReaderBuilder;
-use crate::wkb_read::DecodedKind;
 
-fn parquet_err(e: impl std::fmt::Display) -> CityParquetError {
-    CityParquetError::Parquet(e.to_string())
-}
+/// Used only by this module's `mod tests` (via its `use super::*`), which
+/// reads a real id straight off the local table with the sync reader.
+#[cfg(test)]
+use arrow_array::StringArray;
 
 /// Re-stamps `batch` with `schema` (field metadata included) — the async
 /// analogue of [`crate::reader::CityParquetRecordBatchReader`]'s per-batch
@@ -39,20 +48,6 @@ fn restamp(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
         .map_err(CityParquetError::from)
 }
 
-/// Total surface/face count in `kind` — duplicated from `crate::query`'s
-/// private `surface_count` (a two-line, stable recursive match, cheaper to
-/// copy once than to widen `query.rs`'s visibility for a single shared leaf
-/// helper).
-fn surface_count(kind: &DecodedKind) -> u64 {
-    match kind {
-        DecodedKind::MultiPoint(_) | DecodedKind::MultiLineString(_) => 0,
-        DecodedKind::MultiPolygon(surfaces) | DecodedKind::PolyhedralSurface(surfaces) => {
-            surfaces.len() as u64
-        }
-        DecodedKind::GeometryCollection(members) => members.iter().map(surface_count).sum(),
-    }
-}
-
 /// The table's row count straight from Parquet file metadata — O(1) in row
 /// count (a suffix range request for the footer, plus a second request only
 /// if the footer exceeds the reader's initial prefetch size), no row scan.
@@ -61,7 +56,7 @@ pub async fn count_async(store: Arc<dyn ObjectStore>, path: &ObjectPath) -> Resu
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
     Ok(builder.metadata().file_metadata().num_rows() as u64)
 }
 
@@ -80,61 +75,28 @@ pub async fn full_read_async(
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
     let schema = builder.cityparquet_arrow_schema()?;
-    let mut stream = builder.build().map_err(parquet_err)?;
+    let mut stream = builder.build().map_err(CityParquetError::parquet_from)?;
 
-    let mut feature_count = 0u64;
-    let mut boundary_count = 0u64;
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
-        feature_count += batch.num_rows() as u64;
+    let mut acc = FullReadResult::default();
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
         let batch = restamp(batch, &schema)?;
-        let decoded = decode_batch(&batch, meta)?;
-        for object in &decoded {
-            for (_, geometry, _) in &object.geometries {
-                boundary_count += surface_count(&geometry.kind);
-            }
-        }
+        query_core::accumulate_full_read(&mut acc, &batch, meta)?;
     }
-    Ok(FullReadResult {
-        feature_count,
-        boundary_count,
-    })
-}
-
-use arrow_array::{Array, StringArray, StructArray};
-use parquet::arrow::ProjectionMask;
-
-use crate::query::BBoxQueryResult;
-use crate::reader::{box_intersects_query, row_group_intersects};
-
-/// Same row leaf-reader as `crate::query`'s private `row_bbox` (kept local:
-/// a four-line struct-field read, cheaper to duplicate once than to widen
-/// `query.rs`'s visibility for it alone).
-fn row_bbox(bbox_col: &StructArray, row: usize) -> Result<Option<([f64; 3], [f64; 3])>> {
-    if bbox_col.is_null(row) {
-        return Ok(None);
-    }
-    let leaf = |name: &str| -> Result<f64> {
-        Ok(bbox_col
-            .column_by_name(name)
-            .and_then(|c| c.as_any().downcast_ref::<arrow_array::Float64Array>())
-            .ok_or_else(|| {
-                CityParquetError::Schema(format!("bbox.{name} column missing or not Float64"))
-            })?
-            .value(row))
-    };
-    let min = [leaf("xmin")?, leaf("ymin")?, leaf("zmin")?];
-    let max = [leaf("xmax")?, leaf("ymax")?, leaf("zmax")?];
-    Ok(Some((min, max)))
+    Ok(acc)
 }
 
 /// The async mirror of [`crate::query::bbox_query`]. Row-group pruning
-/// counts come from the SAME [`row_group_intersects`] predicate the sync
+/// counts come from the SAME `row_group_intersects` predicate the sync
 /// path uses (over the identical `parquet::file::metadata::RowGroupMetaData`
 /// type — footer metadata has no sync/async distinction), then the
 /// surviving rows are read via an `id`/`bbox`-only [`ProjectionMask`] and
-/// filtered exactly via [`box_intersects_query`].
+/// filtered exactly via the shared `box_intersects_query` row test.
 pub async fn bbox_query_async(
     store: Arc<dyn ObjectStore>,
     path: &ObjectPath,
@@ -143,40 +105,26 @@ pub async fn bbox_query_async(
     let reader = ParquetObjectReader::new(Arc::clone(&store), path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
-    let metadata = Arc::clone(builder.metadata());
-    let row_groups_total = metadata.num_row_groups();
-    let row_groups_touched = (0..row_groups_total)
-        .filter(|&i| row_group_intersects(metadata.row_group(i), &query_bbox))
-        .count();
+    let (row_groups_total, row_groups_touched) =
+        query_core::bbox_row_group_counts(builder.metadata(), &query_bbox);
 
     let projection = ProjectionMask::columns(builder.parquet_schema(), ["id", "bbox"]);
     let pruned = builder
         .with_projection(projection)
         .with_bbox_row_groups(query_bbox)?;
-    let mut stream = pruned.build().map_err(parquet_err)?;
+    let mut stream = pruned.build().map_err(CityParquetError::parquet_from)?;
 
+    // No restamp: the `id`/`bbox` projection carries no extension metadata
+    // the row test depends on.
     let mut ids = Vec::new();
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
-        let id_col = batch
-            .column_by_name("id")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-            .ok_or_else(|| CityParquetError::Schema("'id' column missing or not Utf8".into()))?;
-        let bbox_col = batch
-            .column_by_name("bbox")
-            .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-            .ok_or_else(|| {
-                CityParquetError::Schema("'bbox' column missing or not a struct".into())
-            })?;
-        for row in 0..batch.num_rows() {
-            let Some((row_min, row_max)) = row_bbox(bbox_col, row)? else {
-                continue;
-            };
-            if box_intersects_query(row_min, row_max, &query_bbox) {
-                ids.push(id_col.value(row).to_string());
-            }
-        }
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
+        query_core::collect_bbox_ids(&batch, &query_bbox, &mut ids)?;
     }
 
     Ok(BBoxQueryResult {
@@ -186,15 +134,12 @@ pub async fn bbox_query_async(
     })
 }
 
-use parquet::arrow::arrow_reader::{ArrowPredicateFn, RowFilter};
-
-use crate::query::{AttrPredicate, evaluate_attr_predicate};
-
 /// The async mirror of [`crate::query::attr_filter`]: restricts the scan to
-/// `column` alone and applies `pred` as a Parquet [`RowFilter`] — the SAME
-/// `evaluate_attr_predicate` dispatch the sync path uses, so a predicate
-/// that is legal/illegal against a given column's Arrow type behaves
-/// identically on both transports.
+/// `column` alone and applies `pred` as a Parquet row filter — the SAME
+/// `query_core::attr_predicate_row_filter` (hence the same
+/// `evaluate_attr_predicate` dispatch) the sync path installs, so a
+/// predicate that is legal/illegal against a given column's Arrow type
+/// behaves identically on both transports.
 pub async fn attr_filter_async(
     store: Arc<dyn ObjectStore>,
     path: &ObjectPath,
@@ -204,44 +149,33 @@ pub async fn attr_filter_async(
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
-    builder.schema().field_with_name(column).map_err(|_| {
-        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
-    })?;
+    query_core::require_column(builder.schema(), column)?;
 
-    let predicate_mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
     let output_mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
-    let owned_column = column.to_string();
-    let owned_pred = pred.clone();
-    let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
-        let array = batch.column(0);
-        evaluate_attr_predicate(&owned_column, array.as_ref(), &owned_pred)
-            .map_err(arrow_schema::ArrowError::from)
-    });
-    let row_filter = RowFilter::new(vec![Box::new(predicate_fn)]);
+    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred);
 
     let mut stream = builder
         .with_projection(output_mask)
         .with_row_filter(row_filter)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
     let mut count = 0u64;
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
         count += batch.num_rows() as u64;
     }
     Ok(count)
 }
 
-use arrow_array::{Float64Array, Int64Array};
-use arrow_schema::DataType;
-
-use crate::query::{AttrStats, column_statistics, statistics_min_max};
-
 /// The async mirror of [`crate::query::attr_stats`]: the same
-/// statistics-fast-path-then-scan structure, over `column_statistics`/
-/// `statistics_min_max` from `crate::query` (Parquet row-group metadata is
+/// statistics-fast-path-then-scan structure, over the shared
+/// `query_core::AttrStatsAccumulator` (Parquet row-group metadata is
 /// identical between sync and async readers — no transport-specific
 /// re-derivation needed).
 pub async fn attr_stats_async(
@@ -252,100 +186,31 @@ pub async fn attr_stats_async(
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
-    builder.schema().field_with_name(column).map_err(|_| {
-        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
-    })?;
+    query_core::require_column(builder.schema(), column)?;
 
-    let metadata = Arc::clone(builder.metadata());
-    let mut stats_available = true;
-    let mut stats_min = f64::INFINITY;
-    let mut stats_max = f64::NEG_INFINITY;
-    for i in 0..metadata.num_row_groups() {
-        match column_statistics(metadata.row_group(i), column).and_then(statistics_min_max) {
-            Some((min, max)) => {
-                stats_min = stats_min.min(min);
-                stats_max = stats_max.max(max);
-            }
-            None => {
-                stats_available = false;
-                break;
-            }
-        }
-    }
+    let mut acc = query_core::AttrStatsAccumulator::new(builder.metadata(), column);
 
     let projection = ProjectionMask::columns(builder.parquet_schema(), [column]);
     let mut stream = builder
         .with_projection(projection)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
-    let mut sum = 0f64;
-    let mut count = 0u64;
-    let mut scan_min = f64::INFINITY;
-    let mut scan_max = f64::NEG_INFINITY;
-
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
-        let array = batch.column(0);
-        let mut visit = |v: f64| {
-            sum += v;
-            count += 1;
-            if !stats_available {
-                scan_min = scan_min.min(v);
-                scan_max = scan_max.max(v);
-            }
-        };
-        match array.data_type() {
-            DataType::Int64 => {
-                let values = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
-                    CityParquetError::Schema(format!("column '{column}' is not Int64"))
-                })?;
-                for i in 0..values.len() {
-                    if !values.is_null(i) {
-                        visit(values.value(i) as f64);
-                    }
-                }
-            }
-            DataType::Float64 => {
-                let values = array
-                    .as_any()
-                    .downcast_ref::<Float64Array>()
-                    .ok_or_else(|| {
-                        CityParquetError::Schema(format!("column '{column}' is not Float64"))
-                    })?;
-                for i in 0..values.len() {
-                    if !values.is_null(i) {
-                        visit(values.value(i));
-                    }
-                }
-            }
-            other => {
-                return Err(CityParquetError::Schema(format!(
-                    "column '{column}' has an arrow type attr_stats cannot aggregate: {other:?}"
-                )));
-            }
-        }
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
+        acc.visit_batch(column, &batch)?;
     }
-
-    let (min, max) = if stats_available {
-        (stats_min, stats_max)
-    } else {
-        (scan_min, scan_max)
-    };
-    Ok(AttrStats {
-        min,
-        max,
-        sum,
-        count,
-    })
+    Ok(acc.finish())
 }
 
-use arrow_array::BooleanArray;
-
-/// The async mirror of [`crate::query::id_lookup`]: filters to `id` via a
-/// [`RowFilter`], then fully decodes the (expected exactly one) surviving
-/// row.
+/// The async mirror of [`crate::query::id_lookup`]: filters to `id` via the
+/// shared `query_core::id_row_filter`, then fully decodes the (expected
+/// exactly one) surviving row.
 pub async fn id_lookup_async(
     store: Arc<dyn ObjectStore>,
     path: &ObjectPath,
@@ -355,37 +220,25 @@ pub async fn id_lookup_async(
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
     let schema = builder.cityparquet_arrow_schema()?;
 
-    let predicate_mask = ProjectionMask::columns(builder.parquet_schema(), ["id"]);
-    let owned_id = id.to_string();
-    let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
-        let ids = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| {
-                arrow_schema::ArrowError::SchemaError("'id' column is not Utf8".to_string())
-            })?;
-        Ok(BooleanArray::from_iter((0..ids.len()).map(|i| {
-            Some(!ids.is_null(i) && ids.value(i) == owned_id)
-        })))
-    });
-    let row_filter = RowFilter::new(vec![Box::new(predicate_fn)]);
-
+    let row_filter = query_core::id_row_filter(builder.parquet_schema(), id);
     let mut stream = builder
         .with_row_filter(row_filter)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
         if batch.num_rows() == 0 {
             continue;
         }
         let batch = restamp(batch, &schema)?;
-        let decoded = decode_batch(&batch, meta)?;
-        if let Some(object) = decoded.into_iter().next() {
+        if let Some(object) = query_core::first_decoded_object(&batch, meta)? {
             return Ok(Some(object));
         }
     }
@@ -402,22 +255,23 @@ pub async fn project_column_async(
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
-    builder.schema().field_with_name(column).map_err(|_| {
-        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
-    })?;
+    query_core::require_column(builder.schema(), column)?;
 
     let projection = ProjectionMask::columns(builder.parquet_schema(), [column]);
     let mut stream = builder
         .with_projection(projection)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
     let mut count = 0u64;
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
-        let array = batch.column(0);
-        count += (array.len() - array.null_count()) as u64;
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
+        count += query_core::non_null_count(&batch);
     }
     Ok(count)
 }

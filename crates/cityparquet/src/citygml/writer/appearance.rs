@@ -33,10 +33,6 @@ pub type TextureFaceMaps = BTreeMap<String, FaceRingTextures>;
 /// `(ring gml:id, UVs)`.
 type TexPolys = BTreeMap<String, Vec<(String, Vec<[f64; 2]>)>>;
 
-fn io_err(e: std::io::Error) -> CityParquetError {
-    CityParquetError::Io(e.to_string())
-}
-
 fn err(m: impl Into<String>) -> CityParquetError {
     CityParquetError::Geometry(m.into())
 }
@@ -366,10 +362,8 @@ pub fn write_appearance<W: Write>(
         .chain(textures.themes.keys())
         .collect();
     for theme in themes {
-        w.write_event(Event::Start(BytesStart::new("app:appearance")))
-            .map_err(io_err)?;
-        w.write_event(Event::Start(BytesStart::new("app:Appearance")))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new("app:appearance")))?;
+        w.write_event(Event::Start(BytesStart::new("app:Appearance")))?;
         // The empty-string theme round-trips to an ABSENT app:theme.
         if !theme.is_empty() {
             text_elem(w, "app:theme", theme)?;
@@ -398,10 +392,8 @@ pub fn write_appearance<W: Write>(
                 report.textures_written += 1;
             }
         }
-        w.write_event(Event::End(BytesEnd::new("app:Appearance")))
-            .map_err(io_err)?;
-        w.write_event(Event::End(BytesEnd::new("app:appearance")))
-            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new("app:Appearance")))?;
+        w.write_event(Event::End(BytesEnd::new("app:appearance")))?;
     }
     Ok(())
 }
@@ -423,10 +415,8 @@ fn write_parameterized_texture<W: Write>(
     def: &Value,
     polys: &TexPolys,
 ) -> Result<()> {
-    w.write_event(Event::Start(BytesStart::new("app:surfaceDataMember")))
-        .map_err(io_err)?;
-    w.write_event(Event::Start(BytesStart::new("app:ParameterizedTexture")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("app:surfaceDataMember")))?;
+    w.write_event(Event::Start(BytesStart::new("app:ParameterizedTexture")))?;
 
     if let Some(image) = def.get("image").and_then(Value::as_str) {
         text_elem(w, "app:imageURI", image)?;
@@ -457,28 +447,21 @@ fn write_parameterized_texture<W: Write>(
     for (polyid, rings) in polys {
         let mut target = BytesStart::new("app:target");
         target.push_attribute(("uri", format!("#{polyid}").as_str()));
-        w.write_event(Event::Start(target)).map_err(io_err)?;
-        w.write_event(Event::Start(BytesStart::new("app:TexCoordList")))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(target))?;
+        w.write_event(Event::Start(BytesStart::new("app:TexCoordList")))?;
         for (ringid, uvs) in rings {
             let mut tc = BytesStart::new("app:textureCoordinates");
             tc.push_attribute(("ring", format!("#{ringid}").as_str()));
-            w.write_event(Event::Start(tc)).map_err(io_err)?;
-            w.write_event(Event::Text(BytesText::new(&closed_uvs(uvs))))
-                .map_err(io_err)?;
-            w.write_event(Event::End(BytesEnd::new("app:textureCoordinates")))
-                .map_err(io_err)?;
+            w.write_event(Event::Start(tc))?;
+            w.write_event(Event::Text(BytesText::new(&closed_uvs(uvs))))?;
+            w.write_event(Event::End(BytesEnd::new("app:textureCoordinates")))?;
         }
-        w.write_event(Event::End(BytesEnd::new("app:TexCoordList")))
-            .map_err(io_err)?;
-        w.write_event(Event::End(BytesEnd::new("app:target")))
-            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new("app:TexCoordList")))?;
+        w.write_event(Event::End(BytesEnd::new("app:target")))?;
     }
 
-    w.write_event(Event::End(BytesEnd::new("app:ParameterizedTexture")))
-        .map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new("app:surfaceDataMember")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("app:ParameterizedTexture")))?;
+    w.write_event(Event::End(BytesEnd::new("app:surfaceDataMember")))?;
     Ok(())
 }
 
@@ -505,10 +488,8 @@ fn closed_uvs(uvs: &[[f64; 2]]) -> String {
 /// definition and its target face ids. Only present fields are written; numbers
 /// use the shortest round-tripping `f64` `Display` (bit-exact re-parse).
 fn write_x3d_material<W: Write>(w: &mut Writer<W>, def: &Value, targets: &[String]) -> Result<()> {
-    w.write_event(Event::Start(BytesStart::new("app:surfaceDataMember")))
-        .map_err(io_err)?;
-    w.write_event(Event::Start(BytesStart::new("app:X3DMaterial")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("app:surfaceDataMember")))?;
+    w.write_event(Event::Start(BytesStart::new("app:X3DMaterial")))?;
 
     if let Some(name) = def.get("name").and_then(Value::as_str) {
         text_elem(w, "gml:name", name)?;
@@ -544,20 +525,15 @@ fn write_x3d_material<W: Write>(w: &mut Writer<W>, def: &Value, targets: &[Strin
         text_elem(w, "app:target", &format!("#{t}"))?;
     }
 
-    w.write_event(Event::End(BytesEnd::new("app:X3DMaterial")))
-        .map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new("app:surfaceDataMember")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("app:X3DMaterial")))?;
+    w.write_event(Event::End(BytesEnd::new("app:surfaceDataMember")))?;
     Ok(())
 }
 
 /// A `<tag>text</tag>` element (text auto-escaped by quick-xml).
 fn text_elem<W: Write>(w: &mut Writer<W>, tag: &str, text: &str) -> Result<()> {
-    w.write_event(Event::Start(BytesStart::new(tag)))
-        .map_err(io_err)?;
-    w.write_event(Event::Text(BytesText::new(text)))
-        .map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new(tag)))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new(tag)))?;
+    w.write_event(Event::Text(BytesText::new(text)))?;
+    w.write_event(Event::End(BytesEnd::new(tag)))?;
     Ok(())
 }

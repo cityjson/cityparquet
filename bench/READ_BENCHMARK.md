@@ -156,12 +156,13 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
 - `peak_rss_bytes` — the child's own `getrusage(RUSAGE_SELF).ru_maxrss`
   (`cityparquet`/`cityparquet-hilbert`/`flatcitybuf`/`cityjsonseq`/
   `cityjsonseq-gz`), or a separate untimed `/usr/bin/time -l`/`-v` capture
-  around the same query (`duckdb-parquet`). **Units are platform-dependent
-  and NOT normalised**: this is **bytes** on macOS (`ru_maxrss`'s native
-  unit on BSD/Darwin, this benchmark's development platform) but **KiB** on
-  Linux (glibc's `getrusage(2)`) — the environment block below states which
-  machine produced the committed numbers; a reader combining these CSVs
-  with a Linux-produced run must convert one side.
+  around the same query (`duckdb-parquet`). **Normalised to bytes on every
+  platform** by `rss_to_bytes` in `crates/cityparquet-readbench/src/main.rs`
+  (`ru_maxrss` is natively KiB on Linux per `getrusage(2)`, bytes on
+  macOS/BSD). CSVs produced by builds *older* than this fix reported the
+  raw Linux value, i.e. KiB, under the same column name — see the erratum
+  in the parent repo's `benchmarking/README.md` before combining old and
+  new runs.
 - `selectivity` = `result_count / total_object_count`, empty where N/A
   (`count`, `full-read`). See Caveat 2 for what `total_object_count` means
   per scenario.
@@ -359,8 +360,9 @@ rustc:    rustc 1.93.1 (01f6ddf75 2026-02-11)
 fcb:      fcb 0.7.4
 ```
 
-`peak_rss_bytes` on this machine is therefore in **bytes** (BSD/Darwin
-`ru_maxrss`), not KiB — see the CSV-contract note above.
+`peak_rss_bytes` is in **bytes** on every platform since the
+`rss_to_bytes` fix — the macOS numbers recorded above were already bytes
+and are unaffected by it.
 
 ## Reproduce
 
