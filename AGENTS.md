@@ -18,7 +18,7 @@ table (`../documents/docs/06-resources/02-software.mdx`). This repo's own
 **parent spec is authoritative on the format**, and any divergence is a tracked
 follow-up here. Known current-vs-spec deltas:
 
-- **File split is per 1st-level CityObject family** (`building.parquet`, `bridge.parquet`, …); the spec's target is **per CityGML module**.
+- ~~File split per 1st-level CityObject family~~ — **resolved**: the file split now follows the spec's per-CityGML-module layout (`building.parquet`, `transportation.parquet`, …; `cityparquet_schema::module_file`).
 - Footer metadata is now the spec's single `city` object (plus a conditional pure-GeoParquet `geo` object), emitted per Parquet file.
 
 ## Components
