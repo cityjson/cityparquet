@@ -364,7 +364,11 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
             // `boundary_work` is computed purely to force full geometry
             // traversal (the "full read" cost); the returned metric
             // stays feature-level, per this module's own doc comment.
-            let _ = boundary_work;
+            // `black_box` rather than `let _ =`, so the traversal cannot be
+            // optimised away as dead code — the same guarantee
+            // [`super::cityjson`]'s own `FullRead` needs for its coordinate
+            // resolution.
+            std::hint::black_box(boundary_work);
             Ok(feature_count)
         }
         Scenario::BBoxQuery => {

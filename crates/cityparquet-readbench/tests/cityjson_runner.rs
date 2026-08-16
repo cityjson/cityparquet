@@ -105,6 +105,39 @@ fn count_and_full_read_are_cityobject_map_entries_not_top_level_features() {
     );
 }
 
+/// The OTHER disclosure this runner owes the paper, enforced the same way:
+/// `full-read` is not the same operation in the two JSON runners.
+/// `cityjsonseq`'s walks each geometry's boundary-index tree; this one
+/// additionally resolves every leaf through the document-level `vertices`
+/// array and `transform` (measurably more work — see the module doc). Both
+/// are honest for their own format, but a CSV row labelled `full-read` must
+/// not be read as "both formats did the same thing", so the module doc has
+/// to say so in as many words. There is no runtime signal a reader of the
+/// CSV could check instead, so this asserts against the module's own doc
+/// block — the disclosure cannot be deleted without a test going red.
+#[test]
+fn the_module_doc_discloses_that_full_read_differs_from_cityjsonseqs() {
+    const SOURCE: &str = include_str!("../src/formats/cityjson.rs");
+    // The leading `//!` block, i.e. everything before the first `use`.
+    let module_doc = SOURCE
+        .split("\nuse ")
+        .next()
+        .expect("the module always has a doc block above its first `use`");
+
+    for needle in [
+        "not the same operation",
+        "resolves every boundary leaf",
+        "cityjsonseq",
+    ] {
+        assert!(
+            module_doc.contains(needle),
+            "the module doc must disclose that full-read resolves coordinates \
+             while cityjsonseq's only traverses boundary indices; missing: \
+             '{needle}'"
+        );
+    }
+}
+
 /// Second-level objects are first-class rows for this runner: the fixture's
 /// 56 `BuildingInstallation`s are children of its `Building`s and are counted
 /// individually.

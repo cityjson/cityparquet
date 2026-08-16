@@ -1,7 +1,7 @@
 //! RED->GREEN (readbench Task 11, Commit A): `--attr-eq` must always mean
-//! STRING equality, and every `FormatRunner` — `cityparquet`, `cityjsonseq`,
-//! `flatcitybuf` — must therefore agree on the same real, numeric-looking
-//! string-typed attribute code.
+//! STRING equality, and every `FormatRunner` — `cityparquet`, `cityjson`,
+//! `cityjsonseq`, `flatcitybuf` — must therefore agree on the same real,
+//! numeric-looking string-typed attribute code.
 //!
 //! `lod3_railway.city.json`'s `function` attribute is a STRING column whose
 //! values are numeric-looking codes (e.g. `"1070"`); independently confirmed
@@ -32,8 +32,11 @@
 //! go through `convert()` at all (they read the raw fixture / a `.fcb`
 //! export of it directly), so they are unaffected and keep proving the
 //! original `--attr-eq` regression stays fixed, in
-//! `cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code`
-//! below. The full three-way cross-check
+//! `cityjson_cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code`
+//! below — which the plain-CityJSON runner joined when it was added, because
+//! THIS file, not any single runner's own test file, is the designated
+//! cross-format attribute-semantics guard: a new runner has to satisfy it
+//! too. The full three-way cross-check
 //! (`all_three_runners_agree_on_the_string_typed_numeric_attr_code`) is kept
 //! as an `#[ignore]`d, documented gap until a follow-up plan teaches the
 //! readbench runners to aggregate across every table in a by-type
@@ -168,15 +171,35 @@ fn run_child_expect_failure(
     String::from_utf8(output.stderr).expect("stderr must be valid UTF-8")
 }
 
-/// The CityJSONSeq and FlatCityBuf legs of the original three-way
-/// regression pin: neither goes through `convert()`, so both are unaffected
-/// by the single-file table layout's removal and keep proving `--attr-eq`
-/// always means STRING equality (see this module's own doc comment on the
-/// historical bug, which manifested in the CityJSONSeq runner).
+/// The non-CityParquet legs of the original regression pin: none of them
+/// goes through `convert()`, so all are unaffected by the single-file table
+/// layout's removal and keep proving `--attr-eq` always means STRING
+/// equality (see this module's own doc comment on the historical bug, which
+/// manifested in the CityJSONSeq runner).
+///
+/// The `cityjson` runner joined this matrix when it was added: this file —
+/// not any single runner's own test file — is the designated cross-format
+/// attribute-semantics guard, so every new runner has to satisfy it too.
+/// `cityjson` and `cityjsonseq` read the very SAME `.city.json` document
+/// here, from opposite parse shapes (whole document vs. line-oriented), and
+/// must still agree object-for-object.
 #[test]
-fn cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code() {
+fn cityjson_cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code() {
     const EXPECTED: u64 = 65;
     let attr_args: &[&str] = &["--attr-column", "function", "--attr-eq", "1070"];
+
+    // --- plain CityJSON (whole-document parse of the same fixture) ---
+    let cityjson_count = run_child(
+        "cityjson",
+        "attr-filter",
+        &fixture("lod3_railway.city.json"),
+        attr_args,
+    );
+    assert_eq!(
+        cityjson_count, EXPECTED,
+        "cityjson's attr-filter on function == '1070' must match the fixture's \
+         known 65 CityObjects"
+    );
 
     // --- CityJSONSeq (the format the bug actually manifested in) ---
     let cityjsonseq_count = run_child(
@@ -190,6 +213,11 @@ fn cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code() {
         "cityjsonseq's attr-filter on function == '1070' must also match 65 — \
          before the --attr-eq fix this returned 0 (a JSON-number predicate can \
          never equal a JSON-string cell)"
+    );
+    assert_eq!(
+        cityjson_count, cityjsonseq_count,
+        "the two JSON runners read the very same document from opposite parse \
+         shapes and must agree exactly"
     );
 
     // --- FlatCityBuf (skips gracefully if `fcb` isn't on PATH) ---
@@ -205,6 +233,7 @@ fn cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code() {
         "flatcitybuf's attr-filter on function == '1070' must also match 65"
     );
     assert_eq!(cityjsonseq_count, fcb_count);
+    assert_eq!(cityjson_count, fcb_count);
 }
 
 /// Single-file table layout removal (2026-07-21, mandatory-by-type-layout):

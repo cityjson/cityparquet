@@ -45,6 +45,22 @@
 //!   A `GeometryInstance` contributes its anchor point (the one vertex index
 //!   its `boundaries` hold), not the bounds of the template it instantiates;
 //!   the same simplification [`super::cityjsonseq`]'s feature bbox makes.
+//! - [`Scenario::FullRead`] is **not the same operation** here as in
+//!   [`super::cityjsonseq`], even though both wear the same scenario label.
+//!   That runner walks each geometry's `boundaries` index tree and stops
+//!   there; this one *resolves every boundary leaf* through the
+//!   document-level `vertices` array and `transform` into a real-world
+//!   coordinate — 245,137 leaf resolutions against 73,554 unique vertices on
+//!   the `lod3_railway` fixture; roughly a fifth more wall-clock than
+//!   [`Scenario::Count`] in release mode on this machine (median of 9 runs:
+//!   0.199 s vs 0.243 s), so it is real work rather than something the
+//!   optimiser elides — and `run_scenario` pins that with
+//!   `std::hint::black_box` rather than trusting it to stay true.
+//!   Resolving coordinates IS the honest cost
+//!   of a shared document-level vertex array (a Seq feature carries its own
+//!   local vertices instead), so neither side is bent to match the other —
+//!   but a published `full-read` row must not be read as "both formats did
+//!   the same thing".
 //! - [`Scenario::AttrStats`] aggregates NUMERIC values only, so a
 //!   string-typed column (the railway fixture's numeric-LOOKING `function`
 //!   codes, e.g. `"1070"`) counts 0 — identical to
@@ -211,11 +227,15 @@ fn run_scenario(document: &Document, scenario: Scenario, params: &QueryParams) -
             let mut object_count = 0u64;
             for co in document.objects() {
                 object_count += 1;
-                // Result discarded: the traversal itself is the measured
-                // work (see `accumulate_boundaries`), and the returned
-                // metric stays object-level per this module's own doc
-                // comment.
-                object_bounds(co, &doc.vertices, &doc.transform)?;
+                // The bounds are discarded — the traversal itself is the
+                // measured work (see `accumulate_boundaries`), and the
+                // returned metric stays object-level per this module's own
+                // doc comment. `black_box` so "full read genuinely touches
+                // every coordinate" holds BY CONSTRUCTION rather than by
+                // the optimiser's current mood: without it nothing stops
+                // LLVM concluding the coordinate arithmetic is dead and
+                // measuring a walk that never happened.
+                std::hint::black_box(object_bounds(co, &doc.vertices, &doc.transform)?);
             }
             Ok(object_count)
         }
