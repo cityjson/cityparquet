@@ -194,8 +194,14 @@ enum Commands {
 /// Resolve `inputs` (files/dirs/globs) and open each as a [`Source`].
 fn resolve_and_open(inputs: &[PathBuf]) -> CpResult<Vec<Source>> {
     let resolved = resolve_inputs(inputs)?;
-    let mut sources = Vec::with_capacity(resolved.len());
-    for p in &resolved {
+    for p in &resolved.skipped_non_files {
+        eprintln!(
+            "warning: glob match {} is not a file; skipping",
+            p.display()
+        );
+    }
+    let mut sources = Vec::with_capacity(resolved.files.len());
+    for p in &resolved.files {
         sources.push(Source::open(p)?);
     }
     Ok(sources)
@@ -219,6 +225,13 @@ fn merge_to_one(sources: Vec<Source>) -> CpResult<Source> {
     }
     let crs_is_operator_supplied = sources.iter().all(Source::crs_is_operator_supplied);
     let merged = merge_sources(&sources)?;
+    if merged.duplicate_ids > 0 {
+        eprintln!(
+            "warning: {} duplicate feature id(s) across inputs; all kept (a package with \
+             duplicate ids cannot faithfully round-trip through export)",
+            merged.duplicate_ids
+        );
+    }
     Ok(Source::from_parts(
         merged.header,
         merged.features,

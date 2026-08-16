@@ -6,8 +6,9 @@
 //! - a **directory** — its immediate children whose extension is one of
 //!   `json`/`jsonl`/`gml` are collected (non-recursive);
 //! - a **glob** (contains `*`, `?`, or `[`) — expanded with [`glob::glob`];
-//!   matches that are files are kept, matches that are directories are skipped
-//!   with a warning.
+//!   matches that are files are kept, matches that are not (directories, …)
+//!   are skipped and reported back on [`ResolvedInputs::skipped_non_files`]
+//!   for the caller to surface.
 //!
 //! The result is canonicalised for de-duplication and sorted for deterministic
 //! ordering; an empty resolution is an error.
@@ -30,10 +31,21 @@ fn looks_like_glob(s: &str) -> bool {
     s.contains(['*', '?', '['])
 }
 
+/// The outcome of resolving CLI input patterns: the concrete files, plus
+/// every glob match skipped because it is not a plain file (directories,
+/// sockets, …) — carried on the value instead of `eprintln!`'d from library
+/// code, so the caller decides how to surface it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedInputs {
+    pub files: Vec<PathBuf>,
+    pub skipped_non_files: Vec<PathBuf>,
+}
+
 /// Expand `patterns` (files, directories, globs) into the concrete list of
 /// source files to convert — canonicalised for de-duplication and sorted.
-pub fn resolve_inputs(patterns: &[PathBuf]) -> Result<Vec<PathBuf>> {
+pub fn resolve_inputs(patterns: &[PathBuf]) -> Result<ResolvedInputs> {
     let mut out: Vec<PathBuf> = Vec::new();
+    let mut skipped_non_files: Vec<PathBuf> = Vec::new();
     for pat in patterns {
         let s = pat.to_string_lossy();
         if looks_like_glob(&s) {
@@ -44,10 +56,7 @@ pub fn resolve_inputs(patterns: &[PathBuf]) -> Result<Vec<PathBuf>> {
                 if p.is_file() {
                     out.push(p);
                 } else {
-                    eprintln!(
-                        "warning: glob match {} is not a file; skipping",
-                        p.display()
-                    );
+                    skipped_non_files.push(p);
                 }
             }
         } else if pat.is_dir() {
@@ -92,7 +101,10 @@ pub fn resolve_inputs(patterns: &[PathBuf]) -> Result<Vec<PathBuf>> {
     if deduped.is_empty() {
         return Err(CityParquetError::Io("no input files resolved".to_string()));
     }
-    Ok(deduped)
+    Ok(ResolvedInputs {
+        files: deduped,
+        skipped_non_files,
+    })
 }
 
 #[cfg(test)]
@@ -119,6 +131,7 @@ mod tests {
 
         let got = resolve_inputs(&[d.path().to_path_buf()]).unwrap();
         let names: Vec<_> = got
+            .files
             .iter()
             .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
             .collect();
@@ -132,7 +145,19 @@ mod tests {
         touch(d.path(), "b.city.json");
         let pat = d.path().join("*.city.json");
         let got = resolve_inputs(&[pat, a.clone()]).unwrap();
-        assert_eq!(got.len(), 2, "duplicate a.city.json must collapse");
+        assert_eq!(got.files.len(), 2, "duplicate a.city.json must collapse");
+        assert!(got.skipped_non_files.is_empty());
+    }
+
+    #[test]
+    fn glob_matching_a_directory_is_skipped_and_reported() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), "a.json");
+        let sub = d.path().join("b.json"); // a DIRECTORY whose name matches the glob
+        fs::create_dir(&sub).unwrap();
+        let got = resolve_inputs(&[d.path().join("*.json")]).unwrap();
+        assert_eq!(got.files.len(), 1);
+        assert_eq!(got.skipped_non_files, vec![sub]);
     }
 
     #[test]

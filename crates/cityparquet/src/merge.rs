@@ -203,19 +203,15 @@ pub fn merge_sources(sources: &[Source]) -> Result<MergedDataset> {
         }
     };
 
-    // Duplicate feature ids across inputs: count + warn, keep all.
+    // Duplicate feature ids across inputs: count, keep all. The count travels
+    // out on `MergedDataset::duplicate_ids` — warning about it is the caller's
+    // job, not this library's.
     let mut seen: HashSet<&str> = HashSet::new();
     let mut duplicate_ids = 0usize;
     for f in &features {
         if !seen.insert(f.id.as_str()) {
             duplicate_ids += 1;
         }
-    }
-    if duplicate_ids > 0 {
-        eprintln!(
-            "warning: {duplicate_ids} duplicate feature id(s) across inputs; all kept \
-             (a package with duplicate ids cannot faithfully round-trip through export)"
-        );
     }
 
     Ok(MergedDataset {
