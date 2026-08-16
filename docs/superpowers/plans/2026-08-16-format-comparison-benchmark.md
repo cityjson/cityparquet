@@ -604,15 +604,14 @@ CityGML ──citygml-tools to-cityjson──> CityJSON ──cjseq──> CityJ
 
 Each artefact derives from the one before. FlatCityBuf and CityParquet both derive from the **same** CityJSONSeq — that is what makes their comparison fair. **Nothing derives from CityParquet**: `cityparquet export` could emit the CityJSON artefacts, and it would be tempting, but deriving a competitor's input from the format under test would favour it.
 
-- [ ] **Step 1: Verify the toolchain's actual capabilities before writing anything**
+- [ ] **Step 1: Confirm the tools are usable**
 
-citygml-tools is confirmed to have `to-cityjson` and `from-cityjson` and to need Java 17+ (Java 21 is present). **Unverified: whether `to-cityjson` can emit CityJSONSeq directly.** Run its `--help` and check for a JSON-Lines/sequence option:
+The chain is settled — **citygml-tools cannot emit CityJSONSeq, so `cjseq` performs that hop.** Do not spend time re-investigating that; it is a decision, not an open question.
 
-```bash
-./scripts/fetch_tools.sh          # after Step 2
-citygml-tools to-cityjson --help
-```
-If it can, use it for the CityJSON→CityJSONSeq hop and skip `cjseq` entirely. If it cannot, use `cjseq` (`cargo install cjseq`, or the pinned release). **Record which path you took and why in the report** — the plan deliberately does not guess.
+- `citygml-tools` — `to-cityjson`, Java 17+ (Java 21 present). Fetched by Step 2.
+- `cjseq` — CityJSON → CityJSONSeq (`cjseq cat`). Install with `cargo install cjseq` if absent, and pin the version in `scripts/fetch_tools.sh` alongside citygml-tools so the corpus is reproducible.
+
+Verify both run (`citygml-tools --version`, `cjseq --help`) and record the exact versions in your report — they are part of the measurement's provenance and belong in `bench/READ_BENCHMARK.md`'s Environment block.
 
 - [ ] **Step 2: Write `scripts/fetch_tools.sh`**
 
