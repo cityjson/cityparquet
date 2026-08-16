@@ -8,6 +8,7 @@ use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
 use cityparquet::source::{Source, SourceFormat};
 use cityparquet_cli::bench::{self, BenchOptions};
+use cityparquet_schema::Result as CpResult;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -191,11 +192,11 @@ enum Commands {
 }
 
 /// Resolve `inputs` (files/dirs/globs) and open each as a [`Source`].
-fn resolve_and_open(inputs: &[PathBuf]) -> Result<Vec<Source>, String> {
-    let resolved = resolve_inputs(inputs).map_err(|e| e.to_string())?;
+fn resolve_and_open(inputs: &[PathBuf]) -> CpResult<Vec<Source>> {
+    let resolved = resolve_inputs(inputs)?;
     let mut sources = Vec::with_capacity(resolved.len());
     for p in &resolved {
-        sources.push(Source::open(p).map_err(|e| e.to_string())?);
+        sources.push(Source::open(p)?);
     }
     Ok(sources)
 }
@@ -212,12 +213,12 @@ fn resolve_and_open(inputs: &[PathBuf]) -> Result<Vec<Source>, String> {
 /// would stamp a whole mixed batch `crs_source: "operator-supplied"` and strip
 /// the genuine `referenceSystem` out of the verbatim `source_metadata`,
 /// leaving a footer that denies a declaration the source did make.
-fn merge_to_one(sources: Vec<Source>) -> Result<Source, String> {
+fn merge_to_one(sources: Vec<Source>) -> CpResult<Source> {
     if sources.len() == 1 {
         return Ok(sources.into_iter().next().expect("one source"));
     }
     let crs_is_operator_supplied = sources.iter().all(Source::crs_is_operator_supplied);
-    let merged = merge_sources(&sources).map_err(|e| e.to_string())?;
+    let merged = merge_sources(&sources)?;
     Ok(Source::from_parts(
         merged.header,
         merged.features,
