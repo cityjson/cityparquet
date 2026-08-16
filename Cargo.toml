@@ -25,6 +25,12 @@ cjseq = "0.4"
 quick-xml = "0.37"
 chrono = "0.4"
 flate2 = "1"
+object_store = { version = "0.13", features = ["http"] }
+tokio = { version = "1.53.1", features = ["rt", "macros", "rt-multi-thread"] }
+axum = "0.8.9"
+tower-http = { version = "0.6", features = ["fs"] }
+bytes = "1.12.1"
+async-trait = "0.1.91"
 clap = { version = "4", features = ["derive"] }
 glob = "0.3"
 wkb = "0.9"

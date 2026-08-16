@@ -23,21 +23,21 @@ cjseq2 = "0.1.0"
 peak_alloc = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-flate2 = "1"
+flate2 = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true }
 libc = "0.2"
 anyhow = "1"
-tokio = { version = "1.53.1", features = ["rt", "macros", "rt-multi-thread"] }
-object_store = { version = "0.13", features = ["http"] }
-bytes = "1.12.1"
-async-trait = "0.1.91"
+tokio = { workspace = true }
+object_store = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
 http-range-client = { version = "0.9", default-features = false, features = ["reqwest-async"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tempfile.workspace = true
 url = "2"
 
 [dev-dependencies]
-axum = "0.8.9"
-tower-http = { version = "0.6", features = ["fs"] }
+axum = { workspace = true }
+tower-http = { workspace = true }
