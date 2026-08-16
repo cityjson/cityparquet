@@ -1,3 +1,32 @@
+# --------------------------------------------------------------------------
+# The INPUT-EXTENSION CONVENTION, shared by every per-dataset recipe below.
+#
+# A benchmark input is `<dataset><ext>`, and `<dataset>` names everything
+# derived from it (a package directory, a results CSV, every prepared
+# artefact). The rule is implemented four times over — here, in
+# `crates/cityparquet-readbench/src/naming.rs`, in
+# `scripts/readbench_prepare.sh`, and (as its composable package-name
+# counterpart) in `scripts/readbench_duckdb.sh` — because a shell script
+# cannot import a Rust function and `just` has no functions of its own.
+# `crates/cityparquet-readbench/tests/strip_extension.rs` extracts the shell
+# ones from their own source files and RUNS them over the same table, so a
+# copy that drifts fails `just check`.
+#
+# Both lists knew only `.json`/`.jsonl` until CityGML became a measured
+# format: a `.gml` input was invisible to every `find` below, and one that
+# got through anyway kept its extension and misnamed every artefact
+# (`foo.gml.parquet`, `foo.gml.csv`).
+#
+# KNOWN_INPUT_EXTENSIONS is MOST SPECIFIC FIRST (so `.city.jsonl` wins over
+# `.jsonl`) and must match the Rust list exactly, in order.
+KNOWN_INPUT_EXTENSIONS := ".city.jsonl .city.json .citygml .jsonl .json .gml .xml"
+# The discovery half of the same convention: a stripper that knows an
+# extension `find` never matches is dead code. `*.gml` does NOT match
+# `*.citygml` (the suffix would have to be `.gml`, not `gml`), so both are
+# listed. `metadata.json` is excluded at each use site — it is a CityParquet
+# package's own manifest, not an input.
+KNOWN_INPUT_FIND := "-name '*.json' -o -name '*.jsonl' -o -name '*.gml' -o -name '*.citygml' -o -name '*.xml'"
+
 test:
     cargo test --workspace
 
@@ -30,6 +59,34 @@ vendor-check:
     cargo fmt --manifest-path "${dir}/Cargo.toml" --all --check
     cargo clippy --manifest-path "${dir}/Cargo.toml" --all-targets --all-features -- -D warnings
     cargo test --manifest-path "${dir}/Cargo.toml" --all-features
+
+# The read benchmark's two NON-Rust test suites, which `just check` (the Rust
+# workspace's gate) cannot run. Both are deliberately outside it — `plot-test`
+# because it needs `uv`, which `just check` does not today require of a
+# machine, and `scripts-test` because it needs `jq` and a bash new enough for
+# its stubs. Run them alongside `just check` when touching `bench/plot/` or
+# `scripts/`. The one convention that MUST NOT drift silently — the
+# input-extension rule these scripts and the justfile each implement — is
+# instead enforced from inside `just check`, by
+# `crates/cityparquet-readbench/tests/strip_extension.rs`.
+
+# `bench/plot`'s pytest suite (CSV-header contract + chart building). Needs
+# `uv` on PATH; no network beyond uv's own dependency resolution.
+#
+# `--directory`, not `--project`: pytest's rootdir follows the working
+# directory, so `--project bench/plot` alone leaves it at the repo root, where
+# `testpaths = ["tests"]` no longer resolves and collection wanders into
+# `tools/catalog2cityparquet/tests` (a different project, different deps) and
+# errors out.
+plot-test:
+    uv run --directory bench/plot --extra dev pytest -q
+
+# `scripts/readbench_prepare.sh`'s own test suite: plain bash, no framework,
+# every external binary stubbed inside a throwaway sandbox (so it needs no
+# real `fcb`/`cjseq`/`citygml-tools` and performs no real conversion). Needs
+# `jq`.
+scripts-test:
+    ./scripts/tests/readbench_prepare_test.sh
 
 isolation:
     cargo tree -p cityparquet-schema --prefix none | grep -E '^(arrow-array|arrow |parquet) ' && exit 1 || echo "isolation ok"
@@ -85,39 +142,41 @@ fetch-data DEST='bench/data/benchmark':
 fetch-tools:
     ./scripts/fetch_tools.sh
 
-# Convert every CityJSON/CityJSONSeq file found under FOLDER (recursive)
-# into a CityParquet package under OUT (default out/cityparquet), one
-# OUT/<name>/ package directory per input where <name> is the input's
-# basename minus its .city.jsonl/.city.json/.jsonl/.json extension (core
-# profile; existing packages of the same name are overwritten).
+# Convert every CityGML/CityJSON/CityJSONSeq file found under FOLDER
+# (recursive) into a CityParquet package under OUT (default out/cityparquet),
+# one OUT/<name>/ package directory per input where <name> is the input's
+# basename minus its known input extension (see KNOWN_INPUT_EXTENSIONS at the
+# top of this file; core profile, and existing packages of the same name are
+# overwritten).
 convert-all FOLDER OUT='out/cityparquet':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}"
     found=0
     while IFS= read -r -d '' f; do
-        base="$(basename "$f")"
-        name="${base%.city.jsonl}"; name="${name%.city.json}"
-        name="${name%.jsonl}"; name="${name%.json}"
+        name="$(basename "$f")"
+        for ext in {{KNOWN_INPUT_EXTENSIONS}}; do
+            if [[ "$name" == *"$ext" ]]; then name="${name%"$ext"}"; break; fi
+        done
         dest="{{OUT}}/${name}"
         echo ">> ${f} -> ${dest}"
         cargo run --release -p cityparquet-cli --bin cityparquet -- convert \
             "$f" --output "$dest" --overwrite
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
-        \( -name '*.json' -o -name '*.jsonl' \) ! -name 'metadata.json' -print0 \
+        \( {{KNOWN_INPUT_FIND}} \) ! -name 'metadata.json' -print0 \
         | sort -z)
     if [[ "$found" -eq 0 ]]; then
-        echo "convert-all: no CityJSON/CityJSONSeq files found under {{FOLDER}}" >&2
+        echo "convert-all: no city-model inputs found under {{FOLDER}}" >&2
         exit 1
     fi
     echo "convert-all: ${found} file(s) converted into {{OUT}}"
 
 # Cross-format READ benchmark (see bench/READ_BENCHMARK.md): for every
-# CityJSON/CityJSONSeq file found under FOLDER (recursive), prepare every
-# compared format (parquet/hilbert/fcb/gz, `scripts/readbench_prepare.sh`),
-# run the `cityparquet-readbench` coordinator across the whole (format x
-# scenario) matrix into one OUT/<name>.csv, then append the `duckdb-parquet`
+# CityGML/CityJSON/CityJSONSeq file found under FOLDER (recursive), prepare
+# every compared format (`scripts/readbench_prepare.sh`), run the
+# `cityparquet-readbench` coordinator across the whole (format x scenario)
+# matrix into one OUT/<name>.csv, then append the `duckdb-parquet`
 # SQL-engine baseline to the SAME csv (`scripts/readbench_duckdb.sh`),
 # auto-detecting a numeric attribute column via a `DESCRIBE` query where
 # possible (omitted, skipping attr-stats, if none is found). Each
@@ -126,71 +185,149 @@ convert-all FOLDER OUT='out/cityparquet':
 # (best-effort: a missing `uv`/plotting setup doesn't fail the benchmark
 # run, only skips the charts). Needs `fcb`+`duckdb` on PATH; network-
 # independent given already-fetched inputs; kept OUT of `just check`/CI.
-bench FOLDER OUT='bench/read_results':
+#
+# FORMATS is a comma-separated format list (`Format::ALL`'s canonical names,
+# crates/cityparquet-readbench/src/format.rs) threaded to BOTH the prepare
+# script and the coordinator, so exactly the requested artefacts are built
+# and exactly they are measured. Empty (the default) means: prepare every
+# artefact, measure `Format::DEFAULT_SET`. It is APPENDED to the parameter
+# list rather than inserted before OUT because `just` parameters are
+# positional-with-defaults — inserting it would silently reinterpret every
+# existing `just bench FOLDER OUT` call's second argument.
+bench FOLDER OUT='bench/read_results' FORMATS='':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" bench/data/readbench
+    # FORMATS reaches two consumers that do NOT accept the same vocabulary:
+    #   - the coordinator takes the list verbatim (it knows every
+    #     `Format::ALL` name, `duckdb-parquet` included, and reports the ones
+    #     it does not itself drive);
+    #   - `readbench_prepare.sh` builds ARTEFACTS, so it rejects
+    #     `duckdb-parquet` outright (that baseline has no artefact of its
+    #     own), and must always be asked for `cityparquet` whatever was
+    #     requested: the coordinator derives EVERY query parameter — bbox
+    #     windows, the id, the attribute predicate — from that one package.
+    # `duckdb-parquet`'s presence also decides whether the SQL-engine
+    # baseline is appended below: a deliberately single-axis run (see
+    # `ordering-bench`) must not have a third series quietly added to its CSV.
+    prepare_formats=""
+    want_duckdb=1
+    if [[ -n "{{FORMATS}}" ]]; then
+        want_duckdb=0
+        IFS=',' read -r -a requested <<<"{{FORMATS}}"
+        for fmt in "${requested[@]}"; do
+            if [[ "$fmt" == "duckdb-parquet" ]]; then
+                want_duckdb=1
+            else
+                prepare_formats+="${prepare_formats:+,}$fmt"
+            fi
+        done
+        case ",$prepare_formats," in
+            *,cityparquet,*) ;;
+            *) prepare_formats="cityparquet${prepare_formats:+,$prepare_formats}" ;;
+        esac
+    fi
+    # `${a[@]+"${a[@]}"}`, never a bare `"${a[@]}"`: under `set -u` an EMPTY
+    # array is an unbound variable to bash 4.3 and older (macOS still ships
+    # 3.2 as /bin/bash), which would abort every default-FORMATS run.
+    prepare_args=()
+    run_args=()
+    if [[ -n "$prepare_formats" ]]; then
+        prepare_args=(--formats "$prepare_formats")
+    fi
+    if [[ -n "{{FORMATS}}" ]]; then
+        run_args=(--formats "{{FORMATS}}")
+    fi
     found=0
     while IFS= read -r -d '' f; do
-        base="$(basename "$f")"
-        name="${base%.city.jsonl}"; name="${name%.city.json}"
-        name="${name%.jsonl}"; name="${name%.json}"
+        name="$(basename "$f")"
+        for ext in {{KNOWN_INPUT_EXTENSIONS}}; do
+            if [[ "$name" == *"$ext" ]]; then name="${name%"$ext"}"; break; fi
+        done
         out="{{OUT}}/${name}.csv"
         echo ">> ${f} -> ${out}"
         rm -f "$out"
 
-        ./scripts/readbench_prepare.sh "$f" bench/data/readbench
+        ./scripts/readbench_prepare.sh ${prepare_args[@]+"${prepare_args[@]}"} \
+            "$f" bench/data/readbench
 
         cargo run --release -p cityparquet-readbench -- run \
             --input "$f" \
             --prepared-dir bench/data/readbench \
             --out "$out" \
-            --repeat 7
+            --repeat 7 \
+            ${run_args[@]+"${run_args[@]}"}
 
-        pkg="bench/data/readbench/${name}.parquet"
-        # By-type is the only, mandatory table layout: resolve the package's
-        # single main table from its own metadata.json STAC Item (the
-        # `cityparquet-objects` asset role) rather than assuming the
-        # pre-by-type "cityobjects.parquet" name. `package_tables.py --single`
-        # succeeds only for a single-family dataset; an empty `main_table`
-        # here just skips the optional attr-stats column detection, and
-        # `readbench_duckdb.sh` below still hard-fails clearly for a
-        # multi-family/multi-table package.
-        main_table="$(./scripts/package_tables.py "$pkg" --single 2>/dev/null || true)"
-        numeric_col=""
-        if [[ -n "$main_table" ]]; then
-            numeric_col="$(duckdb -csv -noheader -c "
-                SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${pkg}/${main_table}'))
-                WHERE column_type IN ('BIGINT', 'DOUBLE')
-                  AND column_name NOT IN ('id', 'feature_id', 'object_type', 'parents',
-                    'children', 'children_roles', 'bbox', 'material', 'texture',
-                    'template', 'other')
-                  AND column_name NOT LIKE 'geometry_lod%'
-                  AND column_name NOT LIKE 'geometry_properties_lod%'
-                ORDER BY column_name LIMIT 1;
-            " 2>/dev/null || true)"
-        fi
+        if [[ "$want_duckdb" -eq 1 ]]; then
+            pkg="bench/data/readbench/${name}.parquet"
+            # By-type is the only, mandatory table layout: resolve the
+            # package's single main table from its own metadata.json STAC
+            # Item (the `cityparquet-objects` asset role) rather than
+            # assuming the pre-by-type "cityobjects.parquet" name.
+            # `package_tables.py --single` succeeds only for a single-family
+            # dataset; an empty `main_table` here just skips the optional
+            # attr-stats column detection, and `readbench_duckdb.sh` below
+            # still hard-fails clearly for a multi-family/multi-table package.
+            main_table="$(./scripts/package_tables.py "$pkg" --single 2>/dev/null || true)"
+            numeric_col=""
+            if [[ -n "$main_table" ]]; then
+                numeric_col="$(duckdb -csv -noheader -c "
+                    SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${pkg}/${main_table}'))
+                    WHERE column_type IN ('BIGINT', 'DOUBLE')
+                      AND column_name NOT IN ('id', 'feature_id', 'object_type', 'parents',
+                        'children', 'children_roles', 'bbox', 'material', 'texture',
+                        'template', 'other')
+                      AND column_name NOT LIKE 'geometry_lod%'
+                      AND column_name NOT LIKE 'geometry_properties_lod%'
+                    ORDER BY column_name LIMIT 1;
+                " 2>/dev/null || true)"
+            fi
 
-        if [[ -n "$numeric_col" ]]; then
-            echo "-- numeric attribute column for attr-stats: ${numeric_col}"
-            ./scripts/readbench_duckdb.sh "$pkg" "$out" --numeric-column "$numeric_col" --repeat 7
+            if [[ -n "$numeric_col" ]]; then
+                echo "-- numeric attribute column for attr-stats: ${numeric_col}"
+                ./scripts/readbench_duckdb.sh "$pkg" "$out" --numeric-column "$numeric_col" --repeat 7
+            else
+                echo "-- no numeric attribute column detected; skipping attr-stats for duckdb-parquet"
+                ./scripts/readbench_duckdb.sh "$pkg" "$out" --repeat 7
+            fi
         else
-            echo "-- no numeric attribute column detected; skipping attr-stats for duckdb-parquet"
-            ./scripts/readbench_duckdb.sh "$pkg" "$out" --repeat 7
+            echo "-- duckdb-parquet not requested; the SQL-engine baseline is not appended"
         fi
 
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
-        \( -name '*.json' -o -name '*.jsonl' \) ! -name 'metadata.json' -print0 \
+        \( {{KNOWN_INPUT_FIND}} \) ! -name 'metadata.json' -print0 \
         | sort -z)
     if [[ "$found" -eq 0 ]]; then
-        echo "bench: no CityJSON/CityJSONSeq files found under {{FOLDER}}" >&2
+        echo "bench: no city-model inputs found under {{FOLDER}}" >&2
         exit 1
     fi
     echo "bench: ${found} file(s) benchmarked into {{OUT}}"
 
-    just plot "{{OUT}}" || echo "plot skipped (uv not available)"
-    just sizes "bench/data/readbench" "{{OUT}}" || echo "sizes skipped (uv not available)"
+    # Best-effort: a missing `uv` must not fail a benchmark that already
+    # produced its CSVs. `sizes` additionally reports nothing for a run whose
+    # FORMATS built no `.fcb`/`.jsonl.gz` (it discovers datasets by those two
+    # artefacts) — an ordering-only run, for instance — which is a skip, not
+    # a failure, so the message names both causes rather than blaming `uv`.
+    just plot "{{OUT}}" || echo "plot skipped (needs uv)"
+    just sizes "bench/data/readbench" "{{OUT}}" \
+        || echo "sizes skipped (needs uv, and a run that built the .fcb/.jsonl.gz artefacts it sizes)"
+
+# The ORDERING-COMPARISON run: the same benchmark, restricted to
+# `Format::ORDERING_SET` (crates/cityparquet-readbench/src/format.rs) — a
+# source-order CityParquet package and a Hilbert-ordered one, same writer,
+# same reader, same scenarios, so the ONLY variable is the row order.
+#
+# A separate OUT default (bench/ordering_results) rather than a shared one:
+# `plot` charts a whole directory, so mixing an ordering run's CSVs in with
+# the format comparison's would put two axes on one chart and answer
+# neither question. `duckdb-parquet` is deliberately absent from the list,
+# which is what keeps `bench` from appending the SQL-engine baseline here.
+#
+# It DELEGATES to `bench` rather than copying its body — a forked recipe is
+# how the two would drift apart.
+ordering-bench FOLDER OUT='bench/ordering_results':
+    just bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet-hilbert"
 
 # Encoding-variant WRITE benchmark (M5): for every CityJSON/CityJSONSeq file
 # found under FOLDER (recursive), run the `cityparquet bench` variant matrix
@@ -204,9 +341,10 @@ write-bench FOLDER OUT='bench/results':
     mkdir -p "{{OUT}}"
     found=0
     while IFS= read -r -d '' f; do
-        base="$(basename "$f")"
-        name="${base%.city.jsonl}"; name="${name%.city.json}"
-        name="${name%.jsonl}"; name="${name%.json}"
+        name="$(basename "$f")"
+        for ext in {{KNOWN_INPUT_EXTENSIONS}}; do
+            if [[ "$name" == *"$ext" ]]; then name="${name%"$ext"}"; break; fi
+        done
         out="{{OUT}}/${name}.csv"
         echo ">> ${f} -> ${out}"
         rm -f "$out"
@@ -217,10 +355,10 @@ write-bench FOLDER OUT='bench/results':
 
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
-        \( -name '*.json' -o -name '*.jsonl' \) ! -name 'metadata.json' -print0 \
+        \( {{KNOWN_INPUT_FIND}} \) ! -name 'metadata.json' -print0 \
         | sort -z)
     if [[ "$found" -eq 0 ]]; then
-        echo "write-bench: no CityJSON/CityJSONSeq files found under {{FOLDER}}" >&2
+        echo "write-bench: no city-model inputs found under {{FOLDER}}" >&2
         exit 1
     fi
     echo "write-bench: ${found} file(s) benchmarked into {{OUT}}"
@@ -242,9 +380,10 @@ compression-bench FOLDER OUT='bench/compression_results':
     mkdir -p "{{OUT}}"
     found=0
     while IFS= read -r -d '' f; do
-        base="$(basename "$f")"
-        name="${base%.city.jsonl}"; name="${name%.city.json}"
-        name="${name%.jsonl}"; name="${name%.json}"
+        name="$(basename "$f")"
+        for ext in {{KNOWN_INPUT_EXTENSIONS}}; do
+            if [[ "$name" == *"$ext" ]]; then name="${name%"$ext"}"; break; fi
+        done
         out="{{OUT}}/${name}.csv"
         echo ">> ${f} -> ${out}"
         rm -f "$out"
@@ -255,10 +394,10 @@ compression-bench FOLDER OUT='bench/compression_results':
 
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
-        \( -name '*.json' -o -name '*.jsonl' \) ! -name 'metadata.json' -print0 \
+        \( {{KNOWN_INPUT_FIND}} \) ! -name 'metadata.json' -print0 \
         | sort -z)
     if [[ "$found" -eq 0 ]]; then
-        echo "compression-bench: no CityJSON/CityJSONSeq files found under {{FOLDER}}" >&2
+        echo "compression-bench: no city-model inputs found under {{FOLDER}}" >&2
         exit 1
     fi
     echo "compression-bench: ${found} file(s) benchmarked into {{OUT}}"
@@ -349,5 +488,10 @@ catalog-histogram OUT='out/cityparquet-catalog':
 # The driver's own test suite. No network and no binaries: every origin,
 # subprocess and catalogue document is faked, so this is safe to run anywhere.
 # Not part of `just check`, which is the Rust workspace's gate — run both.
+# `--directory`, not `--project`: see `plot-test` above — with the working
+# directory left at the repo root, pytest's rootdir is the repo root too and
+# collection wanders into `bench/plot/tests`, which imports a package this
+# project's venv does not have. That made this recipe exit 2 on a healthy
+# tree.
 catalog-test:
-    uv run --project tools/catalog2cityparquet --extra dev pytest -v
+    uv run --directory tools/catalog2cityparquet --extra dev pytest -v

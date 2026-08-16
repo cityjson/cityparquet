@@ -57,6 +57,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Schema};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet_readbench::format::{Artefact, Format};
+use cityparquet_readbench::naming::strip_known_extension;
 use cityparquet_schema::CityMetadata;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -434,20 +435,6 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// `name` with a trailing `.city.jsonl`/`.city.json`/`.jsonl`/`.json`
-/// removed (the longest/most specific suffix wins) — the same stripping
-/// rule `scripts/readbench_prepare.sh` and the justfile's `bench-fixtures`/
-/// `convert-all` recipes use, so this coordinator locates exactly the
-/// artefacts those tools produce.
-fn strip_known_extension(name: &str) -> &str {
-    for ext in [".city.jsonl", ".city.json", ".jsonl", ".json"] {
-        if let Some(stripped) = name.strip_suffix(ext) {
-            return stripped;
-        }
-    }
-    name
 }
 
 /// One requested format's artefact [`Source`], or how it is out of this

@@ -16,9 +16,12 @@
 # From a CityJSON/CityJSONSeq INPUT, `cityjsonseq` is a no-op: that format's
 # "artefact" is INPUT itself, which the benchmark reads in place.
 #
-# `<x>` is INPUT's basename minus its .gml/.citygml/.city.jsonl/.city.json/
-# .jsonl/.json extension (the CityJSON rule is the same one the justfile's
-# bench-fixtures/convert-all recipes use).
+# `<x>` is INPUT's basename minus its known input extension — see
+# `KNOWN_INPUT_EXTENSIONS` below, which is one of four implementations of the
+# same convention (this script, the justfile, the coordinator's Rust
+# `naming::strip_known_extension`, and `scripts/readbench_duckdb.sh`'s
+# package-name counterpart), held in lockstep by
+# `crates/cityparquet-readbench/tests/strip_extension.rs`.
 #
 # THE CONVERSION CHAIN, AND WHY IT RUNS FORWARDS ONLY:
 #
@@ -112,6 +115,27 @@ VALID_FORMATS=(citygml cityjson cityjsonseq cityjsonseq-gz flatcitybuf cityparqu
 # build step below exists for, so that a bare run never fails on its own
 # default.
 DEFAULT_BUILD_FORMATS=(citygml cityjson cityjsonseq cityjsonseq-gz flatcitybuf cityparquet cityparquet-hilbert)
+
+# The INPUT-EXTENSION CONVENTION, most specific first — the same list, in the
+# same order, as `KNOWN_INPUT_EXTENSIONS` in
+# `crates/cityparquet-readbench/src/naming.rs` and in the justfile. Keep the
+# array on ONE line and the function's closing brace in column 1:
+# `crates/cityparquet-readbench/tests/strip_extension.rs` extracts both out of
+# this file and RUNS them against the Rust implementation's own table, so a
+# copy that drifts fails `just check` rather than silently misnaming every
+# artefact of a `.gml` input.
+KNOWN_INPUT_EXTENSIONS=(.city.jsonl .city.json .citygml .jsonl .json .gml .xml)
+
+strip_known_extension() {
+  local name=$1 ext
+  for ext in "${KNOWN_INPUT_EXTENSIONS[@]}"; do
+    if [[ "$name" == *"$ext" ]]; then
+      printf '%s' "${name%"$ext"}"
+      return
+    fi
+  done
+  printf '%s' "$name"
+}
 
 usage() {
   cat >&2 <<EOF
@@ -288,7 +312,11 @@ citygml_declared_version() {
 # head; a CityJSON/CityJSONSeq input joins it midway.
 INPUT_KIND="cityjson"   # any of: citygml | cityjson | cityjsonseq
 case "$INPUT" in
-  *.gml|*.citygml) INPUT_KIND="citygml" ;;
+  # `.xml` is here for the same reason it is in KNOWN_INPUT_EXTENSIONS: real
+  # CityGML exports ship under all three spellings, and a `.xml` classed as
+  # CityJSON would be handed to `cjseq`/`jq` and fail with a JSON parse error
+  # instead of being converted.
+  *.gml|*.citygml|*.xml) INPUT_KIND="citygml" ;;
   *.city.jsonl|*.jsonl) INPUT_KIND="cityjsonseq" ;;
 esac
 
@@ -437,10 +465,7 @@ fi
 
 mkdir -p "$OUTDIR"
 
-BASE="$(basename "$INPUT")"
-BASE="${BASE%.gml}"; BASE="${BASE%.citygml}"
-BASE="${BASE%.city.jsonl}"; BASE="${BASE%.city.json}"
-BASE="${BASE%.jsonl}"; BASE="${BASE%.json}"
+BASE="$(strip_known_extension "$(basename "$INPUT")")"
 
 # Artefact names come from `Format::artefact` in
 # crates/cityparquet-readbench/src/format.rs — the coordinator resolves them

@@ -155,12 +155,20 @@ export+compare check. See [bench/README.md](bench/README.md).
 | `just check` | clippy, tests, schema/Parquet isolation, `fmt --check` |
 | `just test` / `just lint` / `just fmt` | the individual gates |
 | `just interop` | convert both fixtures and have DuckDB read the Parquet natively |
-| `just convert-all FOLDER [OUT]` | convert every CityJSON/Seq file under `FOLDER` into a package under `OUT` (default `out/cityparquet`) |
-| `just bench-fixtures [FOLDER]` | run the benchmark on every CityJSON/Seq file under `FOLDER` (default `tests/fixtures`), one CSV per input |
-| `just bench-data` | fetch the 3 pinned 3DBAG benchmark tiles into `bench/data/` |
-| `just bench-corpus` | fetch the CityJSON benchmark corpus (11 datasets) into `bench/data/benchmark/` |
-| `just bench-all` | the full M5 benchmark run (fixtures + 3DBAG tiles, cityparquet + DuckDB baseline) |
-| `just bench-baseline INPUT CSV` | append the DuckDB `COPY` baseline rows for one dataset |
+| `just convert-all FOLDER [OUT]` | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`) |
+| `just fetch-data [DEST]` | fetch the CityJSON benchmark corpus (11 datasets) into `DEST` (default `bench/data/benchmark/`) |
+| `just fetch-tools` | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq) |
+| `just bench FOLDER [OUT] [FORMATS]` | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `bench/read_results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set |
+| `just ordering-bench FOLDER [OUT]` | the same run restricted to the ordering axis (source-order vs Hilbert CityParquet), into `OUT` (default `bench/ordering_results`) |
+| `just write-bench FOLDER [OUT]` | encoding-variant WRITE benchmark + the DuckDB `COPY` baseline, one CSV per input |
+| `just compression-bench FOLDER [OUT]` | codec + row-group WRITE-bench matrix, one CSV per input, plus charts |
+| `just plot-test` / `just scripts-test` | the two non-Rust test suites (`bench/plot`'s pytest, `scripts/`'s bash suite) — outside `just check`, which is the Rust gate |
+
+Every recipe that walks a `FOLDER` discovers and names its inputs through the
+one input-extension convention at the top of the `justfile`
+(`KNOWN_INPUT_EXTENSIONS`/`KNOWN_INPUT_FIND`), which CityGML inputs are part
+of; `crates/cityparquet-readbench/tests/strip_extension.rs` holds it in
+lockstep with the Rust and shell implementations of the same rule.
 
 Downloaded benchmark data (`bench/data/`) and generated packages (`out/`) are
 gitignored; `bench/results/*.csv` and `bench/README.md` are committed as the
