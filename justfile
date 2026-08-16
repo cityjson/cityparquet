@@ -81,12 +81,15 @@ vendor-check:
 plot-test:
     uv run --directory bench/plot --extra dev pytest -q
 
-# `scripts/readbench_prepare.sh`'s own test suite: plain bash, no framework,
-# every external binary stubbed inside a throwaway sandbox (so it needs no
-# real `fcb`/`cjseq`/`citygml-tools` and performs no real conversion). Needs
-# `jq`.
+# The benchmark shell scripts' own test suites: plain bash, no framework, no
+# network. `readbench_prepare_test.sh` stubs every external binary inside a
+# throwaway sandbox (so it needs no real `fcb`/`cjseq`/`citygml-tools` and
+# performs no real conversion); `fetch_benchmark_test.sh` serves a throwaway
+# corpus of `file://` URLs to the real fetcher, and lints its pinned table
+# against `bench/catalogue_benchmark_urls.txt`. Needs `jq`, `zip`/`unzip`.
 scripts-test:
     ./scripts/tests/readbench_prepare_test.sh
+    ./scripts/tests/fetch_benchmark_test.sh
 
 isolation:
     cargo tree -p cityparquet-schema --prefix none | grep -E '^(arrow-array|arrow |parquet) ' && exit 1 || echo "isolation ok"
@@ -125,13 +128,37 @@ fixtures:
 interop:
     ./scripts/interop.sh
 
-# Fetch the CityJSON benchmark corpus (11 CityJSONSeq datasets, ~1.7 GiB)
-# from gs://cityjson/benchmark_dataset/ into DEST (default
-# bench/data/benchmark/, gitignored). Needs gsutil; network-dependent; kept
-# OUT of `just check`/CI. Verifies each file's byte size after download (see
-# scripts/fetch_benchmark.sh).
-fetch-data DEST='bench/data/benchmark':
-    ./scripts/fetch_benchmark.sh {{DEST}}
+# Fetch the CityParquet benchmark corpus — 30 REAL published city models
+# (CityGML 2.0 `.gml` and CityJSON 2.0 `.city.json`, 923 KB .. 1.9 GB, 6.5 GB
+# on the wire) derived from the city3d STAC catalogue, into DEST (default
+# bench/data/benchmark/, gitignored). Every entry's byte size is pinned and
+# verified, `.gz`/`.zip` downloads are normalised to plain files on arrival,
+# and an already-present file is skipped — see scripts/fetch_benchmark.sh for
+# the table and bench/catalogue_benchmark_urls.txt for each URL's provenance.
+# Needs curl (and gunzip/unzip); network-dependent; kept OUT of `just
+# check`/CI.
+#
+# ONLY narrows the selection to the entries that can serve one benchmark set:
+# `default` (the default format set, `citygml` row included), `no-citygml`
+# (every format but citygml), or `all` (the default). Two entries — Riga and
+# PLATEAU's brid tile — cannot serve the default set; both would abort a
+# default-set run rather than merely lose a row, so use `--only default`
+# unless you are passing an explicit `--formats` list that omits citygml.
+fetch-data DEST='bench/data/benchmark' ONLY='all':
+    ./scripts/fetch_benchmark.sh --only {{ONLY}} {{DEST}}
+
+# Fetch the LEGACY CityJSONSeq corpus (11 datasets, ~1.7 GiB) from the public
+# gs://cityjson/benchmark_dataset/ bucket over HTTPS into DEST (default
+# bench/data/benchmark_seq/, gitignored — deliberately NOT the same directory
+# as `fetch-data`, since `just bench FOLDER` measures everything under
+# FOLDER). This is the ordering benchmark's input and the continuity link to
+# the read results already published in bench/READ_BENCHMARK.md and
+# bench/CORPUS_REPORT.md; it is CityJSONSeq only, so it cannot serve the
+# cross-format comparison. Needs curl; network-dependent; kept OUT of `just
+# check`/CI. Verifies each file's byte size after download (see
+# scripts/fetch_cityjsonseq_corpus.sh).
+fetch-seq-data DEST='bench/data/benchmark_seq':
+    ./scripts/fetch_cityjsonseq_corpus.sh {{DEST}}
 
 # Fetch the pinned external converters the read benchmark's conversion chain
 # needs: citygml-tools (CityGML -> CityJSON) into bench/tools/ (gitignored,

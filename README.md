@@ -156,7 +156,8 @@ export+compare check. See [bench/README.md](bench/README.md).
 | `just test` / `just lint` / `just fmt` | the individual gates |
 | `just interop` | convert both fixtures and have DuckDB read the Parquet natively |
 | `just convert-all FOLDER [OUT]` | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`) |
-| `just fetch-data [DEST]` | fetch the CityJSON benchmark corpus (11 datasets) into `DEST` (default `bench/data/benchmark/`) |
+| `just fetch-data [DEST] [ONLY]` | fetch the catalogue benchmark corpus (30 real CityGML/CityJSON datasets, 6.5 GB) into `DEST` (default `bench/data/benchmark/`); `ONLY` narrows it to the entries serving one benchmark set (`default`, `no-citygml`, `all`) |
+| `just fetch-seq-data [DEST]` | fetch the legacy CityJSONSeq corpus (11 datasets, ~1.7 GB) into `DEST` (default `bench/data/benchmark_seq/`) — the ordering benchmark's input, and the continuity link to the already-published read results |
 | `just fetch-tools` | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq) |
 | `just bench FOLDER [OUT] [FORMATS]` | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `bench/read_results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set |
 | `just ordering-bench FOLDER [OUT]` | the same run restricted to the ordering axis (source-order vs Hilbert CityParquet), into `OUT` (default `bench/ordering_results`) |
