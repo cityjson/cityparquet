@@ -16,8 +16,11 @@
 #                                                citygml-tools — is absent)
 #   $SANDBOX/bin/{cargo,fcb,citygml-tools,cjseq}  stubs, prepended to PATH
 #   $SANDBOX/data/tiny.city.jsonl                a stand-in CityJSONSeq input
-#   $SANDBOX/data/tiny.gml                       a stand-in CityGML input
-#   $SANDBOX/data/empty.gml                      one with no city objects at all
+#   $SANDBOX/data/tiny.gml                       CityGML 2.0, 1 member, gml:id
+#   $SANDBOX/data/empty.gml                      no city objects at all
+#   $SANDBOX/data/no_id.gml                      a member with no gml:id
+#   $SANDBOX/data/citygml1.gml                   the version the reader refuses
+#   $SANDBOX/data/multiline.gml                  member tags split across lines
 #   $SANDBOX/out                                 OUTDIR
 #
 # The copy is what lets the `cargo` stub plant a fake `target/release/
@@ -33,7 +36,14 @@
 # removing cargo from PATH would also remove much else.
 #
 # `jq` is deliberately NOT stubbed: the stubs below emit real, parseable
-# CityJSON, so the script's object-count checks run for real against them.
+# CityJSON, so the script's object-count checks run for real against them. Its
+# own guard case hides it differently — see `jq_free_bin`.
+#
+# The stubs RECORD what they were fed (`"stub_source"` in the CityJSON they
+# emit, `stub-source.txt` in a package, the whole content of a .fcb), because
+# an assertion made against the script's own log line proves only that the
+# script printed a path, not that it read one: a mutation swapping `cjseq cat
+# -f "$CITYJSON_OUT"` for `-f "$INPUT"` once left this whole suite green.
 set -euo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -81,6 +91,33 @@ tool_free_path() {
 
 BASE_PATH="$(tool_free_path fcb cjseq citygml-tools)"
 
+# `jq` cannot be hidden the way `fcb` and `cjseq` can. Those live in
+# ~/.cargo/bin, a directory that holds nothing else the script needs, so
+# dropping it from PATH is harmless; `jq` lives in /usr/bin beside `bash`,
+# `dirname` and everything else, and dropping THAT leaves the script unable to
+# start (exit 127 from `env bash`, which is not the guard firing).
+#
+# So the jq case gets a hand-built PATH instead: one directory of symlinks to
+# exactly the commands the script can reach before the guard. If the guard is
+# deleted the run does not limp on — it dies on the first missing tool — which
+# is why the case asserts the guard's own wording and exit 1, not merely
+# "non-zero".
+jq_free_bin() {
+  local dir=$1 tool resolved
+  mkdir -p "$dir/nojq"
+  # `env` resolves `bash` through PATH, and REPO_ROOT is computed with
+  # `dirname`; the rest are what the build steps would need if the guard were
+  # gone and the run continued.
+  for tool in bash env dirname basename mkdir cat sed grep awk head tr wc \
+    find mktemp cp mv rm gzip gunzip; do
+    resolved="$(PATH="$BASE_PATH" command -v "$tool" 2>/dev/null || true)"
+    if [[ -n "$resolved" ]]; then
+      ln -sf "$resolved" "$dir/nojq/$tool"
+    fi
+  done
+  printf '%s' "$dir/nojq"
+}
+
 # new_sandbox [stub ...] -> prints the sandbox directory.
 # Named stubs ("cargo", "fcb", "citygml-tools", "cjseq") are installed into
 # $SANDBOX/bin; anything not named is simply absent from PATH.
@@ -91,20 +128,60 @@ new_sandbox() {
   cp "$PREPARE" "$dir/repo/scripts/readbench_prepare.sh"
   # One CityJSONFeature line — enough for the script's feature count to be 1.
   printf '{"type":"CityJSONFeature","id":"tiny"}\n' >"$dir/data/tiny.city.jsonl"
-  # One <cityObjectMember> — enough for the script's CityGML object count to
-  # be 1. No stub parses it as XML.
+  # CityGML inputs. No stub parses them as XML; they exist so the script's own
+  # namespace sniff and its two counts (top-level members, and how many of them
+  # carry a gml:id) have something to read.
+  #
+  # The good one: CityGML 2.0, one member, WITH a gml:id — the shape every
+  # positive CityGML case needs, because an id-less document is now refused.
   cat >"$dir/data/tiny.gml" <<'TINY_GML'
 <?xml version="1.0" encoding="UTF-8"?>
-<CityModel xmlns="http://www.opengis.net/citygml/2.0">
-  <cityObjectMember><Building/></cityObjectMember>
+<CityModel xmlns="http://www.opengis.net/citygml/2.0" xmlns:gml="http://www.opengis.net/gml">
+  <cityObjectMember><Building gml:id="tiny-1"/></cityObjectMember>
 </CityModel>
 TINY_GML
-  # …and one with none at all, for the "exists but is vacuous" case.
+  # No members at all, for the "exists but is vacuous" case.
   cat >"$dir/data/empty.gml" <<'EMPTY_GML'
 <?xml version="1.0" encoding="UTF-8"?>
-<CityModel xmlns="http://www.opengis.net/citygml/2.0">
+<CityModel xmlns="http://www.opengis.net/citygml/2.0" xmlns:gml="http://www.opengis.net/gml">
 </CityModel>
 EMPTY_GML
+  # Two members, only one of which carries a gml:id — the shape of Riga's
+  # published atgazene_lod2.gml (703 top-level objects, 0 with gml:id; identity
+  # lives in a gen:intAttribute), which citygml-tools would give fresh random
+  # ids, making its id-lookup row a miss beside every other format's hit.
+  cat >"$dir/data/no_id.gml" <<'NO_ID_GML'
+<?xml version="1.0" encoding="UTF-8"?>
+<CityModel xmlns="http://www.opengis.net/citygml/2.0" xmlns:gml="http://www.opengis.net/gml">
+  <cityObjectMember><Building gml:id="has-one"/></cityObjectMember>
+  <cityObjectMember><Building><gen:intAttribute name="OBJECTID"/></Building></cityObjectMember>
+</CityModel>
+NO_ID_GML
+  # CityGML 1.0: convertible, but the benchmark's own reader refuses it, so
+  # preparing it would leave an artefact that can never be measured.
+  cat >"$dir/data/citygml1.gml" <<'CITYGML1_GML'
+<?xml version="1.0" encoding="UTF-8"?>
+<CityModel xmlns="http://www.opengis.net/citygml/1.0" xmlns:gml="http://www.opengis.net/gml">
+  <cityObjectMember><Building gml:id="old-1"/></cityObjectMember>
+</CityModel>
+CITYGML1_GML
+  # Opening tags whose attributes continue on the next line — valid, and
+  # invisible to a line-oriented count.
+  cat >"$dir/data/multiline.gml" <<'MULTILINE_GML'
+<?xml version="1.0" encoding="UTF-8"?>
+<core:CityModel xmlns:core="http://www.opengis.net/citygml/2.0" xmlns:gml="http://www.opengis.net/gml">
+  <core:cityObjectMember
+      >
+    <Building
+        gml:id="split-1"/>
+  </core:cityObjectMember>
+  <core:cityObjectMember
+      >
+    <Building
+        gml:id="split-2"/>
+  </core:cityObjectMember>
+</core:CityModel>
+MULTILINE_GML
 
   local stub
   for stub in "$@"; do
@@ -165,13 +242,15 @@ CARGO_STUB
         cat >"$dir/bin/citygml-tools" <<'CGT_STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-# A CityJSON document with $1 top-level CityObjects.
+# A CityJSON document with $1 top-level CityObjects, recording in
+# "stub_source" the file ($2) it was derived from — so a case can assert WHICH
+# file fed this hop instead of trusting the script's own echo of the path.
 cityjson_doc() {
-  local n=$1 i objs=""
+  local n=$1 src=$2 i objs=""
   for ((i = 0; i < n; i++)); do
     objs+="${objs:+,}\"tiny$i\":{\"type\":\"Building\",\"geometry\":[]}"
   done
-  printf '{"type":"CityJSON","version":"2.0","transform":{"scale":[1,1,1],"translate":[0,0,0]},"CityObjects":{%s},"vertices":[]}\n' "$objs"
+  printf '{"type":"CityJSON","version":"2.0","stub_source":"%s","transform":{"scale":[1,1,1],"translate":[0,0,0]},"CityObjects":{%s},"vertices":[]}\n' "$src" "$objs"
 }
 sub=${1:-}
 shift || true
@@ -189,7 +268,7 @@ case "$sub" in
     [[ -n "$outdir" && -n "$src" ]] || { echo "stub citygml-tools: need -o and a source" >&2; exit 1; }
     base="$(basename "$src")"; base="${base%.*}"
     mkdir -p "$outdir"
-    cityjson_doc "${STUB_CITYJSON_OBJECTS:-1}" >"$outdir/$base.json"
+    cityjson_doc "${STUB_CITYJSON_OBJECTS:-1}" "$src" >"$outdir/$base.json"
     ;;
   --version|-V) echo "citygml-tools 0.0.0-stub" ;;
   *) echo "stub citygml-tools: unknown command '$sub'" >&2; exit 1 ;;
@@ -206,13 +285,15 @@ CGT_STUB
         cat >"$dir/bin/cjseq" <<'CJSEQ_STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-# A CityJSON document with $1 top-level CityObjects.
+# A CityJSON document with $1 top-level CityObjects, recording in
+# "stub_source" the file ($2) it was derived from — so a case can assert WHICH
+# file fed this hop instead of trusting the script's own echo of the path.
 cityjson_doc() {
-  local n=$1 i objs=""
+  local n=$1 src=$2 i objs=""
   for ((i = 0; i < n; i++)); do
     objs+="${objs:+,}\"tiny$i\":{\"type\":\"Building\",\"geometry\":[]}"
   done
-  printf '{"type":"CityJSON","version":"2.0","transform":{"scale":[1,1,1],"translate":[0,0,0]},"CityObjects":{%s},"vertices":[]}\n' "$objs"
+  printf '{"type":"CityJSON","version":"2.0","stub_source":"%s","transform":{"scale":[1,1,1],"translate":[0,0,0]},"CityObjects":{%s},"vertices":[]}\n' "$src" "$objs"
 }
 sub=${1:-}
 shift || true
@@ -224,15 +305,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -f "$src" ]] || { echo "stub cjseq: no readable -f input ('$src')" >&2; exit 1; }
+# $STUB_CJSEQ_FAIL names a subcommand that should emit a partial result and
+# then die, so a case can prove no truncated artefact is left behind.
 case "$sub" in
   cat)
-    printf '%s\n' '{"type":"CityJSON","version":"2.0","transform":{"scale":[1,1,1],"translate":[0,0,0]},"CityObjects":{},"vertices":[]}'
+    # The header line records its source, so the CityJSONSeq artefact itself
+    # carries proof of which document it was cut from.
+    printf '{"type":"CityJSON","version":"2.0","stub_source":"%s","transform":{"scale":[1,1,1],"translate":[0,0,0]},"CityObjects":{},"vertices":[]}\n' "$src"
+    if [[ "${STUB_CJSEQ_FAIL:-}" == "cat" ]]; then
+      printf '{"type":"CityJSONFeature","id":"trunc'
+      exit 1
+    fi
     for ((i = 0; i < ${STUB_SEQ_FEATURES:-1}; i++)); do
       printf '{"type":"CityJSONFeature","id":"tiny%s","CityObjects":{"tiny%s":{"type":"Building","geometry":[]}},"vertices":[]}\n' "$i" "$i"
     done
     ;;
   collect)
-    cityjson_doc "${STUB_CITYJSON_OBJECTS:-1}"
+    if [[ "${STUB_CJSEQ_FAIL:-}" == "collect" ]]; then
+      printf '{"type":"CityJSON","version":'
+      exit 1
+    fi
+    cityjson_doc "${STUB_CITYJSON_OBJECTS:-1}" "$src"
     ;;
   *) echo "stub cjseq: unknown subcommand '$sub'" >&2; exit 1 ;;
 esac
@@ -284,7 +377,7 @@ run_prepare() {
   # CITYGML_TOOLS is blanked, not inherited: a developer who exported it to
   # point at their own checkout would otherwise smuggle a real citygml-tools
   # into the cases that exist to prove it is absent.
-  PATH="$dir/bin:$BASE_PATH" CITYGML_TOOLS="" \
+  PATH="$dir/bin:${RUN_PREPARE_PATH:-$BASE_PATH}" CITYGML_TOOLS="" \
     "$dir/repo/scripts/readbench_prepare.sh" "$@" \
     >"$LAST_LOG" 2>&1
   LAST_RC=$?
@@ -448,6 +541,12 @@ case_default_on_cityjsonseq_skips_only_citygml() {
     fail "$name" "synthesised a CityGML artefact by reverse conversion"
     return
   fi
+  # The CityJSON was collected from the INPUT itself — never out of a
+  # CityParquet package. Asserted from the artefact's recorded source.
+  if ! grep -qF "\"stub_source\":\"$dir/data/tiny.city.jsonl\"" "$dir/out/tiny.city.json"; then
+    fail "$name" "the CityJSON was not collected from the input; got: $(cat "$dir/out/tiny.city.json")"
+    return
+  fi
   # The full sentence, not a bare "citygml": the `-- formats: …` echo prints
   # that word on every run of the default set.
   if ! log_mentions "citygml: not derivable from a CityJSON input"; then
@@ -508,10 +607,14 @@ case_citygml_input_builds_the_whole_chain() {
     fi
   done
   # The CityJSONSeq must have been cut from the CityJSON the chain just
-  # produced — not from the .gml, and certainly not from the package. The log
-  # line names both endpoints, so it pins the edge, not merely the step.
-  if ! log_mentions "cjseq cat $dir/out/tiny.city.json -> $dir/out/tiny.city.jsonl"; then
-    fail "$name" "the CityJSONSeq was not cut from the derived CityJSON; log: $(cat "$LAST_LOG")"
+  # produced — not from the .gml, and certainly not from the package. This is
+  # THE edge the chain's fairness rests on, so it is asserted from the
+  # artefact's own recorded source, not from the script's echo: a hop that
+  # logs one file and reads another would sail past a log-only match (it did,
+  # until the reviewer mutated `cjseq cat -f "$CITYJSON_OUT"` to `-f "$INPUT"`
+  # and the whole suite stayed green).
+  if ! grep -qF "\"stub_source\":\"$dir/out/tiny.city.json\"" "$dir/out/tiny.city.jsonl"; then
+    fail "$name" "the CityJSONSeq records source '$(head -1 "$dir/out/tiny.city.jsonl")', not the derived CityJSON"
     return
   fi
   # …and FlatCityBuf and both CityParquet packages must have been fed that
@@ -698,6 +801,174 @@ case_conversion_loss_is_reported() {
 }
 
 # --------------------------------------------------------------------------
+# Case 7i: a CityGML document whose top-level objects carry no `gml:id` is
+# refused outright.
+#
+# citygml-tools mints a fresh random id for such an object — a different one
+# on every run — so the id the benchmark samples (from the derived CityJSONSeq)
+# does not appear in the .gml at all. `citygml`'s id-lookup then scores a MISS
+# beside every other format's hit: not a slower lookup, a different query, and
+# never publishable. The coordinator's cross-format self-consistency check
+# covers only AttrFilter(object_type), so nothing downstream would catch it —
+# which is why the refusal has to happen here.
+#
+# This is the shape of Riga's published atgazene_lod2.gml (703 top-level
+# objects, none with a gml:id).
+# --------------------------------------------------------------------------
+case_citygml_without_gml_ids_is_refused() {
+  local name="a CityGML input whose objects lack gml:id is refused"
+  local dir
+  dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
+  # The DEFAULT format set, so this also pins where the refusal happens: it is
+  # a property of the input, so it must fire before anything is built. A
+  # refusal at the end would leave a .gml sitting in the prepared directory
+  # that a later run — or a coordinator pointed at that directory — would
+  # happily measure, which is the very row this check exists to prevent.
+  run_prepare "$dir" "$dir/data/no_id.gml" "$dir/out"
+  if ! expect_guard "$name" "1 of 2 top-level objects carry a gml:id"; then
+    return
+  fi
+  # The reason, not just the count: this refusal only makes sense if it says
+  # which measurement it is protecting.
+  if ! log_mentions "id-lookup"; then
+    fail "$name" "the refusal does not name id-lookup as the reason; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ -n "$(find "$dir/out" -mindepth 1 -print -quit)" ]]; then
+    fail "$name" "a refused input still left artefacts behind: $(find "$dir/out" -mindepth 1)"
+    return
+  fi
+  if [[ -f "$dir/repo/cargo-invoked" ]]; then
+    fail "$name" "built the CityParquet CLI before refusing an input it cannot use"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 7j: a CityGML 1.0 input is refused. citygml-tools converts it happily,
+# so the whole chain would go green — but the benchmark's own reader accepts
+# only CityGML 2.0 (crates/cityparquet/src/source.rs), so the `citygml`
+# artefact could never be measured. Preparing an unmeasurable artefact is the
+# same failure as preparing an empty one.
+# --------------------------------------------------------------------------
+case_citygml_1_0_is_refused() {
+  local name="a CityGML 1.0 input is refused as unmeasurable"
+  local dir
+  dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
+  run_prepare "$dir" "$dir/data/citygml1.gml" "$dir/out"
+  if ! expect_guard "$name" "declares CityGML 1.0"; then
+    return
+  fi
+  if ! log_mentions "only CityGML 2.0"; then
+    fail "$name" "the refusal does not say which version is required; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  # Same fail-fast requirement as the gml:id case above.
+  if [[ -n "$(find "$dir/out" -mindepth 1 -print -quit)" ]]; then
+    fail "$name" "a refused input still left artefacts behind: $(find "$dir/out" -mindepth 1)"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 7k: an opening tag whose attributes continue on the next line is still
+# counted. A line-oriented count returns 0 for it and hard-fails a perfectly
+# valid document.
+# --------------------------------------------------------------------------
+case_multiline_member_tags_are_counted() {
+  local name="member tags split across lines are counted"
+  local dir
+  dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
+  run_prepare "$dir" --formats citygml "$dir/data/multiline.gml" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! log_mentions "citygml: 2 top-level object(s)"; then
+    fail "$name" "wrong count for split tags; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 7l: `jq` is guarded like every other external tool it stands beside.
+# --------------------------------------------------------------------------
+case_cityjson_without_jq() {
+  local name="--formats cityjson without jq fails at the guard"
+  local dir
+  dir="$(new_sandbox cargo fcb cjseq)"
+  RUN_PREPARE_PATH="$(jq_free_bin "$dir")" \
+    run_prepare "$dir" --formats cityjson "$dir/data/tiny.city.jsonl" "$dir/out"
+  if ! expect_guard "$name" "error: jq not found"; then
+    return
+  fi
+  if [[ -n "$(find "$dir/out" -mindepth 1 -print -quit)" ]]; then
+    fail "$name" "a run that failed its guard still built something"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 7m: a converter that dies midway leaves no truncated artefact behind —
+# not even the temporary it was writing. A leftover `.tmp` is litter; a
+# leftover half-written artefact would be measured.
+# --------------------------------------------------------------------------
+case_a_dying_converter_leaves_no_debris() {
+  local name="a converter that dies midway leaves no debris"
+  local dir
+  dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
+  STUB_CJSEQ_FAIL=cat \
+    run_prepare "$dir" --formats cityjsonseq "$dir/data/tiny.gml" "$dir/out"
+  if [[ $LAST_RC -eq 0 ]]; then
+    fail "$name" "a dying converter did not fail the run; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ -e "$dir/out/tiny.city.jsonl" ]]; then
+    fail "$name" "left a truncated CityJSONSeq artefact behind"
+    return
+  fi
+  local debris
+  # The parentheses are load-bearing: `find A -o B -print` prints only for B,
+  # so an unbracketed version silently never looks for the *.tmp at all.
+  debris="$(find "$dir/out" \( -name '*.tmp' -o -name '.cityjson.*' \) -print)"
+  if [[ -n "$debris" ]]; then
+    fail "$name" "left debris behind: $debris"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 7n: an intermediate the chain had to build but nobody asked for is
+# reported. `--formats cityparquet` on a .gml cannot avoid writing a CityJSON
+# on the way to the CityJSONSeq; leaving it unmentioned makes the prepared
+# directory look like it holds an artefact that was measured.
+# --------------------------------------------------------------------------
+case_chain_intermediates_are_reported() {
+  local name="an unrequested chain intermediate is reported as one"
+  local dir
+  dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
+  run_prepare "$dir" --formats cityparquet "$dir/data/tiny.gml" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ ! -e "$dir/out/tiny.city.json" ]]; then
+    fail "$name" "the CityJSON intermediate was not built"
+    return
+  fi
+  if ! log_mentions "chain intermediates (not requested): $dir/out/tiny.city.json"; then
+    fail "$name" "the intermediate is not reported as one; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
 # Case 8: idempotency survives the flag — a second run skips what is already
 # there rather than rebuilding it.
 # --------------------------------------------------------------------------
@@ -780,6 +1051,12 @@ case_object_less_citygml_is_rejected
 case_object_less_cityjson_is_rejected
 case_feature_less_cityjsonseq_is_rejected
 case_conversion_loss_is_reported
+case_citygml_without_gml_ids_is_refused
+case_citygml_1_0_is_refused
+case_multiline_member_tags_are_counted
+case_cityjson_without_jq
+case_a_dying_converter_leaves_no_debris
+case_chain_intermediates_are_reported
 case_second_run_skips
 case_vocabulary_matches_the_rust_enum
 

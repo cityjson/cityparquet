@@ -32,9 +32,26 @@
 # could emit the CityJSON artefacts and it would be tempting, but deriving a
 # competitor's input from the format under test would favour it.
 #
-# citygml-tools cannot emit CityJSONSeq, so `cjseq` performs that hop; from a
-# CityJSON/CityJSONSeq INPUT the CityJSON artefact is likewise cut by `cjseq
-# collect`, never by a CityParquet export.
+# WHY `cjseq` CUTS THE SEQ, and not citygml-tools. citygml-tools 2.5.0 *can*
+# write CityJSONSeq directly (`-l/--json-lines`), so this is a choice, not a
+# limitation. Three reasons against using it:
+#
+#   1. `cityjson` is itself a measured format, so the whole CityJSON document
+#      has to be produced anyway. `-l` would not replace that step, it would
+#      add a SECOND, independent citygml-tools run beside it.
+#   2. That second run would derive the CityJSONSeq from the CityGML again,
+#      instead of from the CityJSON already in hand — breaking the one rule
+#      this chain exists to keep: each artefact derives from the one before it.
+#   3. For input whose objects have no `gml:id`, citygml-tools mints fresh ids
+#      per run, so the two runs would disagree — the `cityjson` and
+#      `cityjsonseq` artefacts would carry DIFFERENT ids for the same objects,
+#      silently desynchronising id-lookup across two measured formats. (The
+#      verification below refuses such input outright, but the argument holds
+#      regardless.)
+#
+# `cjseq` is unavoidable in any case: from a CityJSON/CityJSONSeq INPUT the
+# CityJSON artefact is cut by `cjseq collect`, which citygml-tools cannot do at
+# all — and never by a CityParquet export.
 #
 # CITYGML IS NOT SYNTHESISED. From a CityJSON/CityJSONSeq INPUT the `citygml`
 # artefact is reported as not derivable and skipped — the only way to produce
@@ -205,6 +222,68 @@ require_tool() {
 # the tools the request actually needs. Everything below this point is
 # expected to succeed.
 
+# Two numbers about a CityGML document, printed as "MEMBERS WITH_GML_ID":
+# how many top-level <cityObjectMember> elements it has, and how many of those
+# members' city objects carry a `gml:id`.
+#
+# awk with RS="<" rather than grep, because the count must be tag-oriented,
+# not line-oriented: a perfectly valid
+#
+#     <core:cityObjectMember
+#         xlink:href="#x">
+#
+# splits an opening tag across two lines, and a line-oriented regex counts it
+# as zero — hard-failing a good document. Splitting on '<' makes every record
+# exactly one tag plus its following text, whatever the line breaks.
+#
+# The gml:id half exists because citygml-tools mints a FRESH RANDOM id for an
+# object that has none, so the id the benchmark samples from the derived
+# CityJSONSeq is absent from the .gml entirely — see the refusal below.
+citygml_counts() {
+  awk '
+    BEGIN { RS = "<"; members = 0; ids = 0; expect = 0 }
+    {
+      tag = $0
+      p = index(tag, ">")
+      if (p > 0) tag = substr(tag, 1, p - 1)
+      if (tag == "" || tag ~ /^[!?]/ || tag ~ /^\//) next   # text, comment/PI, closing
+      name = tag
+      sub(/[ \t\r\n\/].*$/, "", name)
+      bare = name
+      sub(/^[^:]*:/, "", bare)
+      if (bare == "cityObjectMember") {
+        members++
+        # A self-closing member (an xlink reference) has no city object of its
+        # own following it, so nothing may be attributed to it.
+        expect = (tag ~ /\/[ \t\r\n]*$/) ? 0 : 1
+        next
+      }
+      if (expect) {
+        if (tag ~ /gml:id[ \t\r\n]*=/) ids++
+        expect = 0
+      }
+    }
+    END { print members, ids }
+  ' "$1"
+}
+
+# The CityGML version a document declares, from the citygml namespace URI its
+# root element binds (default or prefixed); empty when none is found. Only the
+# head of the file is read — the root element is the first thing in it, and
+# these documents run to gigabytes.
+citygml_declared_version() {
+  local found
+  # No `| head -1` on the end of this pipeline: `head` exiting early can hand
+  # `grep` a SIGPIPE, and under `set -o pipefail` that would abort the script
+  # on a perfectly good document — a latent failure that only shows up on a
+  # header with enough matches to fill the pipe buffer. Take the first match
+  # with a parameter expansion instead.
+  found="$(head -c 262144 "$1" \
+    | { grep -oE 'http://www\.opengis\.net/citygml/[0-9]+\.[0-9]+' || true; })"
+  found=${found%%$'\n'*}
+  printf '%s' "${found##*/}"
+}
+
 # What kind of document INPUT is. Only a CityGML input starts the chain at its
 # head; a CityJSON/CityJSONSeq input joins it midway.
 INPUT_KIND="cityjson"   # any of: citygml | cityjson | cityjsonseq
@@ -284,6 +363,67 @@ if [[ "$NEED_CITYJSON" -eq 1 ]]; then
   require_tool jq "the CityJSON object-count check"
 fi
 
+# --- is this CityGML input fit to prepare at all? --------------------------
+# Read from INPUT, here in the preflight, so an unfit input costs nothing and
+# — crucially — leaves NOTHING behind. A refusal at verification time would
+# already have copied the .gml into OUTDIR, where a later run, or a
+# coordinator pointed at that directory, would find it and measure it: exactly
+# the incomparable row these checks exist to prevent.
+GML_OBJECTS=""
+GML_WITH_IDS=""
+if [[ "$INPUT_KIND" == "citygml" ]] \
+  && { [[ "$BUILD_CITYGML" -eq 1 ]] || [[ "$NEED_CITYJSON" -eq 1 ]]; }; then
+  read -r GML_OBJECTS GML_WITH_IDS <<<"$(citygml_counts "$INPUT")"
+  if [[ "$GML_OBJECTS" -le 0 ]]; then
+    echo "error: $INPUT contains no <cityObjectMember> elements (expected > 0)" >&2
+    exit 1
+  fi
+
+  # Two ways a CityGML document can convert perfectly and still be unfit to
+  # MEASURE. Both are refusals rather than warnings: this script's job is to
+  # produce artefacts the benchmark can compare, and an artefact that will
+  # silently produce an incomparable row is worse than no artefact at all —
+  # the coordinator would carry on and publish the row. They apply only when
+  # the `citygml` artefact itself is being built: every other format is read
+  # from the derived CityJSON, whose ids are self-consistent whatever the
+  # source did.
+  if [[ "$BUILD_CITYGML" -eq 1 ]]; then
+    # 1. The reader accepts only CityGML 2.0 (`sniff_citygml` in
+    #    crates/cityparquet/src/source.rs rejects everything else), while
+    #    citygml-tools converts 1.0 happily — so without this the whole chain
+    #    goes green around an artefact that can never be read.
+    GML_VERSION="$(citygml_declared_version "$INPUT")"
+    if [[ -z "$GML_VERSION" ]]; then
+      echo "warn: could not find a CityGML namespace in $INPUT; the benchmark reader" \
+        "accepts only CityGML 2.0 and may refuse this artefact" >&2
+    elif [[ "$GML_VERSION" != "2.0" ]]; then
+      echo "error: $INPUT declares CityGML $GML_VERSION; the benchmark's reader" >&2
+      echo "       supports only CityGML 2.0, so this artefact could never be measured" >&2
+      exit 1
+    fi
+
+    # 2. Identity. citygml-tools mints a fresh random id for a top-level
+    #    object with no `gml:id` — a different one on every run — so the id
+    #    the benchmark samples from the derived CityJSONSeq is not in the .gml
+    #    at all, and `citygml`'s id-lookup scores a MISS (result_count 0)
+    #    beside every other format's hit. That is not a slower lookup, it is a
+    #    different query, and the row is not publishable. Nothing downstream
+    #    catches it either: the coordinator's cross-format self-consistency
+    #    check covers AttrFilter(object_type) only, never IdLookup.
+    #
+    #    Not hypothetical: Riga's published atgazene_lod2.gml has 703 top-level
+    #    objects and 0 gml:ids (identity lives in a gen:intAttribute OBJECTID).
+    if [[ "$GML_WITH_IDS" -lt "$GML_OBJECTS" ]]; then
+      echo "error: only $GML_WITH_IDS of $GML_OBJECTS top-level objects carry a gml:id in $INPUT" >&2
+      echo "       citygml-tools mints a fresh random id for each of the rest, so the id" >&2
+      echo "       the benchmark samples would be absent from this artefact and the" >&2
+      echo "       id-lookup scenario would measure a miss against every other format's" >&2
+      echo "       hit; refusing to prepare an artefact that cannot be compared" >&2
+      exit 1
+    fi
+  fi
+fi
+
 NEED_CLI=0
 if want cityparquet || want cityparquet-hilbert; then
   NEED_CLI=1
@@ -339,18 +479,13 @@ same_file() {
 # non-vacuous, and surfacing conversion loss across the chain, which the
 # design spec's fairness caveats say must be asserted rather than assumed (a
 # CityGML row and a CityParquet row are only comparable if the conversion
-# between them was lossless).
+# between them was lossless). The CityGML end of it is counted up in the
+# preflight, because it also decides whether this input is fit to prepare
+# at all.
 #
 # `fcb info`'s feature count is deliberately NOT folded into the comparison:
 # it is checked separately below, and CityParquet's own object_count counts
 # descendants (BuildingParts) too, so neither is the same quantity.
-
-# Top-level <cityObjectMember> elements. Matches an opening tag with or
-# without a namespace prefix; `</core:cityObjectMember>` cannot match, because
-# the optional prefix may not begin with '/'.
-citygml_object_count() {
-  { grep -oE '<([A-Za-z_][A-Za-z0-9_.-]*:)?cityObjectMember[ />]' "$1" || true; } | wc -l | tr -d ' '
-}
 
 # CityObjects with no "parents" member, i.e. the first-level ones — the same
 # quantity a CityJSONSeq counts as features.
@@ -395,6 +530,12 @@ fi
 # Artefacts this run is responsible for, in build order, for the closing
 # summary.
 BUILT=()
+
+# Files the chain HAD to write on the way to something that was requested —
+# `--formats cityparquet` on a .gml cannot reach the CityJSONSeq without a
+# CityJSON. They are reported separately at the end rather than silently left
+# in OUTDIR, where they would look like artefacts this run measured.
+INTERMEDIATES=()
 
 # The CityJSONSeq every downstream artefact (gz / fcb / cityparquet) is cut
 # from. It is INPUT itself unless INPUT is CityGML, in which case block 3
@@ -451,16 +592,21 @@ if [[ "$NEED_CITYJSON" -eq 1 ]]; then
     trap - EXIT
   elif [[ "$INPUT_KIND" == "cityjsonseq" ]]; then
     echo "-- cjseq collect $INPUT -> $CITYJSON_OUT"
-    # Via a temporary: a `cjseq` that dies midway must not leave a truncated
-    # document that the next run's validity check would happily accept.
+    # Via a temporary, and the temporary is cleaned up on any exit: a `cjseq`
+    # that dies midway must leave neither a truncated document that the next
+    # run's validity check would happily accept, nor debris beside it.
+    trap 'rm -f "$CITYJSON_OUT.tmp"' EXIT
     cjseq collect -f "$INPUT" >"$CITYJSON_OUT.tmp"
     mv "$CITYJSON_OUT.tmp" "$CITYJSON_OUT"
+    trap - EXIT
   else
     echo "-- copy $INPUT -> $CITYJSON_OUT"
     cp "$INPUT" "$CITYJSON_OUT"
   fi
   if want cityjson; then
     BUILT+=("$CITYJSON_OUT")
+  else
+    INTERMEDIATES+=("$CITYJSON_OUT")
   fi
 fi
 
@@ -471,12 +617,16 @@ if [[ "$NEED_SEQ" -eq 1 ]]; then
     echo "skip $SEQ_OUT (already present)"
   else
     echo "-- cjseq cat $CITYJSON_OUT -> $SEQ_OUT"
+    trap 'rm -f "$SEQ_OUT.tmp"' EXIT
     cjseq cat -f "$CITYJSON_OUT" >"$SEQ_OUT.tmp"
     mv "$SEQ_OUT.tmp" "$SEQ_OUT"
+    trap - EXIT
   fi
   SEQ_INPUT="$SEQ_OUT"
   if want cityjsonseq; then
     BUILT+=("$SEQ_OUT")
+  else
+    INTERMEDIATES+=("$SEQ_OUT")
   fi
 fi
 
@@ -551,33 +701,26 @@ echo "-- verifying artefacts"
 # missing, because the benchmark would happily measure it. The counts are then
 # compared to each other, so a lossy hop shows up as a warning rather than as
 # an unexplained gap in the results table.
-GML_OBJECTS=""
+# (GML_OBJECTS/GML_WITH_IDS are NOT reset here — the preflight computed them
+# from the source document and this block reports and compares them.)
 CITYJSON_OBJECTS=""
 SEQ_FEATURES=""
 
 if [[ "$BUILD_CITYGML" -eq 1 ]]; then
   file_is_valid "$GML_OUT" || { echo "error: missing/empty file: $GML_OUT" >&2; exit 1; }
 fi
-# Counted from whichever CityGML document this run has — the artefact when one
-# was built, otherwise the input it would have been copied from. The head of
-# the chain is the baseline every later count is compared against, so it is
-# read even by a run that did not ask for the `citygml` artefact: the
+# The counts come from the preflight, which already read the source document
+# (and refused it if it was empty, the wrong version, or short of gml:ids).
+# They are reported here, beside the other artefacts' counts, and used as the
+# baseline the derived CityJSON is compared against — which is why they are
+# taken even by a run that never asked for the `citygml` artefact: the
 # CityGML -> CityJSON hop is where loss is likeliest (citygml-tools skips ADE
-# content it has no extension for), and that is precisely the hop that would
-# otherwise go unmeasured.
-if [[ "$INPUT_KIND" == "citygml" ]] \
-  && { [[ "$BUILD_CITYGML" -eq 1 ]] || [[ "$NEED_CITYJSON" -eq 1 ]]; }; then
+# content it has no extension for), and it would otherwise go unmeasured.
+if [[ -n "$GML_OBJECTS" ]]; then
+  echo "  citygml: $GML_OBJECTS top-level object(s) in $INPUT"
   if [[ "$BUILD_CITYGML" -eq 1 ]]; then
-    GML_COUNTED="$GML_OUT"
-  else
-    GML_COUNTED="$INPUT"
+    echo "  citygml: all $GML_WITH_IDS object(s) carry a gml:id (id-lookup is comparable)"
   fi
-  GML_OBJECTS="$(citygml_object_count "$GML_COUNTED")"
-  if [[ "$GML_OBJECTS" -le 0 ]]; then
-    echo "error: $GML_COUNTED contains no <cityObjectMember> elements (expected > 0)" >&2
-    exit 1
-  fi
-  echo "  citygml: $GML_OBJECTS top-level object(s) in $GML_COUNTED"
 fi
 if [[ "$NEED_CITYJSON" -eq 1 ]]; then
   file_is_valid "$CITYJSON_OUT" || { echo "error: missing/empty file: $CITYJSON_OUT" >&2; exit 1; }
@@ -588,7 +731,7 @@ if [[ "$NEED_CITYJSON" -eq 1 ]]; then
   fi
   echo "  cityjson: $CITYJSON_OBJECTS top-level object(s) in $CITYJSON_OUT"
   if [[ -n "$GML_OBJECTS" ]]; then
-    report_count_drift "$GML_COUNTED" "$GML_OBJECTS" "$CITYJSON_OUT" "$CITYJSON_OBJECTS"
+    report_count_drift "$INPUT" "$GML_OBJECTS" "$CITYJSON_OUT" "$CITYJSON_OBJECTS"
   fi
 fi
 if [[ "$NEED_SEQ" -eq 1 ]]; then
@@ -626,6 +769,14 @@ if want flatcitybuf; then
     exit 1
   fi
   echo "  fcb info: $FEATURES features in $FCB_OUT"
+fi
+
+if [[ ${#INTERMEDIATES[@]} -gt 0 ]]; then
+  INTERMEDIATE_SUMMARY=""
+  for out in "${INTERMEDIATES[@]}"; do
+    INTERMEDIATE_SUMMARY+="${INTERMEDIATE_SUMMARY:+, }$out"
+  done
+  echo "chain intermediates (not requested): $INTERMEDIATE_SUMMARY"
 fi
 
 if [[ ${#BUILT[@]} -eq 0 ]]; then
