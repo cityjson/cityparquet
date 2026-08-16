@@ -48,18 +48,8 @@ fn an_unknown_name_names_every_valid_one() {
     }
 }
 
-#[test]
-fn duckdb_parquet_is_not_a_child_format() {
-    // It is a SQL-engine baseline driven by scripts/readbench_duckdb.sh; the
-    // --child path must refuse it rather than pretend to run it.
-    assert!(!Format::DuckDbParquet.is_child_format());
-    for f in Format::ALL {
-        if f != Format::DuckDbParquet {
-            assert!(
-                f.is_child_format(),
-                "{} should be a child format",
-                f.as_str()
-            );
-        }
-    }
-}
+// Which formats the `--child` path will run is asserted where the dispatch
+// itself lives: `formats::resolve`'s own unit test enumerates `Format::ALL`
+// and requires a runner for every variant except `duckdb-parquet`, which must
+// error cleanly. That is the production statement of the same fact, so it is
+// tested there rather than against a second, parallel classifier here.

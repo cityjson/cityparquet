@@ -80,7 +80,8 @@ pub struct RunOptions {
     /// Warm repeats per measurement (a further, discarded warmup precedes
     /// every one). Must be >= 1.
     pub repeat: usize,
-    /// Requested formats; `None`/empty selects [`DEFAULT_FORMATS`].
+    /// Requested formats; `None`/empty selects [`Format::DEFAULT_SET`], the
+    /// format-comparison set.
     pub formats: Option<Vec<Format>>,
     /// Requested scenario names (canonical [`Scenario::as_str`] spelling,
     /// case-insensitive); `None`/empty selects every [`Scenario::ALL`].
@@ -103,18 +104,6 @@ pub enum Transport {
     Local,
     Http,
 }
-
-/// Formats this coordinator drives when `--formats` is omitted.
-/// [`Format::DuckDbParquet`] is deliberately excluded — it is a separate
-/// SQL-engine baseline driven entirely by `scripts/readbench_duckdb.sh`
-/// (Task 12), never a `--child` format.
-const DEFAULT_FORMATS: [Format; 5] = [
-    Format::CityParquet,
-    Format::CityParquetHilbert,
-    Format::FlatCityBuf,
-    Format::CityJsonSeq,
-    Format::CityJsonSeqGz,
-];
 
 /// `(fraction of the dataset bbox's x/y extent, notes tag)` for
 /// [`Scenario::BBoxQuery`]'s three selectivity targets — one CSV row per
@@ -161,11 +150,16 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // comment).
     let cp_table = locate_cityparquet_table(&opts.prepared_dir, base)?;
 
-    let requested_formats: Vec<Format> = match &opts.formats {
-        Some(v) if !v.is_empty() => v.clone(),
-        _ => DEFAULT_FORMATS.to_vec(),
+    // Who chose the format list matters to how a skip below is reported: an
+    // operator who NAMED a format is told about it once, in passing; a
+    // default-set run that quietly measured a subset would otherwise be
+    // published as "the format comparison" (see the summary after this loop).
+    let (requested_formats, chosen_by_default): (Vec<Format>, bool) = match &opts.formats {
+        Some(v) if !v.is_empty() => (v.clone(), false),
+        _ => (Format::DEFAULT_SET.to_vec(), true),
     };
 
+    let mut skipped_formats: Vec<Format> = Vec::new();
     let mut resolved_formats: Vec<(Format, Source)> = Vec::new();
     for &format in &requested_formats {
         match resolve_format_artefact(
@@ -179,32 +173,59 @@ pub fn run(opts: &RunOptions) -> Result<()> {
             ArtefactResolution::Source(Source::Local(path)) if path.exists() => {
                 resolved_formats.push((format, Source::Local(path)));
             }
-            ArtefactResolution::Source(Source::Local(path)) => eprintln!(
-                "cityparquet-readbench: skipping format '{format}': missing artefact {} \
-                 (run `just readbench-prepare {}` first)",
-                path.display(),
-                opts.input.display()
-            ),
+            ArtefactResolution::Source(Source::Local(path)) => {
+                skipped_formats.push(format);
+                eprintln!(
+                    "cityparquet-readbench: skipping format '{format}': missing artefact {} \
+                     (run `just readbench-prepare {}` first)",
+                    path.display(),
+                    opts.input.display()
+                )
+            }
             // Optimistic, no existence check: a missing remote object
             // surfaces as a natural child-process error, not a preflight
             // HEAD request this coordinator would otherwise need to make.
             ArtefactResolution::Source(source @ Source::Http { .. }) => {
                 resolved_formats.push((format, source));
             }
-            ArtefactResolution::NotCoordinated => eprintln!(
-                "cityparquet-readbench: skipping format '{format}': driven by \
-                 scripts/readbench_duckdb.sh, not this coordinator"
-            ),
-            ArtefactResolution::NonUtf8Key => eprintln!(
-                "cityparquet-readbench: skipping format '{format}': its artefact path is not \
-                 valid UTF-8, so no HTTP key can be derived from it"
-            ),
+            ArtefactResolution::NotCoordinated => {
+                skipped_formats.push(format);
+                eprintln!(
+                    "cityparquet-readbench: skipping format '{format}': driven by \
+                     scripts/readbench_duckdb.sh, not this coordinator"
+                )
+            }
+            ArtefactResolution::NonUtf8Key => {
+                skipped_formats.push(format);
+                eprintln!(
+                    "cityparquet-readbench: skipping format '{format}': its artefact path is not \
+                     valid UTF-8, so no HTTP key can be derived from it"
+                )
+            }
         }
     }
     if resolved_formats.is_empty() {
         bail!(
             "no requested format has a present artefact for dataset '{dataset}'; nothing to run \
              (run `just readbench-prepare {}` first)",
+            opts.input.display()
+        );
+    }
+    // A skip is one line of noise when the operator NAMED the format — they
+    // know what they asked for. When the coordinator itself chose the
+    // format-comparison set, an incomplete run produces a CSV that LOOKS like
+    // the comparison but silently omits formats, so it is reported as the
+    // spoiled result it is (loudly, and only for the default set).
+    if chosen_by_default && !skipped_formats.is_empty() {
+        let missing: Vec<&str> = skipped_formats.iter().map(|f| f.as_str()).collect();
+        eprintln!(
+            "cityparquet-readbench: WARNING: this run measured {} of the {} formats in the \
+             default format-comparison set, so its results are not a complete format \
+             comparison; missing: {}. Run `just readbench-prepare {}` to build every artefact, \
+             or pass an explicit --formats to measure a subset deliberately.",
+            resolved_formats.len(),
+            requested_formats.len(),
+            missing.join(", "),
             opts.input.display()
         );
     }

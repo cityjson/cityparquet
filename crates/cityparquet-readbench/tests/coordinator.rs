@@ -327,6 +327,101 @@ fn run_skips_a_format_with_no_prepared_artefact_and_still_produces_the_other() {
     assert_eq!(rows[0].field("format"), "cityparquet");
 }
 
+/// A skipped format is a different kind of event depending on WHO chose it.
+/// When the operator names `--formats`, a missing artefact is answered by the
+/// per-format skip note above and nothing more. When `--formats` is omitted,
+/// the coordinator picked the format-comparison set itself, and a CSV holding
+/// only some of it is not the comparison the operator asked for — silently
+/// dropping four of five formats would be published as "the format
+/// comparison". So a default-set run that resolves fewer formats than the set
+/// holds must say so loudly, naming exactly what is missing.
+///
+/// Prepares only the `cityparquet` package (required regardless, for
+/// QueryParams derivation), so of the default set only `cityjsonseq` —
+/// which reads the `--input` itself — can resolve.
+#[test]
+fn a_default_set_run_says_loudly_when_it_could_not_measure_the_whole_set() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    let out_csv = prepared.path().join("out.csv");
+
+    // No `--formats`: the coordinator selects the format-comparison set.
+    let output = run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+    ]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not a complete format comparison"),
+        "an incomplete default-set run must say the CSV is not a complete format \
+         comparison; stderr:\n{stderr}"
+    );
+    for missing in ["citygml", "cityjson", "flatcitybuf", "cityparquet-hilbert"] {
+        assert!(
+            stderr.contains(missing),
+            "the warning must name the missing format '{missing}'; stderr:\n{stderr}"
+        );
+    }
+
+    // Only `cityjsonseq` could resolve, and it still ran.
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected only cityjsonseq's count row: {csv_text}"
+    );
+    assert_eq!(rows[0].field("format"), "cityjsonseq");
+}
+
+/// The mirror of the case above: when the operator NAMED the formats, the
+/// per-format skip note is the whole story — no set-level "incomplete
+/// comparison" alarm, because there is no set the coordinator chose.
+#[test]
+fn an_explicitly_requested_skip_does_not_raise_the_incomplete_set_alarm() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    let out_csv = prepared.path().join("out.csv");
+
+    let output = run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet,flatcitybuf",
+    ]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("flatcitybuf"),
+        "the per-format skip note must still appear; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("not a complete format comparison"),
+        "an explicitly-requested skip is not an incomplete default set; stderr:\n{stderr}"
+    );
+}
+
 /// Object-level scenarios (`AttrFilter`/`AttrStats`/`Project`/`IdLookup`) are
 /// CityObject-level for EVERY format (see `coordinator`'s own module doc),
 /// so their selectivity denominator must be the dataset-global CityObject

@@ -137,7 +137,8 @@ struct RunArgs {
     /// Comma-separated format names — one of `Format::ALL`'s canonical
     /// names each, validated by `Format::from_str` (an unknown name is
     /// rejected here, never silently skipped); omit for
-    /// `coordinator::DEFAULT_FORMATS`.
+    /// `Format::DEFAULT_SET`, the format-comparison set. `Format::ORDERING_SET`
+    /// names the other measured set (`just ordering-bench` passes it).
     #[arg(long, value_delimiter = ',', value_parser = parse_format)]
     formats: Option<Vec<Format>>,
 

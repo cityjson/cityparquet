@@ -83,6 +83,38 @@ impl Format {
         Format::DuckDbParquet,
     ];
 
+    /// The FORMAT-COMPARISON set: what a run with no `--formats` measures.
+    ///
+    /// One tag per format family, so the CSV answers exactly one question —
+    /// *how do the formats a city model can ship as compare?* CityParquet is
+    /// represented by [`Format::CityParquetHilbert`], the configuration we
+    /// would actually ship, so the comparison is not handicapped by an
+    /// ordering choice no other format here faces; the ordering choice itself
+    /// is a separate question, asked by [`Format::ORDERING_SET`].
+    ///
+    /// [`Format::CityJsonSeqGz`] (a compression variant of a format already
+    /// in the set) and [`Format::DuckDbParquet`] (an SQL-engine baseline, and
+    /// not driven by this coordinator at all) are opt-in: neither is a
+    /// format, so neither belongs on a format axis.
+    pub const DEFAULT_SET: [Format; 5] = [
+        Format::CityGml,
+        Format::CityJson,
+        Format::CityJsonSeq,
+        Format::FlatCityBuf,
+        Format::CityParquetHilbert,
+    ];
+
+    /// The ORDERING-COMPARISON set — the answer to *does Hilbert-curve
+    /// ordering pay for itself?*, and nothing else.
+    ///
+    /// Both members are the same writer, the same reader and the same
+    /// scenarios; the ONLY difference is the row order the package was
+    /// written in (see [`Format::artefact`]). Running this set alongside
+    /// other formats would confound the two axes, which is why it is its own
+    /// set rather than extra members of [`Format::DEFAULT_SET`] — the
+    /// justfile's `ordering-bench` recipe passes exactly these two tags.
+    pub const ORDERING_SET: [Format; 2] = [Format::CityParquet, Format::CityParquetHilbert];
+
     /// The canonical kebab-case CLI/CSV spelling (round-trips through
     /// [`FromStr`]).
     pub fn as_str(self) -> &'static str {
@@ -96,14 +128,6 @@ impl Format {
             Format::CityParquetHilbert => "cityparquet-hilbert",
             Format::DuckDbParquet => "duckdb-parquet",
         }
-    }
-
-    /// Whether this format is measured by spawning this binary's own
-    /// `--child` process. False only for [`Format::DuckDbParquet`], which is
-    /// a SQL-engine baseline driven by `scripts/readbench_duckdb.sh`; the
-    /// `--child` path must refuse it rather than pretend to run it.
-    pub fn is_child_format(self) -> bool {
-        !matches!(self, Format::DuckDbParquet)
     }
 
     /// Where this format's artefact lives, relative to `prepared_dir`.

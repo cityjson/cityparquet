@@ -87,7 +87,9 @@ pub trait FormatRunner {
 /// 2.0 reader, with no index and therefore a full parse per scenario.
 /// [`Format::DuckDbParquet`] is a SQL-engine baseline driven entirely by
 /// `scripts/readbench_duckdb.sh`; it is not, and never will be, a `--child`
-/// format (see [`Format::is_child_format`]).
+/// format — the `bail!` arm below is the single production statement of that
+/// fact, and [`Format::artefact`]'s `NotCoordinated` is its counterpart on
+/// the coordinator side.
 pub fn resolve(format: Format) -> Result<Box<dyn FormatRunner>> {
     match format {
         Format::CityParquet | Format::CityParquetHilbert => {
