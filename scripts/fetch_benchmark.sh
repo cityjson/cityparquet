@@ -83,8 +83,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #                 a different city object ("cross-building/shared geometry is
 #                 out of scope"). Again a `citygml`-only defect — citygml-tools
 #                 resolves the references, so every derived artefact is fine.
-#             Run either of them with an explicit `--formats` list that omits
-#             `citygml`; `--only default` leaves them out.
+#             Neither degrades a default-set run, both ABORT one: the
+#             coordinator bails when a child fails, `readbench_prepare.sh`
+#             refuses Riga outright, and `just bench`'s folder loop runs under
+#             `set -e` — so one of these files in the directory does not lose
+#             its own dataset, it kills the loop and takes every dataset
+#             sorting after it down with it. That is why `--only` DEFAULTS to
+#             `default`. Ask for them with `--only no-citygml` (or `all`), and
+#             measure them with an explicit `--formats` list that omits
+#             `citygml`.
 #
 # url         Verbatim from bench/catalogue_benchmark_urls.txt.
 #
@@ -143,13 +150,17 @@ UA='Mozilla/5.0 (X11; Linux x86_64) cityparquet-bench/1.0'
 
 usage() {
   cat >&2 <<'USAGE'
-usage: fetch_benchmark.sh [--only SET] [DEST]
+usage: fetch_benchmark.sh [--only SET] [--allow-foreign] [DEST]
 
-  --only SET   fetch only the entries that can serve SET:
-                 default      the default format set (citygml row included)
-                 no-citygml   every format except citygml
-                 all          every pinned entry (the default)
-  DEST         destination directory (default bench/data/benchmark)
+  --only SET       fetch only the entries that can serve SET:
+                     default      the default format set, citygml row
+                                  included (THE DEFAULT — see `sets` below)
+                     no-citygml   every format except citygml
+                     all          every pinned entry
+  --allow-foreign  proceed even though DEST holds city-model files this
+                   table does not describe (they will still be measured by
+                   `just bench DEST` — this only says you meant it)
+  DEST             destination directory (default bench/data/benchmark)
 
   $CORPUS_MANIFEST  fetch a manifest file's entries instead of the pinned
                     corpus. Same `name|bytes|form|sets|url` line format;
@@ -157,7 +168,12 @@ usage: fetch_benchmark.sh [--only SET] [DEST]
 USAGE
 }
 
-ONLY=all
+# `default`, not `all`: the two `no-citygml` entries below do not degrade a
+# default-set run, they ABORT it (see the `sets` notes in the table), and this
+# script's output is fed to `just bench DEST`, which measures the whole
+# directory. Fetching them has to be asked for.
+ONLY=default
+ALLOW_FOREIGN=0
 DEST=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -169,6 +185,10 @@ while [[ $# -gt 0 ]]; do
       }
       ONLY=$2
       shift 2
+      ;;
+    --allow-foreign)
+      ALLOW_FOREIGN=1
+      shift
       ;;
     -h | --help)
       usage
@@ -235,6 +255,9 @@ NAMES=()
 WANTS=()
 FORMS=()
 URLS=()
+# Every name the TABLE knows, `--only` notwithstanding — the foreign-input
+# check below is about what this corpus is, not about what this run selected.
+ALL_NAMES=()
 SKIPPED_BY_SET=()
 need_gunzip=0
 need_unzip=0
@@ -244,6 +267,7 @@ for entry in ${ENTRIES[@]+"${ENTRIES[@]}"}; do
     echo "error: malformed corpus entry (want name|bytes|form|sets|url): $entry" >&2
     exit 1
   fi
+  ALL_NAMES+=("$e_name")
   if [[ "$ONLY" != "all" ]] && [[ ",$e_sets," != *",$ONLY,"* ]]; then
     SKIPPED_BY_SET+=("$e_name")
     continue
@@ -274,6 +298,47 @@ if [[ "$need_unzip" -eq 1 ]] && ! command -v unzip >/dev/null 2>&1; then
 fi
 
 mkdir -p "$DATA_DIR"
+
+# A city-model file in DEST that this table does not describe is refused, not
+# warned about.
+#
+# DEST defaults to the directory the PREVIOUS fetcher used, so a developer who
+# ran it still has 11 CityJSONSeq files sitting there — and `just bench FOLDER`
+# measures every input under FOLDER. Left alone, that publishes 41 datasets as
+# "the corpus" with nothing anywhere saying where 11 of them came from. A
+# warning would be printed in the middle of a 30-line fetch log and read by
+# nobody, so the run stops instead; `--allow-foreign` is there for the case
+# where the extra input is deliberate.
+#
+# `-maxdepth 1`, and the extension list is the justfile's KNOWN_INPUT_FIND: a
+# file `just bench` would not pick up is not this script's business. The
+# receipts live in a dot-directory and end in `.receipt`, so they match
+# neither the depth nor the patterns.
+if [[ "$ALLOW_FOREIGN" -ne 1 ]]; then
+  foreign=()
+  while IFS= read -r found; do
+    [[ -z "$found" ]] && continue
+    base="$(basename "$found")"
+    [[ "$base" == "metadata.json" ]] && continue
+    known=0
+    for n in ${ALL_NAMES[@]+"${ALL_NAMES[@]}"}; do
+      [[ "$base" == "$n" ]] && known=1 && break
+    done
+    [[ "$known" -eq 1 ]] || foreign+=("$base")
+  done < <(find "$DATA_DIR" -maxdepth 1 -type f \
+    \( -name '*.json' -o -name '*.jsonl' -o -name '*.gml' -o -name '*.citygml' \
+    -o -name '*.xml' \) | sort)
+  if [[ "${#foreign[@]}" -gt 0 ]]; then
+    echo "error: $DATA_DIR holds ${#foreign[@]} city-model file(s) this corpus does not describe:" >&2
+    printf '         %s\n' "${foreign[@]}" >&2
+    echo "       \`just bench\` measures EVERY input under that directory, so these would be" >&2
+    echo "       published alongside the corpus as if they were part of it. Move or delete" >&2
+    echo "       them (the legacy CityJSONSeq corpus belongs in bench/data/benchmark_seq/," >&2
+    echo "       see \`just fetch-seq-data\`), or re-run with --allow-foreign if you meant it." >&2
+    exit 1
+  fi
+fi
+
 WORK="$DATA_DIR/.fetch"
 RECEIPTS="$DATA_DIR/.receipts"
 
@@ -351,7 +416,14 @@ for i in ${NAMES[@]+"${!NAMES[@]}"}; do
       member="${form#zip:}"
       # Exactly one member must match, or "the pinned member" is a guess:
       # `unzip -p` would concatenate every match into one nonsense file.
-      matches="$(unzip -Z1 "$part" "$member" 2>/dev/null | wc -l | tr -d ' ')"
+      #
+      # The `|| true` is load-bearing, and its absence made the guard below
+      # UNREACHABLE for the case it most needs to catch: `unzip -Z1` exits 11
+      # when nothing matches, so under `set -euo pipefail` this assignment
+      # killed the script at exit 11 with nothing printed at all — the silent
+      # abort landing on whoever pins the next zip entry, after their download.
+      matches="$( { unzip -Z1 "$part" "$member" 2>/dev/null || true; } \
+        | wc -l | tr -d ' ')"
       if [[ "$matches" != "1" ]]; then
         echo "error: $name: '$member' matches $matches members of the archive (want exactly 1)" >&2
         exit 1

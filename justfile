@@ -138,13 +138,27 @@ interop:
 # Needs curl (and gunzip/unzip); network-dependent; kept OUT of `just
 # check`/CI.
 #
-# ONLY narrows the selection to the entries that can serve one benchmark set:
-# `default` (the default format set, `citygml` row included), `no-citygml`
-# (every format but citygml), or `all` (the default). Two entries — Riga and
-# PLATEAU's brid tile — cannot serve the default set; both would abort a
-# default-set run rather than merely lose a row, so use `--only default`
-# unless you are passing an explicit `--formats` list that omits citygml.
-fetch-data DEST='bench/data/benchmark' ONLY='all':
+# ONLY selects the entries that can serve one benchmark set: `default` (the
+# DEFAULT, the default format set with the `citygml` row included),
+# `no-citygml` (every format but citygml), or `all` (every pinned entry).
+#
+# `default` is the default because two entries — Riga (703 objects, no
+# gml:id) and PLATEAU's brid tile (shared geometry this repository's CityGML
+# reader refuses) — cannot serve the default format set, and NEITHER FAILS
+# GRACEFULLY. `readbench_prepare.sh` refuses Riga outright; the readbench
+# coordinator bails when brid's `citygml` child exits non-zero; and the
+# `bench` recipe's folder loop below runs under `set -e`, so either one does
+# not merely lose its own dataset — it kills the loop and silently takes
+# every dataset sorting after it down too. `just fetch-data && just bench
+# bench/data/benchmark` is the documented happy path, so the fetch must not
+# put those two files in the folder unasked. Fetch them with
+# `just fetch-data DEST no-citygml` and measure them with an explicit
+# `FORMATS` list that omits `citygml`.
+#
+# The fetch also REFUSES to add to a DEST that already holds city-model files
+# the table does not describe — most likely the previous corpus, which used
+# this same directory (`--allow-foreign` overrides).
+fetch-data DEST='bench/data/benchmark' ONLY='default':
     ./scripts/fetch_benchmark.sh --only {{ONLY}} {{DEST}}
 
 # Fetch the LEGACY CityJSONSeq corpus (11 datasets, ~1.7 GiB) from the public

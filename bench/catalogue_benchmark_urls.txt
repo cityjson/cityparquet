@@ -92,6 +92,18 @@ https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d43730
 #
 # japan-plateau-3d — Japan PLATEAU 3D City Models; Yokohama (no Tokyo squr tile exists),
 #   squr (Square / plaza), CityGML 2.0, .gml, 5.3 MB
+#   WARNING — ONE OBJECT. MEASURED 2026-08-16: this tile holds exactly 1
+#   top-level object (a single tran:Square, with a gml:id; one object table,
+#   transportation.parquet). It is 5.3 MB because that one plaza is finely
+#   triangulated, not because it holds many features. Every SELECTIVITY-based
+#   scenario is therefore degenerate on it: bbox, attribute-filter and
+#   id-lookup each match either 1 row or 0 of 1, so their ratios carry no
+#   information and their timings are dominated by fixed open/parse cost. Read
+#   its count/full-read rows; do not quote its filter rows as selectivity
+#   evidence, and do not average it into a cross-dataset selectivity figure.
+#   Kept because it is the only Square/plaza dataset in the catalogue and the
+#   corpus samples PLATEAU by MODULE rather than by volume. The brid tile
+#   below is the same shape at a smaller scale (13 objects).
 https://assets.cms.plateau.reearth.io/assets/04/96d45a-a30b-4c9f-88c0-c1323b5a0f86/14100_yokohama-shi_city_2024_citygml_2_op/udx/squr/53391368_squr_6697_op.gml
 #
 # vienna-3d — Vienna 3D City Model; tile 102081, CityJSON, .city.json, 5.4 MB
@@ -255,10 +267,15 @@ https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
 # stadt-hannover-2024 — Hannover 3D Building Models; city-wide LoD2, CityGML,
 #   .zip, 300 MB
 #   -> INSPECTED 2026-08-16 via a ranged GET of the archive's central
-#      directory: 217 separate .gml tiles (5490_5805.gml, 5480_5804.gml, ...),
-#      8 KB to 41 MB each. Like the PLATEAU bundle it is a tile set, not a
-#      document, so there is no single member to pin. Re-admit it by pinning
-#      ONE tile once the fetcher grows a per-tile form.
+#      directory: 217 flat .gml members (5490_5805.gml, 5480_5804.gml, ...),
+#      8 KB to 41 MB each, no directories and no other file types.
+#      NOT a technical limit — the fetcher's existing `zip:MEMBER` form would
+#      extract `zip:5480_5802.gml` today. The reason is honesty about what is
+#      being measured: an arbitrary 1 of 217 tiles is not "Hannover's
+#      city-wide LoD2 model", it is one 25-40 MB square of it chosen by
+#      whoever wrote the table, and the corpus already carries better-provenanced
+#      German data (Freiburg, city-wide and whole, 1.86 GB). Admit it by
+#      pinning ONE tile and saying in the entry which tile and why that one.
 # https://opengeodata.hannover-stadt.de/Stadtmodell_Hannover_CityGML_LOD2.zip
 #
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
 FETCH="$REPO_ROOT/scripts/fetch_benchmark.sh"
 CATALOGUE="$REPO_ROOT/bench/catalogue_benchmark_urls.txt"
+JUSTFILE="$REPO_ROOT/justfile"
 
 PASSED=0
 FAILED=0
@@ -61,7 +62,8 @@ new_sandbox() {
   gzip -cn "$dir/origin/plain.city.json" >"$dir/origin/packed.json.gz"
   printf '<CityModel/>\n' >"$dir/origin/wanted.gml"
   printf 'not the city model\n' >"$dir/origin/decoy.txt"
-  (cd "$dir/origin" && zip -q bundle.zip wanted.gml decoy.txt)
+  printf '<CityModel/>\n' >"$dir/origin/twin.gml"
+  (cd "$dir/origin" && zip -q bundle.zip wanted.gml decoy.txt twin.gml)
   printf '%s' "$dir"
 }
 
@@ -304,7 +306,232 @@ case_unknown_set_rejected() {
 }
 
 # --------------------------------------------------------------------------
-# Case 7: the script's own pinned table is well-formed, and it agrees with
+# Case 7: a `zip:MEMBER` that matches no member fails at the script's OWN
+# guard, with its own words.
+#
+# Not a hypothetical, and not a cosmetic difference. `unzip -Z1` exits 11 when
+# nothing matches, so under `set -euo pipefail` the guard's own `matches=$(...)`
+# assignment killed the script at exit 11 with NOTHING printed — the error
+# message below was unreachable code. Whoever pins the next zip entry finds
+# out via a silent abort, possibly after a multi-gigabyte download. Hence the
+# assertion on exit 1 AND the wording: a bare "nonzero" also matches the bug.
+# --------------------------------------------------------------------------
+case_zip_member_that_matches_nothing() {
+  local name="a zip member that matches nothing fails at the guard"
+  local dir
+  dir="$(new_sandbox)"
+  manifest_line missing.gml "$dir/origin/bundle.zip" zip:absent.gml default \
+    >"$dir/manifest.txt"
+
+  run_fetch "$dir" "$dir/dest"
+  if [[ $LAST_RC -ne 1 ]]; then
+    fail "$name" "expected exit 1 from the script's own guard, got $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! log_mentions "matches 0 members of the archive"; then
+    fail "$name" "the guard's own wording is missing; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ -e "$dir/dest/missing.gml" ]]; then
+    fail "$name" "a failed extraction still left an artefact"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 8: a `zip:MEMBER` pattern matching MORE than one member fails too —
+# `unzip -p` would happily concatenate them into one nonsense file.
+# --------------------------------------------------------------------------
+case_zip_member_that_matches_several() {
+  local name="a zip member pattern matching several members fails at the guard"
+  local dir
+  dir="$(new_sandbox)"
+  manifest_line ambiguous.gml "$dir/origin/bundle.zip" 'zip:*.gml' default \
+    >"$dir/manifest.txt"
+
+  run_fetch "$dir" "$dir/dest"
+  if [[ $LAST_RC -ne 1 ]]; then
+    fail "$name" "expected exit 1, got $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! log_mentions "matches 2 members of the archive"; then
+    fail "$name" "the guard did not report the count; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 9: a file that is present but carries no fetch receipt is re-fetched,
+# not trusted. Its provenance is unknown — it may be a leftover from the
+# PREVIOUS corpus, which used this same directory — so "a file with that name
+# exists" is not evidence that it holds the pinned bytes.
+# --------------------------------------------------------------------------
+case_receiptless_file_is_refetched() {
+  local name="a present file with no receipt is re-fetched, not trusted"
+  local dir
+  dir="$(new_sandbox)"
+  manifest_line plain.city.json "$dir/origin/plain.city.json" plain default \
+    >"$dir/manifest.txt"
+  # Same name, same size, different bytes: only the receipt can tell them
+  # apart, so a size-only check would wrongly skip this.
+  printf '{"type":"CityJSON","version":"1.0","CityObjects":{},"vertices":[]}\n' \
+    >"$dir/dest/plain.city.json"
+
+  run_fetch "$dir" "$dir/dest"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! log_mentions "no fetch receipt"; then
+    fail "$name" "the missing receipt was not reported; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! cmp -s "$dir/dest/plain.city.json" "$dir/origin/plain.city.json"; then
+    fail "$name" "the unverifiable file was kept instead of being replaced"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 10: a city-model file in DEST that the table does not describe stops
+# the run.
+#
+# The PREVIOUS fetcher defaulted to this same directory, so a developer who
+# has run it still has 11 CityJSONSeq files sitting there. `just bench FOLDER`
+# measures every input it finds under FOLDER, so an unnoticed leftover is not
+# a stray file — it is 11 extra rows published as "the corpus". Refused rather
+# than warned: a warning in the middle of a 30-entry fetch log is a warning
+# nobody reads.
+# --------------------------------------------------------------------------
+case_foreign_inputs_are_refused() {
+  local name="a city-model file the table does not describe stops the run"
+  local dir
+  dir="$(new_sandbox)"
+  manifest_line plain.city.json "$dir/origin/plain.city.json" plain default \
+    >"$dir/manifest.txt"
+  printf '{"type":"CityJSONFeature"}\n' >"$dir/dest/Rotterdam.jsonl"
+
+  run_fetch "$dir" "$dir/dest"
+  if [[ $LAST_RC -ne 1 ]]; then
+    fail "$name" "expected exit 1, got $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  # The offending file by name, so the message is actionable…
+  if ! log_mentions "Rotterdam.jsonl"; then
+    fail "$name" "the message does not name the offending file; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  # …and the escape hatch, so a deliberate extra input is not a dead end.
+  if ! log_mentions "--allow-foreign"; then
+    fail "$name" "the message offers no way out; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  # Refused BEFORE fetching: this costs nothing to check and gigabytes to
+  # discover afterwards.
+  if [[ -e "$dir/dest/plain.city.json" ]]; then
+    fail "$name" "the run fetched before checking the destination"
+    return
+  fi
+
+  run_fetch "$dir" --allow-foreign "$dir/dest"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "--allow-foreign did not let the run proceed; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ ! -e "$dir/dest/plain.city.json" ]]; then
+    fail "$name" "--allow-foreign run fetched nothing"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 11: an entry the table DOES describe is not foreign, whichever `--only`
+# set this particular run selected. A `--only default` run must not trip over
+# a `no-citygml` entry that an earlier `--only all` run legitimately fetched.
+# --------------------------------------------------------------------------
+case_other_set_entries_are_not_foreign() {
+  local name="an entry outside the selected set is not treated as foreign"
+  local dir
+  dir="$(new_sandbox)"
+  {
+    manifest_line in-default.city.json "$dir/origin/plain.city.json" plain default,no-citygml
+    manifest_line no-citygml-only.gml "$dir/origin/wanted.gml" plain no-citygml
+  } >"$dir/manifest.txt"
+
+  run_fetch "$dir" --only all "$dir/dest"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "the all-sets run failed: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ ! -e "$dir/dest/no-citygml-only.gml" ]]; then
+    fail "$name" "--only all did not fetch the no-citygml entry"
+    return
+  fi
+  run_fetch "$dir" --only default "$dir/dest"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "a narrowed re-run rejected its own corpus; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 12: an unreadable $CORPUS_MANIFEST is reported, not silently treated as
+# an empty corpus (which would exit 0 having fetched nothing).
+# --------------------------------------------------------------------------
+case_unreadable_manifest_is_reported() {
+  local name="an unreadable CORPUS_MANIFEST is reported"
+  local dir
+  dir="$(new_sandbox)"
+  # No manifest written at all.
+  run_fetch "$dir" "$dir/dest"
+  if [[ $LAST_RC -ne 1 ]]; then
+    fail "$name" "expected exit 1, got $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! log_mentions "not readable"; then
+    fail "$name" "wrong wording; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 13: `just fetch-data`'s default selection is `default`, not `all`.
+#
+# The `sets` column is ADVISORY — nothing downstream enforces it. Two pinned
+# entries cannot serve the default format set, and neither degrades gracefully:
+# `readbench_prepare.sh` refuses Riga outright, and the readbench coordinator
+# bails when the `citygml` child fails on PLATEAU's brid tile. `just bench`
+# runs its folder loop under `set -e`, so either one does not lose its own
+# dataset — it kills the loop and takes every dataset sorting after it with
+# it, silently.
+#
+# The documented happy path is `just fetch-data && just bench
+# bench/data/benchmark`. That path must therefore not put those two files in
+# the folder by default. This case pins the ONE character that guarantees it.
+# --------------------------------------------------------------------------
+case_fetch_data_defaults_to_the_default_set() {
+  local name="just fetch-data defaults to --only default"
+  local recipe
+  recipe="$(grep -E "^fetch-data " "$JUSTFILE" || true)"
+  if [[ -z "$recipe" ]]; then
+    fail "$name" "no fetch-data recipe found in $JUSTFILE"
+    return
+  fi
+  if [[ "$recipe" != *"ONLY='default'"* ]]; then
+    fail "$name" "fetch-data's ONLY default is not 'default': $recipe"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 14: the script's own pinned table is well-formed, and it agrees with
 # `bench/catalogue_benchmark_urls.txt`.
 #
 # The catalogue file is the corpus's provenance record (where each URL came
@@ -382,6 +609,13 @@ case_second_run_skips
 case_truncated_file_is_refetched
 case_only_selects_by_set
 case_unknown_set_rejected
+case_zip_member_that_matches_nothing
+case_zip_member_that_matches_several
+case_receiptless_file_is_refetched
+case_foreign_inputs_are_refused
+case_other_set_entries_are_not_foreign
+case_unreadable_manifest_is_reported
+case_fetch_data_defaults_to_the_default_set
 case_pinned_table_is_well_formed
 
 echo "fetch_benchmark_test: $PASSED passed, $FAILED failed"

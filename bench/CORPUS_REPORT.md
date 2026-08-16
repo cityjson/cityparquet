@@ -171,7 +171,12 @@ Row-group size is the lever for spatially-selective query performance.
 ## Reproduce
 
 ```sh
-just fetch-data                       # corpus → bench/data/benchmark (network)
+# `just fetch-seq-data`, NOT `just fetch-data`: every number in this document
+# was measured on the 11 CityJSONSeq datasets of the legacy corpus, and
+# `fetch-data` now fetches the catalogue corpus of real CityGML/CityJSON
+# documents into a different directory. Reproducing these figures needs the
+# bytes they were measured on.
+just fetch-seq-data                   # legacy corpus → bench/data/benchmark_seq (network)
 just bench <folder>                   # cross-format read benchmark + charts
 just compression-bench <folder>       # codec / row-group sweep + charts
 just sizes                            # size + compression-ratio report + charts
