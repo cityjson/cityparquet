@@ -57,20 +57,23 @@ just catalog-tools                       # build the two binaries the driver she
 just catalog-convert [OUT] [ARGS...]     # whole catalogue -> CityParquet mirror (hours; resumable)
 just catalog-convert-collection ID [OUT] # one collection, the way to prove a change on real data
 just catalog-aggregate [OUT]             # rebuild the mirror's root catalog.json, no downloads
-just catalog-test                        # the driver's own suite (219 tests, no network)
+just catalog-test                        # the driver's own suite (261 tests, no network)
 ```
 
 CLI (add `--release` for realistic timing):
 
 ```bash
-cargo run -p cityparquet-cli -- convert INPUT OUTPUT_DIR --overwrite   # CityJSON/Seq → package
+cargo run -p cityparquet-cli -- convert INPUT --output OUTPUT_DIR --overwrite  # CityJSON/Seq/CityGML → package
 cargo run -p cityparquet-cli -- export  PACKAGE_DIR  OUT.city.jsonl    # package → CityJSON/Seq
 cargo run -p cityparquet-cli -- compare A.city.jsonl B.city.jsonl      # semantic equality (round-trip proof)
 cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
 ```
 
-`convert` flags include `--recipe`, `--ordering
-source|hilbert`, `--row-group-size`, `--zstd-level`. The round-trip is proven by
+`convert` takes the output directory as the **required `-o`/`--output` flag**, not
+positionally. Other flags include `--recipe`, `--ordering source|hilbert`,
+`--row-group-size`, `--zstd-level`, `--geometry-encoding wkb|arrow-native`,
+`--partition`, `--no-lod0`, and `--crs` (an operator-supplied CRS for a source that
+declares none — without it such a source still converts, writing `city.crs: null`). The round-trip is proven by
 `convert` → `export` → `compare` against the source. See `README.md` for the full flag
 tables and the per-command stdout report formats, and `bench/README.md` for benchmark
 methodology and comparability caveats.
