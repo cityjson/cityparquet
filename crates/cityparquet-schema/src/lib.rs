@@ -19,6 +19,5 @@ pub use model::{CityParquetSchema, normalise_attribute_name};
 pub use types::{
     CityGmlModule, ClassInfo, ExtensionClassDecl, ExtensionRegistry, GeometryEncoding, Lod,
     ModuleKey, ModuleKeyResolver, TAXONOMY, cityjson_type_for_citygml_class, class_info,
-    first_level_type, geometry_column_name, is_extension_type, module_file, resolve_module_key,
-    strip_plus,
+    geometry_column_name, is_extension_type, module_file, resolve_module_key, strip_plus,
 };
