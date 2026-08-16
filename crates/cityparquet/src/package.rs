@@ -194,14 +194,6 @@ fn err(msg: String) -> CityParquetError {
     CityParquetError::Schema(msg)
 }
 
-fn io_err(msg: String) -> CityParquetError {
-    CityParquetError::Io(msg)
-}
-
-fn parquet_err(msg: String) -> CityParquetError {
-    CityParquetError::Parquet(msg)
-}
-
 /// Removes every trace of a PRIOR `convert` run from `output_dir`, so an
 /// overwrite can never leave a stale sidecar behind that the fresh
 /// `metadata.json` no longer lists (e.g. a Compatibility convert's
@@ -223,26 +215,28 @@ fn purge_stale_package_files(output_dir: &Path) -> Result<()> {
     let metadata_path = output_dir.join("metadata.json");
     if metadata_path.exists() {
         fs::remove_file(&metadata_path).map_err(|e| {
-            io_err(format!(
-                "cannot remove stale {}: {e}",
-                metadata_path.display()
-            ))
+            CityParquetError::io_source(
+                format!("cannot remove stale {}", metadata_path.display()),
+                e,
+            )
         })?;
     }
     let entries = fs::read_dir(output_dir).map_err(|e| {
-        io_err(format!(
-            "cannot read output directory {}: {e}",
-            output_dir.display()
-        ))
+        CityParquetError::io_source(
+            format!("cannot read output directory {}", output_dir.display()),
+            e,
+        )
     })?;
     for entry in entries {
-        let entry = entry.map_err(|e| io_err(format!("cannot read directory entry: {e}")))?;
+        let entry =
+            entry.map_err(|e| CityParquetError::io_source("cannot read directory entry", e))?;
         let path = entry.path();
         let is_parquet_file =
             path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("parquet");
         if is_parquet_file {
-            fs::remove_file(&path)
-                .map_err(|e| io_err(format!("cannot remove stale {}: {e}", path.display())))?;
+            fs::remove_file(&path).map_err(|e| {
+                CityParquetError::io_source(format!("cannot remove stale {}", path.display()), e)
+            })?;
         }
     }
     Ok(())
@@ -278,22 +272,38 @@ fn purge_stale_package_files(output_dir: &Path) -> Result<()> {
 fn commit_package(tmp_dir: &Path, output_dir: &Path, files: &[String]) -> Result<()> {
     // From here on the old package is (partially) gone: every error must
     // point the operator at the recoverable remainder in `tmp_dir`.
-    let recoverable = |detail: String| {
-        io_err(format!(
-            "{detail}; partial package recoverable at {}",
-            tmp_dir.display()
-        ))
+    // The underlying failure rides the `#[source]` chain (review P7) rather
+    // than being flattened into `detail`; `detail` says what this function
+    // was doing and where the remainder can be recovered from.
+    let recoverable = |detail: String, source: std::io::Error| {
+        CityParquetError::io_source(
+            format!(
+                "{detail}; partial package recoverable at {}",
+                tmp_dir.display()
+            ),
+            source,
+        )
     };
-    purge_stale_package_files(output_dir).map_err(|e| recoverable(e.to_string()))?;
+    purge_stale_package_files(output_dir).map_err(|e| {
+        recoverable(
+            format!("cannot purge the stale package in {}", output_dir.display()),
+            // A `CityParquetError`, boxed into an `io::Error` so it stays on
+            // the chain — `Io`'s source is concretely `std::io::Error`.
+            std::io::Error::other(e),
+        )
+    })?;
     for name in files {
         let from = tmp_dir.join(name);
         let to = output_dir.join(name);
         fs::rename(&from, &to).map_err(|e| {
-            recoverable(format!(
-                "cannot move {} into place at {}: {e}",
-                from.display(),
-                to.display()
-            ))
+            recoverable(
+                format!(
+                    "cannot move {} into place at {}",
+                    from.display(),
+                    to.display()
+                ),
+                e,
+            )
         })?;
     }
     // Best-effort: every file this run wrote into `tmp_dir` was just renamed
@@ -785,8 +795,9 @@ impl TableWriters {
 
     fn open_table(&mut self, name: &str) -> Result<usize> {
         let path = self.tmp_dir.join(name);
-        let file = fs::File::create(&path)
-            .map_err(|e| io_err(format!("cannot create {}: {e}", path.display())))?;
+        let file = fs::File::create(&path).map_err(|e| {
+            CityParquetError::io_source(format!("cannot create {}", path.display()), e)
+        })?;
         let projection = self.projection_for(name)?;
         let table_schema = Arc::new(
             self.wide_schema
@@ -794,7 +805,7 @@ impl TableWriters {
                 .map_err(|e| err(format!("table {name}: cannot project its own schema: {e}")))?,
         );
         let writer = ArrowWriter::try_new(file, table_schema, Some(self.props.clone()))
-            .map_err(|e| parquet_err(format!("cannot open parquet writer: {e}")))?;
+            .map_err(|e| CityParquetError::parquet_source("cannot open parquet writer", e))?;
         let idx = self.writers.len();
         self.writers.push(writer);
         self.projections.push(projection);
@@ -883,7 +894,7 @@ impl TableWriters {
             let projected = filtered.project(&self.projections[idx])?;
             self.writers[idx]
                 .write(&projected)
-                .map_err(|e| parquet_err(format!("parquet write error: {e}")))?;
+                .map_err(|e| CityParquetError::parquet_source("parquet write error", e))?;
         }
         Ok(())
     }
@@ -915,7 +926,7 @@ impl TableWriters {
         for writer in self.writers {
             writer
                 .close()
-                .map_err(|e| parquet_err(format!("cannot finalise parquet file: {e}")))?;
+                .map_err(|e| CityParquetError::parquet_source("cannot finalise parquet file", e))?;
         }
         Ok(self.order)
     }
@@ -1166,8 +1177,9 @@ fn write_package(
         },
     )?;
     let metadata_path = tmp_dir.join("metadata.json");
-    fs::write(&metadata_path, serde_json::to_string_pretty(&item)?)
-        .map_err(|e| io_err(format!("cannot write {}: {e}", metadata_path.display())))?;
+    fs::write(&metadata_path, serde_json::to_string_pretty(&item)?).map_err(|e| {
+        CityParquetError::io_source(format!("cannot write {}", metadata_path.display()), e)
+    })?;
     file_names.push("metadata.json".to_string());
 
     Ok(WrittenPackage {
@@ -1288,17 +1300,20 @@ pub(crate) fn convert_source_impl(
         validate_crs_override(spec)?;
     }
     fs::create_dir_all(&opts.output_dir).map_err(|e| {
-        io_err(format!(
-            "cannot create output directory {}: {e}",
-            opts.output_dir.display()
-        ))
+        CityParquetError::io_source(
+            format!(
+                "cannot create output directory {}",
+                opts.output_dir.display()
+            ),
+            e,
+        )
     })?;
     let has_entries = fs::read_dir(&opts.output_dir)
         .map_err(|e| {
-            io_err(format!(
-                "cannot read output directory {}: {e}",
-                opts.output_dir.display()
-            ))
+            CityParquetError::io_source(
+                format!("cannot read output directory {}", opts.output_dir.display()),
+                e,
+            )
         })?
         .next()
         .is_some();
@@ -1380,17 +1395,20 @@ pub(crate) fn convert_source_impl(
         // and `commit_package` finishing): start from a clean slate rather
         // than risk mixing files across unrelated runs.
         fs::remove_dir_all(&tmp_dir).map_err(|e| {
-            io_err(format!(
-                "cannot remove stale scratch directory {}: {e}",
-                tmp_dir.display()
-            ))
+            CityParquetError::io_source(
+                format!(
+                    "cannot remove stale scratch directory {}",
+                    tmp_dir.display()
+                ),
+                e,
+            )
         })?;
     }
     fs::create_dir_all(&tmp_dir).map_err(|e| {
-        io_err(format!(
-            "cannot create scratch directory {}: {e}",
-            tmp_dir.display()
-        ))
+        CityParquetError::io_source(
+            format!("cannot create scratch directory {}", tmp_dir.display()),
+            e,
+        )
     })?;
 
     let written = match write_package(opts, source, &scan_result, arrow_schema, props, &tmp_dir) {
@@ -1759,7 +1777,7 @@ mod tests {
         ];
         let err = commit_package(&tmp, out.path(), &files).unwrap_err();
         assert!(
-            matches!(err, CityParquetError::Io(_)),
+            matches!(err, CityParquetError::Io { .. }),
             "expected an Io error from the failed rename, got {err:?}"
         );
         let msg = err.to_string();

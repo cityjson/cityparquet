@@ -18,7 +18,7 @@ use std::io::Write;
 
 use arrow_schema::Schema;
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
-use cityparquet_schema::{AttributeType, CityParquetError};
+use cityparquet_schema::AttributeType;
 use quick_xml::Writer;
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use serde_json::{Map, Value};
@@ -27,10 +27,6 @@ use super::WriteReport;
 use crate::Result;
 
 const ARROW_JSON_EXTENSION: &str = "arrow.json";
-
-fn io_err(e: std::io::Error) -> CityParquetError {
-    CityParquetError::Io(e.to_string())
-}
 
 /// Build the `column name -> stored AttributeType` map from the package's Arrow
 /// schema. A `Utf8` field tagged with the `arrow.json` extension is a `Json`
@@ -124,11 +120,9 @@ fn write_bldg_element<W: Write>(
     if let Some(u) = uom {
         start.push_attribute(("uom", u));
     }
-    w.write_event(Event::Start(start)).map_err(io_err)?;
-    w.write_event(Event::Text(BytesText::new(text)))
-        .map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new(&tag)))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(start))?;
+    w.write_event(Event::Text(BytesText::new(text)))?;
+    w.write_event(Event::End(BytesEnd::new(&tag)))?;
     Ok(())
 }
 
@@ -141,15 +135,11 @@ fn write_gen_element<W: Write>(
     let tag = format!("gen:{element}");
     let mut start = BytesStart::new(&tag);
     start.push_attribute(("name", name));
-    w.write_event(Event::Start(start)).map_err(io_err)?;
-    w.write_event(Event::Start(BytesStart::new("gen:value")))
-        .map_err(io_err)?;
-    w.write_event(Event::Text(BytesText::new(text)))
-        .map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new("gen:value")))
-        .map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new(&tag)))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(start))?;
+    w.write_event(Event::Start(BytesStart::new("gen:value")))?;
+    w.write_event(Event::Text(BytesText::new(text)))?;
+    w.write_event(Event::End(BytesEnd::new("gen:value")))?;
+    w.write_event(Event::End(BytesEnd::new(&tag)))?;
     Ok(())
 }
 

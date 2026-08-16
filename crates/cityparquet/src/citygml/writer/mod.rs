@@ -102,10 +102,6 @@ pub struct WriteReport {
     pub texture_geometries_dropped: usize,
 }
 
-fn io_err(e: std::io::Error) -> CityParquetError {
-    CityParquetError::Io(e.to_string())
-}
-
 /// How one decoded geometry column of a Building is routed by the driver.
 enum GeomRoute {
     /// Emit as a `bldg:lodNSolid` — a Solid (`PolyhedralSurface`) or a
@@ -168,9 +164,9 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     let first_path = &tables.tables[0];
     let first_builder =
         ParquetRecordBatchReaderBuilder::try_new(fs::File::open(first_path).map_err(|e| {
-            CityParquetError::Io(format!("cannot open {}: {e}", first_path.display()))
+            CityParquetError::io_source(format!("cannot open {}", first_path.display()), e)
         })?)
-        .map_err(|e| CityParquetError::Parquet(format!("cannot open parquet reader: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("cannot open parquet reader", e))?;
     let meta = first_builder.cityparquet_metadata()?;
     let schema = first_builder.cityparquet_arrow_schema()?;
     let srs_name = srs_name_for(meta.crs.as_ref())?;
@@ -208,9 +204,9 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     for (idx, path) in tables.tables.iter().enumerate() {
         let (reader, table_meta) = if idx == 0 {
             let builder = first_builder.take().expect("first builder taken once");
-            let pr = builder.build().map_err(|e| {
-                CityParquetError::Parquet(format!("cannot build parquet reader: {e}"))
-            })?;
+            let pr = builder
+                .build()
+                .map_err(|e| CityParquetError::parquet_source("cannot build parquet reader", e))?;
             (
                 CityParquetRecordBatchReader::new(pr, Arc::clone(&schema)),
                 meta.clone(),
@@ -218,11 +214,9 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
         } else {
             let builder =
                 ParquetRecordBatchReaderBuilder::try_new(fs::File::open(path).map_err(|e| {
-                    CityParquetError::Io(format!("cannot open {}: {e}", path.display()))
+                    CityParquetError::io_source(format!("cannot open {}", path.display()), e)
                 })?)
-                .map_err(|e| {
-                    CityParquetError::Parquet(format!("cannot open parquet reader: {e}"))
-                })?;
+                .map_err(|e| CityParquetError::parquet_source("cannot open parquet reader", e))?;
             let table_meta = builder.cityparquet_metadata()?;
             if table_meta.version != meta.version {
                 return Err(CityParquetError::Metadata(format!(
@@ -238,9 +232,9 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
             // legitimately carries only the geometry/appearance columns its
             // own rows need (spec "object-table-schema").
             let table_schema = builder.cityparquet_arrow_schema()?;
-            let pr = builder.build().map_err(|e| {
-                CityParquetError::Parquet(format!("cannot build parquet reader: {e}"))
-            })?;
+            let pr = builder
+                .build()
+                .map_err(|e| CityParquetError::parquet_source("cannot build parquet reader", e))?;
             (
                 CityParquetRecordBatchReader::new(pr, Arc::clone(&table_schema)),
                 table_meta,
@@ -350,19 +344,13 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
             &mut reached_parts,
         )?;
         if non_empty {
-            members
-                .write_event(Event::Start(BytesStart::new("cityObjectMember")))
-                .map_err(io_err)?;
+            members.write_event(Event::Start(BytesStart::new("cityObjectMember")))?;
             let mut bldg = BytesStart::new("bldg:Building");
             bldg.push_attribute(("gml:id", root_id.as_str()));
-            members.write_event(Event::Start(bldg)).map_err(io_err)?;
-            members.get_mut().write_all(&inner).map_err(io_err)?;
-            members
-                .write_event(Event::End(BytesEnd::new("bldg:Building")))
-                .map_err(io_err)?;
-            members
-                .write_event(Event::End(BytesEnd::new("cityObjectMember")))
-                .map_err(io_err)?;
+            members.write_event(Event::Start(bldg))?;
+            members.get_mut().write_all(&inner)?;
+            members.write_event(Event::End(BytesEnd::new("bldg:Building")))?;
+            members.write_event(Event::End(BytesEnd::new("cityObjectMember")))?;
             report.buildings_written += 1;
         } else {
             report.buildings_without_solid_skipped += 1;
@@ -381,15 +369,12 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     // members + CityModel close. Envelope-before-members ordering is why the
     // members are buffered first.
     let file = fs::File::create(&opts.output).map_err(|e| {
-        CityParquetError::Io(format!("cannot create {}: {e}", opts.output.display()))
+        CityParquetError::io_source(format!("cannot create {}", opts.output.display()), e)
     })?;
     let mut doc = Writer::new(file);
-    doc.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))
-        .map_err(io_err)?;
+    doc.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
     write_city_model_open(&mut doc, srs_name.as_deref(), &bounds)?;
-    doc.get_mut()
-        .write_all(&members.into_inner())
-        .map_err(io_err)?;
+    doc.get_mut().write_all(&members.into_inner())?;
     write_city_model_close(&mut doc)?;
     Ok(report)
 }

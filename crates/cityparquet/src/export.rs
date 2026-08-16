@@ -99,10 +99,6 @@ fn err(msg: String) -> CityParquetError {
     CityParquetError::Schema(msg)
 }
 
-fn io_err(msg: String) -> CityParquetError {
-    CityParquetError::Io(msg)
-}
-
 /// Short file name for a table path, for user-facing messages — `tables`
 /// entries are absolute paths (see `PackageTables`), and echoing the whole
 /// path (e.g. a tempdir prefix in tests/benches) leaks environment detail
@@ -1237,15 +1233,16 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     // below, never a shared one. `tables.tables` entries are already
     // absolute paths.
     let first_table_path = &tables.tables[0];
-    let first_file = fs::File::open(first_table_path)
-        .map_err(|e| io_err(format!("cannot open {}: {e}", first_table_path.display())))?;
+    let first_file = fs::File::open(first_table_path).map_err(|e| {
+        CityParquetError::io_source(format!("cannot open {}", first_table_path.display()), e)
+    })?;
     let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file)
-        .map_err(|e| CityParquetError::Parquet(format!("cannot open parquet reader: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("cannot open parquet reader", e))?;
     let meta = first_builder.cityparquet_metadata()?;
     let first_schema = first_builder.cityparquet_arrow_schema()?;
     let first_parquet_reader = first_builder
         .build()
-        .map_err(|e| CityParquetError::Parquet(format!("cannot build parquet reader: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("cannot build parquet reader", e))?;
     // Wrapped in `Option` so the objects-decode loop below can `.take()` it
     // for the `idx == 0` table without re-opening the file it already holds
     // open — the first object table's already-open reader is reused for
@@ -1301,7 +1298,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         .any(|f| f == "geometry_templates.parquet");
     let template_rows = if templates_listed {
         if !templates_path.exists() {
-            return Err(io_err(format!(
+            return Err(CityParquetError::io(format!(
                 "package manifest lists 'geometry_templates.parquet' but {} does not exist",
                 templates_path.display()
             )));
@@ -1339,11 +1336,11 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                 .take()
                 .expect("the first table's reader is only ever consumed once")
         } else {
-            let file = fs::File::open(table_path)
-                .map_err(|e| io_err(format!("cannot open {}: {e}", table_path.display())))?;
-            let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
-                CityParquetError::Parquet(format!("cannot open parquet reader: {e}"))
+            let file = fs::File::open(table_path).map_err(|e| {
+                CityParquetError::io_source(format!("cannot open {}", table_path.display()), e)
             })?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+                .map_err(|e| CityParquetError::parquet_source("cannot open parquet reader", e))?;
             // Every table must agree on `city.version` — a genuine
             // internal inconsistency (different writer versions cannot
             // safely coexist in one package) rather than the module-scoped
@@ -1370,9 +1367,9 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             // each batch's own schema; `table_meta.attribute_columns` is what
             // makes attribute decoding self-contained per table too.
             let table_schema = builder.cityparquet_arrow_schema()?;
-            let parquet_reader = builder.build().map_err(|e| {
-                CityParquetError::Parquet(format!("cannot build parquet reader: {e}"))
-            })?;
+            let parquet_reader = builder
+                .build()
+                .map_err(|e| CityParquetError::parquet_source("cannot build parquet reader", e))?;
             (
                 CityParquetRecordBatchReader::new(parquet_reader, Arc::clone(&table_schema)),
                 table_meta,
@@ -1563,11 +1560,13 @@ fn write_output(
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
     {
-        fs::create_dir_all(parent)
-            .map_err(|e| io_err(format!("cannot create {}: {e}", parent.display())))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            CityParquetError::io_source(format!("cannot create {}", parent.display()), e)
+        })?;
     }
-    let file = fs::File::create(output)
-        .map_err(|e| io_err(format!("cannot create {}: {e}", output.display())))?;
+    let file = fs::File::create(output).map_err(|e| {
+        CityParquetError::io_source(format!("cannot create {}", output.display()), e)
+    })?;
     // One buffered writer for the whole output: the Seq arm writes one line
     // per feature, and an unbuffered `writeln!` per feature was one write
     // syscall per feature (review P5c).
@@ -1575,22 +1574,22 @@ fn write_output(
     match format {
         OutputFormat::Seq => {
             writeln!(file, "{}", serde_json::to_string(&header)?)
-                .map_err(|e| io_err(format!("write error: {e}")))?;
+                .map_err(|e| CityParquetError::io_source("write error", e))?;
             for feature in &features {
                 writeln!(file, "{}", serde_json::to_string(feature)?)
-                    .map_err(|e| io_err(format!("write error: {e}")))?;
+                    .map_err(|e| CityParquetError::io_source("write error", e))?;
             }
         }
         OutputFormat::Doc => {
             let doc = cjseq::cjseq_to_cj(header, features);
             write!(file, "{}", serde_json::to_string(&doc)?)
-                .map_err(|e| io_err(format!("write error: {e}")))?;
+                .map_err(|e| CityParquetError::io_source("write error", e))?;
         }
     }
     // Explicit: `BufWriter`'s `Drop` swallows flush errors, so a full disk
     // would otherwise truncate the export silently.
     file.flush()
-        .map_err(|e| io_err(format!("write error: {e}")))?;
+        .map_err(|e| CityParquetError::io_source("write error", e))?;
     Ok(())
 }
 

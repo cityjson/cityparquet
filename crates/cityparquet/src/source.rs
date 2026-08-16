@@ -50,10 +50,6 @@ fn err(msg: String) -> CityParquetError {
     CityParquetError::Schema(msg)
 }
 
-fn io_err(msg: String) -> CityParquetError {
-    CityParquetError::Io(msg)
-}
-
 impl Source {
     pub fn open(path: &Path) -> Result<Self> {
         // CityGML is XML, not JSON — detect it by its root element before the
@@ -92,19 +88,21 @@ impl Source {
         // non-empty line follows it, so this reads at most those two lines —
         // never the whole file. Only the CityJson (non-Seq) branch below
         // reads the full document, because it must parse it in one piece.
-        let file =
-            File::open(path).map_err(|e| io_err(format!("cannot open {}: {e}", path.display())))?;
+        let file = File::open(path).map_err(|e| {
+            CityParquetError::io_source(format!("cannot open {}", path.display()), e)
+        })?;
         let mut reader = BufReader::new(file);
         let mut first_line = String::new();
-        reader
-            .read_line(&mut first_line)
-            .map_err(|e| io_err(format!("cannot read {}: {e}", path.display())))?;
+        reader.read_line(&mut first_line).map_err(|e| {
+            CityParquetError::io_source(format!("cannot read {}", path.display()), e)
+        })?;
         let first_line = first_line.trim_end_matches(['\n', '\r']);
         let has_feature_lines = {
             let mut has_more = false;
             for line in reader.lines() {
-                let line =
-                    line.map_err(|e| io_err(format!("cannot read {}: {e}", path.display())))?;
+                let line = line.map_err(|e| {
+                    CityParquetError::io_source(format!("cannot read {}", path.display()), e)
+                })?;
                 if !line.trim().is_empty() {
                     has_more = true;
                     break;
@@ -131,8 +129,9 @@ impl Source {
                 crs_is_operator_supplied: false,
             })
         } else {
-            let text = fs::read_to_string(path)
-                .map_err(|e| io_err(format!("cannot read {}: {e}", path.display())))?;
+            let text = fs::read_to_string(path).map_err(|e| {
+                CityParquetError::io_source(format!("cannot read {}", path.display()), e)
+            })?;
             let mut doc =
                 CityJSON::from_str(&text).map_err(|e| err(format!("invalid CityJSON: {e}")))?;
             doc.sort_cjfeatures(SortingStrategy::Lexicographical);
@@ -285,8 +284,9 @@ impl Source {
         }
         match self.format {
             SourceFormat::CityJsonSeq => {
-                let file = File::open(&self.path)
-                    .map_err(|e| io_err(format!("cannot reopen {}: {e}", self.path.display())))?;
+                let file = File::open(&self.path).map_err(|e| {
+                    CityParquetError::io_source(format!("cannot reopen {}", self.path.display()), e)
+                })?;
                 let mut lines = BufReader::new(file).lines();
                 lines.next(); // skip header line
                 Ok(FeatureIter::Seq(lines))
@@ -322,7 +322,7 @@ impl Iterator for FeatureIter<'_> {
         match self {
             FeatureIter::Seq(lines) => loop {
                 match lines.next()? {
-                    Err(e) => return Some(Err(io_err(format!("read error: {e}")))),
+                    Err(e) => return Some(Err(CityParquetError::io_source("read error", e))),
                     Ok(line) if line.trim().is_empty() => continue,
                     Ok(line) => {
                         return Some(
@@ -377,7 +377,7 @@ mod tests {
         match Source::open(Path::new("/no/such/path/city.jsonl")) {
             Ok(_) => panic!("expected an error opening a nonexistent path"),
             Err(e) => assert!(
-                matches!(e, CityParquetError::Io(_)),
+                matches!(e, CityParquetError::Io { .. }),
                 "expected Io error, got {e:?}"
             ),
         }

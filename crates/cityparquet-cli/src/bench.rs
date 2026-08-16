@@ -202,10 +202,6 @@ fn variant_grammar_err(id: &str) -> CityParquetError {
     ))
 }
 
-fn io_err(msg: impl Into<String>) -> CityParquetError {
-    CityParquetError::Io(msg.into())
-}
-
 /// Short file names for a package's table paths, for user-facing messages —
 /// `PackageTables::tables` entries are absolute paths (e.g. under a bench
 /// tempdir), and echoing the whole path leaks environment detail that isn't
@@ -215,10 +211,6 @@ fn table_display_names(tables: &[PathBuf]) -> Vec<&str> {
         .iter()
         .map(|p| p.file_name().and_then(|n| n.to_str()).unwrap_or("<table>"))
         .collect()
-}
-
-fn parquet_err(msg: impl std::fmt::Display) -> CityParquetError {
-    CityParquetError::Parquet(msg.to_string())
 }
 
 /// The median of `durations`, in seconds. `durations` must be non-empty.
@@ -336,9 +328,9 @@ fn union_batch_bbox(batch: &RecordBatch, acc: &mut Option<[f64; 6]>) {
 
 /// The on-disk byte size of `dir/name`.
 fn file_size(dir: &std::path::Path, name: &str) -> Result<u64> {
-    fs::metadata(dir.join(name))
-        .map(|m| m.len())
-        .map_err(|e| io_err(format!("cannot stat {}: {e}", dir.join(name).display())))
+    fs::metadata(dir.join(name)).map(|m| m.len()).map_err(|e| {
+        CityParquetError::io_source(format!("cannot stat {}", dir.join(name).display()), e)
+    })
 }
 
 /// The on-disk byte size of an already-absolute path (`PackageTables::tables`
@@ -346,7 +338,7 @@ fn file_size(dir: &std::path::Path, name: &str) -> Result<u64> {
 fn path_size(path: &std::path::Path) -> Result<u64> {
     fs::metadata(path)
         .map(|m| m.len())
-        .map_err(|e| io_err(format!("cannot stat {}: {e}", path.display())))
+        .map_err(|e| CityParquetError::io_source(format!("cannot stat {}", path.display()), e))
 }
 
 /// Runs one variant end to end (convert, full scan, window query, round
@@ -373,7 +365,7 @@ fn run_variant(
     // finding 3).
     let mut write_times = Vec::with_capacity(opts.repeat);
     for _ in 0..opts.repeat {
-        let repeat_dir = tempfile::tempdir().map_err(|e| io_err(e.to_string()))?;
+        let repeat_dir = tempfile::tempdir().map_err(CityParquetError::from)?;
         let mut convert_opts =
             ConvertOptions::new(opts.input.clone(), repeat_dir.path().to_path_buf());
         convert_opts.recipe = variant.recipe();
@@ -393,7 +385,7 @@ fn run_variant(
     // window query, round trip) is written once more, untimed, into its own
     // fresh `out_dir` — kept separate from the timing loop above so those
     // measurements never contend with, or get billed into, `write_s`.
-    let out_dir = tempfile::tempdir().map_err(|e| io_err(e.to_string()))?;
+    let out_dir = tempfile::tempdir().map_err(CityParquetError::from)?;
     let mut convert_opts = ConvertOptions::new(opts.input.clone(), out_dir.path().to_path_buf());
     convert_opts.recipe = variant.recipe();
     convert_opts.ordering = variant.ordering;
@@ -420,7 +412,7 @@ fn run_variant(
         .into_iter()
         .sum();
     let total_bytes: u64 = fs::read_dir(out_dir.path())
-        .map_err(|e| io_err(e.to_string()))?
+        .map_err(CityParquetError::from)?
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| entry.metadata().ok())
         .filter(|meta| meta.is_file())
@@ -438,9 +430,10 @@ fn run_variant(
         let mut rows_this_run = 0usize;
         let mut bbox_this_run: Option<[f64; 6]> = None;
         for path in &tables.tables {
-            let file = File::open(path).map_err(|e| io_err(e.to_string()))?;
-            let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
-            let reader = builder.build().map_err(parquet_err)?;
+            let file = File::open(path).map_err(CityParquetError::from)?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+                .map_err(CityParquetError::parquet_from)?;
+            let reader = builder.build().map_err(CityParquetError::parquet_from)?;
             for batch in reader {
                 let batch = batch?;
                 rows_this_run += batch.num_rows();
@@ -487,10 +480,11 @@ fn run_variant(
     for _ in 0..opts.repeat {
         let start = Instant::now();
         for path in &tables.tables {
-            let file = File::open(path).map_err(|e| io_err(e.to_string()))?;
-            let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+            let file = File::open(path).map_err(CityParquetError::from)?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+                .map_err(CityParquetError::parquet_from)?;
             let pruned = builder.with_bbox_row_groups(window_bbox)?;
-            let reader = pruned.build().map_err(parquet_err)?;
+            let reader = pruned.build().map_err(CityParquetError::parquet_from)?;
             for batch in reader {
                 let _ = batch?;
             }
@@ -505,8 +499,9 @@ fn run_variant(
     let mut row_groups_total = 0usize;
     let mut row_groups_touched = 0usize;
     for path in &tables.tables {
-        let file = File::open(path).map_err(|e| io_err(e.to_string()))?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+        let file = File::open(path).map_err(CityParquetError::from)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+            .map_err(CityParquetError::parquet_from)?;
         let metadata = builder.metadata().clone();
         row_groups_total += metadata.num_row_groups();
         row_groups_touched += (0..metadata.num_row_groups())
@@ -521,7 +516,7 @@ fn run_variant(
     let roundtrip_equal = if opts.skip_roundtrip {
         None
     } else {
-        let export_dir = tempfile::tempdir().map_err(|e| io_err(e.to_string()))?;
+        let export_dir = tempfile::tempdir().map_err(CityParquetError::from)?;
         let export_path = export_dir.path().join("roundtrip.city.jsonl");
         let equal = export(&ExportOptions {
             package_dir: out_dir.path().to_path_buf(),
@@ -570,10 +565,10 @@ fn run_variant(
 /// touches every row group.
 pub fn run(opts: &BenchOptions) -> Result<()> {
     if opts.repeat == 0 {
-        return Err(io_err("repeat must be >= 1"));
+        return Err(CityParquetError::io("repeat must be >= 1"));
     }
     if !(opts.window_frac.is_finite() && opts.window_frac > 0.0 && opts.window_frac <= 1.0) {
-        return Err(io_err(format!(
+        return Err(CityParquetError::io(format!(
             "window_frac must be finite and satisfy 0 < window_frac <= 1, got {}",
             opts.window_frac
         )));
@@ -594,7 +589,7 @@ pub fn run(opts: &BenchOptions) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
-            io_err(format!(
+            CityParquetError::io(format!(
                 "cannot derive a dataset name from input path {}",
                 opts.input.display()
             ))
@@ -604,8 +599,9 @@ pub fn run(opts: &BenchOptions) -> Result<()> {
     if let Some(parent) = opts.out_csv.parent()
         && !parent.as_os_str().is_empty()
     {
-        fs::create_dir_all(parent)
-            .map_err(|e| io_err(format!("cannot create {}: {e}", parent.display())))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            CityParquetError::io_source(format!("cannot create {}", parent.display()), e)
+        })?;
     }
     let file_existed = opts.out_csv.exists();
     if file_existed {
@@ -613,11 +609,12 @@ pub fn run(opts: &BenchOptions) -> Result<()> {
         // shaped `run`) already created must not silently mix two column
         // schemas into one file — check the first line matches exactly
         // before appending any row.
-        let existing = fs::read_to_string(&opts.out_csv)
-            .map_err(|e| io_err(format!("cannot read {}: {e}", opts.out_csv.display())))?;
+        let existing = fs::read_to_string(&opts.out_csv).map_err(|e| {
+            CityParquetError::io_source(format!("cannot read {}", opts.out_csv.display()), e)
+        })?;
         let first_line = existing.lines().next().unwrap_or("");
         if first_line != CSV_HEADER {
-            return Err(io_err(format!(
+            return Err(CityParquetError::io(format!(
                 "{} already exists with a different header; expected `{CSV_HEADER}`, found `{first_line}` \
                  — refusing to append rows with a mismatched schema",
                 opts.out_csv.display()
@@ -628,14 +625,16 @@ pub fn run(opts: &BenchOptions) -> Result<()> {
         .create(true)
         .append(true)
         .open(&opts.out_csv)
-        .map_err(|e| io_err(format!("cannot open {}: {e}", opts.out_csv.display())))?;
+        .map_err(|e| {
+            CityParquetError::io_source(format!("cannot open {}", opts.out_csv.display()), e)
+        })?;
     if !file_existed {
-        writeln!(csv_file, "{CSV_HEADER}").map_err(|e| io_err(e.to_string()))?;
+        writeln!(csv_file, "{CSV_HEADER}").map_err(CityParquetError::from)?;
     }
 
     for (variant_id, parsed) in parsed_variants {
         let row = run_variant(opts, &dataset, &variant_id, parsed)?;
-        writeln!(csv_file, "{}", row.to_csv_line()).map_err(|e| io_err(e.to_string()))?;
+        writeln!(csv_file, "{}", row.to_csv_line()).map_err(CityParquetError::from)?;
     }
 
     Ok(())

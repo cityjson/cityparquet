@@ -49,10 +49,17 @@ pub fn resolve_inputs(patterns: &[PathBuf]) -> Result<ResolvedInputs> {
     for pat in patterns {
         let s = pat.to_string_lossy();
         if looks_like_glob(&s) {
-            let entries =
-                glob::glob(&s).map_err(|e| CityParquetError::Io(format!("bad glob {s}: {e}")))?;
+            // `glob`'s two error types are not `std::io::Error` (the pattern
+            // error is a syntax error; `GlobError` wraps an io error but adds
+            // the offending path), so they ride the chain boxed inside an
+            // `io::Error::other` rather than being flattened into the message.
+            let entries = glob::glob(&s).map_err(|e| {
+                CityParquetError::io_source(format!("bad glob {s}"), std::io::Error::other(e))
+            })?;
             for entry in entries {
-                let p = entry.map_err(|e| CityParquetError::Io(format!("glob error: {e}")))?;
+                let p = entry.map_err(|e| {
+                    CityParquetError::io_source("glob error", std::io::Error::other(e))
+                })?;
                 if p.is_file() {
                     out.push(p);
                 } else {
@@ -62,12 +69,15 @@ pub fn resolve_inputs(patterns: &[PathBuf]) -> Result<ResolvedInputs> {
         } else if pat.is_dir() {
             let mut children: Vec<PathBuf> = Vec::new();
             for entry in std::fs::read_dir(pat).map_err(|e| {
-                CityParquetError::Io(format!("cannot read dir {}: {e}", pat.display()))
+                CityParquetError::io_source(format!("cannot read dir {}", pat.display()), e)
             })? {
                 // Propagate a per-entry read error rather than silently
                 // omitting a file the user asked to convert.
                 let entry = entry.map_err(|e| {
-                    CityParquetError::Io(format!("cannot read entry in {}: {e}", pat.display()))
+                    CityParquetError::io_source(
+                        format!("cannot read entry in {}", pat.display()),
+                        e,
+                    )
                 })?;
                 let p = entry.path();
                 if is_recognised(&p) {
@@ -79,7 +89,7 @@ pub fn resolve_inputs(patterns: &[PathBuf]) -> Result<ResolvedInputs> {
         } else if pat.is_file() {
             out.push(pat.clone());
         } else {
-            return Err(CityParquetError::Io(format!(
+            return Err(CityParquetError::io(format!(
                 "input not found: {}",
                 pat.display()
             )));
@@ -99,7 +109,7 @@ pub fn resolve_inputs(patterns: &[PathBuf]) -> Result<ResolvedInputs> {
     }
     deduped.sort();
     if deduped.is_empty() {
-        return Err(CityParquetError::Io("no input files resolved".to_string()));
+        return Err(CityParquetError::io("no input files resolved".to_string()));
     }
     Ok(ResolvedInputs {
         files: deduped,

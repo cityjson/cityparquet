@@ -70,7 +70,7 @@ pub struct FeatureReader {
 /// promoted to model scope.
 fn read_model_appearance(path: &Path) -> Result<ModelAppearance> {
     let file = File::open(path)
-        .map_err(|e| CityParquetError::Io(format!("cannot reopen {}: {e}", path.display())))?;
+        .map_err(|e| CityParquetError::io_source(format!("cannot reopen {}", path.display()), e))?;
     let mut reader = NsReader::from_reader(BufReader::new(file));
     reader.config_mut().expand_empty_elements = true;
     let mut buf = Vec::new();
@@ -99,8 +99,9 @@ impl FeatureReader {
     /// Open `path` for streaming, quantising vertices against `transform`
     /// (which the header exposes so scan/encode dequantise consistently).
     pub fn open(path: &Path, transform: &Transform) -> Result<Self> {
-        let file = File::open(path)
-            .map_err(|e| CityParquetError::Io(format!("cannot reopen {}: {e}", path.display())))?;
+        let file = File::open(path).map_err(|e| {
+            CityParquetError::io_source(format!("cannot reopen {}", path.display()), e)
+        })?;
         let scale = triple(&transform.scale, "scale")?;
         let translate = triple(&transform.translate, "translate")?;
         let model_appearance = read_model_appearance(path)?;

@@ -66,7 +66,7 @@ pub fn parse_header(path: &Path) -> Result<CityJSON> {
 /// ahead of the first `cityObjectMember`.
 fn scan_envelope(path: &Path) -> Result<(Option<String>, Option<[f64; 6]>)> {
     let file = File::open(path)
-        .map_err(|e| CityParquetError::Io(format!("cannot open {}: {e}", path.display())))?;
+        .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
     let mut reader = NsReader::from_reader(BufReader::new(file));
     let mut buf = Vec::new();
 

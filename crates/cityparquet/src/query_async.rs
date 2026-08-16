@@ -39,10 +39,6 @@ use crate::reader::CityParquetReaderBuilder;
 #[cfg(test)]
 use arrow_array::StringArray;
 
-fn parquet_err(e: impl std::fmt::Display) -> CityParquetError {
-    CityParquetError::Parquet(e.to_string())
-}
-
 /// Re-stamps `batch` with `schema` (field metadata included) — the async
 /// analogue of [`crate::reader::CityParquetRecordBatchReader`]'s per-batch
 /// rewrap, inlined here rather than as its own stream-wrapper type since
@@ -60,7 +56,7 @@ pub async fn count_async(store: Arc<dyn ObjectStore>, path: &ObjectPath) -> Resu
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
     Ok(builder.metadata().file_metadata().num_rows() as u64)
 }
 
@@ -79,12 +75,16 @@ pub async fn full_read_async(
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
     let schema = builder.cityparquet_arrow_schema()?;
-    let mut stream = builder.build().map_err(parquet_err)?;
+    let mut stream = builder.build().map_err(CityParquetError::parquet_from)?;
 
     let mut acc = FullReadResult::default();
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
         let batch = restamp(batch, &schema)?;
         query_core::accumulate_full_read(&mut acc, &batch, meta)?;
     }
@@ -105,7 +105,7 @@ pub async fn bbox_query_async(
     let reader = ParquetObjectReader::new(Arc::clone(&store), path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
     let (row_groups_total, row_groups_touched) =
         query_core::bbox_row_group_counts(builder.metadata(), &query_bbox);
@@ -114,12 +114,16 @@ pub async fn bbox_query_async(
     let pruned = builder
         .with_projection(projection)
         .with_bbox_row_groups(query_bbox)?;
-    let mut stream = pruned.build().map_err(parquet_err)?;
+    let mut stream = pruned.build().map_err(CityParquetError::parquet_from)?;
 
     // No restamp: the `id`/`bbox` projection carries no extension metadata
     // the row test depends on.
     let mut ids = Vec::new();
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
         query_core::collect_bbox_ids(&batch, &query_bbox, &mut ids)?;
     }
 
@@ -145,7 +149,7 @@ pub async fn attr_filter_async(
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
     query_core::require_column(builder.schema(), column)?;
 
@@ -156,10 +160,14 @@ pub async fn attr_filter_async(
         .with_projection(output_mask)
         .with_row_filter(row_filter)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
     let mut count = 0u64;
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
         count += batch.num_rows() as u64;
     }
     Ok(count)
@@ -178,7 +186,7 @@ pub async fn attr_stats_async(
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
     query_core::require_column(builder.schema(), column)?;
 
@@ -188,9 +196,13 @@ pub async fn attr_stats_async(
     let mut stream = builder
         .with_projection(projection)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
         acc.visit_batch(column, &batch)?;
     }
     Ok(acc.finish())
@@ -208,16 +220,20 @@ pub async fn id_lookup_async(
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
     let schema = builder.cityparquet_arrow_schema()?;
 
     let row_filter = query_core::id_row_filter(builder.parquet_schema(), id);
     let mut stream = builder
         .with_row_filter(row_filter)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
         if batch.num_rows() == 0 {
             continue;
         }
@@ -239,7 +255,7 @@ pub async fn project_column_async(
     let reader = ParquetObjectReader::new(store, path.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
     query_core::require_column(builder.schema(), column)?;
 
@@ -247,10 +263,14 @@ pub async fn project_column_async(
     let mut stream = builder
         .with_projection(projection)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
     let mut count = 0u64;
-    while let Some(batch) = stream.try_next().await.map_err(parquet_err)? {
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
         count += query_core::non_null_count(&batch);
     }
     Ok(count)

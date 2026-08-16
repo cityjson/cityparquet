@@ -31,14 +31,6 @@ use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 
 pub use crate::query_core::{AttrPredicate, AttrStats, BBoxQueryResult, FullReadResult};
 
-fn io_err(e: impl std::fmt::Display) -> CityParquetError {
-    CityParquetError::Io(e.to_string())
-}
-
-fn parquet_err(e: impl std::fmt::Display) -> CityParquetError {
-    CityParquetError::Parquet(e.to_string())
-}
-
 /// Opens `table_path`, scans every row group single-threaded (the
 /// `parquet` crate's synchronous [`ParquetRecordBatchReaderBuilder`] path
 /// never spreads batch iteration across a thread pool, unlike its async
@@ -47,10 +39,11 @@ fn parquet_err(e: impl std::fmt::Display) -> CityParquetError {
 /// [`FullReadResult::boundary_count`] (total decoded surfaces/faces).
 /// Forces full geometry materialisation.
 pub fn full_read(table_path: &Path, meta: &CityMetadata) -> Result<FullReadResult> {
-    let file = File::open(table_path).map_err(io_err)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
     let schema = builder.cityparquet_arrow_schema()?;
-    let parquet_reader = builder.build().map_err(parquet_err)?;
+    let parquet_reader = builder.build().map_err(CityParquetError::parquet_from)?;
     let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
 
     let mut acc = FullReadResult::default();
@@ -63,8 +56,9 @@ pub fn full_read(table_path: &Path, meta: &CityMetadata) -> Result<FullReadResul
 /// The table's row count straight from Parquet file metadata — O(1), no
 /// row scan.
 pub fn count(table_path: &Path) -> Result<u64> {
-    let file = File::open(table_path).map_err(io_err)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
     Ok(builder.metadata().file_metadata().num_rows() as u64)
 }
 
@@ -77,8 +71,9 @@ pub fn count(table_path: &Path) -> Result<u64> {
 /// the `cityparquet bench` CLI harness measures, via the identical shared
 /// [`crate::reader::row_group_intersects`] predicate.
 pub fn bbox_query(table_path: &Path, query_bbox: [f64; 6]) -> Result<BBoxQueryResult> {
-    let file = File::open(table_path).map_err(io_err)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
 
     // Row-group pruning counts, computed BEFORE `with_bbox_row_groups`
     // consumes `builder`.
@@ -92,11 +87,15 @@ pub fn bbox_query(table_path: &Path, query_bbox: [f64; 6]) -> Result<BBoxQueryRe
     let pruned = builder
         .with_projection(projection)
         .with_bbox_row_groups(query_bbox)?;
-    let reader = pruned.build().map_err(parquet_err)?;
+    let reader = pruned.build().map_err(CityParquetError::parquet_from)?;
 
     let mut ids = Vec::new();
     for batch in reader {
-        query_core::collect_bbox_ids(&batch.map_err(parquet_err)?, &query_bbox, &mut ids)?;
+        query_core::collect_bbox_ids(
+            &batch.map_err(CityParquetError::parquet_from)?,
+            &query_bbox,
+            &mut ids,
+        )?;
     }
     Ok(BBoxQueryResult {
         ids,
@@ -116,8 +115,9 @@ pub fn bbox_query(table_path: &Path, query_bbox: [f64; 6]) -> Result<BBoxQueryRe
 /// batches, so counting rows across the batches yielded IS the matching
 /// count.
 pub fn attr_filter(table_path: &Path, column: &str, pred: &AttrPredicate) -> Result<u64> {
-    let file = File::open(table_path).map_err(io_err)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
 
     // Checked now (before `builder` is consumed by `with_projection`/
     // `with_row_filter` below) purely to fail fast with a clear "column not
@@ -137,11 +137,11 @@ pub fn attr_filter(table_path: &Path, column: &str, pred: &AttrPredicate) -> Res
         .with_projection(output_mask)
         .with_row_filter(row_filter)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
     let mut count = 0u64;
     for batch in reader {
-        count += batch.map_err(parquet_err)?.num_rows() as u64;
+        count += batch.map_err(CityParquetError::parquet_from)?.num_rows() as u64;
     }
     Ok(count)
 }
@@ -162,8 +162,9 @@ pub fn attr_filter(table_path: &Path, column: &str, pred: &AttrPredicate) -> Res
 ///   `count` is the number of non-null cells; `sum` is over those same
 ///   non-null cells; nulls never contribute to either.
 pub fn attr_stats(table_path: &Path, column: &str) -> Result<AttrStats> {
-    let file = File::open(table_path).map_err(io_err)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
 
     // Fail fast with a clear "column not found" error before `builder` is
     // consumed by `with_projection` below.
@@ -179,9 +180,9 @@ pub fn attr_stats(table_path: &Path, column: &str) -> Result<AttrStats> {
     let reader = builder
         .with_projection(projection)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
     for batch in reader {
-        acc.visit_batch(column, &batch.map_err(parquet_err)?)?;
+        acc.visit_batch(column, &batch.map_err(CityParquetError::parquet_from)?)?;
     }
     Ok(acc.finish())
 }
@@ -199,8 +200,9 @@ pub fn id_lookup(
     meta: &CityMetadata,
     id: &str,
 ) -> Result<Option<crate::decode::DecodedObject>> {
-    let file = File::open(table_path).map_err(io_err)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
     let schema = builder.cityparquet_arrow_schema()?;
 
     // The predicate's own required projection is `id` alone; the builder's
@@ -210,7 +212,7 @@ pub fn id_lookup(
     let parquet_reader = builder
         .with_row_filter(row_filter)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
     let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
 
     for batch in reader {
@@ -226,8 +228,9 @@ pub fn id_lookup(
 /// else in the table is ever decoded — the columnar-projection primitive).
 /// Returns the count of NON-NULL values in `column`.
 pub fn project_column(table_path: &Path, column: &str) -> Result<u64> {
-    let file = File::open(table_path).map_err(io_err)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(parquet_err)?;
+    let file = File::open(table_path)?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(CityParquetError::parquet_from)?;
 
     // Fail fast with a clear "column not found" error before `builder` is
     // consumed by `with_projection` below.
@@ -237,11 +240,11 @@ pub fn project_column(table_path: &Path, column: &str) -> Result<u64> {
     let reader = builder
         .with_projection(projection)
         .build()
-        .map_err(parquet_err)?;
+        .map_err(CityParquetError::parquet_from)?;
 
     let mut count = 0u64;
     for batch in reader {
-        count += query_core::non_null_count(&batch.map_err(parquet_err)?);
+        count += query_core::non_null_count(&batch.map_err(CityParquetError::parquet_from)?);
     }
     Ok(count)
 }

@@ -15,10 +15,6 @@ use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 
 use crate::Result;
 
-fn io_err(e: std::io::Error) -> CityParquetError {
-    CityParquetError::Io(e.to_string())
-}
-
 /// One ring's `posList` text: `X Y Z` per vertex, world coords, **re-closed**
 /// (the WKB reader strips the closing vertex, GML requires it back).
 pub fn pos_list(coords: &[[f64; 3]], ring: &[usize]) -> String {
@@ -52,19 +48,15 @@ fn write_linear_ring<W: Write>(
     if let Some(id) = ring_id {
         lr.push_attribute(("gml:id", id));
     }
-    w.write_event(Event::Start(lr)).map_err(io_err)?;
+    w.write_event(Event::Start(lr))?;
 
     let mut pos_list_start = BytesStart::new("gml:posList");
     pos_list_start.push_attribute(("srsDimension", "3"));
-    w.write_event(Event::Start(pos_list_start))
-        .map_err(io_err)?;
-    w.write_event(Event::Text(BytesText::new(&pos_list(coords, ring))))
-        .map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new("gml:posList")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(pos_list_start))?;
+    w.write_event(Event::Text(BytesText::new(&pos_list(coords, ring))))?;
+    w.write_event(Event::End(BytesEnd::new("gml:posList")))?;
 
-    w.write_event(Event::End(BytesEnd::new("gml:LinearRing")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("gml:LinearRing")))?;
     Ok(())
 }
 
@@ -105,29 +97,24 @@ pub fn write_polygon_ids<W: Write>(
     if let Some(id) = id {
         poly.push_attribute(("gml:id", id));
     }
-    w.write_event(Event::Start(poly)).map_err(io_err)?;
+    w.write_event(Event::Start(poly))?;
 
     let (exterior, interiors) = face
         .split_first()
         .ok_or_else(|| CityParquetError::Geometry("face has no rings to write".to_string()))?;
     let ring_id = |k: usize| ring_ids.and_then(|r| r.get(k)).and_then(|o| o.as_deref());
 
-    w.write_event(Event::Start(BytesStart::new("gml:exterior")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("gml:exterior")))?;
     write_linear_ring(w, coords, exterior, ring_id(0))?;
-    w.write_event(Event::End(BytesEnd::new("gml:exterior")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("gml:exterior")))?;
 
     for (k, hole) in interiors.iter().enumerate() {
-        w.write_event(Event::Start(BytesStart::new("gml:interior")))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new("gml:interior")))?;
         write_linear_ring(w, coords, hole, ring_id(k + 1))?;
-        w.write_event(Event::End(BytesEnd::new("gml:interior")))
-            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new("gml:interior")))?;
     }
 
-    w.write_event(Event::End(BytesEnd::new("gml:Polygon")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("gml:Polygon")))?;
     Ok(())
 }
 
@@ -136,7 +123,7 @@ pub fn write_polygon_ids<W: Write>(
 pub fn write_xlink_member<W: Write>(w: &mut Writer<W>, id: &str) -> Result<()> {
     let mut m = BytesStart::new("gml:surfaceMember");
     m.push_attribute(("xlink:href", format!("#{id}").as_str()));
-    w.write_event(Event::Empty(m)).map_err(io_err)?;
+    w.write_event(Event::Empty(m))?;
     Ok(())
 }
 
@@ -175,11 +162,9 @@ pub fn write_inline_member_ids<W: Write>(
     id: Option<&str>,
     ring_ids: Option<&[Option<String>]>,
 ) -> Result<()> {
-    w.write_event(Event::Start(BytesStart::new("gml:surfaceMember")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("gml:surfaceMember")))?;
     write_polygon_ids(w, coords, face, id, ring_ids)?;
-    w.write_event(Event::End(BytesEnd::new("gml:surfaceMember")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("gml:surfaceMember")))?;
     Ok(())
 }
 
@@ -245,29 +230,23 @@ fn write_gml_solid<W: Write>(
 ) -> Result<()> {
     let shells = crate::export::partition_shells(faces.to_vec(), counts)?;
 
-    w.write_event(Event::Start(BytesStart::new("gml:Solid")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("gml:Solid")))?;
 
     let (exterior, interiors) = shells
         .split_first()
         .ok_or_else(|| CityParquetError::Geometry("solid has no shells to write".to_string()))?;
 
-    w.write_event(Event::Start(BytesStart::new("gml:exterior")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("gml:exterior")))?;
     write_composite_surface(w, coords, exterior, face_ids, cursor)?;
-    w.write_event(Event::End(BytesEnd::new("gml:exterior")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("gml:exterior")))?;
 
     for shell in interiors {
-        w.write_event(Event::Start(BytesStart::new("gml:interior")))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new("gml:interior")))?;
         write_composite_surface(w, coords, shell, face_ids, cursor)?;
-        w.write_event(Event::End(BytesEnd::new("gml:interior")))
-            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new("gml:interior")))?;
     }
 
-    w.write_event(Event::End(BytesEnd::new("gml:Solid")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("gml:Solid")))?;
     Ok(())
 }
 
@@ -319,8 +298,7 @@ pub fn write_composite_solid_with_ids<W: Write>(
         )));
     }
 
-    w.write_event(Event::Start(BytesStart::new("gml:CompositeSolid")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("gml:CompositeSolid")))?;
     let mut cursor = 0usize;
     for (m, member) in members.iter().enumerate() {
         let crate::wkb_read::DecodedKind::PolyhedralSurface(faces) = member else {
@@ -329,14 +307,11 @@ pub fn write_composite_solid_with_ids<W: Write>(
             ));
         };
         let counts = nested.as_ref().map(|c| c[m].as_slice());
-        w.write_event(Event::Start(BytesStart::new("gml:solidMember")))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new("gml:solidMember")))?;
         write_gml_solid(w, coords, faces, counts, face_ids, &mut cursor)?;
-        w.write_event(Event::End(BytesEnd::new("gml:solidMember")))
-            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new("gml:solidMember")))?;
     }
-    w.write_event(Event::End(BytesEnd::new("gml:CompositeSolid")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("gml:CompositeSolid")))?;
     Ok(())
 }
 
@@ -351,21 +326,17 @@ fn write_composite_surface<W: Write>(
     face_ids: Option<&[FaceIds]>,
     cursor: &mut usize,
 ) -> Result<()> {
-    w.write_event(Event::Start(BytesStart::new("gml:CompositeSurface")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("gml:CompositeSurface")))?;
     for face in shell {
         let ids = face_ids.and_then(|a| a.get(*cursor));
         let poly_id = ids.and_then(|f| f.poly.as_deref());
         let ring_ids = ids.and_then(FaceIds::ring_slice);
-        w.write_event(Event::Start(BytesStart::new("gml:surfaceMember")))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new("gml:surfaceMember")))?;
         write_polygon_ids(w, coords, face, poly_id, ring_ids)?;
-        w.write_event(Event::End(BytesEnd::new("gml:surfaceMember")))
-            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new("gml:surfaceMember")))?;
         *cursor += 1;
     }
-    w.write_event(Event::End(BytesEnd::new("gml:CompositeSurface")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("gml:CompositeSurface")))?;
     Ok(())
 }
 

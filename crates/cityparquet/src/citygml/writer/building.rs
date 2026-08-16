@@ -31,10 +31,6 @@ use super::semantics::{
 use crate::Result;
 use crate::wkb_read::{DecodedGeometry, DecodedKind};
 
-fn io_err(e: std::io::Error) -> CityParquetError {
-    CityParquetError::Io(e.to_string())
-}
-
 /// The semantics a geometry can actually emit as `bldg:boundedBy`, or `None`.
 /// Requires: a major in `2..=4` (CityGML 2.0 `_BoundarySurface` has no
 /// `lod1MultiSurface`), an emittable geometry kind, every surface type a legal
@@ -70,8 +66,7 @@ fn write_plain_lodn_solid<W: Write>(
     face_ids: Option<&[FaceIds]>,
 ) -> Result<()> {
     let elem = format!("bldg:lod{major}Solid");
-    w.write_event(Event::Start(BytesStart::new(elem.as_str())))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new(elem.as_str())))?;
     match &geom.kind {
         DecodedKind::PolyhedralSurface(faces) => {
             write_solid_with_ids(w, &geom.coords, faces, props, face_ids)?
@@ -82,8 +77,7 @@ fn write_plain_lodn_solid<W: Write>(
         }
         _ => unreachable!("only PolyhedralSurface/GeometryCollection reach the plain solid path"),
     }
-    w.write_event(Event::End(BytesEnd::new(elem.as_str())))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new(elem.as_str())))?;
     report.semantic_surfaces_dropped += droppable_surface_count(props);
     Ok(())
 }
@@ -187,18 +181,13 @@ pub fn write_building<W: Write>(
     )? {
         return Ok(false);
     }
-    w.write_event(Event::Start(BytesStart::new("cityObjectMember")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(BytesStart::new("cityObjectMember")))?;
     let mut bldg = BytesStart::new("bldg:Building");
     bldg.push_attribute(("gml:id", b.id.as_str()));
-    w.write_event(Event::Start(bldg)).map_err(io_err)?;
-    w.get_mut()
-        .write_all(&content.into_inner())
-        .map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new("bldg:Building")))
-        .map_err(io_err)?;
-    w.write_event(Event::End(BytesEnd::new("cityObjectMember")))
-        .map_err(io_err)?;
+    w.write_event(Event::Start(bldg))?;
+    w.get_mut().write_all(&content.into_inner())?;
+    w.write_event(Event::End(BytesEnd::new("bldg:Building")))?;
+    w.write_event(Event::End(BytesEnd::new("cityObjectMember")))?;
     Ok(true)
 }
 
@@ -595,19 +584,13 @@ pub fn render_abstract_object(
             reached_parts,
         )?;
         if child_nonempty {
-            inner
-                .write_event(Event::Start(BytesStart::new("bldg:consistsOfBuildingPart")))
-                .map_err(io_err)?;
+            inner.write_event(Event::Start(BytesStart::new("bldg:consistsOfBuildingPart")))?;
             let mut bp = BytesStart::new("bldg:BuildingPart");
             bp.push_attribute(("gml:id", child_id.as_str()));
-            inner.write_event(Event::Start(bp)).map_err(io_err)?;
-            inner.get_mut().write_all(&child_inner).map_err(io_err)?;
-            inner
-                .write_event(Event::End(BytesEnd::new("bldg:BuildingPart")))
-                .map_err(io_err)?;
-            inner
-                .write_event(Event::End(BytesEnd::new("bldg:consistsOfBuildingPart")))
-                .map_err(io_err)?;
+            inner.write_event(Event::Start(bp))?;
+            inner.get_mut().write_all(&child_inner)?;
+            inner.write_event(Event::End(BytesEnd::new("bldg:BuildingPart")))?;
+            inner.write_event(Event::End(BytesEnd::new("bldg:consistsOfBuildingPart")))?;
             report.building_parts_written += 1;
             any_part = true;
         } else {

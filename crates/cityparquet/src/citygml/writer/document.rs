@@ -9,15 +9,10 @@
 
 use std::io::Write;
 
-use cityparquet_schema::CityParquetError;
 use quick_xml::Writer;
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 
 use crate::Result;
-
-fn io_err(e: std::io::Error) -> CityParquetError {
-    CityParquetError::Io(e.to_string())
-}
 
 /// Accumulates the min/max corner of every coordinate written, for the
 /// document's `gml:boundedBy/gml:Envelope`. `any` stays `false` until the
@@ -87,37 +82,28 @@ pub fn write_city_model_open<W: Write>(
     root.push_attribute(("xmlns:app", "http://www.opengis.net/citygml/appearance/2.0"));
     root.push_attribute(("xmlns:gml", "http://www.opengis.net/gml"));
     root.push_attribute(("xmlns:xlink", "http://www.w3.org/1999/xlink"));
-    w.write_event(Event::Start(root)).map_err(io_err)?;
+    w.write_event(Event::Start(root))?;
 
     if bounds.any {
-        w.write_event(Event::Start(BytesStart::new("gml:boundedBy")))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new("gml:boundedBy")))?;
 
         let mut envelope = BytesStart::new("gml:Envelope");
         if let Some(srs) = srs_name {
             envelope.push_attribute(("srsName", srs));
         }
         envelope.push_attribute(("srsDimension", "3"));
-        w.write_event(Event::Start(envelope)).map_err(io_err)?;
+        w.write_event(Event::Start(envelope))?;
 
-        w.write_event(Event::Start(BytesStart::new("gml:lowerCorner")))
-            .map_err(io_err)?;
-        w.write_event(Event::Text(BytesText::new(&corner(bounds.min))))
-            .map_err(io_err)?;
-        w.write_event(Event::End(BytesEnd::new("gml:lowerCorner")))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new("gml:lowerCorner")))?;
+        w.write_event(Event::Text(BytesText::new(&corner(bounds.min))))?;
+        w.write_event(Event::End(BytesEnd::new("gml:lowerCorner")))?;
 
-        w.write_event(Event::Start(BytesStart::new("gml:upperCorner")))
-            .map_err(io_err)?;
-        w.write_event(Event::Text(BytesText::new(&corner(bounds.max))))
-            .map_err(io_err)?;
-        w.write_event(Event::End(BytesEnd::new("gml:upperCorner")))
-            .map_err(io_err)?;
+        w.write_event(Event::Start(BytesStart::new("gml:upperCorner")))?;
+        w.write_event(Event::Text(BytesText::new(&corner(bounds.max))))?;
+        w.write_event(Event::End(BytesEnd::new("gml:upperCorner")))?;
 
-        w.write_event(Event::End(BytesEnd::new("gml:Envelope")))
-            .map_err(io_err)?;
-        w.write_event(Event::End(BytesEnd::new("gml:boundedBy")))
-            .map_err(io_err)?;
+        w.write_event(Event::End(BytesEnd::new("gml:Envelope")))?;
+        w.write_event(Event::End(BytesEnd::new("gml:boundedBy")))?;
     }
 
     Ok(())
@@ -125,8 +111,7 @@ pub fn write_city_model_open<W: Write>(
 
 /// Close the `</CityModel>` root element.
 pub fn write_city_model_close<W: Write>(w: &mut Writer<W>) -> Result<()> {
-    w.write_event(Event::End(BytesEnd::new("CityModel")))
-        .map_err(io_err)?;
+    w.write_event(Event::End(BytesEnd::new("CityModel")))?;
     Ok(())
 }
 

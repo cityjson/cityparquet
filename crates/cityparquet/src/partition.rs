@@ -101,10 +101,6 @@ fn err(msg: String) -> CityParquetError {
     CityParquetError::Schema(msg)
 }
 
-fn io_err(msg: String) -> CityParquetError {
-    CityParquetError::Io(msg)
-}
-
 /// True only for the EXACT subdirectory-name shapes this driver produces
 /// (`count-<digits>`, `features-<digits>`, `box_x<int>_y<int>`, `box_none`), so
 /// overwrite never deletes an unrelated directory that merely shares a prefix
@@ -132,10 +128,10 @@ fn is_partition_dir_name(name: &str) -> bool {
 fn existing_partition_dirs(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(fs::read_dir(dir)
         .map_err(|e| {
-            io_err(format!(
-                "cannot read output directory {}: {e}",
-                dir.display()
-            ))
+            CityParquetError::io_source(
+                format!("cannot read output directory {}", dir.display()),
+                e,
+            )
         })?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
@@ -154,10 +150,10 @@ fn existing_partition_dirs(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
 /// work has succeeded.
 fn ensure_parent_ready(dir: &Path, overwrite: bool) -> Result<Vec<std::path::PathBuf>> {
     fs::create_dir_all(dir).map_err(|e| {
-        io_err(format!(
-            "cannot create output directory {}: {e}",
-            dir.display()
-        ))
+        CityParquetError::io_source(
+            format!("cannot create output directory {}", dir.display()),
+            e,
+        )
     })?;
     let existing = existing_partition_dirs(dir)?;
     if !existing.is_empty() && !overwrite {
@@ -237,10 +233,7 @@ pub fn convert_partitioned(
     // to complete it (documented limitation for this research tool).
     for p in stale {
         fs::remove_dir_all(&p).map_err(|e| {
-            io_err(format!(
-                "cannot remove stale partition {}: {e}",
-                p.display()
-            ))
+            CityParquetError::io_source(format!("cannot remove stale partition {}", p.display()), e)
         })?;
     }
 

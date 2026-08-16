@@ -475,7 +475,7 @@ fn overwrite_with_a_bad_input_path_leaves_the_existing_package_intact() {
     bad.overwrite = true;
     let err = convert(&bad).unwrap_err();
     assert!(
-        matches!(err, CityParquetError::Io(_)),
+        matches!(err, CityParquetError::Io { .. }),
         "expected an Io error opening the bad input path, got {err:?}"
     );
 

@@ -51,14 +51,6 @@ fn schema_err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Schema(msg.into())
 }
 
-fn io_err(msg: impl Into<String>) -> CityParquetError {
-    CityParquetError::Io(msg.into())
-}
-
-fn parquet_err(msg: impl Into<String>) -> CityParquetError {
-    CityParquetError::Parquet(msg.into())
-}
-
 /// zstd level 3, no per-column tuning — sidecars are small, dictionary-poor
 /// tables (a few dozen to a few thousand appearance definitions), unlike the
 /// main table's [`crate::recipe::WriterRecipe`] which is the paper's actual
@@ -85,17 +77,17 @@ fn sidecar_writer_properties() -> Result<WriterProperties> {
 }
 
 fn write_batch(path: &Path, schema: Arc<Schema>, batch: RecordBatch) -> Result<()> {
-    let file =
-        File::create(path).map_err(|e| io_err(format!("cannot create {}: {e}", path.display())))?;
+    let file = File::create(path)
+        .map_err(|e| CityParquetError::io_source(format!("cannot create {}", path.display()), e))?;
     let props = sidecar_writer_properties()?;
     let mut writer = ArrowWriter::try_new(file, schema, Some(props))
-        .map_err(|e| parquet_err(format!("cannot open parquet writer: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("cannot open parquet writer", e))?;
     writer
         .write(&batch)
-        .map_err(|e| parquet_err(format!("parquet write error: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("parquet write error", e))?;
     writer
         .close()
-        .map_err(|e| parquet_err(format!("cannot finalise parquet file: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("cannot finalise parquet file", e))?;
     Ok(())
 }
 
@@ -587,10 +579,10 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let file =
-        File::open(path).map_err(|e| io_err(format!("cannot open {}: {e}", path.display())))?;
+    let file = File::open(path)
+        .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|e| parquet_err(format!("cannot open parquet reader: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("cannot open parquet reader", e))?;
     let mut lods: Vec<Lod> = builder
         .schema()
         .fields()
@@ -605,12 +597,12 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
     lods.dedup();
     let reader = builder
         .build()
-        .map_err(|e| parquet_err(format!("cannot build parquet reader: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("cannot build parquet reader", e))?;
 
     let mut out = Vec::new();
     let mut next_pos = 0usize;
     for batch in reader {
-        let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
+        let batch = batch.map_err(|e| CityParquetError::parquet_source("parquet read error", e))?;
         let id: &StringArray = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
 
         let cols: Vec<(Lod, TemplateCols)> = lods
@@ -760,18 +752,18 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let file =
-        File::open(path).map_err(|e| io_err(format!("cannot open {}: {e}", path.display())))?;
+    let file = File::open(path)
+        .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|e| parquet_err(format!("cannot open parquet reader: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("cannot open parquet reader", e))?;
     let reader = builder
         .build()
-        .map_err(|e| parquet_err(format!("cannot build parquet reader: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("cannot build parquet reader", e))?;
 
     let mut out = Vec::new();
     let mut next_id = 0i64;
     for batch in reader {
-        let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
+        let batch = batch.map_err(|e| CityParquetError::parquet_source("parquet read error", e))?;
         let id: &Int64Array = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
         let name: &StringArray = downcast(get_column(&batch, "name")?.as_ref(), "name")?;
         let ambient_intensity: &Float64Array = downcast(
@@ -855,18 +847,18 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let file =
-        File::open(path).map_err(|e| io_err(format!("cannot open {}: {e}", path.display())))?;
+    let file = File::open(path)
+        .map_err(|e| CityParquetError::io_source(format!("cannot open {}", path.display()), e))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|e| parquet_err(format!("cannot open parquet reader: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("cannot open parquet reader", e))?;
     let reader = builder
         .build()
-        .map_err(|e| parquet_err(format!("cannot build parquet reader: {e}")))?;
+        .map_err(|e| CityParquetError::parquet_source("cannot build parquet reader", e))?;
 
     let mut out = Vec::new();
     let mut next_id = 0i64;
     for batch in reader {
-        let batch = batch.map_err(|e| parquet_err(format!("parquet read error: {e}")))?;
+        let batch = batch.map_err(|e| CityParquetError::parquet_source("parquet read error", e))?;
         let id: &Int64Array = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
         // This crate no longer writes a `name` column (§11.3, G16), but a
         // third-party file may still carry one; read it only when present so a
