@@ -548,7 +548,7 @@ named set. Measuring both axes in one run answered neither cleanly."
 
 **Files:**
 - Modify: `scripts/readbench_prepare.sh`
-- Test: `scripts/tests/test_readbench_prepare.bats` **(new)** — or, if `bats` is unavailable, a plain `scripts/tests/readbench_prepare_test.sh` returning non-zero on failure. State which you used in the report.
+- Test: `scripts/tests/readbench_prepare_test.sh` **(new)** — a plain `set -euo pipefail` script that returns non-zero on failure and prints one line per case. `bats` is **not** installed on this machine, so do not reach for it.
 
 **Interfaces:**
 - Consumes: nothing.
