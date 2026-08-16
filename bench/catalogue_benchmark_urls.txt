@@ -192,7 +192,16 @@ https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
 # CityJSON TINRelief, which this repository treats as first class and writes to
 # relief.parquet). The runner now REFUSES such a document outright, naming the
 # offending types, so these tiles cannot be measured at all until the reader's
-# type map is extended. Verified against each tile below on 2026-08-16.
+# type map is extended.
+#
+# PROVENANCE OF THE FIGURES BELOW: the lsld, trk, urf and ubld tallies were
+# MEASURED on 2026-08-16 by downloading each tile and running
+# `cityparquet-readbench --child --format citygml --scenario count`. The dem
+# entry is INFERRED, not measured — the tile is 599 MB and was never downloaded;
+# dem:ReliefFeature is unmapped by explicit decision in the reader's own type
+# map (crates/cityparquet/src/citygml/reader.rs, the ReliefFeature comment in
+# `citygml_object_type`), so the refusal follows by construction rather than
+# from a run.
 #
 # Do not re-admit these to the USABLE list without either extending the reader's
 # 1st-level type map or converting the tile with citygml-tools first.
@@ -226,15 +235,18 @@ https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
 #
 # japan-plateau-3d — central Tokyo (Edogawa-ku sheet), dem (ReliefFeature / TIN
 #   terrain), CityGML 2.0, .gml, 599 MB
-#   -> dem:ReliefFeature is explicitly unmapped (see the comment in
-#      reader.rs::citygml_object_type: a ReliefFeature may be raster, breakline,
-#      mass-point or TIN, and only a TIN maps cleanly to CityJSON TINRelief).
-#      The widest cross-format divergence of the five: citygml-tools DOES
-#      convert it, so every other row reports N.
+#   -> NOT MEASURED (599 MB, never downloaded); no member tally is claimed.
+#      Blocked by inference: dem:ReliefFeature is explicitly unmapped (see the
+#      comment in reader.rs::citygml_object_type — a ReliefFeature may be
+#      raster, breakline, mass-point or TIN, and only a TIN maps cleanly to
+#      CityJSON TINRelief), so every member of a dem tile is a member the
+#      reader skips. Would be the widest cross-format divergence of the five:
+#      citygml-tools DOES convert it, so every other row reports N.
 # https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/dem/533946_dem_6697_op.gml
 #
-# Modules verified as fully mapped (all members read): bldg, brid (loud geometry
-# error, see its entry above), fld, frn, htd, luse, squr, tran, veg.
+# Modules MEASURED as fully mapped (every member read, run on 2026-08-16):
+# bldg, brid (which then fails loudly on geometry — see its entry above), fld,
+# frn, htd, luse, squr, tran, veg.
 #
 # ---------------------------------------------------------------------------
 # BLOCKED — valid CityGML/CityJSON, NOT ingestible by the converter today.

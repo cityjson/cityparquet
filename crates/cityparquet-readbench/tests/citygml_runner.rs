@@ -391,6 +391,69 @@ fn an_unmapped_member_type_fails_loudly_instead_of_counting_zero() {
     }
 }
 
+/// **The `id-lookup` hit path** — the one place the guard can be bypassed, and
+/// the reason `id-lookup` deliberately gave up its early exit.
+///
+/// The skipped-member tally is only authoritative at EOF, so a scenario that
+/// stopped at a lucky early hit would answer from a document it never finished
+/// reading: a tile whose FIRST member is mapped could publish `1` while its
+/// later, unmapped members went unnoticed. `run_scenario` therefore drains the
+/// stream and only then consults the guard.
+///
+/// The `plateau_trk_fragment.gml` test above cannot pin that, because it holds
+/// no id to hit — every scenario there drains by necessity. This fixture puts a
+/// findable id in front of the unmapped members, so an early exit would produce
+/// a clean `1` and skip the guard entirely. Re-run the mutation (restore
+/// `return Ok(1)` on a hit) and this test — and only this test — goes red.
+#[test]
+fn id_lookup_still_reaches_the_guard_when_the_id_is_found() {
+    // The premise: this id really is present, and really is in the FIRST
+    // member — so a hit genuinely happens before the unmapped members are
+    // reached. Proven against the unmixed source fixture, which the guard
+    // accepts, so a `1` here would mean "found and stopped", not "not found".
+    const FOUND_ID: &str = "GMLID_BUI46739_1739_10911";
+    assert_eq!(
+        run_child(
+            "citygml",
+            "id-lookup",
+            &data_fixture("railway_lod3_fragment.gml"),
+            &["--target-id", FOUND_ID],
+        ),
+        1,
+        "the id must be findable in the mapped half on its own, or this test \
+         would pass for the wrong reason"
+    );
+
+    let composed = data_fixture("railway_then_unmapped_trk.gml");
+    let stderr = run_child_expect_failure(
+        "citygml",
+        "id-lookup",
+        &composed,
+        &["--target-id", FOUND_ID],
+    );
+    assert!(
+        stderr.contains("does not map") && stderr.contains("tran:Track"),
+        "finding the id must NOT let id-lookup skip the skipped-member guard; \
+         got stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("3 of 7"),
+        "the refusal must account for the whole document — 4 mapped members \
+         plus 3 unmapped ones — proving the stream was drained past the hit; \
+         got stderr:\n{stderr}"
+    );
+
+    // And the same document with an id that is NOT present must fail
+    // identically, so the guard is not accidentally coupled to the hit.
+    let miss = run_child_expect_failure(
+        "citygml",
+        "id-lookup",
+        &composed,
+        &["--target-id", "no-such-id"],
+    );
+    assert!(miss.contains("3 of 7"), "got stderr:\n{miss}");
+}
+
 /// The documents the guard must still accept, spelled out so the guard cannot
 /// be over-tightened into refusing valid input. All four of
 /// `railway_lod3_fragment.gml`'s members and all three of the Ingolstadt
