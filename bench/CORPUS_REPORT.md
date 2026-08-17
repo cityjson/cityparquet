@@ -238,9 +238,11 @@ just sizes                            # size + compression-ratio report + charts
 The explicit `FORMATS` list is not decoration. A bare `just bench <folder>`
 now measures `Format::DEFAULT_SET`, which (a) asks for a `citygml` row this
 corpus cannot provide, so the run warns that it is not a complete format
-comparison, and (b) represents CityParquet by `cityparquet-hilbert` rather
-than the source-ordered `cityparquet` these figures were measured with. The
-list above reproduces the series this report actually contains. The ordering
+comparison, (b) represents CityParquet by `cityparquet-hilbert` rather than
+the source-ordered `cityparquet` these figures were measured with, and
+(c) does **not** append the `duckdb-parquet` baseline, which is now opt-in —
+§1's DuckDB-over-Parquet row only exists because the list above names it. The
+list reproduces the series this report actually contains. The ordering
 question is now asked separately by `just ordering-bench <folder>`, into
 `bench/ordering_results/`.
 

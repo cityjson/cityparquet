@@ -106,9 +106,23 @@ Three deliberate choices in that first row:
 - **`cityjsonseq-gz` and `duckdb-parquet` are opt-in, not default.** Neither
   is a *format*: `cityjsonseq-gz` is a compression variant of a format
   already in the set, and `duckdb-parquet` is an SQL-**engine** baseline over
-  a file already in the set. Both are measured on request
-  (`just bench <folder> <out> "cityjsonseq-gz,..."`); neither belongs on a
-  format axis unasked.
+  a file already in the set. Neither belongs on a format axis unasked, so
+  **a bare `just bench <folder>` produces a CSV with exactly the five
+  `DEFAULT_SET` series in it** — no sixth, non-format row. Both are measured
+  on request, by naming them:
+
+  ```sh
+  just bench <folder> bench/read_results \
+      "citygml,cityjson,cityjsonseq,cityjsonseq-gz,flatcitybuf,cityparquet-hilbert,duckdb-parquet"
+  ```
+
+  `duckdb-parquet` is the *only* thing that triggers the
+  `scripts/readbench_duckdb.sh` append step. This is pinned in both
+  directions — a bare run must not append it, naming it must — by
+  `scripts/tests/bench_recipe_test.sh`, which extracts the `bench` recipe's
+  own format-selection block from the justfile and runs it. The justfile used
+  to disagree with `Format::DEFAULT_SET` here, appending the baseline on every
+  default run; the test exists so that cannot come back.
 
 `duckdb-parquet` is **not** the M5 write-benchmark's `duckdb-copy` baseline.
 `duckdb-copy` there reads CityJSON through the community `cityjson`
@@ -335,6 +349,20 @@ each cold number stands alone, one per format, one `full-read` only.
    whenever a feature contains more than one matching CityObject. This is
    why selectivity is a meaningful, bounded number in this benchmark rather
    than an artefact to explain away.
+
+   **The guard against a grain mismatch WARNS; it never fails the run.**
+   After `attr-filter` has run for every resolved format, the coordinator
+   compares their `result_count`s — `object_type` equality is CityObject-level
+   in every format, so a healthy run sees them agree exactly — and prints
+   either `self-consistency OK: …` or `WARNING: formats disagree on
+   AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
+   not a correctness gate: a run whose formats disagreed still writes a
+   complete-looking CSV, with nothing in the CSV itself recording that they
+   did. It also covers `attr-filter` **only** — never `id-lookup`, and never
+   the three feature-grain scenarios. **So the stderr log has to be kept with
+   the run**, and a `WARNING: formats disagree` line must be reproduced beside
+   any number quoted from that run. CityGML's nested `cityObjectMember`
+   hierarchy is the likeliest source of such a disagreement.
 
 3. **`full-read`'s materialisation is honestly different work per format,
    not identical work in different clothes.** CityGML streams and decodes
@@ -769,8 +797,8 @@ format list, when only some artefacts are wanted (e.g.
 `duckdb-parquet` is not accepted there, because it has no artefact of its own.
 
 The `readbench_duckdb.sh` step is only needed when the `duckdb-parquet`
-baseline is wanted — it is opt-in, and `just bench` appends it only when
-`duckdb-parquet` appears in `FORMATS` (or when `FORMATS` is empty).
+baseline is wanted — it is opt-in, and `just bench` appends it **only when
+`duckdb-parquet` is explicitly named in `FORMATS`**, never on a bare run.
 `--numeric-column` is in turn only needed to enable that baseline's
 `attr-stats` row; omit it for datasets with no numeric attribute (e.g.
 `lod3_railway.city.json`, where `attr-stats` is skipped for every format —
