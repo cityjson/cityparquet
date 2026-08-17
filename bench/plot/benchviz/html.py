@@ -260,12 +260,8 @@ BODY = r"""
     <button class="theme" id="theme-btn" type="button" aria-live="polite">Theme: auto</button>
   </header>
 
-  <h1>CityParquet dominates the selective read and pays for the full read</h1>
-  <p class="lede">Eleven CityJSON corpora, six formats, nine read scenarios &mdash; every
-  number on this page is a ratio against the same CityJSONSeq baseline. Column pruning and
-  predicate push-down buy one to two orders of magnitude on counts, bounding-box windows and
-  attribute queries, at roughly a third of the bytes on disk; materialising every geometry of
-  every object is the one job where the columnar layout does not pay, and it costs memory.</p>
+  <h1 id="headline"></h1>
+  <p class="lede" id="lede"></p>
   <p class="small" id="provenance"></p>
 
   <h2>How to read this page</h2>
@@ -400,6 +396,18 @@ JS = r"""
   };
   var SCEN_ORDER = ["full-read", "count", "bbox-1pct", "bbox-5pct", "bbox-25pct",
                     "attr-filter", "attr-stats", "id-lookup", "project"];
+
+  /* Which formats this run actually measured. A run carries the formats it was
+     asked for — the 2026-08-17 corpus run carried three of the six — and the
+     page's own sentences count them rather than assuming all six. */
+  var MEASURED = {};
+  DATA.read.forEach(function (r) {
+    if (r.time_ratio != null || r.format === META.baseline) { MEASURED[r.format] = true; }
+  });
+  var MEASURED_SIZES = {};
+  DATA.sizes.forEach(function (r) {
+    if (r.frac_of_baseline != null) { MEASURED_SIZES[r.format] = true; }
+  });
 
   /* ---------------- small helpers ---------------- */
 
@@ -620,6 +628,68 @@ JS = r"""
   });
 
   /* ---------------- header / how to read ---------------- */
+
+  /* The title and the lede are claims about the corpus, so they are computed
+     from it. Typed by hand they survive exactly until the next benchmark run,
+     which is how the first edition of this page came to open with "Eleven
+     CityJSON corpora, six formats" over a 21-dataset, three-format run. */
+  var CP_SERIES = FORMATS.filter(function (f) {
+    return f.indexOf("cityparquet") === 0 && MEASURED[f];
+  })[0];
+
+  function medianOf(list) {
+    var v = list.filter(function (x) { return x != null; }).sort(function (a, b) {
+      return a - b;
+    });
+    if (!v.length) { return null; }
+    var m = v.length >> 1;
+    return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+  }
+
+  function medianRatio(scenario, fmt, key) {
+    return medianOf(DATA.read.filter(function (r) {
+      return r.scenario_key === scenario && r.format === fmt;
+    }).map(function (r) { return r[key]; }));
+  }
+
+  function renderHeadline() {
+    var scenarios = {};
+    DATA.read.forEach(function (r) { scenarios[r.scenario_key] = true; });
+    var scenList = Object.keys(scenarios);
+    var nFmt = Object.keys(MEASURED).length;
+    var full = CP_SERIES ? medianRatio("full-read", CP_SERIES, "time_ratio") : null;
+    var selective = CP_SERIES ? medianOf(scenList.filter(function (sc) {
+      return sc !== "full-read";
+    }).map(function (sc) { return medianRatio(sc, CP_SERIES, "time_ratio"); })) : null;
+    var sizeMed = medianOf(DATA.sizes.filter(function (r) {
+      return r.format === CP_SERIES || r.format === "cityparquet";
+    }).map(function (r) { return r.frac_of_baseline; }));
+
+    var title = "CityParquet benchmarks — read speed, memory and size against CityJSONSeq";
+    if (full != null && selective != null) {
+      title = selective < 1 && full >= 0.9
+        ? "CityParquet dominates the selective read and pays for the full read"
+        : (selective < 1 && full < 0.9
+            ? "CityParquet reads faster than CityJSONSeq, selectively and in full"
+            : "CityParquet trades read time for selectivity");
+    }
+    el("headline").textContent = title;
+    document.title = title;
+
+    var parts = [
+      "<b>" + DATASETS.length + " CityJSON corpora, " + nFmt + " formats, " +
+        scenList.length + " read scenarios</b> — every number on this page is a ratio " +
+        "against the same CityJSONSeq baseline."
+    ];
+    if (CP_SERIES && selective != null && full != null) {
+      parts.push("Column pruning and predicate push-down put " + SHORT[CP_SERIES] +
+        " at a median " + ratio(selective) + " of the baseline's time across the " +
+        "selective scenarios, against " + ratio(full) + " for materialising every " +
+        "CityObject" + (sizeMed != null ? ", at a median " + ratio(sizeMed) +
+        " of the bytes on disk" : "") + ".");
+    }
+    el("lede").innerHTML = parts.join(" ");
+  }
 
   el("provenance").innerHTML =
     "Baseline " + esc(META.baseline) + " = 1× &middot; read data " +
@@ -1111,10 +1181,11 @@ JS = r"""
 
   function renderOverview() {
     el("overview-rationale").textContent =
-      "Two chart types, chosen by the shape of the data. Five formats judged on three " +
-      "ordered criteria is a slopegraph — it makes the trade the eye follows a line. " +
-      "Eleven datasets per format per scenario is a distribution, so it gets a dot " +
-      "strip — a median alone would hide whether the corpus agrees with itself.";
+      "Two chart types, chosen by the shape of the data. A handful of formats judged on " +
+      "three ordered criteria is a slopegraph — it makes the trade a line the eye can " +
+      "follow. " + DATASETS.length + " datasets per format per scenario is a " +
+      "distribution, so it gets a dot strip — a median alone would hide whether the " +
+      "corpus agrees with itself.";
     renderSlope();
     renderStrips();
   }
@@ -1340,14 +1411,15 @@ JS = r"""
       ? "Heap is the allocator's view, not the operating system's: FlatCityBuf streams by " +
         "design and so shows a tiny heap, and DuckDB on CityParquet reports no heap at all " +
         'because it runs out of process (marked "n/a" in the panel notes). Peak RSS is the ' +
-        "metric present for all six formats and is the one to cite " +
+        "metric present for every format measured here and is the one to cite " +
         '(<a href="#caveat-6">caveat 6</a>).'
-      : "Peak RSS is the primary memory metric: present for all six formats, and platform " +
-        "units cancel in the ratio.";
+      : "Peak RSS is the primary memory metric: present for every format measured here, " +
+        "and platform units cancel in the ratio.";
 
     var sect = el("view-pareto");
     sect.setAttribute("aria-label",
-      "Speed against memory, eleven datasets. On selective scenarios CityParquet sits below " +
+      "Speed against memory, " + DATASETS.length + " datasets. On selective scenarios " +
+      "CityParquet sits below " +
       "and to the left of the CityJSONSeq baseline — faster and leaner; on full-read it " +
       "sits near 1 times in time and above it in memory.");
   }
@@ -1523,8 +1595,10 @@ JS = r"""
 
     el("size-lede").innerHTML =
       "Bars are file size divided by the CityJSONSeq file size for the same dataset, sorted " +
-      "smallest first, all panels on one shared scale. Five formats — DuckDB is absent " +
-      "because it reads the CityParquet artefact rather than writing one of its own. " +
+      "smallest first, all panels on one shared scale. " +
+      SIZE_FORMATS.filter(function (f) { return MEASURED_SIZES[f]; }).length +
+      " formats — DuckDB is absent because it reads the CityParquet artefact rather than " +
+      "writing one of its own. " +
       "CityParquet is accented, Hilbert-ordered CityParquet is the outlined bar.";
 
     el("view-size").setAttribute("aria-label",
@@ -1677,7 +1751,8 @@ JS = r"""
     el("comp-grid").innerHTML = out;
 
     el("comp-lede").innerHTML =
-      "Eight of the eleven datasets have a compression run. Each point is one writer variant " +
+      COMP_DATASETS.length + " of the " + DATASETS.length + " datasets have a " +
+      "compression run. Each point is one writer variant " +
       "measured against that dataset's own default CityParquet recipe at 1×, 1× " +
       "(the cross): horizontal is write time, vertical is total bytes, both logarithmic. " +
       "Filled circles are codec variants, open circles are row-group-size variants — a " +
@@ -1761,25 +1836,39 @@ JS = r"""
         esc(noBaseline.join("; ")) + ". The absolute times are still in the exact-value " +
         "tables above; only the ratios are undefined.");
     }
-    var noDuck = [];
-    DATASETS.forEach(function (d) {
-      SCEN_ORDER.forEach(function (sc) {
-        var byF = READ[d.id] && READ[d.id][sc];
-        if (byF && !byF["duckdb-parquet"] && byF.cityjsonseq) {
-          noDuck.push(d.id + " / " + sc);
-        }
+    /* A format the run never measured is one sentence, not one per (dataset,
+       scenario) pair: the previous edition listed 180 pairs for a format that
+       was simply absent, which buries the gaps that are actually specific. */
+    FORMATS.forEach(function (f) {
+      if (f === META.baseline || MEASURED[f]) { return; }
+      items.push("<b>" + esc(SHORT[f]) + "</b> was not read-benchmarked in this run — no " +
+        "marker, column or row in sections 0 to 2" +
+        (MEASURED_SIZES[f] ? "; its on-disk size WAS measured and is in section 3" : "") +
+        ".");
+    });
+    var partial = [];
+    FORMATS.forEach(function (f) {
+      if (!MEASURED[f] || f === META.baseline) { return; }
+      DATASETS.forEach(function (d) {
+        SCEN_ORDER.forEach(function (sc) {
+          var byF = READ[d.id] && READ[d.id][sc];
+          if (byF && byF.cityjsonseq && !byF[f]) { partial.push(SHORT[f] + ": " + d.id + " / " + sc); }
+        });
       });
     });
-    if (noDuck.length) {
-      items.push("<b>DuckDB on CityParquet</b> was not run for: " + esc(noDuck.join("; ")) +
-        ". Its cells are “–”, never zero.");
+    if (partial.length) {
+      items.push("<b>Measured for some datasets only</b>: " + esc(partial.join("; ")) +
+        ". Those cells are “–”, never zero.");
     }
-    items.push("<b>Peak heap</b> is missing for every DuckDB measurement (" +
-      num(DATA.read.filter(function (r) { return r.heap_b == null; }).length) +
-      " records): it is an out-of-process SQL engine, so the harness cannot see its " +
-      "allocator. Use the peak-RSS view for any memory claim.");
-    items.push("<b>Sizes</b> cover five formats; DuckDB produces no artefact of its own, " +
-      "it reads the CityParquet package.");
+    var noHeap = DATA.read.filter(function (r) { return r.heap_b == null; }).length;
+    if (noHeap) {
+      items.push("<b>Peak heap</b> is missing for " + num(noHeap) + " record(s), all of " +
+        "them out-of-process measurements: the harness cannot see another process's " +
+        "allocator. Use the peak-RSS view for any memory claim.");
+    }
+    items.push("<b>Sizes</b> cover " +
+      SIZE_FORMATS.filter(function (f) { return MEASURED_SIZES[f]; }).length +
+      " formats; DuckDB produces no artefact of its own, it reads the CityParquet package.");
     (DATA.meta.excluded_formats || []).forEach(function (e) {
       items.push("<b>" + esc(e.format) + "</b> was measured but is <b>not plotted " +
         "anywhere on this page</b> (" + num(e.rows) + " " + esc(e.where.join(" + ")) +
@@ -1815,6 +1904,7 @@ JS = r"""
     apply();
   }());
 
+  renderHeadline();
   renderOverview();
   renderPareto();
   renderHeat();
@@ -1832,7 +1922,7 @@ TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CityParquet benchmarks — selective reads win, full reads pay</title>
 <meta name="description" content="Self-contained benchmark summary: CityParquet against \
-CityJSONSeq, FlatCityBuf and DuckDB across eleven CityJSON datasets — read speed, memory, \
+CityJSONSeq, FlatCityBuf and DuckDB across a corpus of CityJSON datasets — read speed, memory, \
 on-disk size and compression variants, with the fairness caveats quoted verbatim.">
 <style>
 __CSS__

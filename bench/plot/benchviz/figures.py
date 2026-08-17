@@ -1556,9 +1556,10 @@ def compression(
     gaps = data.get("compression_gaps", [])
     if gaps:
         note += _wrap(
-            "Datasets without a panel, and why: "
+            "Flagged in this run: "
             + "; ".join(f"{g['dataset']} — {g['issue']}" for g in gaps)
-            + ". Stated in the key, not silently dropped.",
+            + ". A failed round-trip is drawn grey and badged; a dataset with no "
+            "rows has no panel. Both are named here rather than dropped silently.",
             150,
         )
     _footer(fig, note)

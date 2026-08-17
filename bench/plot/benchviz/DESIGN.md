@@ -19,9 +19,8 @@ calls the same code with its own `--html`/`--figures` destinations.
   the same (dataset, scenario). Lower/left = better, everywhere. The baseline
   sits at 1× and is drawn as a reference cross/line in every panel.
 - **Per-dataset small multiples** at shared scale, ordered by CityObject count
-  descending — for the corpus this was written for: Zurich, NYC, 9-284-556,
-  delft, 3DBAG, Vienna, Rotterdam, Ingolstadt, Montreal, Railway, lod3_railway.
-  The order is computed from the data, so a later run's corpus orders itself.
+  descending. The order is computed from the data, so each run's corpus orders
+  itself and no dataset name is written down anywhere in this package.
 - **Color/markers**: accent `#e41a1c` (light) / `#fc8d62` (dark) for
   `cityparquet` (filled circle); same accent, open circle for
   `cityparquet-hilbert`; gray `#666`/`#999` for others with distinct shapes:
@@ -126,17 +125,18 @@ an explicit gap, never drop silently).
      "roundtrip": true}
   ],
   "compression_gaps": [
-    {"dataset": "Ingolstadt", "issue": "all roundtrip_equal=false (undocumented)"},
-    {"dataset": "Railway", "issue": "CSV present but header-only"},
-    {"dataset": "Rotterdam", "issue": "excluded per CORPUS_REPORT (material index error)"}
+    // two kinds, both derived from the CSVs themselves:
+    {"dataset": "<id>", "issue": "all roundtrip_equal=false (undocumented)"},
+    {"dataset": "<id>", "issue": "CSV present but header-only"}
   ]
 }
 ```
 
 `scenario_key`: `full-read`, `count`, `bbox-1pct`, `bbox-5pct`, `bbox-25pct`
 (scenario + `notes` merged), `attr-filter`, `attr-stats`, `id-lookup`,
-`project`. `attr-stats` absent for lod3_railway, Montreal, NYC, Railway —
-that's a source fact, render as "n/a".
+`project`. A run need not measure every scenario for every dataset — that is a
+source fact, rendered as "n/a" per cell and counted in the figures' own
+"not measured in this run" footnote, never imputed.
 
 Verbatim caveat texts: prep.py extracts the "## Fairness caveats" section from
 `bench/READ_BENCHMARK.md` (lines under that heading until the
