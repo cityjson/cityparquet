@@ -1,7 +1,7 @@
 //! RED->GREEN (readbench Task 11, Commit A): `--attr-eq` must always mean
-//! STRING equality, and every `FormatRunner` — `cityparquet`, `cityjsonseq`,
-//! `flatcitybuf` — must therefore agree on the same real, numeric-looking
-//! string-typed attribute code.
+//! STRING equality, and every `FormatRunner` — `cityparquet`, `cityjson`,
+//! `cityjsonseq`, `flatcitybuf` — must therefore agree on the same real,
+//! numeric-looking string-typed attribute code.
 //!
 //! `lod3_railway.city.json`'s `function` attribute is a STRING column whose
 //! values are numeric-looking codes (e.g. `"1070"`); independently confirmed
@@ -32,8 +32,16 @@
 //! go through `convert()` at all (they read the raw fixture / a `.fcb`
 //! export of it directly), so they are unaffected and keep proving the
 //! original `--attr-eq` regression stays fixed, in
-//! `cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code`
-//! below. The full three-way cross-check
+//! `cityjson_cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code`
+//! below — which the plain-CityJSON runner joined when it was added, because
+//! THIS file, not any single runner's own test file, is the designated
+//! cross-format attribute-semantics guard: a new runner has to satisfy it
+//! too. The `citygml` runner joined in
+//! `citygml_agrees_on_the_string_typed_numeric_attr_code`, on a CityGML
+//! fragment of the SAME upstream Railway dataset — it cannot read the
+//! CityJSON file itself (and must refuse it), but it can be held to the same
+//! `--attr-eq` semantics on the same `function` codes. The full three-way
+//! cross-check
 //! (`all_three_runners_agree_on_the_string_typed_numeric_attr_code`) is kept
 //! as an `#[ignore]`d, documented gap until a follow-up plan teaches the
 //! readbench runners to aggregate across every table in a by-type
@@ -168,15 +176,35 @@ fn run_child_expect_failure(
     String::from_utf8(output.stderr).expect("stderr must be valid UTF-8")
 }
 
-/// The CityJSONSeq and FlatCityBuf legs of the original three-way
-/// regression pin: neither goes through `convert()`, so both are unaffected
-/// by the single-file table layout's removal and keep proving `--attr-eq`
-/// always means STRING equality (see this module's own doc comment on the
-/// historical bug, which manifested in the CityJSONSeq runner).
+/// The non-CityParquet legs of the original regression pin: none of them
+/// goes through `convert()`, so all are unaffected by the single-file table
+/// layout's removal and keep proving `--attr-eq` always means STRING
+/// equality (see this module's own doc comment on the historical bug, which
+/// manifested in the CityJSONSeq runner).
+///
+/// The `cityjson` runner joined this matrix when it was added: this file —
+/// not any single runner's own test file — is the designated cross-format
+/// attribute-semantics guard, so every new runner has to satisfy it too.
+/// `cityjson` and `cityjsonseq` read the very SAME `.city.json` document
+/// here, from opposite parse shapes (whole document vs. line-oriented), and
+/// must still agree object-for-object.
 #[test]
-fn cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code() {
+fn cityjson_cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code() {
     const EXPECTED: u64 = 65;
     let attr_args: &[&str] = &["--attr-column", "function", "--attr-eq", "1070"];
+
+    // --- plain CityJSON (whole-document parse of the same fixture) ---
+    let cityjson_count = run_child(
+        "cityjson",
+        "attr-filter",
+        &fixture("lod3_railway.city.json"),
+        attr_args,
+    );
+    assert_eq!(
+        cityjson_count, EXPECTED,
+        "cityjson's attr-filter on function == '1070' must match the fixture's \
+         known 65 CityObjects"
+    );
 
     // --- CityJSONSeq (the format the bug actually manifested in) ---
     let cityjsonseq_count = run_child(
@@ -190,6 +218,11 @@ fn cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code() {
         "cityjsonseq's attr-filter on function == '1070' must also match 65 — \
          before the --attr-eq fix this returned 0 (a JSON-number predicate can \
          never equal a JSON-string cell)"
+    );
+    assert_eq!(
+        cityjson_count, cityjsonseq_count,
+        "the two JSON runners read the very same document from opposite parse \
+         shapes and must agree exactly"
     );
 
     // --- FlatCityBuf (skips gracefully if `fcb` isn't on PATH) ---
@@ -205,6 +238,7 @@ fn cityjsonseq_and_flatcitybuf_agree_on_the_string_typed_numeric_attr_code() {
         "flatcitybuf's attr-filter on function == '1070' must also match 65"
     );
     assert_eq!(cityjsonseq_count, fcb_count);
+    assert_eq!(cityjson_count, fcb_count);
 }
 
 /// Single-file table layout removal (2026-07-21, mandatory-by-type-layout):
@@ -228,6 +262,62 @@ fn cityparquet_attr_filter_rejects_a_multi_family_by_type_package() {
         stderr.contains("tables") && stderr.contains("single-table"),
         "expected a clear multi-table rejection, got stderr:\n{stderr}"
     );
+}
+
+/// The `citygml` runner's leg of the same guard.
+///
+/// It cannot share the other runners' input: `lod3_railway.city.json` is
+/// CityJSON, and `--format citygml` must REFUSE it rather than measure another
+/// format's cost under this format's name (see `formats::citygml`'s
+/// `open_citygml`). What it can share is the DATA: `railway_lod3_fragment.gml`
+/// is a fragment of the very same upstream CityGML 2.0 "Railway" reference
+/// dataset that `lod3_railway.city.json` was converted from, and it carries
+/// the same string-typed, numeric-LOOKING `function` codes — including
+/// `"1070"`, the exact value this whole file exists to pin.
+///
+/// So the count differs (a 4-member fragment, not the whole dataset) while the
+/// SEMANTICS asserted are identical: `--attr-eq 1070` is a STRING comparison,
+/// and a runner that parsed it as a JSON number would return 0 here just as
+/// the CityJSONSeq runner once did.
+///
+/// The `function` values live on the Building's two
+/// `outerBuildingInstallation` children (1070 and 1040), which also proves
+/// this runner's attribute scenarios reach NESTED CityObjects — `count` on the
+/// same file reports 4 members and never sees them.
+#[test]
+fn citygml_agrees_on_the_string_typed_numeric_attr_code() {
+    let fragment = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../cityparquet/tests/data/railway_lod3_fragment.gml");
+    assert!(fragment.exists(), "missing committed CityGML fragment");
+
+    let matched = run_child(
+        "citygml",
+        "attr-filter",
+        &fragment,
+        &["--attr-column", "function", "--attr-eq", "1070"],
+    );
+    assert_eq!(
+        matched, 1,
+        "exactly one BuildingInstallation in the fragment has function == \
+         '1070' (the other has '1040'); a numeric-parsed predicate would \
+         return 0"
+    );
+
+    let other = run_child(
+        "citygml",
+        "attr-filter",
+        &fragment,
+        &["--attr-column", "function", "--attr-eq", "1040"],
+    );
+    assert_eq!(other, 1, "and the sibling installation carries '1040'");
+
+    let absent = run_child(
+        "citygml",
+        "attr-filter",
+        &fragment,
+        &["--attr-column", "function", "--attr-eq", "9999"],
+    );
+    assert_eq!(absent, 0, "a code no object carries must match nothing");
 }
 
 /// DEFERRED (2026-07-21, feat/mandatory-bytype-layout): the single-file

@@ -2,6 +2,8 @@
 //! implements, plus [`resolve`] — the `--format <name>` dispatch the
 //! `--child` process (`main.rs`) uses.
 
+pub mod citygml;
+pub mod cityjson;
 pub mod cityjsonseq;
 pub mod cityparquet;
 pub mod flatcitybuf;
@@ -9,6 +11,7 @@ pub mod flatcitybuf;
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
+use cityparquet_readbench::format::Format;
 
 use crate::scenario::{QueryParams, Scenario};
 
@@ -60,30 +63,46 @@ pub trait FormatRunner {
     fn run(&self, source: &Source, scenario: Scenario, params: &QueryParams) -> Result<RunOutcome>;
 }
 
-/// Resolves `--format <name>` to its [`FormatRunner`]. `cityparquet`,
-/// `cityjsonseq`, `cityjsonseq-gz`, and `flatcitybuf` are implemented.
-/// `cityparquet-hilbert` is an ALIAS for the same [`cityparquet::CityParquetRunner`]:
-/// the Hilbert-ordered package is still a plain CityParquet package on
-/// disk (same reader, same query primitives) — the only difference from
-/// `cityparquet` is WHICH artefact path the coordinator resolves
-/// `--input` to (`coordinator::resolve_format_artefact` already points
-/// `cityparquet-hilbert` at the `<name>-hilbert.parquet` package), so no
-/// separate runner type is needed here. `duckdb-parquet` is a SQL-engine
-/// baseline driven entirely by `scripts/readbench_duckdb.sh`; it is not,
-/// and never will be, a `--child` format.
-pub fn resolve(format: &str) -> Result<Box<dyn FormatRunner>> {
+/// Resolves a [`Format`] to its [`FormatRunner`]. This match is exhaustive,
+/// so adding a [`Format`] variant is a compiler error here rather than a
+/// silently-missing backend; an unknown NAME never reaches this function at
+/// all, because `Format`'s own [`FromStr`](std::str::FromStr) rejects it at
+/// CLI-parse time.
+///
+/// [`Format::CityParquetHilbert`] is an ALIAS for the same
+/// [`cityparquet::CityParquetRunner`]: the Hilbert-ordered package is still
+/// a plain CityParquet package on disk (same reader, same query
+/// primitives) — the only difference from [`Format::CityParquet`] is WHICH
+/// artefact path the coordinator resolves `--input` to (see
+/// [`Format::artefact`]), so no separate runner type is needed here.
+///
+/// [`Format::CityJson`] is NOT an alias for [`Format::CityJsonSeq`]: a plain
+/// whole-document `.city.json` parses as one JSON object with a shared
+/// document-level `vertices` array, where a Seq stream is line-oriented with
+/// feature-local vertices — different parse shape, different counting grain,
+/// so its own runner (see [`cityjson`]'s module doc).
+///
+/// [`Format::CityGml`] has its own runner (see [`citygml`]'s module doc): the
+/// format the source data ships in, read with this repository's own CityGML
+/// 2.0 reader, with no index and therefore a full parse per scenario.
+/// [`Format::DuckDbParquet`] is a SQL-engine baseline driven entirely by
+/// `scripts/readbench_duckdb.sh`; it is not, and never will be, a `--child`
+/// format — the `bail!` arm below is the single production statement of that
+/// fact, and [`Format::artefact`]'s `NotCoordinated` is its counterpart on
+/// the coordinator side.
+pub fn resolve(format: Format) -> Result<Box<dyn FormatRunner>> {
     match format {
-        "cityparquet" | "cityparquet-hilbert" => Ok(Box::new(cityparquet::CityParquetRunner)),
-        "cityjsonseq" => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::plain())),
-        "cityjsonseq-gz" => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::gzip())),
-        "flatcitybuf" => Ok(Box::new(flatcitybuf::FlatCityBufRunner)),
-        "duckdb-parquet" => bail!(
+        Format::CityParquet | Format::CityParquetHilbert => {
+            Ok(Box::new(cityparquet::CityParquetRunner))
+        }
+        Format::CityJson => Ok(Box::new(cityjson::CityJsonRunner)),
+        Format::CityJsonSeq => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::plain())),
+        Format::CityJsonSeqGz => Ok(Box::new(cityjsonseq::CityJsonSeqRunner::gzip())),
+        Format::FlatCityBuf => Ok(Box::new(flatcitybuf::FlatCityBufRunner)),
+        Format::CityGml => Ok(Box::new(citygml::CityGmlRunner)),
+        Format::DuckDbParquet => bail!(
             "format 'duckdb-parquet' is a SQL-engine baseline driven by \
              scripts/readbench_duckdb.sh, not this binary's --child path"
-        ),
-        other => bail!(
-            "unknown format '{other}'; expected one of: cityparquet, cityparquet-hilbert, \
-             cityjsonseq, cityjsonseq-gz, flatcitybuf, duckdb-parquet"
         ),
     }
 }
@@ -92,14 +111,28 @@ pub fn resolve(format: &str) -> Result<Box<dyn FormatRunner>> {
 mod tests {
     use super::*;
 
+    /// Enumerates [`Format::ALL`] rather than a hand-written list, so a new
+    /// variant cannot slip past this test unclassified.
     #[test]
     fn resolve_implemented_formats_succeed_and_others_error_cleanly() {
-        assert!(resolve("cityparquet").is_ok());
-        assert!(resolve("cityparquet-hilbert").is_ok());
-        assert!(resolve("cityjsonseq").is_ok());
-        assert!(resolve("cityjsonseq-gz").is_ok());
-        assert!(resolve("flatcitybuf").is_ok());
-        assert!(resolve("duckdb-parquet").is_err());
-        assert!(resolve("not-a-format").is_err());
+        for format in Format::ALL {
+            let resolved = resolve(format);
+            match format {
+                // Implemented today.
+                Format::CityGml
+                | Format::CityParquet
+                | Format::CityParquetHilbert
+                | Format::CityJson
+                | Format::CityJsonSeq
+                | Format::CityJsonSeqGz
+                | Format::FlatCityBuf => {
+                    assert!(resolved.is_ok(), "{format} should resolve to a runner");
+                }
+                // Never a `--child` format at all.
+                Format::DuckDbParquet => {
+                    assert!(resolved.is_err(), "{format} is not a --child format");
+                }
+            }
+        }
     }
 }

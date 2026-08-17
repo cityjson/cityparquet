@@ -22,9 +22,10 @@
 //! CSV contract, `--repeat` validation, and the missing-artefact skip are
 //! all generic over which fixture is converted.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use cityparquet::cjseq::{CityJSON, CityJSONFeature, cjseq_to_cj};
 use cityparquet::package::{ConvertOptions, convert};
 
 fn fixture(name: &str) -> PathBuf {
@@ -33,6 +34,44 @@ fn fixture(name: &str) -> PathBuf {
         .join(name);
     assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
     p
+}
+
+/// A committed fixture of `crates/cityparquet`'s own test data — real
+/// published CityGML, never a hand-written document.
+fn citygml_fixture(name: &str) -> PathBuf {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../cityparquet/tests/data")
+        .join(name);
+    assert!(p.exists(), "missing fixture {name}");
+    p
+}
+
+/// Copies `input` into `prepared` under the name `Format::CityJsonSeq`
+/// resolves to — the same thing `scripts/readbench_prepare.sh` does for a
+/// `.city.jsonl` input (its `cp` branch), reproduced here so these tests
+/// exercise the real resolution path without shelling out to the script.
+fn prepare_seq_artefact(prepared: &Path, input: &Path, base: &str) {
+    std::fs::copy(input, prepared.join(format!("{base}.city.jsonl"))).unwrap();
+}
+
+/// A whole-document CityJSON collected from the real `delft.city.jsonl`
+/// fixture by `cjseq`'s own `cjseq_to_cj` — the very call `cjseq collect`
+/// makes, and therefore the same artefact `readbench_prepare.sh` would
+/// produce. Written as `<dir>/delft.city.json`, so a coordinator run over it
+/// is a run over a `.city.json` INPUT (the shape six of the corpus's
+/// datasets have) rather than over the `.city.jsonl` every other test here
+/// uses. Never inline hand-written CityJSON.
+fn collect_delft_document(dir: &Path) -> PathBuf {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let header = CityJSON::from_str(lines.next().unwrap()).unwrap();
+    let features: Vec<CityJSONFeature> = lines
+        .map(|line| CityJSONFeature::from_str(line).unwrap())
+        .collect();
+    let doc = cjseq_to_cj(header, features);
+    let path = dir.join("delft.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    path
 }
 
 /// Runs the built `cityparquet-readbench run ...` coordinator with `args`
@@ -103,6 +142,9 @@ fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from
     let package_dir = prepared.path().join("delft.parquet");
     let report = convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
     assert_eq!(report.object_count, 2231);
+    // …and the `cityjsonseq` artefact beside it, `<base>.city.jsonl`: EVERY
+    // measured format reads a prepared artefact, this one included.
+    prepare_seq_artefact(prepared.path(), &input, "delft");
 
     let out_csv = prepared.path().join("out.csv");
 
@@ -327,6 +369,102 @@ fn run_skips_a_format_with_no_prepared_artefact_and_still_produces_the_other() {
     assert_eq!(rows[0].field("format"), "cityparquet");
 }
 
+/// A skipped format is a different kind of event depending on WHO chose it.
+/// When the operator names `--formats`, a missing artefact is answered by the
+/// per-format skip note above and nothing more. When `--formats` is omitted,
+/// the coordinator picked the format-comparison set itself, and a CSV holding
+/// only some of it is not the comparison the operator asked for — silently
+/// dropping four of five formats would be published as "the format
+/// comparison". So a default-set run that resolves fewer formats than the set
+/// holds must say so loudly, naming exactly what is missing.
+///
+/// Prepares only the `cityparquet` package (required regardless, for
+/// QueryParams derivation) and the `cityjsonseq` artefact, so those two are
+/// all of the default set that can resolve.
+#[test]
+fn a_default_set_run_says_loudly_when_it_could_not_measure_the_whole_set() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+    let out_csv = prepared.path().join("out.csv");
+
+    // No `--formats`: the coordinator selects the format-comparison set.
+    let output = run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+    ]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not a complete format comparison"),
+        "an incomplete default-set run must say the CSV is not a complete format \
+         comparison; stderr:\n{stderr}"
+    );
+    for missing in ["citygml", "cityjson", "flatcitybuf", "cityparquet-hilbert"] {
+        assert!(
+            stderr.contains(missing),
+            "the warning must name the missing format '{missing}'; stderr:\n{stderr}"
+        );
+    }
+
+    // Only `cityjsonseq` could resolve, and it still ran.
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected only cityjsonseq's count row: {csv_text}"
+    );
+    assert_eq!(rows[0].field("format"), "cityjsonseq");
+}
+
+/// The mirror of the case above: when the operator NAMED the formats, the
+/// per-format skip note is the whole story — no set-level "incomplete
+/// comparison" alarm, because there is no set the coordinator chose.
+#[test]
+fn an_explicitly_requested_skip_does_not_raise_the_incomplete_set_alarm() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    let out_csv = prepared.path().join("out.csv");
+
+    let output = run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet,flatcitybuf",
+    ]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("flatcitybuf"),
+        "the per-format skip note must still appear; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("not a complete format comparison"),
+        "an explicitly-requested skip is not an incomplete default set; stderr:\n{stderr}"
+    );
+}
+
 /// Object-level scenarios (`AttrFilter`/`AttrStats`/`Project`/`IdLookup`) are
 /// CityObject-level for EVERY format (see `coordinator`'s own module doc),
 /// so their selectivity denominator must be the dataset-global CityObject
@@ -349,6 +487,7 @@ fn attr_filter_selectivity_uses_the_shared_cityparquet_object_total_as_denominat
 
     let package_dir = prepared.path().join("delft.parquet");
     let report = convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
     // The dataset-global CityObject total (parents AND children) —
     // `crates/cityparquet/tests/query_real_data.rs` pins the same known
     // split: `BuildingPart: 1116`, `Building: 1115`, `1116 + 1115 = 2231`.
@@ -519,5 +658,184 @@ async fn run_with_http_transport_reports_bytes_and_requests_on_the_cityparquet_r
     assert!(
         requests >= 1,
         "expected at least 1 http_requests, got {requests}"
+    );
+}
+
+/// **C1's regression guard.** A CityGML input must never be measured as
+/// CityJSONSeq.
+///
+/// `Format::CityJsonSeq` used to resolve to the `--input` itself, which was
+/// correct only while every input WAS a `.city.jsonl`. On the catalogue
+/// corpus — `.gml` and `.city.json` — that made the `cityjsonseq` row a
+/// measurement of the input's own format under another name: on
+/// `plateau_chuo_fld.gml`, `count` was 0.175 s of CityGML parsing published
+/// as CityJSONSeq. Nothing caught it, because every coordinator test here
+/// used the one input kind for which the old resolution was right.
+///
+/// So: with no `<base>.city.jsonl` in `--prepared-dir`, `cityjsonseq` must be
+/// SKIPPED — the same treatment any other format's missing artefact gets —
+/// and the `.gml` must not appear in the CSV under that tag.
+#[test]
+fn a_citygml_input_is_never_measured_as_cityjsonseq() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = citygml_fixture("savenow_ingolstadt_lod2.gml");
+    let package_dir = prepared.path().join("savenow_ingolstadt_lod2.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    let out_csv = prepared.path().join("out.csv");
+
+    let output = run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet,cityjsonseq",
+    ]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("skipping format 'cityjsonseq'")
+            && stderr.contains("savenow_ingolstadt_lod2.city.jsonl"),
+        "cityjsonseq must be skipped for its own missing prepared artefact; stderr:\n{stderr}"
+    );
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "only cityparquet may be measured here: {csv_text}"
+    );
+    assert_eq!(rows[0].field("format"), "cityparquet");
+}
+
+/// The same guard for a `.city.json` input — the other half of the catalogue
+/// corpus, and the shape where the old resolution was quietest: `cityjson`
+/// and `cityjsonseq` read the SAME file, so their counts and timings looked
+/// like two formats measured, and the self-consistency check saw nothing
+/// wrong.
+#[test]
+fn a_cityjson_input_is_never_measured_as_cityjsonseq() {
+    let prepared = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let input = collect_delft_document(source.path());
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    let out_csv = prepared.path().join("out.csv");
+
+    let output = run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet,cityjsonseq",
+    ]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("skipping format 'cityjsonseq'") && stderr.contains("delft.city.jsonl"),
+        "cityjsonseq must be skipped for its own missing prepared artefact; stderr:\n{stderr}"
+    );
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "only cityparquet may be measured: {csv_text}"
+    );
+    assert_eq!(rows[0].field("format"), "cityparquet");
+}
+
+/// …and with the artefact PRESENT it is measured, from `--prepared-dir` —
+/// so the guard above is a resolution rule, not a way of never measuring
+/// CityJSONSeq at all. The prepared seq here is deliberately the only
+/// CityJSONSeq in sight: the `--input` is a `.city.json`.
+#[test]
+fn a_prepared_seq_artefact_is_what_cityjsonseq_measures() {
+    let prepared = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let input = collect_delft_document(source.path());
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &fixture("delft.city.jsonl"), "delft");
+    let out_csv = prepared.path().join("out.csv");
+
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityjsonseq",
+    ]);
+
+    let csv_text = std::fs::read_to_string(&out_csv).unwrap();
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected one cityjsonseq count row: {csv_text}"
+    );
+    assert_eq!(rows[0].field("format"), "cityjsonseq");
+    // The Seq stream's own natural unit: 1115 feature lines (one per
+    // top-level Building). The whole-document `--input` beside it holds 2231
+    // CityObjects, so this count is proof of WHICH file was read.
+    assert_eq!(
+        rows[0].field("result_count"),
+        "1115",
+        "cityjsonseq must have read the prepared .city.jsonl: {csv_text}"
+    );
+}
+
+/// The runner's own half of the same guard (the coordinator's is above):
+/// pointed straight at a CityGML document, `--format cityjsonseq` must
+/// refuse it rather than parse it — `cityparquet::source::Source` sniffs, and
+/// would otherwise read the XML quite happily and report its cost as
+/// CityJSONSeq. The mirror image of the guards `--format citygml` and
+/// `--format cityjson` have carried all along.
+#[test]
+fn the_cityjsonseq_child_refuses_a_citygml_document() {
+    let output = Command::new(env!("CARGO_BIN_EXE_cityparquet-readbench"))
+        .args([
+            "--child",
+            "--format",
+            "cityjsonseq",
+            "--scenario",
+            "count",
+            "--input",
+        ])
+        .arg(citygml_fixture("savenow_ingolstadt_lod2.gml"))
+        .output()
+        .expect("failed to run the built cityparquet-readbench binary");
+
+    assert!(
+        !output.status.success(),
+        "a CityGML document must not be measurable as CityJSONSeq; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is a CityGML document, not CityJSONSeq"),
+        "expected the runner's own refusal; stderr:\n{stderr}"
     );
 }

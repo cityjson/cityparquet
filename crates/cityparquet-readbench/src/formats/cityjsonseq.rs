@@ -51,7 +51,10 @@ use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// This runner's `--attr-column`/params error for a scenario missing a
 /// required field — mirrors [`super::cityparquet`]'s own `require` helper.
-fn require<'a, T>(opt: &'a Option<T>, flag: &str, scenario: Scenario) -> Result<&'a T> {
+///
+/// `pub(super)` because [`super::cityjson`] reuses it verbatim: the two
+/// JSON-shaped runners must never drift on what a scenario requires.
+pub(super) fn require<'a, T>(opt: &'a Option<T>, flag: &str, scenario: Scenario) -> Result<&'a T> {
     opt.as_ref()
         .ok_or_else(|| anyhow!("scenario '{scenario}' requires --{flag}"))
 }
@@ -182,10 +185,32 @@ enum Backend {
 }
 
 impl Backend {
+    /// Opens `input`, refusing a CityGML document outright.
+    ///
+    /// The mirror image of [`super::citygml`]'s own sniff (`open_citygml`)
+    /// and of [`super::cityjson`]'s (`Document::parse`), and it exists for
+    /// the same reason: [`Source::open`] sniffs, and a `.gml` handed to it
+    /// opens quite happily as CityGML — so this runner would parse XML and
+    /// publish another format's cost under this format's name. That is not
+    /// hypothetical: while `Format::CityJsonSeq` resolved to the `--input`
+    /// itself, EVERY `.gml` dataset's `cityjsonseq` row was a CityGML
+    /// measurement (~8x too slow), and nothing failed.
+    ///
+    /// A gz artefact is not sniffed: its bytes are compressed, so the check
+    /// would be meaningless, and [`GzSource::open`]'s own JSON parse rejects
+    /// anything that is not CityJSON(Seq) anyway.
     fn open(input: &Path, gzip: bool) -> Result<Self> {
         if gzip {
             Ok(Backend::Gz(Box::new(GzSource::open(input)?)))
         } else {
+            if cityparquet::citygml::sniff_citygml(input).is_some() {
+                return Err(anyhow!(
+                    "{} is a CityGML document, not CityJSONSeq; --format cityjsonseq must never \
+                     be pointed at CityGML, or the benchmark would report another format's cost \
+                     under this format's name",
+                    input.display()
+                ));
+            }
             Ok(Backend::Plain(Box::new(
                 Source::open(input).map_err(|e| anyhow!(e))?,
             )))
@@ -215,7 +240,13 @@ impl Backend {
 /// raw `serde_json::Value` cell instead of an Arrow column, since a
 /// CityJSONSeq attribute has no columnar type to dispatch on. A missing or
 /// JSON-`null` `value` never matches any variant.
-fn matches_predicate(value: Option<&serde_json::Value>, pred: &AttrPred) -> bool {
+///
+/// `pub(super)` because [`super::cityjson`] reuses it: a plain CityJSON
+/// document and a CityJSONSeq stream carry the very same
+/// `serde_json::Value` attribute cells, so sharing this is what makes the
+/// two runners' `attr-filter` answers comparable by construction rather
+/// than by coincidence (see `tests/attr_consistency.rs`).
+pub(super) fn matches_predicate(value: Option<&serde_json::Value>, pred: &AttrPred) -> bool {
     let Some(value) = value.filter(|v| !v.is_null()) else {
         return false;
     };
@@ -240,7 +271,11 @@ fn matches_predicate(value: Option<&serde_json::Value>, pred: &AttrPred) -> bool
 /// object's `"type"` field, never the `attributes` map); every other column
 /// name is looked up in `co.attributes` (a JSON attribute name -> value
 /// map), with a JSON-`null` entry treated the same as an absent one.
-fn column_value(co: &CityObject, column: &str) -> Option<serde_json::Value> {
+///
+/// `pub(super)` for the same reason as [`matches_predicate`]: shared with
+/// [`super::cityjson`] so both JSON runners resolve a column name
+/// identically.
+pub(super) fn column_value(co: &CityObject, column: &str) -> Option<serde_json::Value> {
     if column == "object_type" {
         return Some(serde_json::Value::String(co.thetype.clone()));
     }
@@ -258,7 +293,12 @@ fn column_value(co: &CityObject, column: &str) -> Option<serde_json::Value> {
 /// deserialized them into a [`serde_json::Value`] tree. The result itself is
 /// discarded — [`Scenario::FullRead`]'s returned metric stays feature-level,
 /// per this module's own counting-unit ruling above.
-fn count_boundary_leaves(value: &serde_json::Value) -> u64 {
+///
+/// `pub(super)` because [`super::citygml`] reuses it: that runner's
+/// [`Scenario::FullRead`] is deliberately the SAME operation as this one's, so
+/// the two rows stay comparable — sharing the traversal is what makes that
+/// true by construction rather than by two copies happening to agree.
+pub(super) fn count_boundary_leaves(value: &serde_json::Value) -> u64 {
     match value {
         serde_json::Value::Array(items) => items.iter().map(count_boundary_leaves).sum(),
         serde_json::Value::Number(_) => 1,
@@ -272,7 +312,15 @@ fn count_boundary_leaves(value: &serde_json::Value) -> u64 {
 /// `scale`/`translate` convention specifies. `None` if the feature carries
 /// no vertices at all (never true for a real geometry-bearing feature, but
 /// guards against a division-by-nothing rather than panicking).
-fn feature_bbox(feature: &CityJSONFeature, transform: &Transform) -> Option<([f64; 3], [f64; 3])> {
+///
+/// `pub(super)` because [`super::citygml`] reuses it: a CityGML feature is
+/// built with feature-local, transform-quantised vertices exactly like a
+/// CityJSONSeq one, so both runners' `bbox-query` windows must mean the same
+/// thing.
+pub(super) fn feature_bbox(
+    feature: &CityJSONFeature,
+    transform: &Transform,
+) -> Option<([f64; 3], [f64; 3])> {
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     let mut any = false;
@@ -290,8 +338,10 @@ fn feature_bbox(feature: &CityJSONFeature, transform: &Transform) -> Option<([f6
 /// Axis-aligned 3D interval-overlap test, identical in spirit to
 /// `cityparquet::reader::box_intersects_query` (that function is
 /// `pub(crate)` inside the `cityparquet` crate, so this runner keeps its own
-/// copy rather than depending on a private item).
-fn intersects(min: [f64; 3], max: [f64; 3], query: &[f64; 6]) -> bool {
+/// copy rather than depending on a private item). Shared with
+/// [`super::cityjson`] so the two JSON runners' `bbox-query` windows mean
+/// exactly the same thing.
+pub(super) fn intersects(min: [f64; 3], max: [f64; 3], query: &[f64; 6]) -> bool {
     for axis in 0..3 {
         if max[axis] < query[axis] || min[axis] > query[axis + 3] {
             return false;
@@ -349,7 +399,11 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
             // `boundary_work` is computed purely to force full geometry
             // traversal (the "full read" cost); the returned metric
             // stays feature-level, per this module's own doc comment.
-            let _ = boundary_work;
+            // `black_box` rather than `let _ =`, so the traversal cannot be
+            // optimised away as dead code — the same guarantee
+            // [`super::cityjson`]'s own `FullRead` needs for its coordinate
+            // resolution.
+            std::hint::black_box(boundary_work);
             Ok(feature_count)
         }
         Scenario::BBoxQuery => {

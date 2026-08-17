@@ -23,15 +23,15 @@ bench/data/readbench/
     metadata.json
     ...
   <name>.fcb
+  <name>.city.jsonl
   <name>.jsonl.gz
 ```
 
-The plain (non-gz) `cityjsonseq` format's own artefact is the *original*
-CityJSONSeq/CityJSON input, which normally lives outside `prepared_dir`
-(e.g. a fixture under `tests/fixtures/`) — for HTTP transport, also place a
-copy of it at the served root under its own file name (e.g.
-`bench/data/readbench/delft.city.jsonl`) alongside the other artefacts, so
-`--base-url <url> --input delft.city.jsonl` resolves.
+Nothing outside that directory is ever fetched: every format — the plain
+(non-gz) `cityjsonseq` included — reads an artefact the prepare script wrote
+there, under the name `Format::artefact` resolves
+(`crates/cityparquet-readbench/src/format.rs`). The `--input` argument only
+names the dataset.
 
 Upload the **whole directory as-is** — don't rename or flatten anything;
 `cityparquet-readbench`'s HTTP paths key off these exact relative names

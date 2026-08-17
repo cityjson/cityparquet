@@ -10,6 +10,21 @@
 
 **Design spec:** `docs/superpowers/specs/2026-08-16-format-comparison-benchmark-design.md`
 
+## Execution order (revised 2026-08-16)
+
+Tasks are **executed** in this order, which differs from the numbering below:
+
+> 1 → 2 → 3 → 4 → **6 → 7 → 5** → 8 → 9 → 10 → 11
+
+Task 5 changes `DEFAULT_FORMATS` to include `citygml` and `cityjson`, but
+`Format::artefact` maps those to `<base>.gml` / `<base>.city.json` and
+**nothing produces those files until Tasks 6-7**. Running 5 first would make
+every default run silently skip two of its five formats with only a warning —
+fewer rows, and a run that still looks successful. Producers before consumers.
+
+The task numbering is left unchanged so the briefs and this document stay in
+correspondence; only the dispatch order moves.
+
 ## Global Constraints
 
 - **Strict red-green TDD**: failing test first, run it, confirm it fails for the right reason, then the smallest change to pass, then refactor.
@@ -548,7 +563,7 @@ named set. Measuring both axes in one run answered neither cleanly."
 
 **Files:**
 - Modify: `scripts/readbench_prepare.sh`
-- Test: `scripts/tests/test_readbench_prepare.bats` **(new)** — or, if `bats` is unavailable, a plain `scripts/tests/readbench_prepare_test.sh` returning non-zero on failure. State which you used in the report.
+- Test: `scripts/tests/readbench_prepare_test.sh` **(new)** — a plain `set -euo pipefail` script that returns non-zero on failure and prints one line per case. `bats` is **not** installed on this machine, so do not reach for it.
 
 **Interfaces:**
 - Consumes: nothing.

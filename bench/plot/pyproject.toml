@@ -8,6 +8,9 @@ dependencies = [
     "pandas>=2.3",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
 readbench-plot = "readbench_plot.__main__:main"
 
@@ -19,6 +22,9 @@ dev = [
 [build-system]
 requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100

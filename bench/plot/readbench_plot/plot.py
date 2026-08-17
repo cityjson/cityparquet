@@ -1,15 +1,17 @@
 """Render grouped-bar charts from cityparquet-readbench result CSVs.
 
-Each CSV in a results directory is expected to match the 11-column
+Each CSV in a results directory is expected to begin with the 13-column
 read-benchmark contract `cityparquet-readbench`'s coordinator writes (see
 `CSV_HEADER` in the package `__init__`, mirroring
 `crates/cityparquet-readbench/src/coordinator.rs`):
 
     dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,
-    peak_heap_bytes,peak_rss_bytes,repeat,notes
+    peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests
 
-Files whose header doesn't match (e.g. the M5 write-benchmark's own,
-differently-shaped CSVs under bench/results/) are skipped, not errored on.
+The match is a prefix check, so a coordinator that later grows further
+trailing columns still plots; files whose leading columns don't match (e.g.
+the M5 write-benchmark's own, differently-shaped CSVs under bench/results/)
+are skipped, not errored on.
 
 For each matching CSV, two PNGs are written under `<results_dir>/plots/`:
 `<name>-time.png` (median `time_s` per scenario, grouped by format, log
@@ -23,6 +25,12 @@ median, consistent with the "median ... per scenario" framing. Rows whose
 `notes` is exactly `cold` (the separate, manual purged-cache measurement)
 are excluded before aggregating. A cross-dataset summary of `full-read`
 timings is also produced.
+
+Bars are coloured from the package-level `FORMAT_COLORS`, keyed by format
+name and shared with `sizes.py`, so one format is one colour in every figure
+this project renders and adding a format cannot recolour an existing one. A
+format the colour map has never heard of is drawn hatched in grey rather
+than dropped.
 """
 
 from __future__ import annotations
@@ -37,7 +45,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from readbench_plot import CSV_HEADER
+from readbench_plot import CSV_HEADER, FORMAT_COLORS, FORMAT_ORDER, bar_style
 
 # Preferred left-to-right ordering for readability; anything else seen in
 # the data is appended afterwards (alphabetically), so an unrecognised
@@ -51,14 +59,12 @@ SCENARIO_ORDER = [
     "attr-stats",
     "project",
 ]
-FORMAT_ORDER = [
-    "cityjsonseq",
-    "cityjsonseq-gz",
-    "flatcitybuf",
-    "cityparquet",
-    "cityparquet-hilbert",
-    "duckdb-parquet",
-]
+
+# `FORMAT_ORDER` and `FORMAT_COLORS` are the package's, shared with sizes.py:
+# this module used to carry its own six-entry ordering while sizes.py carried
+# a five-entry one, and no colour map at all. Re-exported so
+# `plot.FORMAT_ORDER` keeps working for anything that already reads it.
+__all__ = ["FORMAT_COLORS", "FORMAT_ORDER", "aggregate", "load_csv", "run"]
 
 
 def _ordered(seen: list[str], preferred: list[str]) -> list[str]:
@@ -77,7 +83,12 @@ def load_csv(path: Path) -> pd.DataFrame | None:
     """
     with path.open(newline="") as fh:
         header = fh.readline().strip().split(",")
-    if header != CSV_HEADER:
+    # Prefix check, not equality: the coordinator may add trailing columns
+    # (it added bytes_read/http_requests for the HTTP transport). A strict
+    # `!=` silently skipped every CSV and produced empty charts - a wrong
+    # picture is worse than a loud failure here, because the charts go in the
+    # paper.
+    if header[: len(CSV_HEADER)] != CSV_HEADER:
         return None
 
     df = pd.read_csv(path)
@@ -129,7 +140,7 @@ def _grouped_bar(
             continue
         offsets = [xi + (j - (n_formats - 1) / 2) * width for xi in x]
         heights = [v if pd.notna(v) else 0 for v in values]
-        ax.bar(offsets, heights, width=width, label=fmt)
+        ax.bar(offsets, heights, width=width, label=fmt, **bar_style(fmt))
 
     ax.set_xticks(list(x))
     ax.set_xticklabels(scenarios, rotation=20, ha="right")
@@ -190,7 +201,7 @@ def plot_summary(datasets: dict[str, pd.DataFrame], plots_dir: Path) -> None:
             continue
         offsets = [xi + (j - (n_formats - 1) / 2) * width for xi in x]
         heights = [v if pd.notna(v) else 0 for v in values]
-        ax.bar(offsets, heights, width=width, label=fmt)
+        ax.bar(offsets, heights, width=width, label=fmt, **bar_style(fmt))
 
     ax.set_xticks(list(x))
     ax.set_xticklabels(dataset_order, rotation=20, ha="right")
