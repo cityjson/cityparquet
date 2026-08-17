@@ -775,6 +775,20 @@ question. `just bench` removes each `OUT/<name>.csv` before writing it (a
 fresh `rm -f` precedes each; it never appends across runs), so a committed
 run is always one machine, one sitting, per dataset.
 
+**Clear `bench/data/readbench/` first if it predates commit `fb5e3de`.**
+Artefacts built before that commit derive from the wrong stage — for a
+`.city.json` input no `.city.jsonl` was cut at all, so its `<name>.jsonl.gz`
+is a gzip of the whole CityJSON document (measured: 0.254909 s / 61,192,614 B
+against the real seq-gz's 0.092799 s / 1,798,710 B — 2.75x too slow, 34x too
+heavy) and its `.fcb`/`.parquet` were serialised from the document rather
+than from the seq. The prepare script skips an artefact that already exists,
+so those would be reused silently. It does not rely on this paragraph being
+read: each dataset's artefacts carry the version of the chain that built them
+in `bench/data/readbench/.readbench-chain/<name>`, and a stale or absent
+stamp makes `readbench_prepare.sh` REFUSE the dataset, printing the exact
+`rm -rf` that clears it (`CHAIN_VERSION` in that script owns the version and
+the history of what each one changed).
+
 `fetch-data` defaults to `--only default`, which deliberately **omits** the
 two datasets that cannot serve a default-set run — Riga (no `gml:id`,
 Caveat 15) and PLATEAU `brid` (Caveat 16). Neither fails gracefully: either

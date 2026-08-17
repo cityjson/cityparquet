@@ -470,8 +470,12 @@ case_cityparquet_only() {
     return
   fi
   local unexpected
+  # `.readbench-chain` is provenance, not an artefact: the chain-version stamp
+  # every run writes (see `CHAIN_VERSION` in the script). It is excluded by
+  # name everywhere an "exactly these artefacts" assertion is made, so the
+  # assertions stay about artefacts.
   unexpected="$(find "$dir/out" -mindepth 1 -maxdepth 1 \
-    ! -name 'tiny.parquet' -print)"
+    ! -name 'tiny.parquet' ! -name '.readbench-chain' -print)"
   if [[ -n "$unexpected" ]]; then
     fail "$name" "unrequested artefacts built: $unexpected"
     return
@@ -632,7 +636,8 @@ case_cityjsonseq_is_materialised_from_a_seq_input() {
   # …and nothing else: a copy is all this format needs, and no CityJSON hop
   # was taken to make it (the sandbox has no cjseq at all).
   local unexpected
-  unexpected="$(find "$dir/out" -mindepth 1 -maxdepth 1 ! -name 'tiny.city.jsonl' -print)"
+  unexpected="$(find "$dir/out" -mindepth 1 -maxdepth 1 \
+    ! -name 'tiny.city.jsonl' ! -name '.readbench-chain' -print)"
   if [[ -n "$unexpected" ]]; then
     fail "$name" "unrequested artefacts built: $unexpected"
     return
@@ -733,7 +738,9 @@ case_explicit_citygml_from_cityjson_is_reported_not_fatal() {
     fail "$name" "did not report why; log: $(cat "$LAST_LOG")"
     return
   fi
-  if [[ -n "$(find "$dir/out" -mindepth 1 -print -quit)" ]]; then
+  # `-prune`, not `! -name`: the latter still DESCENDS into the provenance
+  # directory and finds the stamp file inside it.
+  if [[ -n "$(find "$dir/out" -mindepth 1 -name '.readbench-chain' -prune -o -print -quit)" ]]; then
     fail "$name" "built something for a format it could not derive"
     return
   fi
@@ -1248,11 +1255,131 @@ case_artefact_names_match_the_rust_enum() {
     fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
     return
   fi
-  produced="$(find "$dir/out" -mindepth 1 -maxdepth 1 -exec basename {} \; \
+  produced="$(find "$dir/out" -mindepth 1 -maxdepth 1 ! -name '.readbench-chain' \
+    -exec basename {} \; \
     | sed 's/^tiny//' | sort | tr '\n' ' ')"
   produced="$(echo "$produced" | xargs)"
   if [[ "$produced" != "$rust_names" ]]; then
     fail "$name" "a default run produced [$produced], Format::artefact resolves [$rust_names]"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 8e: artefacts built by an OLDER derivation chain must not be reused.
+#
+# The prepare script skips an artefact that already exists and passes its
+# validity check, and `bench/data/readbench/` persists across runs — so a
+# directory prepared before the chain changed keeps serving artefacts derived
+# from a stage that no longer exists, and nothing says so. That is C1's bug
+# class one level up: a pre-fix `<base>.jsonl.gz` is a gzip of the WHOLE
+# CityJSON document, which the gz runner reads quite happily (measured:
+# 0.254909 s / 61,192,614 B against the real seq-gz's 0.092799 s / 1,798,710 B
+# — 2.75x too slow, 34x too heavy, and the same whole-document parse C1's own
+# "before" figure was).
+#
+# A sentence in the docs cannot fix this: it is missed by exactly the person
+# who most needs it, and the failure publishes plausible-looking numbers. So
+# the prepared directory carries a per-dataset chain-version stamp, and a
+# stale (or absent) one is a refusal, not a warning.
+# --------------------------------------------------------------------------
+case_stale_chain_artefacts_are_refused() {
+  local name="artefacts from an older derivation chain are refused, not reused"
+  local dir before
+  dir="$(new_sandbox cargo)"
+  run_prepare "$dir" --formats cityparquet "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "first run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if [[ ! -f "$dir/out/.readbench-chain/tiny" ]]; then
+    fail "$name" "the first run left no chain-version stamp"
+    return
+  fi
+  # Age the stamp: exactly what a directory prepared by an older version of
+  # this script looks like.
+  printf '1\n' >"$dir/out/.readbench-chain/tiny"
+  before="$(cat "$dir/out/tiny.parquet/stub-source.txt")"
+
+  run_prepare "$dir" --formats cityparquet "$dir/data/tiny.city.jsonl" "$dir/out"
+  if ! expect_guard "$name" "built by an older derivation chain"; then
+    return
+  fi
+  # The refusal must say WHAT to do about it, naming the artefact.
+  if ! log_mentions "$dir/out/tiny.parquet"; then
+    fail "$name" "the refusal does not name the stale artefact; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  # …and must not have quietly rebuilt or removed anything on its way out: a
+  # refusal that mutates the directory is a refusal nobody can inspect.
+  if [[ "$(cat "$dir/out/tiny.parquet/stub-source.txt")" != "$before" ]]; then
+    fail "$name" "the refused run rebuilt the stale artefact"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 8f: an UNSTAMPED directory holding artefacts is the same case.
+#
+# This is the shape every prepared directory on disk today has — they were
+# built before the stamp existed. "No stamp" must therefore mean "older
+# chain", never "fresh directory": treating an unknown provenance as current
+# would let exactly the directories this guard exists for through.
+# --------------------------------------------------------------------------
+case_unstamped_artefacts_are_refused() {
+  local name="artefacts with no chain-version stamp at all are refused"
+  local dir
+  dir="$(new_sandbox cargo)"
+  run_prepare "$dir" --formats cityparquet "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "first run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  rm -rf "$dir/out/.readbench-chain"
+
+  run_prepare "$dir" --formats cityparquet "$dir/data/tiny.city.jsonl" "$dir/out"
+  if ! expect_guard "$name" "built by an older derivation chain"; then
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 8g: the guard must not fire on a directory this chain built.
+#
+# The other half of the pair — a guard that refused a current directory would
+# simply be a broken script, and idempotency (case 8) is a documented
+# property.
+# --------------------------------------------------------------------------
+case_current_chain_artefacts_are_reused() {
+  local name="a directory built by this chain is still reused"
+  local dir stamp
+  dir="$(new_sandbox cargo fcb citygml-tools cjseq)"
+  run_prepare "$dir" "$dir/data/tiny.gml" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "first run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  # The stamp is the script's own current version, read out of the script
+  # rather than retyped, so bumping the version does not silently pass here.
+  stamp="$(sed -n 's/^CHAIN_VERSION=\([0-9]*\)$/\1/p' "$PREPARE")"
+  if [[ -z "$stamp" ]]; then
+    fail "$name" "could not read CHAIN_VERSION out of $PREPARE"
+    return
+  fi
+  if [[ "$(cat "$dir/out/.readbench-chain/tiny")" != "$stamp" ]]; then
+    fail "$name" "stamp is '$(cat "$dir/out/.readbench-chain/tiny")', CHAIN_VERSION is '$stamp'"
+    return
+  fi
+  run_prepare "$dir" "$dir/data/tiny.gml" "$dir/out"
+  if [[ $LAST_RC -ne 0 ]]; then
+    fail "$name" "second run: exit $LAST_RC; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  if ! log_mentions "skip $dir/out/tiny.parquet (already present)"; then
+    fail "$name" "a current directory was not reused; log: $(cat "$LAST_LOG")"
     return
   fi
   pass "$name"
@@ -1324,6 +1451,9 @@ case_second_run_skips
 case_cityjson_input_builds_a_real_seq_artefact
 case_measurement_flags_are_passed
 case_fcb_info_count_is_reported
+case_stale_chain_artefacts_are_refused
+case_unstamped_artefacts_are_refused
+case_current_chain_artefacts_are_reused
 case_vocabulary_matches_the_rust_enum
 case_artefact_names_match_the_rust_enum
 

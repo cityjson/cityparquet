@@ -523,6 +523,80 @@ same_file() {
     == "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")" ]]
 }
 
+# --- chain provenance ------------------------------------------------------
+# WHY A STAMP AND NOT A SENTENCE IN THE DOCS.
+#
+# This script skips an artefact that already exists and passes its validity
+# check, and OUTDIR (bench/data/readbench by default) persists across runs and
+# across checkouts. So a directory prepared before the derivation chain
+# changed keeps serving artefacts derived from a stage that no longer exists —
+# silently, under the same names, with nothing to look at. The sharp case is
+# the gz baseline: before `cityjsonseq` became a real artefact for every input
+# kind, a `.city.json` input's `<x>.jsonl.gz` was a gzip of the WHOLE CityJSON
+# DOCUMENT, and the gz runner reads one happily (0.254909 s / 61,192,614 B
+# against the real seq-gz's 0.092799 s / 1,798,710 B — 2.75x too slow, 34x too
+# heavy). A documentation line is missed by exactly the person who most needs
+# it, and this failure publishes plausible-looking numbers.
+#
+# So each dataset's artefacts carry the version of the chain that built them,
+# in `$OUTDIR/.readbench-chain/<base>`, and a stale one is a REFUSAL. Absent
+# counts as stale: every directory prepared before this stamp existed is
+# exactly the kind this guard is for, so unknown provenance can never mean
+# "current".
+#
+# BUMP CHAIN_VERSION whenever a change here makes an artefact built by an
+# older version wrong to reuse (a different derivation stage, different flags,
+# a different tool) — NOT for a change that only affects which artefacts get
+# built, or reporting. History:
+#   1  every version up to and including commit ba6e5fa (unstamped): from a
+#      CityJSON/CityJSONSeq input the CityJSONSeq artefact was not built at
+#      all, and fcb/cityparquet/gz were derived from INPUT itself.
+#   2  the CityJSONSeq artefact is always materialised, and everything
+#      downstream derives from IT.
+CHAIN_VERSION=2
+CHAIN_DIR="$OUTDIR/.readbench-chain"
+CHAIN_STAMP="$CHAIN_DIR/$BASE"
+
+# Every artefact path this script owns for this dataset, whatever was
+# requested: a stale artefact nobody asked for today is still one the
+# coordinator will measure tomorrow.
+ALL_OUTPUTS=("$GML_OUT" "$CITYJSON_OUT" "$SEQ_OUT" "$PARQUET_OUT" "$HILBERT_OUT" \
+  "$FCB_OUT" "$GZ_OUT")
+
+STALE=()
+STAMPED=""
+if [[ -f "$CHAIN_STAMP" ]]; then
+  STAMPED="$(cat "$CHAIN_STAMP")"
+  STAMPED=${STAMPED%%$'\n'*}
+fi
+if [[ "$STAMPED" != "$CHAIN_VERSION" ]]; then
+  for out in "${ALL_OUTPUTS[@]}"; do
+    # INPUT sitting in OUTDIR under an artefact's own name was not built by
+    # any run of this script, so it is not evidence of an older chain (block
+    # 1/2/3 each report it as "the input is already the artefact").
+    if same_file "$INPUT" "$out"; then
+      continue
+    fi
+    if file_is_valid "$out" || dir_is_valid "$out"; then
+      STALE+=("$out")
+    fi
+  done
+fi
+if [[ ${#STALE[@]} -gt 0 ]]; then
+  echo "error: $OUTDIR holds artefacts for '$BASE' built by an older derivation chain" >&2
+  echo "       (chain version ${STAMPED:-none recorded}; this script builds version $CHAIN_VERSION)." >&2
+  echo "       Reusing them would measure a stage this chain no longer produces, and the" >&2
+  echo "       numbers would look entirely plausible. Delete them and re-run:" >&2
+  echo "         rm -rf ${STALE[*]} $CHAIN_STAMP" >&2
+  exit 1
+fi
+
+# Stamped BEFORE anything is built, so that whatever this run does write is
+# covered by it (a run that dies midway leaves artefacts this chain built, and
+# they are the ones the stamp claims).
+mkdir -p "$CHAIN_DIR"
+printf '%s\n' "$CHAIN_VERSION" >"$CHAIN_STAMP"
+
 # --- object counts ---------------------------------------------------------
 # Cheap, per-format counts of the same quantity: TOP-LEVEL city objects. They
 # serve two purposes — proving an artefact is not merely non-empty but
