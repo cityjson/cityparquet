@@ -21,13 +21,23 @@ calls the same code with its own `--html`/`--figures` destinations.
 - **Per-dataset small multiples** at shared scale, ordered by CityObject count
   descending. The order is computed from the data, so each run's corpus orders
   itself and no dataset name is written down anywhere in this package.
+- **The format axis is the harness's, not this package's.** The views plot
+  `Format::DEFAULT_SET` (crates/cityparquet-readbench/src/format.rs), carried in
+  `meta.format_axis`: `citygml`, `cityjson`, `cityjsonseq`, `flatcitybuf` and
+  `cityparquet-hilbert` — one tag per format family, CityParquet represented by
+  the configuration it would ship as. `cityjsonseq-gz` (a compression variant of
+  a format already on the axis) and `duckdb-parquet` (an SQL-engine baseline) are
+  NOT formats: their rows stay in `bench_data.json` when a run opts in, no view
+  plots them, and the page says so once. Ordering is a separate question with its
+  own run (`Format::ORDERING_SET`, `bench/ordering_results/`).
 - **Color/markers**: accent `#e41a1c` (light) / `#fc8d62` (dark) for
   `cityparquet` (filled circle); same accent, open circle for
-  `cityparquet-hilbert`; gray `#666`/`#999` for others with distinct shapes:
-  cityjsonseq = ×/cross at (1,1) (it IS the baseline), cityjsonseq-gz = square,
-  flatcitybuf = triangle, duckdb-parquet = diamond. Shapes carry identity
-  (color-blind safety); no legends — direct labels in the first panel, tooltips
-  in HTML.
+  `cityparquet-hilbert`; gray `#666`/`#999` for the rest with distinct shapes:
+  cityjsonseq = ×/cross at (1,1) (it IS the baseline), citygml = star,
+  cityjson = plus, flatcitybuf = triangle; cityjsonseq-gz = square and
+  duckdb-parquet = diamond keep their marks for an opt-in run's footnotes.
+  Shapes carry identity (color-blind safety); no legends — direct labels in the
+  first panel, tooltips in HTML.
 - Tufte: no top/right spines, range-frame axes, bg `#fffff8`/`#151515`, serif
   titles/labels, sans 11–12 px ticks, no gridlines (hover crosshair in HTML),
   titles assert findings. Log scales on Pareto axes, labelled "log".
@@ -66,8 +76,8 @@ calls the same code with its own `--html`/`--figures` destinations.
    README.md's "Baseline geometry coverage" section verbatim at generation time
    (same policy as the previous page — the page cannot drift from the
    methodology it reports).
-8. **Memory metric**: primary = `peak_rss_bytes` ratio (present for all 6
-   formats; platform units cancel in ratios). `peak_heap_bytes` ratio is the
+8. **Memory metric**: primary = `peak_rss_bytes` ratio (present for every
+   format the coordinator measures; platform units cancel in ratios). `peak_heap_bytes` ratio is the
    HTML toggle, annotated: allocator view; FCB streams (tiny heap by design);
    duckdb-parquet absent.
 9. Dataset subtitles use only in-repo facts (CityObject count, raw
@@ -92,11 +102,17 @@ an explicit gap, never drop silently).
     "caveats_compression": ["<verbatim baseline-geometry-coverage text>"],
     "codec_level_note": "<the recipe.rs-sourced mismatch note>",
     "citation_floor_s": 0.010,
+    "format_axis": ["cityparquet-hilbert", "citygml", "cityjson",
+                    "cityjsonseq", "flatcitybuf"],   // = Format::DEFAULT_SET
+    "object_grain_formats": ["cityparquet", "cityparquet-hilbert", "cityjson",
+                             "duckdb-parquet"],      // caveat 1's own table
+    "feature_grain_formats": ["citygml", "cityjsonseq", "cityjsonseq-gz",
+                              "flatcitybuf"],
     "excluded_formats": [               // measured but unplottable: no colour,
                                         // marker or caption exists for them.
                                         // Stated in the page's coverage notes,
                                         // never averaged in, never hidden.
-      {"format": "citygml", "rows": 144, "where": ["read", "sizes"]}
+      {"format": "<tag>", "rows": 144, "where": ["read", "sizes"]}
     ]
   },
   "datasets": [                       // ordered by objects desc
@@ -189,20 +205,24 @@ requested).
 
 ## The four views
 
-1. **Speed–Memory Pareto grid** (headline). 11 panels; x = time_ratio (log),
+1. **Speed–Memory Pareto grid** (headline), one panel per dataset; x = time_ratio (log),
    y = rss_ratio (log); dot per format; baseline cross at (1,1); quadrant hint
    "below-left = faster AND leaner than CityJSONSeq"; stepped Pareto frontier
    through non-dominated points; citation-floor band per honesty rule 1.
    HTML: scenario selector (all 9 keys) + RSS/heap toggle. Static: two figures
    (`full-read`, `bbox-5pct`), RSS only.
-2. **Read speedup heatmap grid**. 11 panels; rows = scenario_keys (with †),
+2. **Read speedup heatmap grid**, one panel per dataset; rows = scenario_keys (with †),
    cols = formats; cell = speedup `1/time_ratio`, diverging palette in log2
    space centered 1× (green = faster, red = slower — also encoded by value
    label so color is not the sole channel); in-cell labels "12×"/"0.3×"/"≈".
    Companion `<details>` data table per dataset (accessibility + precision).
-3. **On-disk size grid**. 11 panels; horizontal bars of `frac_of_baseline`
-   sorted ascending, reference line at 1×, cityparquet accented, shared x
-   scale, value labels ("0.38×"). 5 formats (no duckdb-parquet — no artefact).
+3. **On-disk size grid**, one panel per dataset; horizontal bars of
+   `frac_of_baseline` sorted ascending, cityparquet accented, value labels
+   ("0.38×"). The bars grow OUT OF the 1× baseline on a shared LOG x scale,
+   left for smaller and right for larger: the axis spans CityParquet at ~0.3×
+   and CityGML at up to ~25× of the same bytes, and a linear 0-to-max scale
+   collapses the CityParquet series into a sliver. duckdb-parquet is absent —
+   it writes no artefact of its own.
 4. **Compression codec grid** (de-emphasized styling), one panel per measured
    dataset; x = write_ratio, y = size_ratio, default variant at (1,1) cross;
    codecs = filled markers, row-group variants = open markers (different
