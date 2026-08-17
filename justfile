@@ -166,19 +166,6 @@ interop:
 fetch-data DEST='bench/data/benchmark' ONLY='default':
     ./scripts/fetch_benchmark.sh --only {{ONLY}} {{DEST}}
 
-# Fetch the LEGACY CityJSONSeq corpus (11 datasets, ~1.7 GiB) from the public
-# gs://cityjson/benchmark_dataset/ bucket over HTTPS into DEST (default
-# bench/data/benchmark_seq/, gitignored — deliberately NOT the same directory
-# as `fetch-data`, since `just bench FOLDER` measures everything under
-# FOLDER). This is the ordering benchmark's input and the continuity link to
-# the read results already published in bench/READ_BENCHMARK.md and
-# bench/CORPUS_REPORT.md; it is CityJSONSeq only, so it cannot serve the
-# cross-format comparison. Needs curl; network-dependent; kept OUT of `just
-# check`/CI. Verifies each file's byte size after download (see
-# scripts/fetch_cityjsonseq_corpus.sh).
-fetch-seq-data DEST='bench/data/benchmark_seq':
-    ./scripts/fetch_cityjsonseq_corpus.sh {{DEST}}
-
 # Fetch the pinned external converters the read benchmark's conversion chain
 # needs: citygml-tools (CityGML -> CityJSON) into bench/tools/ (gitignored,
 # sha256-verified) and cjseq (CityJSON -> CityJSONSeq) via `cargo install`.

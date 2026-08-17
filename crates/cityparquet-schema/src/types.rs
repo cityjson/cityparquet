@@ -2,14 +2,16 @@ use std::collections::HashMap;
 
 use crate::error::{CityParquetError, Result};
 
-/// Which physical Arrow encoding a `geometry_lod*` column uses. `Wkb` is the
-/// only encoding CityParquet supports normatively today; `ArrowNative` is the
-/// experimental alternative from the `arrow-native-type` branch (design doc
-/// in the PARENT workspace repo, at
-/// `docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md` —
-/// i.e. `../docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`
-/// relative to this `cityparquet-rs` repo's own root) — nested indexed
-/// `List`/`Struct` columns instead of a WKB `BLOB`.
+/// Which physical Arrow encoding a `geometry_lod*` column uses.
+///
+/// `Wkb` is the only encoding CityParquet supports normatively: one WKB `BLOB`
+/// per `geometry_lod*` column, which is what makes an LoD0 footprint column
+/// readable as GeoParquet. `ArrowNative` is the experimental alternative —
+/// nested indexed `List`/`Struct` columns plus a `geometry_vertices_lod*`
+/// sibling holding the shared vertex pool, so a reader can project a single
+/// ring without decoding a whole solid. It is opt-in (`--geometry-encoding
+/// arrow-native`), written and read by this workspace but declared by nothing
+/// in the specification, and no benchmark row in `bench/` uses it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GeometryEncoding {
     #[default]

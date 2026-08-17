@@ -33,9 +33,7 @@
 # Kuopio's 1.5 GB archive to a 982 MB GML.
 #
 # Needs `curl`; `gunzip` and `unzip` only if the selection includes an entry
-# that needs them. `gsutil` is NOT needed — the previous corpus's dependency
-# on it is gone (see `scripts/fetch_cityjsonseq_corpus.sh`, which now reaches
-# the same bucket over plain HTTPS).
+# that needs them. No `gsutil`: every entry is fetched over plain HTTPS.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -333,8 +331,7 @@ if [[ "$ALLOW_FOREIGN" -ne 1 ]]; then
     printf '         %s\n' "${foreign[@]}" >&2
     echo "       \`just bench\` measures EVERY input under that directory, so these would be" >&2
     echo "       published alongside the corpus as if they were part of it. Move or delete" >&2
-    echo "       them (the legacy CityJSONSeq corpus belongs in bench/data/benchmark_seq/," >&2
-    echo "       see \`just fetch-seq-data\`), or re-run with --allow-foreign if you meant it." >&2
+    echo "       them, or re-run with --allow-foreign if you meant it." >&2
     exit 1
   fi
 fi

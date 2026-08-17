@@ -105,11 +105,10 @@ pub struct ConvertOptions {
     /// GeoPandas/QGIS/GDAL interop.
     pub geoarrow: bool,
     /// Which physical Arrow encoding `geometry_lod*` columns use. `Wkb` (the
-    /// default) is normative; `ArrowNative` is the experimental
-    /// `arrow-native-type` branch encoding (nested Arrow `List`/`Struct`
-    /// columns plus a `geometry_vertices_lod*` sibling, instead of a WKB
-    /// `BLOB`) — see
-    /// `docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md`.
+    /// default) is normative; `ArrowNative` is the experimental encoding
+    /// (nested Arrow `List`/`Struct` columns plus a
+    /// `geometry_vertices_lod*` sibling, instead of a WKB `BLOB`) — see
+    /// `cityparquet_schema::GeometryEncoding`.
     pub geometry_encoding: GeometryEncoding,
     /// Synthesise an LoD0 footprint into the `geometry_lod0_0` column when an
     /// object has no source LoD0 (§9 "LoD0 synthesis"). A synthesised footprint

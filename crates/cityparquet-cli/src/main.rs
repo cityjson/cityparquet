@@ -103,7 +103,7 @@ enum Commands {
         /// Physical geometry column encoding: "wkb" (default, normative) or
         /// "arrow-native" (experimental nested Arrow List/Struct columns plus
         /// a geometry_vertices_lod* sibling column, instead of a WKB BLOB —
-        /// see docs/superpowers/specs/2026-07-25-arrow-native-geometry-design.md).
+        /// see `GeometryEncoding` in cityparquet-schema for what each writes).
         #[arg(long, value_enum, default_value = "wkb")]
         geometry_encoding: GeometryEncodingArg,
 

@@ -177,8 +177,10 @@ CSV row per variant. Every variant converts with **Compatibility**
 unconditionally, so the harness stays uniform across variants and datasets
 (sidecars cost nothing when there's no appearance data).
 
-The committed artefacts and their caveats live in
-[`../bench/README.md`](../bench/README.md).
+The methodology and its comparability caveats live in
+[`../bench/README.md`](../bench/README.md) (write side) and
+[`../bench/READ_BENCHMARK.md`](../bench/READ_BENCHMARK.md) (read side, which is
+where the committed CSVs are).
 
 ### Recipe presets (the benchmark variable)
 

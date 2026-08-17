@@ -10,7 +10,7 @@
 # citygml-tools is unpacked into bench/tools/ (gitignored, like bench/data/);
 # cjseq is a Rust binary and goes wherever `cargo install` puts it.
 #
-# Reproducibility beats freshness, exactly as in scripts/fetch_3dbag.sh: the
+# Reproducibility beats freshness: the
 # citygml-tools version, its download URL and its archive's sha256 are
 # HARDCODED below rather than re-derived from "latest" at run time, and a
 # mismatch retries the download ONCE before hard-failing — the benchmark must

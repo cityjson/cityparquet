@@ -17,8 +17,10 @@ semantic losslessness.
   semantics.
 - **[docs/architecture.md](docs/architecture.md)** — the code: crates, the
   two-pass conversion pipeline, reader/export/compare, the benchmark harness.
-- **[bench/README.md](bench/README.md)** — benchmark methodology, results, and
-  comparability caveats.
+- **[bench/README.md](bench/README.md)** — the write/compression benchmark's
+  methodology and comparability caveats.
+- **[bench/READ_BENCHMARK.md](bench/READ_BENCHMARK.md)** — the cross-format read
+  benchmark's methodology, fairness caveats, and the committed CSVs' provenance.
 
 ## Crates
 
@@ -157,7 +159,6 @@ export+compare check. See [bench/README.md](bench/README.md).
 | `just interop` | convert both fixtures and have DuckDB read the Parquet natively |
 | `just convert-all FOLDER [OUT]` | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`) |
 | `just fetch-data [DEST] [ONLY]` | fetch the catalogue benchmark corpus (30 real CityGML/CityJSON datasets, 6.5 GB) into `DEST` (default `bench/data/benchmark/`); `ONLY` picks the entries serving one benchmark set — `default` (the default), `no-citygml`, or `all` |
-| `just fetch-seq-data [DEST]` | fetch the legacy CityJSONSeq corpus (11 datasets, ~1.7 GB) into `DEST` (default `bench/data/benchmark_seq/`) — the ordering benchmark's input, and the continuity link to the already-published read results |
 | `just fetch-tools` | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq) |
 | `just bench FOLDER [OUT] [FORMATS]` | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `bench/read_results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set |
 | `just ordering-bench FOLDER [OUT]` | the same run restricted to the ordering axis (source-order vs Hilbert CityParquet), into `OUT` (default `bench/ordering_results`) |
@@ -172,8 +173,10 @@ of; `crates/cityparquet-readbench/tests/strip_extension.rs` holds it in
 lockstep with the Rust and shell implementations of the same rule.
 
 Downloaded benchmark data (`bench/data/`) and generated packages (`out/`) are
-gitignored; `bench/results/*.csv` and `bench/README.md` are committed as the
-paper's measurement artefacts.
+gitignored. The committed measurement artefacts are the read benchmark's CSVs
+(`bench/read_results/`, `bench/ordering_results/`) and the two methodology
+documents beside them (`bench/READ_BENCHMARK.md`, `bench/README.md`); the
+write-side CSVs are not committed — see `bench/README.md`.
 
 ## Development
 

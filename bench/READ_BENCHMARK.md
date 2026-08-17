@@ -1,43 +1,17 @@
 # CityParquet read-benchmark methodology
 
-This is the **read**-side counterpart to `bench/README.md` (the M5
-write-benchmark doc): same repo, same discipline (real published data, warm
-medians + MAD at 6-decimal precision, disclosed rather than hidden fixed
-overheads), but a separate methodology and a separate set of measurement
-artefacts (`bench/read_results/*.csv`, produced by `just bench` /
-`cityparquet-readbench run` + `scripts/readbench_duckdb.sh`, not
-`bench/results/*.csv`).
+This is the **read**-side counterpart to `bench/README.md` (the write/encoding
+benchmark's methodology): same repo, same discipline — real published data, warm
+medians + MAD at 6-decimal precision, fixed overheads disclosed rather than
+hidden — but a separate methodology and its own measurement artefacts,
+`bench/read_results/*.csv` (format comparison) and `bench/ordering_results/*.csv`
+(ordering comparison), produced by `just bench` / `just ordering-bench`.
 
-> ## ⚠ RESULTS STATUS — every number below is STALE. Do not quote one.
->
-> **This document's methodology is current; its numbers are not.** As of
-> 2026-08-17 there are **no committed read-benchmark CSVs at all**: the
-> `bench/read_results/*.csv` this document was written around were deleted in
-> `84a2b38`, because branch-level changes to the full-read and convert paths
-> meant their `time_s` values no longer described HEAD. Three further changes
-> have landed since, each of which independently invalidates the old figures:
->
-> 1. **The corpus was replaced** (`fdfc1c1`). `just fetch-data` now fetches 30
->    real published CityGML 2.0 / CityJSON 2.0 documents from the city3d STAC
->    catalogue; the 11 pre-converted CityJSONSeq datasets every published
->    figure was measured on moved to `just fetch-seq-data` and a *different*
->    directory. Not one dataset named in `bench/CORPUS_REPORT.md`'s tables is
->    in the default corpus any more. (The two `just fixtures` files —
->    `delft.city.jsonl`, `lod3_railway.city.json` — are unaffected: they are
->    test fixtures, not corpus, and the object counts this document quotes from
->    them are asserted by tests and remain true.)
-> 2. **Three format tags were added** — `citygml`, `cityjson` and
->    `cityparquet-hilbert` — so the format axis itself is different. Every
->    published table is missing rows that now exist.
-> 3. **The default format set changed**, and the ordering comparison was split
->    into a benchmark of its own (see "The two benchmark sets" below), so a CSV
->    produced by a bare run no longer holds the same series as before.
->
-> Anything numeric in this file, in `bench/CORPUS_REPORT.md`, or in
-> `bench/README.md` is therefore **provenance, not evidence**: it records what
-> was once measured and on what, and is retained so the re-run has something
-> to be compared against. **Nothing in it may be cited in the paper until the
-> re-run described under "Reproduce" has been done and its CSVs committed.**
+The committed CSVs are from the run of **2026-08-17**: 21 datasets of the
+catalogue corpus under the format comparison (`bench/read_results/`, plus its
+`sizes.csv`) and 28 under the ordering comparison (`bench/ordering_results/`).
+Nothing in this document quotes a number from them — the numbers live in the
+CSVs, and the summary page (`just plot-pretty`) is what reads them.
 
 ## Purpose
 
@@ -124,7 +98,7 @@ Three deliberate choices in that first row:
   to disagree with `Format::DEFAULT_SET` here, appending the baseline on every
   default run; the test exists so that cannot come back.
 
-`duckdb-parquet` is **not** the M5 write-benchmark's `duckdb-copy` baseline.
+`duckdb-parquet` is **not** the write benchmark's `duckdb-copy` baseline.
 `duckdb-copy` there reads CityJSON through the community `cityjson`
 extension's `read_cityjson`/`read_cityjsonseq` table functions and re-writes
 it via `COPY ... TO (FORMAT PARQUET)` — a baseline with well-documented
@@ -241,8 +215,8 @@ rather than by coincidence.
 
 `bbox-query` is measured at **three** selectivity targets — windows sized to
 ~1%, ~5%, and ~25% of the dataset's own x/y bbox extent, anchored at its
-lower-left corner (the same window construction `bench/README.md`'s M5
-harness uses for its own single window) — one CSV row per target, tagged
+lower-left corner (the same window construction the write benchmark uses for
+its own single window) — one CSV row per target, tagged
 `bbox-1pct`/`bbox-5pct`/`bbox-25pct` in `notes`.
 
 ## Metrics and the CSV contract
@@ -269,10 +243,8 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
   around the same query (`duckdb-parquet`). **Normalised to bytes on every
   platform** by `rss_to_bytes` in `crates/cityparquet-readbench/src/main.rs`
   (`ru_maxrss` is natively KiB on Linux per `getrusage(2)`, bytes on
-  macOS/BSD). CSVs produced by builds *older* than this fix reported the
-  raw Linux value, i.e. KiB, under the same column name — see the erratum
-  in the parent repo's `benchmarking/README.md` before combining old and
-  new runs.
+  macOS/BSD). Every committed CSV was produced after that normalisation, so
+  the column is bytes throughout.
 - `selectivity` = `result_count / total_object_count`, empty where N/A
   (`count`, `full-read`). See Caveat 2 for what `total_object_count` means
   per scenario.
@@ -383,7 +355,7 @@ each cold number stands alone, one per format, one `full-read` only.
    decodes every row's WKB geometry and counts surfaces; DuckDB runs
    `SELECT sum(hash(COLUMNS(*)))` (forcing every column, including every
    geometry column, to be decoded — the same "force full decode" pattern
-   `bench/README.md`'s M5 baseline uses). Each is that format's own honest
+   the write benchmark's baseline uses). Each is that format's own honest
    full-read cost — reported per-format, never normalised into a shared
    unit of work that doesn't actually exist across six different
    encodings. Where two of them are *labelled* the same but are not the same
@@ -400,8 +372,8 @@ each cold number stands alone, one per format, one `full-read` only.
    window, never fewer, purely from the missing z test — not a query-plan
    or index-quality difference.
 
-5. **`duckdb-parquet` reads OUR CityParquet package directly — the M5
-   write-side geometry-coverage caveats do NOT carry over.** Unlike
+5. **`duckdb-parquet` reads OUR CityParquet package directly — the write-side
+   geometry-coverage caveats do NOT carry over.** Unlike
    `bench/README.md`'s `duckdb-copy`/`duckdb-copy-zstd` rows (which go
    through the community `cityjson` extension's `read_cityjson`/
    `read_cityjsonseq`, documented there to write 0% `geom_lod0` coverage
@@ -440,7 +412,7 @@ each cold number stands alone, one per format, one `full-read` only.
    warm rows.
 
 8. **Sub-millisecond deltas are noise; single-threaded reads are pinned.**
-   As in `bench/README.md`'s M5 methodology, deltas under roughly 10 ms at
+   As in `bench/README.md`'s own methodology, deltas under roughly 10 ms at
    `repeat = 7` are within scheduler/filesystem-cache noise and are not
    cited as a finding by themselves. Every format's reads here run
    single-threaded (no Parquet multi-threaded row-group decode, no
@@ -733,34 +705,32 @@ below, because unlike the two above they are not pinned by a fetch script.
 
 ### Machine
 
-Captured 2026-07-08 — **the machine the now-deleted `bench/read_results/*.csv`
-were produced on, NOT a machine any current result came from** (see the
-results-status banner at the top of this file). Replace this block wholesale
-as part of the re-run; the `peak_rss_bytes` unit note above applies to it:
+**Not captured for the committed run.** What the commit that added
+`bench/read_results/*.csv` records is the date and the platform family — a Linux
+x86-64 host, AMD EPYC, 2026-08-17 — and nothing in the CSVs carries machine
+metadata, so no CPU model, RAM figure or toolchain version can be recovered from
+the artefacts. Treat the committed numbers as internally comparable (one machine,
+one sitting, per dataset) but do not quote an absolute time against another
+paper's hardware.
 
+Capture this block as part of the next run, and paste its output here:
+
+```sh
+uname -a
+# Linux: lscpu | sed -n '1,15p'; free -b | head -2
+# macOS: sysctl -n machdep.cpu.brand_string hw.memsize
+duckdb --version; cargo --version; rustc --version; fcb --version
+cat bench/tools/tool_versions.txt      # the pinned conversion chain
 ```
-uname -a: Darwin F19WYJD2P7 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:28:34 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6041 arm64
-CPU:      Apple M4 Max
-RAM:      38654705664 bytes (36 GiB)
-duckdb:   v1.5.3 (Variegata) 14eca11bd9
-cargo:    cargo 1.93.1 (083ac5135 2025-12-15)
-rustc:    rustc 1.93.1 (01f6ddf75 2026-02-11)
-fcb:      fcb 0.7.4
-```
 
-The tool versions above were captured on 2026-08-16, i.e. **after** that
-machine capture and after every figure this document currently quotes: no
-published number here was produced by the pinned chain. That is one more
-reason the re-run is mandatory.
-
-`peak_rss_bytes` is in **bytes** on every platform since the
-`rss_to_bytes` fix — the macOS numbers recorded above were already bytes
-and are unaffected by it.
+`peak_rss_bytes` is in **bytes** on every platform (`rss_to_bytes` in
+`crates/cityparquet-readbench/src/main.rs` normalises the KiB `ru_maxrss` that
+Linux reports), so a Linux run and a macOS run are directly comparable in that
+column.
 
 ## Reproduce
 
-This is also the procedure that must be run before any number in this
-document may be quoted (see the results-status banner at the top).
+What produced the committed CSVs, and what regenerates them:
 
 ```sh
 just fetch-tools                     # pinned citygml-tools + cjseq (network, needs java 17+)
@@ -826,11 +796,3 @@ baseline is wanted — it is opt-in, and `just bench` appends it **only when
 `lod3_railway.city.json`, where `attr-stats` is skipped for every format —
 see `crates/cityparquet-readbench/src/coordinator.rs`'s own
 `pick_numeric_attribute`, logged on stderr, never fabricated).
-
-**Continuity with the published figures.** The 11 CityJSONSeq datasets every
-number in `bench/CORPUS_REPORT.md` was measured on are now fetched by
-`just fetch-seq-data`, into `bench/data/benchmark_seq` — a *different*
-directory, because `just bench FOLDER` measures everything under FOLDER.
-They are CityJSONSeq only, so they cannot serve the `citygml`/`cityjson` rows
-of the format comparison; they remain the ordering benchmark's input and the
-link back to the older results.

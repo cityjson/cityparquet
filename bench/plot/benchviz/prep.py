@@ -162,10 +162,10 @@ CODEC_LEVEL_NOTE = (
     "Codec levels are mismatched across the compression variants: zstd is "
     "written at level 3, gzip at level 6 and brotli at level 1. These are the "
     "parquet-rs defaults carried by the writer recipe "
-    "(crates/cityparquet/src/recipe.rs) and they are not documented in "
-    "bench/README.md, so the codec comparison is a comparison of "
-    "implementation defaults, not of codecs at equal effort. \"Smallest "
-    "codec\" is therefore not a citable claim from this benchmark."
+    "(crates/cityparquet/src/recipe.rs), as bench/README.md states, so the "
+    "codec comparison is a comparison of implementation defaults, not of codecs "
+    "at equal effort. \"Smallest codec\" is therefore not a citable claim from "
+    "this benchmark."
 )
 
 
@@ -365,11 +365,19 @@ def read_caveats(inputs: Inputs) -> list[str]:
 
 
 def compression_caveats(inputs: Inputs) -> list[str]:
+    """The write-side baseline's coverage caveat, verbatim — if it still exists.
+
+    Quoted from `bench/README.md` so the page cannot drift from the methodology
+    it reports. Returned empty rather than raised when the section is absent:
+    the caveat is about the DuckDB baseline of the *write* benchmark, and a run
+    with no compression data has no view to attach it to.
+    """
     path = inputs.bench_readme_md
-    body = _extract_section(path, "Baseline geometry coverage")
-    if not body.strip():
-        raise PrepError(f"{path}: 'Baseline geometry coverage' section is empty")
-    return [body]
+    try:
+        body = _extract_section(path, "Baseline geometry coverage")
+    except PrepError:
+        return []
+    return [body] if body.strip() else []
 
 
 # --------------------------------------------------------------------------

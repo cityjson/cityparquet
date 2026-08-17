@@ -344,9 +344,10 @@ Documented exclusions:
 
 ## Status & known limitations
 
-Implemented and tested against real CityJSON fixtures and 3DBAG tiles through
+Implemented and tested against real CityJSON and CityGML fixtures through
 milestones M1–M5 (schema, writer, reader/round-trip, Compatibility profile,
-benchmark suite). Current limitations:
+benchmark suite), and exercised over the 30-dataset published corpus the read
+benchmark uses. Current limitations:
 
 - `Solid` geometry is WKB `PolyhedralSurfaceZ` (type 1015), which some
   geometry-auto-decoding GeoParquet readers (GeoPandas, DuckDB `spatial`) do
