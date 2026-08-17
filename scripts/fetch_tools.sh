@@ -80,7 +80,13 @@ check_java() {
   local raw major
   # `java -version` prints to stderr, e.g. `openjdk version "21.0.11" ...` or
   # the legacy `java version "1.8.0_402"`.
-  raw="$(java -version 2>&1 | head -1 | sed -n 's/.*version "\([^"]*\)".*/\1/p')"
+  #
+  # No `| head -1` in the middle of the pipeline: `head` exiting early can
+  # hand `java` a SIGPIPE, and under `set -o pipefail` that aborts the script
+  # on a perfectly good JVM. Take the first match with a parameter expansion
+  # instead (the same idiom `readbench_prepare.sh` uses).
+  raw="$(java -version 2>&1 | sed -n 's/.*version "\([^"]*\)".*/\1/p')"
+  raw=${raw%%$'\n'*}
   if [[ -z "$raw" ]]; then
     echo "error: could not read a version out of \`java -version\`; citygml-tools needs Java ${JAVA_MIN_MAJOR} or newer" >&2
     java -version >&2 || true

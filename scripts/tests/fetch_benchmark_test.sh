@@ -517,7 +517,7 @@ case_unreadable_manifest_is_reported() {
 # --------------------------------------------------------------------------
 case_fetch_data_defaults_to_the_default_set() {
   local name="just fetch-data defaults to --only default"
-  local recipe
+  local recipe script_default
   recipe="$(grep -E "^fetch-data " "$JUSTFILE" || true)"
   if [[ -z "$recipe" ]]; then
     fail "$name" "no fetch-data recipe found in $JUSTFILE"
@@ -525,6 +525,16 @@ case_fetch_data_defaults_to_the_default_set() {
   fi
   if [[ "$recipe" != *"ONLY='default'"* ]]; then
     fail "$name" "fetch-data's ONLY default is not 'default': $recipe"
+    return
+  fi
+  # BOTH defaults, not just the justfile's. The script is run directly too
+  # (bench/READ_BENCHMARK.md documents it), and its own `ONLY=` is the
+  # fallback whenever `--only` is absent — so pinning only the recipe left
+  # `ONLY=all` in the script itself free to put the two abort-causing
+  # datasets into the folder that `just bench` measures.
+  script_default="$(grep -E '^ONLY=' "$FETCH" || true)"
+  if [[ "$script_default" != "ONLY=default" ]]; then
+    fail "$name" "fetch_benchmark.sh's own default is '$script_default', not ONLY=default"
     return
   fi
   pass "$name"
@@ -574,6 +584,29 @@ case_pinned_table_is_well_formed() {
       *)
         fail "$name" "entry '${fields[0]}' has an unknown set list '${fields[3]}'"
         return
+        ;;
+    esac
+    # The two entries that cannot serve a default-set run must be
+    # `no-citygml`-ONLY, and no other entry may be. This is a VALUE
+    # assertion, deliberately: the shape check above accepts any of the three
+    # spellings, so flipping riga to `default,no-citygml` used to leave this
+    # suite green — and would put back exactly the aborted folder loop
+    # c20b8b2 exists to prevent (readbench_prepare.sh refuses Riga outright;
+    # the coordinator bails on PLATEAU brid's citygml child; `just bench`
+    # runs under `set -e`, so either takes every dataset sorting after it
+    # down too).
+    case "${fields[0]}" in
+      riga_atgazene_lod2.gml | plateau_chuo_brid.gml)
+        if [[ "${fields[3]}" != "no-citygml" ]]; then
+          fail "$name" "entry '${fields[0]}' is in set '${fields[3]}'; it cannot serve a default-set run"
+          return
+        fi
+        ;;
+      *)
+        if [[ "${fields[3]}" == "no-citygml" ]]; then
+          fail "$name" "entry '${fields[0]}' is no-citygml-only, but only riga_atgazene_lod2.gml and plateau_chuo_brid.gml are known to be"
+          return
+        fi
         ;;
     esac
     url_field="${fields[4]}"

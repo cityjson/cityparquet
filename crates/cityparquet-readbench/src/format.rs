@@ -53,16 +53,19 @@ pub enum Format {
 /// Where a [`Format`]'s artefact lives, relative to the coordinator's
 /// `prepared_dir`.
 ///
-/// Three cases, deliberately distinguished — conflating the last two (both
-/// would be `None` under an `Option<String>`) is how the old
-/// string-matching version got confusing.
+/// EVERY measured format reads an artefact `scripts/readbench_prepare.sh`
+/// built inside `prepared_dir` — no format reads the original `--input`.
+/// There used to be a third case, `TheInputItself`, for
+/// [`Format::CityJsonSeq`]: it was correct only while `--input` was itself a
+/// `.city.jsonl`, and on the catalogue corpus (whose inputs are `.gml` and
+/// `.city.json`) it silently made the `cityjsonseq` row measure the input's
+/// OWN format under this format's name. The prepare script now always
+/// materialises `<base>.city.jsonl`, and this enum no longer has a way to
+/// say otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Artefact {
     /// A file or directory the prepare script builds inside `prepared_dir`.
     Prepared(String),
-    /// The original `--input` itself, which normally lives OUTSIDE
-    /// `prepared_dir`.
-    TheInputItself,
     /// Not this coordinator's business at all.
     NotCoordinated,
 }
@@ -132,18 +135,21 @@ impl Format {
 
     /// Where this format's artefact lives, relative to `prepared_dir`.
     ///
-    /// Three cases, deliberately distinguished — conflating the last two is
-    /// how the old string-matching version got confusing:
+    /// Two cases:
     /// - `Prepared(name)`: a file or directory the prepare script builds.
-    /// - `TheInputItself`: `CityJsonSeq` reads the original `--input`, which
-    ///   normally lives OUTSIDE `prepared_dir`.
+    ///   These names are the coordinator's HALF of a contract with
+    ///   `scripts/readbench_prepare.sh`, which writes exactly them;
+    ///   `scripts/tests/readbench_prepare_test.sh` reads both sides out of
+    ///   their own sources and fails if they disagree.
     /// - `NotCoordinated`: `DuckDbParquet` is an SQL-engine baseline driven
     ///   by `scripts/readbench_duckdb.sh`, never by this coordinator.
     pub fn artefact(self, base: &str) -> Artefact {
         match self {
             Format::CityGml => Artefact::Prepared(format!("{base}.gml")),
             Format::CityJson => Artefact::Prepared(format!("{base}.city.json")),
-            Format::CityJsonSeq => Artefact::TheInputItself,
+            // NEVER the `--input` itself: a `.gml`/`.city.json` input would
+            // then be measured, and published, as CityJSONSeq.
+            Format::CityJsonSeq => Artefact::Prepared(format!("{base}.city.jsonl")),
             Format::CityJsonSeqGz => Artefact::Prepared(format!("{base}.jsonl.gz")),
             Format::FlatCityBuf => Artefact::Prepared(format!("{base}.fcb")),
             Format::CityParquet => Artefact::Prepared(format!("{base}.parquet")),
@@ -214,17 +220,35 @@ mod tests {
         );
     }
 
-    /// The two non-`Prepared` cases are distinct on purpose (see
-    /// [`Artefact`]'s own doc comment).
+    /// `duckdb-parquet` is the ONLY format with no artefact of this
+    /// coordinator's own (see [`Artefact`]'s own doc comment).
     #[test]
-    fn the_input_itself_and_not_coordinated_are_distinct() {
+    fn only_the_sql_engine_baseline_is_uncoordinated() {
+        for format in Format::ALL {
+            match format {
+                Format::DuckDbParquet => assert_eq!(
+                    format.artefact("delft"),
+                    Artefact::NotCoordinated,
+                    "{format} is driven by scripts/readbench_duckdb.sh"
+                ),
+                other => assert!(
+                    matches!(other.artefact("delft"), Artefact::Prepared(_)),
+                    "{other} must read an artefact from --prepared-dir"
+                ),
+            }
+        }
+    }
+
+    /// CityJSONSeq reads a PREPARED `<base>.city.jsonl`, never the original
+    /// `--input`. While it read the input itself, a `.gml`/`.city.json`
+    /// input made the `cityjsonseq` row measure the input's own format —
+    /// CityGML parsing, appearance pre-pass included — and publish it as
+    /// CityJSONSeq.
+    #[test]
+    fn cityjsonseq_reads_a_prepared_seq_artefact() {
         assert_eq!(
-            Format::CityJsonSeq.artefact("delft"),
-            Artefact::TheInputItself
-        );
-        assert_eq!(
-            Format::DuckDbParquet.artefact("delft"),
-            Artefact::NotCoordinated
+            Format::CityJsonSeq.artefact("plateau_chuo_fld"),
+            Artefact::Prepared("plateau_chuo_fld.city.jsonl".to_string())
         );
     }
 }

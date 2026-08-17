@@ -8,9 +8,10 @@ under a "prepared dir" (default `bench/data/readbench/`) — the same names
 
     <name>.gml               CityGML 2.0 source (only for a CityGML input)
     <name>.city.json         whole-document CityJSON
-    <name>.city.jsonl        CityJSONSeq (only when the input was CityGML;
-                             otherwise the CityJSONSeq *is* the input, and
-                             lives outside the prepared dir)
+    <name>.city.jsonl        CityJSONSeq (always materialised when the
+                             `cityjsonseq` format was prepared, whatever the
+                             input kind — copied from a `.city.jsonl` input,
+                             `cjseq cat` from anything else)
     <name>.jsonl.gz          gzip -9 of the CityJSONSeq
     <name>.fcb               FlatCityBuf file
     <name>.parquet/          CityParquet package directory (source order)

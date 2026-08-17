@@ -172,20 +172,39 @@ case_explicit_list_without_baseline() {
 # --------------------------------------------------------------------------
 case_ordering_run_stays_single_axis() {
   local name="the ordering set does not append the baseline"
-  local tags got recipe
-  tags="$(sed -n '/pub const ORDERING_SET/,/];/p' "$FORMAT_RS" \
-    | grep -oE 'Format::[A-Za-z]+' | grep -v 'Format::ORDERING_SET' || true)"
-  if [[ -z "$tags" ]]; then
+  local variant tag expected="" actual got recipe
+  # `Format::ORDERING_SET`'s members, mapped through `Format::as_str` to the
+  # CLI spelling `ordering-bench` has to pass. The old version read the
+  # variant names, checked only that the list was non-empty, and then compared
+  # the recipe against a HARDCODED string — so `ORDERING_SET := [CityParquet,
+  # FlatCityBuf]` and an `ordering-bench` passing a third format both left
+  # this case green. The enum is the authority; the recipe must match it.
+  while IFS= read -r variant; do
+    [[ -n "$variant" ]] || continue
+    tag="$(sed -n "s/^ *Format::${variant#Format::} => \"\([a-z0-9-]*\)\",\$/\1/p" "$FORMAT_RS")"
+    tag=${tag%%$'\n'*}
+    if [[ -z "$tag" ]]; then
+      fail "$name" "no as_str spelling for $variant in $FORMAT_RS"
+      return
+    fi
+    expected+="${expected:+,}$tag"
+  # The declaration only, ending at ITS OWN `];`. A `sed` range would run on
+  # to the next `];` in the file and drag unrelated `Format::` mentions in
+  # with it.
+  done < <(awk '/pub const ORDERING_SET/ { f = 1 } f { print; if (/\];/) exit }' "$FORMAT_RS" \
+    | grep -oE 'Format::[A-Za-z]+' | grep -v 'Format::ORDERING_SET' || true)
+  if [[ -z "$expected" ]]; then
     fail "$name" "could not read ORDERING_SET out of $FORMAT_RS"
     return
   fi
   # What `ordering-bench` actually passes, taken from the recipe itself.
   recipe="$(grep -F 'just bench "{{FOLDER}}" "{{OUT}}"' "$JUSTFILE" || true)"
-  if [[ "$recipe" != *"cityparquet,cityparquet-hilbert"* ]]; then
-    fail "$name" "ordering-bench no longer passes cityparquet,cityparquet-hilbert: $recipe"
+  actual="$(printf '%s' "$recipe" | sed -n 's/.*"{{OUT}}"[[:space:]]*"\([^"]*\)".*/\1/p')"
+  if [[ "$actual" != "$expected" ]]; then
+    fail "$name" "ordering-bench passes '$actual', Format::ORDERING_SET is '$expected'"
     return
   fi
-  got="$(want_duckdb_for "cityparquet,cityparquet-hilbert")"
+  got="$(want_duckdb_for "$expected")"
   if [[ "$got" != "0" ]]; then
     fail "$name" "want_duckdb=$got for the ordering set (expected 0)"
     return

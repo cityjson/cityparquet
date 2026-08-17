@@ -185,10 +185,32 @@ enum Backend {
 }
 
 impl Backend {
+    /// Opens `input`, refusing a CityGML document outright.
+    ///
+    /// The mirror image of [`super::citygml`]'s own sniff (`open_citygml`)
+    /// and of [`super::cityjson`]'s (`Document::parse`), and it exists for
+    /// the same reason: [`Source::open`] sniffs, and a `.gml` handed to it
+    /// opens quite happily as CityGML — so this runner would parse XML and
+    /// publish another format's cost under this format's name. That is not
+    /// hypothetical: while `Format::CityJsonSeq` resolved to the `--input`
+    /// itself, EVERY `.gml` dataset's `cityjsonseq` row was a CityGML
+    /// measurement (~8x too slow), and nothing failed.
+    ///
+    /// A gz artefact is not sniffed: its bytes are compressed, so the check
+    /// would be meaningless, and [`GzSource::open`]'s own JSON parse rejects
+    /// anything that is not CityJSON(Seq) anyway.
     fn open(input: &Path, gzip: bool) -> Result<Self> {
         if gzip {
             Ok(Backend::Gz(Box::new(GzSource::open(input)?)))
         } else {
+            if cityparquet::citygml::sniff_citygml(input).is_some() {
+                return Err(anyhow!(
+                    "{} is a CityGML document, not CityJSONSeq; --format cityjsonseq must never \
+                     be pointed at CityGML, or the benchmark would report another format's cost \
+                     under this format's name",
+                    input.display()
+                ));
+            }
             Ok(Backend::Plain(Box::new(
                 Source::open(input).map_err(|e| anyhow!(e))?,
             )))

@@ -99,6 +99,17 @@ use http_range_client::{AsyncBufferedHttpRangeClient, AsyncHttpRangeClient};
 use super::{FormatRunner, IoStats, RunOutcome, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
+/// The markers every index-fallback message below carries, and the exact
+/// tags the coordinator records in the CSV's `notes` column for a row whose
+/// child printed one (`coordinator::child_disclosures`).
+///
+/// A fallback is a DIFFERENT MECHANISM — a full `select_all` walk where the
+/// row's neighbours in the table used an index — so a row that took one is
+/// not the indexed query the chart's axis label claims. Announcing that on
+/// stderr alone left it out of the artefact entirely, where every reader of
+/// the published CSV is.
+pub(crate) const FALLBACK_MARKERS: [&str; 2] = ["no-attr-index", "attr-index-failed"];
+
 /// This runner's `--attr-column`/params error for a scenario missing a
 /// required field — mirrors [`super::cityparquet`] and
 /// [`super::cityjsonseq`]'s own `require` helper.
@@ -377,7 +388,7 @@ fn attr_filter(input: &Path, column: &str, pred: &AttrPred) -> Result<u64> {
             Ok(iter) => return Ok(iter.features_count().unwrap_or(0) as u64),
             Err(e) => eprintln!(
                 "cityparquet-readbench: flatcitybuf: indexed attr-filter query on '{column}' \
-                 failed ({e}); falling back to a full scan"
+                 failed ({e}) (attr-index-failed); falling back to a full scan"
             ),
         }
     } else {
@@ -402,6 +413,15 @@ fn id_lookup(input: &Path, id: &str) -> Result<u64> {
         if let Ok(mut iter) = reader.select_attr_query(query) {
             return Ok(if iter.next()?.is_some() { 1 } else { 0 });
         }
+        eprintln!(
+            "cityparquet-readbench: flatcitybuf: indexed id-lookup query failed \
+             (attr-index-failed); falling back to a full scan"
+        );
+    } else {
+        eprintln!(
+            "cityparquet-readbench: flatcitybuf: 'id' has no B+-tree index (no-attr-index); \
+             falling back to a full scan"
+        );
     }
     full_walk_id_lookup(input, id)
 }
@@ -590,7 +610,7 @@ async fn attr_filter_http(
             Ok(iter) => return Ok(iter.features_count().unwrap_or(0) as u64),
             Err(e) => eprintln!(
                 "cityparquet-readbench: flatcitybuf: indexed attr-filter query on '{column}' \
-                 failed ({e}); falling back to a full scan"
+                 failed ({e}) (attr-index-failed); falling back to a full scan"
             ),
         }
     } else {
@@ -610,6 +630,15 @@ async fn id_lookup_http(url: &str, tally: RangeTally, id: &str) -> Result<u64> {
         if let Ok(mut iter) = reader.select_attr_query(&query).await {
             return Ok(if iter.next().await?.is_some() { 1 } else { 0 });
         }
+        eprintln!(
+            "cityparquet-readbench: flatcitybuf: indexed id-lookup query failed \
+             (attr-index-failed); falling back to a full scan"
+        );
+    } else {
+        eprintln!(
+            "cityparquet-readbench: flatcitybuf: 'id' has no B+-tree index (no-attr-index); \
+             falling back to a full scan"
+        );
     }
     full_walk_id_lookup_http(url, tally, id).await
 }

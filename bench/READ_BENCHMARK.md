@@ -63,7 +63,7 @@ today" through "what we propose" to "a different engine over the same file":
 |---|---|---|
 | `citygml` | CityGML 2.0 XML (`.gml`) — the format most national datasets are published in, read through **this repository's own reader** (`cityparquet::citygml`) | **none** — no offsets, no object directory, no spatial or attribute tree; every scenario is a full XML parse and an in-memory filter (see Caveat 12) |
 | `cityjson` | plain, whole-document CityJSON (`.city.json`): one JSON document, one `CityObjects` map, one shared document-level `vertices` array | **none** — the document must be parsed in one piece before any object is readable, so every scenario is a full parse (see Caveat 13) |
-| `cityjsonseq` | CityJSONSeq (`.city.jsonl`), one self-contained JSON feature per line, feature-local vertices | **none** — every scenario is a full parse |
+| `cityjsonseq` | CityJSONSeq, one self-contained JSON feature per line, feature-local vertices. Read from the PREPARED `<base>.city.jsonl` — `readbench_prepare.sh` always materialises one (copied from a `.city.jsonl` input, `cjseq cat` from anything else), and the runner refuses a CityGML document outright | **none** — every scenario is a full parse |
 | `cityjsonseq-gz` | the same stream, `gzip -9`'d | **none** — full parse, plus gzip inflate |
 | `flatcitybuf` | FlatCityBuf (`fcb ser -A`) | R-tree spatial index (**2D only**, see Caveat 4) + B+-tree index over **every** attribute (`-A`) |
 | `cityparquet` | our CityParquet package, **source row order** (`cityparquet convert --overwrite`) | Parquet row-group min/max statistics + column projection |
@@ -276,9 +276,17 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
 - `selectivity` = `result_count / total_object_count`, empty where N/A
   (`count`, `full-read`). See Caveat 2 for what `total_object_count` means
   per scenario.
-- `notes` — free text: the `bbox-*pct` selectivity tag, the attribute
-  name/predicate used for `attr-filter`/`attr-stats`/`project`, the sampled
-  id for `id-lookup`, or `cold` for the one cold-cache row.
+- `notes` — a `;`-separated tag list (never a comma: it is one CSV field):
+  the `bbox-*pct` selectivity tag, the attribute name/predicate used for
+  `attr-filter`/`attr-stats`/`project`, the sampled id for `id-lookup`, or
+  `cold` (always first) for the one cold-cache row — plus any DISCLOSURE the
+  run made about that row:
+  - `no-attr-index` / `attr-index-failed` — FlatCityBuf answered this row by
+    a full scan, not by its B+-tree (Caveat 11);
+  - `attr-filter-count-mismatch` — the resolved formats disagreed on
+    `attr-filter`'s `result_count`, so this run's object-level rows are not
+    all measuring the same query (see "Self-consistency" in
+    `crates/cityparquet-readbench/src/coordinator.rs`).
 - `bytes_read` / `http_requests` — **empty for every `--transport local`
   row** (no HTTP concept locally); for a `--transport http` row, the total
   bytes transferred and HTTP request count that scenario's own
@@ -494,12 +502,12 @@ each cold number stands alone, one per format, one `full-read` only.
     `select_attr_query` for attribute/id), which requires the `.fcb` to carry
     a spatial index (default) and an attribute index (`fcb ser -A`, which
     `readbench-prepare` always passes). If an index query errors, the runner
-    falls back to a full scan and logs it to stderr — the earlier runs (whose
-    CSVs have since been deleted; see the results-status banner) used
-    fully-indexed `.fcb` files and did not fall back, but **the re-run must
-    surface any fallback in the CSV `notes`**, so an index-vs-scan measurement
-    is never silently mislabelled. Nothing in the CSV distinguishes the two
-    today, which is why the stderr log has to be kept with the run. The `cityjsonseq-gz` runner fully supports
+    falls back to a full scan — and **says so in the CSV `notes`**
+    (`no-attr-index` when the column carries no B+-tree at all,
+    `attr-index-failed` when the index query itself errored), so an
+    index-vs-scan measurement is never silently mislabelled. It used to say
+    so on stderr only, which meant a fallback was invisible to everyone
+    reading the artefact. The `cityjsonseq-gz` runner fully supports
     CityJSONSeq and single-line whole-document `.city.json.gz` (the form the
     committed fixtures use); a *pretty-printed* multi-line whole-document
     `.city.json.gz` is not yet handled (it needs the fuller sniff

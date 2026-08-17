@@ -7,14 +7,22 @@
 #
 #   citygml              OUTDIR/<x>.gml               the CityGML source itself (only from a CityGML INPUT)
 #   cityjson             OUTDIR/<x>.city.json         one whole-document CityJSON
-#   cityjsonseq          OUTDIR/<x>.city.jsonl        CityJSONSeq (only when INPUT is CityGML; see below)
+#   cityjsonseq          OUTDIR/<x>.city.jsonl        CityJSONSeq
 #   cityparquet          OUTDIR/<x>.parquet/          core-profile CityParquet package (source order)
 #   cityparquet-hilbert  OUTDIR/<x>-hilbert.parquet/  CityParquet package, Hilbert-ordered rows
 #   flatcitybuf          OUTDIR/<x>.fcb               FlatCityBuf, spatial index + ALL-attribute B+Tree index
 #   cityjsonseq-gz       OUTDIR/<x>.jsonl.gz          the CityJSONSeq, gzip -9
 #
-# From a CityJSON/CityJSONSeq INPUT, `cityjsonseq` is a no-op: that format's
-# "artefact" is INPUT itself, which the benchmark reads in place.
+# EVERY ONE OF THOSE IS A REAL FILE IN OUTDIR, `cityjsonseq` included — from a
+# CityJSONSeq INPUT it is a copy, from a CityJSON INPUT it is cut with `cjseq
+# cat`. It used to be a no-op ("the artefact IS the INPUT, read in place"),
+# which held only while every INPUT was a `.city.jsonl`: on a `.gml` or
+# `.city.json` INPUT the benchmark then measured the INPUT'S OWN FORMAT and
+# published it as CityJSONSeq (~8x too slow on a real .gml, and for a
+# `.city.json` two rows over one file). The coordinator now resolves EVERY
+# format to an OUTDIR artefact (`Format::artefact`), so an artefact that is
+# not built is a format that is skipped — never one that is silently
+# substituted.
 #
 # `<x>` is INPUT's basename minus its known input extension — see
 # `KNOWN_INPUT_EXTENSIONS` below, which is one of four implementations of the
@@ -334,21 +342,38 @@ fi
 
 # Which hops of the chain this request needs.
 #
-# NEED_SEQ: a CityGML input carries no CityJSONSeq, so one must be cut before
-# anything downstream of it (gz / fcb / cityparquet) can be built. From a
-# CityJSON/CityJSONSeq input the downstream steps read INPUT directly, exactly
-# as they always have.
+# NEED_SEQ: a CityJSONSeq artefact must exist in OUTDIR — either because
+# something downstream of it (gz / fcb / cityparquet) is cut from it and the
+# input carries no CityJSONSeq of its own, or because `cityjsonseq` itself was
+# requested, which is a REAL artefact for every input kind (see the header).
 NEED_SEQ=0
 if [[ "$INPUT_KIND" == "citygml" ]]; then
   if want cityjsonseq || want cityjsonseq-gz || want flatcitybuf \
     || want cityparquet || want cityparquet-hilbert; then
     NEED_SEQ=1
   fi
+elif want cityjsonseq; then
+  NEED_SEQ=1
 fi
+
+# HOW block 3 produces it. A CityJSONSeq input already IS one, so it is
+# copied; anything else is cut from the CityJSON stage with `cjseq cat`,
+# keeping the chain's one rule (each artefact derives from the one before it)
+# true for a CityJSON input too.
+SEQ_FROM=""
+if [[ "$NEED_SEQ" -eq 1 ]]; then
+  if [[ "$INPUT_KIND" == "cityjsonseq" ]]; then
+    SEQ_FROM="copy"
+  else
+    SEQ_FROM="cjseq-cat"
+  fi
+fi
+
 # NEED_CITYJSON: requested outright, or needed as the stage the CityJSONSeq is
-# cut from.
+# cut from (never for the copy case — a `.city.jsonl` input needs no CityJSON
+# to become a `.city.jsonl` artefact).
 NEED_CITYJSON=0
-if want cityjson || [[ "$NEED_SEQ" -eq 1 ]]; then
+if want cityjson || [[ "$SEQ_FROM" == "cjseq-cat" ]]; then
   NEED_CITYJSON=1
 fi
 
@@ -381,7 +406,7 @@ fi
 # cjseq performs whichever CityJSON <-> CityJSONSeq hop this request needs:
 # `cat` down from the CityJSON the chain just produced, or `collect` up from a
 # CityJSONSeq input.
-if [[ "$NEED_SEQ" -eq 1 ]] \
+if [[ "$SEQ_FROM" == "cjseq-cat" ]] \
   || [[ "$NEED_CITYJSON" -eq 1 && "$INPUT_KIND" == "cityjsonseq" ]]; then
   require_tool cjseq "the CityJSON <-> CityJSONSeq conversion"
 fi
@@ -563,9 +588,10 @@ BUILT=()
 INTERMEDIATES=()
 
 # The CityJSONSeq every downstream artefact (gz / fcb / cityparquet) is cut
-# from. It is INPUT itself unless INPUT is CityGML, in which case block 3
-# below derives one; either way all three read the SAME bytes, which is what
-# makes their comparison fair.
+# from. It is INPUT itself unless block 3 below materialises a `.city.jsonl`
+# artefact (whenever NEED_SEQ), in which case all of them read THAT — the
+# same bytes the `cityjsonseq` row is measured on, which is what makes their
+# comparison fair.
 SEQ_INPUT="$INPUT"
 
 # 1. CityGML: the source document itself, placed where the coordinator looks
@@ -635,11 +661,18 @@ if [[ "$NEED_CITYJSON" -eq 1 ]]; then
   fi
 fi
 
-# 3. CityJSONSeq, cut from the CityJSON above. Only from a CityGML input:
-# otherwise INPUT already IS the CityJSONSeq (see block 8).
+# 3. CityJSONSeq: cut from the CityJSON above, or copied when INPUT already
+# IS one. Either way it lands in OUTDIR under the name the coordinator
+# resolves (`Format::artefact`) — never left as "read INPUT in place", which
+# is how a `.gml`/`.city.json` input got measured under this format's name.
 if [[ "$NEED_SEQ" -eq 1 ]]; then
-  if file_is_valid "$SEQ_OUT"; then
+  if file_is_valid "$SEQ_OUT" && same_file "$INPUT" "$SEQ_OUT"; then
+    echo "skip $SEQ_OUT (the input is already the artefact)"
+  elif file_is_valid "$SEQ_OUT"; then
     echo "skip $SEQ_OUT (already present)"
+  elif [[ "$SEQ_FROM" == "copy" ]]; then
+    echo "-- copy $INPUT -> $SEQ_OUT"
+    cp "$INPUT" "$SEQ_OUT"
   else
     echo "-- cjseq cat $CITYJSON_OUT -> $SEQ_OUT"
     trap 'rm -f "$SEQ_OUT.tmp"' EXIT
@@ -647,6 +680,9 @@ if [[ "$NEED_SEQ" -eq 1 ]]; then
     mv "$SEQ_OUT.tmp" "$SEQ_OUT"
     trap - EXIT
   fi
+  # Everything downstream now reads the SAME bytes the `cityjsonseq` row is
+  # measured on, for every input kind — the chain diagram in the header is
+  # true of a CityJSON input too, not only a CityGML one.
   SEQ_INPUT="$SEQ_OUT"
   if want cityjsonseq; then
     BUILT+=("$SEQ_OUT")
@@ -706,13 +742,9 @@ if want cityjsonseq-gz; then
   BUILT+=("$GZ_OUT")
 fi
 
-# 8. From a CityJSON/CityJSONSeq input, plain CityJSONSeq needs no artefact
-# at all: the benchmark reads INPUT itself (`Artefact::TheInputItself`).
-# Requesting it is a no-op, NOT a "cannot build" error. (From a CityGML input
-# it is a real artefact, built by block 3 above.)
-if want cityjsonseq && [[ "$NEED_SEQ" -eq 0 ]]; then
-  echo "-- cityjsonseq: no artefact needed (the benchmark reads $INPUT in place)"
-fi
+# (There is no block 8: `cityjsonseq` is built by block 3 for EVERY input
+# kind. It used to be a documented no-op here — see the header for what that
+# cost.)
 
 # Sanity checks: every artefact this run was responsible for exists and is
 # non-empty, and — when FlatCityBuf was built — the FCB file reports a
@@ -767,7 +799,13 @@ if [[ "$NEED_SEQ" -eq 1 ]]; then
     exit 1
   fi
   echo "  cityjsonseq: $SEQ_FEATURES feature(s) in $SEQ_OUT"
-  report_count_drift "$CITYJSON_OUT" "$CITYJSON_OBJECTS" "$SEQ_OUT" "$SEQ_FEATURES"
+  # Only the `cjseq cat` hop has a CityJSON stage to have lost anything
+  # against; a copied artefact has no upstream count here (CITYJSON_OBJECTS is
+  # empty when the CityJSON was never needed), and comparing against an empty
+  # string would report a "loss" that never happened.
+  if [[ -n "$CITYJSON_OBJECTS" ]]; then
+    report_count_drift "$CITYJSON_OUT" "$CITYJSON_OBJECTS" "$SEQ_OUT" "$SEQ_FEATURES"
+  fi
 fi
 
 if want cityparquet; then
@@ -783,7 +821,19 @@ if want flatcitybuf; then
   file_is_valid "$FCB_OUT" || { echo "error: missing/empty file: $FCB_OUT" >&2; exit 1; }
 
   FCB_INFO="$(fcb info -i "$FCB_OUT")"
-  FEATURES="$(echo "$FCB_INFO" | grep -E '^\s*Features:' | grep -oE '[0-9]+' | head -1)"
+  # `[[:space:]]`, not `\s`: `\s` is a GNU extension that POSIX ERE does not
+  # define, so BSD/macOS `grep -E` matches nothing with it — and the
+  # measurement machine (bench/READ_BENCHMARK.md's own record) is Darwin
+  # arm64, where this block therefore failed EVERY FlatCityBuf prepare.
+  #
+  # No `| head -1` either: `head` exiting early can hand `grep` a SIGPIPE,
+  # which under `set -o pipefail` aborts the script on perfectly good output
+  # (see `citygml_declared_version` above). Take the first match with a
+  # parameter expansion instead.
+  FEATURES="$(echo "$FCB_INFO" \
+    | { grep -E '^[[:space:]]*Features:' || true; } \
+    | { grep -oE '[0-9]+' || true; })"
+  FEATURES=${FEATURES%%$'\n'*}
   if [[ -z "$FEATURES" ]]; then
     echo "error: could not find a 'Features:' count in \`fcb info\` output for $FCB_OUT" >&2
     echo "$FCB_INFO" >&2
