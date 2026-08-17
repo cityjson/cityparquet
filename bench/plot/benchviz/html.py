@@ -381,19 +381,27 @@ JS = r"""
   var DATASETS = DATA.datasets;
   var FLOOR = META.citation_floor_s;
 
-  var FORMATS = ["cityparquet", "cityparquet-hilbert", "flatcitybuf",
-                 "cityjsonseq", "cityjsonseq-gz", "duckdb-parquet"];
-  var SIZE_FORMATS = ["cityparquet", "cityparquet-hilbert", "flatcitybuf",
-                      "cityjsonseq", "cityjsonseq-gz"];
+  /* The FORMAT-COMPARISON axis, from META.format_axis (mirroring the harness's
+     own Format::DEFAULT_SET): the formats a city model can ship as, one per
+     family, CityParquet as the Hilbert-ordered package it would ship as.
+     cityjsonseq-gz (a compression variant of a format already here) and
+     duckdb-parquet (an SQL-engine baseline) are not formats and are not on it —
+     a panel putting gzipped CityJSONSeq beside CityJSONSeq compares a codec.
+     Their labels stay defined for the coverage notes. */
+  var FORMATS = (META.format_axis || []).slice();
+  var SIZE_FORMATS = FORMATS.slice();
   var ABBR = {
     "cityparquet": "cpq", "cityparquet-hilbert": "cpq-h", "flatcitybuf": "fcb",
-    "cityjsonseq": "cjs", "cityjsonseq-gz": "cjs-gz", "duckdb-parquet": "ddb"
+    "cityjsonseq": "cjs", "cityjsonseq-gz": "cjs-gz", "duckdb-parquet": "ddb",
+    "citygml": "gml", "cityjson": "cj"
   };
   var SHORT = {
     "cityparquet": "CityParquet", "cityparquet-hilbert": "CityParquet (Hilbert)",
     "flatcitybuf": "FlatCityBuf", "cityjsonseq": "CityJSONSeq (baseline)",
-    "cityjsonseq-gz": "CityJSONSeq+gz", "duckdb-parquet": "DuckDB on CityParquet"
+    "cityjsonseq-gz": "CityJSONSeq+gz", "duckdb-parquet": "DuckDB on CityParquet",
+    "citygml": "CityGML", "cityjson": "CityJSON"
   };
+  var OFF_AXIS = ["cityjsonseq-gz", "duckdb-parquet"];
   var SCEN_ORDER = ["full-read", "count", "bbox-1pct", "bbox-5pct", "bbox-25pct",
                     "attr-filter", "attr-stats", "id-lookup", "project"];
 
@@ -522,6 +530,23 @@ JS = r"""
     } else if (fmt === "cityjsonseq-gz") {
       g = '<rect x="' + (x - s) + '" y="' + (y - s) + '" width="' + (2 * s) +
         '" height="' + (2 * s) + '" class="mk-gray"/>';
+    } else if (fmt === "citygml") {
+      /* star: distinct from the triangle at panel scale, and from every filled
+         round or square mark. Same shape as the print figures use. */
+      var pts = "";
+      for (var k = 0; k < 10; k++) {
+        var rr = k % 2 ? s * 0.5 : s * 1.35;
+        var aa = -Math.PI / 2 + (k * Math.PI) / 5;
+        pts += (k ? "L" : "M") + (x + rr * Math.cos(aa)).toFixed(1) + " " +
+          (y + rr * Math.sin(aa)).toFixed(1);
+      }
+      g = '<path class="mk-gray" d="' + pts + 'Z"/>';
+    } else if (fmt === "cityjson") {
+      var t = s * 0.45;
+      g = '<path class="mk-gray" d="M' + (x - t) + ' ' + (y - s) + 'h' + (2 * t) + 'v' +
+        (s - t) + 'h' + (s - t) + 'v' + (2 * t) + 'h' + (-(s - t)) + 'v' + (s - t) +
+        'h' + (-2 * t) + 'v' + (-(s - t)) + 'h' + (-(s - t)) + 'v' + (-2 * t) + 'h' +
+        (s - t) + 'Z"/>';
     } else if (fmt === "flatcitybuf") {
       g = '<path class="mk-gray" d="M' + x + ' ' + (y - s * 1.2) + 'L' + (x + s * 1.15) +
         ' ' + (y + s * 0.9) + 'L' + (x - s * 1.15) + ' ' + (y + s * 0.9) + 'Z"/>';
@@ -740,8 +765,7 @@ JS = r"""
      non-null values only, and never over an imputed one.
      ========================================================= */
 
-  var NONBASE = ["cityparquet", "cityparquet-hilbert", "flatcitybuf",
-                 "cityjsonseq-gz", "duckdb-parquet"];
+  var NONBASE = FORMATS.filter(function (f) { return f !== META.baseline; });
 
   function median(vals) {
     var v = vals.filter(function (x) { return x != null && isFinite(x); })
@@ -996,11 +1020,13 @@ JS = r"""
         "selected scenario; the faint ticks are those datasets individually, so the " +
         "spread the median summarises stays on the page."
     ];
-    notes.push(series["duckdb-parquet"][0].med == null
-      ? "DuckDB on CityParquet has no line here: it was not benchmarked on this " +
-        "scenario, and it writes no artefact of its own to size."
-      : "DuckDB on CityParquet reads the CityParquet package rather than writing an " +
-        "artefact of its own, so its line stops at the peak-RSS axis.");
+    if (series["duckdb-parquet"]) {
+      notes.push(series["duckdb-parquet"][0].med == null
+        ? "DuckDB on CityParquet has no line here: it was not benchmarked on this " +
+          "scenario, and it writes no artefact of its own to size."
+        : "DuckDB on CityParquet reads the CityParquet package rather than writing an " +
+          "artefact of its own, so its line stops at the peak-RSS axis.");
+    }
     if (fl.mostly) {
       notes.push(fl.below + " of this scenario's " + fl.n + " time deltas are inside the " +
         (FLOOR * 1000).toFixed(0) + " ms citation floor — the time axis is measuring " +
@@ -1534,15 +1560,21 @@ JS = r"""
      ========================================================= */
 
   function renderSizes() {
-    var maxFrac = 0;
+    /* A LOG axis, with the bars growing out of the 1x baseline rather than out
+       of zero. The format axis spans CityParquet at ~0.3x and CityGML at up to
+       ~25x of the same bytes, and on a linear 0-to-max scale the CityParquet
+       series — the subject of the view — collapses against the left edge. */
+    var lo = Infinity, hi = 0;
     DATA.sizes.forEach(function (s) {
-      if (s.frac_of_baseline != null && s.frac_of_baseline > maxFrac) {
-        maxFrac = s.frac_of_baseline;
-      }
+      if (s.frac_of_baseline == null) { return; }
+      if (s.frac_of_baseline < lo) { lo = s.frac_of_baseline; }
+      if (s.frac_of_baseline > hi) { hi = s.frac_of_baseline; }
     });
+    lo = Math.min(lo / 1.6, 0.5);
+    hi = Math.max(hi * 1.6, 2);
     var W = 280, ML = 52, MR = 40, rowH = 20, MT = 6;
     var pw = W - ML - MR;
-    var sx = linScale(0, maxFrac * 1.05, ML, ML + pw);
+    var sx = logScale(lo, hi, ML, ML + pw);
 
     var out = "";
     DATASETS.forEach(function (d, di) {
@@ -1559,29 +1591,30 @@ JS = r"""
         var y = MT + i * rowH + 4, bh = 10;
         var cls = r.format === "cityparquet" ? "bar accent"
           : (r.format === "cityparquet-hilbert" ? "bar accent-open" : "bar");
-        var x2 = sx(r.frac_of_baseline);
+        var x2 = sx(r.frac_of_baseline), x1 = sx(1);
+        var bx = Math.min(x1, x2), bw = Math.max(0.8, Math.abs(x2 - x1));
+        var smaller = r.frac_of_baseline < 1;
         var tipTxt = SHORT[r.format] + "\n" + d.id + "\n" + bytes(r.bytes) + " = " +
           ratio(r.frac_of_baseline) + " of the CityJSONSeq baseline (" +
           bytes(SIZES[d.id].cityjsonseq && SIZES[d.id].cityjsonseq.bytes) + ")";
         svg += '<g class="pt" tabindex="0" role="img" aria-label="' +
           esc(SHORT[r.format] + " " + ratio(r.frac_of_baseline) + " of baseline, " +
               bytes(r.bytes)) + '" data-tip="' + esc(tipTxt) + '">' +
-          '<rect class="' + cls + '" x="' + ML + '" y="' + y + '" width="' +
-          Math.max(0.8, x2 - ML).toFixed(1) + '" height="' + bh + '"/>' +
+          '<rect class="' + cls + '" x="' + bx.toFixed(1) + '" y="' + y + '" width="' +
+          bw.toFixed(1) + '" height="' + bh + '"/>' +
           '<text class="tick" x="' + (ML - 4) + '" y="' + (y + bh - 1.5) +
           '" text-anchor="end">' + esc(ABBR[r.format]) + "</text>" +
-          '<text class="tick" x="' + (x2 + 4).toFixed(1) + '" y="' + (y + bh - 1.5) + '">' +
+          '<text class="tick" x="' + (smaller ? bx - 4 : x2 + 4).toFixed(1) + '" y="' +
+          (y + bh - 1.5) + '"' + (smaller ? ' text-anchor="end"' : "") + ">" +
           esc(ratio(r.frac_of_baseline)) + "</text></g>";
       });
       svg += '<line class="axis" x1="' + ML + '" y1="' + (MT + rows.length * rowH) +
         '" x2="' + (ML + pw) + '" y2="' + (MT + rows.length * rowH) + '"/>';
-      svg += '<text class="tick" x="' + sx(1).toFixed(1) + '" y="' +
-        (MT + rows.length * rowH + 11) + '" text-anchor="middle">' +
-        (di === 0 ? "1× CityJSONSeq" : "1×") + "</text>";
-      if (di === 0) {
-        svg += '<text class="tick" x="' + ML + '" y="' + (MT + rows.length * rowH + 11) +
-          '">0</text>';
-      }
+      logTicks(lo, hi).forEach(function (t) {
+        svg += '<text class="tick" x="' + sx(t).toFixed(1) + '" y="' +
+          (MT + rows.length * rowH + 11) + '" text-anchor="middle">' +
+          esc(t === 1 && di === 0 ? "1× CityJSONSeq" : tickText(t)) + "</text>";
+      });
 
       out += '<figure class="panel"><figcaption><span class="name">' + esc(d.id) +
         '</span><span class="sub">' + esc(d.subtitle) + "</span></figcaption>" +
@@ -1846,19 +1879,47 @@ JS = r"""
         (MEASURED_SIZES[f] ? "; its on-disk size WAS measured and is in section 3" : "") +
         ".");
     });
-    var partial = [];
+    /* Gaps are grouped by format and by dataset. A format missing from every
+       scenario of six datasets is six facts, not fifty-four rows. */
     FORMATS.forEach(function (f) {
       if (!MEASURED[f] || f === META.baseline) { return; }
+      var whole = [], partial = [];
       DATASETS.forEach(function (d) {
+        var covered = 0, offered = 0;
         SCEN_ORDER.forEach(function (sc) {
           var byF = READ[d.id] && READ[d.id][sc];
-          if (byF && byF.cityjsonseq && !byF[f]) { partial.push(SHORT[f] + ": " + d.id + " / " + sc); }
+          if (!byF || !byF[META.baseline]) { return; }
+          offered++;
+          if (byF[f]) { covered++; }
         });
+        if (!offered) { return; }
+        if (!covered) { whole.push(d.id); }
+        else if (covered < offered) { partial.push(d.id + " (" + covered + "/" + offered + ")"); }
       });
+      if (whole.length) {
+        items.push("<b>" + esc(SHORT[f]) + "</b> was not measured for " + whole.length +
+          " of " + DATASETS.length + " datasets: " + esc(whole.join(", ")) +
+          ". Their cells are “–”, never zero.");
+      }
+      if (partial.length) {
+        items.push("<b>" + esc(SHORT[f]) + "</b> covers only some scenarios of " +
+          esc(partial.join(", ")) + ".");
+      }
     });
-    if (partial.length) {
-      items.push("<b>Measured for some datasets only</b>: " + esc(partial.join("; ")) +
-        ". Those cells are “–”, never zero.");
+    /* Rows a run opted into that are not on the format axis. They are measured
+       data and they stay in the JSON; what they are not is a format, so no view
+       plots them — said once here rather than left to be noticed. */
+    var offAxis = OFF_AXIS.concat(["cityparquet"]).filter(function (f) {
+      return FORMATS.indexOf(f) < 0 && (MEASURED[f] || MEASURED_SIZES[f]);
+    });
+    if (offAxis.length) {
+      items.push("<b>Measured but off the format axis</b>: " +
+        esc(offAxis.map(function (f) { return SHORT[f]; }).join(", ")) +
+        ". This page compares FORMATS a city model can ship as; a compression " +
+        "variant of a format already here, an SQL engine reading one of them, and " +
+        "the source-ordered CityParquet package (an ordering question, asked by the " +
+        "separate ordering benchmark) are different questions. Their rows are in " +
+        "the CSVs and in this page's data block, plotted nowhere.");
     }
     var noHeap = DATA.read.filter(function (r) { return r.heap_b == null; }).length;
     if (noHeap) {

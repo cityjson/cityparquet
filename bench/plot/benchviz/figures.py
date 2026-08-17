@@ -144,31 +144,59 @@ FORMAT_STYLE: dict[str, dict[str, Any]] = {
         "code": "DDB",
         "label": "duckdb-parquet",
     },
+    "citygml": {
+        "marker": "*",
+        "filled": True,
+        "color": GRAY,
+        "code": "GML",
+        "label": "citygml",
+    },
+    "cityjson": {
+        "marker": "P",
+        "filled": True,
+        "color": GRAY,
+        "code": "CJ",
+        "label": "cityjson",
+    },
 }
 
-# Plot order: the two CityParquet variants first (they are the subject), the
-# baseline last so its cross is drawn on top of the reference lines.
-FORMAT_ORDER = [
-    "cityparquet",
+# What the views plot: the FORMAT-COMPARISON axis of
+# `Format::DEFAULT_SET` (crates/cityparquet-readbench/src/format.rs) — the
+# formats a city model can ship as, one tag per family, CityParquet represented
+# by the Hilbert-ordered package it would actually ship as.
+#
+# `cityjsonseq-gz` and `duckdb-parquet` are NOT here on purpose: a compression
+# variant and an SQL-engine baseline are not formats, and putting either on a
+# format axis answers a different question than the one the figure asks. They
+# keep their marker vocabulary for an opt-in run's footnotes.
+FORMAT_AXIS = [
     "cityparquet-hilbert",
-    "cityjsonseq-gz",
+    "citygml",
+    "cityjson",
+    "cityjsonseq",
     "flatcitybuf",
-    "duckdb-parquet",
+]
+# Plot order: CityParquet first (it is the subject), the baseline last so its
+# cross is drawn on top of the reference lines.
+FORMAT_ORDER = [
+    "cityparquet-hilbert",
+    "citygml",
+    "cityjson",
+    "flatcitybuf",
     "cityjsonseq",
 ]
 HEATMAP_FORMATS = [
-    "cityparquet",
     "cityparquet-hilbert",
+    "citygml",
+    "cityjson",
     "cityjsonseq",
-    "cityjsonseq-gz",
     "flatcitybuf",
-    "duckdb-parquet",
 ]
 SIZE_FORMATS = [
-    "cityparquet",
     "cityparquet-hilbert",
+    "citygml",
+    "cityjson",
     "cityjsonseq",
-    "cityjsonseq-gz",
     "flatcitybuf",
 ]
 
@@ -465,6 +493,23 @@ def _footer(fig: Figure, lines: Sequence[str], y: float = 0.008) -> None:
         ha="left",
         linespacing=1.55,
     )
+
+
+def _footer_reserve(fig: Figure, lines: Sequence[str], floor: float) -> float:
+    """The bottom margin the footer needs, in figure fractions.
+
+    The footer is anchored to the bottom of the sheet and grows upward, while
+    the panel grid grows downward: on a five-row sheet with a footer of derived
+    notes the two met, and the last row of panels was printed through. Measuring
+    the wrapped footer before laying the panels out is what keeps them apart, at
+    any corpus size and any number of notes.
+    """
+    max_in = fig.get_figwidth() - 0.15
+    count = 0
+    for line in lines:
+        count += len(_fit_wrap(fig, line, FS_FOOTER, max_in) or [""])
+    height = count * FS_FOOTER * 1.55 / 72.0 / fig.get_figheight()
+    return max(floor, 0.012 + height + 0.022)
 
 
 def _headline(fig: Figure, title: str, subtitle: str) -> float:
@@ -766,20 +811,36 @@ def pareto(
     xlim = (min(xs_all) / 1.7, max(xs_all) * 1.7)
     ylim = (min(ys_all) / 1.35, max(ys_all) * 1.35)
 
+    dagger = "†" if scenario in GRAIN_DAGGER else ""
+
     rows_n, cols_n, figsize = _sheet(len(datasets) + 1, 6.8 / 3)
     fig, axes = plt.subplots(rows_n, cols_n, figsize=figsize, sharex=True, sharey=True)
     head_bottom = _headline(fig, *headline)
+    footer = [
+        f"Baseline = cityjsonseq, at (1×, 1×) in every panel; axes share limits "
+        f"across panels. Scenario: {scenario}{dagger}. Memory = peak RSS "
+        "(platform units cancel in the ratio).",
+        "Shaded band = the benchmark's own 10 ms citation floor, ±(10 ms ÷ that "
+        "dataset's baseline time): points inside it are indistinguishable from "
+        "the baseline, so their horizontal position is noise.",
+    ]
+    if omitted := _omitted_note(FORMAT_ORDER, order):
+        footer.append(omitted)
+    if note := _reader_note(order):
+        footer.extend(_wrap(note, 150))
+    if dagger and (note := _grain_note(data, order)):
+        footer.extend(_wrap(note, 150))
+    bottom = _footer_reserve(fig, footer, 0.165)
     fig.subplots_adjust(
         left=0.085,
         right=0.988,
         top=min(0.845, head_bottom - 0.055),
-        bottom=0.165,
+        bottom=bottom,
         wspace=0.24,
         hspace=0.72,
     )
     flat = axes.ravel()
 
-    dagger = "†" if scenario in GRAIN_DAGGER else ""
     for ax, ds in zip(flat, datasets, strict=False):
         ax.set_xscale("log")
         ax.set_yscale("log")
@@ -892,7 +953,7 @@ def pareto(
 
     fig.text(
         0.53,
-        0.118,
+        bottom - 0.047,
         "read time ÷ CityJSONSeq read time (log)",
         fontsize=FS_LABEL,
         family="serif",
@@ -910,25 +971,6 @@ def pareto(
         va="center",
     )
 
-    footer = [
-        f"Baseline = cityjsonseq, at (1×, 1×) in every panel; axes share limits "
-        f"across panels. Scenario: {scenario}{dagger}. Memory = peak RSS "
-        "(platform units cancel in the ratio).",
-        "Shaded band = the benchmark's own 10 ms citation floor, ±(10 ms ÷ that "
-        "dataset's baseline time): points inside it are indistinguishable from "
-        "the baseline, so their horizontal position is noise.",
-        "duckdb-parquet, where measured, runs out of process and carries ~0.06 s "
-        "of un-subtracted start-up time, which dominates its position on the small "
-        "datasets.",
-    ]
-    if omitted := _omitted_note(FORMAT_ORDER, order):
-        footer.append(omitted)
-    if dagger:
-        footer.append(
-            "† grain-incomparable: for this scenario cityjsonseq(+gz) and "
-            "flatcitybuf count top-level features while CityParquet counts one row "
-            "per CityObject, so the two sides do not do identical work."
-        )
     _footer(fig, footer)
     return _save(fig, name, out_dir)
 
@@ -970,11 +1012,29 @@ def heatmap(
     )
     fig, axes = plt.subplots(rows_n, cols_n, figsize=figsize)
     head_bottom = _headline(fig, *headline)
+    footer = [
+        "Every cell is a ratio against the cityjsonseq baseline row for the same "
+        "dataset and scenario; the baseline column (SEQ) is 1× by construction. "
+        "Colour saturates beyond 1/256× and 256× — read the printed value, "
+        "never the colour alone.",
+        *_wrap(
+            _grain_note(data, fmts)
+            + " attr-filter, attr-stats, id-lookup and project are"
+            " CityObject-granular in every format and are the comparable rows.",
+            150,
+        ),
+        *_wrap(_reader_note(fmts), 150),
+        "id-lookup samples a table-order-first identifier, which favours scanning "
+        "formats. An empty cell is a scenario the run did not measure for that "
+        "dataset, never a zero.",
+        *_wrap(_missing_note(data), 150),
+        *_wrap(_omitted_note(HEATMAP_FORMATS, fmts), 150),
+    ]
     fig.subplots_adjust(
         left=0.115,
         right=0.99,
         top=min(0.895, head_bottom - 0.075),
-        bottom=0.088,
+        bottom=_footer_reserve(fig, footer, 0.088),
         wspace=0.20,
         hspace=0.46,
     )
@@ -1152,25 +1212,7 @@ def heatmap(
     for ax in flat[n + 1 :]:
         ax.set_visible(False)
 
-    _footer(
-        fig,
-        [
-            "Every cell is a ratio against the cityjsonseq baseline row for the same "
-            "dataset and scenario; the baseline column (SEQ) is 1× by construction. "
-            "Colour saturates beyond 1/256× and 256× — read the printed value, "
-            "never the colour alone.",
-            "† full-read / count / bbox-* compare feature-grain formats "
-            "(cityjsonseq, cityjsonseq-gz, flatcitybuf) against CityObject-grain "
-            "CityParquet; attr-filter, attr-stats, id-lookup and project are "
-            "CityObject-granular in every format and are the comparable rows.",
-            "id-lookup samples a table-order-first identifier, which favours scanning "
-            "formats. duckdb-parquet, where measured, carries ~0.06 s of un-subtracted "
-            "process start-up. An empty cell is a scenario the run did not measure for "
-            "that dataset, never a zero.",
-            *_wrap(_missing_note(data), 150),
-            *_wrap(_omitted_note(HEATMAP_FORMATS, fmts), 150),
-        ],
-    )
+    _footer(fig, footer)
     return _save(fig, "heatmap", out_dir)
 
 
@@ -1193,16 +1235,35 @@ def sizes(
         raise DataContractError("bench_data.json carries no usable size rows.")
 
     size_fmts = _present_sizes(data, SIZE_FORMATS)
-    xmax = max(max(v.values()) for v in by_dataset.values()) * 1.32
+    fracs = [v for row in by_dataset.values() for v in row.values()]
+    # A LOG axis with the bars growing OUT OF the 1x baseline, not out of zero.
+    # The axis spans CityParquet at ~0.3x and CityGML at up to ~25x of the same
+    # bytes: on a linear 0-to-max axis the whole CityParquet series — the subject
+    # of the figure — collapses into a sliver against the panel edge, and the
+    # tick labels of a 0/0.5/1 scale overprint each other. Anchoring at 1x also
+    # matches what a ratio bar means: distance from the baseline, left or right.
+    xlo = min(min(fracs) / 1.6, 0.5)
+    xhi = max(max(fracs) * 1.6, 2.0)
 
     rows_n, cols_n, figsize = _sheet(len(datasets) + 1, 6.0 / 3)
     fig, axes = plt.subplots(rows_n, cols_n, figsize=figsize, sharex=True)
     head_bottom = _headline(fig, *headline)
+    footer = [
+        "Baseline = the uncompressed CityJSONSeq artefact for the same dataset "
+        "(1×); bars grow out of that reference line — left is smaller on disk, "
+        "right is larger. Shared logarithmic x scale across all panels.",
+        "duckdb-parquet is absent: it reads the CityParquet artefact rather than "
+        "writing one of its own, so it has no size to report. Sizes are a pure "
+        "artefact property — no timing, so the 10 ms citation floor does not "
+        "apply here.",
+        *_wrap(_omitted_note(SIZE_FORMATS, size_fmts), 150),
+    ]
+    bottom = _footer_reserve(fig, footer, 0.155)
     fig.subplots_adjust(
         left=0.075,
         right=0.99,
         top=min(0.845, head_bottom - 0.055),
-        bottom=0.155,
+        bottom=bottom,
         wspace=0.36,
         hspace=0.80,
     )
@@ -1215,7 +1276,8 @@ def sizes(
         entries = sorted(
             ((f, rows[f]) for f in size_fmts if f in rows), key=lambda kv: kv[1]
         )
-        ax.set_xlim(0, xmax)
+        ax.set_xscale("log")
+        ax.set_xlim(xlo, xhi)
         if not entries:
             _no_data(ax)
             for spine in ax.spines.values():
@@ -1232,23 +1294,36 @@ def sizes(
                 color, alpha = ACCENT, 0.5
             else:
                 color, alpha = "#b9b9ae", 1.0
-            ax.barh([y], [frac], height=0.62, color=color, alpha=alpha, linewidth=0)
+            left, width = (frac, 1.0 - frac) if frac < 1.0 else (1.0, frac - 1.0)
+            ax.barh(
+                [y],
+                [width],
+                left=[left],
+                height=0.62,
+                color=color,
+                alpha=alpha,
+                linewidth=0,
+            )
+            smaller = frac < 1.0
             ax.text(
-                frac + xmax * 0.03,
+                frac / 1.12 if smaller else frac * 1.12,
                 y,
                 f"{frac:.2f}×",
-                fontsize=4.8,
+                fontsize=FS_MARK * 0.9,
                 family="sans-serif",
                 color=INK_2,
                 va="center",
+                ha="right" if smaller else "left",
             )
         ax.axvline(1.0, color=AXIS, linewidth=0.5, zorder=0)
         ax.set_yticks(ys)
         ax.set_yticklabels([FORMAT_STYLE[f]["code"] for f in (e[0] for e in entries)])
         ax.set_ylim(-0.8, len(entries) - 0.2)
-        ax.set_xticks([0, 0.5, 1.0])
-        ax.set_xticklabels(["0", "0.5×", "1×"])
-        _range_frame(ax, [0, max(e[1] for e in entries)], [])
+        ticks = _log_ticks(xlo, xhi)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([_ratio_tick(t) for t in ticks])
+        ax.minorticks_off()
+        _range_frame(ax, [xlo, xhi], [])
         # the bar labels are the y axis here: no left spine, no y tick marks
         ax.spines["left"].set_visible(False)
         ax.tick_params(axis="y", length=0)
@@ -1321,26 +1396,14 @@ def sizes(
 
     fig.text(
         0.53,
-        0.105,
+        bottom - 0.05,
         "on-disk size ÷ CityJSONSeq size",
         fontsize=FS_LABEL,
         family="serif",
         color=INK_2,
         ha="center",
     )
-    _footer(
-        fig,
-        [
-            "Baseline = the uncompressed CityJSONSeq artefact for the same dataset "
-            "(1×); bars below 1× are smaller on disk. Shared x scale across all "
-            "panels.",
-            "duckdb-parquet is absent: it reads the CityParquet artefact rather than "
-            "writing one of its own, so it has no size to report. Sizes are a pure "
-            "artefact property — no timing, so the 10 ms citation floor does not "
-            "apply here.",
-            *_wrap(_omitted_note(SIZE_FORMATS, size_fmts), 150),
-        ],
-    )
+    _footer(fig, footer)
     return _save(fig, "sizes", out_dir)
 
 
@@ -1379,11 +1442,22 @@ def compression(
     )
     fig, axes = plt.subplots(rows_n, cols_n, figsize=figsize, sharex=True, sharey=True)
     head_bottom = _headline(fig, *headline)
+    footer = _wrap(data["meta"]["codec_level_note"], 150)
+    gaps = data.get("compression_gaps", [])
+    if gaps:
+        footer += _wrap(
+            "Flagged in this run: "
+            + "; ".join(f"{g['dataset']} — {g['issue']}" for g in gaps)
+            + ". A failed round-trip is drawn grey and badged; a dataset with no "
+            "rows has no panel. Both are named here rather than dropped silently.",
+            150,
+        )
+    bottom = _footer_reserve(fig, footer, 0.165)
     fig.subplots_adjust(
         left=0.085,
         right=0.99,
         top=min(0.855, head_bottom - 0.055),
-        bottom=0.165,
+        bottom=bottom,
         wspace=0.20,
         hspace=0.55,
     )
@@ -1534,7 +1608,7 @@ def compression(
 
     fig.text(
         0.53,
-        0.112,
+        bottom - 0.053,
         "write time ÷ default write time",
         fontsize=FS_LABEL,
         family="serif",
@@ -1552,17 +1626,7 @@ def compression(
         va="center",
     )
 
-    note = _wrap(data["meta"]["codec_level_note"], 150)
-    gaps = data.get("compression_gaps", [])
-    if gaps:
-        note += _wrap(
-            "Flagged in this run: "
-            + "; ".join(f"{g['dataset']} — {g['issue']}" for g in gaps)
-            + ". A failed round-trip is drawn grey and badged; a dataset with no "
-            "rows has no panel. Both are named here rather than dropped silently.",
-            150,
-        )
-    _footer(fig, note)
+    _footer(fig, footer)
     return _save(fig, "compression", out_dir)
 
 
@@ -1582,13 +1646,18 @@ def compression(
 
 
 def _primary_cityparquet(data: dict[str, Any]) -> str:
-    """The CityParquet series a run actually measured on the read path.
+    """The CityParquet series the sentences are about.
 
-    A run may carry the source-ordered package, the Hilbert-ordered one, or
-    both; whichever is present is what the sentences are about.
+    The Hilbert-ordered package where a run carries it: that is the
+    configuration `Format::DEFAULT_SET` puts on the format axis, so that the
+    format comparison is not handicapped by an ordering choice no other format
+    faces. A run that measured only the source-ordered package (an
+    ordering-comparison run) falls back to it.
     """
     present = {r["format"] for r in data["read"] if r["time_ratio"] is not None}
-    return "cityparquet" if "cityparquet" in present else "cityparquet-hilbert"
+    if "cityparquet-hilbert" in present:
+        return "cityparquet-hilbert"
+    return "cityparquet"
 
 
 def _stats(data: dict[str, Any], scenario: str, fmt: str) -> dict[str, Any] | None:
@@ -1686,6 +1755,40 @@ def _missing_note(data: dict[str, Any]) -> str:
     return "Not measured in this run: " + "; ".join(parts) + "."
 
 
+def _grain_note(data: dict[str, Any], present: Sequence[str]) -> str:
+    """Which of the plotted formats count features and which count CityObjects.
+
+    Straight from READ_BENCHMARK.md fairness caveat 1's own table (carried in
+    `meta`), because the split is per format and changes with the axis: naming
+    the two sides by hand is how a footnote came to cite `cityjsonseq-gz`, a
+    format the views no longer plot.
+    """
+    meta = data["meta"]
+    feature = [f for f in present if f in meta.get("feature_grain_formats", [])]
+    objects = [f for f in present if f in meta.get("object_grain_formats", [])]
+    if not feature or not objects:
+        return ""
+    return (
+        "† grain-incomparable in this scenario: "
+        + ", ".join(feature)
+        + " count top-level features (children inline) while "
+        + ", ".join(objects)
+        + " count one row per CityObject, so the two sides do not do identical work."
+    )
+
+
+def _reader_note(present: Sequence[str]) -> str:
+    """The citygml row's own caveat, said on any sheet that plots it."""
+    if "citygml" not in present:
+        return ""
+    return (
+        "The citygml row measures THIS repository's CityGML reader, not CityGML's "
+        "ceiling: the constant factor is ours, the linear term is the format's — a "
+        "published .gml carries no index, so any reader must traverse the document "
+        "(caveat 12)."
+    )
+
+
 def _pareto_headline(
     data: dict[str, Any], scenario: str, label: str
 ) -> tuple[str, str]:
@@ -1756,9 +1859,8 @@ def _heatmap_headline(data: dict[str, Any]) -> tuple[str, str]:
 
 
 def _sizes_headline(data: dict[str, Any]) -> tuple[str, str]:
-    cp = _size_median(data, "cityparquet") or _size_median(data, "cityparquet-hilbert")
-    gz = _size_median(data, "cityjsonseq-gz")
-    fcb = _size_median(data, "flatcitybuf")
+    primary = _primary_cityparquet(data)
+    cp = _size_median(data, primary) or _size_median(data, "cityparquet")
     if cp is None:
         return (
             "On-disk footprint against the CityJSONSeq baseline",
@@ -1773,14 +1875,14 @@ def _sizes_headline(data: dict[str, Any]) -> tuple[str, str]:
         f"Fraction of the uncompressed CityJSONSeq artefact, {_corpus_phrase(data)}, "
         "sorted per panel, shorter is smaller."
     ]
-    if gz:
-        smaller = "smaller still" if gz[0] < median else "larger"
-        parts.append(
-            f"gzipped CityJSONSeq is {smaller} at a median {_times(gz[0])} — but it is "
-            "not queryable without a full decompression pass."
-        )
-    if fcb:
-        parts.append(f"flatcitybuf sits at a median {_times(fcb[0])}.")
+    others = [
+        (f, _size_median(data, f))
+        for f in SIZE_FORMATS
+        if f not in (primary, "cityjsonseq")
+    ]
+    stated = [f"{f} at a median {_times(m[0])}" for f, m in others if m]
+    if stated:
+        parts.append("The other formats on the axis: " + "; ".join(stated) + ".")
     note = _density_note(data)
     return title + ".", " ".join(parts) + (f" {note}" if note else "")
 

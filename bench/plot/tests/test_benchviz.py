@@ -11,6 +11,7 @@ No test renders the HTML or the figures — that needs matplotlib and tens of
 seconds; `just plot-pretty` is the check for those.
 """
 
+import re
 import shutil
 from pathlib import Path
 
@@ -162,6 +163,68 @@ def test_figures_refuse_a_corpus_larger_than_their_panel_grid(tmp_path):
 
     with pytest.raises(SystemExit, match="panel grid"):
         figures.main(data_path=data_path, out_dir=tmp_path / "figures")
+
+
+def _rust_format_set(name: str) -> list[str]:
+    """A `Format::*_SET` const, read out of the harness's own source.
+
+    `format.rs` is the authority on what a benchmark run measures and why, and
+    it states the reasoning in full: one tag per format family on the format
+    axis, with `cityjsonseq-gz` (a compression variant of a format already in
+    the set) and `duckdb-parquet` (an SQL-engine baseline) opt-in because
+    neither is a format. Restating that list here is how the views would come to
+    plot a different comparison than the CSVs answer.
+    """
+    src = (LIVE_BENCH_DIR.parent / "crates/cityparquet-readbench/src/format.rs").read_text()
+    body = re.search(rf"pub const {name}: \[Format; \d+\] = \[(.*?)\];", src, re.S)
+    assert body, f"could not find {name} in format.rs"
+    tags = re.findall(r"Format::(\w+)", body.group(1))
+    # `Format::as_str` is the authority on the CSV/CLI spelling of each variant
+    # (CityJsonSeq is "cityjsonseq", not "cityjson-seq"), so read it rather than
+    # deriving one from the variant name.
+    spelling = dict(re.findall(r'Format::(\w+) => "([a-z0-9-]+)"', src))
+    return [spelling[t] for t in tags]
+
+
+def test_the_views_plot_the_format_axis_the_harness_measures():
+    from benchviz import figures
+
+    axis = _rust_format_set("DEFAULT_SET")
+    assert axis, "no DEFAULT_SET parsed"
+    for fmt in axis:
+        assert fmt in prep.KNOWN_FORMATS, f"{fmt} would be excluded by prep"
+        assert fmt in figures.FORMAT_STYLE, f"{fmt} has no marker/colour"
+        assert fmt in figures.FORMAT_ORDER, f"{fmt} is missing from the Pareto panels"
+        assert fmt in figures.HEATMAP_FORMATS, f"{fmt} is missing from the heatmap columns"
+
+    # The opt-in tags are not formats, so they must not sit on a format axis —
+    # plotting gzipped CityJSONSeq beside CityJSONSeq compares a codec, not a
+    # format, and DuckDB compares an engine.
+    for fmt in ("cityjsonseq-gz", "duckdb-parquet"):
+        assert fmt not in figures.FORMAT_ORDER
+        assert fmt not in figures.HEATMAP_FORMATS
+        assert fmt not in figures.SIZE_FORMATS
+
+
+def test_cityparquet_is_represented_by_the_configuration_the_axis_names():
+    """On the format axis CityParquet is the Hilbert-ordered package.
+
+    `DEFAULT_SET` says so — the format comparison must not be handicapped by an
+    ordering choice no other format faces, and ordering is asked separately by
+    `ORDERING_SET`. So where a run carries both packages, the sentences are
+    about the Hilbert one.
+    """
+    from benchviz import figures
+
+    assert "cityparquet-hilbert" in _rust_format_set("DEFAULT_SET")
+    assert _rust_format_set("ORDERING_SET") == ["cityparquet", "cityparquet-hilbert"]
+    data = {
+        "read": [
+            {"format": "cityparquet", "time_ratio": 1.0},
+            {"format": "cityparquet-hilbert", "time_ratio": 1.0},
+        ]
+    }
+    assert figures._primary_cityparquet(data) == "cityparquet-hilbert"
 
 
 @pytest.mark.parametrize(

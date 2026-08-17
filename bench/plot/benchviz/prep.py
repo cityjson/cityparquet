@@ -73,11 +73,50 @@ BASELINE_FORMAT = "cityjsonseq"
 CITATION_FLOOR_S = 0.010
 
 KNOWN_FORMATS = (
+    "citygml",
+    "cityjson",
     "cityjsonseq",
     "cityjsonseq-gz",
     "cityparquet",
     "cityparquet-hilbert",
     "duckdb-parquet",
+    "flatcitybuf",
+)
+
+# The FORMAT-COMPARISON axis, mirroring `Format::DEFAULT_SET`
+# (crates/cityparquet-readbench/src/format.rs): one tag per format family, with
+# CityParquet represented by the Hilbert-ordered package — the configuration
+# that would actually ship, so the comparison is not handicapped by an ordering
+# choice no other format faces. Ordering is its own question, asked by
+# `Format::ORDERING_SET` over bench/ordering_results.
+#
+# `cityjsonseq-gz` and `duckdb-parquet` are deliberately absent: the first is a
+# compression variant of a format already on the axis, the second an SQL-engine
+# baseline. Neither is a format, so neither belongs on a format axis — a panel
+# putting gzipped CityJSONSeq beside CityJSONSeq compares a codec, not a format.
+# Rows for them still reach `bench_data.json` when a run opts in; the views omit
+# them and say so.
+FORMAT_AXIS = (
+    "cityparquet-hilbert",
+    "citygml",
+    "cityjson",
+    "cityjsonseq",
+    "flatcitybuf",
+)
+
+# Counting grain, from READ_BENCHMARK.md fairness caveat 1's own table. Only
+# `count`/`full-read`/`bbox-*` split this way; the other scenarios are
+# CityObject-granular in every format.
+OBJECT_GRAIN_FORMATS = (
+    "cityparquet",
+    "cityparquet-hilbert",
+    "cityjson",
+    "duckdb-parquet",
+)
+FEATURE_GRAIN_FORMATS = (
+    "citygml",
+    "cityjsonseq",
+    "cityjsonseq-gz",
     "flatcitybuf",
 )
 
@@ -649,6 +688,9 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
             "caveats_compression": compression_caveats(inputs),
             "codec_level_note": CODEC_LEVEL_NOTE,
             "citation_floor_s": CITATION_FLOOR_S,
+            "format_axis": list(FORMAT_AXIS),
+            "object_grain_formats": list(OBJECT_GRAIN_FORMATS),
+            "feature_grain_formats": list(FEATURE_GRAIN_FORMATS),
             "excluded_formats": excluded.as_list(),
         },
         "datasets": datasets,
