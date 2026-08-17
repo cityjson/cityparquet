@@ -1,7 +1,7 @@
 [project]
 name = "readbench-plot"
 version = "0.1.0"
-description = "Chart the cityparquet-rs cross-format read-benchmark result CSVs."
+description = "Chart the cityparquet-rs benchmark result CSVs (readbench_plot + benchviz)."
 requires-python = ">=3.11"
 dependencies = [
     "matplotlib>=3.9",
@@ -13,6 +13,14 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 readbench-plot = "readbench_plot.__main__:main"
+
+# Two packages, one project: `readbench_plot` renders the per-dataset charts of
+# a single run (`just plot`), `benchviz` renders the cross-dataset summary page
+# and the static paper figures (`just plot-pretty`). They read the same CSVs and
+# `benchviz`'s dependencies are a subset of these, so a second uv project would
+# only buy a second lockfile to keep in step.
+[tool.hatch.build.targets.wheel]
+packages = ["readbench_plot", "benchviz"]
 
 [dependency-groups]
 dev = [
@@ -40,6 +48,15 @@ select = [
     "SIM",
     "UP",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# The typographic characters ARE the content here: "x" multiplication signs,
+# em dashes and "~" in axis labels, panel captions and page copy. RUF001 reads
+# every one of them as a homoglyph typo.
+"benchviz/*.py" = ["RUF001"]
+# html.py embeds the page's CSS and HTML as literal blocks; rewrapping those
+# lines to 100 columns would reformat the generated page, not this source.
+"benchviz/html.py" = ["E501", "RUF001"]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -40,6 +40,10 @@ target
 # committed inputs are the CSVs under bench/read_results/, not these PNGs.
 /bench/**/plots/
 
+# `just plot-pretty` output (bench_data.json, bench-summary.html, figures/):
+# all three are derived from the committed CSVs and regenerate in seconds.
+/bench/summary/
+
 # bench/plot/'s own uv-managed venv + Python bytecode cache — its source
 # (pyproject.toml, *.py, uv.lock) IS committed.
 /bench/plot/.venv/

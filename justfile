@@ -509,6 +509,29 @@ compression-plot RESULTS='bench/compression_results':
 plot RESULTS='bench/read_results':
     uv run --project bench/plot python -m readbench_plot {{RESULTS}}
 
+# The CROSS-DATASET view of the SAME already-measured CSVs: one self-contained
+# `bench-summary.html` (every dataset and every format on one page, as ratios
+# against the CityJSONSeq baseline, with the fairness caveats quoted verbatim
+# from bench/READ_BENCHMARK.md at generation time) plus the static print figures
+# the paper embeds. Written under OUT (default bench/summary/, gitignored).
+#
+# Measures nothing — it reads what `bench`, `compression-bench` and `sizes` left
+# behind, so it is the recipe to run after a benchmark, or after editing the
+# renderers, and re-running it is free. `plot` (above) stays the per-dataset
+# view of one run; this is the comparison across runs' datasets. Needs `uv`.
+#
+# The FIGURES STEP IS ALLOWED TO FAIL and says why: those five figures are
+# hand-laid print sheets with room for 11 dataset panels, and each asserts its
+# finding in a written caption tied to the corpus it was drawn from. A corpus
+# that outgrows the grid needs a layout decision and revised captions, not a
+# silent stretch — the HTML page has no such limit and still covers everything.
+# See bench/plot/benchviz/DESIGN.md for the data contract and honesty rules.
+plot-pretty OUT='bench/summary':
+    uv run --project bench/plot python -m benchviz prep --out {{OUT}}
+    uv run --project bench/plot python -m benchviz html --out {{OUT}}
+    uv run --project bench/plot python -m benchviz figures --out {{OUT}} \
+        || echo "figures skipped (see the message above; the HTML page is written)"
+
 # Render the file-size / compression-ratio report from PREPARED_DIR (default
 # bench/data/readbench, the same per-format artefacts `readbench_prepare.sh`
 # populates): OUT/sizes.csv (dataset, format, bytes, mb,
