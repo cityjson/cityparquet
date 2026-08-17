@@ -56,10 +56,12 @@ calls the same code with its own `--html`/`--figures` destinations.
    bench/README.md. The codec view carries this inline, phrased as sourced from
    implementation defaults, and the section is visually de-emphasized:
    "smallest codec" is not a citable claim.
-6. **Ingolstadt compression: all 8 rows `roundtrip_equal=false`** (undocumented
-   gap). Its codec panel renders grayed-out with a "roundtrip FAILED — not
-   citable" badge. **Railway compression CSV is header-only** — rendered as an
-   explicit empty-panel note, not silently dropped.
+6. **Round-trip failures and empty inputs are shown, not dropped.** A dataset
+   whose compression rows are all `roundtrip_equal=false` renders grayed-out
+   with a "roundtrip FAILED — not citable" badge; a header-only CSV becomes an
+   explicit empty-panel note. A corpus with no compression run at all (the
+   compression benchmark is a separate, slower pass) says so where the panels
+   would be, and the compression figure is skipped rather than drawn empty.
 7. **Verbatim caveats**: the page quotes every one of READ_BENCHMARK.md's
    fairness caveats (11 when this was written, 18 today) and
    README.md's "Baseline geometry coverage" section verbatim at generation time
@@ -201,11 +203,11 @@ requested).
 3. **On-disk size grid**. 11 panels; horizontal bars of `frac_of_baseline`
    sorted ascending, reference line at 1×, cityparquet accented, shared x
    scale, value labels ("0.38×"). 5 formats (no duckdb-parquet — no artefact).
-4. **Compression codec grid** (de-emphasized styling). 8 populated panels;
-   x = write_ratio, y = size_ratio, default variant at (1,1) cross;
+4. **Compression codec grid** (de-emphasized styling), one panel per measured
+   dataset; x = write_ratio, y = size_ratio, default variant at (1,1) cross;
    codecs = filled markers, row-group variants = open markers (different
-   axis of variation, same plot, distinguished); Ingolstadt grayed + badge;
-   Railway/Rotterdam explicit notes. Codec-level caveat inline above the grid.
+   axis of variation, same plot, distinguished); round-trip failures grayed +
+   badged, gaps named in the key. Codec-level caveat inline above the grid.
    Roundtrip status: one sentence + per-dataset ✓/✗ strip, no chart.
 
 Page order: Title (finding-asserting) → How to read this page (conventions,
@@ -235,8 +237,15 @@ bench/summary/              # generated: JSON + page + figures (gitignored)
   JS module from embedded JSON; no external requests; works from file://.
 - Static figures: `pareto-full-read`, `pareto-bbox-5pct`, `heatmap`, `sizes`,
   `compression` as `.svg` + `.png` (Typst cannot embed PDF). 300 dpi PNG.
-  Their grids hold 11 dataset panels (8 for compression) and their captions
-  assert findings in prose written for one corpus, so `figures` refuses a run
-  that outgrows them rather than stretching the layout or keeping stale
-  sentences; the HTML page has no such limit. Re-fitting them is a deliberate
-  figure-design step: `figures.MAX_PANELS` and the four `plt.subplots` grids.
+- **Nothing in a figure is typed by hand about the data.** Every headline
+  sentence, count and median is computed from the run being plotted, and the
+  comparative words ("faster than", "at parity with") come from the same
+  numbers; a format the run did not measure gets no marker slot, no key row and
+  no column, and is named in the footer instead. Hand-typed findings held
+  exactly until the next benchmark run, which is how the first edition came to
+  assert one corpus's medians over another corpus's marks.
+- The grids grow to a 5x5 sheet (four columns while the corpus still fits the
+  shape they were drawn at) and refuse anything past 24 datasets: past that the
+  panels carry neither values nor a pattern, and the answer is a different
+  figure. Denser grids scale the panel type down and say on the sheet that the
+  panels are to be read as a pattern, with exact values in the HTML tables.

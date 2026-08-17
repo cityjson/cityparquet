@@ -1,9 +1,0 @@
-dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
-Montreal.city.jsonl,cityparquet,294,0.168624,1765359,1757742,7432,0.006273,0.006046,1,1,true
-Montreal.city.jsonl,cityparquet+uncompressed,294,0.165669,11335659,11328042,7432,0.002556,0.003052,1,1,true
-Montreal.city.jsonl,cityparquet+snappy,294,0.207932,3035827,3028210,7432,0.008333,0.007266,1,1,true
-Montreal.city.jsonl,cityparquet+gzip,294,0.329173,1778724,1771107,7432,0.010651,0.011489,1,1,true
-Montreal.city.jsonl,cityparquet+lz4,294,0.167243,3062840,3055223,7432,0.003764,0.003537,1,1,true
-Montreal.city.jsonl,cityparquet+brotli,294,0.169068,1900637,1893020,7432,0.018550,0.018633,1,1,true
-Montreal.city.jsonl,cityparquet+rg512,294,0.160814,1765359,1757742,7432,0.006231,0.006723,1,1,true
-Montreal.city.jsonl,cityparquet+rg4096,294,0.159184,1765359,1757742,7432,0.005852,0.005851,1,1,true

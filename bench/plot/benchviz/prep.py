@@ -68,6 +68,7 @@ class Inputs:
         except ValueError:  # a --bench-dir outside its own parent: bare path
             return str(path)
 
+
 BASELINE_FORMAT = "cityjsonseq"
 CITATION_FLOOR_S = 0.010
 
@@ -117,8 +118,6 @@ COMPRESSION_COLUMNS = [
 
 BBOX_NOTE_RE = re.compile(r"^bbox-\d+pct$")
 COLD_RE = re.compile(r"\bcold\b", re.IGNORECASE)
-
-ROTTERDAM_GAP_NOTE = "excluded per CORPUS_REPORT (material index error)"
 
 CODEC_LEVEL_NOTE = (
     "Codec levels are mismatched across the compression variants: zstd is "
@@ -494,17 +493,18 @@ def _compression_kind(variant: str) -> str:
     return "codec"
 
 
-def load_compression(
-    inputs: Inputs,
-    known_datasets: set[str],
-) -> tuple[list[dict], list[dict]]:
+def load_compression(inputs: Inputs) -> tuple[list[dict], list[dict]]:
+    """Compression records and the gaps worth stating.
+
+    A corpus with no compression run at all is normal, not an error: the
+    compression benchmark is a separate, much slower pass over the same inputs.
+    Both renderers say so where the view would have been.
+    """
     records: list[dict] = []
     gaps: list[dict] = []
-    seen: set[str] = set()
 
     for path in _dataset_csvs(inputs.compression_dir):
         dataset = path.stem
-        seen.add(dataset)
         rows = _read_rows(path, COMPRESSION_COLUMNS)
         if not rows:
             gaps.append(
@@ -542,9 +542,6 @@ def load_compression(
                     "roundtrip": _bool(row["roundtrip_equal"]),
                 }
             )
-
-    if "Rotterdam" in known_datasets and "Rotterdam" not in seen:
-        gaps.append({"dataset": "Rotterdam", "issue": ROTTERDAM_GAP_NOTE})
 
     gaps.sort(key=lambda g: g["dataset"])
     return records, gaps
@@ -623,8 +620,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     read_records, anomalies = load_read(inputs, excluded)
     size_records, raw_mb = load_sizes(inputs, excluded)
     datasets = build_datasets(read_records, raw_mb)
-    dataset_ids = {d["id"] for d in datasets}
-    compression_records, compression_gaps = load_compression(inputs, dataset_ids)
+    compression_records, compression_gaps = load_compression(inputs)
 
     order = {d["id"]: i for i, d in enumerate(datasets)}
     read_records.sort(

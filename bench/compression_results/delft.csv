@@ -1,9 +1,0 @@
-dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
-delft.city.jsonl,cityparquet,2231,0.144817,2337008,2336816,0,0.008271,0.008154,1,1,true
-delft.city.jsonl,cityparquet+uncompressed,2231,0.285412,12000847,12000655,0,0.004662,0.002991,1,1,true
-delft.city.jsonl,cityparquet+snappy,2231,0.121488,3719583,3719391,0,0.006609,0.006680,1,1,true
-delft.city.jsonl,cityparquet+gzip,2231,0.178788,2287085,2286893,0,0.010389,0.010121,1,1,true
-delft.city.jsonl,cityparquet+lz4,2231,0.121117,3745573,3745381,0,0.004604,0.004648,1,1,true
-delft.city.jsonl,cityparquet+brotli,2231,0.134015,2534923,2534731,0,0.025106,0.025158,1,1,true
-delft.city.jsonl,cityparquet+rg512,2231,0.127258,2455885,2455693,0,0.012552,0.006224,5,2,true
-delft.city.jsonl,cityparquet+rg4096,2231,0.126151,2337008,2336816,0,0.008439,0.008216,1,1,true

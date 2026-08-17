@@ -1,9 +1,0 @@
-dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
-NYC.jsonl,cityparquet,23777,1.426393,18081759,18081600,0,0.063372,0.061482,1,1,true
-NYC.jsonl,cityparquet+uncompressed,23777,1.426114,157250944,157250785,0,0.016611,0.016907,1,1,true
-NYC.jsonl,cityparquet+snappy,23777,1.407529,31693804,31693645,0,0.042060,0.042096,1,1,true
-NYC.jsonl,cityparquet+gzip,23777,1.877072,18730194,18730035,0,0.076123,0.076159,1,1,true
-NYC.jsonl,cityparquet+lz4,23777,1.408262,31531670,31531511,0,0.034012,0.032982,1,1,true
-NYC.jsonl,cityparquet+brotli,23777,1.520455,19953361,19953202,0,0.198492,0.198271,1,1,true
-NYC.jsonl,cityparquet+rg512,23777,1.512595,18318625,18318466,0,0.081783,0.029721,47,16,true
-NYC.jsonl,cityparquet+rg4096,23777,1.453903,18101346,18101187,0,0.065316,0.066086,6,6,true

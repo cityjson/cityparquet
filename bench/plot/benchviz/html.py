@@ -1553,6 +1553,25 @@ JS = r"""
     el("codec-note").innerHTML = '<p class="small"><b>Read this before the panels.</b> ' +
       esc(META.codec_level_note) + "</p>";
 
+    /* A corpus measured for reads but never for compression is normal: the
+       compression benchmark is a separate, much slower pass. Say so where the
+       panels would have been — an empty section reads like a rendering bug. */
+    if (!DATA.compression.length) {
+      el("comp-grid").innerHTML = "";
+      el("comp-lede").innerHTML =
+        "<p><b>No compression run for this corpus.</b> The codec and row-group " +
+        "variants are measured by a separate pass over the same inputs " +
+        "(<span class='num'>just compression-bench</span>), and " +
+        "<span class='num'>bench/compression_results</span> is empty for the run " +
+        "reported here. Nothing on this page is derived from an earlier corpus's " +
+        "compression numbers.</p>";
+      el("comp-notes").innerHTML = "";
+      el("roundtrip-strip").innerHTML = "";
+      el("view-comp").setAttribute("aria-label",
+        "Compression variants: not measured for this corpus.");
+      return;
+    }
+
     var xs = [1], ys = [1];
     DATA.compression.forEach(function (c) {
       if (c.write_ratio > 0) { xs.push(c.write_ratio); }
@@ -1690,13 +1709,13 @@ JS = r"""
     el("roundtrip-strip").innerHTML =
       "Every variant is re-read and compared against the source; ✓ means all variants of " +
       "that dataset round-tripped equal. " + strip + ". " +
-      "Ingolstadt fails on all eight variants, an undocumented gap — nothing from that " +
-      "panel is citable.";
+      "Where a dataset shows ✗ for every variant, nothing in its panel is citable — the " +
+      "written bytes did not read back equal to the source.";
 
     el("view-comp").setAttribute("aria-label",
       "Compression and row-group variants, de-emphasised. Codec choice moves size by at most " +
       "a factor of two at mismatched compression levels, so no codec ranking is citable from " +
-      "this benchmark, and the Ingolstadt run failed its round-trip check entirely.");
+      "this benchmark.");
   }
 
   /* =========================================================

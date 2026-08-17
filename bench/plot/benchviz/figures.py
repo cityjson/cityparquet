@@ -172,13 +172,71 @@ SIZE_FORMATS = [
     "flatcitybuf",
 ]
 
-# The small-multiple grids below are hand-tuned for print: 3x4 and 4x3 sheets
-# on a 7.1-inch column, one panel per dataset plus one for the key. Eleven
-# datasets is what fits and stays legible; a bigger corpus is a figure-layout
-# decision (panel size, page size, or splitting into two figures), not
-# something to stretch silently, so `main` refuses instead.
-MAX_PANELS = 11
-MAX_COMPRESSION_PANELS = 8
+# Small-multiple geometry. One panel per dataset plus one for the key, on a
+# 7.1-inch-wide sheet: four columns up to a dozen panels (what the figures were
+# drawn at, so a corpus that size keeps its exact layout), five beyond that, and
+# five rows at most. A 5x5 sheet holds a 24-dataset corpus with panels that read
+# as a pattern rather than as values — exact numbers live in the HTML page's
+# per-dataset tables, and the figures say so. Past 25 panels there is nothing
+# left to read, so `main` refuses instead of drawing a grey mosaic.
+GRID_MAX_ROWS = 5
+GRID_MAX_COLS = 5
+MAX_PANELS = GRID_MAX_ROWS * GRID_MAX_COLS - 1
+MAX_COMPRESSION_PANELS = MAX_PANELS
+# Tallest sheet worth printing (inches): roughly a journal page's text height.
+MAX_SHEET_HEIGHT = 9.4
+
+
+def _grid(panels: int, cols_small: int = 4, rows_small: int = 3) -> tuple[int, int]:
+    """(rows, cols) for ``panels`` small multiples.
+
+    ``cols_small``/``rows_small`` are the figure's own designed shape, kept
+    exactly while the corpus still fits it; a bigger one goes to five columns.
+    """
+    cols = cols_small if panels <= cols_small * rows_small else GRID_MAX_COLS
+    rows = -(-panels // cols)  # ceil
+    return rows, cols
+
+
+def _sheet(
+    panels: int,
+    row_height: float,
+    cols_small: int = 4,
+    rows_small: int = 3,
+    width: float = 7.1,
+) -> tuple[int, int, tuple]:
+    """(rows, cols, figsize) — the sheet grows with the corpus, then densifies.
+
+    ``row_height`` is the per-row height the figure was designed at. Rows are
+    added until the sheet reaches a printable page, after which the same height
+    is shared by more rows: the panels shrink instead of the figure running off
+    the paper.
+    """
+    rows, cols = _grid(panels, cols_small, rows_small)
+    return rows, cols, (width, min(MAX_SHEET_HEIGHT, rows * row_height))
+
+
+def _scale_panel_fonts(rows: int, cols: int) -> None:
+    """Shrink the panel-level type for a denser grid than 3x4.
+
+    The panel text sizes are module constants read as globals by every builder
+    below (there is one figure set per process, so rebinding them here is the
+    whole mechanism). Headline and footer sizes are left alone: they are set
+    against the sheet, not the panel.
+    """
+    global FS_PANEL, FS_PANEL_SUB, FS_TICK, FS_LABEL, FS_MARK
+    factor = min(1.0, (4 / cols) ** 0.5 * (3 / rows) ** 0.25)
+    FS_PANEL, FS_PANEL_SUB = FS_PANEL * factor, FS_PANEL_SUB * factor
+    FS_TICK, FS_LABEL, FS_MARK = FS_TICK * factor, FS_LABEL * factor, FS_MARK * factor
+    plt.rcParams.update(
+        {
+            "axes.labelsize": FS_LABEL,
+            "axes.titlesize": FS_PANEL,
+            "xtick.labelsize": FS_TICK,
+            "ytick.labelsize": FS_TICK,
+        }
+    )
+
 
 SCENARIO_ORDER = [
     "full-read",
@@ -238,6 +296,34 @@ def _load(data_path: Path) -> dict[str, Any]:
     if missing:
         raise DataContractError(f"read records lack fields: {sorted(missing)}")
     return data
+
+
+def _present(data: dict[str, Any], candidates: Sequence[str]) -> list[str]:
+    """The candidates a run actually measured on the read path, in canonical order.
+
+    A run measures the formats it was asked for, and the corpus run of
+    2026-08-17 carried three of the six. Keeping a column or a marker slot for
+    the other three fills every panel with dashes; dropping them without a word
+    would hide the fact. So the views plot what exists and the footer names what
+    does not (`_omitted_note`).
+    """
+    seen = {r["format"] for r in data["read"] if r["time_ratio"] is not None}
+    return [f for f in candidates if f in seen]
+
+
+def _present_sizes(data: dict[str, Any], candidates: Sequence[str]) -> list[str]:
+    seen = {r["format"] for r in data["sizes"] if r["frac_of_baseline"] is not None}
+    return [f for f in candidates if f in seen]
+
+
+def _omitted_note(candidates: Sequence[str], present: Sequence[str]) -> str:
+    missing = [f for f in candidates if f not in present]
+    if not missing:
+        return ""
+    return (
+        "Not measured in this run, so absent from every panel rather than drawn "
+        "empty: " + ", ".join(missing) + "."
+    )
 
 
 def _index_read(rows: Iterable[dict[str, Any]]) -> dict[tuple[str, str, str], dict]:
@@ -573,7 +659,12 @@ def _pareto_frontier(points: list[tuple[float, float]]) -> list[tuple[float, flo
     return deduped
 
 
-def _pareto_key_panel(ax: Axes, floor_hint: str) -> None:
+def _pareto_key_panel(ax: Axes, floor_hint: str, order: Sequence[str]) -> None:
+    """The key lists the formats this sheet actually plots, in plot order.
+
+    Listing a marker for a format the run never measured invites the reader to
+    hunt for it in the panels; the footer names those instead.
+    """
     _blank(ax)
     ax.text(
         0.0,
@@ -596,14 +687,8 @@ def _pareto_key_panel(ax: Axes, floor_hint: str) -> None:
         va="bottom",
     )
 
-    rows = [
-        ("cityparquet", "cityparquet"),
-        ("cityparquet-hilbert", "cityparquet-hilbert"),
-        ("cityjsonseq", "cityjsonseq = baseline"),
-        ("cityjsonseq-gz", "cityjsonseq-gz"),
-        ("flatcitybuf", "flatcitybuf"),
-        ("duckdb-parquet", "duckdb-parquet"),
-    ]
+    labels = {"cityjsonseq": "cityjsonseq = baseline"}
+    rows = [(f, labels.get(f, f)) for f in order]
     top = 0.95
     step = 0.118
     for i, (fmt, text) in enumerate(rows):
@@ -666,10 +751,11 @@ def pareto(
     datasets = data["datasets"]
     index = _index_read(data["read"])
     floor_s = data["meta"]["citation_floor_s"]
+    order = _present(data, FORMAT_ORDER)
 
     xs_all, ys_all = [], []
     for ds in datasets:
-        for fmt in FORMAT_ORDER:
+        for fmt in order:
             rec = index.get((ds["id"], scenario, fmt))
             if rec and rec["time_ratio"] and rec["rss_ratio"]:
                 xs_all.append(rec["time_ratio"])
@@ -680,7 +766,8 @@ def pareto(
     xlim = (min(xs_all) / 1.7, max(xs_all) * 1.7)
     ylim = (min(ys_all) / 1.35, max(ys_all) * 1.35)
 
-    fig, axes = plt.subplots(3, 4, figsize=(7.1, 6.8), sharex=True, sharey=True)
+    rows_n, cols_n, figsize = _sheet(len(datasets) + 1, 6.8 / 3)
+    fig, axes = plt.subplots(rows_n, cols_n, figsize=figsize, sharex=True, sharey=True)
     head_bottom = _headline(fig, *headline)
     fig.subplots_adjust(
         left=0.085,
@@ -702,7 +789,7 @@ def pareto(
 
         recs = {
             fmt: index.get((ds["id"], scenario, fmt))
-            for fmt in FORMAT_ORDER
+            for fmt in order
         }
         usable = {
             fmt: rec
@@ -738,7 +825,7 @@ def pareto(
             fy = [p[1] for p in frontier]
             ax.step(fx, fy, where="post", color=INK_3, linewidth=0.6, zorder=2)
 
-        for fmt in FORMAT_ORDER:
+        for fmt in order:
             rec = usable.get(fmt)
             if not rec:
                 continue
@@ -749,7 +836,7 @@ def pareto(
                 **_marker_kwargs(fmt, size=4.2),
             )
 
-        missing = [f for f in FORMAT_ORDER if f not in usable]
+        missing = [f for f in order if f not in usable]
         if missing:
             ax.text(
                 0.99,
@@ -776,7 +863,7 @@ def pareto(
     # direct labels: first data panel only (they would collide everywhere else)
     first_ds = datasets[0]["id"]
     label_items = []
-    for fmt in FORMAT_ORDER:
+    for fmt in order:
         rec = index.get((first_ds, scenario, fmt))
         if rec and rec["time_ratio"] and rec["rss_ratio"]:
             label_items.append(
@@ -792,14 +879,14 @@ def pareto(
     # tick labels only on the bottom-most panel of each column
     n = len(datasets)
     for i, ax in enumerate(flat[:n]):
-        _row, col = divmod(i, 4)
-        below = i + 4
+        col = i % cols_n
+        below = i + cols_n
         is_bottom = below >= n
         ax.tick_params(labelbottom=is_bottom)
         ax.tick_params(labelleft=(col == 0))
 
     key_ax = _replace_axes(fig, flat[n])
-    _pareto_key_panel(key_ax, "10 ms citation floor")
+    _pareto_key_panel(key_ax, "10 ms citation floor", order)
     for ax in flat[n + 1 :]:
         ax.set_visible(False)
 
@@ -826,13 +913,16 @@ def pareto(
     footer = [
         f"Baseline = cityjsonseq, at (1×, 1×) in every panel; axes share limits "
         f"across panels. Scenario: {scenario}{dagger}. Memory = peak RSS "
-        "(present for all six formats; platform units cancel in the ratio).",
+        "(platform units cancel in the ratio).",
         "Shaded band = the benchmark's own 10 ms citation floor, ±(10 ms ÷ that "
         "dataset's baseline time): points inside it are indistinguishable from "
         "the baseline, so their horizontal position is noise.",
-        "duckdb-parquet runs out of process and carries ~0.06 s of un-subtracted "
-        "start-up time, which dominates its position on the small datasets.",
+        "duckdb-parquet, where measured, runs out of process and carries ~0.06 s "
+        "of un-subtracted start-up time, which dominates its position on the small "
+        "datasets.",
     ]
+    if omitted := _omitted_note(FORMAT_ORDER, order):
+        footer.append(omitted)
     if dagger:
         footer.append(
             "† grain-incomparable: for this scenario cityjsonseq(+gz) and "
@@ -870,11 +960,15 @@ def heatmap(
 ) -> list[Path]:
     datasets = data["datasets"]
     index = _index_read(data["read"])
+    fmts = _present(data, HEATMAP_FORMATS)
     cmap = plt.get_cmap("PRGn")
     vmax = 8.0  # log2 units: colour saturates at 1/256x and 256x
     norm = mcolors.Normalize(-vmax, vmax)
 
-    fig, axes = plt.subplots(4, 3, figsize=(7.1, 9.1))
+    rows_n, cols_n, figsize = _sheet(
+        len(datasets) + 1, 9.1 / 4, cols_small=3, rows_small=4
+    )
+    fig, axes = plt.subplots(rows_n, cols_n, figsize=figsize)
     head_bottom = _headline(fig, *headline)
     fig.subplots_adjust(
         left=0.115,
@@ -888,8 +982,8 @@ def heatmap(
     n = len(datasets)
 
     for i, (ax, ds) in enumerate(zip(flat, datasets, strict=False)):
-        col = i % 3
-        ax.set_xlim(0, len(HEATMAP_FORMATS))
+        col = i % cols_n
+        ax.set_xlim(0, len(fmts))
         ax.set_ylim(len(SCENARIO_ORDER), 0)
         ax.set_xticks([])
         ax.set_yticks([])
@@ -899,7 +993,7 @@ def heatmap(
             ax, ds["id"], ds["subtitle"], title_y=1.30, subtitle_y=1.145
         )
 
-        for c, fmt in enumerate(HEATMAP_FORMATS):
+        for c, fmt in enumerate(fmts):
             ax.text(
                 c + 0.5,
                 -0.12,
@@ -923,7 +1017,7 @@ def heatmap(
                     ha="right",
                     va="center",
                 )
-            for c, fmt in enumerate(HEATMAP_FORMATS):
+            for c, fmt in enumerate(fmts):
                 rec = index.get((ds["id"], scenario, fmt))
                 ratio = rec["time_ratio"] if rec else None
                 speedup = 1.0 / ratio if ratio else None
@@ -1038,7 +1132,7 @@ def heatmap(
     lines = [("columns, left to right:", INK_2)]
     lines += [
         (f"   {FORMAT_STYLE[f]['code']} = {FORMAT_STYLE[f]['label']}", INK_2)
-        for f in HEATMAP_FORMATS
+        for f in fmts
     ]
     lines += [
         ("≈  within the 10 ms citation floor (muted)", INK_2),
@@ -1070,9 +1164,11 @@ def heatmap(
             "CityParquet; attr-filter, attr-stats, id-lookup and project are "
             "CityObject-granular in every format and are the comparable rows.",
             "id-lookup samples a table-order-first identifier, which favours scanning "
-            "formats. duckdb-parquet carries ~0.06 s of un-subtracted process start-up "
-            "and has no id-lookup row. attr-stats and project were not run for NYC, "
-            "Montreal, Railway or lod3_railway.",
+            "formats. duckdb-parquet, where measured, carries ~0.06 s of un-subtracted "
+            "process start-up. An empty cell is a scenario the run did not measure for "
+            "that dataset, never a zero.",
+            *_wrap(_missing_note(data), 150),
+            *_wrap(_omitted_note(HEATMAP_FORMATS, fmts), 150),
         ],
     )
     return _save(fig, "heatmap", out_dir)
@@ -1096,9 +1192,11 @@ def sizes(
     if not by_dataset:
         raise DataContractError("bench_data.json carries no usable size rows.")
 
+    size_fmts = _present_sizes(data, SIZE_FORMATS)
     xmax = max(max(v.values()) for v in by_dataset.values()) * 1.32
 
-    fig, axes = plt.subplots(3, 4, figsize=(7.1, 6.0), sharex=True)
+    rows_n, cols_n, figsize = _sheet(len(datasets) + 1, 6.0 / 3)
+    fig, axes = plt.subplots(rows_n, cols_n, figsize=figsize, sharex=True)
     head_bottom = _headline(fig, *headline)
     fig.subplots_adjust(
         left=0.075,
@@ -1115,7 +1213,7 @@ def sizes(
         _panel_heading(ax, ds["id"], ds["subtitle"])
         rows = by_dataset.get(ds["id"], {})
         entries = sorted(
-            ((f, rows[f]) for f in SIZE_FORMATS if f in rows), key=lambda kv: kv[1]
+            ((f, rows[f]) for f in size_fmts if f in rows), key=lambda kv: kv[1]
         )
         ax.set_xlim(0, xmax)
         if not entries:
@@ -1155,12 +1253,12 @@ def sizes(
         ax.spines["left"].set_visible(False)
         ax.tick_params(axis="y", length=0)
         for label, (fmt, _frac) in zip(ax.get_yticklabels(), entries, strict=True):
-            label.set_fontsize(4.9)
+            label.set_fontsize(FS_MARK * 0.9)
             label.set_color(ACCENT if fmt.startswith("cityparquet") else INK_2)
         _sans(ax)
 
     for i, ax in enumerate(flat[:n]):
-        ax.tick_params(labelbottom=(i + 4) >= n)
+        ax.tick_params(labelbottom=(i + cols_n) >= n)
 
     key_ax = _replace_axes(fig, flat[n])
     _blank(key_ax)
@@ -1186,7 +1284,7 @@ def sizes(
     )
     key_rows = [
         (f, f"{FORMAT_STYLE[f]['code']} = {FORMAT_STYLE[f]['label']}")
-        for f in SIZE_FORMATS
+        for f in size_fmts
     ]
     for j, (fmt, text) in enumerate(key_rows):
         y = 0.88 - j * 0.15
@@ -1240,6 +1338,7 @@ def sizes(
             "writing one of its own, so it has no size to report. Sizes are a pure "
             "artefact property — no timing, so the 10 ms citation floor does not "
             "apply here.",
+            *_wrap(_omitted_note(SIZE_FORMATS, size_fmts), 150),
         ],
     )
     return _save(fig, "sizes", out_dir)
@@ -1275,7 +1374,10 @@ def compression(
     xlim = (min(xs) * 0.82, max(xs) * 1.22)
     ylim = (min(ys) * 0.88, max(ys) * 1.5)
 
-    fig, axes = plt.subplots(3, 3, figsize=(7.1, 6.3), sharex=True, sharey=True)
+    rows_n, cols_n, figsize = _sheet(
+        len(populated) + 1, 6.3 / 3, cols_small=3, rows_small=3
+    )
+    fig, axes = plt.subplots(rows_n, cols_n, figsize=figsize, sharex=True, sharey=True)
     head_bottom = _headline(fig, *headline)
     fig.subplots_adjust(
         left=0.085,
@@ -1367,7 +1469,7 @@ def compression(
         _sans(ax)
 
     for i, ax in enumerate(flat[:n]):
-        ax.tick_params(labelbottom=(i + 3) >= n, labelleft=(i % 3 == 0))
+        ax.tick_params(labelbottom=(i + cols_n) >= n, labelleft=(i % cols_n == 0))
 
     key_ax = _replace_axes(fig, flat[n]) if n < len(flat) else None
     if key_ax is not None:
@@ -1451,21 +1553,260 @@ def compression(
     )
 
     note = _wrap(data["meta"]["codec_level_note"], 150)
-    _footer(
-        fig,
-        [
-            *note,
-            "Rotterdam and Railway have no panel: the first is excluded by the corpus "
-            "report, the second has a header-only CSV. Both are stated in the key, "
-            "not silently dropped.",
-        ],
-    )
+    gaps = data.get("compression_gaps", [])
+    if gaps:
+        note += _wrap(
+            "Datasets without a panel, and why: "
+            + "; ".join(f"{g['dataset']} — {g['issue']}" for g in gaps)
+            + ". Stated in the key, not silently dropped.",
+            150,
+        )
+    _footer(fig, note)
     return _save(fig, "compression", out_dir)
 
 
 # --------------------------------------------------------------------------
 # entry point
 # --------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------
+# headline sentences, computed from the data they describe
+# --------------------------------------------------------------------------
+#
+# Every number and every comparative word below is derived from the run being
+# plotted. The previous edition typed them by hand, which held exactly until the
+# next benchmark run: the figures then asserted one corpus's findings over
+# another corpus's marks, with nothing in the code to notice.
+
+
+def _primary_cityparquet(data: dict[str, Any]) -> str:
+    """The CityParquet series a run actually measured on the read path.
+
+    A run may carry the source-ordered package, the Hilbert-ordered one, or
+    both; whichever is present is what the sentences are about.
+    """
+    present = {r["format"] for r in data["read"] if r["time_ratio"] is not None}
+    return "cityparquet" if "cityparquet" in present else "cityparquet-hilbert"
+
+
+def _stats(data: dict[str, Any], scenario: str, fmt: str) -> dict[str, Any] | None:
+    rows = [
+        r
+        for r in data["read"]
+        if r["scenario_key"] == scenario and r["format"] == fmt
+    ]
+    times = [r["time_ratio"] for r in rows if r["time_ratio"]]
+    rss = [r["rss_ratio"] for r in rows if r["rss_ratio"]]
+    if not times:
+        return None
+    return {
+        "n": len(times),
+        "time": _median(times),
+        "rss": _median(rss) if rss else None,
+        "faster": sum(1 for t in times if t < 1.0),
+        "leaner": sum(1 for r in rss if r < 1.0),
+        "n_rss": len(rss),
+        "floored": sum(1 for r in rows if r.get("below_floor")),
+    }
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _ratio_word(ratio: float) -> str:
+    """Faster / at parity / slower, with the same 10 % band in both directions."""
+    if ratio < 0.9:
+        return "faster than"
+    if ratio > 1.1:
+        return "slower than"
+    return "at parity with"
+
+
+def _times(ratio: float) -> str:
+    if ratio >= 10:
+        return f"{ratio:.0f}×"
+    if ratio >= 1:
+        return f"{ratio:.2f}×"
+    if ratio >= 0.01:
+        return f"{ratio:.3f}×"
+    return f"{ratio:.4f}×"
+
+
+def _size_median(data: dict[str, Any], fmt: str) -> tuple[float, float, float] | None:
+    fracs = [
+        r["frac_of_baseline"]
+        for r in data["sizes"]
+        if r["format"] == fmt and r["frac_of_baseline"]
+    ]
+    if not fracs:
+        return None
+    return _median(fracs), min(fracs), max(fracs)
+
+
+def _corpus_phrase(data: dict[str, Any]) -> str:
+    return f"{len(data['datasets'])} corpus dataset" + (
+        "s" if len(data["datasets"]) != 1 else ""
+    )
+
+
+def _density_note(data: dict[str, Any]) -> str:
+    """Said on the sheet when the panels have shrunk past reading individual marks."""
+    rows, cols = _grid(len(data["datasets"]) + 1)
+    if cols <= 4 and rows <= 3:
+        return ""
+    return (
+        f"At {len(data['datasets'])} datasets the panels are meant to be read as a "
+        "pattern; exact per-dataset values are in the HTML summary page's tables."
+    )
+
+
+def _missing_note(data: dict[str, Any]) -> str:
+    """Which (scenario, dataset) pairs the run never measured — a source fact."""
+    covered: dict[str, set[str]] = {}
+    for r in data["read"]:
+        covered.setdefault(r["scenario_key"], set()).add(r["dataset"])
+    ids = [d["id"] for d in data["datasets"]]
+    missing = {
+        sc: [i for i in ids if i not in covered.get(sc, set())] for sc in SCENARIO_ORDER
+    }
+    parts = [
+        f"{sc} for {len(names)} of {len(ids)} datasets"
+        for sc, names in missing.items()
+        if names
+    ]
+    if not parts:
+        return "Every scenario was measured for every dataset in this corpus."
+    return "Not measured in this run: " + "; ".join(parts) + "."
+
+
+def _pareto_headline(
+    data: dict[str, Any], scenario: str, label: str
+) -> tuple[str, str]:
+    cp = _primary_cityparquet(data)
+    st = _stats(data, scenario, cp)
+    if st is None:
+        return (
+            f"{label}: no CityParquet measurements in this run",
+            f"Reading {label.lower()} across {_corpus_phrase(data)}.",
+        )
+    others = [
+        (f, s)
+        for f in FORMAT_ORDER
+        if f not in (cp, "cityjsonseq") and (s := _stats(data, scenario, f))
+    ]
+    best = min(others, key=lambda kv: kv[1]["time"], default=None)
+    title = (
+        f"{label}: {FORMAT_STYLE[cp]['label']} is {_ratio_word(st['time'])} "
+        f"CityJSONSeq at a median {_times(st['time'])} of its time"
+    )
+    if st["rss"]:
+        title += f", using {_times(st['rss'])} its peak RSS"
+    subtitle = (
+        f"{_corpus_phrase(data)}, each panel one dataset against its own CityJSONSeq "
+        f"baseline at (1×, 1×). Faster in {st['faster']} of {st['n']} datasets"
+    )
+    if st["n_rss"]:
+        subtitle += f" and leaner in {st['leaner']} of {st['n_rss']}"
+    if best is not None:
+        subtitle += (
+            f". The frontier's lower-left corner is held by {best[0]} "
+            f"(median {_times(best[1]['time'])})"
+        )
+    if st["floored"]:
+        subtitle += (
+            f". {st['floored']} of this format's time deltas fall inside the 10 ms "
+            "noise floor and are drawn hollow"
+        )
+    note = _density_note(data)
+    return title + ".", subtitle + "." + (f" {note}" if note else "")
+
+
+def _heatmap_headline(data: dict[str, Any]) -> tuple[str, str]:
+    cp = _primary_cityparquet(data)
+    selective = [
+        s["time"]
+        for sc in SCENARIO_ORDER
+        if sc != "full-read" and (s := _stats(data, sc, cp))
+    ]
+    full = _stats(data, "full-read", cp)
+    formats = len({r["format"] for r in data["read"]})
+    scenarios = len({r["scenario_key"] for r in data["read"]})
+    if selective and full:
+        title = (
+            "Where columnar layout pays: the selective scenarios run at a median "
+            f"{_times(_median(selective))} of the baseline's time, full "
+            f"materialisation at {_times(full['time'])}"
+        )
+    else:
+        title = "Read speed-up over the CityJSONSeq baseline, by scenario and format"
+    subtitle = (
+        f"Speed-up (1 ÷ time ratio) for {scenarios} scenarios × {formats} formats × "
+        f"{_corpus_phrase(data)}. Green beats the baseline, purple loses to it; the "
+        "printed value is the datum and colour is only a second reading."
+    )
+    note = _density_note(data)
+    return title + ".", subtitle + (f" {note}" if note else "")
+
+
+def _sizes_headline(data: dict[str, Any]) -> tuple[str, str]:
+    cp = _size_median(data, "cityparquet") or _size_median(data, "cityparquet-hilbert")
+    gz = _size_median(data, "cityjsonseq-gz")
+    fcb = _size_median(data, "flatcitybuf")
+    if cp is None:
+        return (
+            "On-disk footprint against the CityJSONSeq baseline",
+            f"{_corpus_phrase(data)}; no CityParquet artefact was sized in this run.",
+        )
+    median, lo, hi = cp
+    title = (
+        f"CityParquet stores a city model in a median {_times(median)} of the "
+        f"CityJSONSeq bytes (range {_times(lo)}–{_times(hi)})"
+    )
+    parts = [
+        f"Fraction of the uncompressed CityJSONSeq artefact, {_corpus_phrase(data)}, "
+        "sorted per panel, shorter is smaller."
+    ]
+    if gz:
+        smaller = "smaller still" if gz[0] < median else "larger"
+        parts.append(
+            f"gzipped CityJSONSeq is {smaller} at a median {_times(gz[0])} — but it is "
+            "not queryable without a full decompression pass."
+        )
+    if fcb:
+        parts.append(f"flatcitybuf sits at a median {_times(fcb[0])}.")
+    note = _density_note(data)
+    return title + ".", " ".join(parts) + (f" {note}" if note else "")
+
+
+def _compression_headline(data: dict[str, Any]) -> tuple[str, str]:
+    rows = data["compression"]
+    sizes = [r["size_ratio"] for r in rows if r.get("size_ratio")]
+    writes = [r["write_ratio"] for r in rows if r.get("write_ratio")]
+    datasets = len({r["dataset"] for r in rows})
+    title = (
+        "Compression variants move size far more than write time — and none of it "
+        "is a citable codec ranking"
+    )
+    if sizes and writes:
+        title = (
+            f"Compression variants move size across {_times(min(sizes))}–"
+            f"{_times(max(sizes))} of the default write's bytes for "
+            f"{_times(min(writes))}–{_times(max(writes))} of its time — and none of "
+            "it is a citable codec ranking"
+        )
+    subtitle = (
+        f"{datasets} dataset(s) measured, each variant against that dataset's own "
+        "default CityParquet write at (1×, 1×). Codecs are filled markers, row-group "
+        "variants open ones. The codec levels are not matched, so this figure is "
+        "exploratory."
+    )
+    return title + ".", subtitle
 
 
 def _check_capacity(data: dict[str, Any]) -> None:
@@ -1491,72 +1832,33 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
     _check_capacity(data)
     out_dir.mkdir(parents=True, exist_ok=True)
     plt.rcParams.update(TUFTE_RC)
+    _scale_panel_fonts(*_grid(len(data["datasets"]) + 1))
 
     written: list[Path] = []
     written += pareto(
         data,
         "full-read",
         "pareto-full-read",
-        (
-            "Full materialisation is CityParquet's weakest case: near parity on "
-            "time, several times the memory",
-            "Reading every CityObject, all 11 corpus datasets, against the "
-            "CityJSONSeq baseline at (1×, 1×). CityParquet lands at a median "
-            "1.13× the baseline time and 3.2× its peak RSS; flatcitybuf, which "
-            "streams, holds the frontier's lower-left corner.",
-        ),
+        _pareto_headline(data, "full-read", "Materialising every CityObject"),
         out_dir,
     )
     written += pareto(
         data,
         "bbox-5pct",
         "pareto-bbox-5pct",
-        (
-            "Selective reading inverts the trade: a 5 % bounding-box window costs "
-            "CityParquet ~3 % of the baseline's time",
-            "The same 11 datasets and the same axes as the full-read figure. "
-            "CityParquet is faster than CityJSONSeq in 11 of 11 datasets (median "
-            "0.033× time) and leaner in 10 of 11 — the columnar layout pays off "
-            "when the query touches a fraction of the file, not when it touches all "
-            "of it.",
-        ),
+        _pareto_headline(data, "bbox-5pct", "A 5 % bounding-box window"),
         out_dir,
     )
-    written += heatmap(
-        data,
-        (
-            "Where columnar layout pays: speed-ups concentrate in the selective "
-            "scenarios, not in full materialisation",
-            "Read speed-up over the CityJSONSeq baseline, 9 scenarios × 6 formats "
-            "× 11 datasets. Green cells beat the baseline, purple cells lose to it; "
-            "the printed value is the datum and colour is only a second reading.",
-        ),
-        out_dir,
-    )
-    written += sizes(
-        data,
-        (
-            "CityParquet stores a city model in roughly a quarter to a third of the "
-            "CityJSONSeq bytes",
-            "On-disk footprint relative to the uncompressed CityJSONSeq artefact "
-            "(median 0.29× for cityparquet, 0.28× with Hilbert ordering). "
-            "gzipped CityJSONSeq is usually a little smaller still — but it is not "
-            "queryable without a full decompression pass.",
-        ),
-        out_dir,
-    )
-    written += compression(
-        data,
-        (
-            "Compression variants move size far more than write time — and none "
-            "of it is a citable codec ranking",
-            "Each panel is one dataset's variants against its own default "
-            "CityParquet write. Turning compression off costs 5–9× the bytes for "
-            "at most a 2× change in write time; row-group size barely moves either "
-            "axis. The codec levels are not matched, so this figure is exploratory.",
-        ),
-        out_dir,
-    )
+    written += heatmap(data, _heatmap_headline(data), out_dir)
+    written += sizes(data, _sizes_headline(data), out_dir)
+    if data["compression"]:
+        written += compression(data, _compression_headline(data), out_dir)
+    else:
+        print(
+            "  compression figure skipped: this corpus has no compression run "
+            "(bench/compression_results is empty) — `just compression-bench` "
+            "produces it"
+        )
 
     print(f"benchviz figures -> {out_dir}")
     for path in written:

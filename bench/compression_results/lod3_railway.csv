@@ -1,9 +1,0 @@
-dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
-lod3_railway.city.json,cityparquet,121,0.177938,1378572,1353643,24685,0.007057,0.007051,1,1,true
-lod3_railway.city.json,cityparquet+uncompressed,121,0.170646,9868704,9843775,24685,0.002237,0.002132,1,1,true
-lod3_railway.city.json,cityparquet+snappy,121,0.160942,2544751,2519822,24685,0.005593,0.005944,1,1,true
-lod3_railway.city.json,cityparquet+gzip,121,0.229856,1368506,1343577,24685,0.008151,0.008308,1,1,true
-lod3_railway.city.json,cityparquet+lz4,121,0.164711,2779466,2754537,24685,0.004318,0.004535,1,1,true
-lod3_railway.city.json,cityparquet+brotli,121,0.174979,1645924,1620995,24685,0.018195,0.018557,1,1,true
-lod3_railway.city.json,cityparquet+rg512,121,0.169728,1378572,1353643,24685,0.007030,0.006412,1,1,true
-lod3_railway.city.json,cityparquet+rg4096,121,0.169439,1378572,1353643,24685,0.006972,0.006899,1,1,true

@@ -117,15 +117,40 @@ def test_a_renamed_column_is_still_an_error(tmp_path):
         prep._read_rows(csv_path, prep.READ_COLUMNS)
 
 
+def test_a_corpus_with_no_compression_run_is_stated_not_crashed(tmp_path):
+    """Read-only corpora are normal: compression is a separate, slower run.
+
+    A corpus measured for reads but never for compression must still produce a
+    page — with the compression view saying so — and the compression figure must
+    be skipped rather than drawn empty or raised as a contract error.
+    """
+    from benchviz import figures
+
+    bench = _bench_dir(tmp_path)
+    shutil.rmtree(bench / "compression_results")
+
+    data, _ = prep.build(prep.Inputs(bench))
+    assert data["compression"] == []
+    assert data["compression_gaps"] == []
+
+    data_path = tmp_path / "no_compression.json"
+    data_path.write_text(prep.json.dumps(data), encoding="utf-8")
+    written = sorted(
+        p.name for p in figures.main(data_path=data_path, out_dir=tmp_path / "f").glob("*")
+    )
+    assert "compression.svg" not in written
+    assert "sizes.svg" in written
+
+
 def test_figures_refuse_a_corpus_larger_than_their_panel_grid(tmp_path):
     """More datasets than panels must be a stated refusal, not a crash.
 
-    The static figures are print artefacts: four hand-tuned small-multiple
-    grids sized for the corpus they were drawn for. A larger corpus used to run
-    off the end of the axes array and die with an IndexError deep inside the
-    Pareto builder, which reads as a bug in the plotting code rather than what
-    it is — a figure layout that has to be re-decided for that many panels.
-    The HTML page has no such limit and covers every dataset.
+    The static figures are print artefacts: small-multiple grids that grow to a
+    5x5 sheet and stop there. Beyond that the panels are too small to carry even
+    a pattern, and the honest move is to say so — a corpus that big needs a
+    different kind of figure, not a finer grid. It used to run off the end of the
+    axes array and die with an IndexError deep inside the Pareto builder, which
+    reads as a bug in the plotting code. The HTML page has no such limit.
     """
     from benchviz import figures
 
@@ -137,6 +162,22 @@ def test_figures_refuse_a_corpus_larger_than_their_panel_grid(tmp_path):
 
     with pytest.raises(SystemExit, match="panel grid"):
         figures.main(data_path=data_path, out_dir=tmp_path / "figures")
+
+
+@pytest.mark.parametrize(
+    ("panels", "expected"),
+    [(3, (1, 4)), (11, (3, 4)), (12, (3, 4)), (13, (3, 5)), (22, (5, 5)), (25, (5, 5))],
+)
+def test_grid_shape(panels, expected):
+    """Four columns up to a dozen panels, five beyond, never past 5x5.
+
+    Four is what the figures were drawn at, so a corpus of the size they were
+    designed for keeps its exact layout; a bigger one densifies instead of
+    running off the sheet.
+    """
+    from benchviz import figures
+
+    assert figures._grid(panels) == expected
 
 
 def test_cli_prep_writes_to_the_requested_data_path(tmp_path):

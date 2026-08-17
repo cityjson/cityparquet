@@ -1,9 +1,0 @@
-dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
-Zurich.city.jsonl,cityparquet,198699,4.281824,74111477,74111318,0,0.211292,0.207846,4,3,true
-Zurich.city.jsonl,cityparquet+uncompressed,198699,3.918454,377283849,377283690,0,0.062296,0.056561,4,3,true
-Zurich.city.jsonl,cityparquet+snappy,198699,4.252208,111385283,111385124,0,0.170554,0.167867,4,3,true
-Zurich.city.jsonl,cityparquet+gzip,198699,5.791498,69515505,69515346,0,0.314615,0.315255,4,3,true
-Zurich.city.jsonl,cityparquet+lz4,198699,4.147742,111911997,111911838,0,0.118472,0.116163,4,3,true
-Zurich.city.jsonl,cityparquet+brotli,198699,4.505268,77882689,77882530,0,0.699617,0.688076,4,3,true
-Zurich.city.jsonl,cityparquet+rg512,198699,4.409212,76901624,76901465,0,0.330204,0.026324,389,29,true
-Zurich.city.jsonl,cityparquet+rg4096,198699,4.390157,74582059,74581900,0,0.221762,0.188398,49,41,true
