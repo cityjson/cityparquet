@@ -167,16 +167,30 @@ impl UnionFind {
 /// Empty groups are dropped, so the returned labels are exactly the packages
 /// to write. Ordering is preserved: groups stay sorted by label and each
 /// group's indices stay ascending.
+///
+/// Two consequences of moving a feature, both confined to non-conformant
+/// input. A `Box` label stops describing the centroid of everything filed
+/// under it (and because `box_none` sorts first, a component holding one
+/// vertexless feature adopts `box_none`) — harmless while labels are just
+/// directory names and every package recomputes its own bbox from its own
+/// features, but it would matter the day labels became spatial discovery
+/// keys. And a `Features(M)` partition can exceed `M`: a fully chained input
+/// collapses to a single package, however large.
 pub fn repair_reference_locality(
     features: &[CityJSONFeature],
     groups: &mut Vec<(String, Vec<usize>)>,
 ) -> LocalityRepair {
     let mut repair = LocalityRepair::default();
 
-    // Object id -> the feature that holds it. First occurrence wins; a
-    // duplicate id across features is already surfaced separately as
-    // `MergedDataset::duplicate_ids` and must not silently fuse two
-    // unrelated partitions here.
+    // Object id -> the feature that holds it. First occurrence wins if the
+    // same OBJECT id appears in two features — which nothing else here
+    // detects: `MergedDataset::duplicate_ids` counts duplicate *feature* ids
+    // (`f.id`), a different thing. That input is pathological either way (the
+    // package ends up with two rows for one object), and first-wins does not
+    // make it worse: the union loop below walks every feature's objects, not
+    // `owner`, so references FROM either copy are still joined. Only which
+    // holder a referrer is pulled towards is affected, and both choices leave
+    // the reference package-local.
     let mut owner: HashMap<&str, usize> = HashMap::new();
     for (i, f) in features.iter().enumerate() {
         for id in f.city_objects.keys() {
@@ -206,11 +220,21 @@ pub fn repair_reference_locality(
     // Feature -> its current group. Every index appears in exactly one group
     // (`assign_partitions`' documented invariant), so this is total.
     let mut group_of: Vec<usize> = vec![0; features.len()];
+    let mut assigned = vec![false; features.len()];
     for (g, (_, idxs)) in groups.iter().enumerate() {
         for &i in idxs {
             group_of[i] = g;
+            assigned[i] = true;
         }
     }
+    // Without this, a partition method that DROPPED an index would have the
+    // feature silently resurrected into group 0 by the move below: complete
+    // output, green tests, hidden bug — exactly what the locality tests exist
+    // to prevent. Fail loudly in debug instead of papering over it.
+    debug_assert!(
+        assigned.iter().all(|&a| a),
+        "assign_partitions must place every feature index in exactly one group"
+    );
 
     // Each component adopts the lowest-indexed group any of its members sits
     // in. `groups` is sorted by label, so that is the alphabetically first

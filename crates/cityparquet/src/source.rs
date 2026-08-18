@@ -343,7 +343,18 @@ fn name_a_few(ids: &BTreeSet<&str>) -> String {
 /// already-formed, and [`crate::citygml`]'s reader descends recursively
 /// (`emit_into`), so both carry arbitrarily deep hierarchies safely.
 ///
-/// Delete this the day cjseq descends transitively; nothing else changes.
+/// It guards [`Source`], which is every read path the CLI drives — convert,
+/// export and compare all go through it. The read benchmark
+/// (`cityparquet-readbench`'s `formats::cityjson`) deliberately does not: it
+/// parses the document itself to measure parsing, and routing it through this
+/// check would put validation work inside the timed section. A >2-level
+/// document would still lose objects there; the benchmark corpus is
+/// two-level.
+///
+/// Delete this the day cjseq descends transitively — the canary test
+/// `cjseq_still_drops_grandchildren_so_this_guard_is_still_needed` fails on
+/// that day and says so. Note the workspace depends on `cjseq = "0.4"`, not a
+/// pinned patch, so the day can arrive without anyone editing this repo.
 fn validate_document_hierarchy(doc: &CityJSON) -> Result<()> {
     let mut emitted: HashSet<&str> = HashSet::new();
     let mut missing: BTreeSet<&str> = BTreeSet::new();

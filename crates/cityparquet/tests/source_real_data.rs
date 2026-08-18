@@ -121,6 +121,41 @@ fn a_three_level_document_is_refused_rather_than_silently_truncated() {
     );
 }
 
+/// Canary for the guard above. `validate_document_hierarchy` reproduces
+/// behaviour that lives in cjseq's PRIVATE internals, and the workspace
+/// depends on `cjseq = "0.4"` — not a pinned patch — so a point release could
+/// fix the `children-of-children` TODO and turn our guard into a refusal of
+/// documents that had become perfectly readable.
+///
+/// This asserts the loss is still real, straight against cjseq rather than
+/// through `Source`. When it fails, cjseq has been fixed: delete
+/// `validate_document_hierarchy`'s depth branch and this test with it.
+#[test]
+fn cjseq_still_drops_grandchildren_so_this_guard_is_still_needed() {
+    use cjseq::CityJSON;
+
+    let (_dir, path, grandchild) = railway_with_a_three_level_hierarchy();
+    let doc = CityJSON::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+    let mut emitted = 0usize;
+    let mut saw_grandchild = false;
+    let mut i = 0usize;
+    while let Some(f) = doc.get_cjfeature(i) {
+        emitted += f.city_objects.len();
+        saw_grandchild |= f.city_objects.contains_key(&grandchild);
+        i += 1;
+    }
+
+    assert!(
+        !saw_grandchild,
+        "cjseq now emits grandchildren — delete validate_document_hierarchy's depth check"
+    );
+    assert_eq!(
+        emitted, 120,
+        "the deepened railway document has 121 objects and cjseq emits all but the grandchild"
+    );
+}
+
 /// The two-level fixture the deepened one was derived from must keep working —
 /// the guard rejects depth, not hierarchy.
 #[test]

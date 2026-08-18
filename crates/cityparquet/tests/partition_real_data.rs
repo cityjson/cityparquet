@@ -497,6 +497,49 @@ fn a_parent_and_child_split_across_features_are_co_assigned_to_one_partition() {
     assert_eq!(rep.unresolvable_refs, 0);
 }
 
+/// Co-assignment is a LABEL-level repair, not a merge: the two features share
+/// a package but stay two features. Each row keeps its own `feature_id` and
+/// `export` regroups on it, so the package exports as two CityJSONSeq lines —
+/// the input's feature split is preserved, only its packaging is fixed.
+#[test]
+fn a_co_assigned_package_still_exports_the_two_features_separately() {
+    use cityparquet::export::{ExportOptions, export};
+
+    let out = tempfile::tempdir().unwrap();
+    let (_dir, path, parent, child) = delft_with_split_parent_and_part(0, true);
+    let src = Source::open(&path).unwrap();
+    let opts = ConvertOptions::new(path.clone(), out.path().to_path_buf());
+    let rep =
+        convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(2), &opts).unwrap();
+    assert_eq!(rep.partitions.len(), 1);
+
+    let exported = out.path().join("repaired.city.jsonl");
+    export(&ExportOptions {
+        package_dir: out.path().join(&rep.partitions[0].0),
+        output: exported.clone(),
+    })
+    .unwrap();
+
+    let features: Vec<serde_json::Value> = std::fs::read_to_string(&exported)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .filter(|v: &serde_json::Value| v["type"] != "CityJSON")
+        .collect();
+
+    assert_eq!(
+        features.len(),
+        2,
+        "the parent and part must export as two features, not be fused into one"
+    );
+    for (feature, expected) in features.iter().zip([&parent, &child]) {
+        let objects = feature["CityObjects"].as_object().unwrap();
+        assert_eq!(objects.len(), 1, "each feature still holds its one object");
+        assert!(objects.contains_key(expected), "feature ids are preserved");
+    }
+}
+
 /// Conformant input must not be perturbed: every delft feature is already
 /// self-contained, so the repair moves nothing and reports nothing, and the
 /// index-derived partition count is unchanged.

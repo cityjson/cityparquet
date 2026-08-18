@@ -45,7 +45,10 @@ enum Commands {
         #[arg(long, value_name = "N")]
         number: Option<usize>,
 
-        /// features: maximum features per partition
+        /// features: maximum features per partition. Exceeded only where
+        /// features reference each other's objects across the feature
+        /// boundary and must share a package to stay resolvable — a warning
+        /// says so when it happens
         #[arg(long, value_name = "M")]
         feature_num: Option<usize>,
 
