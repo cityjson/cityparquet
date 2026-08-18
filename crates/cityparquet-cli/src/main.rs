@@ -525,6 +525,27 @@ fn main() -> std::process::ExitCode {
                             {
                                 eprintln!("warning: {message}");
                             }
+                            // Reference locality: both counts are 0 for
+                            // conformant input, so these lines only ever
+                            // appear when the input really did carry a
+                            // hierarchy split across features.
+                            if report.co_assigned_features > 0 {
+                                eprintln!(
+                                    "warning: {} feature(s) reference a parent or child in \
+                                     another feature; they were assigned to a shared partition \
+                                     so the references still resolve within one package \
+                                     (CityJSONSeq features are meant to be self-contained)",
+                                    report.co_assigned_features
+                                );
+                            }
+                            if report.unresolvable_refs > 0 {
+                                eprintln!(
+                                    "warning: {} parent/child reference(s) name an object that \
+                                     is not in the input at all; they are written as-is and \
+                                     will not resolve in any package",
+                                    report.unresolvable_refs
+                                );
+                            }
                             println!(
                                 "partitions={} duplicate_ids={}",
                                 report.partitions.len(),

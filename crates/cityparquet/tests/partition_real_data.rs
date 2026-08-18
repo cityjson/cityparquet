@@ -53,6 +53,122 @@ fn delft_opts(out: &std::path::Path) -> ConvertOptions {
     ConvertOptions::new(fixture("delft.city.jsonl"), out.to_path_buf())
 }
 
+/// Export the package at `pkg` to CityJSONSeq and return every CityObject id
+/// it holds paired with every `parents`/`children` id those objects reference.
+///
+/// Reference locality is a property of the PACKAGE, not of one Parquet file:
+/// the by-module layout legitimately puts a `CityObjectGroup` in
+/// `generics.parquet` and its members in `vegetation.parquet`. Exporting
+/// collapses the package back to one stream, which is exactly the granularity
+/// the invariant is about.
+fn package_ids_and_refs(
+    pkg: &std::path::Path,
+    scratch: &std::path::Path,
+) -> (
+    std::collections::HashSet<String>,
+    Vec<(String, &'static str, String)>,
+) {
+    use cityparquet::export::{ExportOptions, export};
+
+    let jsonl = scratch.join(format!(
+        "{}.export.city.jsonl",
+        pkg.file_name().unwrap().to_string_lossy()
+    ));
+    export(&ExportOptions {
+        package_dir: pkg.to_path_buf(),
+        output: jsonl.clone(),
+    })
+    .unwrap();
+
+    let mut ids = std::collections::HashSet::new();
+    let mut refs = Vec::new();
+    for line in std::fs::read_to_string(&jsonl).unwrap().lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let feature: serde_json::Value = serde_json::from_str(line).unwrap();
+        // The first line is the CityJSONSeq header, which carries no objects.
+        if feature["type"] == "CityJSON" {
+            continue;
+        }
+        let objects = feature["CityObjects"].as_object().unwrap();
+        for (id, co) in objects {
+            ids.insert(id.clone());
+            for (field, name) in [(&co["parents"], "parents"), (&co["children"], "children")] {
+                for target in field.as_array().into_iter().flatten() {
+                    refs.push((id.clone(), name, target.as_str().unwrap().to_string()));
+                }
+            }
+        }
+    }
+    (ids, refs)
+}
+
+/// Assert the invariant the whole partition design rests on: a city object and
+/// everything it points at through `parents`/`children` land in the SAME
+/// partition package. `assign_partitions` keys on the feature index and a
+/// `CityJSONFeature` is a top-level object plus its children, so this holds by
+/// construction — this test is what stops a future partition method from
+/// keying on the object index and quietly severing the hierarchy.
+fn assert_references_are_package_local(out: &std::path::Path, labels: &[String], scenario: &str) {
+    let mut checked = 0usize;
+    for label in labels {
+        let (ids, refs) = package_ids_and_refs(&out.join(label), out);
+        for (from, field, target) in refs {
+            assert!(
+                ids.contains(&target),
+                "{scenario}: {label} holds {from} whose {field} reference {target} \
+                 resolves outside the package"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 0,
+        "{scenario}: no parent/child references were checked at all — the fixture \
+         or the export lost the hierarchy, so this test proves nothing"
+    );
+}
+
+/// Maximal split: one feature per partition. If reference locality survives
+/// this it survives every coarser `count`/`features` split, because those only
+/// ever put MORE features together. Railway is the fixture with the widest
+/// hierarchy — a `CityObjectGroup` with 14 members, spanning two module files
+/// (`generics.parquet` and `vegetation.parquet`) inside one package.
+#[test]
+fn parent_child_references_stay_package_local_under_maximal_split() {
+    let out = tempfile::tempdir().unwrap();
+    let (_crs_dir, src) = railway_source_with_crs();
+    let opts = ConvertOptions::new(fixture("lod3_railway.city.json"), out.path().to_path_buf());
+    let rep =
+        convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(38), &opts).unwrap();
+    let labels: Vec<String> = rep.partitions.iter().map(|(l, _)| l.clone()).collect();
+    assert_eq!(
+        labels.len(),
+        38,
+        "railway has 38 top-level features, so Count(38) is one feature per partition"
+    );
+    assert_references_are_package_local(out.path(), &labels, "railway Count(38)");
+}
+
+/// The same invariant under the spatial method, where the label comes from a
+/// feature's own centroid rather than its position in the stream.
+#[test]
+fn parent_child_references_stay_package_local_under_box_partitioning() {
+    let out = tempfile::tempdir().unwrap();
+    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let opts = delft_opts(out.path());
+    let rep = convert_partitioned(
+        std::slice::from_ref(&src),
+        &PartitionSpec::Box { cell: 1000.0 },
+        &opts,
+    )
+    .unwrap();
+    let labels: Vec<String> = rep.partitions.iter().map(|(l, _)| l.clone()).collect();
+    assert!(labels.len() > 1, "delft spans >1 1000m cell");
+    assert_references_are_package_local(out.path(), &labels, "delft Box(1000)");
+}
+
 #[test]
 fn partitioned_convert_is_lossless_over_delft() {
     let out = tempfile::tempdir().unwrap();
@@ -284,6 +400,143 @@ fn partitioned_synthesis_declares_the_footprint_as_primary_in_every_partition() 
             );
         }
     }
+}
+
+/// Build a CityJSONSeq derivative of the real `delft.city.jsonl` whose FIRST
+/// feature has been torn in two: the `Building` on one line and its
+/// `BuildingPart` on the next, each carrying the original feature's whole
+/// vertex array so both lines stay individually valid. Every other line is the
+/// real fixture's, untouched.
+///
+/// CityJSONSeq requires a feature to be self-contained, so this is
+/// non-conformant input — but it is exactly the shape a merge of neighbouring
+/// tiles produces when a building's parts fall on the other side of a tile
+/// boundary, which IS a legitimate workflow. A mutation of the real fixture,
+/// never hand-written CityJSON (the `railway_source_with_crs` idiom).
+///
+/// With `keep_child` false the child line is dropped entirely while the
+/// parent's `children` array still names it — an unrepairable dangling
+/// reference, the partial-area-extract case.
+///
+/// The returned `TempDir` MUST outlive the path: `Source` streams lazily.
+fn delft_with_split_parent_and_part(
+    extra_features: usize,
+    keep_child: bool,
+) -> (tempfile::TempDir, PathBuf, String, String) {
+    let source = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = source.lines();
+    let header = lines.next().unwrap().to_string();
+    let first: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+
+    let objects = first["CityObjects"].as_object().unwrap();
+    let parent = objects
+        .iter()
+        .find(|(_, co)| co["type"] == "Building")
+        .map(|(id, _)| id.clone())
+        .expect("delft's first feature is a Building + BuildingPart");
+    let child = objects
+        .keys()
+        .find(|id| **id != parent)
+        .expect("delft's first feature has a BuildingPart")
+        .clone();
+
+    let one_object_line = |id: &str| {
+        serde_json::to_string(&serde_json::json!({
+            "type": "CityJSONFeature",
+            "id": id,
+            "CityObjects": { id: objects[id] },
+            "vertices": first["vertices"],
+        }))
+        .unwrap()
+    };
+
+    let mut out = vec![header, one_object_line(&parent)];
+    if keep_child {
+        out.push(one_object_line(&child));
+    }
+    out.extend(lines.take(extra_features).map(str::to_string));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("split_parent.city.jsonl");
+    std::fs::write(&path, out.join("\n") + "\n").unwrap();
+    (dir, path, parent, child)
+}
+
+/// RED (b): a parent and its child arriving as SEPARATE features must still be
+/// written into one partition package. Before the reference-locality repair
+/// they were assigned by feature index alone, so `Count(2)` put them in
+/// `count-00000` and `count-00001` — two packages, each holding a dangling
+/// reference, with nothing printed.
+#[test]
+fn a_parent_and_child_split_across_features_are_co_assigned_to_one_partition() {
+    let out = tempfile::tempdir().unwrap();
+    let (_dir, path, parent, child) = delft_with_split_parent_and_part(0, true);
+    let src = Source::open(&path).unwrap();
+    let opts = ConvertOptions::new(path.clone(), out.path().to_path_buf());
+    let rep =
+        convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(2), &opts).unwrap();
+
+    let labels: Vec<String> = rep.partitions.iter().map(|(l, _)| l.clone()).collect();
+    assert_eq!(
+        labels.len(),
+        1,
+        "the two features reference each other, so they must collapse to one \
+         partition rather than being split by index; got {labels:?}"
+    );
+    let (ids, _) = package_ids_and_refs(&out.path().join(&labels[0]), out.path());
+    assert!(
+        ids.contains(&parent) && ids.contains(&child),
+        "both objects in one package"
+    );
+    assert_references_are_package_local(out.path(), &labels, "split parent/child");
+
+    assert_eq!(
+        rep.co_assigned_features, 1,
+        "one feature was moved off its index-derived label to keep the hierarchy together"
+    );
+    assert_eq!(rep.unresolvable_refs, 0);
+}
+
+/// Conformant input must not be perturbed: every delft feature is already
+/// self-contained, so the repair moves nothing and reports nothing, and the
+/// index-derived partition count is unchanged.
+#[test]
+fn self_contained_features_are_never_co_assigned() {
+    let out = tempfile::tempdir().unwrap();
+    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let opts = delft_opts(out.path());
+    let rep =
+        convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(4), &opts).unwrap();
+    assert_eq!(
+        rep.partitions.len(),
+        4,
+        "conformant input keeps its 4 index chunks"
+    );
+    assert_eq!(rep.co_assigned_features, 0);
+    assert_eq!(rep.unresolvable_refs, 0);
+}
+
+/// A reference whose target is absent from the whole dataset (a partial-area
+/// extract) cannot be repaired by co-assignment. It must be counted and
+/// reported — never silently ignored, and never fatal: refusing would block a
+/// legitimate extract.
+#[test]
+fn a_dangling_reference_is_counted_not_fatal() {
+    let out = tempfile::tempdir().unwrap();
+    let (_dir, path, _parent, _child) = delft_with_split_parent_and_part(3, false);
+    let src = Source::open(&path).unwrap();
+    let opts = ConvertOptions::new(path.clone(), out.path().to_path_buf());
+    let rep =
+        convert_partitioned(std::slice::from_ref(&src), &PartitionSpec::Count(2), &opts).unwrap();
+    assert_eq!(
+        rep.unresolvable_refs, 1,
+        "the orphaned parent still names a child that is nowhere in the dataset"
+    );
+    assert_eq!(
+        rep.co_assigned_features, 0,
+        "there is nothing to co-assign it with"
+    );
+    assert!(!rep.partitions.is_empty(), "the conversion still succeeds");
 }
 
 /// Build a small on-disk CityJSONSeq derivative of the real
