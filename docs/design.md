@@ -220,7 +220,13 @@ rewrite.
 `materials.parquet` and `textures.parquet` carry one dataset-global
 definition per row; well-known CityJSON members become typed columns and
 anything else is preserved under a JSON `other` column. The `id` column is
-the dense `0..n` row index as `Int64` (readers validate `id == position`).
+`Int64`, written as the dense `0..n` row index but resolved **by value**: a
+geometry's `material`/`texture` reference matches the `id`, never the row
+position. Readers require only that ids are non-null and unique, because
+merging two packages offset-shifts a whole sidecar's ids (`dst_max + 1 -
+src_min`) and may leave gaps — the same rule that applies to
+`geometry_templates.parquet`, and the reason all three sidecar ids are
+integers.
 One deliberate normalisation: the numeric material scalars
 (`ambientIntensity`/`transparency`/`shininess`) round-trip through `Float64`,
 so an integer literal `1` reads back as `1.0` — value-exact, not

@@ -171,7 +171,7 @@ fn face_materials(pkg: &Path) -> FaceMaterials {
         .unwrap()
         .cityparquet_metadata()
         .unwrap();
-    let table = read_materials(&pkg.join("materials.parquet")).unwrap();
+    let table = defs_only(read_materials(&pkg.join("materials.parquet")).unwrap());
 
     let mut out = BTreeMap::new();
     for path in &tables.tables {
@@ -234,7 +234,7 @@ fn material_set(pkg: &Path) -> BTreeSet<String> {
     read_materials(&pkg.join("materials.parquet"))
         .unwrap()
         .iter()
-        .map(|m| serde_json::to_string(m).unwrap())
+        .map(|(_, m)| serde_json::to_string(m).unwrap())
         .collect()
 }
 
@@ -242,8 +242,14 @@ fn texture_set(pkg: &Path) -> BTreeSet<String> {
     read_textures(&pkg.join("textures.parquet"))
         .unwrap()
         .iter()
-        .map(|t| serde_json::to_string(t).unwrap())
+        .map(|(_, t)| serde_json::to_string(t).unwrap())
         .collect()
+}
+
+/// The definitions alone: the sidecar readers now return each definition
+/// paired with its `id`, but these comparisons are about payloads.
+fn defs_only(rows: Vec<(i64, Value)>) -> Vec<Value> {
+    rows.into_iter().map(|(_, def)| def).collect()
 }
 
 /// Dereference a texture `values` tree: replace each ring leaf's texture INDEX
@@ -276,7 +282,7 @@ fn face_textures(pkg: &Path) -> FaceTextures {
         .unwrap()
         .cityparquet_metadata()
         .unwrap();
-    let table = read_textures(&pkg.join("textures.parquet")).unwrap();
+    let table = defs_only(read_textures(&pkg.join("textures.parquet")).unwrap());
 
     let mut out = BTreeMap::new();
     for path in &tables.tables {

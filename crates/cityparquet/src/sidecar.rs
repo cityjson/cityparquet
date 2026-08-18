@@ -591,16 +591,10 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
 /// does the rest. A null `id` is rejected outright: there is no such thing
 /// as a row nothing can reference.
 ///
-/// KNOWN INCONSISTENCY: [`read_materials`]/[`read_textures`] still validate
-/// dense ordinals, and `duckdb-cityjson` offset-shifts THEIR ids too — its
-/// `OffsetSQL` is applied per sidecar, generically, materials and textures
-/// included. So exporting a merged package still fails, one file earlier,
-/// at `materials.parquet`; this relaxation is necessary for reading such a
-/// package but not yet sufficient. The spec is if anything blunter about
-/// those two than about templates — the "MUST NOT be interpreted as a row
-/// position, which is not a stable key" sentence is stated of material and
-/// texture references specifically. Relaxing them the same way is a
-/// tracked follow-up, deliberately not folded into the schema change.
+/// [`read_materials`]/[`read_textures`] apply the same rule, for the same
+/// reason: `duckdb-cityjson`'s `OffsetSQL` is applied per sidecar,
+/// generically, so all three tables' ids shift together on a merge. All
+/// three resolve by value.
 pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -782,16 +776,20 @@ fn merge_other(map: &mut serde_json::Map<String, Value>, other: Option<Value>) -
 /// `shininess` come back in float-literal form regardless of how the source
 /// wrote them (see the module docs).
 ///
-/// The join back to a geometry's material index is POSITIONAL (row `i` is
-/// material `i`), so the `id` column — this crate's own writer always sets
-/// it to the row's position — is read back and validated: a row whose `id`
-/// does not equal its position (a spec-conformant but row-reordered
-/// third-party file, or a `materials.parquet` hand-edited/regenerated out of
-/// order) is a `Schema` error rather than a silent mis-attribution of every
-/// definition after that point. Ids are therefore required to be dense
-/// `0..n` in row order; a future reader could instead sort by `id` and drop
-/// this restriction, but no writer this crate produces needs that.
-pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
+/// Each definition is returned paired with its `id`, and a geometry's
+/// `material`/`texture` reference resolves against that VALUE — never against
+/// row position. The spec is explicit: a reference "resolves by matching the
+/// sidecar's `id` column; it MUST NOT be interpreted as a row position, which
+/// is not a stable key and may change when a package is rewritten". It
+/// changes in practice, too: `duckdb-cityjson` offset-shifts every sidecar's
+/// ids on merge and insert (`dst_max + 1 - src_min`, applied per sidecar,
+/// materials and textures included), so a merged package's ids start wherever
+/// the offset put them and have gaps where rows were deduplicated.
+///
+/// `id` is therefore validated for what the spec requires of it and no more:
+/// non-null, and unique across rows. Uniqueness is what keeps a reference
+/// unambiguous; density was never what the join needed.
+pub fn read_materials(path: &Path) -> Result<Vec<(i64, Value)>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -804,7 +802,7 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
         .map_err(|e| CityParquetError::parquet_source("cannot build parquet reader", e))?;
 
     let mut out = Vec::new();
-    let mut next_id = 0i64;
+    let mut seen_ids: HashSet<i64> = HashSet::new();
     for batch in reader {
         let batch = batch.map_err(|e| CityParquetError::parquet_source("parquet read error", e))?;
         let id: &Int64Array = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
@@ -832,13 +830,20 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
         let other: &StringArray = downcast(get_column(&batch, "other")?.as_ref(), "other")?;
 
         for row in 0..batch.num_rows() {
-            if id.value(row) != next_id {
+            if !id.is_valid(row) {
+                return Err(schema_err(
+                    "materials.parquet: a row has a null id — every definition needs an id \
+                     for a geometry's appearance reference to resolve against"
+                        .to_string(),
+                ));
+            }
+            if !seen_ids.insert(id.value(row)) {
                 return Err(schema_err(format!(
-                    "materials.parquet: row at position {next_id} has id {} — ids must be dense 0..n in row order",
+                    "materials.parquet: id {} appears on more than one row — ids must be \
+                     unique across rows, since appearance references resolve against them",
                     id.value(row)
                 )));
             }
-            next_id += 1;
 
             let mut map = serde_json::Map::new();
             if let Some(v) = opt_str(name, row) {
@@ -866,7 +871,7 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
                 map.insert("isSmooth".to_string(), Value::Bool(v));
             }
             merge_other(&mut map, opt_json(other, row)?)?;
-            out.push(Value::Object(map));
+            out.push((id.value(row), Value::Object(map)));
         }
     }
     Ok(out)
@@ -886,7 +891,7 @@ pub fn read_materials(path: &Path) -> Result<Vec<Value>> {
 /// non-null `image_data` (embedded image bytes, which have no JSON
 /// representation to restore them into) is a `Schema` error naming the row —
 /// honest rejection beats silently losing the bytes.
-pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
+pub fn read_textures(path: &Path) -> Result<Vec<(i64, Value)>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -899,7 +904,7 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
         .map_err(|e| CityParquetError::parquet_source("cannot build parquet reader", e))?;
 
     let mut out = Vec::new();
-    let mut next_id = 0i64;
+    let mut seen_ids: HashSet<i64> = HashSet::new();
     for batch in reader {
         let batch = batch.map_err(|e| CityParquetError::parquet_source("parquet read error", e))?;
         let id: &Int64Array = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
@@ -925,13 +930,20 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
         let other: &StringArray = downcast(get_column(&batch, "other")?.as_ref(), "other")?;
 
         for row in 0..batch.num_rows() {
-            if id.value(row) != next_id {
+            if !id.is_valid(row) {
+                return Err(schema_err(
+                    "textures.parquet: a row has a null id — every definition needs an id \
+                     for a geometry's appearance reference to resolve against"
+                        .to_string(),
+                ));
+            }
+            if !seen_ids.insert(id.value(row)) {
                 return Err(schema_err(format!(
-                    "textures.parquet: row at position {next_id} has id {} — ids must be dense 0..n in row order",
+                    "textures.parquet: id {} appears on more than one row — ids must be \
+                     unique across rows, since appearance references resolve against them",
                     id.value(row)
                 )));
             }
-            next_id += 1;
 
             // Embedded image bytes have no JSON representation to restore
             // them into: honest rejection beats silently dropping them (see
@@ -966,7 +978,7 @@ pub fn read_textures(path: &Path) -> Result<Vec<Value>> {
                 map.insert("name".to_string(), Value::String(v));
             }
             merge_other(&mut map, opt_json(other, row)?)?;
-            out.push(Value::Object(map));
+            out.push((id.value(row), Value::Object(map)));
         }
     }
     Ok(out)
@@ -994,6 +1006,19 @@ mod tests {
         crate::appearance::canonical_json_string(v)
     }
 
+    /// The definitions alone, with their ids stripped — for the many tests
+    /// that only care about the payloads. Also asserts the ids are the dense
+    /// ordinals this crate's own writer assigns, so dropping them here never
+    /// hides a writer-side id regression.
+    fn defs_only(rows: Vec<(i64, Value)>) -> Vec<Value> {
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            (0..rows.len() as i64).collect::<Vec<_>>(),
+            "this crate's writer assigns dense ordinal ids"
+        );
+        rows.into_iter().map(|(_, def)| def).collect()
+    }
+
     fn assert_defs_equal(actual: &[Value], expected: &[Value]) {
         assert_eq!(actual.len(), expected.len());
         for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
@@ -1007,12 +1032,12 @@ mod tests {
         let path = dir.path().join("materials.parquet");
         assert_eq!(write_materials(&path, &[]).unwrap(), 0);
         assert!(!path.exists());
-        assert_eq!(read_materials(&path).unwrap(), Vec::<Value>::new());
+        assert_eq!(read_materials(&path).unwrap(), Vec::new());
 
         let path = dir.path().join("textures.parquet");
         assert_eq!(write_textures(&path, &[]).unwrap(), 0);
         assert!(!path.exists());
-        assert_eq!(read_textures(&path).unwrap(), Vec::<Value>::new());
+        assert_eq!(read_textures(&path).unwrap(), Vec::new());
     }
 
     /// Real CityJSON data: railway's own header `appearance.materials` /
@@ -1038,8 +1063,8 @@ mod tests {
         assert_eq!(m_written, 85);
         assert_eq!(t_written, 34);
 
-        let m_back = read_materials(&materials_path).unwrap();
-        let t_back = read_textures(&textures_path).unwrap();
+        let m_back = defs_only(read_materials(&materials_path).unwrap());
+        let t_back = defs_only(read_textures(&textures_path).unwrap());
         assert_defs_equal(&m_back, &materials);
         assert_defs_equal(&t_back, &textures);
 
@@ -1307,7 +1332,14 @@ mod tests {
     /// M4 final-review brief is used here instead of physically reordering
     /// rows: shifting `id` alone is enough to prove the reader actually
     /// looks at the column instead of trusting position).
-    fn corrupt_id_column_by_shifting(path: &Path, schema: Arc<Schema>) {
+    /// Shift every `id` by +1 — the shape a merge offset produces.
+    fn shift_id_column(path: &Path, schema: Arc<Schema>) {
+        rewrite_id_column(path, schema, &|_, id| id + 1);
+    }
+
+    /// Rewrite the `id` column through `f(row_index, old_id)`, leaving every
+    /// other column of the real file untouched.
+    fn rewrite_id_column(path: &Path, schema: Arc<Schema>, f: &dyn Fn(usize, i64) -> i64) {
         let file = File::open(path).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         let mut reader = builder.build().unwrap();
@@ -1325,7 +1357,7 @@ mod tests {
             .unwrap();
         let mut shifted = Int64Builder::with_capacity(old_id.len());
         for i in 0..old_id.len() {
-            shifted.append_value(old_id.value(i) + 1);
+            shifted.append_value(f(i, old_id.value(i)));
         }
         let mut arrays: Vec<ArrayRef> = batch.columns().to_vec();
         let id_pos = batch.schema().index_of("id").unwrap();
@@ -1335,14 +1367,19 @@ mod tests {
         write_batch(path, schema, corrupted).unwrap();
     }
 
-    /// Reviewer follow-up (M4 final-review Fix 2): the join from a
-    /// `materials.parquet` row to the geometry `material` index it backs is
-    /// positional, so a file whose `id` column disagrees with row position
-    /// (a spec-conformant but reordered/corrupted third-party file) must be
-    /// rejected rather than silently mis-attributing every definition from
-    /// that point on. Derived from real railway material definitions.
+    /// Ids that do not match row position are LEGAL: `duckdb-cityjson`
+    /// offset-shifts every sidecar's ids on merge and insert
+    /// (`dst_max + 1 - src_min`, applied per sidecar), so a merged package's
+    /// materials start wherever the offset put them. The reader must return
+    /// them as-is — a geometry's `material` reference resolves against the id
+    /// VALUE, which the spec states outright.
+    ///
+    /// This replaces a check that required dense `0..n`; that check would
+    /// reject the very packages the BIGINT id exists to make mergeable.
+    /// Derived from real railway material definitions, shifted by the same
+    /// +1 the old test used to corrupt them with.
     #[test]
-    fn read_materials_rejects_id_column_disagreeing_with_row_position() {
+    fn read_materials_accepts_offset_shifted_ids() {
         let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
         let doc = CityJSON::from_str(&raw_text).unwrap();
         let materials = doc
@@ -1355,26 +1392,30 @@ mod tests {
         let path = dir.path().join("materials.parquet");
         write_materials(&path, &materials).unwrap();
 
-        // Precondition: the honest file reads back fine.
-        assert_eq!(read_materials(&path).unwrap().len(), materials.len());
+        // Precondition: as written, ids are the dense ordinals 0..n.
+        let before = read_materials(&path).unwrap();
+        assert_eq!(before.len(), materials.len());
+        assert_eq!(before[0].0, 0);
 
-        corrupt_id_column_by_shifting(&path, Arc::new(sidecar_schemas::materials_schema()));
+        shift_id_column(&path, Arc::new(sidecar_schemas::materials_schema()));
 
-        let err = read_materials(&path).unwrap_err();
-        assert!(
-            matches!(err, CityParquetError::Schema(_)),
-            "expected a Schema error, got {err:?}"
+        let after = read_materials(&path).unwrap();
+        assert_eq!(
+            after.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            (1..=materials.len() as i64).collect::<Vec<_>>(),
+            "shifted ids must come back shifted, not be rejected or renumbered"
         );
-        assert!(
-            err.to_string().contains("id"),
-            "the error must mention the id mismatch, got: {err}"
+        assert_eq!(
+            after.iter().map(|(_, d)| canonical(d)).collect::<Vec<_>>(),
+            before.iter().map(|(_, d)| canonical(d)).collect::<Vec<_>>(),
+            "only the ids moved; the definitions are unchanged"
         );
     }
 
-    /// [`read_materials_rejects_id_column_disagreeing_with_row_position`]'s
-    /// counterpart for `read_textures`.
+    /// [`read_materials_accepts_offset_shifted_ids`]'s counterpart for
+    /// `read_textures`.
     #[test]
-    fn read_textures_rejects_id_column_disagreeing_with_row_position() {
+    fn read_textures_accepts_offset_shifted_ids() {
         let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
         let doc = CityJSON::from_str(&raw_text).unwrap();
         let textures = doc
@@ -1389,16 +1430,47 @@ mod tests {
 
         assert_eq!(read_textures(&path).unwrap().len(), textures.len());
 
-        corrupt_id_column_by_shifting(&path, Arc::new(sidecar_schemas::textures_schema()));
+        shift_id_column(&path, Arc::new(sidecar_schemas::textures_schema()));
 
-        let err = read_textures(&path).unwrap_err();
+        let after = read_textures(&path).unwrap();
+        assert_eq!(
+            after.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            (1..=textures.len() as i64).collect::<Vec<_>>()
+        );
+    }
+
+    /// Uniqueness is what replaced density, and it is not optional: two rows
+    /// sharing an id make a geometry's `material` reference ambiguous.
+    /// Derived from real railway materials by forcing row 1's id to row 0's.
+    #[test]
+    fn read_materials_rejects_a_duplicate_id() {
+        let raw_text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+        let doc = CityJSON::from_str(&raw_text).unwrap();
+        let materials = doc
+            .appearance
+            .as_ref()
+            .and_then(|a| a.materials.clone())
+            .expect("railway has materials");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materials.parquet");
+        write_materials(&path, &materials).unwrap();
+        rewrite_id_column(
+            &path,
+            Arc::new(sidecar_schemas::materials_schema()),
+            &|i, id| {
+                if i == 1 { 0 } else { id }
+            },
+        );
+
+        let err = read_materials(&path).unwrap_err();
         assert!(
             matches!(err, CityParquetError::Schema(_)),
             "expected a Schema error, got {err:?}"
         );
         assert!(
-            err.to_string().contains("id"),
-            "the error must mention the id mismatch, got: {err}"
+            err.to_string().contains("more than one row"),
+            "the error must name the duplicate, got: {err}"
         );
     }
 
@@ -1433,7 +1505,7 @@ mod tests {
             write_materials(&path, std::slice::from_ref(&def)).unwrap(),
             1
         );
-        let back = read_materials(&path).unwrap();
+        let back = defs_only(read_materials(&path).unwrap());
         assert_eq!(back.len(), 1);
 
         // Value-exact: same number...
@@ -2010,7 +2082,7 @@ mod tests {
         let path = dir.path().join("textures.parquet");
         write_one_texture_row(&path, Some("my-texture"), None);
 
-        let defs = read_textures(&path).unwrap();
+        let defs = defs_only(read_textures(&path).unwrap());
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0]["name"], serde_json::json!("my-texture"));
     }

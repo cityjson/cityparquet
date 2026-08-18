@@ -1334,7 +1334,11 @@ fn export_errors_on_an_out_of_range_material_global_id() {
     convert(&opts).unwrap();
 
     let materials_path = package_dir.path().join("materials.parquet");
-    let defs = read_materials(&materials_path).unwrap();
+    let defs: Vec<serde_json::Value> = read_materials(&materials_path)
+        .unwrap()
+        .into_iter()
+        .map(|(_, def)| def)
+        .collect();
     assert_eq!(
         defs.len(),
         85,

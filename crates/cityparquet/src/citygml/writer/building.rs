@@ -10,6 +10,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
+use std::sync::LazyLock;
 
 use cityparquet_schema::{AttributeType, CityParquetError, Lod};
 use quick_xml::Writer;
@@ -157,8 +158,8 @@ pub fn write_building<W: Write>(
     feature_index: usize,
     bounds: &mut Bounds,
     report: &mut WriteReport,
-    materials: Option<&[Value]>,
-    textures: Option<&[Value]>,
+    materials: Option<&HashMap<i64, Value>>,
+    textures: Option<&HashMap<i64, Value>>,
 ) -> Result<bool> {
     if !is_ncname(&b.id) {
         return Err(CityParquetError::Schema(format!(
@@ -203,8 +204,8 @@ pub fn write_object_content<W: Write>(
     feature_index: usize,
     bounds: &mut Bounds,
     report: &mut WriteReport,
-    materials: Option<&[Value]>,
-    textures: Option<&[Value]>,
+    materials: Option<&HashMap<i64, Value>>,
+    textures: Option<&HashMap<i64, Value>>,
 ) -> Result<bool> {
     // Keep at most one solid per major LoD (1..=4), the highest minor.
     // BTreeMap keeps the majors in ascending order for emission.
@@ -401,8 +402,8 @@ pub fn write_object_content<W: Write>(
             w,
             &mat_acc,
             &tex_acc,
-            materials.unwrap_or(&[]),
-            textures.unwrap_or(&[]),
+            materials.unwrap_or(&EMPTY_DEFS),
+            textures.unwrap_or(&EMPTY_DEFS),
             report,
         )?;
     }
@@ -419,7 +420,7 @@ pub fn write_object_content<W: Write>(
 /// the geometry still emits without appearance.
 fn resolve_materials(
     material: Option<&Value>,
-    materials: Option<&[Value]>,
+    materials: Option<&HashMap<i64, Value>>,
     kind: &DecodedKind,
     report: &mut WriteReport,
 ) -> (
@@ -435,7 +436,7 @@ fn resolve_materials(
         return (empty, Vec::new());
     };
     let n_faces = count_faces(kind);
-    match material_face_maps(material, n_faces, table.len()) {
+    match material_face_maps(material, n_faces, table) {
         Ok(maps) => {
             let union = material_union(&maps, n_faces);
             (maps, union)
@@ -453,7 +454,7 @@ fn resolve_materials(
 /// emits without texture appearance.
 fn resolve_textures(
     texture: Option<&Value>,
-    textures: Option<&[Value]>,
+    textures: Option<&HashMap<i64, Value>>,
     kind: &DecodedKind,
     report: &mut WriteReport,
 ) -> TextureFaceMaps {
@@ -464,7 +465,7 @@ fn resolve_textures(
         report.appearance_skipped_core_profile += 1;
         return TextureFaceMaps::new();
     };
-    match texture_face_maps(texture, table.len()) {
+    match texture_face_maps(texture, table) {
         // The `[face][ring]` tree must match the geometry's shape exactly — else
         // ring ids would be allocated for phantom rings and `app:target`s would
         // dangle. A mismatch drops this geometry's textures with a counter.
@@ -493,16 +494,23 @@ const MAX_PART_DEPTH: usize = 32;
 /// The read-only object graph a Building assembly is rendered from: every
 /// object's content, its `children` id list, its CityObject `type`, and the
 /// attribute type map.
+/// Stand-in for "this package has no appearance definitions", so the
+/// `Option<&HashMap>` can be unwrapped without allocating per call.
+static EMPTY_DEFS: LazyLock<HashMap<i64, Value>> = LazyLock::new(HashMap::new);
+
 pub struct BuildingTree<'a> {
     pub content_by_id: &'a HashMap<String, BuildingSolids>,
     pub children_by_id: &'a HashMap<String, Vec<String>>,
     pub type_by_id: &'a HashMap<String, String>,
     pub types: &'a HashMap<String, AttributeType>,
-    /// The package's global materials table (`materials.parquet`), or `None` on a
-    /// Core-profile package with no appearance definitions.
-    pub materials: Option<&'a [Value]>,
-    /// The package's global textures table (`textures.parquet`), or `None`.
-    pub textures: Option<&'a [Value]>,
+    /// The package's global materials (`materials.parquet`) keyed by sidecar
+    /// `id`, or `None` on a Core-profile package with no appearance
+    /// definitions. Keyed by id rather than row position because a merged
+    /// package's ids are offset-shifted and gapped.
+    pub materials: Option<&'a HashMap<i64, Value>>,
+    /// The package's global textures (`textures.parquet`) keyed by sidecar
+    /// `id`, or `None`. See [`Self::materials`].
+    pub textures: Option<&'a HashMap<i64, Value>>,
 }
 
 /// Render an object's INNER bytes (attributes + geometry, then each non-empty
@@ -1351,10 +1359,16 @@ mod tests {
         };
         let props = serde_json::json!({ "type": "Solid", "shells": [[3]] });
         let material = serde_json::json!({ "visual": { "values": [[0, 0, 1]] } });
-        let table = vec![
-            serde_json::json!({ "name": "red", "diffuseColor": [1.0, 0.0, 0.0] }),
-            serde_json::json!({ "name": "green", "diffuseColor": [0.0, 1.0, 0.0] }),
-        ];
+        let table: HashMap<i64, Value> = HashMap::from([
+            (
+                0,
+                serde_json::json!({ "name": "red", "diffuseColor": [1.0, 0.0, 0.0] }),
+            ),
+            (
+                1,
+                serde_json::json!({ "name": "green", "diffuseColor": [0.0, 1.0, 0.0] }),
+            ),
+        ]);
         let b = BuildingSolids {
             id: "MAT".into(),
             attributes: serde_json::Map::new(),
@@ -1421,7 +1435,8 @@ mod tests {
         let texture = serde_json::json!({
             "visual": { "values": [[[0, [0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], [null]]] }
         });
-        let tex_table = vec![serde_json::json!({ "type": "JPG", "image": "t.jpg" })];
+        let tex_table: HashMap<i64, Value> =
+            HashMap::from([(0, serde_json::json!({ "type": "JPG", "image": "t.jpg" }))]);
         let b = BuildingSolids {
             id: "TM".into(),
             attributes: serde_json::Map::new(),

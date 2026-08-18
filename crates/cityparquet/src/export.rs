@@ -868,8 +868,11 @@ fn is_localised_texture_ring(items: &[Value]) -> bool {
 /// way in; this one turns dataset-global ids (with UVs still inlined) back
 /// into a fresh, self-contained feature-local slice on the way out.
 struct LocalAppearance<'a> {
-    global_materials: &'a [Value],
-    global_textures: &'a [Value],
+    /// Definitions by their sidecar `id`, NOT by row position: appearance
+    /// references resolve by matching the id value (spec), and a merged
+    /// package's ids are offset-shifted and may have gaps.
+    global_materials: &'a HashMap<i64, Value>,
+    global_textures: &'a HashMap<i64, Value>,
     local_materials: Vec<Value>,
     material_ids: HashMap<usize, usize>,
     local_textures: Vec<Value>,
@@ -879,7 +882,10 @@ struct LocalAppearance<'a> {
 }
 
 impl<'a> LocalAppearance<'a> {
-    fn new(global_materials: &'a [Value], global_textures: &'a [Value]) -> Self {
+    fn new(
+        global_materials: &'a HashMap<i64, Value>,
+        global_textures: &'a HashMap<i64, Value>,
+    ) -> Self {
         Self {
             global_materials,
             global_textures,
@@ -900,12 +906,16 @@ impl<'a> LocalAppearance<'a> {
         if let Some(&id) = self.material_ids.get(&global_id) {
             return Ok(id);
         }
-        let def = self.global_materials.get(global_id).ok_or_else(|| {
-            err(format!(
-                "material global id {global_id} out of range (loaded {} definitions)",
-                self.global_materials.len()
-            ))
-        })?;
+        let def = self
+            .global_materials
+            .get(&(global_id as i64))
+            .ok_or_else(|| {
+                err(format!(
+                    "material global id {global_id} does not name a row in materials.parquet \
+                     (loaded {} definitions)",
+                    self.global_materials.len()
+                ))
+            })?;
         let id = self.local_materials.len();
         self.local_materials.push(def.clone());
         self.material_ids.insert(global_id, id);
@@ -918,12 +928,16 @@ impl<'a> LocalAppearance<'a> {
         if let Some(&id) = self.texture_ids.get(&global_id) {
             return Ok(id);
         }
-        let def = self.global_textures.get(global_id).ok_or_else(|| {
-            err(format!(
-                "texture global id {global_id} out of range (loaded {} definitions)",
-                self.global_textures.len()
-            ))
-        })?;
+        let def = self
+            .global_textures
+            .get(&(global_id as i64))
+            .ok_or_else(|| {
+                err(format!(
+                    "texture global id {global_id} does not name a row in textures.parquet \
+                     (loaded {} definitions)",
+                    self.global_textures.len()
+                ))
+            })?;
         let id = self.local_textures.len();
         self.local_textures.push(def.clone());
         self.texture_ids.insert(global_id, id);
@@ -1158,8 +1172,8 @@ struct RebuiltTemplates {
 /// non-empty (callers skip this entirely when no sidecar was loaded).
 fn rebuild_templates(
     rows: &[TemplateRow],
-    global_materials: &[Value],
-    global_textures: &[Value],
+    global_materials: &HashMap<i64, Value>,
+    global_textures: &HashMap<i64, Value>,
 ) -> Result<RebuiltTemplates> {
     let mut interner = RawVertexInterner::default();
     let mut local_appearance = LocalAppearance::new(global_materials, global_textures);
@@ -1306,15 +1320,20 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         .sidecar_files
         .iter()
         .any(|f| f == "materials.parquet" || f == "textures.parquet");
-    let global_materials = if restore_appearance {
+    // Keyed by sidecar `id`, not row position — see `LocalAppearance`.
+    let global_materials: HashMap<i64, Value> = if restore_appearance {
         read_materials(&opts.package_dir.join("materials.parquet"))?
+            .into_iter()
+            .collect()
     } else {
-        Vec::new()
+        HashMap::new()
     };
-    let global_textures = if restore_appearance {
+    let global_textures: HashMap<i64, Value> = if restore_appearance {
         read_textures(&opts.package_dir.join("textures.parquet"))?
+            .into_iter()
+            .collect()
     } else {
-        Vec::new()
+        HashMap::new()
     };
 
     // Whether this package carries the geometry-templates sidecar: gated by
@@ -1571,7 +1590,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             // both global slices empty it can only ever produce a
             // defaults-only block (or `None` when there are no defaults).
             None => meta.appearance_defaults.as_ref().and_then(|defaults| {
-                LocalAppearance::new(&[], &[]).into_appearance(Some(defaults))
+                LocalAppearance::new(&HashMap::new(), &HashMap::new())
+                    .into_appearance(Some(defaults))
             }),
         };
         features.push(feature);
@@ -1914,7 +1934,8 @@ mod tests {
     /// nonexistent `appearance` block, invalid CityJSON.
     #[test]
     fn into_appearance_is_not_none_when_only_local_uvs_are_populated() {
-        let mut local = LocalAppearance::new(&[], &[]);
+        let empty = HashMap::new();
+        let mut local = LocalAppearance::new(&empty, &empty);
         let map = serde_json::json!({
             "visual": {"values": [[null, [0.1, 0.2], [0.3, 0.4]]]}
         });
@@ -1949,7 +1970,8 @@ mod tests {
     /// defaults exist` rule.
     #[test]
     fn into_appearance_with_an_empty_slicer_and_defaults_is_some_with_only_default_members() {
-        let local = LocalAppearance::new(&[], &[]);
+        let empty = HashMap::new();
+        let local = LocalAppearance::new(&empty, &empty);
         let defaults = serde_json::json!({
             "default-theme-material": "theme-a",
             "default-theme-texture": "theme-b",
@@ -1972,7 +1994,8 @@ mod tests {
     /// grow an appearance block out of nowhere.
     #[test]
     fn into_appearance_with_an_empty_slicer_and_no_defaults_is_none() {
-        let local = LocalAppearance::new(&[], &[]);
+        let empty = HashMap::new();
+        let local = LocalAppearance::new(&empty, &empty);
         assert!(local.into_appearance(None).is_none());
     }
 }

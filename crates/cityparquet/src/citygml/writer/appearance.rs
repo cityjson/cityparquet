@@ -9,7 +9,7 @@
 //! a full literal `app:X3DMaterial` (CityGML has no shared material library) with
 //! its `app:target` face references.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 
 use cityparquet_schema::CityParquetError;
@@ -66,13 +66,19 @@ pub fn face_ring_counts(kind: &DecodedKind) -> Vec<usize> {
 }
 
 /// Flatten a material `values` tree's leaves (a non-negative integer -> a global
-/// material id, `null` -> no material) in DFS (face-walk) order, range-checked
-/// against the table length.
-fn flatten_leaves(v: &Value, n_materials: usize, out: &mut Vec<Option<usize>>) -> Result<()> {
+/// material id, `null` -> no material) in DFS (face-walk) order, each leaf
+/// checked to name a real row of `materials` — BY ID, not by position: a
+/// merged package's ids are offset-shifted and gapped, so "less than the table
+/// length" is not the same question as "exists".
+fn flatten_leaves(
+    v: &Value,
+    materials: &HashMap<i64, Value>,
+    out: &mut Vec<Option<usize>>,
+) -> Result<()> {
     match v {
         Value::Array(items) => {
             for it in items {
-                flatten_leaves(it, n_materials, out)?;
+                flatten_leaves(it, materials, out)?;
             }
             Ok(())
         }
@@ -85,9 +91,9 @@ fn flatten_leaves(v: &Value, n_materials: usize, out: &mut Vec<Option<usize>>) -
                 .as_u64()
                 .ok_or_else(|| err("material index is not a non-negative integer"))?
                 as usize;
-            if i >= n_materials {
+            if !materials.contains_key(&(i as i64)) {
                 return Err(err(format!(
-                    "material index {i} >= materials table length {n_materials}"
+                    "material id {i} does not name a row in materials.parquet"
                 )));
             }
             out.push(Some(i));
@@ -103,7 +109,7 @@ fn flatten_leaves(v: &Value, n_materials: usize, out: &mut Vec<Option<usize>>) -
 pub fn material_face_maps(
     material_map: &Value,
     n_faces: usize,
-    n_materials: usize,
+    materials: &HashMap<i64, Value>,
 ) -> Result<BTreeMap<String, Vec<Option<usize>>>> {
     let obj = material_map
         .as_object()
@@ -115,7 +121,7 @@ pub fn material_face_maps(
             .ok_or_else(|| err(format!("material theme '{theme}' must be an object")))?;
         let flat = if let Some(values) = inner.get("values") {
             let mut leaves = Vec::new();
-            flatten_leaves(values, n_materials, &mut leaves)?;
+            flatten_leaves(values, materials, &mut leaves)?;
             if leaves.len() != n_faces {
                 return Err(err(format!(
                     "material theme '{theme}' has {} values but geometry has {n_faces} faces",
@@ -128,9 +134,9 @@ pub fn material_face_maps(
                 .as_u64()
                 .ok_or_else(|| err("scalar material value is not a non-negative integer"))?
                 as usize;
-            if gid >= n_materials {
+            if !materials.contains_key(&(gid as i64)) {
                 return Err(err(format!(
-                    "material index {gid} >= materials table length {n_materials}"
+                    "material id {gid} does not name a row in materials.parquet"
                 )));
             }
             vec![Some(gid); n_faces]
@@ -200,7 +206,10 @@ impl AppearanceAcc {
 /// (global id + UVs, `None` = untextured ring). The stored texture tree mirrors
 /// `boundaries` with each ring's `[t, [u,v]…]` (or `[null]`) leaf; the walk over
 /// FACES (in walk order) collapses the shell/solid nesting.
-pub fn texture_face_maps(texture_map: &Value, n_textures: usize) -> Result<TextureFaceMaps> {
+pub fn texture_face_maps(
+    texture_map: &Value,
+    textures: &HashMap<i64, Value>,
+) -> Result<TextureFaceMaps> {
     let obj = texture_map
         .as_object()
         .ok_or_else(|| err("texture map must be a JSON object of theme -> {values}"))?;
@@ -211,7 +220,7 @@ pub fn texture_face_maps(texture_map: &Value, n_textures: usize) -> Result<Textu
             .and_then(|o| o.get("values"))
             .ok_or_else(|| err(format!("texture theme '{theme}' is missing 'values'")))?;
         let mut faces = Vec::new();
-        flatten_texture_faces(values, n_textures, &mut faces)?;
+        flatten_texture_faces(values, textures, &mut faces)?;
         out.insert(theme.clone(), faces);
     }
     Ok(out)
@@ -247,7 +256,10 @@ fn is_ring_leaf(v: &Value) -> bool {
     matches!(v, Value::Array(a) if matches!(a.first(), Some(Value::Number(_)) | Some(Value::Null) | None))
 }
 
-fn parse_ring_leaf(v: &Value, n_textures: usize) -> Result<Option<(usize, Vec<[f64; 2]>)>> {
+fn parse_ring_leaf(
+    v: &Value,
+    textures: &HashMap<i64, Value>,
+) -> Result<Option<(usize, Vec<[f64; 2]>)>> {
     let a = v
         .as_array()
         .ok_or_else(|| err("texture ring leaf must be an array"))?;
@@ -256,9 +268,9 @@ fn parse_ring_leaf(v: &Value, n_textures: usize) -> Result<Option<(usize, Vec<[f
             let tex = n
                 .as_u64()
                 .ok_or_else(|| err("texture id is not an integer"))? as usize;
-            if tex >= n_textures {
+            if !textures.contains_key(&(tex as i64)) {
                 return Err(err(format!(
-                    "texture id {tex} >= textures table length {n_textures}"
+                    "texture id {tex} does not name a row in textures.parquet"
                 )));
             }
             let uvs = a[1..]
@@ -281,7 +293,11 @@ fn parse_ring_leaf(v: &Value, n_textures: usize) -> Result<Option<(usize, Vec<[f
     }
 }
 
-fn flatten_texture_faces(v: &Value, n_textures: usize, out: &mut FaceRingTextures) -> Result<()> {
+fn flatten_texture_faces(
+    v: &Value,
+    textures: &HashMap<i64, Value>,
+    out: &mut FaceRingTextures,
+) -> Result<()> {
     let Value::Array(items) = v else {
         return Err(err("texture values must be an array"));
     };
@@ -289,12 +305,12 @@ fn flatten_texture_faces(v: &Value, n_textures: usize, out: &mut FaceRingTexture
         // `v` is a FACE: its children are ring leaves.
         let rings = items
             .iter()
-            .map(|r| parse_ring_leaf(r, n_textures))
+            .map(|r| parse_ring_leaf(r, textures))
             .collect::<Result<Vec<_>>>()?;
         out.push(rings);
     } else {
         for it in items {
-            flatten_texture_faces(it, n_textures, out)?;
+            flatten_texture_faces(it, textures, out)?;
         }
     }
     Ok(())
@@ -352,8 +368,8 @@ pub fn write_appearance<W: Write>(
     w: &mut Writer<W>,
     materials: &AppearanceAcc,
     textures: &TextureAcc,
-    material_table: &[Value],
-    texture_table: &[Value],
+    material_table: &HashMap<i64, Value>,
+    texture_table: &HashMap<i64, Value>,
     report: &mut WriteReport,
 ) -> Result<()> {
     let themes: BTreeSet<&String> = materials
@@ -370,7 +386,7 @@ pub fn write_appearance<W: Write>(
         }
         if let Some(mats) = materials.themes.get(theme) {
             for (gid, targets) in mats {
-                let def = material_table.get(*gid).ok_or_else(|| {
+                let def = material_table.get(&(*gid as i64)).ok_or_else(|| {
                     err(format!(
                         "material global id {gid} out of range (table length {})",
                         material_table.len()
@@ -382,7 +398,7 @@ pub fn write_appearance<W: Write>(
         }
         if let Some(texs) = textures.themes.get(theme) {
             for (tid, polys) in texs {
-                let def = texture_table.get(*tid).ok_or_else(|| {
+                let def = texture_table.get(&(*tid as i64)).ok_or_else(|| {
                     err(format!(
                         "texture global id {tid} out of range (table length {})",
                         texture_table.len()

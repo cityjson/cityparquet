@@ -184,18 +184,20 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     // Global materials table (Compatibility profile): appearance definitions the
     // per-geometry material maps' global ids resolve against. Absent on a Core
     // package (no materials.parquet listed) — appearance is then skipped.
-    let global_materials: Option<Vec<serde_json::Value>> = tables
+    let global_materials: Option<HashMap<i64, serde_json::Value>> = tables
         .sidecar_files
         .iter()
         .any(|f| f == "materials.parquet")
         .then(|| read_materials(&opts.package_dir.join("materials.parquet")))
-        .transpose()?;
-    let global_textures: Option<Vec<serde_json::Value>> = tables
+        .transpose()?
+        .map(|defs| defs.into_iter().collect());
+    let global_textures: Option<HashMap<i64, serde_json::Value>> = tables
         .sidecar_files
         .iter()
         .any(|f| f == "textures.parquet")
         .then(|| read_textures(&opts.package_dir.join("textures.parquet")))
-        .transpose()?;
+        .transpose()?
+        .map(|defs| defs.into_iter().collect());
 
     let mut report = WriteReport::default();
     let mut bounds = Bounds::new();
@@ -333,8 +335,8 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
         children_by_id: &children_by_id,
         type_by_id: &type_by_id,
         types: &attr_types,
-        materials: global_materials.as_deref(),
-        textures: global_textures.as_deref(),
+        materials: global_materials.as_ref(),
+        textures: global_textures.as_ref(),
     };
     let mut next_feature_index = 0usize;
     let mut reached_parts: HashSet<String> = HashSet::new();
