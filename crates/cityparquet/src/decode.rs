@@ -34,7 +34,9 @@ const ARROW_JSON_EXTENSION: &str = "arrow.json";
 /// transformation matrix.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemplateInstance {
-    pub id: String,
+    /// The `geometry_templates.parquet` row this instance references, by
+    /// `id` value — BIGINT, matching the sidecar's own `id` column.
+    pub id: i64,
     pub point: [f64; 3],
     pub transformation_matrix: Option<Value>,
 }
@@ -495,7 +497,7 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
 
     let template_col =
         downcast::<StructArray>(get_column(batch, "template")?.as_ref(), "template")?;
-    let template_id_col = downcast::<StringArray>(template_col.column(0).as_ref(), "template.id")?;
+    let template_id_col = downcast::<Int64Array>(template_col.column(0).as_ref(), "template.id")?;
     let template_point_col =
         downcast::<BinaryArray>(template_col.column(1).as_ref(), "template.point")?;
     let template_matrix_col = downcast::<ListArray>(
@@ -666,7 +668,7 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
                 )?)
             };
             Some(TemplateInstance {
-                id: template_id_col.value(row).to_string(),
+                id: template_id_col.value(row),
                 point,
                 transformation_matrix,
             })

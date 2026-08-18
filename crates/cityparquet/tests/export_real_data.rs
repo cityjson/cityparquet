@@ -1280,11 +1280,11 @@ fn export_errors_on_a_dangling_template_id_reference() {
         3,
         "railway must carry exactly 3 geometry templates (pinned elsewhere)"
     );
-    let corrupted: Vec<_> = rows.into_iter().filter(|r| r.id != "2").collect();
+    let corrupted: Vec<_> = rows.into_iter().filter(|r| r.id != 2).collect();
     assert_eq!(
         corrupted.len(),
         2,
-        "removing template id \"2\" must leave exactly the other 2 (still densely \"0\", \"1\") rows"
+        "removing template id 2 must leave exactly the other 2 (ids 0 and 1) rows"
     );
     write_templates(&templates_path, &corrupted).unwrap();
 
@@ -1306,8 +1306,8 @@ fn export_errors_on_a_dangling_template_id_reference() {
         "the error must name the dangling object, got: {msg}"
     );
     assert!(
-        msg.contains("\"2\""),
-        "the error must name the missing template id \"2\", got: {msg}"
+        msg.contains("template id 2"),
+        "the error must name the missing template id 2, got: {msg}"
     );
 }
 

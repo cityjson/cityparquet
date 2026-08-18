@@ -104,7 +104,16 @@ pub fn textures_schema() -> Schema {
 /// template's own LOCAL frame, exempt from the file CRS (spec: "Templates
 /// are in local coordinates, and are exempt from the file CRS").
 pub fn geometry_templates_schema(lods: &[Lod]) -> Schema {
-    let mut fields = vec![Field::new("id", DataType::Utf8, false)];
+    // `id` is BIGINT, not the template's source label: sidecar ids are
+    // renumbered by an integer offset (`dst_max + 1 - src_min`) when packages
+    // merge, which a string cannot carry, and the object table's
+    // `template.id` that references this column is BIGINT too. `name` is
+    // where a source identifier survives — null for CityJSON, whose
+    // templates are unnamed array entries.
+    let mut fields = vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ];
     for lod in lods {
         fields.push(Field::new(
             geometry_column_name("geometry", lod),
@@ -209,6 +218,7 @@ mod tests {
         let g = geometry_templates_schema(&[Lod::parse("2.2").unwrap()]);
         for col in [
             "id",
+            "name",
             "geometry_lod2_2",
             "geometry_properties_lod2_2",
             "material_lod2_2",
@@ -216,6 +226,25 @@ mod tests {
         ] {
             assert!(g.field_with_name(col).is_ok(), "templates missing {col}");
         }
+        // Spec "geometry_templates.parquet": `id BIGINT` required, `name
+        // VARCHAR` optional — the same id/name pair as materials and
+        // textures, so all three sidecars remap identically on merge.
+        assert_eq!(
+            g.field_with_name("id").unwrap().data_type(),
+            &DataType::Int64,
+            "templates.id must be BIGINT so it can be offset-shifted on merge like the \
+             other sidecars, and so it matches the object table's template.id"
+        );
+        assert!(!g.field_with_name("id").unwrap().is_nullable());
+        assert_eq!(
+            g.field_with_name("name").unwrap().data_type(),
+            &DataType::Utf8
+        );
+        assert!(
+            g.field_with_name("name").unwrap().is_nullable(),
+            "templates.name is optional — CityJSON templates are array entries with no \
+             identifier of their own"
+        );
         for col in [
             "geometry",
             "geometry_properties",

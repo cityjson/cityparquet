@@ -1137,14 +1137,14 @@ impl<'a> LocalAppearance<'a> {
 
 /// The rebuilt header `geometry-templates` plus the header-scope appearance
 /// its templates' `material`/`texture` were localised into, and the join
-/// table from a sidecar row's `id` (the string the main-table `template`
+/// table from a sidecar row's `id` (the BIGINT the main-table `template`
 /// column's `id` references) to that template's position in
 /// `templates`/the exported `GeometryInstance.template` index.
 struct RebuiltTemplates {
     templates: Vec<Geometry>,
     vertices_templates: Value,
     appearance: Option<Appearance>,
-    id_to_pos: HashMap<String, usize>,
+    id_to_pos: HashMap<i64, usize>,
 }
 
 /// Rebuilds the header's `geometry-templates` from `geometry_templates.parquet`
@@ -1167,7 +1167,7 @@ fn rebuild_templates(
     let mut id_to_pos = HashMap::with_capacity(rows.len());
 
     for (pos, row) in rows.iter().enumerate() {
-        id_to_pos.insert(row.id.clone(), pos);
+        id_to_pos.insert(row.id, pos);
 
         let decoded = wkb_to_geometry(&row.wkb)?;
         let vmap: Vec<usize> = decoded.coords.iter().map(|&c| interner.intern(c)).collect();
@@ -1344,7 +1344,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
     } else {
         Vec::new()
     };
-    let template_id_to_pos: HashMap<String, usize> = if template_rows.is_empty() {
+    let template_id_to_pos: HashMap<i64, usize> = if template_rows.is_empty() {
         HashMap::new()
     } else {
         let rebuilt = rebuild_templates(&template_rows, &global_materials, &global_textures)?;

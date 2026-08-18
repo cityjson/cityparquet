@@ -57,7 +57,9 @@ fn transformation_matrix_data_type() -> DataType {
 
 pub fn template_data_type() -> DataType {
     DataType::Struct(Fields::from(vec![
-        Field::new("id", DataType::Utf8, true),
+        // BIGINT, matching `geometry_templates.parquet`'s own `id` column
+        // this references (spec "Appearance & templates").
+        Field::new("id", DataType::Int64, true),
         Field::new("point", DataType::Binary, true),
         Field::new(
             "transformationMatrix",

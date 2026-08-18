@@ -21,6 +21,7 @@
 //! int/float JSON numbers as equal within tolerance, so this normalisation
 //! can never break round-trip equality at the dataset level.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
@@ -456,7 +457,20 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
 /// with no members left over to preserve".
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemplateRow {
-    pub id: String,
+    /// Dataset-global template identifier — what the object table's
+    /// `template.id` references. An integer, so a merge can shift a whole
+    /// package's template ids by one offset exactly as it does materials and
+    /// textures. The writer assigns ordinal positions; a reader must NOT
+    /// assume that, since a merged package's ids start wherever the offset
+    /// put them.
+    pub id: i64,
+    /// The template's identifier in the source document, when it had one.
+    /// Always `None` from a CityJSON source — `geometry-templates.templates`
+    /// is a bare array whose entries carry no identifier — and the CityGML
+    /// reader emits no templates at all. The column exists so that a source
+    /// which does name its templates has somewhere to put it, now that `id`
+    /// is a remappable integer.
+    pub name: Option<String>,
     pub lod: Lod,
     pub wkb: Vec<u8>,
     pub geometry_properties: Option<Value>,
@@ -499,10 +513,10 @@ impl TemplateSlot {
 /// distinct LoDs present in `rows` (never a wider, dataset-inherited set —
 /// mirrors the main object table's own `scan.lods`-driven column set, except
 /// here the "scan" is `rows` itself). Writes nothing and returns `0` when
-/// `rows` is empty. `id` is written verbatim (the caller assigns it — the
-/// main-table `template.id` column stores the template's position as a
-/// string, and this sidecar's `id` must match it so a reader can join the
-/// two). Each row populates only its own `row.lod`'s column set, leaving
+/// `rows` is empty. `id` and `name` are written verbatim — the caller assigns
+/// them, and the main-table `template.id` column carries the same `id` value,
+/// which is how a reader joins the two. Each row populates only its own
+/// `row.lod`'s column set, leaving
 /// every other LoD's columns null for that row (spec: "sparse by
 /// construction"). [`read_templates`] is the value-exact inverse.
 pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
@@ -514,12 +528,14 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
     lods.dedup();
     let schema = Arc::new(sidecar_schemas::geometry_templates_schema(&lods));
 
-    let mut id = StringBuilder::new();
+    let mut id = Int64Builder::new();
+    let mut name = StringBuilder::new();
     let mut slots: Vec<(Lod, TemplateSlot)> =
         lods.iter().map(|&lod| (lod, TemplateSlot::new())).collect();
 
     for row in rows {
-        id.append_value(&row.id);
+        id.append_value(row.id);
+        name.append_option(row.name.as_deref());
         for (lod, slot) in &mut slots {
             if *lod != row.lod {
                 slot.append_null();
@@ -537,7 +553,7 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
         }
     }
 
-    let mut arrays: Vec<ArrayRef> = vec![Arc::new(id.finish())];
+    let mut arrays: Vec<ArrayRef> = vec![Arc::new(id.finish()), Arc::new(name.finish())];
     for (_, mut slot) in slots {
         arrays.push(Arc::new(slot.geometry.finish()));
         arrays.push(slot.properties.finish());
@@ -564,17 +580,21 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
 /// (spec: "each row populates exactly the column set matching its own
 /// LoD") — zero or more than one is a `Schema` error naming the row.
 ///
-/// The join from a main-table `template.id` string to a row here is
-/// POSITIONAL (row `i`'s id is `i.to_string()` — this crate's own
-/// [`write_templates`]/`crate::package::build_template_rows`'s dense
-/// contract), so `id` is read back and validated against row position
-/// exactly like [`read_materials`]/[`read_textures`]: a row whose `id` does
-/// not equal its position as a string (a corrupted/hand-rolled file, e.g. a
-/// duplicated or reordered id) is a `Schema` error. This single check rules
-/// out BOTH duplicate ids (two rows can't each equal both their own,
-/// different positions) and gaps (a missing position would make some later
-/// row's `id` disagree with its position) in one pass — matching the
-/// materials/textures readers' rationale (M4 Codex-review Finding 2).
+/// The join from a main-table `template.id` to a row here is BY VALUE, and
+/// `id` is validated only for what the spec actually requires of it: "unique
+/// across rows". It is deliberately NOT checked against row position. This
+/// writer does assign dense ordinals, but a package whose sidecars have been
+/// merged carries ids shifted by an integer offset (`dst_max + 1 - src_min`,
+/// the rule `duckdb-cityjson`'s insert path applies), so requiring
+/// `id == position` would reject a perfectly valid package — and the spec
+/// says outright that an id "MUST NOT be interpreted as a row position, which
+/// is not a stable key". Uniqueness is what the join needs and all it needs;
+/// `crate::export`'s `id_to_pos` map does the rest.
+///
+/// This is the one place the three sidecar readers differ:
+/// [`read_materials`]/[`read_textures`] still validate dense ordinals. Their
+/// ids are interned positions this crate controls end to end; templates are
+/// the sidecar whose ids a merge is expected to renumber.
 pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -600,10 +620,11 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
         .map_err(|e| CityParquetError::parquet_source("cannot build parquet reader", e))?;
 
     let mut out = Vec::new();
-    let mut next_pos = 0usize;
+    let mut seen_ids: HashSet<i64> = HashSet::new();
     for batch in reader {
         let batch = batch.map_err(|e| CityParquetError::parquet_source("parquet read error", e))?;
-        let id: &StringArray = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
+        let id: &Int64Array = downcast(get_column(&batch, "id")?.as_ref(), "id")?;
+        let name: &StringArray = downcast(get_column(&batch, "name")?.as_ref(), "name")?;
 
         let cols: Vec<(Lod, TemplateCols)> = lods
             .iter()
@@ -625,16 +646,18 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
             .collect::<Result<Vec<_>>>()?;
 
         for row in 0..batch.num_rows() {
-            let expected = next_pos.to_string();
-            if id.value(row) != expected {
+            // Uniqueness, not density — see this function's doc comment. A
+            // duplicate would make the object table's `template.id` join
+            // ambiguous, which is the only thing the join actually needs
+            // ruled out.
+            if !seen_ids.insert(id.value(row)) {
                 return Err(schema_err(format!(
-                    "geometry_templates.parquet: row at position {next_pos} has id {:?}, expected {:?} \
-                     — ids must be dense '0'..'n' in row order",
-                    id.value(row),
-                    expected
+                    "geometry_templates.parquet: id {} appears on more than one row — \
+                     template ids must be unique across rows, since the object table's \
+                     template.id resolves against them",
+                    id.value(row)
                 )));
             }
-            next_pos += 1;
 
             let mut matched: Option<(Lod, &TemplateCols)> = None;
             for (lod, c) in &cols {
@@ -657,7 +680,8 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
             })?;
 
             out.push(TemplateRow {
-                id: id.value(row).to_string(),
+                id: id.value(row),
+                name: name.is_valid(row).then(|| name.value(row).to_string()),
                 lod,
                 wkb: c.geometry.value(row).to_vec(),
                 geometry_properties: read_geometry_properties(c.properties, row)?,
@@ -1469,7 +1493,8 @@ mod tests {
         let back = read_templates(&path).unwrap();
         assert_eq!(back.len(), 3);
         for (i, row) in back.iter().enumerate() {
-            assert_eq!(row.id, i.to_string());
+            assert_eq!(row.id, i as i64);
+            assert_eq!(row.name, None, "CityJSON templates carry no source name");
             wkb_to_geometry(&row.wkb).expect("sidecar WKB must be accepted by the hardened reader");
         }
         assert_eq!(back[0].material, rows[0].material);
@@ -1557,7 +1582,7 @@ mod tests {
         let back = read_templates(&path).unwrap();
         assert_eq!(back.len(), 3);
         for (i, row) in back.iter().enumerate() {
-            assert_eq!(row.id, i.to_string());
+            assert_eq!(row.id, i as i64);
             wkb_to_geometry(&row.wkb).expect("sidecar WKB must be accepted by the hardened reader");
             assert_eq!(row.lod, rows[i].lod, "row {i}: lod must round-trip");
             assert_eq!(
@@ -1576,13 +1601,16 @@ mod tests {
         }
     }
 
-    /// M4 Codex-review Finding 2: `read_templates` must validate the dense
-    /// `id == position` contract, exactly like `read_materials`/
-    /// `read_textures` already do — this single check rules out both
-    /// duplicate ids and gaps. Derived from the real railway templates
-    /// sidecar (3 rows, ids `"0"`, `"1"`, `"2"`): row 1's id is corrupted to
-    /// `"0"` (a duplicate of row 0's), which is simultaneously a gap at
-    /// position 1 — either framing is valid, one check catches both.
+    /// `read_templates` must reject a duplicate `id`: the object table's
+    /// `template.id` resolves against this column by value, so two rows
+    /// sharing an id make that join ambiguous. Derived from the real railway
+    /// templates sidecar (3 rows, ids `0`, `1`, `2`) by corrupting row 1's id
+    /// to `0`.
+    ///
+    /// Note this is uniqueness, NOT the dense `id == position` contract
+    /// `read_materials`/`read_textures` still enforce — see
+    /// `read_templates`' doc comment and
+    /// `read_templates_accepts_non_dense_ids_from_a_merged_package` below.
     #[test]
     fn read_templates_rejects_a_duplicate_id() {
         use crate::appearance::AppearanceInterner;
@@ -1598,8 +1626,8 @@ mod tests {
         let mut interner = AppearanceInterner::new();
         let mut rows = build_template_rows(&templates, &source, &mut interner).unwrap();
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[1].id, "1", "precondition: row 1 starts as id \"1\"");
-        rows[1].id = "0".to_string();
+        assert_eq!(rows[1].id, 1, "precondition: row 1 starts as id 1");
+        rows[1].id = 0;
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("geometry_templates.parquet");
@@ -1613,6 +1641,84 @@ mod tests {
         assert!(
             err.to_string().contains("id"),
             "the error must mention the id mismatch, got: {err}"
+        );
+    }
+
+    /// The reason template ids are BIGINT: when packages merge, a whole
+    /// sidecar's ids are shifted by one integer offset (`dst_max + 1 -
+    /// src_min` — the rule `duckdb-cityjson`'s insert path applies), so a
+    /// merged package's template ids do NOT start at 0 and are not dense.
+    /// Reading one back must work; requiring `id == position` would reject a
+    /// valid package, and the spec says outright that an id "MUST NOT be
+    /// interpreted as a row position".
+    ///
+    /// Derived from the real railway templates by applying exactly that shift
+    /// to the production builder's own rows.
+    #[test]
+    fn read_templates_accepts_non_dense_ids_from_a_merged_package() {
+        use crate::appearance::AppearanceInterner;
+        use crate::package::build_template_rows;
+        use crate::source::Source;
+
+        let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+        let templates = source
+            .header()
+            .geometry_templates
+            .clone()
+            .expect("railway has geometry-templates");
+        let mut interner = AppearanceInterner::new();
+        let mut rows = build_template_rows(&templates, &source, &mut interner).unwrap();
+        assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), [0, 1, 2]);
+
+        // Offset as if inserted into a destination whose max template id is 40.
+        let offset = 41;
+        for row in &mut rows {
+            row.id += offset;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("geometry_templates.parquet");
+        write_templates(&path, &rows).unwrap();
+
+        let back = read_templates(&path).unwrap();
+        assert_eq!(
+            back.iter().map(|r| r.id).collect::<Vec<_>>(),
+            [41, 42, 43],
+            "shifted ids must survive the round trip unchanged"
+        );
+    }
+
+    /// `name` is optional and round-trips per row: null where the source had
+    /// no identifier (every CityJSON template) and verbatim where it did.
+    /// Built by naming one of the real railway templates.
+    #[test]
+    fn template_name_round_trips_and_stays_null_when_absent() {
+        use crate::appearance::AppearanceInterner;
+        use crate::package::build_template_rows;
+        use crate::source::Source;
+
+        let source = Source::open(&fixture("lod3_railway.city.json")).unwrap();
+        let templates = source
+            .header()
+            .geometry_templates
+            .clone()
+            .expect("railway has geometry-templates");
+        let mut interner = AppearanceInterner::new();
+        let mut rows = build_template_rows(&templates, &source, &mut interner).unwrap();
+        assert!(
+            rows.iter().all(|r| r.name.is_none()),
+            "a CityJSON source names no template — they are bare array entries"
+        );
+        rows[1].name = Some("tree-conifer-01".to_string());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("geometry_templates.parquet");
+        write_templates(&path, &rows).unwrap();
+
+        let back = read_templates(&path).unwrap();
+        assert_eq!(
+            back.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
+            [None, Some("tree-conifer-01".to_string()), None]
         );
     }
 
@@ -1688,12 +1794,15 @@ mod tests {
         include_b: bool,
     ) {
         let schema = Arc::new(sidecar_schemas::geometry_templates_schema(&[lod_a, lod_b]));
-        let mut id = StringBuilder::new();
-        id.append_value("0");
+        let mut id = Int64Builder::new();
+        id.append_value(0);
+        let mut name = StringBuilder::new();
+        name.append_null();
         let (g_a, p_a, m_a, t_a) = malformed_slot_arrays(content_a, include_a);
         let (g_b, p_b, m_b, t_b) = malformed_slot_arrays(content_b, include_b);
         let arrays: Vec<ArrayRef> = vec![
             Arc::new(id.finish()),
+            Arc::new(name.finish()),
             g_a,
             p_a,
             m_a,

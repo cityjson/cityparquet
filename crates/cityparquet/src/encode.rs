@@ -555,7 +555,7 @@ pub(crate) fn compute_geometry_properties(
 /// `template` column's worth of data. The matrix is the flat, row-major
 /// 16-value list the reserved `LIST<DOUBLE>` column stores (spec "Appearance
 /// & templates").
-type TemplateFields = (String, Vec<u8>, Option<Vec<f64>>);
+type TemplateFields = (i64, Vec<u8>, Option<Vec<f64>>);
 
 /// Parses a CityJSON `transformationMatrix` value into the flat 16-value
 /// list the reserved column stores, erroring — not silently truncating or
@@ -599,7 +599,10 @@ fn build_template(geom: &Geometry, pool: &VertexPool) -> Result<Option<TemplateF
         .as_ref()
         .map(parse_transformation_matrix)
         .transpose()?;
-    Ok(Some((template_id.to_string(), point, matrix)))
+    // CityJSON's `template` is the index into `geometry-templates.templates`,
+    // which `build_template_rows` also uses as the sidecar row's `id` — so this
+    // reference resolves by value against `geometry_templates.parquet`.
+    Ok(Some((template_id as i64, point, matrix)))
 }
 
 /// One `address[]` entry's resolved fields, ready for the reserved `address`
@@ -1305,7 +1308,7 @@ struct RowWriter {
     /// schema `encode`/`encode_buffered` declared for the SAME `ScanResult`.
     encoding: GeometryEncoding,
     geometry_slots: Vec<GeometrySlot>,
-    template_id: StringBuilder,
+    template_id: Int64Builder,
     template_point: BinaryBuilder,
     template_matrix: ListBuilder<Float64Builder>,
     template_nulls: NullBufferBuilder,
@@ -1374,7 +1377,7 @@ impl RowWriter {
             per_lod,
             encoding,
             geometry_slots,
-            template_id: StringBuilder::new(),
+            template_id: Int64Builder::new(),
             template_point: BinaryBuilder::new(),
             // Item field explicitly pinned to non-null Float64: a
             // `ListBuilder`'s default-derived item field is always nullable,

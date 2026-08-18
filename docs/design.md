@@ -104,7 +104,7 @@ appearance/template references, then the inferred attribute columns.
 | `geometry_properties` *or* `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>` | semantics WKB can't carry |
 | `material` | JSON | surface→material map into `materials.parquet` |
 | `texture` | JSON | surface→texture map into `textures.parquet` |
-| `template` | `Struct<id: Utf8, point: Binary, transformationMatrix: JSON>` | geometry-instance data |
+| `template` | `Struct<id: Int64, point: Binary, transformationMatrix: JSON>` | geometry-instance data; `id` matches `geometry_templates.parquet`'s `id` |
 | `other` | JSON | source fields not otherwise mapped |
 
 Every field carries self-describing metadata: a `cityparquet:role` key
@@ -243,10 +243,21 @@ to preserve). Template vertices are **raw floats** — CityJSON
 interned by exact `f64` bit pattern rather than through the quantised
 transform, and a template's `geometry_lod*` carries no `geoarrow.wkb`/CRS
 tagging: template coordinates are in the template's own local frame, exempt
-from the file CRS. Its `id` is the template's position, matching the
-main-table `template.id`. An object that instantiates a template stores the
-reference point (WKB `PointZ`) and `transformationMatrix` in its `template`
-column.
+from the file CRS.
+
+Its `id` is a `BIGINT`, written as the template's ordinal position and
+matching the main-table `template.id` that references it. An integer rather
+than a label because sidecar ids are renumbered by an integer offset when
+packages merge, exactly as `materials.parquet` and `textures.parquet` are — a
+string id could not be offset-shifted, and would need its own collision
+strategy. That leaves nowhere for a source's own template identifier to
+survive, so the optional `name` column holds it; it is null for CityJSON
+sources, whose `geometry-templates.templates` is a bare array with no
+identifiers. Readers must resolve `template.id` by matching the `id` value,
+never by row position: a merged package's ids do not start at zero.
+
+An object that instantiates a template stores the reference point (WKB
+`PointZ`) and `transformationMatrix` in its `template` column.
 
 ## Dataset metadata
 

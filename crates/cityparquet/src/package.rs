@@ -331,8 +331,12 @@ fn commit_package(tmp_dir: &Path, output_dir: &Path, files: &[String]) -> Result
 /// the materials/textures sidecars end up describing every definition in
 /// the dataset, not just the ones a regular feature geometry reaches.
 ///
-/// `id` is the template's position as a string, matching the main-table
-/// `template.id` column (see `crate::encode`'s `build_template`). The
+/// `id` is the template's ordinal position as a `BIGINT`, matching the
+/// main-table `template.id` column that references it (see `crate::encode`'s
+/// `build_template`) — CityJSON's own `template` reference IS that index, and
+/// duckdb-cityjson assigns the same, so packages from either implementation
+/// merge cleanly. `name` is always `None` here: CityJSON templates are bare
+/// array entries with no identifier to carry over. The
 /// rewrite rules (drop-realignment, dataset-global rewrite) are IDENTICAL
 /// to a regular feature geometry's — see [`rewrite_geometry_appearance`]'s
 /// doc comment — because a template's `material`/`texture`/`semantics`
@@ -414,7 +418,15 @@ pub(crate) fn build_template_rows(
                 ))
             })?;
         rows.push(TemplateRow {
-            id: i.to_string(),
+            // Ordinal position. CityJSON references a template by its index
+            // in `geometry-templates.templates`, so using that index as the
+            // id keeps the object table's `template.id` meaningful without a
+            // lookup table — and it is the same convention duckdb-cityjson
+            // writes, so the two implementations' packages merge cleanly.
+            id: i as i64,
+            // CityJSON templates are bare array entries: no source
+            // identifier exists to carry across. See `TemplateRow::name`.
+            name: None,
             lod,
             wkb: outcome.bytes,
             geometry_properties: Some(props.to_value()),

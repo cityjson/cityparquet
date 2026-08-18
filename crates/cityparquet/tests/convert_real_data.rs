@@ -355,6 +355,61 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
             );
         }
 
+        // Spec "geometry_templates.parquet": `id BIGINT` required, `name
+        // VARCHAR` optional — the on-disk types another implementation reads
+        // this package with. `id` must be an integer so a merge can shift a
+        // whole package's template ids by one offset, as it does for
+        // materials and textures; `name` is where a source identifier
+        // survives that renumbering (null here — CityJSON templates are
+        // unnamed array entries).
+        assert_eq!(
+            schema.field_with_name("id").unwrap().data_type(),
+            &arrow_schema::DataType::Int64,
+            "geometry_templates.id must be BIGINT, not a string"
+        );
+        assert!(!schema.field_with_name("id").unwrap().is_nullable());
+        assert_eq!(
+            schema.field_with_name("name").unwrap().data_type(),
+            &arrow_schema::DataType::Utf8
+        );
+        assert!(schema.field_with_name("name").unwrap().is_nullable());
+        assert_eq!(
+            template_rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+            [0, 1, 2],
+            "ids are ordinal positions, so packages from either implementation merge cleanly"
+        );
+        assert!(template_rows.iter().all(|r| r.name.is_none()));
+    }
+
+    // The object table's `template.id` references the sidecar's `id`, so the
+    // two must be the same type — a BIGINT sidecar id joined against a
+    // VARCHAR reference is unreadable by any implementation but this one.
+    {
+        let file = std::fs::File::open(out.path().join("vegetation.parquet")).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let template = builder
+            .schema()
+            .field_with_name("template")
+            .unwrap()
+            .clone();
+        let arrow_schema::DataType::Struct(fields) = template.data_type() else {
+            panic!("template must be a struct, got {:?}", template.data_type());
+        };
+        let id = fields
+            .find("id")
+            .expect("template struct has an id field")
+            .1;
+        assert_eq!(
+            id.data_type(),
+            &arrow_schema::DataType::Int64,
+            "object-table template.id must be BIGINT to match geometry_templates.id"
+        );
+    }
+
+    {
+        let file = std::fs::File::open(out.path().join("geometry_templates.parquet")).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+
         // Spec "CRS rules": absence is legitimate precisely here. A template's
         // geometry is stored in template-LOCAL, unplaced coordinates, so the
         // sidecar holds NO CRS-bearing coordinate and writes no `crs` key at
