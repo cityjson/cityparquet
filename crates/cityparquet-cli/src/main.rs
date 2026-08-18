@@ -45,7 +45,10 @@ enum Commands {
         #[arg(long, value_name = "N")]
         number: Option<usize>,
 
-        /// features: maximum features per partition
+        /// features: maximum features per partition. Exceeded only where
+        /// features reference each other's objects across the feature
+        /// boundary and must share a package to stay resolvable — a warning
+        /// says so when it happens
         #[arg(long, value_name = "M")]
         feature_num: Option<usize>,
 
@@ -524,6 +527,27 @@ fn main() -> std::process::ExitCode {
                                 .find_map(|(_, r)| r.crs_diagnostic.as_deref())
                             {
                                 eprintln!("warning: {message}");
+                            }
+                            // Reference locality: both counts are 0 for
+                            // conformant input, so these lines only ever
+                            // appear when the input really did carry a
+                            // hierarchy split across features.
+                            if report.co_assigned_features > 0 {
+                                eprintln!(
+                                    "warning: {} feature(s) reference a parent or child in \
+                                     another feature; they were assigned to a shared partition \
+                                     so the references still resolve within one package \
+                                     (CityJSONSeq features are meant to be self-contained)",
+                                    report.co_assigned_features
+                                );
+                            }
+                            if report.unresolvable_refs > 0 {
+                                eprintln!(
+                                    "warning: {} parent/child reference(s) name an object that \
+                                     is not in the input at all; they are written as-is and \
+                                     will not resolve in any package",
+                                    report.unresolvable_refs
+                                );
                             }
                             println!(
                                 "partitions={} duplicate_ids={}",

@@ -80,6 +80,7 @@ a meaningless single-Item Collection.
 | `--zstd-level` | `3` | zstd level (ignored by `--recipe snappy`) |
 | `--batch-size` | `4096` | encode batch size |
 | `--crs` | unset | operator-supplied CRS (`EPSG:25832` or bare `25832`) for a source that declares none; ignored for a source that declares its own |
+| `--partition` | unset | split the output into one package per partition: `count` (+`--number N`), `features` (+`--feature-num M`), or `box` (+`--cell-size METRES`). Omit to write one package |
 
 `city.crs` is **tri-state**, exactly as in GeoParquet (spec "CRS rules"): a
 PROJJSON object when the CRS is known, an explicit **`null`** when the file
@@ -99,6 +100,26 @@ would. When it is actually applied, the footer records
 source declared a CRS it did not carry. A geographic (degree-valued) code is
 refused: nothing in this pipeline reprojects, and coordinates are quantised at
 millimetre scale.
+
+With `--partition`, `-o` becomes the *parent* of one self-contained package per
+partition (`count-00000/`, `features-00003/`, `box_x93_y44/`, …), all sharing
+one canonical schema so `read_parquet('OUT/*/building.parquet')` sees a uniform
+layout. Partitions are assigned per **feature**, and a `CityJSONFeature` is a
+top-level city object plus its children, so a parent and its children always
+land in the same package — never split across two. Where the input breaks that
+assumption (a CityJSONSeq file whose lines are not self-contained, or a merge
+of neighbouring tiles that separates a building from its parts), the features
+that reference each other are pulled onto a shared partition so the references
+stay resolvable, and a `warning:` line reports how many were moved. This is the
+one thing that can push a `features` partition past `--feature-num`. References
+naming an object absent from the input altogether cannot be repaired; they are
+counted and warned about, not refused, since a partial-area extract carries
+them legitimately.
+
+Within a package, objects are still split across module tables by CityGML
+module, so a `CityObjectGroup` in `generics.parquet` may have its members in
+`vegetation.parquet`. That is the by-module layout, not a partition boundary:
+the guarantee is that the references resolve inside the package.
 
 Sidecars (`materials.parquet`/`textures.parquet`/`geometry_templates.parquet`)
 are written automatically whenever the source has that kind of content —

@@ -2,6 +2,7 @@
 //! CityGML 2.0 documents (the last via [`crate::citygml`], which synthesises a
 //! CityJSON header and streams `bldg:Building`s as features).
 
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -134,6 +135,7 @@ impl Source {
             })?;
             let mut doc =
                 CityJSON::from_str(&text).map_err(|e| err(format!("invalid CityJSON: {e}")))?;
+            validate_document_hierarchy(&doc)?;
             doc.sort_cjfeatures(SortingStrategy::Lexicographical);
             let header = doc.get_metadata();
             Ok(Self {
@@ -300,6 +302,105 @@ impl Source {
             ))),
         }
     }
+}
+
+/// cjseq's own rule (`CityObject::is_toplevel`, private): an object is
+/// top-level when it declares no parents, an absent and an empty `parents`
+/// array counting alike.
+fn is_toplevel(co: &cjseq::CityObject) -> bool {
+    co.parents.as_ref().is_none_or(std::vec::Vec::is_empty)
+}
+
+/// Render at most three ids, so a pathological document cannot produce a
+/// screenful of error.
+fn name_a_few(ids: &BTreeSet<&str>) -> String {
+    let shown: Vec<&str> = ids.iter().take(3).copied().collect();
+    match ids.len().saturating_sub(shown.len()) {
+        0 => shown.join(", "),
+        rest => format!("{} (and {rest} more)", shown.join(", ")),
+    }
+}
+
+/// Refuse a CityJSON document whose hierarchy [`FeatureIter::Doc`] cannot
+/// stream without losing objects.
+///
+/// cjseq 0.4.1 builds the feature stream from two rules: one feature per
+/// TOP-LEVEL object, carrying that object plus **exactly one level** of its
+/// `children` — `CityJSON::get_cjfeature` carries its own
+/// `//-- TODO: to fix: children-of-children?`. An object that is neither
+/// top-level nor the child of a top-level object is therefore emitted by
+/// nobody and vanishes without a word. Nothing downstream notices: `convert` →
+/// `export` → `compare` reads the source through this same iterator on both
+/// sides, so both sides drop it and the round-trip reports equality.
+///
+/// This reproduces those two rules verbatim rather than approximating them
+/// with a depth limit, and errors when any object falls outside the emitted
+/// set. It also catches the dangling child key that would otherwise panic
+/// inside `get_cjfeature` (`self.city_objects.get(&childkey).unwrap()`),
+/// taking the process down with no diagnostic at all.
+///
+/// Only the whole-document path needs this. CityJSONSeq features arrive
+/// already-formed, and [`crate::citygml`]'s reader descends recursively
+/// (`emit_into`), so both carry arbitrarily deep hierarchies safely.
+///
+/// It guards [`Source`], which is every read path the CLI drives — convert,
+/// export and compare all go through it. The read benchmark
+/// (`cityparquet-readbench`'s `formats::cityjson`) deliberately does not: it
+/// parses the document itself to measure parsing, and routing it through this
+/// check would put validation work inside the timed section. A >2-level
+/// document would still lose objects there; the benchmark corpus is
+/// two-level.
+///
+/// Delete this the day cjseq descends transitively — the canary test
+/// `cjseq_still_drops_grandchildren_so_this_guard_is_still_needed` fails on
+/// that day and says so. Note the workspace depends on `cjseq = "0.4"`, not a
+/// pinned patch, so the day can arrive without anyone editing this repo.
+fn validate_document_hierarchy(doc: &CityJSON) -> Result<()> {
+    let mut emitted: HashSet<&str> = HashSet::new();
+    let mut missing: BTreeSet<&str> = BTreeSet::new();
+
+    for (id, co) in &doc.city_objects {
+        if !is_toplevel(co) {
+            continue;
+        }
+        emitted.insert(id.as_str());
+        for child in co.children.iter().flatten() {
+            match doc.city_objects.get_key_value(child) {
+                Some((child_id, _)) => {
+                    emitted.insert(child_id.as_str());
+                }
+                None => {
+                    missing.insert(child.as_str());
+                }
+            }
+        }
+    }
+
+    if !missing.is_empty() {
+        return Err(err(format!(
+            "CityJSON document names {} child object(s) it does not contain: {}",
+            missing.len(),
+            name_a_few(&missing)
+        )));
+    }
+
+    let dropped: BTreeSet<&str> = doc
+        .city_objects
+        .keys()
+        .map(String::as_str)
+        .filter(|id| !emitted.contains(id))
+        .collect();
+    if !dropped.is_empty() {
+        return Err(err(format!(
+            "CityJSON document nests city objects more than two levels deep: {} object(s) are \
+             neither top-level nor the child of a top-level object and would be dropped \
+             silently: {}. Convert the document to CityJSONSeq first, or flatten the hierarchy.",
+            dropped.len(),
+            name_a_few(&dropped)
+        )));
+    }
+
+    Ok(())
 }
 
 pub enum FeatureIter<'a> {
