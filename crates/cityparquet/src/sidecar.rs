@@ -581,20 +581,26 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
 /// LoD") — zero or more than one is a `Schema` error naming the row.
 ///
 /// The join from a main-table `template.id` to a row here is BY VALUE, and
-/// `id` is validated only for what the spec actually requires of it: "unique
-/// across rows". It is deliberately NOT checked against row position. This
-/// writer does assign dense ordinals, but a package whose sidecars have been
-/// merged carries ids shifted by an integer offset (`dst_max + 1 - src_min`,
-/// the rule `duckdb-cityjson`'s insert path applies), so requiring
-/// `id == position` would reject a perfectly valid package — and the spec
-/// says outright that an id "MUST NOT be interpreted as a row position, which
-/// is not a stable key". Uniqueness is what the join needs and all it needs;
-/// `crate::export`'s `id_to_pos` map does the rest.
+/// `id` is validated only for what the spec requires of it: "unique across
+/// rows". It is deliberately NOT checked against row position. This writer
+/// does assign dense ordinals, but a package whose sidecars have been merged
+/// carries ids shifted by an integer offset (`dst_max + 1 - src_min`, the
+/// rule `duckdb-cityjson`'s merge and insert paths apply), so requiring
+/// `id == position` would reject a perfectly valid package. Uniqueness is
+/// what the join needs and all it needs; `crate::export`'s `id_to_pos` map
+/// does the rest. A null `id` is rejected outright: there is no such thing
+/// as a row nothing can reference.
 ///
-/// This is the one place the three sidecar readers differ:
-/// [`read_materials`]/[`read_textures`] still validate dense ordinals. Their
-/// ids are interned positions this crate controls end to end; templates are
-/// the sidecar whose ids a merge is expected to renumber.
+/// KNOWN INCONSISTENCY: [`read_materials`]/[`read_textures`] still validate
+/// dense ordinals, and `duckdb-cityjson` offset-shifts THEIR ids too — its
+/// `OffsetSQL` is applied per sidecar, generically, materials and textures
+/// included. So exporting a merged package still fails, one file earlier,
+/// at `materials.parquet`; this relaxation is necessary for reading such a
+/// package but not yet sufficient. The spec is if anything blunter about
+/// those two than about templates — the "MUST NOT be interpreted as a row
+/// position, which is not a stable key" sentence is stated of material and
+/// texture references specifically. Relaxing them the same way is a
+/// tracked follow-up, deliberately not folded into the schema change.
 pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -646,6 +652,19 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
             .collect::<Result<Vec<_>>>()?;
 
         for row in 0..batch.num_rows() {
+            // `id` is non-null in the schema this crate writes, but a
+            // third-party file can declare it nullable — and `value()` on a
+            // null slot returns buffer content (typically 0), which would
+            // invent an id or collide with a real one. The dense check this
+            // replaced rejected nulls incidentally; uniqueness does not, so
+            // it has to be explicit.
+            if !id.is_valid(row) {
+                return Err(schema_err(
+                    "geometry_templates.parquet: a row has a null id — every template row \
+                     must carry an id for the object table's template.id to resolve against"
+                        .to_string(),
+                ));
+            }
             // Uniqueness, not density — see this function's doc comment. A
             // duplicate would make the object table's `template.id` join
             // ambiguous, which is the only thing the join actually needs
@@ -1685,6 +1704,62 @@ mod tests {
             back.iter().map(|r| r.id).collect::<Vec<_>>(),
             [41, 42, 43],
             "shifted ids must survive the round trip unchanged"
+        );
+    }
+
+    /// A null `id` must be rejected, not read as buffer content. This crate
+    /// writes `id` non-null, so the file is built by hand against a schema
+    /// with a nullable `id` — a third-party writer's shape — around the real
+    /// railway templates' own row data.
+    ///
+    /// The dense check this replaced caught nulls incidentally (a null slot
+    /// never equalled its position as a string); uniqueness does not, so
+    /// without an explicit guard `id.value(row)` on a null slot invents an
+    /// id — typically 0, silently colliding with a real row 0.
+    #[test]
+    fn read_templates_rejects_a_null_id() {
+        use arrow_schema::{DataType, Field, Schema};
+
+        let (a, _b) = two_real_templates();
+        let lod = a.lod;
+        let spec_schema = sidecar_schemas::geometry_templates_schema(&[lod]);
+        // The spec schema with `id` made nullable, everything else identical.
+        let fields: Vec<Field> = spec_schema
+            .fields()
+            .iter()
+            .map(|f| {
+                if f.name() == "id" {
+                    Field::new("id", DataType::Int64, true)
+                } else {
+                    f.as_ref().clone()
+                }
+            })
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+
+        let mut id = Int64Builder::new();
+        id.append_null();
+        let mut name = StringBuilder::new();
+        name.append_null();
+        let (g, p, m, t) = malformed_slot_arrays(&a, true);
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(id.finish()), Arc::new(name.finish()), g, p, m, t],
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("geometry_templates.parquet");
+        write_batch(&path, schema, batch).unwrap();
+
+        let err = read_templates(&path).unwrap_err();
+        assert!(
+            matches!(err, CityParquetError::Schema(_)),
+            "expected a Schema error, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("null id"),
+            "the error must name the null id, got: {err}"
         );
     }
 

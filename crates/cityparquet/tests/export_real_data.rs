@@ -1256,16 +1256,13 @@ fn railway_compatibility_export_rebuilds_geometry_templates_and_instances() {
 /// id — never a panic or a silently-dropped/fabricated geometry. Derived
 /// from a real converted railway package (sanctioned): the fixture's own
 /// python recount (`{0: 10, 1: 4, 2: 1}` GeometryInstance-per-template
-/// counts) confirms template id `"2"` is referenced by 1 real object, so
-/// dropping ONLY its (trailing) sidecar row is guaranteed to hit the
+/// counts) confirms template id `2` is referenced by 1 real object, so
+/// dropping ONLY its sidecar row is guaranteed to hit the
 /// dangling-reference path on export, not silently succeed because nothing
-/// happened to reference it. The trailing row specifically (rather than the
-/// heavier-referenced `"0"`, used before the M4 Codex-review Finding 2
-/// hardening) — `read_templates` now additionally validates that every row's
-/// `id` equals its position (dense `"0".."n"`, no gaps/duplicates); dropping
-/// a middle row would trip THAT check first instead of reaching the
-/// dangling-reference path this test targets, so the corruption must leave
-/// the surviving rows densely numbered from `"0"`.
+/// happened to reference it. Any row would do now that `read_templates`
+/// validates uniqueness rather than dense ordinals — a gap is legal, so a
+/// missing middle row would reach this path too — but the trailing row is
+/// kept as the least surprising corruption.
 #[test]
 fn export_errors_on_a_dangling_template_id_reference() {
     let package_dir = tempfile::tempdir().unwrap();
