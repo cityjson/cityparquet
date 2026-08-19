@@ -60,6 +60,29 @@ fn detect_geometry_encoding(
     crate::geometry_encoding::resolve_geometry_encoding(meta, actual, &sample_name, &vertices_name)
 }
 
+/// The file's own fields, carrying `canonical`'s field metadata wherever a name
+/// matches — role, LoD, the geoarrow tag, `arrow.json`.
+///
+/// The canonical render supplies METADATA ONLY. The fields themselves are the
+/// file's: its names, its order, its physical types. CityParquet conformance is
+/// at the Parquet logical-type level (spec "Physical encoding and conformance"),
+/// so a conformant writer may order reserved columns differently, leave
+/// `other_attributes` out, store `object_type` undictionaried, or name a LIST's
+/// child `element`. Returning the canonical field list instead would reject every
+/// one of those, and — because `parents`, `children` and `children_roles` share a
+/// DataType — the field-count check would not even catch a transposition.
+fn project_metadata_onto(actual: &Schema, canonical: &Schema) -> Schema {
+    let fields: Vec<arrow_schema::Field> = actual
+        .fields()
+        .iter()
+        .map(|f| match canonical.field_with_name(f.name()) {
+            Ok(c) => f.as_ref().clone().with_metadata(c.metadata().clone()),
+            Err(_) => f.as_ref().clone(),
+        })
+        .collect();
+    Schema::new(fields)
+}
+
 /// Extension type name tagging a Utf8 column whose values are JSON text —
 /// see [`cityparquet_schema::model`]'s `json_field` helper.
 const ARROW_JSON_EXTENSION: &str = "arrow.json";
@@ -237,7 +260,10 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
                 })?;
                 fields.push(field.as_ref().clone());
             }
-            return Ok(Arc::new(Schema::new(fields)));
+            return Ok(Arc::new(project_metadata_onto(
+                actual,
+                &Schema::new(fields),
+            )));
         }
 
         let schema = CityParquetSchema {
@@ -267,7 +293,8 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         // `ArrowNative` (`CityParquetSchema::geometry_field` only applies it
         // in the `Wkb` arm).
         let encoding = detect_geometry_encoding(&meta, actual, &schema.lods, has_bare_geometry)?;
-        Ok(Arc::new(schema.to_arrow_schema_tagged(true, encoding)?))
+        let canonical = schema.to_arrow_schema_tagged(true, encoding)?;
+        Ok(Arc::new(project_metadata_onto(actual, &canonical)))
     }
 
     fn with_bbox_row_groups(self, bbox: [f64; 6]) -> Result<Self> {
