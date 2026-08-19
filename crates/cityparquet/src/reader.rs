@@ -279,11 +279,13 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         // columns — see `crate::geometry_encoding`), since a file written
         // under `GeometryEncoding::ArrowNative` also carries
         // `geometry_vertices_lod*` sibling columns that a hardcoded `Wkb`
-        // rendering would omit, desyncing the rendered schema's field count
-        // from the physical file's actual column count
-        // (`CityParquetRecordBatchReader::next` reapplies this schema to
-        // every batch verbatim, so that mismatch is a hard `RecordBatch`
-        // construction error, not a silent misread). `geoarrow = true`:
+        // rendering would omit: the encoding decides which canonical fields
+        // exist at all, and `project_metadata_onto` can only carry metadata
+        // onto the file's own fields for names present in that canonical set —
+        // a wrong encoding here does not error, it silently drops the
+        // geoarrow/LoD tags from whichever columns the wrong canonical schema
+        // failed to name (e.g. `geometry_vertices_lod*` under a mis-detected
+        // `Wkb`). `geoarrow = true`:
         // this rendered schema is the CANONICAL, self-describing view, not a
         // reflection of the physical file's on-disk self-description — a
         // plain-BLOB WKB file (written with `--geoarrow` off) still reports
@@ -380,22 +382,28 @@ pub(crate) fn box_intersects_query(box_min: [f64; 3], box_max: [f64; 3], query: 
     true
 }
 
-/// Thin wrapper around a built `ParquetRecordBatchReader` that re-applies the
-/// rendered [`CityParquetReaderBuilder::cityparquet_arrow_schema`] (field
-/// metadata included) to every emitted batch, since the bare reader's own
-/// `RecordBatch::schema()` is not guaranteed to carry it (see the module docs).
+/// Thin wrapper around a built `ParquetRecordBatchReader` that re-attaches the
+/// rendered [`CityParquetReaderBuilder::cityparquet_arrow_schema`]'s field
+/// metadata to every emitted batch, matched by name, since the bare reader's
+/// own `RecordBatch::schema()` is not guaranteed to carry it (see the module
+/// docs).
 pub struct CityParquetRecordBatchReader {
     inner: ParquetRecordBatchReader,
     schema: SchemaRef,
 }
 
 impl CityParquetRecordBatchReader {
-    /// Wrap `inner`, stamping every emitted batch with `schema`.
+    /// Wrap `inner`, re-attaching `schema`'s field metadata (matched by name)
+    /// to every emitted batch.
     pub fn new(inner: ParquetRecordBatchReader, schema: SchemaRef) -> Self {
         Self { inner, schema }
     }
 
-    /// The schema every batch from this reader carries.
+    /// The rendered schema this reader draws field metadata from. NOT
+    /// necessarily identical to any one emitted batch's own schema — a batch
+    /// carries its own field order and, under `with_projection`, a subset of
+    /// this schema's fields (see this type's `Iterator` impl, which restamps
+    /// by name rather than assuming the two agree).
     pub fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }

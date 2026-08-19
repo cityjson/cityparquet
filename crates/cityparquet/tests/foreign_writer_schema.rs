@@ -5,13 +5,16 @@
 
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, RecordBatch, StringArray, TimestampMicrosecondArray};
+use arrow_array::{
+    Array, ArrayRef, ListArray, RecordBatch, StringArray, TimestampMicrosecondArray,
+};
+use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::properties::WriterProperties;
 
-use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 
 /// A minimal but conformant `city` footer for a one-attribute object table.
 const CITY_JSON: &str = r#"{
@@ -48,14 +51,23 @@ fn foreign_file(path: &std::path::Path) {
     let ids: ArrayRef = Arc::new(StringArray::from(vec!["obj-1"]));
     let feature_ids: ArrayRef = Arc::new(StringArray::from(vec!["obj-1"]));
     let types: ArrayRef = Arc::new(StringArray::from(vec!["Bridge"]));
-    let children: ArrayRef = arrow_array::array::new_null_array(
-        &DataType::List(Field::new("element", DataType::Utf8, true).into()),
-        1,
-    );
-    let parents: ArrayRef = arrow_array::array::new_null_array(
-        &DataType::List(Field::new("element", DataType::Utf8, true).into()),
-        1,
-    );
+    // Distinguishable, non-null values: a real transposition of these two
+    // LIST<VARCHAR> columns must be visible in the DATA, not just provable by
+    // reasoning about column order — a `new_null_array` here would make a
+    // transposition value-invisible.
+    let element_field: Arc<Field> = Field::new("element", DataType::Utf8, true).into();
+    let children: ArrayRef = Arc::new(ListArray::new(
+        Arc::clone(&element_field),
+        OffsetBuffer::from_lengths([1usize]),
+        Arc::new(StringArray::from(vec!["child-of-obj-1"])),
+        None,
+    ));
+    let parents: ArrayRef = Arc::new(ListArray::new(
+        Arc::clone(&element_field),
+        OffsetBuffer::from_lengths([1usize]),
+        Arc::new(StringArray::from(vec!["parent-of-obj-1"])),
+        None,
+    ));
     let stamps: ArrayRef = Arc::new(
         TimestampMicrosecondArray::from(vec![1_600_000_000_000_000i64]).with_timezone("UTC"),
     );
@@ -120,42 +132,72 @@ fn renders_the_foreign_writers_own_fields_not_the_canonical_set() {
             .data_type(),
         &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
     );
+
+    // The projection's entire purpose is carrying canonical METADATA onto the
+    // file's own fields — a `children` field with no `cityparquet:role`
+    // metadata would mean `project_metadata_onto` silently dropped it, and
+    // this test would not otherwise catch that.
+    assert_eq!(
+        rendered
+            .field_with_name("children")
+            .unwrap()
+            .metadata()
+            .get("cityparquet:role")
+            .map(String::as_str),
+        Some("reserved"),
+    );
+}
+
+/// The first element of a `LIST<VARCHAR>` cell (row 0), as an owned `String`.
+fn first_string(array: &ArrayRef) -> String {
+    let list = array
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .expect("a LIST<VARCHAR> array");
+    let values = list.value(0);
+    let strings = values
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("a VARCHAR list element");
+    strings.value(0).to_string()
 }
 
 #[test]
-fn hierarchy_columns_keep_their_own_names_through_the_restamp() {
-    // `parents` and `children` are both LIST<VARCHAR>, so a positional restamp
-    // against a schema that orders them the other way round transposes them
-    // silently — no error, corrupted hierarchy. Pin that it cannot happen.
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_canonically_ordered_schema_does_not_transpose_the_hierarchy_columns() {
+    // `parents` and `children` are both LIST<VARCHAR>. A caller holding the
+    // spec's normative column order reading a file that orders them the other
+    // way round is exactly the case a positional restamp corrupts silently.
+    let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("bridge.parquet");
     foreign_file(&path);
 
-    let file = std::fs::File::open(&path).expect("open");
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("builder");
-    let schema = builder.cityparquet_arrow_schema().expect("render");
-    let reader = cityparquet::reader::CityParquetRecordBatchReader::new(
-        builder.build().expect("build"),
-        schema,
-    );
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&path).unwrap()).unwrap();
+    let rendered = builder.cityparquet_arrow_schema().unwrap();
 
+    // Same names, same DataTypes, spec order: parents before children.
+    let canonical_order = Arc::new(Schema::new(vec![
+        rendered.field(0).clone(),
+        rendered.field(1).clone(),
+        rendered.field(2).clone(),
+        rendered.field(4).clone(), // parents
+        rendered.field(3).clone(), // children
+        rendered.field(5).clone(),
+    ]));
+
+    let reader = CityParquetRecordBatchReader::new(builder.build().unwrap(), canonical_order);
     for batch in reader {
         let batch = batch.expect("batch");
-        let batch_schema = batch.schema();
-        let names: Vec<&str> = batch_schema
-            .fields()
-            .iter()
-            .map(|f| f.name().as_str())
-            .collect();
+        let s = batch.schema();
+        assert_eq!(s.field(3).name(), "children", "the file's order survives");
+        assert_eq!(s.field(4).name(), "parents");
         assert_eq!(
-            names.iter().position(|n| *n == "children"),
-            Some(3),
-            "children stays where the file put it"
+            first_string(batch.column_by_name("children").unwrap()),
+            "child-of-obj-1"
         );
         assert_eq!(
-            names.iter().position(|n| *n == "parents"),
-            Some(4),
-            "parents stays where the file put it"
+            first_string(batch.column_by_name("parents").unwrap()),
+            "parent-of-obj-1"
         );
     }
 }
