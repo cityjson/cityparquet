@@ -121,3 +121,41 @@ fn renders_the_foreign_writers_own_fields_not_the_canonical_set() {
         &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
     );
 }
+
+#[test]
+fn hierarchy_columns_keep_their_own_names_through_the_restamp() {
+    // `parents` and `children` are both LIST<VARCHAR>, so a positional restamp
+    // against a schema that orders them the other way round transposes them
+    // silently — no error, corrupted hierarchy. Pin that it cannot happen.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("bridge.parquet");
+    foreign_file(&path);
+
+    let file = std::fs::File::open(&path).expect("open");
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("builder");
+    let schema = builder.cityparquet_arrow_schema().expect("render");
+    let reader = cityparquet::reader::CityParquetRecordBatchReader::new(
+        builder.build().expect("build"),
+        schema,
+    );
+
+    for batch in reader {
+        let batch = batch.expect("batch");
+        let batch_schema = batch.schema();
+        let names: Vec<&str> = batch_schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        assert_eq!(
+            names.iter().position(|n| *n == "children"),
+            Some(3),
+            "children stays where the file put it"
+        );
+        assert_eq!(
+            names.iter().position(|n| *n == "parents"),
+            Some(4),
+            "parents stays where the file put it"
+        );
+    }
+}

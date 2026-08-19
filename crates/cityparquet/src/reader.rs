@@ -5,11 +5,11 @@
 //! builder method (`with_batch_size`, `with_projection`, `with_row_selection`,
 //! ...) keeps working untouched alongside the three CityParquet-specific
 //! methods added here. `CityParquetRecordBatchReader` is a thin wrapper
-//! around the built `ParquetRecordBatchReader` that re-applies the rendered
-//! schema (field metadata included) to every emitted batch, since a bare
-//! `parquet`-crate read does not otherwise guarantee that metadata survives
-//! (e.g. a `with_projection` reorders/subsets columns; files written by a
-//! non-arrow-rs CityParquet writer may carry no embedded `ARROW:schema` at
+//! around the built `ParquetRecordBatchReader` that re-attaches the rendered
+//! schema's field metadata to every emitted batch, matching columns by name,
+//! since a bare `parquet`-crate read does not otherwise guarantee that metadata
+//! survives (e.g. a `with_projection` reorders/subsets columns; files written by
+//! a non-arrow-rs CityParquet writer may carry no embedded `ARROW:schema` at
 //! all).
 
 use std::sync::Arc;
@@ -409,7 +409,27 @@ impl Iterator for CityParquetRecordBatchReader {
             Ok(batch) => batch,
             Err(e) => return Some(Err(CityParquetError::from(e))),
         };
-        let rebuilt = RecordBatch::try_new(Arc::clone(&self.schema), batch.columns().to_vec());
+        // Re-attach the rendered schema's field metadata to the batch's OWN
+        // fields, matched by NAME. Never positional: several reserved columns
+        // share a DataType (`parents`, `children` and `children_roles` are all
+        // LIST<VARCHAR>), so a positional restamp against a differently ordered
+        // schema would relabel them silently rather than erroring. Name-based
+        // matching is also what makes `with_projection` safe here, since a
+        // projected batch carries a subset of the rendered schema's fields.
+        let fields: Vec<arrow_schema::Field> = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| match self.schema.field_with_name(f.name()) {
+                Ok(rendered) => f
+                    .as_ref()
+                    .clone()
+                    .with_metadata(rendered.metadata().clone()),
+                Err(_) => f.as_ref().clone(),
+            })
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+        let rebuilt = RecordBatch::try_new(schema, batch.columns().to_vec());
         Some(rebuilt.map_err(CityParquetError::from))
     }
 }
