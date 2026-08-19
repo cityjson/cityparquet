@@ -121,7 +121,12 @@ impl AttributeType {
             DataType::Int64 => Some(Self::Int64),
             DataType::Float64 => Some(Self::Float64),
             DataType::Date32 => Some(Self::Date),
-            DataType::Timestamp(TimeUnit::Millisecond, Some(tz)) if tz.as_ref() == "UTC" => {
+            // The unit is a writer's choice between MILLIS and MICROS (spec
+            // "Temporal columns"); UTC-adjustment is not — a timezone-naive
+            // column denotes a wall-clock reading, a different quantity.
+            DataType::Timestamp(TimeUnit::Millisecond | TimeUnit::Microsecond, Some(tz))
+                if tz.as_ref() == "UTC" =>
+            {
                 Some(Self::Timestamp)
             }
             DataType::Utf8 => Some(Self::String),
@@ -332,6 +337,20 @@ mod tests {
             AttributeType::from_arrow(&DataType::Utf8),
             Some(AttributeType::String)
         );
+    }
+
+    #[test]
+    fn from_arrow_accepts_either_permitted_timestamp_unit() {
+        // The unit is a writer's choice (spec: "Temporal columns"); the reader
+        // accepts both. DuckDB writes MICROS, this crate writes MILLIS, and a
+        // reader that took only its own unit could not read the other's files.
+        for unit in [TimeUnit::Millisecond, TimeUnit::Microsecond] {
+            assert_eq!(
+                AttributeType::from_arrow(&DataType::Timestamp(unit, Some("UTC".into()))),
+                Some(AttributeType::Timestamp),
+                "{unit:?} is a permitted CityParquet timestamp unit"
+            );
+        }
     }
 
     #[test]
