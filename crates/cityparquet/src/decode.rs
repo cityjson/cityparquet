@@ -336,13 +336,19 @@ fn string_list_value(col: &ListArray, row: usize) -> Result<Option<Vec<String>>>
     ))
 }
 
-/// A nullable `Utf8` struct field at item `idx`: `None` when either the
-/// struct item itself or the field within it is null.
-fn struct_str_field(items: &StructArray, field_idx: usize, idx: usize) -> Result<Option<String>> {
+/// A nullable `Utf8` struct field named `field_name` at item `idx`: `None`
+/// when either the struct item itself or the field within it is null.
+/// Resolved by NAME — every `address` item field is `Utf8`, so an ordinal
+/// lookup would silently swap two of them for a writer that orders the
+/// struct's children differently (spec "Physical encoding and conformance").
+fn struct_str_field(items: &StructArray, field_name: &str, idx: usize) -> Result<Option<String>> {
     if items.is_null(idx) {
         return Ok(None);
     }
-    let arr = downcast::<StringArray>(items.column(field_idx).as_ref(), "address field")?;
+    let arr = downcast::<StringArray>(
+        crate::arrow_compat::struct_child(items, field_name)?.as_ref(),
+        "address field",
+    )?;
     Ok((!arr.is_null(idx)).then(|| arr.value(idx).to_string()))
 }
 
@@ -363,18 +369,21 @@ fn decode_address_column(col: &ListArray, row: usize) -> Result<Option<Vec<Addre
         let location = if items.is_null(i) {
             None
         } else {
-            let arr = downcast::<BinaryArray>(items.column(8).as_ref(), "address.location")?;
+            let arr = downcast::<BinaryArray>(
+                crate::arrow_compat::struct_child(items, "location")?.as_ref(),
+                "address.location",
+            )?;
             (!arr.is_null(i)).then(|| arr.value(i).to_vec())
         };
         out.push(AddressEntry {
-            street: struct_str_field(items, 0, i)?,
-            house_number: struct_str_field(items, 1, i)?,
-            po_box: struct_str_field(items, 2, i)?,
-            zip_code: struct_str_field(items, 3, i)?,
-            city: struct_str_field(items, 4, i)?,
-            state: struct_str_field(items, 5, i)?,
-            country: struct_str_field(items, 6, i)?,
-            free_text: struct_str_field(items, 7, i)?,
+            street: struct_str_field(items, "street", i)?,
+            house_number: struct_str_field(items, "house_number", i)?,
+            po_box: struct_str_field(items, "po_box", i)?,
+            zip_code: struct_str_field(items, "zip_code", i)?,
+            city: struct_str_field(items, "city", i)?,
+            state: struct_str_field(items, "state", i)?,
+            country: struct_str_field(items, "country", i)?,
+            free_text: struct_str_field(items, "free_text", i)?,
             location,
         });
     }
@@ -473,6 +482,19 @@ fn attribute_value(col: &AttributeColumn<'_>, row: usize) -> Result<Option<Value
             let a = downcast::<StringArray>(array.as_ref(), name)?;
             Value::String(a.value(row).to_string())
         }
+        // Tolerant of a dictionary-encoded VARCHAR attribute column (spec
+        // "Physical encoding and conformance"): `from_arrow` resolves it to
+        // `String`, ambiguous with `Json` exactly like plain `Utf8` above —
+        // the field's `arrow.json` tag (metadata, independent of the
+        // physical shape) is what upgrades it.
+        DataType::Dictionary(_, _) if col.is_json => {
+            let view = crate::arrow_compat::string_view(array.as_ref(), name)?;
+            serde_json::from_str(view.value(row))?
+        }
+        DataType::Dictionary(_, _) => {
+            let view = crate::arrow_compat::string_view(array.as_ref(), name)?;
+            Value::String(view.value(row).to_string())
+        }
         DataType::List(item) if item.data_type() == &DataType::Utf8 => {
             let a = downcast::<ListArray>(array.as_ref(), name)?;
             let values = a.value(row);
@@ -529,11 +551,16 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
 
     let template_array = optional_column(batch, "template", &template_data_type());
     let template_col = downcast::<StructArray>(template_array.as_ref(), "template")?;
-    let template_id_col = downcast::<Int64Array>(template_col.column(0).as_ref(), "template.id")?;
-    let template_point_col =
-        downcast::<BinaryArray>(template_col.column(1).as_ref(), "template.point")?;
+    let template_id_col = downcast::<Int64Array>(
+        crate::arrow_compat::struct_child(template_col, "id")?.as_ref(),
+        "template.id",
+    )?;
+    let template_point_col = downcast::<BinaryArray>(
+        crate::arrow_compat::struct_child(template_col, "point")?.as_ref(),
+        "template.point",
+    )?;
     let template_matrix_col = downcast::<ListArray>(
-        template_col.column(2).as_ref(),
+        crate::arrow_compat::struct_child(template_col, "transformationMatrix")?.as_ref(),
         "template.transformationMatrix",
     )?;
 
@@ -720,8 +747,68 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use serde_json::json;
+
+    /// `street` and `city` sit at ordinal positions 0 and 4 in the canonical
+    /// `address` item struct — both nullable `Utf8`, exactly the shape a
+    /// positionally-indexed reader would silently swap for a writer that
+    /// emits the two fields in the other order. Built with `city` FIRST and
+    /// `street` fifth to force that hazard.
+    #[test]
+    fn address_column_resolves_street_and_city_by_name_not_position() {
+        let street_arr: ArrayRef = Arc::new(StringArray::from(vec!["Main St"]));
+        let city_arr: ArrayRef = Arc::new(StringArray::from(vec!["Delft"]));
+        let null_str = || -> ArrayRef { new_null_array(&DataType::Utf8, 1) };
+        let null_bin: ArrayRef = new_null_array(&DataType::Binary, 1);
+
+        let fields = vec![
+            Field::new("city", DataType::Utf8, true),
+            Field::new("house_number", DataType::Utf8, true),
+            Field::new("po_box", DataType::Utf8, true),
+            Field::new("zip_code", DataType::Utf8, true),
+            Field::new("street", DataType::Utf8, true),
+            Field::new("state", DataType::Utf8, true),
+            Field::new("country", DataType::Utf8, true),
+            Field::new("free_text", DataType::Utf8, true),
+            Field::new("location", DataType::Binary, true),
+        ];
+        let arrays = vec![
+            city_arr,
+            null_str(),
+            null_str(),
+            null_str(),
+            street_arr,
+            null_str(),
+            null_str(),
+            null_str(),
+            null_bin,
+        ];
+        let items = StructArray::new(arrow_schema::Fields::from(fields), arrays, None);
+
+        let item_field: Arc<Field> = Field::new("item", items.data_type().clone(), true).into();
+        let address_col = ListArray::new(
+            item_field,
+            arrow_buffer::OffsetBuffer::from_lengths([1usize]),
+            Arc::new(items),
+            None,
+        );
+
+        let entries = decode_address_column(&address_col, 0).unwrap().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].street.as_deref(),
+            Some("Main St"),
+            "street must resolve by NAME, not ordinal position 0"
+        );
+        assert_eq!(
+            entries[0].city.as_deref(),
+            Some("Delft"),
+            "city must resolve by NAME, not ordinal position 4"
+        );
+    }
 
     // G9 decode guard: the `other`-column merge is a losslessness-critical,
     // corruption-sensitive path, so it is unit-tested directly (building a full
