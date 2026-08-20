@@ -9,25 +9,31 @@
 //! unique and preserved verbatim end-to-end), so feature grouping/ordering
 //! differences between the two sides are irrelevant to the comparison.
 //!
-//! Degenerate-ring normalisation (stripping a ring's trailing duplicates of
-//! its first vertex INDEX; dropping rings left with fewer than 3 ENTRIES;
-//! dropping a surface whose exterior ring was dropped) is reimplemented here
-//! independently of [`crate::wkb_write`]'s writer-side normalisation — on
-//! purpose: a comparator that reused the writer's own normalisation function
-//! could not catch a bug in that function, since both sides would share the
-//! same blind spot. The "fewer than 3" INDEX-based threshold counts remaining
-//! ring ELEMENTS, not geometrically distinct coordinates: a 3-element
-//! zero-area ring made of 3 genuinely distinct (if colinear) vertices passes
-//! through untouched — the CityJSON spec's stricter "at least 3 distinct
-//! vertices" wording is deliberately not enforced beyond this structural
-//! element count in general (data quality is not the format's business,
-//! matching the writer's policy). It is applied to BOTH sides unconditionally.
+//! Degenerate-ring normalisation (stripping a ring's trailing closure —
+//! trailing entries that dequantise to the same COORDINATE as the ring's
+//! first entry, whatever vertex index they carry; dropping rings left with
+//! fewer than 3 ENTRIES; dropping a surface whose exterior ring was dropped)
+//! is reimplemented here independently of [`crate::wkb_write`]'s writer-side
+//! normalisation — on purpose: a comparator that reused the writer's own
+//! normalisation function could not catch a bug in that function, since both
+//! sides would share the same blind spot. The "fewer than 3" threshold counts
+//! remaining ring ELEMENTS, not geometrically distinct coordinates: a
+//! 3-element zero-area ring made of 3 genuinely distinct (if colinear)
+//! vertices passes through untouched — the CityJSON spec's stricter "at least
+//! 3 distinct vertices" wording is deliberately not enforced beyond this
+//! structural element count in general (data quality is not the format's
+//! business, matching the writer's policy). It is applied to BOTH sides
+//! unconditionally. Both sides' rings are index lists into that side's OWN
+//! `VertexPool`, and the two pools are unrelated — indices survive nothing;
+//! only coordinates do — so every step of this normalisation reasons about
+//! dequantised coordinates rather than indices (see
+//! [`normalise_ring`] for the real 3DBAG ring that makes the difference
+//! visible).
 //!
 //! One narrow exception to "data quality is not the format's business":
-//! coordinate-DEGENERATE rings, i.e. rings whose vertex INDICES are pairwise
-//! distinct (so the INDEX-based check above does not fire) but which
-//! dequantise to fewer than 3 DISTINCT coordinates. This is a real 3DBAG tile
-//! finding (`9-284-556.city.json`, object
+//! coordinate-DEGENERATE rings, i.e. rings of 3 or more entries that
+//! nonetheless dequantise to fewer than 3 DISTINCT coordinates. This is a
+//! real 3DBAG tile finding (`9-284-556.city.json`, object
 //! `NL.IMBAG.Pand.0503100000025101-0`, LoD 2.2, face 497): a 3-index exterior
 //! ring `[49590, 49127, 49595]` whose three distinct vertex indices are all
 //! duplicate entries of the identical quantised vertex `(31653, 359040,
@@ -39,20 +45,20 @@
 //! net, only-visible-after-a-round-trip effect is exactly as if the writer
 //! had dropped the face: the source side keeps a normal-looking 3-distinct-
 //! index ring, while the round-tripped side's boundary — after going through
-//! WKB and back — carries the SAME index 3 times over, which the INDEX-based
-//! check above already treats as closed-to-nothing and drops. Comparing the
-//! two sides without this extension therefore reports a spurious
-//! boundary/semantics difference on real production data. The fix: after the
-//! INDEX-based fixpoint strip above, also drop a ring whose surviving indices
-//! dequantise (via that side's own `VertexPool`, bitwise `f64::to_bits`
+//! WKB and back — carries the SAME index 3 times over. An index-based
+//! comparison of the two sides therefore reports a spurious
+//! boundary/semantics difference on real production data, whereas the
+//! coordinate-based strip reduces both to nothing alike. What survives the
+//! strip is dropped when it still resolves to fewer than 3 DISTINCT
+//! coordinates (via that side's own `VertexPool`, bitwise `f64::to_bits`
 //! comparison — deterministic scale/translate arithmetic makes this exactly
 //! as exact, and cheaper, than comparing the underlying quantised i64
-//! triples) to fewer than 3 DISTINCT coordinates — applied identically to
-//! BOTH sides, reusing the same `normalise_ring`/`normalise_surface`
-//! machinery (fixpoint stripping, dropped-position tracking, exterior-ring
-//! surface drop, semantics/material/texture realignment) rather than
-//! duplicating it. This does not affect genuine (distinct-vertex) zero-area
-//! rings, which still pass through unchanged.
+//! triples) — applied identically to BOTH sides, reusing the same
+//! `normalise_ring`/`normalise_surface` machinery (fixpoint stripping,
+//! dropped-position tracking, exterior-ring surface drop,
+//! semantics/material/texture realignment) rather than duplicating it. This
+//! does not affect genuine (distinct-vertex) zero-area rings, which still
+//! pass through unchanged.
 //!
 //! `material`/`texture` blocks ARE part of the comparison by default: they
 //! compare under the same JSON equality as `semantics`, after the same
@@ -229,12 +235,31 @@ fn surface_list_node(pool: &VertexPool, surfaces: &[Vec<Vec<usize>>]) -> Result<
 // crate::wkb_write (see module docs for why).
 // ---------------------------------------------------------------------
 
-/// Strip trailing duplicates of the first vertex INDEX (a pre-baked WKB
-/// closure seen in the wild); drop the ring ([`None`]) if fewer than 3
-/// vertices remain.
+/// Strip a ring's trailing CLOSURE — trailing entries that dequantise
+/// through `pool` to the ring's first COORDINATE, whatever vertex index they
+/// carry (a pre-baked WKB closure seen in the wild); drop the ring
+/// ([`None`]) if fewer than 3 entries remain.
 ///
-/// Loops to a fixpoint rather than stripping a single trailing duplicate,
-/// and — unlike the writer — keeps stripping even once only 3 vertices
+/// Closure is detected on COORDINATES, bitwise (`f64::to_bits`, the same
+/// rule [`distinct_coord_count`] uses), not on indices, because a source
+/// can close a ring either way and both closures must reduce to the same
+/// canonical ring. Index equality is subsumed: two occurrences of one index
+/// resolve through one `pool` to one bit-identical coordinate. Real 3DBAG
+/// data closes rings the other way — object
+/// `NL.IMBAG.Pand.0282100000002586-0`, LoD 2.2, face 24 has the exterior
+/// ring `[45, 49, 35, 42, 43, 46]`, where 45 and 46 are two DISTINCT
+/// `vertices` entries of the identical quantised triple `(21142216,
+/// -46290960, 21411)`. The writer copies such a ring's entries into WKB
+/// verbatim and appends its own closing repeat of the first coordinate; the
+/// WKB reader's bitwise coordinate interner
+/// (`crate::wkb_read::CoordInterner`) then folds the coordinate-duplicates
+/// onto ONE pool index, so the EXPORTED ring is closed by index. A strip
+/// keyed on indices fires on that exported side and not on the source
+/// side, leaving ring trees of different lengths and reporting a spurious
+/// `boundary/coordinates differ` on a semantically perfect round trip.
+///
+/// Loops to a fixpoint rather than stripping a single trailing closure,
+/// and — unlike the writer — keeps stripping even once only 3 entries
 /// remain: the writer (`crate::wkb_write::normalise_ring`) stops at 3
 /// vertices by design, since the stripping itself must never be what turns
 /// a ring degenerate. The comparator has no such constraint; it is NOT
@@ -261,16 +286,24 @@ fn surface_list_node(pool: &VertexPool, surfaces: &[Vec<Vec<usize>>]) -> Result<
 /// (excluded) drop rather than a false difference — see the module docs'
 /// note on `excluded` growing by one entry per side for this shape.
 ///
-/// After the index-based fixpoint strip, also drops a ring whose surviving
-/// indices dequantise (bitwise, via [`distinct_coord_count`]) to fewer than
-/// 3 DISTINCT coordinates — the 3DBAG-tile blind spot described in the
-/// module docs: an index-distinct ring (so the loop above does not fire)
-/// that is nonetheless coordinate-degenerate cannot form a real ring either.
-/// `pool` is the SAME side's own `VertexPool` the ring's indices belong to
-/// (source or exported — this function does not know or care which).
+/// After the closure strip, also drops a ring whose surviving entries
+/// dequantise (bitwise, via [`distinct_coord_count`]) to fewer than 3
+/// DISTINCT coordinates — the coordinate-degenerate case described in the
+/// module docs: a ring whose first and last coordinates differ (so the loop
+/// above stops) yet which resolves to fewer than 3 distinct coordinates in
+/// all cannot form a real ring either. `pool` is the SAME side's own
+/// `VertexPool` the ring's indices belong to (source or exported — this
+/// function does not know or care which).
 fn normalise_ring(ring: &[usize], pool: &VertexPool) -> Result<Option<Vec<usize>>> {
+    let coord_bits = |idx: usize| -> Result<[u64; 3]> {
+        let c = pool.coord(idx)?;
+        Ok([c[0].to_bits(), c[1].to_bits(), c[2].to_bits()])
+    };
     let mut stripped = ring;
-    while stripped.len() >= 2 && stripped.first() == stripped.last() {
+    while stripped.len() >= 2 {
+        if coord_bits(stripped[0])? != coord_bits(stripped[stripped.len() - 1])? {
+            break;
+        }
         stripped = &stripped[..stripped.len() - 1];
     }
     if stripped.len() < 3 {
@@ -2617,6 +2650,104 @@ mod tests {
              normalisation, got: {:#?}",
             report.excluded
         );
+    }
+
+    /// The sibling blind spot of the coordinate-degenerate ring above, and a
+    /// real 3DBAG finding in its own right: a ring whose explicit CLOSING
+    /// vertex is a duplicate vertex-pool entry under a DIFFERENT index.
+    /// Object `NL.IMBAG.Pand.0282100000002586-0`, LoD 2.2, face 24 carries
+    /// the exterior ring `[45, 49, 35, 42, 43, 46]`, where 45 and 46 are two
+    /// distinct `vertices` entries of the identical quantised triple
+    /// `(21142216, -46290960, 21411)` — the ring is closed by coordinate but
+    /// not by index.
+    ///
+    /// Derived from delft's `NL.IMBAG.Pand.0503100000012869-0` lod-1.2 Solid
+    /// (the same object as the sibling tests above): face 2's exterior ring
+    /// becomes a 6-entry ring whose five body entries are the object's own
+    /// vertices and whose closing entry is a BRAND NEW `vertices` entry
+    /// appended to the feature — a bitwise copy of the ring's first vertex's
+    /// raw quantised triple, so it is index-distinct but coordinate-identical.
+    ///
+    /// Mechanism this pins: `crate::wkb_write` writes the ring's six points
+    /// plus its own repeat of the first coordinate, so the WKB carries the
+    /// first coordinate three times over; the reader's bitwise coordinate
+    /// interner (`crate::wkb_read::CoordInterner`) folds those three back onto
+    /// ONE pool index and strips one closure, leaving an exported ring that IS
+    /// closed by index. An index-based comparator strip therefore fires on the
+    /// exported side (6 entries -> 5) but not on the source side (first and
+    /// last indices differ), and the two ring trees compare as a spurious
+    /// `boundary/coordinates differ` on a semantically perfect round trip.
+    /// Stripping on bit-identical dequantised COORDINATES instead reduces both
+    /// sides to the same five-entry ring.
+    #[test]
+    fn compare_strips_a_closing_vertex_that_duplicates_the_first_under_a_distinct_index() {
+        let original = fixture("delft.city.jsonl");
+        let text = fs::read_to_string(&original).unwrap();
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+
+        const OBJ_ID: &str = "NL.IMBAG.Pand.0503100000012869-0";
+        let mut derived_line = None;
+        for line in lines.iter().skip(1) {
+            if !line.contains(OBJ_ID) {
+                continue;
+            }
+            let mut feature: Value = serde_json::from_str(line).unwrap();
+
+            // The ring's five body entries, then one brand new vertex entry
+            // appended to the feature's own `vertices`: a bitwise copy of the
+            // FIRST body vertex's raw quantised triple, so it closes the ring
+            // by coordinate under an index of its own.
+            let body: [i64; 5] = [5, 2, 3, 6, 7];
+            let dup = feature["vertices"][body[0] as usize].clone();
+            let closing = {
+                let vertices = feature["vertices"].as_array_mut().unwrap();
+                let closing = vertices.len() as i64;
+                vertices.push(dup);
+                closing
+            };
+
+            let geom = feature["CityObjects"][OBJ_ID]["geometry"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|g| g["lod"] == "1.2" && g["type"] == "Solid")
+                .expect("delft's Pand-0 must carry a lod 1.2 Solid");
+            geom["boundaries"][0][2][0] =
+                serde_json::json!([body[0], body[1], body[2], body[3], body[4], closing]);
+
+            derived_line = Some(serde_json::to_string(&feature).unwrap());
+            break;
+        }
+        let derived_line = derived_line.expect("delft.city.jsonl must contain the target object");
+
+        let header_line = lines[0].clone();
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("delft_coord_closed_ring.city.jsonl");
+        fs::write(&source_path, format!("{header_line}\n{derived_line}\n")).unwrap();
+
+        let package_dir = tempfile::tempdir().unwrap();
+        crate::package::convert(&crate::package::ConvertOptions::new(
+            source_path.clone(),
+            package_dir.path().to_path_buf(),
+        ))
+        .unwrap();
+
+        let export_dir = tempfile::tempdir().unwrap();
+        let exported = export_dir.path().join("export.city.jsonl");
+        crate::export::export(&crate::export::ExportOptions {
+            package_dir: package_dir.path().to_path_buf(),
+            output: exported.clone(),
+        })
+        .unwrap();
+
+        let report = compare_datasets(&source_path, &exported, &CompareOptions::default()).unwrap();
+        assert!(
+            report.equal,
+            "a ring closed by a coordinate-duplicate vertex under a distinct index must \
+             normalise to the same ring on both sides of the round trip; differences: {:#?}",
+            report.differences
+        );
+        assert!(report.differences.is_empty());
     }
 
     /// No real fixture carries MultiSolid/CompositeSolid (the same gap
