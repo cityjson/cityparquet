@@ -11,6 +11,11 @@ name = "cityparquet-readbench"
 path = "src/main.rs"
 doc = false
 
+[[bin]]
+name = "scaling-corpus"
+path = "src/bin/scaling_corpus.rs"
+doc = false
+
 [dependencies]
 cityparquet = { path = "../cityparquet", features = ["object-store"] }
 cityparquet-schema = { workspace = true }

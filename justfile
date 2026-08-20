@@ -187,6 +187,44 @@ fetch-data DEST='bench/data/benchmark' ONLY='default':
 fetch-tools:
     ./scripts/fetch_tools.sh
 
+# Fetch the SCALING corpus source — one 7.6 GB FlatCityBuf export of a
+# 3DBAG subset (flatcitybuf.open3d.city, pinned byte size, resumable,
+# cached under bench/data/ and skipped once complete) — and cut CityJSONSeq
+# prefixes with a fixed number of CityObjects each: one
+# DEST/3dbag_n<SIZE>.city.jsonl per SIZE, every slice a strict prefix of
+# the next larger one, in source feature order. This is the input for the
+# CONFIGURATION-axis benchmarks (`compression-bench`, `write-bench`,
+# `ordering-bench`): one dataset at several cardinalities shows the trend
+# over size with the data held constant, where a corpus of unrelated city
+# models would entangle every configuration delta with a data delta.
+#
+# Slices cut at FEATURE boundaries (a CityJSONSeq feature is indivisible),
+# so a slice's actual CityObject count can slightly exceed its nominal
+# SIZE — the `scaling-corpus` binary prints the exact counts per slice. A
+# SIZE the source cannot fill is an ERROR, not a silently short file. No
+# .gml source exists for these slices, so pointing `bench` at DEST skips
+# the `citygml` row with a warning, exactly like the corpus's .city.json
+# entries. Needs curl; network-dependent on the first run (~7.6 GB); kept
+# OUT of `just check`/CI.
+fetch-scaling-data DEST='bench/data/scaling' SIZES='1000,5000,10000,50000':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    url='https://flatcitybuf.open3d.city/data/3dbag_subset2_all_index.fcb'
+    src='bench/data/3dbag_subset2_all_index.fcb'
+    expected=7587969439
+    mkdir -p bench/data
+    actual=$(wc -c < "$src" 2>/dev/null || echo 0)
+    if [[ "$actual" -ne "$expected" ]]; then
+        curl -fL --retry 3 -C - -o "$src" "$url"
+        actual=$(wc -c < "$src")
+        if [[ "$actual" -ne "$expected" ]]; then
+            echo "fetch-scaling-data: $src is $actual bytes, expected $expected — delete it and re-run" >&2
+            exit 1
+        fi
+    fi
+    cargo run --release -p cityparquet-readbench --bin scaling-corpus -- \
+        --input "$src" --out-dir "{{DEST}}" --stem 3dbag --sizes "{{SIZES}}"
+
 # Convert every CityGML/CityJSON/CityJSONSeq file found under FOLDER
 # (recursive) into a CityParquet package under OUT (default out/cityparquet),
 # one OUT/<name>/ package directory per input where <name> is the input's
