@@ -297,8 +297,16 @@ fn row_has_semantics(props: &arrow_array::StructArray, row: usize) -> bool {
     if props.is_null(row) {
         return false;
     }
-    let surfaces = props.column(1);
-    let face_semantics = props.column(2);
+    // Resolved by NAME, not ordinal position — `surfaces` and
+    // `face_semantics` do not share a DataType with each other, but a
+    // positional lookup here is the same hazard the spec's "match by name"
+    // rule warns about one nesting level down (`crate::arrow_compat::struct_child`).
+    let Some(surfaces) = props.column_by_name("surfaces") else {
+        return false;
+    };
+    let Some(face_semantics) = props.column_by_name("face_semantics") else {
+        return false;
+    };
     surfaces.is_valid(row) || face_semantics.is_valid(row)
 }
 
@@ -792,6 +800,74 @@ mod tests {
             err.to_string()
                 .contains(&format!("no asset carries the {ROLE_OBJECT_TABLE} role")),
             "got: {err}"
+        );
+    }
+
+    /// `row_has_semantics` reads `surfaces`/`face_semantics` by NAME, not
+    /// ordinal position — a `shells`-only cell physically placed at
+    /// `surfaces`'/`face_semantics`' canonical positions (1, 2) must not be
+    /// mistaken for semantics; a positional `column(1)`/`column(2)` read
+    /// would report `true` here purely because SOME non-null field landed
+    /// there, regardless of which field it actually was.
+    #[test]
+    fn row_has_semantics_resolves_surfaces_and_face_semantics_by_name() {
+        use arrow_array::{Array, ArrayRef, ListArray, StringArray, StructArray};
+
+        let type_arr: ArrayRef = std::sync::Arc::new(StringArray::from(vec!["Solid"]));
+        // `shells`, populated, physically placed where `surfaces` sits in
+        // the canonical order; the real `surfaces`/`face_semantics` fields
+        // are both null.
+        let shell_item = std::sync::Arc::new(arrow_schema::Field::new(
+            "item",
+            arrow_schema::DataType::Int32,
+            false,
+        ));
+        let shell_list = arrow_schema::DataType::List(shell_item);
+        let per_solid = std::sync::Arc::new(arrow_schema::Field::new("item", shell_list, false));
+        let ints: ArrayRef = std::sync::Arc::new(arrow_array::Int32Array::from(vec![6]));
+        let inner_list = ListArray::new(
+            std::sync::Arc::new(arrow_schema::Field::new(
+                "item",
+                arrow_schema::DataType::Int32,
+                false,
+            )),
+            arrow_buffer::OffsetBuffer::from_lengths([1usize]),
+            ints,
+            None,
+        );
+        let shells_arr: ArrayRef = std::sync::Arc::new(ListArray::new(
+            per_solid,
+            arrow_buffer::OffsetBuffer::from_lengths([1usize]),
+            std::sync::Arc::new(inner_list),
+            None,
+        ));
+        let surfaces_null: ArrayRef = arrow_array::new_null_array(&arrow_schema::DataType::Utf8, 1);
+        let face_semantics_null: ArrayRef = arrow_array::new_null_array(
+            &arrow_schema::DataType::List(
+                arrow_schema::Field::new("item", arrow_schema::DataType::Int32, true).into(),
+            ),
+            1,
+        );
+
+        let struct_array = StructArray::new(
+            arrow_schema::Fields::from(vec![
+                arrow_schema::Field::new("type", arrow_schema::DataType::Utf8, false),
+                arrow_schema::Field::new("shells", shells_arr.data_type().clone(), true),
+                arrow_schema::Field::new("surfaces", arrow_schema::DataType::Utf8, true),
+                arrow_schema::Field::new(
+                    "face_semantics",
+                    face_semantics_null.data_type().clone(),
+                    true,
+                ),
+            ]),
+            vec![type_arr, shells_arr, surfaces_null, face_semantics_null],
+            None,
+        );
+
+        assert!(
+            !row_has_semantics(&struct_array, 0),
+            "a populated shells-only row must not be reported as semantics just because SOME \
+             field at surfaces'/face_semantics' canonical position happens to be non-null"
         );
     }
 

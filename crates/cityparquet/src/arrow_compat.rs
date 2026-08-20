@@ -15,13 +15,29 @@
 //!   (MILLIS or MICROS) — [`timestamp_utc_value`].
 
 use arrow_array::types::Int32Type;
-use arrow_array::{Array, ArrayAccessor, DictionaryArray, StringArray, TypedDictionaryArray};
+use arrow_array::{
+    Array, ArrayAccessor, ArrayRef, DictionaryArray, StringArray, StructArray, TypedDictionaryArray,
+};
 use arrow_schema::TimeUnit;
 
 use cityparquet_schema::{CityParquetError, Result};
 
 fn err(msg: String) -> CityParquetError {
     CityParquetError::Schema(msg)
+}
+
+/// `array`'s child field named `name` — matched by NAME, never by ordinal
+/// position (spec "Physical encoding and conformance": a reader MUST match
+/// columns by name; positional access inside a STRUCT is the identical
+/// hazard the top-level rule warns about, one nesting level down — several
+/// `STRUCT` fields sharing a logical type, e.g. `geometry_properties.type`
+/// and `.surfaces` both `VARCHAR`, is exactly the shape a writer emitting
+/// them in a different order would silently transpose under `column(idx)`).
+/// Errors (never panics) when `name` is absent, rather than guessing.
+pub(crate) fn struct_child<'a>(array: &'a StructArray, name: &str) -> Result<&'a ArrayRef> {
+    array
+        .column_by_name(name)
+        .ok_or_else(|| err(format!("struct has no child field named '{name}'")))
 }
 
 /// A string column's per-row view, tolerant of either physical

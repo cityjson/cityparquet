@@ -283,10 +283,22 @@ pub(crate) fn read_geometry_properties(array: &StructArray, row: usize) -> Resul
     if array.is_null(row) {
         return Ok(None);
     }
-    let type_col = downcast::<StringArray>(array.column(0).as_ref(), "type")?;
-    let surfaces_col = downcast::<StringArray>(array.column(1).as_ref(), "surfaces")?;
-    let face_semantics_col = downcast::<ListArray>(array.column(2).as_ref(), "face_semantics")?;
-    let shells_col = downcast::<ListArray>(array.column(3).as_ref(), "shells")?;
+    let type_col = downcast::<StringArray>(
+        crate::arrow_compat::struct_child(array, "type")?.as_ref(),
+        "type",
+    )?;
+    let surfaces_col = downcast::<StringArray>(
+        crate::arrow_compat::struct_child(array, "surfaces")?.as_ref(),
+        "surfaces",
+    )?;
+    let face_semantics_col = downcast::<ListArray>(
+        crate::arrow_compat::struct_child(array, "face_semantics")?.as_ref(),
+        "face_semantics",
+    )?;
+    let shells_col = downcast::<ListArray>(
+        crate::arrow_compat::struct_child(array, "shells")?.as_ref(),
+        "shells",
+    )?;
 
     let mut map = serde_json::Map::new();
     map.insert(
@@ -340,6 +352,54 @@ mod tests {
         let array = b.finish();
         let struct_array = array.as_any().downcast_ref::<StructArray>().unwrap();
         read_geometry_properties(struct_array, 0).unwrap().unwrap()
+    }
+
+    /// The spec's cited positional-decode hazard, reproduced directly:
+    /// `type` and `surfaces` are BOTH `StringArray` (VARCHAR), so a writer
+    /// emitting them in the other physical order — the shape duckdb-cityjson
+    /// actually writes — must not have them silently swapped by
+    /// `read_geometry_properties`. Built by hand (not the builder, which
+    /// always emits the canonical order) to force the hazard.
+    #[test]
+    fn a_reordered_struct_does_not_transpose_type_and_surfaces() {
+        let DataType::Struct(canonical_fields) = geometry_properties_data_type() else {
+            unreachable!("geometry_properties_data_type always returns Struct")
+        };
+        // Canonical physical order is [type, surfaces, face_semantics, shells].
+        let type_field = canonical_fields[0].clone();
+        let surfaces_field = canonical_fields[1].clone();
+        let face_semantics_field = canonical_fields[2].clone();
+        let shells_field = canonical_fields[3].clone();
+
+        let type_arr: ArrayRef = Arc::new(StringArray::from(vec!["MultiSurface"]));
+        let surfaces_arr: ArrayRef =
+            Arc::new(StringArray::from(vec![Some(r#"[{"type":"RoofSurface"}]"#)]));
+        let face_semantics_arr = arrow_array::new_null_array(face_semantics_field.data_type(), 1);
+        let shells_arr = arrow_array::new_null_array(shells_field.data_type(), 1);
+
+        // `surfaces` FIRST, `type` SECOND — the transposed physical order.
+        let struct_array = StructArray::new(
+            arrow_schema::Fields::from(vec![
+                surfaces_field,
+                type_field,
+                face_semantics_field,
+                shells_field,
+            ]),
+            vec![surfaces_arr, type_arr, face_semantics_arr, shells_arr],
+            None,
+        );
+
+        let value = read_geometry_properties(&struct_array, 0).unwrap().unwrap();
+        assert_eq!(
+            value["type"],
+            serde_json::json!("MultiSurface"),
+            "type must resolve by NAME, not by ordinal position 0"
+        );
+        assert_eq!(
+            value["surfaces"],
+            serde_json::json!([{"type": "RoofSurface"}]),
+            "surfaces must resolve by NAME, not by ordinal position 1"
+        );
     }
 
     #[test]
