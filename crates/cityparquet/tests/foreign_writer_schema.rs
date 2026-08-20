@@ -369,3 +369,155 @@ fn a_table_omitting_the_optional_reserved_columns_decodes() {
         "an absent column decodes as an absent address, not Some(vec![])"
     );
 }
+
+/// A minimal, conformant `city` footer with no `columns` entry at all — the
+/// case `cityparquet_arrow_schema`'s TAIL projection (the geometry-bearing
+/// exit, taken whenever `lods` is non-empty) must handle: every real
+/// CityParquet file takes this path, yet [`foreign_file`]/[`minimal_foreign_file`]
+/// above carry no geometry column, so neither exercises it — only the EARLY
+/// return (the geometry-less table shape). `encoding_from_physical_shape`
+/// falls back `Binary -> Wkb` when a footer declares no `city.columns` entry
+/// for a column, so this fixture needs no encoding-token gymnastics.
+const GEOMETRY_CITY_JSON: &str = r#"{
+  "version": "0.1.0-draft",
+  "attributes": []
+}"#;
+
+/// A geometry-bearing foreign file: `geometry_lod1_0` (`Binary`, WKB by the
+/// footer-less fallback) plus its `geometry_properties_lod1_0` pair, both
+/// all-null — this test only calls `cityparquet_arrow_schema`, never
+/// `decode_batch`, so no real WKB/struct payload is needed, only the right
+/// physical shape.
+fn geometry_bearing_foreign_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("feature_id", DataType::Utf8, false),
+        Field::new("object_type", DataType::Utf8, false),
+        Field::new(
+            "parents",
+            DataType::List(Field::new("item", DataType::Utf8, true).into()),
+            true,
+        ),
+        Field::new(
+            "children",
+            DataType::List(Field::new("item", DataType::Utf8, true).into()),
+            true,
+        ),
+        Field::new("geometry_lod1_0", DataType::Binary, true),
+        Field::new(
+            "geometry_properties_lod1_0",
+            cityparquet_schema::model::geometry_properties_data_type(),
+            true,
+        ),
+    ]));
+
+    let ids: ArrayRef = Arc::new(StringArray::from(vec!["obj-1"]));
+    let feature_ids: ArrayRef = Arc::new(StringArray::from(vec!["obj-1"]));
+    let types: ArrayRef = Arc::new(StringArray::from(vec!["Bridge"]));
+    let parents: ArrayRef = new_null_array(
+        &DataType::List(Field::new("item", DataType::Utf8, true).into()),
+        1,
+    );
+    let children: ArrayRef = new_null_array(
+        &DataType::List(Field::new("item", DataType::Utf8, true).into()),
+        1,
+    );
+    let geometry: ArrayRef = new_null_array(&DataType::Binary, 1);
+    let geometry_properties: ArrayRef = new_null_array(
+        &cityparquet_schema::model::geometry_properties_data_type(),
+        1,
+    );
+
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            ids,
+            feature_ids,
+            types,
+            parents,
+            children,
+            geometry,
+            geometry_properties,
+        ],
+    )
+    .expect("geometry-bearing foreign batch");
+
+    let props = WriterProperties::builder()
+        .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new(
+            "city".to_string(),
+            GEOMETRY_CITY_JSON.to_string(),
+        )]))
+        .build();
+    let file = std::fs::File::create(path).expect("create");
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("writer");
+    writer.write(&batch).expect("write");
+    writer.close().expect("close");
+}
+
+/// The tail projection path (`cityparquet_arrow_schema`'s second, geometry-
+/// bearing exit) must carry the CANONICAL schema's field metadata onto the
+/// file's OWN fields, exactly like the early-return path already proven by
+/// [`renders_the_foreign_writers_own_fields_not_the_canonical_set`]. Reverting
+/// only the tail's `project_metadata_onto` call (returning the bare
+/// `canonical` schema, or the bare `actual` schema) breaks NO other test in
+/// this crate — the reviewed gap this test closes.
+#[test]
+fn tail_projection_carries_canonical_metadata_onto_a_geometry_bearing_foreign_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("geometry_bridge.parquet");
+    geometry_bearing_foreign_file(&path);
+
+    let file = std::fs::File::open(&path).expect("open");
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("builder");
+    let rendered = builder
+        .cityparquet_arrow_schema()
+        .expect("a conformant geometry-bearing foreign file must render");
+
+    // File identity preserved: field order is the file's own, and
+    // `object_type` stays the file's plain Utf8, not the canonical
+    // Dictionary — proves this is not the bare canonical schema.
+    let names: Vec<&str> = rendered
+        .fields()
+        .iter()
+        .map(|f| f.name().as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "id",
+            "feature_id",
+            "object_type",
+            "parents",
+            "children",
+            "geometry_lod1_0",
+            "geometry_properties_lod1_0",
+        ],
+        "the rendered schema must be the file's own fields, in the file's order"
+    );
+    assert_eq!(
+        rendered.field_with_name("object_type").unwrap().data_type(),
+        &DataType::Utf8,
+        "physical types are the file's own, not the canonical Dictionary choice"
+    );
+
+    // Canonical metadata carried onto the file's own fields: this fixture's
+    // fields are built with plain `Field::new` (no metadata at all), so
+    // `geoarrow.wkb` / `cityparquet:role` / `cityparquet:lod` can only have
+    // arrived via `project_metadata_onto`.
+    let geom = rendered.field_with_name("geometry_lod1_0").unwrap();
+    assert_eq!(
+        geom.metadata()
+            .get(arrow_schema::extension::EXTENSION_TYPE_NAME_KEY)
+            .map(String::as_str),
+        Some("geoarrow.wkb"),
+        "the tail must tag the geometry column geoarrow.wkb, same as the early-return path"
+    );
+    assert_eq!(
+        geom.metadata().get("cityparquet:role").map(String::as_str),
+        Some("reserved")
+    );
+    assert_eq!(
+        geom.metadata().get("cityparquet:lod").map(String::as_str),
+        Some("1.0")
+    );
+}
