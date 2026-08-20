@@ -2,18 +2,18 @@
 
 How `cityparquet-rs` is put together: the crates, the module responsibilities,
 and the data flow through conversion, reading, export, comparison, and
-benchmarking. Read [`design.md`](design.md) first for the *format*; this
-document is about the *code*.
+benchmarking. Read [`design.md`](design.md) first for the _format_; this
+document is about the _code_.
 
 ## Workspace crates
 
 Three crates, layered so the type system has no I/O dependencies:
 
-| Crate | Responsibility | Notable dependency line |
-|---|---|---|
-| **`cityparquet-schema`** | The CityParquet spec *as code*: types, CityGML taxonomy, Arrow schema, profiles, manifest, metadata. No buffers, no Parquet. | **zero** `arrow-array` / `parquet` deps — only `arrow-schema` |
-| **`cityparquet`** | The Parquet read/write path: scan, encode, write, read, decode, export, compare, WKB, appearance, sidecars, ordering, recipes. | `arrow-*`, `parquet`, `wkb`, `cjseq` |
-| **`cityparquet-cli`** | The `cityparquet` binary (convert/export/compare/bench) and the benchmark harness library. | `clap`, the two crates above |
+| Crate                    | Responsibility                                                                                                                 | Notable dependency line                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| **`cityparquet-schema`** | The CityParquet spec _as code_: types, CityGML taxonomy, Arrow schema, profiles, manifest, metadata. No buffers, no Parquet.   | **zero** `arrow-array` / `parquet` deps — only `arrow-schema` |
+| **`cityparquet`**        | The Parquet read/write path: scan, encode, write, read, decode, export, compare, WKB, appearance, sidecars, ordering, recipes. | `arrow-*`, `parquet`, `wkb`, `cjseq`                          |
+| **`cityparquet-cli`**    | The `cityparquet` binary (convert/export/compare/bench) and the benchmark harness library.                                     | `clap`, the two crates above                                  |
 
 The **schema/Parquet isolation** is enforced in CI: `just isolation` fails if
 `cityparquet-schema` ever pulls in `arrow-array` or `parquet`. Keeping the
@@ -106,7 +106,7 @@ ordering is designed to feed.
 
 - **`scan`** (the reader's) and **`decode`** are the read-side inverse of
   encode: `decode` turns a `RecordBatch` row back into a `cjseq`-model
-  `CityObject`. Geometry is deliberately kept *out* of the reassembled object
+  `CityObject`. Geometry is deliberately kept _out_ of the reassembled object
   (that struct's `geometry` field expects CityJSON boundary arrays, not WKB) —
   callers that need CityJSON-shaped geometry own that re-encoding.
 - **`wkb_read`** — the inverse of `wkb_write`. Coordinates are deduplicated
@@ -126,7 +126,7 @@ Its correctness hinges on **manifest authority**:
   manifest doesn't list it (Core, or Compatibility with no templates), an
   object's `template` reference can't resolve, so the object is exported
   without its instance geometry and the drop is counted. A reference to a
-  missing row *in a listed sidecar* is a corrupt-file `Schema` error, not a
+  missing row _in a listed sidecar_ is a corrupt-file `Schema` error, not a
   silent drop; a listed-but-unreadable sidecar is an `Io` error.
 - **Materials/textures** are handled the same way: listed → load the global
   definitions, slice out the per-feature subset, reassign feature-local
@@ -143,17 +143,17 @@ every `CityObject` is flattened into one `id → ObjectData` map per side, so
 feature grouping/ordering differences are irrelevant.
 
 The subtle part is **degenerate-ring normalisation**, re-implemented here
-*independently* of the writer on purpose — a comparator that reused the
+_independently_ of the writer on purpose — a comparator that reused the
 writer's normalisation couldn't catch a bug in it, because both sides would
 share the blind spot. Two layers:
 
 1. **Index-based** (mirrors the writer): strip a ring's trailing duplicates
    of its first vertex index, drop rings left with < 3 entries, drop a surface
-   whose exterior ring was dropped. Counts ring *elements*, not distinct
+   whose exterior ring was dropped. Counts ring _elements_, not distinct
    coordinates — a genuinely-distinct zero-area ring passes through (data
    quality is not the format's job).
 2. **Coordinate-based** (the round-trip-only case): also drop a ring whose
-   surviving indices dequantise to < 3 *distinct* coordinates. This catches
+   surviving indices dequantise to < 3 _distinct_ coordinates. This catches
    the real 3DBAG occurrence where three distinct vertex indices all map to
    one quantised coordinate: the writer emits it (index-distinct), the WKB
    reader's `f64::to_bits` interner collapses it to one repeated index on read,
@@ -187,14 +187,14 @@ where the committed CSVs are).
 `RecipePreset` is the tuned default plus five ablations, so the paper can
 quantify what each tuning rule buys:
 
-| Preset (`--recipe`) | What it is |
-|---|---|
-| `cityparquet` | the tuned default: delta-encoded ids, dictionary `object_type`, BYTE_STREAM_SPLIT bbox leaves, no stats/dictionary on WKB+JSON, zstd 3 |
-| `parquet-defaults` | parquet-rs defaults + the recipe's global compression & row-group size only — the "untuned writer" comparator |
-| `no-dictionary` | `cityparquet` minus dictionary encoding everywhere |
-| `no-bss` | `cityparquet` minus BYTE_STREAM_SPLIT on the bbox leaves |
-| `no-delta` | `cityparquet` minus DELTA_BYTE_ARRAY on `id`/`feature_id` |
-| `snappy` | `cityparquet` with Snappy instead of zstd (DuckDB COPY's default codec) |
+| Preset (`--recipe`) | What it is                                                                                                                             |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `cityparquet`       | the tuned default: delta-encoded ids, dictionary `object_type`, BYTE_STREAM_SPLIT bbox leaves, no stats/dictionary on WKB+JSON, zstd 3 |
+| `parquet-defaults`  | parquet-rs defaults + the recipe's global compression & row-group size only — the "untuned writer" comparator                          |
+| `no-dictionary`     | `cityparquet` minus dictionary encoding everywhere                                                                                     |
+| `no-bss`            | `cityparquet` minus BYTE_STREAM_SPLIT on the bbox leaves                                                                               |
+| `no-delta`          | `cityparquet` minus DELTA_BYTE_ARRAY on `id`/`feature_id`                                                                              |
+| `snappy`            | `cityparquet` with Snappy instead of zstd (DuckDB COPY's default codec)                                                                |
 
 KV metadata is embedded under every preset — it is never a benchmark
 variable. Row-group size and zstd level remain independent CLI knobs on top.

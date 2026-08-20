@@ -15,8 +15,8 @@ Two things come out of a run:
 
 1. **The mirror** — a directory tree of CityParquet packages with a STAC catalogue over
    the top of it.
-2. **The measurement** — a per-item ledger of what converted, what did not, and *why
-   not*, drawn from a closed vocabulary so that two runs are comparable. Roughly half
+2. **The measurement** — a per-item ledger of what converted, what did not, and _why
+   not_, drawn from a closed vocabulary so that two runs are comparable. Roughly half
    the catalogue's collections are expected not to convert; a measured statement of
    which and why is the artefact this tool exists to produce.
 
@@ -111,7 +111,7 @@ to a depth of 3 by default.
 Three guards matter here, all of them because the payloads are third-party and some are
 enormous:
 
-- **A 20 GiB budget across the whole payload**, charged as bytes are *written*, not as
+- **A 20 GiB budget across the whole payload**, charged as bytes are _written_, not as
   headers declare them. A per-archive cap would multiply with nesting.
 - **No member may escape** the working directory, and a repeated member name is refused
   rather than silently overwritten.
@@ -218,7 +218,7 @@ it, an origin that would not serve the bytes. These make the **reasons histogram
 the histogram is the number this project publishes.
 
 An **environment** failure is a statement about the host: a full disk, an unwritable
-directory, a `city3dstac` that was never built, a broken stdout. It says *nothing* about
+directory, a `city3dstac` that was never built, a broken stdout. It says _nothing_ about
 whether the dataset converts. It has its own status, its own column in `summary.csv`, and
 it is excluded from the histogram **by construction** — the ledger will not even let the
 status and the reason drift apart.
@@ -243,19 +243,19 @@ and re-run; resumption means you only pay for what is missing.
 Closed set. A reason outside it is a programming error, not a new category — silently
 admitting typos would make the histogram meaningless.
 
-| Reason | Kind | What it means |
-|---|---|---|
-| `download_failed` | conformance | The origin would not serve the bytes: a transport error, an HTTP error status, or a timeout. The publisher's availability, not the converter's competence. |
-| `unsupported_archive` | conformance | The payload unpacked cleanly and held nothing the converter reads. |
-| `unsupported_citygml_version` | conformance | CityGML the reader does not support (it implements 2.0). |
-| `unsupported_cityjson_version` | conformance | CityJSON the reader rejects as invalid or out of version range. |
-| `no_crs` | conformance | The source carries CRS-bearing coordinates but declares no CRS a writer can resolve. Fixable per collection with `--crs`. |
-| `geographic_crs` | conformance | The source declares a geographic (degrees) CRS, which CityParquet does not accept for 3D city geometry. |
-| `convert_failed` | conformance | The converter refused for a reason the classifier does not recognise, or it timed out. The catch-all: a large count here means the classifier needs another rule, not that the data is uniquely broken. |
-| `empty_collection` | conformance | The collection publishes no items at all — 20 of the 53 hold only a `collection.json`. |
-| `duplicate_bundle` | conformance | Skipped before downloading: Japan's 381 whole-city ZIPs repackage the same data as the 60,090 per-module tiles, and converting both would encode Japan twice. |
-| `stale_item_index` | conformance | The collection's published `items.parquet` disagreed with the object listing; the listing was used. A fact about the catalogue, recorded rather than merely logged. |
-| `environment` | **environment** | This machine failed here. Excluded from the histogram; see above. |
+| Reason                         | Kind            | What it means                                                                                                                                                                                           |
+| ------------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `download_failed`              | conformance     | The origin would not serve the bytes: a transport error, an HTTP error status, or a timeout. The publisher's availability, not the converter's competence.                                              |
+| `unsupported_archive`          | conformance     | The payload unpacked cleanly and held nothing the converter reads.                                                                                                                                      |
+| `unsupported_citygml_version`  | conformance     | CityGML the reader does not support (it implements 2.0).                                                                                                                                                |
+| `unsupported_cityjson_version` | conformance     | CityJSON the reader rejects as invalid or out of version range.                                                                                                                                         |
+| `no_crs`                       | conformance     | The source carries CRS-bearing coordinates but declares no CRS a writer can resolve. Fixable per collection with `--crs`.                                                                               |
+| `geographic_crs`               | conformance     | The source declares a geographic (degrees) CRS, which CityParquet does not accept for 3D city geometry.                                                                                                 |
+| `convert_failed`               | conformance     | The converter refused for a reason the classifier does not recognise, or it timed out. The catch-all: a large count here means the classifier needs another rule, not that the data is uniquely broken. |
+| `empty_collection`             | conformance     | The collection publishes no items at all — 20 of the 53 hold only a `collection.json`.                                                                                                                  |
+| `duplicate_bundle`             | conformance     | Skipped before downloading: Japan's 381 whole-city ZIPs repackage the same data as the 60,090 per-module tiles, and converting both would encode Japan twice.                                           |
+| `stale_item_index`             | conformance     | The collection's published `items.parquet` disagreed with the object listing; the listing was used. A fact about the catalogue, recorded rather than merely logged.                                     |
+| `environment`                  | **environment** | This machine failed here. Excluded from the histogram; see above.                                                                                                                                       |
 
 ### Where the records live
 
@@ -264,7 +264,7 @@ admitting typos would make the histogram meaningless.
   downloaded, seconds spent, and the `run_id`/`timestamp` of the run that wrote it.
   **This is the durable record**, and it accumulates across runs. Do not tally it by
   hand — see [Reading the cumulative ledger](#reading-the-cumulative-ledger).
-- **`_reports/summary.csv`** — a per-collection roll-up of *this run only*, rewritten
+- **`_reports/summary.csv`** — a per-collection roll-up of _this run only_, rewritten
   wholesale at the end of each run. Its `discovered` column is what enumeration found
   for that collection, which is **not** the sum of the other columns: a collection whose
   enumeration was truncated (by `--limit-per-collection`, or by item documents the
@@ -287,7 +287,7 @@ half-finished conversion never leaves a parseable Item behind. Anything unparsea
 absent beside a directory full of Parquet — means "not finished", and the item is
 re-attempted.
 
-A skipped item produces **no ledger record at all**. It is not an outcome of *this* run,
+A skipped item produces **no ledger record at all**. It is not an outcome of _this_ run,
 and counting it would make a resumed run look like a fresh success.
 
 > **Caveat — `summary.csv` is per-run, not cumulative.** It is written from what the
@@ -296,7 +296,7 @@ and counting it would make a resumed run look like a fresh success.
 > **After a multi-session run, the coverage evidence is the JSONL files, not the CSV** —
 > read them with the `histogram` subcommand below, never by hand.
 
-Working directories are swept at the *start* of a run rather than at the end, because the
+Working directories are swept at the _start_ of a run rather than at the end, because the
 run that made the mess is by definition not around to clean it up. `--keep-downloads`
 suppresses the sweep as well as the per-item cleanup: an operator who asked to keep them
 means across runs too.
@@ -310,7 +310,7 @@ just catalog-histogram out/cityparquet-catalog
 ```
 
 **An item can legitimately appear twice in the JSONL.** Resumption skips only
-*successes*, so an item that failed in an earlier run is re-attempted and appends a
+_successes_, so an item that failed in an earlier run is re-attempted and appends a
 second record — with a different outcome. Counting the lines therefore over-counts
 failures, and a `grep -c` roll-up of a multi-session run is simply wrong.
 
@@ -327,7 +327,7 @@ the other way round, absorbing an environment failure into it. Every record carr
 `run_id` and `timestamp` of the run that wrote it, so a roll-up can be audited against
 the runs that produced it.
 
-It also *counts* lines it could not parse rather than skipping them: a run that died
+It also _counts_ lines it could not parse rather than skipping them: a run that died
 mid-write leaves a torn line behind, and dropping it in silence would shrink the
 denominator the published number is a fraction of.
 
@@ -358,7 +358,7 @@ other's live downloads; two runs sharing an output directory would write two led
 per collection while `summary.csv` — rewritten by whichever finishes last — reports one.
 
 **A killed run leaves its `.c2cp-lock` behind.** The lock records the owning pid and
-hostname, so a stale lock left by a dead process *on the same host* is reclaimed
+hostname, so a stale lock left by a dead process _on the same host_ is reclaimed
 automatically. Two cases are not reclaimed, deliberately: a lock written by another host
 (over a shared filesystem, where the pid means nothing), and a lock whose contents cannot
 be read. Refusing to start is recoverable — the message names the file to delete — whereas
@@ -372,36 +372,36 @@ rm -f OUT/.c2cp-lock OUT/_work/.c2cp-lock   # or WORKDIR/.c2cp-lock if you used 
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| `0` | The run measured something. **However many items failed**, and however badly the report itself fared. |
-| `1` | Nothing could be attempted: the output directory could not be prepared, another run holds a directory this one needs, the catalogue root was unreachable, or it was reachable and **resolved no collections at all** (a root that answers with an error body would otherwise exit 0 with an empty summary, reporting success for a run that measured nothing). |
+| Code | Meaning                                                                                                                                                                                                                                                                                                                                                        |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | The run measured something. **However many items failed**, and however badly the report itself fared.                                                                                                                                                                                                                                                          |
+| `1`  | Nothing could be attempted: the output directory could not be prepared, another run holds a directory this one needs, the catalogue root was unreachable, or it was reachable and **resolved no collections at all** (a root that answers with an error body would otherwise exit 0 with an empty summary, reporting success for a run that measured nothing). |
 
 There is no exit code for "some items failed". That is the normal, expected outcome and
 it is what the ledger is for.
 
 ## Flags
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--out` | `out/cityparquet-catalog` | Output tree root |
-| `--collection` | all | Repeatable; restrict to these collection ids |
-| `--limit-per-collection` | none | Convert at most N items per collection |
-| `--jobs` | 8 | Concurrent items; bounded out of politeness to origins |
-| `--crs` | none | Repeatable `COLLECTION=EPSG:xxxx` override for CRS-less sources. Both halves are validated at startup, and a key naming no attempted collection is reported on stderr — a typo here would otherwise record a whole collection as `no_crs` |
-| `--keep-downloads` | off | Retain temp downloads for debugging |
-| `--no-skip-existing` | off | Reconvert items that already have a package |
-| `--aggregate-only` | off | Rebuild STAC from an existing tree, no downloads |
-| `--work-dir` | `<out>/_work` | Where downloads are unpacked; needs room for the largest single payload, and must not be shared with a concurrent run |
+| Flag                     | Default                   | Meaning                                                                                                                                                                                                                                   |
+| ------------------------ | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--out`                  | `out/cityparquet-catalog` | Output tree root                                                                                                                                                                                                                          |
+| `--collection`           | all                       | Repeatable; restrict to these collection ids                                                                                                                                                                                              |
+| `--limit-per-collection` | none                      | Convert at most N items per collection                                                                                                                                                                                                    |
+| `--jobs`                 | 8                         | Concurrent items; bounded out of politeness to origins                                                                                                                                                                                    |
+| `--crs`                  | none                      | Repeatable `COLLECTION=EPSG:xxxx` override for CRS-less sources. Both halves are validated at startup, and a key naming no attempted collection is reported on stderr — a typo here would otherwise record a whole collection as `no_crs` |
+| `--keep-downloads`       | off                       | Retain temp downloads for debugging                                                                                                                                                                                                       |
+| `--no-skip-existing`     | off                       | Reconvert items that already have a package                                                                                                                                                                                               |
+| `--aggregate-only`       | off                       | Rebuild STAC from an existing tree, no downloads                                                                                                                                                                                          |
+| `--work-dir`             | `<out>/_work`             | Where downloads are unpacked; needs room for the largest single payload, and must not be shared with a concurrent run                                                                                                                     |
 
 Plus three that exist so the tool can be pointed somewhere else — at a test double, a
 staging bucket, or a locally built binary:
 
-| Flag | Default |
-|---|---|
-| `--binary` | `target/release/cityparquet` |
-| `--tool` | `vendor/city3d-stac-tool/target/release/city3dstac` |
-| `--base-url` | `https://storage.googleapis.com/city3d-stac` |
+| Flag           | Default                                                     |
+| -------------- | ----------------------------------------------------------- |
+| `--binary`     | `target/release/cityparquet`                                |
+| `--tool`       | `vendor/city3d-stac-tool/target/release/city3dstac`         |
+| `--base-url`   | `https://storage.googleapis.com/city3d-stac`                |
 | `--bucket-api` | `https://storage.googleapis.com/storage/v1/b/city3d-stac/o` |
 
 Notes on the ones whose names promise more than they deliver:

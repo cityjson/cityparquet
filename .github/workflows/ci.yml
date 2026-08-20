@@ -6,7 +6,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      # `just check` now covers vendor/city3d-stac-tool (see the vendor-check
+      # `just check` covers vendor/city3d-stac-tool (see the vendor-check
       # recipe), so the submodule must be present. Our .gitmodules URL is the
       # https form deliberately: the git@github.com: form needs a key the
       # runner does not have. One level only, NOT recursive — the vendored tool
@@ -19,6 +19,9 @@ jobs:
         with: { components: "clippy, rustfmt" }
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      # Markdown is formatted by Prettier (`just fmt`, and .githooks/pre-commit
+      # on every commit); pinned exactly, in step with the justfile and the hook.
+      - run: npx --yes prettier@3.9.6 --log-level warn --check "**/*.md"
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - uses: extractions/setup-just@v2
       - run: just fixtures

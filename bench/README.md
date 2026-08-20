@@ -14,10 +14,10 @@ again.
 
 ## Two benchmarks, two questions
 
-| recipe | what it varies | output |
-|---|---|---|
-| `just write-bench FOLDER [OUT]` | the writer's variant matrix over every CityJSON/CityJSONSeq file under FOLDER — codecs, row-group sizes, ordering, plus the DuckDB `COPY … TO (FORMAT PARQUET)` baseline | `OUT/<name>.csv` (default `bench/results/`) |
-| `just compression-bench FOLDER [OUT]` | codec and row-group variants only, with a full scan and a window query re-read per variant, and a round-trip check per variant | `OUT/<name>.csv` (default `bench/compression_results/`) |
+| recipe                                | what it varies                                                                                                                                                           | output                                                  |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| `just write-bench FOLDER [OUT]`       | the writer's variant matrix over every CityJSON/CityJSONSeq file under FOLDER — codecs, row-group sizes, ordering, plus the DuckDB `COPY … TO (FORMAT PARQUET)` baseline | `OUT/<name>.csv` (default `bench/results/`)             |
+| `just compression-bench FOLDER [OUT]` | codec and row-group variants only, with a full scan and a window query re-read per variant, and a round-trip check per variant                                           | `OUT/<name>.csv` (default `bench/compression_results/`) |
 
 `just compression-bench`'s CSVs are what the summary page's compression view and
 its static figure read (`bench/plot/benchviz`); with none committed, that view
@@ -31,23 +31,23 @@ Neither is `just bench` — that is the cross-format **read** benchmark, writes 
 - **Median of `repeat` samples** (default 5 for `write-bench`), reported at
   6-decimal precision, alongside the byte counts.
 - **Every `write_s` sample times a CLEAN write.** A fresh, empty directory is
-  created — and later removed — *outside* the timed window for every repeat, so
+  created — and later removed — _outside_ the timed window for every repeat, so
   no sample pays for unlinking the previous one's files. This matches the
   baseline script's own `mktemp -d`-per-sample discipline, so the two sides are
-  timed the same way. (An earlier revision timed repeats 2..n *with* the purge
+  timed the same way. (An earlier revision timed repeats 2..n _with_ the purge
   of the previous repeat, which inflated everything but the first sample.)
 - **Sub-10 ms deltas are noise** at these repeat counts and are not findings on
   their own — the same floor `bench/READ_BENCHMARK.md` applies.
 - **`roundtrip_equal`** is written per variant: the package is exported back to
   CityJSONSeq and compared against the source with `cityparquet compare`. A
-  `false` there invalidates that variant's bytes as a *lossless* encoding, so
+  `false` there invalidates that variant's bytes as a _lossless_ encoding, so
   the summary page greys out and badges any dataset whose variants all fail.
 
 ## The codec levels are NOT matched
 
 The codec variants are written at the `parquet-rs` defaults carried by
 `crates/cityparquet/src/recipe.rs`: **zstd at level 3, gzip at level 6, brotli
-at level 1**. They are therefore a comparison of *implementation defaults*, not
+at level 1**. They are therefore a comparison of _implementation defaults_, not
 of codecs at equal effort, and **"the smallest codec" is not a citable claim
 from this benchmark**. Anyone wanting a codec ranking has to re-run with levels
 chosen deliberately. The summary page states this inline above its codec panels
@@ -82,7 +82,7 @@ Two distinct patterns, both checked against the source CityJSON:
   LoD0 geometries — verified against the raw source JSON, not only through
   DuckDB. It is an extension limitation specific to LoD `"0"`, uniform across
   datasets, not a per-file data quirk. The **50 %**-populated
-  `geom_lod1_2`/`geom_lod1_3`/`geom_lod2_2` pattern beside it is *not* a bug:
+  `geom_lod1_2`/`geom_lod1_3`/`geom_lod2_2` pattern beside it is _not_ a bug:
   a 3DBAG/delft `Building`'s geometry lives on its `BuildingPart` children, so
   half of those datasets' CityObjects (the parents) legitimately carry none.
 - **`lod3_railway.city.json` comes back fully NULL on BOTH its geometry

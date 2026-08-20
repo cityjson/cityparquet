@@ -106,7 +106,7 @@ the whole file every time, defeating the point of the comparison).
 ## Running the benchmark
 
 Once uploaded and verified, the prepared artefacts must still also be
-present *locally* (the coordinator's own `QueryParams` derivation — dataset
+present _locally_ (the coordinator's own `QueryParams` derivation — dataset
 bbox, sampled attribute/id — always reads the local `--prepared-dir`
 directly, regardless of transport; see `bench/READ_BENCHMARK.md`):
 

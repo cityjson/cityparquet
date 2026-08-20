@@ -1,0 +1,7 @@
+# Independent upstream projects with their own formatting baseline.
+vendor/
+# Build and benchmark artefacts.
+target/
+bench/data/
+# Generated catalogue mirrors.
+out/

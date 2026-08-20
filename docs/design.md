@@ -34,12 +34,12 @@ Design principles:
 
 ## Two profiles
 
-| Profile | Writes | Round-trip fidelity |
-|---|---|---|
-| **Core** | main object table(s) + `metadata.json` | identity, hierarchy, attributes, per-LoD geometry, geometry semantics |
+| Profile           | Writes                                                                                   | Round-trip fidelity                                                                            |
+| ----------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **Core**          | main object table(s) + `metadata.json`                                                   | identity, hierarchy, attributes, per-LoD geometry, geometry semantics                          |
 | **Compatibility** | the above **plus** `materials.parquet`, `textures.parquet`, `geometry_templates.parquet` | all of the above **plus** appearance definitions, texture UVs, and geometry-template instances |
 
-Both profiles write the *same* main-table column content (including the
+Both profiles write the _same_ main-table column content (including the
 `material`/`texture`/`template` references). The only difference is whether
 the sidecar **definition** files are written. Under Core, references that
 have nowhere to resolve to are dropped on export and counted; under
@@ -91,21 +91,21 @@ appearance/template references, then the inferred attribute columns.
 
 ### Reserved columns
 
-| Column | Arrow type | Notes |
-|---|---|---|
-| `id` | `Utf8` (non-null) | CityObject id, preserved verbatim end-to-end |
-| `feature_id` | `Utf8` | CityJSONSeq feature grouping id |
-| `object_type` | `Dictionary<Int32, Utf8>` (non-null) | dictionary-encoded — few distinct values over many rows |
-| `parents` | `List<Utf8>` | parent ids |
-| `children` | `List<Utf8>` | child ids |
-| `children_roles` | `List<Utf8>` | one role per child, from CityJSON `children_roles` |
-| `bbox` | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>` | see below |
-| `geometry` *or* `geometry_lod<k>` | `Binary` (WKB) | one column per LoD |
-| `geometry_properties` *or* `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>` | semantics WKB can't carry |
-| `material` | JSON | surface→material map into `materials.parquet` |
-| `texture` | JSON | surface→texture map into `textures.parquet` |
-| `template` | `Struct<id: Int64, point: Binary, transformationMatrix: JSON>` | geometry-instance data; `id` matches `geometry_templates.parquet`'s `id` |
-| `other` | JSON | source fields not otherwise mapped |
+| Column                                                  | Arrow type                                                     | Notes                                                                    |
+| ------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `id`                                                    | `Utf8` (non-null)                                              | CityObject id, preserved verbatim end-to-end                             |
+| `feature_id`                                            | `Utf8`                                                         | CityJSONSeq feature grouping id                                          |
+| `object_type`                                           | `Dictionary<Int32, Utf8>` (non-null)                           | dictionary-encoded — few distinct values over many rows                  |
+| `parents`                                               | `List<Utf8>`                                                   | parent ids                                                               |
+| `children`                                              | `List<Utf8>`                                                   | child ids                                                                |
+| `children_roles`                                        | `List<Utf8>`                                                   | one role per child, from CityJSON `children_roles`                       |
+| `bbox`                                                  | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>`               | see below                                                                |
+| `geometry` _or_ `geometry_lod<k>`                       | `Binary` (WKB)                                                 | one column per LoD                                                       |
+| `geometry_properties` _or_ `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>`               | semantics WKB can't carry                                                |
+| `material`                                              | JSON                                                           | surface→material map into `materials.parquet`                            |
+| `texture`                                               | JSON                                                           | surface→texture map into `textures.parquet`                              |
+| `template`                                              | `Struct<id: Int64, point: Binary, transformationMatrix: JSON>` | geometry-instance data; `id` matches `geometry_templates.parquet`'s `id` |
+| `other`                                                 | JSON                                                           | source fields not otherwise mapped                                       |
 
 Every field carries self-describing metadata: a `cityparquet:role` key
 (`reserved` / `attribute` / `extension`) and, on geometry columns, a
@@ -123,16 +123,16 @@ JSON columns are `Utf8` tagged with the **arrow.json** extension type.
 Each source attribute becomes its own typed column, inferred from the data at
 import:
 
-| Source value | Column type |
-|---|---|
-| boolean | `Boolean` |
-| integer | `Int64` |
-| floating point | `Float64` |
-| string | `Utf8` |
-| confidently date/time-like string | `Date` / `Time` / `Timestamp` |
-| array of strings | `List<Utf8>` |
-| object / heterogeneous array | JSON |
-| inconsistent sampled types | promoted if safe, else `Utf8` / JSON |
+| Source value                      | Column type                          |
+| --------------------------------- | ------------------------------------ |
+| boolean                           | `Boolean`                            |
+| integer                           | `Int64`                              |
+| floating point                    | `Float64`                            |
+| string                            | `Utf8`                               |
+| confidently date/time-like string | `Date` / `Time` / `Timestamp`        |
+| array of strings                  | `List<Utf8>`                         |
+| object / heterogeneous array      | JSON                                 |
+| inconsistent sampled types        | promoted if safe, else `Utf8` / JSON |
 
 Reserved columns win any name clash. CityJSON extension attributes (`+name`)
 are renamed to `ex_name` and tagged with the `extension` role. The inferred
@@ -144,14 +144,14 @@ attributes from structural columns.
 Boundaries are encoded to **little-endian ISO-WKB** in the dataset CRS
 (CityJSON integer vertices × `transform` are applied on write). The mapping:
 
-| CityJSON geometry | WKB |
-|---|---|
-| `MultiPoint` | `MultiPointZ` |
-| `MultiLineString` | `MultiLineStringZ` |
-| `MultiSurface` / `CompositeSurface` | `MultiPolygonZ` |
-| `Solid` | `PolyhedralSurfaceZ` (type 1015) |
-| `MultiSolid` / `CompositeSolid` | `GeometryCollectionZ` |
-| `GeometryInstance` | `template` struct + referenced template |
+| CityJSON geometry                   | WKB                                     |
+| ----------------------------------- | --------------------------------------- |
+| `MultiPoint`                        | `MultiPointZ`                           |
+| `MultiLineString`                   | `MultiLineStringZ`                      |
+| `MultiSurface` / `CompositeSurface` | `MultiPolygonZ`                         |
+| `Solid`                             | `PolyhedralSurfaceZ` (type 1015)        |
+| `MultiSolid` / `CompositeSolid`     | `GeometryCollectionZ`                   |
+| `GeometryInstance`                  | `template` struct + referenced template |
 
 The WKB carries geometry only. Semantic surfaces, the `values` surface→
 semantics mapping, material/texture maps, and the source vertex-index
@@ -245,7 +245,7 @@ the main table. There is no `lod` column (the column name already carries
 it, just as in the main table) and no `other` column (a geometry template is
 a plain geometry — WKB + properties + appearance — with no members left over
 to preserve). Template vertices are **raw floats** — CityJSON
-`vertices-templates` are *not* subject to the dataset transform — so they are
+`vertices-templates` are _not_ subject to the dataset transform — so they are
 interned by exact `f64` bit pattern rather than through the quantised
 transform, and a template's `geometry_lod*` carries no `geoarrow.wkb`/CRS
 tagging: template coordinates are in the template's own local frame, exempt
@@ -290,12 +290,12 @@ OGC:CRS84 and would silently mis-georeference the data. Such a package exports
 with no `referenceSystem` at all, matching the source, and declares no
 `proj:*` STAC fields. The CLI's `--crs EPSG:<code>` is the operator's explicit
 declaration for such a source (a no-op for a source that declares its own
-CRS), which makes the CRS resolvable *before* the writer runs; when it is
+CRS), which makes the CRS resolvable _before_ the writer runs; when it is
 actually applied, `other` carries `crs_source: "operator-supplied"` so the
 footer never implies the source declared a CRS it did not carry.
 
 **The one exclusion from `source_metadata`'s verbatim passthrough** follows
-from that: an applied `--crs` is injected into the *in-memory* header so the
+from that: an applied `--crs` is injected into the _in-memory_ header so the
 scan can resolve it, and is removed again before the header's `metadata` is
 written out — otherwise the passthrough would assert the source declared a CRS
 it never carried, exactly the untruth `crs_source` exists to prevent. Nothing
@@ -322,7 +322,7 @@ listed but missing is an error, never a silent drop.
 
 `metadata.json` is a **STAC Item** (the 3D city models `city3d:*` extension)
 describing that one package — see `crates/cityparquet/src/stac/`. A
-dataset-level `collection.json` (a STAC **Collection** curating *multiple*
+dataset-level `collection.json` (a STAC **Collection** curating _multiple_
 CityParquet packages/tiles into one aggregated dataset) is **not yet
 implemented** — it needs a multi-package conversion workflow this CLI doesn't
 yet have (`convert` writes one package per run); tracked as a follow-up.
@@ -371,6 +371,6 @@ benchmark uses. Current limitations:
   not yet support; `MultiSurface`-derived columns decode fine there.
 - The `geo` metadata omits `crs` PROJJSON until PROJJSON support lands, so
   readers that consult it assume `OGC:CRS84` while coordinates are actually in
-  the source CRS (which *is* recorded, as an OGC CRS URL, in the `crs` KV
+  the source CRS (which _is_ recorded, as an OGC CRS URL, in the `crs` KV
   entry).
 - The `other` column is currently always null (`children_roles` is now populated, G5).

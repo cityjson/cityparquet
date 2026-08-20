@@ -33,11 +33,23 @@ test:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
+# Prettier is pinned exactly — a floating minor changes Markdown output and
+# would churn files nobody edited. Keep in step with .githooks/pre-commit.
+PRETTIER := "prettier@3.9.6"
+
 fmt:
     cargo fmt --all
+    npx --yes {{PRETTIER}} --log-level warn --write "**/*.md"
+
+# Point git at the repo's hooks, so .githooks/pre-commit formats the staged
+# Rust and Markdown on every commit. One-off per clone — git checks the hook
+# out but does not activate it.
+hooks:
+    git config core.hooksPath .githooks
 
 check: lint test isolation vendor-check
     cargo fmt --all --check
+    npx --yes {{PRETTIER}} --log-level warn --check "**/*.md"
 
 # Lint + test the vendored submodules under vendor/ (currently just
 # city3d-stac-tool). They are deliberately kept OUT of this Cargo workspace
@@ -121,7 +133,7 @@ fixtures:
     # first srsName, so the truncated tail is never read. Used by
     # `citygml_srsname_fallback`; this exact shape could not be found in any
     # smaller published CityGML 2.0 file.
-    curl -sSf -r 0-399999 -o tests/fixtures/freiburg_no_preamble_srs.gml https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
+    curl -sSf -o tests/fixtures/freiburg_no_preamble_srs.gml https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
     # Zero-object CityJSONSeq fixture (synthetic, no network fetch needed):
     # a single CityJSON header line, empty CityObjects/vertices, no feature
     # lines — the minimal input that scans to zero city-object rows. Used by
