@@ -272,3 +272,100 @@ fn a_canonically_ordered_schema_does_not_transpose_the_hierarchy_columns() {
         );
     }
 }
+
+/// A minimal, conformant `city` footer with no attributes at all — pairs
+/// with [`minimal_foreign_file`], which carries no attribute columns.
+const MINIMAL_CITY_JSON: &str = r#"{
+  "version": "0.1.0-draft",
+  "attributes": []
+}"#;
+
+/// What duckdb-cityjson actually writes: only the non-null reserved
+/// columns (`id`, `feature_id`, `object_type`, `parents`, `children`) —
+/// `children_roles`, `address`, `template`, `other`, and `other_attributes`
+/// are omitted OUTRIGHT, not present-and-null. Kept separate from
+/// [`foreign_file`] rather than folded into it — three existing tests
+/// depend on that helper's exact shape.
+fn minimal_foreign_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("feature_id", DataType::Utf8, false),
+        // Plain Utf8, matching duckdb-cityjson's own convention.
+        Field::new("object_type", DataType::Utf8, false),
+        Field::new(
+            "parents",
+            DataType::List(Field::new("item", DataType::Utf8, true).into()),
+            true,
+        ),
+        Field::new(
+            "children",
+            DataType::List(Field::new("item", DataType::Utf8, true).into()),
+            true,
+        ),
+    ]));
+
+    let ids: ArrayRef = Arc::new(StringArray::from(vec!["obj-1"]));
+    let feature_ids: ArrayRef = Arc::new(StringArray::from(vec!["obj-1"]));
+    let types: ArrayRef = Arc::new(StringArray::from(vec!["Bridge"]));
+    // A standalone object: no parents, no children — both cells null.
+    let parents: ArrayRef = new_null_array(
+        &DataType::List(Field::new("item", DataType::Utf8, true).into()),
+        1,
+    );
+    let children: ArrayRef = new_null_array(
+        &DataType::List(Field::new("item", DataType::Utf8, true).into()),
+        1,
+    );
+
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![ids, feature_ids, types, parents, children],
+    )
+    .expect("minimal foreign batch");
+
+    let props = WriterProperties::builder()
+        .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new(
+            "city".to_string(),
+            MINIMAL_CITY_JSON.to_string(),
+        )]))
+        .build();
+    let file = std::fs::File::create(path).expect("create");
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("writer");
+    writer.write(&batch).expect("write");
+    writer.close().expect("close");
+}
+
+#[test]
+fn a_table_omitting_the_optional_reserved_columns_decodes() {
+    // duckdb-cityjson emits none of address/template/other_attributes, and the
+    // spec permits an absent other_attributes outright. An absent nullable
+    // column and an all-null one carry the same information, so the reader
+    // treats the first as the second rather than refusing the file.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("bridge.parquet");
+    minimal_foreign_file(&path);
+
+    let file = std::fs::File::open(&path).expect("open");
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("builder");
+    let meta = builder.cityparquet_metadata().expect("metadata");
+    let schema = builder.cityparquet_arrow_schema().expect("render");
+    let reader = cityparquet::reader::CityParquetRecordBatchReader::new(
+        builder.build().expect("build"),
+        schema,
+    );
+
+    let mut objects = Vec::new();
+    for batch in reader {
+        let batch = batch.expect("batch");
+        objects.extend(
+            cityparquet::decode::decode_batch(&batch, &meta)
+                .expect("a table without the optional reserved columns must decode"),
+        );
+    }
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects[0].object.thetype, "Bridge");
+    assert!(
+        objects[0].address.is_none(),
+        "an absent column decodes as an absent address, not Some(vec![])"
+    );
+}

@@ -11,14 +11,15 @@
 //! construction path.
 
 use arrow_array::{
-    Array, ArrayAccessor, BinaryArray, BooleanArray, Date32Array, Float64Array, Int64Array,
-    ListArray, RecordBatch, StringArray, StructArray,
+    Array, ArrayAccessor, ArrayRef, BinaryArray, BooleanArray, Date32Array, Float64Array,
+    Int64Array, ListArray, RecordBatch, StringArray, StructArray, new_null_array,
 };
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
-use arrow_schema::{DataType, Schema, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{SecondsFormat, TimeZone, Utc};
 use serde_json::{Map, Value};
 
+use cityparquet_schema::model::{address_data_type, template_data_type};
 use cityparquet_schema::{CityMetadata, CityParquetError, GeometryEncoding, Lod, Result};
 
 use crate::wkb_read::{self, DecodedGeometry};
@@ -189,6 +190,34 @@ fn get_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a arrow_array:
     batch
         .column_by_name(name)
         .ok_or_else(|| err(format!("record batch missing expected column '{name}'")))
+}
+
+/// `name`'s column, tolerant of the WHOLE column being absent from `batch`
+/// (spec "Optional data is `NULL`" — a reader MUST tolerate an absent
+/// `other_attributes`, and by the same information-equivalence any other
+/// nullable reserved column a writer omits outright, e.g.
+/// duckdb-cityjson's `address`/`template`/`children_roles`/
+/// `other_attributes`): an absent column and an all-null one of `data_type`
+/// carry identical information to every caller below, which already treats
+/// a null cell as "no value". `id`/`feature_id`/`object_type` are non-null
+/// per spec and stay on the strict [`get_column`] instead.
+fn optional_column(batch: &RecordBatch, name: &str, data_type: &DataType) -> ArrayRef {
+    match batch.column_by_name(name) {
+        Some(col) => std::sync::Arc::clone(col),
+        None => new_null_array(data_type, batch.num_rows()),
+    }
+}
+
+/// The `List<Utf8>` shape `parents`/`children`/`children_roles` share (spec
+/// "object-table-schema") — used only to synthesise an [`optional_column`]
+/// fallback when one of them is absent; the item field's own name is
+/// otherwise unobserved by any reader here.
+fn string_list_type() -> DataType {
+    DataType::List(std::sync::Arc::new(Field::new(
+        "item",
+        DataType::Utf8,
+        true,
+    )))
 }
 
 /// `Any`-based downcast with a `CityParquetError` instead of a panic on
@@ -478,21 +507,28 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
     let object_type_view =
         crate::arrow_compat::string_view(object_type_array.as_ref(), "object_type")?;
 
-    let parents_col = downcast::<ListArray>(get_column(batch, "parents")?.as_ref(), "parents")?;
-    let children_col = downcast::<ListArray>(get_column(batch, "children")?.as_ref(), "children")?;
-    let children_roles_col = downcast::<ListArray>(
-        get_column(batch, "children_roles")?.as_ref(),
-        "children_roles",
-    )?;
-    let address_col = downcast::<ListArray>(get_column(batch, "address")?.as_ref(), "address")?;
-    let other_col = downcast::<StringArray>(get_column(batch, "other")?.as_ref(), "other")?;
-    let other_attributes_col = downcast::<StringArray>(
-        get_column(batch, "other_attributes")?.as_ref(),
-        "other_attributes",
-    )?;
+    // Every column below is nullable per spec, so its WHOLE column may be
+    // absent (duckdb-cityjson omits `children_roles`/`address`/`template`/
+    // `other_attributes` outright) — `optional_column` synthesises an
+    // all-null fallback of the right shape rather than erroring, per the
+    // module docs on `optional_column`.
+    let parents_array = optional_column(batch, "parents", &string_list_type());
+    let parents_col = downcast::<ListArray>(parents_array.as_ref(), "parents")?;
+    let children_array = optional_column(batch, "children", &string_list_type());
+    let children_col = downcast::<ListArray>(children_array.as_ref(), "children")?;
+    let children_roles_array = optional_column(batch, "children_roles", &string_list_type());
+    let children_roles_col =
+        downcast::<ListArray>(children_roles_array.as_ref(), "children_roles")?;
+    let address_array = optional_column(batch, "address", &address_data_type());
+    let address_col = downcast::<ListArray>(address_array.as_ref(), "address")?;
+    let other_array = optional_column(batch, "other", &DataType::Utf8);
+    let other_col = downcast::<StringArray>(other_array.as_ref(), "other")?;
+    let other_attributes_array = optional_column(batch, "other_attributes", &DataType::Utf8);
+    let other_attributes_col =
+        downcast::<StringArray>(other_attributes_array.as_ref(), "other_attributes")?;
 
-    let template_col =
-        downcast::<StructArray>(get_column(batch, "template")?.as_ref(), "template")?;
+    let template_array = optional_column(batch, "template", &template_data_type());
+    let template_col = downcast::<StructArray>(template_array.as_ref(), "template")?;
     let template_id_col = downcast::<Int64Array>(template_col.column(0).as_ref(), "template.id")?;
     let template_point_col =
         downcast::<BinaryArray>(template_col.column(1).as_ref(), "template.point")?;
