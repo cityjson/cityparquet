@@ -126,14 +126,49 @@ fn classify_assets(item: &Item) -> Result<(Vec<String>, Vec<String>)> {
         }
     }
 
+    // A conforming writer declares `cityparquet-objects` / `cityparquet-sidecar`
+    // on every asset (spec 05-metadata.mdx). When a package declares neither,
+    // classify by basename instead of rejecting it: the sidecar filenames are
+    // fixed by the specification, so anything else is an object table.
+    if tables.is_empty() && sidecar_files.is_empty() {
+        const SIDECAR_BASENAMES: [&str; 3] = [
+            "materials.parquet",
+            "textures.parquet",
+            "geometry_templates.parquet",
+        ];
+        for name in parquet_assets(item) {
+            if SIDECAR_BASENAMES.contains(&name.as_str()) {
+                sidecar_files.push(name);
+            } else {
+                tables.push(name);
+            }
+        }
+        if !tables.is_empty() {
+            eprintln!(
+                "warning: package declares no CityParquet asset roles; object tables \
+                 inferred from asset names"
+            );
+        }
+    }
+
     if tables.is_empty() {
         return Err(CityParquetError::Metadata(
-            "package lists no object tables (no asset carries the cityparquet-objects role)"
-                .to_string(),
+            "package lists no object tables".to_string(),
         ));
     }
 
     Ok((tables, sidecar_files))
+}
+
+/// Every asset whose href names a `.parquet` file, in the Item's asset order,
+/// with the same `./`-stripping the role-based path applies. Used only by the
+/// no-roles-declared fallback in [`classify_assets`].
+fn parquet_assets(item: &Item) -> Vec<String> {
+    item.assets
+        .values()
+        .map(|a| a.href.trim_start_matches("./").to_string())
+        .filter(|name| name.ends_with(".parquet"))
+        .collect()
 }
 
 /// The relative object-table names an already-fetched `metadata.json`'s
@@ -597,7 +632,7 @@ mod tests {
     use arrow_array::StructArray;
     use city3d_stac_types::metadata::{AttributeDefinition, AttributeType};
 
-    use super::{PackageTables, merge_attributes, row_has_semantics};
+    use super::{PackageTables, classify_assets, merge_attributes, row_has_semantics};
     use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder};
 
     /// The union/dedup semantics [`merge_attributes`] promises, proven
@@ -678,6 +713,28 @@ mod tests {
             vec![dir.join("building.parquet"), dir.join("road.parquet")]
         );
         assert_eq!(resolved.sidecar_files, sidecars);
+    }
+
+    /// Roles are a writer MUST, but they postdate the earliest packages and a
+    /// third-party writer may omit them; the spec has readers fall back
+    /// rather than reject (05-metadata.mdx, asset roles).
+    #[test]
+    fn a_package_with_no_declared_roles_falls_back_to_basenames() {
+        let item: city3d_stac_types::stac::types::Item = serde_json::from_str(
+            r#"{
+              "type": "Feature", "stac_version": "1.1.0", "id": "pkg",
+              "geometry": null, "properties": {}, "links": [],
+              "assets": {
+                "building.parquet": {"href": "building.parquet", "roles": ["data"]},
+                "materials.parquet": {"href": "materials.parquet", "roles": ["data"]}
+              }
+            }"#,
+        )
+        .expect("item");
+
+        let (tables, sidecars) = classify_assets(&item).expect("no roles must not be fatal");
+        assert_eq!(tables, vec!["building.parquet"]);
+        assert_eq!(sidecars, vec!["materials.parquet"]);
     }
 
     /// Every stored geometry gets a `geometry_properties` cell carrying at
