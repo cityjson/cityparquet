@@ -1,0 +1,12 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
+3dbag_n1000.city.jsonl,cityparquet,1000,0.224048,748117,741823,0,0.008120,0.008205,1,1,true
+3dbag_n1000.city.jsonl,parquet-defaults,1000,0.120622,749386,743092,0,0.007181,0.007158,1,1,true
+3dbag_n1000.city.jsonl,no-dictionary,1000,0.118041,732360,726066,0,0.006176,0.006067,1,1,true
+3dbag_n1000.city.jsonl,no-bss,1000,0.120121,735917,729623,0,0.006669,0.006473,1,1,true
+3dbag_n1000.city.jsonl,no-delta,1000,0.119398,750796,744502,0,0.006560,0.006704,1,1,true
+3dbag_n1000.city.jsonl,snappy,1000,0.114023,1119890,1113594,0,0.005083,0.005051,1,1,true
+3dbag_n1000.city.jsonl,cityparquet+hilbert,1000,0.141045,747717,741423,0,0.006510,0.006586,1,1,true
+3dbag_n1000.city.jsonl,cityparquet+rg512,1000,0.121537,781213,774919,0,0.008427,0.004265,2,1,true
+3dbag_n1000.city.jsonl,cityparquet+hilbert+rg512,1000,0.142099,781236,774942,0,0.008404,0.004517,2,1,true
+3dbag_n1000.city.jsonl,duckdb-copy,1000,9.199644,1279508,1279508,0,0.118877,,,,
+3dbag_n1000.city.jsonl,duckdb-copy-zstd,1000,8.759443,788808,788808,0,0.124705,,,,
