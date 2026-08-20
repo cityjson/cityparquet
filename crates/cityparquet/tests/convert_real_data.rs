@@ -434,6 +434,117 @@ fn railway_compatibility_convert_writes_materials_and_textures_sidecars() {
     }
 }
 
+/// Finds the first non-null number nested anywhere under `v` and replaces it
+/// with `new_value`, returning whether it found one. Used only to bump one
+/// material index inside an already-sliced feature's `material` map — the
+/// nesting depth of `values` differs by geometry type (see
+/// `crate::appearance`'s module doc comment), so this walks generically
+/// rather than special-casing a shape.
+fn bump_first_number(v: &mut Value, new_value: i64) -> bool {
+    match v {
+        Value::Number(_) => {
+            *v = serde_json::json!(new_value);
+            true
+        }
+        Value::Array(items) => items.iter_mut().any(|x| bump_first_number(x, new_value)),
+        Value::Object(map) => map.values_mut().any(|x| bump_first_number(x, new_value)),
+        _ => false,
+    }
+}
+
+/// Writes a CityJSONSeq rendering of the real railway fixture (header line +
+/// one line per top-level object, built with cjseq's own doc->seq slicing —
+/// `get_metadata`/`get_cjfeature`, the exact machinery `Source::open` drives
+/// for whole-document input) with one feature's own material index pushed
+/// past that feature's local (already-sliced) materials array.
+///
+/// Built as Seq rather than mutating the source `.city.json` directly: a
+/// genuinely out-of-range index inside a CityObject's geometry or a geometry
+/// template makes cjseq itself PANIC while re-slicing a WHOLE-DOCUMENT
+/// source (`get_metadata`/`get_cjfeature` index the doc-level materials
+/// array by every raw index found, with no bounds check) — a dangling
+/// reference is only reachable past that panic in Seq form, where each line
+/// is parsed as-is with no re-slicing pass, exactly like the real
+/// `bench/data/Railway.city.jsonl` corpus case this option exists for.
+/// `geometry-templates` is dropped from the header: this test targets a
+/// regular feature's own material reference, not a template's, and
+/// `get_metadata`'s header pairs a RENUMBERED `appearance` with an
+/// UNTOUCHED-index `geometry-templates` (see `Source::doc_appearance`'s doc
+/// comment) — a mismatch irrelevant here that dropping templates sidesteps.
+fn dangling_material_variant() -> (tempfile::TempDir, PathBuf) {
+    use cjseq::CityJSON;
+
+    let text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+    let doc = CityJSON::from_str(&text).unwrap();
+
+    let mut header: Value = serde_json::to_value(doc.get_metadata()).unwrap();
+    header["geometry-templates"] = Value::Null;
+    header["appearance"] = Value::Null;
+
+    let mut lines = vec![serde_json::to_string(&header).unwrap()];
+    let mut mutated = false;
+    let mut i = 0usize;
+    while let Some(f) = doc.get_cjfeature(i) {
+        i += 1;
+        let mut fv: Value = serde_json::to_value(&f).unwrap();
+        if !mutated {
+            let materials_len = fv["appearance"]["materials"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0);
+            if materials_len > 0
+                && fv
+                    .get_mut("CityObjects")
+                    .and_then(Value::as_object_mut)
+                    .into_iter()
+                    .flat_map(|co| co.values_mut())
+                    .filter_map(|co| co.get_mut("geometry").and_then(Value::as_array_mut))
+                    .flatten()
+                    .filter_map(|g| g.get_mut("material"))
+                    .any(|material| bump_first_number(material, materials_len as i64 + 1000))
+            {
+                mutated = true;
+            }
+        }
+        lines.push(serde_json::to_string(&fv).unwrap());
+    }
+    assert!(
+        mutated,
+        "the fixture must carry a feature with its own material reference"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_dangling_material.city.jsonl");
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    (dir, path)
+}
+
+/// Strict is the default: the reference implementation is the appearance-
+/// resolution oracle, so a dangling material index aborts conversion unless
+/// the operator explicitly opts into dropping it — the way a degenerate ring
+/// is already counted rather than treated as an error.
+#[test]
+fn a_dangling_material_reference_is_fatal_by_default_and_droppable_on_request() {
+    let (_variant_dir, invalid_path) = dangling_material_variant();
+
+    let strict_out = tempfile::tempdir().unwrap();
+    let strict = ConvertOptions::new(invalid_path.clone(), strict_out.path().to_path_buf());
+    let err = convert(&strict).expect_err("strict is the default: a dangling reference aborts");
+    assert!(
+        err.to_string().contains("out of range"),
+        "strict must fail on the dangling reference, got: {err}"
+    );
+
+    let lenient_out = tempfile::tempdir().unwrap();
+    let mut lenient = ConvertOptions::new(invalid_path, lenient_out.path().to_path_buf());
+    lenient.tolerate_invalid_appearance = true;
+    let report = convert(&lenient).expect("tolerated");
+    assert!(
+        report.invalid_appearance_refs_dropped > 0,
+        "a dropped reference is counted, never silent"
+    );
+}
+
 /// A dataset with no appearance at all (delft): no sidecar files are
 /// written, and the manifest says so — sidecars are written whenever the
 /// source has content for them (spec-alignment gap 19), so delft (no

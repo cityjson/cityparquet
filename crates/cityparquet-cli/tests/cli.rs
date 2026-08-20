@@ -260,12 +260,15 @@ fn convert_with_overwrite_succeeds() {
 
 /// M4 task 11 (Step 3): the `convert` report line gains 3 fields
 /// (`materials_written textures_written templates_written`), appended after
-/// the 6 fields it already printed. Exercised against a convert of railway,
-/// which carries real materials/textures/templates so they are written
-/// unconditionally (spec-alignment gap 19 dropped the `--profile` flag this
-/// test used to pass), whose sidecar counts are pinned elsewhere (85/34/3 —
+/// the 6 fields it already printed; `--tolerate-invalid-appearance`'s own
+/// counter (`invalid_appearance_refs_dropped`) appends a 10th. Exercised
+/// against a convert of railway, which carries real materials/textures/
+/// templates so they are written unconditionally (spec-alignment gap 19
+/// dropped the `--profile` flag this test used to pass), whose sidecar
+/// counts are pinned elsewhere (85/34/3 —
 /// `railway_compatibility_convert_writes_materials_and_textures_sidecars` in
-/// `crates/cityparquet/tests/convert_real_data.rs`).
+/// `crates/cityparquet/tests/convert_real_data.rs`). This run is strict
+/// (the default) over a valid fixture, so the trailing counter is 0.
 #[test]
 fn convert_compatibility_reports_sidecar_counts() {
     let out = tempfile::tempdir().unwrap();
@@ -288,15 +291,16 @@ fn convert_compatibility_reports_sidecar_counts() {
     let parts: Vec<&str> = stdout.split_whitespace().collect();
     assert_eq!(
         parts.len(),
-        9,
-        "convert should print 9 space-separated values (6 original + 3 sidecar counts), got: {}",
+        10,
+        "convert should print 10 space-separated values (6 original + 3 sidecar counts \
+         + 1 invalid-appearance-refs-dropped count), got: {}",
         stdout
     );
     assert_eq!(
-        &parts[6..9],
-        &["85", "34", "3"],
-        "the 3 new trailing fields must be materials_written textures_written \
-         templates_written in that order, got: {}",
+        &parts[6..10],
+        &["85", "34", "3", "0"],
+        "the 4 new trailing fields must be materials_written textures_written \
+         templates_written invalid_appearance_refs_dropped in that order, got: {}",
         stdout
     );
 }

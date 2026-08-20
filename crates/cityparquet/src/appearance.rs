@@ -42,11 +42,30 @@ pub struct AppearanceInterner {
     material_ids: HashMap<String, usize>,
     textures: Vec<Value>,
     texture_ids: HashMap<String, usize>,
+    /// When set by [`Self::set_tolerate_invalid_refs`], an out-of-range
+    /// material/texture index is dropped instead of erroring.
+    tolerate_invalid_refs: bool,
+    /// Out-of-range material/texture indices dropped because
+    /// [`Self::set_tolerate_invalid_refs`] was set — `0` in the (default)
+    /// strict mode, where such an index is a `Schema` error instead. Counted
+    /// the same way [`crate::encode::EncodeStats::degenerate_rings_dropped`]
+    /// counts a writer-dropped ring: never silently.
+    pub invalid_refs_dropped: usize,
 }
 
 impl AppearanceInterner {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Opt into dropping (rather than erroring on) a material/texture index
+    /// that falls outside its local definitions array. Strict (the default,
+    /// `tolerate = false`) is what every constructor leaves this at: the
+    /// reference implementation is the appearance-resolution oracle, so a
+    /// dangling reference stays fatal unless a caller explicitly opts out —
+    /// see `ConvertOptions::tolerate_invalid_appearance`.
+    pub fn set_tolerate_invalid_refs(&mut self, tolerate: bool) {
+        self.tolerate_invalid_refs = tolerate;
     }
 
     /// Dedupe by canonical JSON: the key is `def` serialized with object
@@ -135,12 +154,19 @@ impl AppearanceInterner {
                         "material index in theme '{theme}' is not a non-negative integer: {n}"
                     ))
                 })? as usize;
-                let def = local_defs.get(idx).ok_or_else(|| {
-                    schema_err(format!(
-                        "material index {idx} in theme '{theme}' out of range (local defs len {})",
-                        local_defs.len()
-                    ))
-                })?;
+                let def = match local_defs.get(idx) {
+                    Some(def) => def,
+                    None => {
+                        if self.tolerate_invalid_refs {
+                            self.invalid_refs_dropped += 1;
+                            return Ok(Value::Null);
+                        }
+                        return Err(schema_err(format!(
+                            "material index {idx} in theme '{theme}' out of range (local defs len {})",
+                            local_defs.len()
+                        )));
+                    }
+                };
                 Ok(Value::from(self.intern_material(def)))
             }
             other => Err(schema_err(format!(
@@ -222,12 +248,25 @@ impl AppearanceInterner {
                         "texture index in theme '{theme}' is not a non-negative integer: {n}"
                     ))
                 })? as usize;
-                let def = local_defs.get(idx).ok_or_else(|| {
-                    schema_err(format!(
-                        "texture index {idx} in theme '{theme}' out of range (local defs len {})",
-                        local_defs.len()
-                    ))
-                })?;
+                let def = match local_defs.get(idx) {
+                    Some(def) => def,
+                    None => {
+                        if self.tolerate_invalid_refs {
+                            self.invalid_refs_dropped += 1;
+                            // Dropping the dangling reference means dropping
+                            // the whole ring: its UV entries are meaningless
+                            // without a resolved texture, so this returns the
+                            // same all-null sentinel ring the format already
+                            // uses for "no texture" rather than falling
+                            // through to resolve UVs below.
+                            return Ok(Value::Array(vec![Value::Null]));
+                        }
+                        return Err(schema_err(format!(
+                            "texture index {idx} in theme '{theme}' out of range (local defs len {})",
+                            local_defs.len()
+                        )));
+                    }
+                };
                 Value::from(self.intern_texture(def))
             }
             other => {

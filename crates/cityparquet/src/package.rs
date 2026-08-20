@@ -138,6 +138,14 @@ pub struct ConvertOptions {
     /// the `crs_source` provenance stamp is read from the source, so setting
     /// this field cannot by itself make the output claim anything.
     pub crs_override: Option<String>,
+    /// Drop a material/texture index that falls outside its local
+    /// definitions array instead of erroring — off (strict) by default: the
+    /// reference implementation is the appearance-resolution oracle, so a
+    /// dangling reference aborts conversion unless an operator explicitly
+    /// opts in. A dropped reference is counted in
+    /// [`ConvertReport::invalid_appearance_refs_dropped`], never silent —
+    /// see [`crate::appearance::AppearanceInterner::set_tolerate_invalid_refs`].
+    pub tolerate_invalid_appearance: bool,
 }
 
 impl ConvertOptions {
@@ -162,6 +170,7 @@ impl ConvertOptions {
             generate_lod0: false,
             lod0: Lod0Options::default(),
             crs_override: None,
+            tolerate_invalid_appearance: false,
         }
     }
 }
@@ -198,6 +207,12 @@ pub struct ConvertReport {
     /// report-diagnostic idiom as
     /// [`crate::inputs::ResolvedInputs::skipped_non_files`].
     pub crs_diagnostic: Option<String>,
+    /// Material/texture indices dropped because
+    /// [`ConvertOptions::tolerate_invalid_appearance`] was set (`0` under
+    /// the default strict mode, where such an index is fatal instead).
+    /// Distinct from [`crate::export::ExportReport::appearance_refs_dropped`],
+    /// which counts a different thing on the export side.
+    pub invalid_appearance_refs_dropped: usize,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -451,6 +466,7 @@ struct WrittenPackage {
     materials_written: usize,
     textures_written: usize,
     templates_written: usize,
+    invalid_appearance_refs_dropped: usize,
 }
 
 /// Buffers every feature `source` yields (RowOrder::Hilbert's documented
@@ -1075,6 +1091,13 @@ fn write_package(
             )?
         }
     };
+    // Set BEFORE either the main encode loop below or `build_template_rows`
+    // touches the interner — both resolve material/texture indices through
+    // it, and a dangling one must be tolerated (or not) consistently across
+    // both paths, not just the main table's own geometries.
+    batches
+        .appearance_mut()
+        .set_tolerate_invalid_refs(opts.tolerate_invalid_appearance);
     for batch in batches.by_ref() {
         let batch = batch?;
         writers.write_batch(&batch)?;
@@ -1102,6 +1125,7 @@ fn write_package(
     };
 
     let appearance = batches.appearance();
+    let invalid_appearance_refs_dropped = appearance.invalid_refs_dropped;
 
     let materials_path = tmp_dir.join(MATERIALS_TABLE);
     let materials_written = write_materials(&materials_path, appearance.materials())?;
@@ -1198,6 +1222,7 @@ fn write_package(
         materials_written,
         textures_written,
         templates_written,
+        invalid_appearance_refs_dropped,
     })
 }
 
@@ -1468,6 +1493,7 @@ pub(crate) fn convert_source_impl(
         textures_written: written.textures_written,
         templates_written: written.templates_written,
         crs_diagnostic: scan_result.crs_diagnostic.clone(),
+        invalid_appearance_refs_dropped: written.invalid_appearance_refs_dropped,
     })
 }
 

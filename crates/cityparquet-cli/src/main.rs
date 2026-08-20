@@ -128,6 +128,16 @@ enum Commands {
         /// (degree-valued) code is refused: nothing here reprojects.
         #[arg(long, value_name = "EPSG")]
         crs: Option<String>,
+
+        /// Drop a material/texture index that falls outside its local
+        /// definitions array instead of aborting conversion. Off by default:
+        /// this implementation is the appearance-resolution oracle, so a
+        /// dangling reference is fatal unless explicitly waived — pass this
+        /// for input another CityParquet implementation reads regardless. A
+        /// dropped reference is counted in the report's trailing field,
+        /// never silent.
+        #[arg(long, default_value_t = false)]
+        tolerate_invalid_appearance: bool,
     },
 
     /// Export CityParquet package back to CityJSON/CityJSONSeq
@@ -418,6 +428,7 @@ fn main() -> std::process::ExitCode {
             geometry_encoding,
             no_lod0,
             crs,
+            tolerate_invalid_appearance,
         } => {
             // `--compression` deliberately keeps its hand-rolled parse: its
             // "error: invalid compression '<v>' (expected one of: …)" text and
@@ -462,6 +473,7 @@ fn main() -> std::process::ExitCode {
                 generate_lod0: !no_lod0,
                 lod0: cityparquet::lod0::Lod0Options::default(),
                 crs_override: None,
+                tolerate_invalid_appearance,
             };
 
             // A sizing flag only makes sense with --partition.
@@ -584,7 +596,7 @@ fn main() -> std::process::ExitCode {
                                 eprintln!("warning: {message}");
                             }
                             println!(
-                                "{} {} {} {} {} {} {} {} {}",
+                                "{} {} {} {} {} {} {} {} {} {}",
                                 report.object_count,
                                 report.files.len(),
                                 report.skipped_same_lod_geometries,
@@ -593,7 +605,8 @@ fn main() -> std::process::ExitCode {
                                 report.degenerate_surfaces_dropped,
                                 report.materials_written,
                                 report.textures_written,
-                                report.templates_written
+                                report.templates_written,
+                                report.invalid_appearance_refs_dropped
                             );
                             std::process::ExitCode::SUCCESS
                         }
