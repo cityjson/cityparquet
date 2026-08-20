@@ -545,6 +545,96 @@ fn a_dangling_material_reference_is_fatal_by_default_and_droppable_on_request() 
     );
 }
 
+/// Rewrites the first ring found anywhere in `v` (a "boundaries" value —
+/// the recursion bottoms out at a ring: an array of plain vertex-index
+/// numbers, whatever nesting depth the geometry type puts it at) to the
+/// structural `[a, b, a]` index-repeat shape, reusing the ring's own first
+/// two indices so every index stays in range. Returns whether a ring was
+/// found and mutated.
+fn bake_index_repeat_sliver_in_boundaries(v: &mut Value) -> bool {
+    match v {
+        Value::Array(items) if items.iter().all(Value::is_number) => {
+            if items.len() >= 2 {
+                let a = items[0].clone();
+                let b = items[1].clone();
+                *items = vec![a.clone(), b, a];
+                true
+            } else {
+                false
+            }
+        }
+        Value::Array(items) => items.iter_mut().any(bake_index_repeat_sliver_in_boundaries),
+        _ => false,
+    }
+}
+
+/// Derives a copy of delft with the first ring found in any CityObject's
+/// `boundaries` rewritten to the `[a, b, a]` index-repeat sliver shape — a
+/// genuine zero-area ring under CityJSON's own semantics (real case:
+/// `[87, 71, 87]`, duckdb-cityjson's `railway_appearance.city.jsonl`, object
+/// `GMLID_855011_330784_753`, surface 67), not a pre-baked WKB closure.
+/// Built the same way as `dangling_material_variant`: mutate a parsed copy
+/// of the real fixture, never hand-write CityJSON.
+fn delft_with_index_repeat_sliver() -> (tempfile::TempDir, PathBuf) {
+    let raw = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = Vec::new();
+    let mut mutated = false;
+    for line in raw.lines() {
+        let mut fv: Value = serde_json::from_str(line).unwrap();
+        if !mutated && let Some(objs) = fv.get_mut("CityObjects").and_then(Value::as_object_mut) {
+            mutated = objs
+                .values_mut()
+                .filter_map(|co| co.get_mut("geometry").and_then(Value::as_array_mut))
+                .flatten()
+                .filter_map(|g| g.get_mut("boundaries"))
+                .any(bake_index_repeat_sliver_in_boundaries);
+        }
+        lines.push(serde_json::to_string(&fv).unwrap());
+    }
+    assert!(mutated, "expected at least one boundaries ring to mutate");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delft_index_repeat_sliver.city.jsonl");
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    (dir, path)
+}
+
+/// TDD pin for the ring-normalisation fix (`crate::wkb_write::normalise_ring`):
+/// an `[a, b, a]` sliver ring is a real 3-vertex ring, not a pre-baked WKB
+/// closure, and must survive convert (and the export round trip) intact —
+/// not be stripped down to 2 indices and dropped along with its surface.
+#[test]
+fn index_repeat_sliver_ring_survives_convert_and_export_round_trip() {
+    let (_variant_dir, path) = delft_with_index_repeat_sliver();
+
+    let out = tempfile::tempdir().unwrap();
+    let opts = ConvertOptions::new(path.clone(), out.path().to_path_buf());
+    let report = convert(&opts).unwrap();
+    assert_eq!(
+        report.degenerate_rings_dropped, 0,
+        "an [a, b, a] sliver ring must not be misread as a baked WKB closure and stripped"
+    );
+    assert_eq!(
+        report.degenerate_surfaces_dropped, 0,
+        "the surface carrying the sliver ring must not be dropped either"
+    );
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let exported = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: out.path().to_path_buf(),
+        output: exported.clone(),
+    })
+    .unwrap();
+
+    let cmp_report = compare_datasets(&path, &exported, &CompareOptions::default()).unwrap();
+    assert!(
+        cmp_report.equal,
+        "the round trip must stay semantically lossless; differences: {:#?}",
+        cmp_report.differences
+    );
+}
+
 /// A dataset with no appearance at all (delft): no sidecar files are
 /// written, and the manifest says so — sidecars are written whenever the
 /// source has content for them (spec-alignment gap 19), so delft (no
@@ -1082,11 +1172,16 @@ fn hilbert_ordering_never_changes_delft_semantics() {
 }
 
 /// Same headline gate as `hilbert_ordering_never_changes_delft_semantics`,
-/// for railway (Compatibility profile — the M4 headline round trip): the 23
+/// for railway (Compatibility profile — the M4 headline round trip): the 24
 /// documented degenerate-ring drops (updated alongside the comparator's
 /// coordinate-degenerate fix — see the comment in
-/// `hilbert_ordering_never_changes_delft_semantics` above) and
-/// header-metadata exclusions are the ONLY exclusions, exactly as
+/// `hilbert_ordering_never_changes_delft_semantics` above — and again
+/// alongside `wkb_write::normalise_ring`'s `> 3` bound: the writer now keeps
+/// object `GMLID_855011_330784_753`'s `[a, b, a]` sliver ring intact, so the
+/// comparator's own (still `>= 2`) fixpoint strip now excludes it on BOTH
+/// the source and the export side instead of the source side only — one
+/// object's drop grew from 1 exclusion entry to 2, moving the total from 23
+/// to 24) and header-metadata exclusions are the ONLY exclusions, exactly as
 /// `roundtrip_real_data.rs::railway_compatibility_round_trips_losslessly_with_no_exclusions`
 /// pins for `RowOrder::Source`.
 #[test]
@@ -1124,8 +1219,8 @@ fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (23, 23),
-        "the only non-header exclusions must be the 23 pinned degenerate-ring drops, got: {:#?}",
+        (24, 24),
+        "the only non-header exclusions must be the 24 pinned degenerate-ring drops, got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -2031,11 +2126,12 @@ fn arrow_native_roundtrip_railway_multisurface_only_decodes_back_to_the_same_sem
     );
 
     // Same breakdown discipline as the delft test: pin the non-header
-    // exclusions to exactly the 23 coordinate-degenerate-ring drops plus the
-    // 30 geometry-instance exclusions (15 objects, source + export side
-    // each) already established for railway under the WKB path — appearance
-    // contributes zero exclusions here because it round-trips, not because
-    // it was excluded.
+    // exclusions to exactly the 24 degenerate-ring drops (see
+    // `hilbert_ordering_never_changes_railway_compatibility_semantics`'s
+    // comment for why this grew from 23 to 24) plus the 30 geometry-instance
+    // exclusions (15 objects, source + export side each) already established
+    // for railway under the WKB path — appearance contributes zero
+    // exclusions here because it round-trips, not because it was excluded.
     let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
         .excluded
         .iter()
@@ -2050,8 +2146,8 @@ fn arrow_native_roundtrip_railway_multisurface_only_decodes_back_to_the_same_sem
         .count();
     assert_eq!(
         (degenerate, instances, non_header_excluded.len()),
-        (23, 30, 53),
-        "arrow-native railway's only non-header exclusions must be the 23 pinned degenerate-ring \
+        (24, 30, 54),
+        "arrow-native railway's only non-header exclusions must be the 24 pinned degenerate-ring \
          drops plus the 30 pinned geometry-instance exclusions, exactly matching the WKB path's \
          own pins; got: {:#?}",
         non_header_excluded

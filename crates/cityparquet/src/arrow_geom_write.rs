@@ -589,13 +589,13 @@ mod tests {
     fn geometry_to_compacted_reports_the_same_drops_as_geometry_to_wkb() {
         use crate::wkb_write::geometry_to_wkb;
 
-        // Surface 0's exterior ring is the structural [a,b,a] closure shape
-        // (2 effective vertices): the ring is dropped, and with it the whole
+        // Surface 0's exterior ring has only 2 vertices — too short to form
+        // a ring at all — so the ring is dropped, and with it the whole
         // surface. Surface 1 is fine and must survive as the ONLY polygon.
         let vertices: Vec<Vec<i64>> =
             vec![vec![0, 0, 0], vec![1, 0, 0], vec![0, 1, 0], vec![0, 0, 1]];
         let pool = VertexPool::new(&vertices, &transform_identity());
-        let geom = multisurface_geom(serde_json::json!([[[0, 1, 0]], [[0, 1, 2, 3]]]));
+        let geom = multisurface_geom(serde_json::json!([[[0, 1]], [[0, 1, 2, 3]]]));
 
         let wkb_outcome = geometry_to_wkb(&geom, &pool).unwrap().unwrap();
         let compacted_outcome = geometry_to_compacted(&geom, &pool).unwrap().unwrap();
@@ -627,12 +627,12 @@ mod tests {
         }
 
         // Second sub-case (mirrors `wkb_write`'s own test exactly): a
-        // dropped surface's interior degenerate ring is still counted in
+        // dropped surface's interior too-short ring is still counted in
         // dropped_rings (surface drop unchanged) — proves the parity holds
         // even when dropped_rings and dropped_surfaces.len() diverge, not
         // just in the trivial 1-dropped-ring-equals-1-dropped-surface case
         // above.
-        let geom2 = multisurface_geom(serde_json::json!([[[0, 1, 0], [2, 3, 2]], [[0, 1, 2, 3]]]));
+        let geom2 = multisurface_geom(serde_json::json!([[[0, 1], [2, 3]], [[0, 1, 2, 3]]]));
         let wkb_outcome2 = geometry_to_wkb(&geom2, &pool).unwrap().unwrap();
         let compacted_outcome2 = geometry_to_compacted(&geom2, &pool).unwrap().unwrap();
         assert_eq!(compacted_outcome2.dropped_rings, wkb_outcome2.dropped_rings);

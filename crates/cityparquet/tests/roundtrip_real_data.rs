@@ -380,10 +380,15 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
     // finding; see `crate::compare`'s module docs): railway's real,
     // unmutated source carries 20 MORE objects whose boundaries include an
     // index-distinct/coordinate-identical ring, previously invisible to the
-    // INDEX-only degenerate check (the writer's 3 pinned drops in
-    // `wkb_roundtrip_real_data.rs::geometries_with_drops` are unaffected —
-    // that pin is about the WRITER's own index-based normalisation, which
-    // this fix does not touch).
+    // INDEX-only degenerate check. It moved again, 23 to 24, alongside
+    // `wkb_write::normalise_ring`'s `> 3` bound: the writer no longer drops
+    // object `GMLID_855011_330784_753`'s `[a, b, a]` sliver ring (it is a
+    // real 3-vertex ring, not a baked WKB closure), so the export now
+    // carries it too — and the comparator's own (still `>= 2`) fixpoint
+    // strip excludes it on BOTH sides instead of the source side only,
+    // turning that one object's single exclusion into two (the writer's own
+    // drop counts in `wkb_roundtrip_real_data.rs` were updated alongside
+    // this same change: railway's former 6 writer-side drops are now 0).
     let appearance = non_header_excluded
         .iter()
         .filter(|e| e.contains("exclusions.appearance"))
@@ -398,14 +403,14 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
         .count();
     assert_eq!(
         (appearance, instances, degenerate),
-        (210, 30, 23),
+        (210, 30, 24),
         "exclusion breakdown must match the pinned pipeline counts, got: {:#?}",
         non_header_excluded
     );
     assert_eq!(
         non_header_excluded.len(),
-        263,
-        "210 appearance + 30 instances + 23 degenerate = 263 total non-header exclusions, \
+        264,
+        "210 appearance + 30 instances + 24 degenerate = 264 total non-header exclusions, \
          nothing else, got: {:#?}",
         non_header_excluded
     );
@@ -486,8 +491,9 @@ fn railway_interior_ring_texture_survives_round_trip() {
 /// sidecars are content-gated rather than profile-gated), so unlike
 /// `railway_round_trips_losslessly_modulo_documented_drops` above (an older
 /// pin from when Core-vs-Compatibility was a real choice), the only
-/// remaining exclusions are the 23 pinned degenerate-ring drops (updated
-/// alongside the comparator's coordinate-degenerate fix — see the comment in
+/// remaining exclusions are the 24 pinned degenerate-ring drops (updated
+/// alongside the comparator's coordinate-degenerate fix, and again alongside
+/// `wkb_write::normalise_ring`'s `> 3` bound — see the comment in
 /// `railway_round_trips_losslessly_modulo_documented_drops` above) and
 /// whatever header metadata members railway's header sets (documented,
 /// unbounded). Any OTHER exclusion here would mean appearance or an
@@ -514,16 +520,16 @@ fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
         .filter(|e| e.contains("degenerate ring"))
         .count();
     assert_eq!(
-        degenerate, 23,
-        "the 23 pinned coordinate-degenerate-ring drops must still be the only \
+        degenerate, 24,
+        "the 24 pinned degenerate-ring drops must still be the only \
          non-header exclusions, got: {:#?}",
         non_header_excluded
     );
     assert_eq!(
         non_header_excluded.len(),
-        23,
+        24,
         "with appearance and instances now round-tripping, every non-header exclusion must be \
-         one of the 23 pinned degenerate-ring notes, nothing else, got: {:#?}",
+         one of the 24 pinned degenerate-ring notes, nothing else, got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -584,7 +590,10 @@ fn delft_compatibility_round_trips_losslessly_with_only_header_exclusions() {
 /// normalisation must agree with the writer's real drop, end-to-end.
 /// Derived from delft's `NL.IMBAG.Pand.0503100000012869-0` lod-1.2 Solid
 /// (single shell, 6 faces, `semantics.values == [[0,2,2,2,2,1]]`): face 2's
-/// exterior ring degenerates to `[a, b, a]` (its own first two indices).
+/// exterior ring is cut down to its own first two indices — too short to
+/// form a ring at all, the only shape `wkb_write::normalise_ring`'s `> 3`
+/// bound still drops (a 3-vertex `[a, b, a]` sliver ring is now kept, see
+/// `wkb_roundtrip_real_data.rs`, so it no longer exercises a real drop here).
 /// Compared against the mutated SOURCE (not the whole original delft file —
 /// this tempdir file carries only the one mutated feature line, so it can't
 /// compare equal against delft's other 1114 features). With
@@ -622,7 +631,7 @@ fn delft_derived_solid_face_drop_round_trips_and_comparator_agrees_with_the_writ
         let ring = &mut geom["boundaries"][0][2][0];
         let indices: Vec<i64> = serde_json::from_value(ring.clone()).unwrap();
         let (a, b) = (indices[0], indices[1]);
-        *ring = serde_json::json!([a, b, a]);
+        *ring = serde_json::json!([a, b]);
         mutated_line = Some(serde_json::to_string(&feature).unwrap());
         break;
     }
@@ -803,8 +812,8 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (23, 23),
-        "the 23 pinned coordinate-degenerate-ring drops must still be the only \
+        (24, 24),
+        "the 24 pinned degenerate-ring drops must still be the only \
          non-header exclusions, got: {:#?}",
         non_header_excluded
     );

@@ -125,11 +125,13 @@ pub struct EncodeStats {
     /// Attribute values present (non-null) but not representable as the
     /// column's inferred type; encoded as null instead of panicking.
     pub attribute_coercion_nulls: usize,
-    /// Structurally degenerate rings the writer dropped ([a,b,a] closure
-    /// shape; see `wkb_write`), counted over STORED geometries.
+    /// Rings the writer dropped because they had fewer than 3 vertices to
+    /// begin with (see `wkb_write::normalise_ring` — stripping a pre-baked
+    /// WKB closure never reduces a ring below 3), counted over STORED
+    /// geometries.
     pub degenerate_rings_dropped: usize,
-    /// Surfaces the writer dropped because their exterior ring was
-    /// degenerate, counted over STORED geometries.
+    /// Surfaces the writer dropped because their exterior ring was one of
+    /// the above, counted over STORED geometries.
     pub degenerate_surfaces_dropped: usize,
     /// Attribute values diverted into the `other_attributes` column because
     /// their name collides with a reserved/geometry column name (§5.2, G12).
@@ -2233,8 +2235,9 @@ mod tests {
             "geometry": [{
                 "type": "MultiSurface",
                 "lod": "2",
-                // surface 0 is the [a,b,a] structural-degenerate shape
-                "boundaries": [[[0, 1, 0]], [[0, 1, 2, 3]]],
+                // surface 0's exterior ring has only 2 vertices — too short
+                // to form a ring at all
+                "boundaries": [[[0, 1]], [[0, 1, 2, 3]]],
                 "semantics": {
                     "surfaces": [{"type": "WallSurface"}, {"type": "RoofSurface"}],
                     "values": [0, 1]
@@ -2355,8 +2358,9 @@ mod tests {
             "geometry": [{
                 "type": "Solid",
                 "lod": "2",
-                // one shell, 3 faces; face 1 is the [a,b,a] structural-degenerate shape
-                "boundaries": [[[[0, 1, 2]], [[0, 1, 0]], [[1, 2, 3]]]],
+                // one shell, 3 faces; face 1's ring has only 2 vertices —
+                // too short to form a ring at all
+                "boundaries": [[[[0, 1, 2]], [[0, 1]], [[1, 2, 3]]]],
                 "semantics": {
                     "surfaces": [{"type": "A"}, {"type": "B"}, {"type": "C"}],
                     "values": [[0, 1, 2]]
@@ -2468,10 +2472,10 @@ mod tests {
                 "boundaries": [
                     [
                         [[[0, 1, 2]], [[1, 2, 3]]],
-                        [[[0, 1, 0]]]
+                        [[[0, 1]]]
                     ],
                     [
-                        [[[0, 2, 3]], [[2, 3, 2]]]
+                        [[[0, 2, 3]], [[2, 3]]]
                     ]
                 ],
                 "semantics": {

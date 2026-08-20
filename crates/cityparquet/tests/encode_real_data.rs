@@ -178,13 +178,15 @@ fn railway_encodes_with_semantics_and_templates() {
     assert_eq!(rows, 121);
 }
 
-/// The writer drops structurally degenerate surfaces ([a,b,a]-shaped
-/// exterior rings) at write time; the stored material per-surface arrays
-/// and geometry_properties must be realigned/annotated to match.
-/// GMLID_855011_330784_753 in lod3_railway has 101 source surfaces with a
-/// per-surface material values array; surface 67 is degenerate.
+/// A `[a, b, a]`-shaped exterior ring is a real 3-vertex sliver, not a
+/// pre-baked WKB closure (`wkb_write::normalise_ring`'s `> 3` bound never
+/// strips a ring's third vertex): the writer keeps it and its surface
+/// intact, so the stored geometry and the material per-surface array stay
+/// exactly as sourced, unrealigned. GMLID_855011_330784_753 in lod3_railway
+/// has 101 source surfaces with a per-surface material values array;
+/// surface 67 is one of these sliver-ring surfaces.
 #[test]
-fn railway_realigns_material_values_for_dropped_surfaces() {
+fn railway_keeps_index_repeat_sliver_surfaces_intact() {
     let (_crs_dir, src) = railway_source_with_crs();
     let s = scan(&src, GeometryEncoding::Wkb).unwrap();
     let batches: Vec<_> = encode(&src, &s, 1024, false)
@@ -214,17 +216,17 @@ fn railway_realigns_material_values_for_dropped_surfaces() {
             .unwrap();
         for row in 0..batch.num_rows() {
             let id = ids.value(row);
-            // The dropped positions themselves are no longer part of
-            // geometry_properties (spec: exactly type/surfaces/
-            // face_semantics/shells, no non-normative drop diagnostic) —
-            // EncodeStats aggregates the counts instead. What's checked
-            // here is that the STORED geometry itself lost exactly the
-            // dropped faces, proving the realignment ran (checked against
-            // the decoded WKB rather than face_semantics, since not every
-            // one of these rows carries semantics).
+            // These 3 objects are the ones whose real boundaries carry
+            // [a,b,a]-shaped sliver rings (see
+            // `wkb_roundtrip_real_data.rs::railway_geometries_round_trip_through_wkb_reader`'s
+            // pinned 6-ring/3-geometry breakdown). None of the 6 are
+            // dropped, so every one of these rows keeps its ORIGINAL
+            // (source) face count — checked against the decoded WKB rather
+            // than face_semantics, since not every one of these rows
+            // carries semantics.
             let expected_stored_faces = match id {
-                "GMLID_855011_330784_753" | "GMLID_0373494_301709_129" => 100,
-                "UUID_d96effed-08fe-4f74-b134-05b194aa3cff" => 22022 - 4,
+                "GMLID_855011_330784_753" | "GMLID_0373494_301709_129" => 101,
+                "UUID_d96effed-08fe-4f74-b134-05b194aa3cff" => 22022,
                 _ => continue,
             };
             found += 1;
@@ -236,7 +238,8 @@ fn railway_realigns_material_values_for_dropped_surfaces() {
             assert_eq!(
                 faces.len(),
                 expected_stored_faces,
-                "the stored geometry must lose exactly the dropped faces for {id}"
+                "the stored geometry must keep every source face, including the sliver-ring \
+                 one(s), for {id}"
             );
             if id != "UUID_d96effed-08fe-4f74-b134-05b194aa3cff" {
                 let material: serde_json::Value =
@@ -246,13 +249,14 @@ fn railway_realigns_material_values_for_dropped_surfaces() {
                     .expect("per-surface material values array");
                 assert_eq!(
                     values.len(),
-                    100,
-                    "material values must be realigned after dropping surface 67 (source had 101) for {id}"
+                    101,
+                    "material values must stay unrealigned (source had 101, surface 67 is kept) \
+                     for {id}"
                 );
             }
         }
     }
-    assert_eq!(found, 3, "all three degenerate-drop rows must be found");
+    assert_eq!(found, 3, "all three sliver-ring rows must be found");
 }
 
 #[test]
@@ -336,9 +340,9 @@ fn delft_records_per_shell_face_partition_for_solids() {
 /// delft carries no material/texture anywhere, so both are added here to
 /// exercise the fix; the values arrays are shaped exactly like the real
 /// semantics array). Face 2's exterior ring ([5,2,3,6] in the real fixture)
-/// is degenerated to `[a, b, a]` from its own first two indices, so the
-/// writer drops exactly that face; every per-face array must lose exactly
-/// that one entry, in order, while the shell nesting survives.
+/// is cut down to its own first two indices — too short to form a ring at
+/// all, so the writer drops exactly that face; every per-face array must
+/// lose exactly that one entry, in order, while the shell nesting survives.
 #[test]
 fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face() {
     let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
@@ -366,7 +370,7 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
         let ring = &mut geom["boundaries"][0][2][0];
         let indices: Vec<i64> = serde_json::from_value(ring.clone()).unwrap();
         let (a, b) = (indices[0], indices[1]);
-        *ring = serde_json::json!([a, b, a]);
+        *ring = serde_json::json!([a, b]);
 
         geom["material"] = serde_json::json!({"visual": {"values": [[0, 1, 0, 1, 0, 1]]}});
         geom["texture"] = serde_json::json!({"visual": {"values": [[

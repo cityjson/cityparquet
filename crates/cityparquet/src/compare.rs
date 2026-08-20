@@ -233,27 +233,33 @@ fn surface_list_node(pool: &VertexPool, surfaces: &[Vec<Vec<usize>>]) -> Result<
 /// closure seen in the wild); drop the ring ([`None`]) if fewer than 3
 /// vertices remain.
 ///
-/// Loops to a fixpoint rather than stripping a single trailing duplicate:
-/// the writer (`crate::wkb_write::normalise_ring`) only strips one, which is
-/// enough for its own output to satisfy the reader's ring-closure check, but
-/// is NOT idempotent for a ring the source doubly-closed (e.g.
-/// `[a,b,b,a,a]`, seen in the railway fixture) — stripping once there still
-/// leaves a closed ring (`[a,b,b,a]`). Since this same normalisation is
-/// applied independently to BOTH the raw source ring and the writer's
-/// already-once-stripped output, it must converge to the identical result
+/// Loops to a fixpoint rather than stripping a single trailing duplicate,
+/// and — unlike the writer — keeps stripping even once only 3 vertices
+/// remain: the writer (`crate::wkb_write::normalise_ring`) stops at 3
+/// vertices by design, since the stripping itself must never be what turns
+/// a ring degenerate. The comparator has no such constraint; it is NOT
+/// idempotent for a ring the source doubly-closed (e.g. `[a,b,b,a,a]`, seen
+/// in the railway fixture) — stripping once there still leaves a closed
+/// ring (`[a,b,b,a]`). Since this same normalisation is applied
+/// independently to BOTH the raw source ring and the writer's own
+/// (differently-bounded) output, it must converge to the identical result
 /// from either starting point, or a doubly-closed ring would compare as a
 /// false difference. Looping to a fixpoint guarantees that convergence
 /// regardless of how many redundant closures the source (or the writer)
 /// left in place, while remaining a no-op for the common single-closure
 /// case.
 ///
-/// This fixpoint loop is therefore DELIBERATELY more lenient than the
-/// writer's single-strip contract: the writer only ever needs to undo one
-/// pre-baked closure (its output feeds the WKB reader, which re-checks
-/// closure itself), whereas the comparator's job is to decide whether two
-/// differently-normalised encodings of the same source ring denote the same
-/// ring — which requires an idempotent canonical form, not a faithful
-/// replay of the writer's one pass.
+/// This fixpoint loop is therefore DELIBERATELY more aggressive than the
+/// writer's `> 3` bound: the writer only ever needs to undo a pre-baked
+/// closure without manufacturing a too-short ring (its output feeds the WKB
+/// reader, which re-checks closure itself), whereas the comparator's job is
+/// to decide whether two differently-normalised encodings of the same
+/// source ring denote the same ring — which requires an idempotent
+/// canonical form, not a faithful replay of the writer's own policy. A
+/// consequence: a `[a, b, a]` sliver the writer now keeps intact is still
+/// reduced to `None` here on both sides, so it compares as an identical
+/// (excluded) drop rather than a false difference — see the module docs'
+/// note on `excluded` growing by one entry per side for this shape.
 ///
 /// After the index-based fixpoint strip, also drops a ring whose surviving
 /// indices dequantise (bitwise, via [`distinct_coord_count`]) to fewer than

@@ -217,8 +217,10 @@ pub(crate) fn boundaries<T: serde::de::DeserializeOwned>(geom: &Geometry) -> Res
 /// Structural drops performed while normalising one geometry's rings.
 #[derive(Debug, Default)]
 pub(crate) struct Drops {
-    /// Rings dropped because they cannot form a valid WKB ring (< 3
-    /// effective vertices after stripping a pre-baked closure).
+    /// Rings dropped because the SOURCE ring itself has fewer than 3
+    /// vertices: stripping a pre-baked closure never removes a ring's third
+    /// vertex (see `normalise_ring`), so a drop here means the ring was
+    /// already too short before normalisation ran.
     pub(crate) rings: usize,
     /// Original flat surface/face positions (within the geometry) of
     /// surfaces dropped because their EXTERIOR ring was degenerate.
@@ -226,13 +228,19 @@ pub(crate) struct Drops {
 }
 
 /// Structural ring normalisation (narrow by design — this is NOT zero-area
-/// cleanup): strip trailing duplicates of the first vertex index to a
-/// fixpoint (sources in the wild bake the WKB closure more than once, e.g.
-/// `[0, 1, 0, 0]`: a single strip would leave a still-closed `[0, 1, 0]`
-/// that the hardened reader rejects); if fewer than 3 vertices remain the
-/// ring cannot form a valid WKB ring and is dropped (`None`). Zero-area
-/// rings with >= 3 effective vertices pass through unchanged — data quality
-/// is not the format's business.
+/// cleanup): strip trailing duplicates of the first vertex index, but only
+/// while MORE than 3 vertices remain (sources in the wild bake the WKB
+/// closure more than once, e.g. `[0, 1, 0, 0]`: a single strip would leave a
+/// still-closed `[0, 1, 0]` that the hardened reader rejects, so this keeps
+/// stripping until the repeat is gone). The `> 3` bound means stripping
+/// never removes a ring's third vertex: it can only ever undo a genuinely
+/// redundant closure, never manufacture a too-short ring out of one that
+/// already had 3 or more effective vertices. A ring is dropped (`None`)
+/// only when the SOURCE already had fewer than 3 vertices to begin with —
+/// stripping cannot create that condition. Zero-area rings, including the
+/// 3-vertex index-repeat shape `[a, b, a]` (a real closed-to-a-sliver ring,
+/// not a baked closure), pass through unchanged — data quality is not the
+/// format's business.
 ///
 /// Known limitation (deliberate): closure detection is INDEX-based. A ring
 /// whose last vertex is a DIFFERENT index carrying a bitwise-identical
@@ -243,10 +251,11 @@ pub(crate) struct Drops {
 /// coordinate-level degeneracy is data quality, out of scope.
 pub(crate) fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
     let mut stripped = ring;
-    // Fixpoint, not single-strip: sources in the wild bake the closure more
-    // than once ([0,1,0,0]); a single strip left a still-closed [0,1,0] that
-    // the hardened reader rejects.
-    while stripped.len() >= 2 && stripped.first() == stripped.last() {
+    // Strip while MORE than 3 vertices remain, not to a `>= 2` fixpoint:
+    // that bound lets a doubly-baked closure ([0,1,0,0]) still converge to
+    // its real 3-vertex shape, while never stripping a ring's third vertex
+    // — the stripping itself must never be what turns a ring degenerate.
+    while stripped.len() > 3 && stripped.first() == stripped.last() {
         stripped = &stripped[..stripped.len() - 1];
     }
     (stripped.len() >= 3).then_some(stripped)
@@ -254,12 +263,14 @@ pub(crate) fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
 
 /// Normalise one surface's rings. Returns the kept rings, or `None` when
 /// the surface must be dropped entirely: either it has no rings at all (no
-/// WKB polygon can be formed), or its EXTERIOR ring (index 0) is degenerate
-/// (interior rings cannot stand without it). Every degenerate ring is
-/// counted in `drops.rings` — including interior rings of a surface that is
-/// dropped anyway — so the reported ring total is exact. `pos` is the
-/// surface's original flat position within the geometry, recorded so the
-/// encoder can realign per-surface semantics/material/texture arrays.
+/// WKB polygon can be formed), or its EXTERIOR ring (index 0) was dropped by
+/// `normalise_ring` — i.e. it had fewer than 3 vertices to begin with
+/// (interior rings cannot stand without an exterior). Every ring
+/// `normalise_ring` drops is counted in `drops.rings` — including interior
+/// rings of a surface that is dropped anyway — so the reported ring total is
+/// exact. `pos` is the surface's original flat position within the
+/// geometry, recorded so the encoder can realign per-surface
+/// semantics/material/texture arrays.
 pub(crate) fn normalise_surface<'r>(
     rings: &'r [Vec<usize>],
     pos: usize,
@@ -361,11 +372,13 @@ pub fn point_to_wkb(c: [f64; 3]) -> Vec<u8> {
 pub struct WkbOutcome {
     pub bytes: Vec<u8>,
     pub bbox: [f64; 6],
-    /// Structurally degenerate rings dropped (the [a,b,a] closure shape:
-    /// fewer than 3 effective vertices).
+    /// Rings dropped for having fewer than 3 vertices to begin with (see
+    /// `normalise_ring`: stripping a pre-baked closure never reduces a ring
+    /// below 3 vertices, so a drop here always means a too-short source
+    /// ring).
     pub dropped_rings: usize,
     /// Original flat surface positions (within this geometry) of surfaces
-    /// dropped because their exterior ring was degenerate. Flat means: the
+    /// dropped because their exterior ring was one of the above. Flat means: the
     /// boundaries index for MultiSurface/CompositeSurface; the face position
     /// counted across shells (and across solids for MultiSolid/
     /// CompositeSolid) for the solid types.
@@ -722,15 +735,16 @@ mod tests {
 
     #[test]
     fn degenerate_ring_drops_with_its_surface() {
-        // Surface 0's exterior ring is the structural [a,b,a] closure shape
-        // (2 effective vertices): the ring is dropped, and with it the whole
-        // surface. Surface 1 is fine and must survive as the ONLY polygon.
+        // Surface 0's exterior ring has only 2 vertices — too short to form
+        // a ring at all, regardless of normalisation — so the ring is
+        // dropped, and with it the whole surface. Surface 1 is fine and
+        // must survive as the ONLY polygon.
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiSurface,
             lod: Some("2".into()),
-            boundaries: serde_json::json!([[[0, 1, 0]], [[0, 1, 2, 3]]]),
+            boundaries: serde_json::json!([[[0, 1]], [[0, 1, 2, 3]]]),
             semantics: None,
             material: None,
             texture: None,
@@ -758,12 +772,12 @@ mod tests {
             "surviving ring keeps its 4 vertices"
         );
 
-        // Counter precision: a dropped surface's interior degenerate rings
+        // Counter precision: a dropped surface's interior too-short rings
         // are still counted in dropped_rings (surface drop unchanged).
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiSurface,
             lod: Some("2".into()),
-            boundaries: serde_json::json!([[[0, 1, 0], [2, 3, 2]], [[0, 1, 2, 3]]]),
+            boundaries: serde_json::json!([[[0, 1], [2, 3]], [[0, 1, 2, 3]]]),
             semantics: None,
             material: None,
             texture: None,
@@ -785,10 +799,10 @@ mod tests {
 
     #[test]
     fn zero_area_ring_with_3_effective_vertices_passes_through() {
-        // Policy is narrow and structural: only the [a,b,a] closure shape
-        // drops. A ring of 3 distinct indices passes through even if it is
-        // geometrically degenerate — data quality is not the format's
-        // business.
+        // Policy is narrow and structural: only a ring with fewer than 3
+        // vertices to begin with drops. A ring of 3 distinct indices passes
+        // through even if it is geometrically degenerate — data quality is
+        // not the format's business.
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t);
         let geom = cjseq::Geometry {
@@ -820,7 +834,7 @@ mod tests {
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiSurface,
             lod: Some("2".into()),
-            boundaries: serde_json::json!([[[0, 1, 0]]]),
+            boundaries: serde_json::json!([[[0, 1]]]),
             semantics: None,
             material: None,
             texture: None,
@@ -831,15 +845,25 @@ mod tests {
     }
 
     #[test]
-    fn normalise_ring_strips_trailing_duplicates_to_fixpoint() {
+    fn normalise_ring_strips_baked_closures_but_never_below_3_vertices() {
         // The exact Codex ring: [0, 1, 0, 0]. One strip leaves [0, 1, 0], which
-        // still closes (first == last); the fixpoint strip must continue until
-        // [0, 1] and then drop the ring (< 3 effective vertices).
-        assert_eq!(normalise_ring(&[0, 1, 0, 0]), None);
-        // Still only trailing-closure strips: a healthy pre-closed ring keeps
-        // its body, and an unclosed ring is untouched.
+        // still closes (first == last) but is already down to 3 vertices, so
+        // the `> 3` bound stops the strip there instead of continuing to drop
+        // it — the doubly-baked closure converges to its real 3-vertex shape.
+        assert_eq!(normalise_ring(&[0, 1, 0, 0]), Some(&[0usize, 1, 0][..]));
+        // A single pre-baked closure, and a ring that was never closed at
+        // all, both pass through with their 3-vertex body untouched.
         assert_eq!(normalise_ring(&[0, 1, 2, 0]), Some(&[0usize, 1, 2][..]));
         assert_eq!(normalise_ring(&[0, 1, 2]), Some(&[0usize, 1, 2][..]));
+        // A genuine [a, b, a] sliver (index-repeat, not a baked closure) is
+        // already at 3 vertices, so the `> 3` bound never even enters the
+        // strip loop: it passes through unchanged rather than being reduced
+        // to 2 and dropped.
+        assert_eq!(normalise_ring(&[87, 71, 87]), Some(&[87usize, 71, 87][..]));
+        // A ring with fewer than 3 vertices to begin with is dropped —
+        // stripping cannot create this condition, only a too-short source
+        // ring can.
+        assert_eq!(normalise_ring(&[0, 1]), None);
     }
 
     #[test]
@@ -972,11 +996,12 @@ mod tests {
         let (v, t) = pool_and(1.0);
         let pool = VertexPool::new(&v, &t);
         let cases: Vec<(cjseq::GeometryType, serde_json::Value)> = vec![
-            // MultiSurface with an interior ring (hole) AND a degenerate surface
-            // that geometry_to_wkb drops — the walker must drop it identically.
+            // MultiSurface with an interior ring (hole) AND a too-short-ring
+            // surface that geometry_to_wkb drops — the walker must drop it
+            // identically.
             (
                 cjseq::GeometryType::MultiSurface,
-                serde_json::json!([[[0, 1, 2, 3], [0, 1, 4]], [[0, 1, 0]]]),
+                serde_json::json!([[[0, 1, 2, 3], [0, 1, 4]], [[0, 1]]]),
             ),
             (
                 cjseq::GeometryType::Solid,
@@ -994,7 +1019,7 @@ mod tests {
             // Everything degenerate: both paths must agree on None.
             (
                 cjseq::GeometryType::MultiSurface,
-                serde_json::json!([[[0, 1, 0]]]),
+                serde_json::json!([[[0, 1]]]),
             ),
             // Empty boundaries: both paths must agree on None.
             (cjseq::GeometryType::MultiPoint, serde_json::json!([])),

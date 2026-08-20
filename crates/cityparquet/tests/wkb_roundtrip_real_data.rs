@@ -14,10 +14,12 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 /// Test-side mirror of the writer's structural normalisation policy: strip
-/// trailing duplicates of the first vertex index to a fixpoint (the WKB
-/// closure the source pre-baked, possibly more than once), drop the ring if
-/// fewer than 3 vertices remain, and drop the whole surface when its
-/// EXTERIOR ring (index 0) is dropped. Returns the surface's expected
+/// trailing duplicates of the first vertex index, but only while MORE than 3
+/// vertices remain (undoes the WKB closure the source pre-baked, possibly
+/// more than once, without ever stripping a ring's third vertex), drop the
+/// ring if fewer than 3 vertices remain (only possible when the source ring
+/// already had fewer than 3 to begin with), and drop the whole surface when
+/// its EXTERIOR ring (index 0) is dropped. Returns the surface's expected
 /// decoded rings, or `None` when the whole surface is expected to be
 /// dropped.
 ///
@@ -33,7 +35,7 @@ fn normalise_expected_surface(surface: &[Vec<usize>]) -> Option<Vec<Vec<usize>>>
     let mut kept = Vec::with_capacity(surface.len());
     for (i, ring) in surface.iter().enumerate() {
         let mut stripped = &ring[..];
-        while stripped.len() >= 2 && stripped.first() == stripped.last() {
+        while stripped.len() > 3 && stripped.first() == stripped.last() {
             stripped = &stripped[..stripped.len() - 1];
         }
         if stripped.len() >= 3 {
@@ -260,10 +262,13 @@ fn delft_geometries_round_trip_through_wkb_reader() {
 /// plus ONE feature line carrying a real `Solid`, replace that Solid's
 /// first face's first ring with the `[a, b, a, a]` shape built from the
 /// ring's own first two real indices, write it to a tempdir, and confirm
-/// the writer/reader pipeline drops exactly that one ring and its surface
-/// while everything else round-trips.
+/// the writer/reader pipeline strips the doubly-baked closure down to its
+/// real 3-vertex `[a, b, a]` shape — WITHOUT dropping the ring or its
+/// surface — while everything else round-trips. `normalise_ring`'s `> 3`
+/// bound stops stripping once exactly 3 vertices remain, so the second
+/// (redundant) closure is undone but the ring's own third vertex never is.
 #[test]
-fn delft_derived_double_baked_closure_ring_is_dropped_and_still_round_trips() {
+fn delft_derived_double_baked_closure_ring_converges_to_3_vertices_and_round_trips() {
     let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
     let mut lines = text.lines();
     let header_line = lines.next().unwrap().to_string();
@@ -342,18 +347,25 @@ fn delft_derived_double_baked_closure_ring_is_dropped_and_still_round_trips() {
 
     let outcome = geometry_to_wkb(geom, &pool)
         .unwrap()
-        .expect("the Solid still has surviving faces after dropping one degenerate ring");
+        .expect("the Solid's faces, including the mutated one, all survive");
     assert_eq!(
-        outcome.dropped_rings, 1,
-        "exactly the mutated [a,b,a,a] ring must be dropped"
+        outcome.dropped_rings, 0,
+        "the [a,b,a,a] ring converges to its real 3-vertex shape, not a drop"
     );
-    assert_eq!(
-        outcome.dropped_surfaces,
-        vec![0],
-        "its face (the first, position 0) must be dropped with it"
+    assert!(
+        outcome.dropped_surfaces.is_empty(),
+        "no surface is dropped: the mutated ring survives normalisation"
     );
-    wkb_to_geometry(&outcome.bytes)
+    let decoded = wkb_to_geometry(&outcome.bytes)
         .expect("hardened reader must accept the writer's normalised output");
+    let DecodedKind::PolyhedralSurface(faces) = &decoded.kind else {
+        panic!("expected PolyhedralSurface, got {:?}", decoded.kind);
+    };
+    assert_eq!(
+        faces[0][0].len(),
+        3,
+        "the mutated face's exterior ring must round-trip as exactly 3 vertices, not 4"
+    );
 }
 
 #[test]
@@ -365,10 +377,13 @@ fn railway_geometries_round_trip_through_wkb_reader() {
         totals.round_tripped, 105,
         "all 105 railway geometries must round-trip"
     );
-    // lod3_railway carries exactly 6 structurally degenerate [a,b,a] rings,
-    // each the sole (exterior) ring of its surface, across 3 geometries
-    // (one CompositeSurface with 4, two MultiSurfaces with 1 each).
-    assert_eq!(totals.dropped_rings, 6);
-    assert_eq!(totals.dropped_surfaces, 6);
-    assert_eq!(totals.geometries_with_drops, 3);
+    // lod3_railway carries exactly 6 [a,b,a] sliver rings (across 3
+    // geometries: one CompositeSurface with 4, two MultiSurfaces with 1
+    // each), each the sole (exterior) ring of its surface. A 3-vertex
+    // index-repeat ring is a real ring, not a baked WKB closure
+    // (`wkb_write::normalise_ring`'s `> 3` bound never strips a ring's
+    // third vertex), so none of the 6 are dropped: they round-trip intact.
+    assert_eq!(totals.dropped_rings, 0);
+    assert_eq!(totals.dropped_surfaces, 0);
+    assert_eq!(totals.geometries_with_drops, 0);
 }
