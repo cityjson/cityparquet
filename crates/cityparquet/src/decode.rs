@@ -10,10 +10,9 @@
 //! JSON value and built via `serde_json::from_value` — the one supported
 //! construction path.
 
-use arrow_array::types::Int32Type;
 use arrow_array::{
-    Array, ArrayAccessor, BinaryArray, BooleanArray, Date32Array, DictionaryArray, Float64Array,
-    Int64Array, ListArray, RecordBatch, StringArray, StructArray, TimestampMillisecondArray,
+    Array, ArrayAccessor, BinaryArray, BooleanArray, Date32Array, Float64Array, Int64Array,
+    ListArray, RecordBatch, StringArray, StructArray,
 };
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
 use arrow_schema::{DataType, Schema, TimeUnit};
@@ -429,10 +428,10 @@ fn attribute_value(col: &AttributeColumn<'_>, row: usize) -> Result<Option<Value
                 .ok_or_else(|| err(format!("invalid Date32 value in column '{name}'")))?;
             Value::String(date.format("%Y-%m-%d").to_string())
         }
-        DataType::Timestamp(TimeUnit::Millisecond, Some(tz)) if tz.as_ref() == "UTC" => {
-            let a = downcast::<TimestampMillisecondArray>(array.as_ref(), name)?;
-            let naive = a
-                .value_as_datetime(row)
+        DataType::Timestamp(unit @ (TimeUnit::Millisecond | TimeUnit::Microsecond), Some(tz))
+            if tz.as_ref() == "UTC" =>
+        {
+            let naive = crate::arrow_compat::timestamp_utc_value(array.as_ref(), *unit, row, name)?
                 .ok_or_else(|| err(format!("invalid Timestamp value in column '{name}'")))?;
             let dt = Utc.from_utc_datetime(&naive);
             Value::String(dt.to_rfc3339_opts(SecondsFormat::Millis, true))
@@ -476,11 +475,8 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         downcast::<StringArray>(get_column(batch, "feature_id")?.as_ref(), "feature_id")?;
 
     let object_type_array = get_column(batch, "object_type")?;
-    let object_type_dict =
-        downcast::<DictionaryArray<Int32Type>>(object_type_array.as_ref(), "object_type")?;
-    let object_type_values = object_type_dict
-        .downcast_dict::<StringArray>()
-        .ok_or_else(|| err("'object_type' dictionary values are not Utf8"))?;
+    let object_type_view =
+        crate::arrow_compat::string_view(object_type_array.as_ref(), "object_type")?;
 
     let parents_col = downcast::<ListArray>(get_column(batch, "parents")?.as_ref(), "parents")?;
     let children_col = downcast::<ListArray>(get_column(batch, "children")?.as_ref(), "children")?;
@@ -550,7 +546,7 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         // Every other core class, and every extension class (no taxonomy
         // entry), has an identical or unmapped spelling, so the reverse
         // lookup is a no-op for them.
-        let stored_object_type = object_type_values.value(row);
+        let stored_object_type = object_type_view.value(row);
         let object_type = cityparquet_schema::cityjson_type_for_citygml_class(stored_object_type)
             .map(str::to_string)
             .unwrap_or_else(|| stored_object_type.to_string());

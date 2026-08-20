@@ -1,12 +1,15 @@
 //! A CityParquet file from a foreign writer must read. The physical conventions
 //! here are duckdb-cityjson's: its reserved-column order, plain Utf8 for
-//! `object_type`, `element` as the LIST child name, microsecond timestamps, and
-//! no `address`/`template`/`other_attributes` columns.
+//! `object_type`, `element` as the LIST child name, and microsecond
+//! timestamps. `address`/`template`/`children_roles`/`other`/
+//! `other_attributes` are present but all-null on every row — `decode_batch`
+//! requires the columns to exist, so this exercises them as absent-in-effect
+//! without pretending a foreign writer would physically omit them.
 
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, ArrayRef, ListArray, RecordBatch, StringArray, TimestampMicrosecondArray,
+    Array, ArrayRef, ListArray, RecordBatch, StringArray, TimestampMicrosecondArray, new_null_array,
 };
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
@@ -15,6 +18,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::properties::WriterProperties;
 
 use cityparquet::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
+use cityparquet_schema::model::{address_data_type, template_data_type};
 
 /// A minimal but conformant `city` footer for a one-attribute object table.
 const CITY_JSON: &str = r#"{
@@ -46,6 +50,19 @@ fn foreign_file(path: &std::path::Path) {
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             true,
         ),
+        // `decode_batch` errors on any of these being absent, so they must
+        // be present — all-null is enough to exercise the object-type/
+        // timestamp tolerance this file tests without needing real address/
+        // template/other data.
+        Field::new(
+            "children_roles",
+            DataType::List(Field::new("item", DataType::Utf8, true).into()),
+            true,
+        ),
+        Field::new("address", address_data_type(), true),
+        Field::new("template", template_data_type(), true),
+        Field::new("other", DataType::Utf8, true),
+        Field::new("other_attributes", DataType::Utf8, true),
     ]));
 
     let ids: ArrayRef = Arc::new(StringArray::from(vec!["obj-1"]));
@@ -71,10 +88,30 @@ fn foreign_file(path: &std::path::Path) {
     let stamps: ArrayRef = Arc::new(
         TimestampMicrosecondArray::from(vec![1_600_000_000_000_000i64]).with_timezone("UTC"),
     );
+    let children_roles: ArrayRef = new_null_array(
+        &DataType::List(Field::new("item", DataType::Utf8, true).into()),
+        1,
+    );
+    let address: ArrayRef = new_null_array(&address_data_type(), 1);
+    let template: ArrayRef = new_null_array(&template_data_type(), 1);
+    let other: ArrayRef = new_null_array(&DataType::Utf8, 1);
+    let other_attributes: ArrayRef = new_null_array(&DataType::Utf8, 1);
 
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
-        vec![ids, feature_ids, types, children, parents, stamps],
+        vec![
+            ids,
+            feature_ids,
+            types,
+            children,
+            parents,
+            stamps,
+            children_roles,
+            address,
+            template,
+            other,
+            other_attributes,
+        ],
     )
     .expect("foreign batch");
 
@@ -115,7 +152,12 @@ fn renders_the_foreign_writers_own_fields_not_the_canonical_set() {
             "object_type",
             "children",
             "parents",
-            "tijdstipregistratie"
+            "tijdstipregistratie",
+            "children_roles",
+            "address",
+            "template",
+            "other",
+            "other_attributes",
         ],
         "the rendered schema must be the file's own fields, in the file's order"
     );
@@ -146,6 +188,35 @@ fn renders_the_foreign_writers_own_fields_not_the_canonical_set() {
             .map(String::as_str),
         Some("reserved"),
     );
+}
+
+#[test]
+fn a_foreign_writers_values_decode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("bridge.parquet");
+    foreign_file(&path);
+
+    let file = std::fs::File::open(&path).expect("open");
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("builder");
+    let meta = builder.cityparquet_metadata().expect("metadata");
+    let schema = builder.cityparquet_arrow_schema().expect("render");
+    let reader = cityparquet::reader::CityParquetRecordBatchReader::new(
+        builder.build().expect("build"),
+        schema,
+    );
+
+    // Decoding is where the canonical-type downcasts live: a plain Utf8
+    // `object_type` and a MICROS timestamp both render fine and then fail here.
+    let mut objects = Vec::new();
+    for batch in reader {
+        let batch = batch.expect("batch");
+        objects.extend(
+            cityparquet::decode::decode_batch(&batch, &meta)
+                .expect("a foreign writer's values must decode"),
+        );
+    }
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects[0].object.thetype, "Bridge");
 }
 
 /// The first element of a `LIST<VARCHAR>` cell (row 0), as an owned `String`.

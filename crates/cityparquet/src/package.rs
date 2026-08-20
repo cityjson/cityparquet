@@ -12,9 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
 use arrow_array::builder::BooleanBuilder;
-use arrow_array::types::Int32Type;
-use arrow_array::{Array, DictionaryArray, RecordBatch, StringArray};
 use arrow_schema::Schema;
 use arrow_select::filter::filter_record_batch;
 use parquet::arrow::ArrowWriter;
@@ -608,42 +607,36 @@ fn module_column_names(
     names
 }
 
-/// `batch`'s `object_type` column downcast to its dictionary array and Utf8
-/// dictionary values — the one shared decode both [`TableWriters::write_batch`]
-/// and its tests need (`crate::encode::BatchBuilder` always dictionary-encodes
-/// `object_type`; `crate::decode` downcasts it identically).
-fn object_type_dictionary(
+/// Resolves every row of `batch`'s `object_type` column to its
+/// [`ModuleKey`] — via `resolver`, which itself memoises by source-type
+/// string across the whole conversion (many batches), so a distinct value
+/// seen before costs one hash lookup, never a re-derivation of
+/// [`cityparquet_schema::resolve_module_key`]. Tolerant of either physical
+/// representation a writer may have chosen for `object_type` (spec: a
+/// reader must accept plain `Utf8` or `Dictionary<Int32, Utf8>` —
+/// `crate::encode::BatchBuilder` always dictionary-encodes it, a foreign
+/// writer may not) via [`crate::arrow_compat::string_view`]. `object_type`
+/// stores the CityGML class name (spec "object_type vocabulary", gap 15);
+/// `resolve_module_key` recognises a core class by either its CityJSON or
+/// CityGML spelling, so this is correct as-is.
+fn resolve_object_type_module_keys(
     batch: &RecordBatch,
-) -> Result<(&DictionaryArray<Int32Type>, &StringArray)> {
+    resolver: &mut ModuleKeyResolver,
+) -> Result<Vec<ModuleKey>> {
     let column = batch
         .column_by_name("object_type")
         .ok_or_else(|| err("encoded batch is missing its 'object_type' column".to_string()))?;
-    let dict = column
-        .as_any()
-        .downcast_ref::<DictionaryArray<Int32Type>>()
-        .ok_or_else(|| err("'object_type' column is not a dictionary array".to_string()))?;
-    let values = dict
-        .values()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| err("'object_type' dictionary values are not Utf8".to_string()))?;
-    Ok((dict, values))
-}
-
-/// Resolves every DISTINCT dictionary VALUE of `batch`'s `object_type`
-/// column to its [`ModuleKey`] exactly once — via `resolver`, which itself
-/// memoises by source-type string across the whole conversion (many
-/// batches) — indexed by dictionary key so every later per-row lookup is a
-/// plain `Vec` index, never a re-derivation from the string. `object_type`
-/// stores the CityGML class name (spec "object_type vocabulary", gap 15);
-/// [`cityparquet_schema::resolve_module_key`] recognises a core class by
-/// either its CityJSON or CityGML spelling, so this is correct as-is.
-fn resolve_dictionary_module_keys(
-    values: &StringArray,
-    resolver: &mut ModuleKeyResolver,
-) -> Result<Vec<ModuleKey>> {
-    (0..values.len())
-        .map(|i| resolver.resolve(values.value(i)))
+    let view = crate::arrow_compat::string_view(column.as_ref(), "object_type")?;
+    (0..batch.num_rows())
+        .map(|row| {
+            if view.is_null(row) {
+                // The schema declares `object_type` non-nullable — a null
+                // here can only mean a corrupt/foreign batch; error loudly
+                // rather than silently drop the row from every table.
+                return Err(err(format!("row {row}: 'object_type' must not be null")));
+            }
+            resolver.resolve(view.value(row))
+        })
         .collect()
 }
 
@@ -877,27 +870,19 @@ impl TableWriters {
     /// sub-batch going to that module's own (lazily opened) writer. A
     /// row's own `object_type` value is untouched by this: only which FILE
     /// it lands in is decided by its module, the `object_type` column
-    /// itself still carries the row's real, literal type. Resolves each
-    /// DISTINCT dictionary value's `ModuleKey` once (via `self.resolver`),
-    /// then does one linear pass over rows comparing dictionary keys/
-    /// `ModuleKey`s — never re-deriving a `ModuleKey` from a string per row.
+    /// itself still carries the row's real, literal type. Resolves every
+    /// row's `ModuleKey` once via [`resolve_object_type_module_keys`] (whose
+    /// `self.resolver` memoises by distinct string across the whole
+    /// conversion), then does one linear pass over rows comparing
+    /// `ModuleKey`s.
     fn write_batch(&mut self, batch: &RecordBatch) -> Result<()> {
-        let (dict, values) = object_type_dictionary(batch)?;
-        let per_dict_key = resolve_dictionary_module_keys(values, &mut self.resolver)?;
+        let per_row_key = resolve_object_type_module_keys(batch, &mut self.resolver)?;
 
         // Distinct ModuleKeys actually present in `batch`, first-appearance
         // order within this batch — mirrors the old `distinct_types_in_batch`
         // shape but keyed on `ModuleKey`, not a re-derived string.
         let mut order: Vec<ModuleKey> = Vec::new();
-        for row in 0..batch.num_rows() {
-            if dict.is_null(row) {
-                // The schema declares `object_type` non-nullable — a null
-                // here can only mean a corrupt/foreign batch; error loudly
-                // rather than silently drop the row from every table.
-                return Err(err(format!("row {row}: 'object_type' must not be null")));
-            }
-            let code = dict.keys().value(row) as usize;
-            let key = &per_dict_key[code];
+        for key in &per_row_key {
             if !order.iter().any(|k| k == key) {
                 order.push(key.clone());
             }
@@ -906,9 +891,8 @@ impl TableWriters {
         for key in &order {
             let idx = self.by_type_table_index(key)?;
             let mut mask = BooleanBuilder::with_capacity(batch.num_rows());
-            for row in 0..batch.num_rows() {
-                let code = dict.keys().value(row) as usize;
-                mask.append_value(&per_dict_key[code] == key);
+            for row_key in &per_row_key {
+                mask.append_value(row_key == key);
             }
             let filtered = filter_record_batch(batch, &mask.finish())?;
             // Column projection (this table's own pruned schema) — rows
@@ -1492,6 +1476,7 @@ mod tests {
     use super::*;
 
     use arrow_array::builder::StringDictionaryBuilder;
+    use arrow_array::types::Int32Type;
     use arrow_schema::{DataType, Field};
     use cityparquet_schema::{CityGmlModule, ExtensionClassDecl};
 

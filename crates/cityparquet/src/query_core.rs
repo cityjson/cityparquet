@@ -7,10 +7,8 @@
 //! exactly once (review P3 — the former self-acknowledged duplication at
 //! the top of `query_async.rs`).
 
-use arrow_array::types::Int32Type;
 use arrow_array::{
-    Array, ArrayAccessor, BooleanArray, DictionaryArray, Float64Array, Int64Array, RecordBatch,
-    StringArray, StructArray,
+    Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, StructArray,
 };
 use arrow_schema::DataType;
 use parquet::arrow::ProjectionMask;
@@ -121,48 +119,20 @@ pub(crate) fn evaluate_attr_predicate(
     let schema_err = |msg: String| CityParquetError::Schema(msg);
 
     match array.data_type() {
-        DataType::Utf8 => {
-            let values = array
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| schema_err(format!("column '{column}' is not Utf8")))?;
+        // Tolerant of either physical representation a writer may have
+        // chosen for a string column (spec: a reader must accept plain
+        // `Utf8` or `Dictionary<Int32, Utf8>`) — routed through
+        // [`crate::arrow_compat::string_view`] so this site cannot drift
+        // from `decode`/`package`'s identical tolerance.
+        DataType::Utf8 | DataType::Dictionary(_, _) => {
             let AttrPredicate::Eq(serde_json::Value::String(want)) = pred else {
                 return Err(schema_err(format!(
-                    "column '{column}' is Utf8; only `Eq(<string>)` applies, got {pred:?}"
+                    "column '{column}' is a string column; only `Eq(<string>)` applies, got {pred:?}"
                 )));
             };
-            Ok(BooleanArray::from_iter((0..values.len()).map(|i| {
-                Some(!values.is_null(i) && values.value(i) == want)
-            })))
-        }
-        DataType::Dictionary(key_type, value_type) => {
-            if key_type.as_ref() != &DataType::Int32 || value_type.as_ref() != &DataType::Utf8 {
-                return Err(schema_err(format!(
-                    "column '{column}' is Dictionary<{key_type:?}, {value_type:?}>; only \
-                     Dictionary<Int32, Utf8> is supported"
-                )));
-            }
-            let dict = array
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int32Type>>()
-                .ok_or_else(|| {
-                    schema_err(format!(
-                        "column '{column}' is not a Dictionary<Int32, Utf8>"
-                    ))
-                })?;
-            let values = dict.downcast_dict::<StringArray>().ok_or_else(|| {
-                schema_err(format!("column '{column}' dictionary values are not Utf8"))
-            })?;
-            let AttrPredicate::Eq(serde_json::Value::String(want)) = pred else {
-                return Err(schema_err(format!(
-                    "column '{column}' is a dictionary column; only `Eq(<string>)` applies, got {pred:?}"
-                )));
-            };
-            // `TypedDictionaryArray::value` is unchecked w.r.t. nulls (a null
-            // key position may point at any dictionary entry, or none), so
-            // `dict.is_null(i)` must gate every lookup.
-            Ok(BooleanArray::from_iter((0..dict.len()).map(|i| {
-                Some(!dict.is_null(i) && values.value(i) == want.as_str())
+            let view = crate::arrow_compat::string_view(array, column)?;
+            Ok(BooleanArray::from_iter((0..array.len()).map(|i| {
+                Some(!view.is_null(i) && view.value(i) == want.as_str())
             })))
         }
         DataType::Int64 => {
