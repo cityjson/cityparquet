@@ -184,7 +184,11 @@ for CODEC in SNAPPY ZSTD; do
 
   WRITE_S=$(median5 "${WRITE_TIMES[@]}")
   FULL_SCAN_S=$(median5 "${SCAN_TIMES[@]}")
-  BYTES=$(stat -f %z "$PARQUET" 2>/dev/null || stat -c %s "$PARQUET")
+  # `wc -c`, not `stat`: GNU stat treats `-f` as filesystem mode and
+  # SUCCEEDS with non-numeric output, so a `stat -f %z || stat -c %s`
+  # macOS-first chain never falls through on Linux. `wc -c` is portable;
+  # `tr` strips the leading spaces BSD wc pads with.
+  BYTES=$(wc -c < "$PARQUET" | tr -d '[:space:]')
   OBJS=$("$DUCKDB" -csv -noheader -c "SELECT count(*) FROM read_parquet('$PARQUET');")
 
   NAME=duckdb-copy

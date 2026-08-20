@@ -1,6 +1,10 @@
 [package]
 name = "cityparquet-readbench"
 description = "Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParquet, etc.)"
+# Two [[bin]]s live here (the coordinator and `scaling-corpus`); a bare
+# `cargo run -p cityparquet-readbench` — the `bench` recipe's own
+# invocation — must keep meaning the coordinator.
+default-run = "cityparquet-readbench"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
