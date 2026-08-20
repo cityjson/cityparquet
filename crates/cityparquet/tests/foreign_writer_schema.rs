@@ -219,6 +219,21 @@ fn a_foreign_writers_values_decode() {
     }
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0].object.thetype, "Bridge");
+    // The DECODED VALUE, not just that decoding didn't error: a unit-
+    // confusion bug (a MICROS raw value read through the MILLIS divisor)
+    // would still decode without error, just to the wrong instant.
+    // 1_600_000_000_000_000 microseconds since the epoch is
+    // 2020-09-13T12:26:40Z.
+    assert_eq!(
+        objects[0]
+            .object
+            .attributes
+            .as_ref()
+            .and_then(|a| a.get("tijdstipregistratie"))
+            .and_then(|v| v.as_str()),
+        Some("2020-09-13T12:26:40.000Z"),
+        "a MICROS timestamp must decode through the MICROS divisor, not the MILLIS one"
+    );
 }
 
 /// The first element of a `LIST<VARCHAR>` cell (row 0), as an owned `String`.
@@ -369,6 +384,11 @@ fn a_table_omitting_the_optional_reserved_columns_decodes() {
     assert!(
         objects[0].address.is_none(),
         "an absent column decodes as an absent address, not Some(vec![])"
+    );
+    assert!(
+        objects[0].template.is_none(),
+        "an absent template column decodes as no template instance, not a spuriously \
+         populated one"
     );
 }
 
