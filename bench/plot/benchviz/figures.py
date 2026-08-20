@@ -200,6 +200,28 @@ SIZE_FORMATS = [
     "flatcitybuf",
 ]
 
+# Bar fills for the per-dataset panels. The marker vocabulary in FORMAT_STYLE
+# identifies a format by SHAPE, which a filled bar has no room for; these are
+# the same idea in the one channel a bar does have. CityParquet keeps the
+# accent, and the rest are separated by value rather than by hue so the panels
+# stay readable in greyscale and to a colour-blind reader.
+FORMAT_GREY = {
+    "citygml": "#c6c5bb",
+    "cityjson": "#9d9c95",
+    "cityjsonseq": "#6b6b66",
+    "flatcitybuf": "#6b6b66",
+    "cityjsonseq-gz": "#b9b9ae",
+    "duckdb-parquet": "#b9b9ae",
+}
+FORMAT_LABEL = {
+    "cityparquet": "CityParquet",
+    "cityparquet-hilbert": "CityParquet",
+    "citygml": "CityGML",
+    "cityjson": "CityJSON",
+    "cityjsonseq": "CityJSONSeq",
+    "flatcitybuf": "FlatCityBuf",
+}
+
 # Small-multiple geometry. One panel per dataset plus one for the key, on a
 # 7.1-inch-wide sheet: four columns up to a dozen panels (what the figures were
 # drawn at, so a corpus that size keeps its exact layout), five beyond that, and
@@ -1912,6 +1934,475 @@ def _compression_headline(data: dict[str, Any]) -> tuple[str, str]:
     return title + ".", subtitle
 
 
+# --------------------------------------------------------------------------
+# figure 6: per-dataset format comparison (time beside memory)
+# --------------------------------------------------------------------------
+
+# Scenarios drawn per dataset panel. The 1 % and 25 % windows are omitted
+# deliberately: across this corpus they land within the citation floor of the
+# 5 % window on almost every dataset, so drawing all three spends two rows per
+# panel restating one result. The HTML page keeps all three.
+PANEL_SCENARIOS = [
+    "full-read",
+    "count",
+    "bbox-5pct",
+    "attr-filter",
+    "attr-stats",
+    "project",
+    "id-lookup",
+]
+SCENARIO_LABEL = {
+    "full-read": "full read",
+    "count": "count",
+    "bbox-1pct": "spatial 1%",
+    "bbox-5pct": "spatial 5%",
+    "bbox-25pct": "spatial 25%",
+    "attr-filter": "attr filter",
+    "attr-stats": "attr stats",
+    "project": "projection",
+    "id-lookup": "id lookup",
+}
+# Panels on the per-dataset sheet. Four is what the sheet's two-axis panels fit
+# at a readable size; the selection below is derived, never named.
+FORMAT_PANELS = 4
+# A dataset with fewer CityObjects than this cannot exercise a selective query:
+# every filter matches all of it or none of it, so its ratios carry no signal
+# (READ_BENCHMARK.md makes the same point about its one-object tile). Such
+# datasets are excluded from the panel PICK, never from the data.
+DEGENERATE_OBJECTS = 100
+
+
+def _panel_pick(datasets: Sequence[dict[str, Any]], count: int) -> list[dict]:
+    """`count` datasets spread across the corpus by CityObject count.
+
+    `datasets` arrives sorted by object count descending. Taking evenly spaced
+    positions out of it gives the largest, the smallest non-degenerate, and an
+    even spread between — a selection that follows whatever corpus was measured
+    instead of naming datasets this package must not know about.
+    """
+    pool = [d for d in datasets if (d.get("objects") or 0) >= DEGENERATE_OBJECTS]
+    if not pool:
+        pool = list(datasets)
+    if len(pool) <= count:
+        return pool
+    step = (len(pool) - 1) / (count - 1)
+    return [pool[round(i * step)] for i in range(count)]
+
+
+def _axis_label(ax: Axes, text: str) -> None:
+    ax.set_xlabel(text, fontsize=FS_LABEL, family="serif", color=INK_2)
+
+
+def _ratio_bar(ax: Axes, y: float, value: float, lo: float, hi: float, **kw) -> None:
+    """One bar from the 1x rule to `value` on a log axis, clamped to the panel.
+
+    The anchor is 1x rather than zero because the quantity is a ratio: on this
+    corpus a single scenario spans five orders of magnitude between formats, so
+    a zero-anchored linear bar renders every format but the fastest as an
+    invisible sliver. Anchored at the reference, a bar's length is its distance
+    from the baseline and its direction is better-or-worse.
+    """
+    x = min(max(value, lo), hi)
+    left, width = (1.0, x - 1.0) if x >= 1.0 else (x, 1.0 - x)
+    ax.barh([y], [max(width, 1e-9)], left=[left], height=0.78, **kw)
+
+
+def _format_panel_axis(ax: Axes, lo: float, hi: float, rows: int) -> None:
+    ax.set_xscale("log")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(-0.8, rows - 0.2)
+    ax.invert_yaxis()
+    ax.axvline(1.0, color=GRAY, lw=0.7, zorder=1)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.set_yticks([])
+    ticks = _log_ticks(lo, hi, 5)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([_ratio_tick(t) for t in ticks])
+    # A narrow log span leaves matplotlib drawing MINOR ticks, which it labels
+    # with its own "6 x 10^-1" formatter rather than this package's ratio one.
+    ax.minorticks_off()
+    _sans(ax)
+
+
+def formats(
+    data: dict[str, Any], headline: tuple[str, str], out_dir: Path
+) -> list[Path]:
+    """Read time and peak memory per dataset, per scenario, per format."""
+    index = _index_read(data["read"])
+    fmts = [f for f in FORMAT_AXIS if f != "cityjsonseq"]
+    picked = _panel_pick(data["datasets"], FORMAT_PANELS)
+    if not picked:
+        raise DataContractError("bench_data.json carries no datasets to draw.")
+
+    times, mems = [], []
+    for ds in picked:
+        for scenario in PANEL_SCENARIOS:
+            for fmt in fmts:
+                rec = index.get((ds["id"], scenario, fmt))
+                if not rec:
+                    continue
+                if rec.get("time_ratio"):
+                    times.append(1.0 / rec["time_ratio"])
+                if rec.get("rss_ratio"):
+                    mems.append(1.0 / rec["rss_ratio"])
+    if not times:
+        raise DataContractError("bench_data.json carries no usable read ratios.")
+    tlo, thi = min(min(times) / 2, 0.5), max(max(times) * 2, 2.0)
+    mlo, mhi = min(min(mems) / 2, 0.5), max(max(mems) * 2, 2.0)
+
+    # One dataset per ROW, two axes wide. A two-up grid fits the sheet, but the
+    # scenario labels and the baseline's own seconds both live left of the time
+    # axis, and only a first-column panel has a figure margin to put them in;
+    # the inner column overprinted its neighbour. One row per dataset reserves
+    # that gutter once, for every panel.
+    rows_n = len(picked)
+    fig = plt.figure(figsize=(7.1, min(MAX_SHEET_HEIGHT, 1.92 * rows_n + 1.9)))
+    axes = fig.subplots(rows_n, 2, squeeze=False)
+    head_bottom = _headline(fig, *headline)
+    drawn, total = len(picked), len(data["datasets"])
+    footer = [
+        "Bars grow out of the 1x rule -- the CityJSONSeq artefact for the same "
+        "dataset and the same scenario -- on a logarithmic axis, so a bar's "
+        "length is orders of magnitude and its direction is better or worse. "
+        "Right is faster, and leaner, than the baseline.",
+        "A faded read-time bar is a difference smaller than the "
+        f"{data['meta']['citation_floor_s'] * 1000:.0f} ms citation floor: "
+        "position without signal. The grey figure beside each scenario is the "
+        "baseline's own absolute time, so a ratio can be read back into seconds. "
+        "CityJSONSeq is the reference and is not drawn.",
+        f"{drawn} of {total} measured datasets are drawn, spread across the "
+        "corpus by CityObject count; the HTML summary page carries every dataset "
+        "and every scenario, including the 1 % and 25 % windows omitted here.",
+    ]
+    bottom = _footer_reserve(fig, footer, 0.10) + 0.055  # + the key strip
+    fig.subplots_adjust(
+        left=0.175, right=0.985, top=min(0.88, head_bottom - 0.055),
+        bottom=bottom, wspace=0.16, hspace=0.90,
+    )
+
+    for i, ds in enumerate(picked):
+        ax_t, ax_m = axes[i][0], axes[i][1]
+        _panel_heading(ax_t, ds["id"], ds["subtitle"])
+        step = len(fmts) + 1.4
+        rows_total = len(PANEL_SCENARIOS) * step
+        for si, scenario in enumerate(PANEL_SCENARIOS):
+            base = si * step
+            present = [
+                (fmt, index.get((ds["id"], scenario, fmt))) for fmt in fmts
+            ]
+            label = SCENARIO_LABEL.get(scenario, scenario)
+            if scenario in GRAIN_DAGGER:
+                label += "\u2020"
+            ax_t.text(
+                -0.235, base + (len(fmts) - 1) / 2, label,
+                transform=ax_t.get_yaxis_transform(), fontsize=FS_LABEL,
+                family="serif", color=INK, ha="right", va="center",
+            )
+            got = [r for _, r in present if r]
+            if not got:
+                ax_t.text(
+                    0.02, base + (len(fmts) - 1) / 2, "not measured in this run",
+                    transform=ax_t.get_yaxis_transform(), fontsize=FS_MARK,
+                    family="serif", color=INK_3, ha="left", va="center",
+                    style="italic",
+                )
+                continue
+            base_s = got[0].get("base_time_s")
+            if base_s:
+                ax_t.text(
+                    -0.022, base + (len(fmts) - 1) / 2,
+                    f"{base_s * 1000:,.0f} ms" if base_s < 1 else f"{base_s:,.1f} s",
+                    transform=ax_t.get_yaxis_transform(), fontsize=FS_MARK,
+                    family="serif", color=INK_3, ha="right", va="center",
+                )
+            for fi, (fmt, rec) in enumerate(present):
+                y = base + fi
+                if not rec:
+                    continue
+                color = ACCENT if fmt.startswith("cityparquet") else FORMAT_GREY[fmt]
+                if rec.get("time_ratio"):
+                    _ratio_bar(
+                        ax_t, y, 1.0 / rec["time_ratio"], tlo, thi,
+                        color=color, alpha=0.34 if rec.get("below_floor") else 1.0,
+                        linewidth=0,
+                    )
+                if rec.get("rss_ratio"):
+                    _ratio_bar(
+                        ax_m, y, 1.0 / rec["rss_ratio"], mlo, mhi,
+                        color=color, linewidth=0,
+                    )
+        _format_panel_axis(ax_t, tlo, thi, rows_total)
+        _format_panel_axis(ax_m, mlo, mhi, rows_total)
+        _axis_label(ax_t, "read time (x faster)")
+        _axis_label(ax_m, "peak memory (x leaner)")
+
+    for ax in list(axes.ravel())[len(picked) * 2 :]:
+        ax.set_visible(False)
+
+
+    _format_key(fig, fmts, bottom)
+    _footer(fig, footer)
+    return _save(fig, "formats", out_dir)
+
+
+def _format_key(fig: Figure, fmts: Sequence[str], bottom: float) -> None:
+    """One swatch strip for the whole sheet.
+
+    The per-panel mark repeats 28 times, so the package's usual direct labels
+    would print the same four words 28 times over. One strip, and the bar order
+    is the same in every group.
+    """
+    x = 0.012
+    y = bottom - 0.044
+    for fmt in fmts:
+        color = ACCENT if fmt.startswith("cityparquet") else FORMAT_GREY[fmt]
+        fig.add_artist(
+            Rectangle(
+                (x, y), 0.016, 0.006, transform=fig.transFigure,
+                facecolor=color, edgecolor="none", zorder=5,
+            )
+        )
+        label = FORMAT_LABEL.get(fmt, fmt)
+        fig.text(
+            x + 0.020, y, label, fontsize=FS_LABEL, family="serif",
+            color=ACCENT if fmt.startswith("cityparquet") else INK, va="bottom",
+        )
+        x += 0.022 + 0.0088 * len(label)
+    fig.text(
+        x + 0.006, y, "-- same order in every group", fontsize=FS_MARK,
+        family="serif", color=INK_2, va="bottom", style="italic",
+    )
+
+
+# --------------------------------------------------------------------------
+# figure 7: configuration axes (row ordering)
+# --------------------------------------------------------------------------
+
+
+def _ordering_by_dataset(data: dict[str, Any]) -> dict[str, list[dict]]:
+    by: dict[str, list[dict]] = {}
+    for row in data.get("ordering", []):
+        by.setdefault(row["dataset"], []).append(row)
+    return by
+
+
+def _ordering_pick(by_dataset: dict[str, list[dict]]) -> list[tuple[str, list[dict]]]:
+    """The two datasets that bracket what this axis can show.
+
+    One is where ordering is most measurable (the most scenarios clearing the
+    citation floor, ties broken by the largest single difference), the other
+    where it is least (the smallest largest-difference). Both are derived: the
+    figure's whole point is that the answer depends on the dataset, so naming a
+    pair here would be asserting the conclusion rather than reading it.
+    """
+    # A dataset too small to exercise a selective query cannot show a
+    # configuration effect either, and would make "ordering is unmeasurable
+    # here" look like a finding about ordering rather than about the input.
+    pool = {
+        ds: rows
+        for ds, rows in by_dataset.items()
+        if max((r.get("objects") or 0) for r in rows) >= DEGENERATE_OBJECTS
+    } or by_dataset
+    if not pool:
+        return []
+    def cleared(rows: Sequence[dict]) -> int:
+        return sum(1 for r in rows if not r["below_floor"])
+    def widest(rows: Sequence[dict]) -> float:
+        return max((r["delta_s"] for r in rows), default=0.0)
+    ranked = sorted(
+        pool.items(), key=lambda kv: (cleared(kv[1]), widest(kv[1])), reverse=True
+    )
+    if len(ranked) == 1:
+        return ranked
+    return [ranked[0], ranked[-1]]
+
+
+def configuration(
+    data: dict[str, Any], headline: tuple[str, str], out_dir: Path
+) -> list[Path]:
+    """Row ordering: the Hilbert package against the source-order one."""
+    picked = _ordering_pick(_ordering_by_dataset(data))
+    if not picked:
+        raise DataContractError("bench_data.json carries no ordering rows.")
+
+    ratios = [
+        r["time_ratio"] for _, rows in picked for r in rows if r.get("time_ratio")
+    ]
+    mems = [
+        r["rss_ratio"] for _, rows in picked for r in rows if r.get("rss_ratio")
+    ]
+    lo, hi = min(min(ratios) / 1.8, 0.5), max(max(ratios) * 1.8, 2.0)
+    mlo, mhi = min(min(mems) / 1.8, 0.5), max(max(mems) * 1.8, 2.0)
+    order = [s for s in SCENARIO_ORDER]
+
+    fig = plt.figure(figsize=(7.1, 4.5))
+    axes = fig.subplots(2, 2, squeeze=False).ravel()
+    head_bottom = _headline(fig, *headline)
+    floor_ms = data["meta"]["citation_floor_s"] * 1000
+    footer = [
+        f"Baseline (1x) is the same package written in source order; a bar right "
+        f"of the rule is a scenario Hilbert ordering made faster. A faded bar is "
+        f"a difference smaller than the {floor_ms:.0f} ms citation floor, and the "
+        "grey figure beside each scenario is the source-order package's own "
+        "absolute time.",
+        "Two datasets are drawn, chosen from the ordering run itself: the one "
+        "where the most scenarios clear the floor and the one where the largest "
+        "difference is smallest. Everything else about the two packages -- "
+        "writer, reader, codec, row-group size -- is identical.",
+        "Row ordering is the only configuration axis this run measures. The "
+        "codec and row-group axes come from `just compression-bench`, which "
+        "reports write time, size and row-group counts but no peak RSS and only "
+        "two query types; partitioning granularity has no recipe at all.",
+    ]
+    bottom = _footer_reserve(fig, footer, 0.14) + 0.045
+    fig.subplots_adjust(
+        left=0.175, right=0.985, top=min(0.84, head_bottom - 0.075),
+        bottom=bottom, wspace=0.16, hspace=0.85,
+    )
+
+    for i, (dataset, rows) in enumerate(picked):
+        ax_t, ax_m = axes[i * 2], axes[i * 2 + 1]
+
+        by_scenario = {r["scenario_key"]: r for r in rows}
+        objects = next((r["objects"] for r in rows if r.get("objects")), None)
+        cleared = sum(1 for r in rows if not r["below_floor"])
+        subtitle = (
+            f"{objects:,} CityObjects · {cleared} of {len(rows)} scenarios clear "
+            f"the {floor_ms:.0f} ms floor"
+            if objects
+            else f"{cleared} of {len(rows)} scenarios clear the floor"
+        )
+        _panel_heading(ax_t, dataset, subtitle)
+        for si, scenario in enumerate(order):
+            rec = by_scenario.get(scenario)
+            ax_t.text(
+                -0.235, si, SCENARIO_LABEL.get(scenario, scenario),
+                transform=ax_t.get_yaxis_transform(), fontsize=FS_LABEL,
+                family="serif", color=INK, ha="right", va="center",
+            )
+            if not rec:
+                continue
+            base_s = rec["base_time_s"]
+            ax_t.text(
+                -0.022, si,
+                f"{base_s * 1000:,.0f} ms" if base_s < 1 else f"{base_s:,.2f} s",
+                transform=ax_t.get_yaxis_transform(), fontsize=FS_MARK,
+                family="serif", color=INK_3, ha="right", va="center",
+            )
+            faded = rec["below_floor"]
+            if rec.get("time_ratio"):
+                _ratio_bar(
+                    ax_t, si, rec["time_ratio"], lo, hi, color=ACCENT,
+                    alpha=0.26 if faded else 1.0, linewidth=0,
+                )
+            if rec.get("rss_ratio"):
+                _ratio_bar(
+                    ax_m, si, rec["rss_ratio"], mlo, mhi, color=GRAY,
+                    alpha=0.26 if faded else 1.0, linewidth=0,
+                )
+        _format_panel_axis(ax_t, lo, hi, len(order))
+        _format_panel_axis(ax_m, mlo, mhi, len(order))
+        _axis_label(ax_t, "read time (x faster than source order)")
+        _axis_label(ax_m, "peak memory (x leaner)")
+
+    _footer(fig, footer)
+    return _save(fig, "configuration", out_dir)
+
+
+def _formats_headline(data: dict[str, Any]) -> tuple[str, str]:
+    """Assert what THIS run's per-dataset panels show, computed from them."""
+    index = _index_read(data["read"])
+    picked = _panel_pick(data["datasets"], FORMAT_PANELS)
+    primary = _primary_cityparquet(data)
+
+    def speedups(scenario: str, fmt: str) -> list[float]:
+        out = []
+        for ds in picked:
+            rec = index.get((ds["id"], scenario, fmt))
+            if rec and rec.get("time_ratio"):
+                out.append(1.0 / rec["time_ratio"])
+        return out
+
+    full = speedups("full-read", primary)
+    selective = [
+        v
+        for scenario in ("attr-filter", "attr-stats", "project")
+        for v in speedups(scenario, primary)
+    ]
+    window_ours = speedups("bbox-5pct", primary)
+    window_fcb = speedups("bbox-5pct", "flatcitybuf")
+    lost = sum(
+        1
+        for a, b in zip(window_ours, window_fcb, strict=False)
+        if b > a
+    )
+
+    if selective:
+        lead = (
+            f"CityParquet answers the selective queries at "
+            f"{_times(min(selective))}–{_times(max(selective))} the CityJSONSeq "
+            "baseline"
+        )
+    else:
+        lead = "CityParquet is drawn against the CityJSONSeq baseline"
+    if full:
+        lead += (
+            f", and materialises every CityObject at "
+            f"{_times(min(full))}–{_times(max(full))} of it"
+        )
+    if lost and window_fcb:
+        lead += (
+            f"; FlatCityBuf's index takes the spatial window on {lost} of "
+            f"{len(window_fcb)} panels"
+        )
+    subtitle = (
+        f"{len(picked)} datasets, {len(PANEL_SCENARIOS)} query types and "
+        f"{len([f for f in FORMAT_AXIS if f != 'cityjsonseq'])} formats, each "
+        "against the CityJSONSeq artefact for the same dataset and scenario. "
+        "Read time left, peak memory right; both logarithmic, both anchored at 1×."
+    )
+    return lead + ".", subtitle
+
+
+def _configuration_headline(data: dict[str, Any]) -> tuple[str, str]:
+    """The ordering axis's own verdict, counted rather than asserted."""
+    picked = _ordering_pick(_ordering_by_dataset(data))
+    floor_ms = data["meta"]["citation_floor_s"] * 1000
+    if not picked:
+        return (
+            "No row-ordering run in this corpus.",
+            "`just ordering-bench` produces it.",
+        )
+    best_rows = picked[0][1]
+    best_cleared = [r for r in best_rows if not r["below_floor"]]
+    worst_rows = picked[-1][1]
+    worst_cleared = [r for r in worst_rows if not r["below_floor"]]
+    gain = max((r["time_ratio"] or 0) for r in best_cleared) if best_cleared else 0
+
+    if best_cleared and not worst_cleared:
+        title = (
+            f"Whether row ordering is measurable at all is a property of the "
+            f"dataset: {len(best_cleared)} of {len(best_rows)} scenarios clear "
+            f"the {floor_ms:.0f} ms floor on one panel and "
+            f"{len(worst_cleared)} of {len(worst_rows)} on the other"
+        )
+    else:
+        title = (
+            f"Row ordering clears the {floor_ms:.0f} ms floor on "
+            f"{len(best_cleared)} of {len(best_rows)} scenarios at best and "
+            f"{len(worst_cleared)} of {len(worst_rows)} at worst"
+        )
+    if gain > 1:
+        title += f", where it pays it reaches {_times(gain)}"
+    subtitle = (
+        "Hilbert-ordered package against the same package written in source "
+        "order — same writer, same reader, same scenarios. Read time left, peak "
+        "memory right; both logarithmic, both anchored at the source-order 1×."
+    )
+    return title + ".", subtitle
+
+
 def _check_capacity(data: dict[str, Any]) -> None:
     datasets = len(data["datasets"])
     compression = len({r["dataset"] for r in data["compression"]})
@@ -1952,6 +2443,15 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
         _pareto_headline(data, "bbox-5pct", "A 5 % bounding-box window"),
         out_dir,
     )
+    written += formats(data, _formats_headline(data), out_dir)
+    if data.get("ordering"):
+        written += configuration(data, _configuration_headline(data), out_dir)
+    else:
+        print(
+            "  configuration figure skipped: this corpus has no ordering run "
+            "(bench/ordering_results is empty) — `just ordering-bench` "
+            "produces it"
+        )
     written += heatmap(data, _heatmap_headline(data), out_dir)
     written += sizes(data, _sizes_headline(data), out_dir)
     if data["compression"]:

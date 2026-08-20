@@ -40,7 +40,15 @@ def test_prep_builds_the_design_contract_from_result_csvs(tmp_path):
 
     assert out.exists()
     data = prep.json.loads(out.read_text(encoding="utf-8"))
-    for key in ("meta", "datasets", "read", "sizes", "compression", "compression_gaps"):
+    for key in (
+        "meta",
+        "datasets",
+        "read",
+        "sizes",
+        "compression",
+        "compression_gaps",
+        "ordering",
+    ):
         assert key in data, f"bench_data.json lacks '{key}'"
     assert [d["id"] for d in data["datasets"]] == ["Zurich", "delft", "Ingolstadt"]
     assert data["read"]
@@ -258,3 +266,77 @@ def test_cli_prep_writes_to_the_requested_data_path(tmp_path):
         == 0
     )
     assert target.exists()
+
+
+def test_ordering_records_carry_their_own_dataset_shape(tmp_path):
+    """The ordering corpus is not a subset of the read corpus.
+
+    `just ordering-bench` runs over whatever inputs it is pointed at, routinely
+    including datasets the read benchmark never measured, so an ordering record
+    has to carry the object count and the baseline seconds a view needs rather
+    than expecting to find a `datasets` entry to look them up in.
+    """
+    data, _ = prep.build(prep.Inputs(_bench_dir(tmp_path)))
+
+    assert data["ordering"], "the fixture has an ordering run"
+    read_ids = {d["id"] for d in data["datasets"]}
+    ordering_ids = {r["dataset"] for r in data["ordering"]}
+    assert not (ordering_ids & read_ids), (
+        "the fixture is built so the two corpora are disjoint -- a view that "
+        "joins ordering rows to `datasets` would silently draw nothing"
+    )
+    for record in data["ordering"]:
+        assert record["objects"], "no CityObject count to title a panel with"
+        assert record["base_time_s"] > 0
+        assert record["below_floor"] in (True, False)
+    # The baseline is the source-order package, NOT the read benchmark's
+    # CityJSONSeq: an ordering run has no CityJSONSeq row to divide by.
+    assert data["meta"]["ordering_baseline"] == "cityparquet"
+
+
+def test_a_corpus_with_no_ordering_run_is_stated_not_crashed(tmp_path):
+    """Ordering is a separate pass, so its absence is normal.
+
+    Same contract as the compression run: the configuration figure is skipped
+    rather than drawn empty, and every other figure is still written.
+    """
+    from benchviz import figures
+
+    bench = _bench_dir(tmp_path)
+    shutil.rmtree(bench / "ordering_results")
+
+    data, _ = prep.build(prep.Inputs(bench))
+    assert data["ordering"] == []
+
+    data_path = tmp_path / "no_ordering.json"
+    data_path.write_text(prep.json.dumps(data), encoding="utf-8")
+    written = sorted(
+        p.name for p in figures.main(data_path=data_path, out_dir=tmp_path / "f").glob("*")
+    )
+    assert "configuration.svg" not in written
+    assert "formats.svg" in written
+
+
+def test_both_panel_picks_refuse_a_degenerate_dataset(tmp_path):
+    """A dataset too small to filter cannot carry a panel.
+
+    The corpus deliberately holds a one-object tile (READ_BENCHMARK.md says so
+    itself). Every selective scenario on it matches all of it or none of it, so
+    a panel drawn from it shows fixed open cost, not a format or a
+    configuration. Both picks must reach past it while it stays in the data.
+    """
+    from benchviz import figures
+
+    tiny = {"id": "tiny", "objects": 1, "raw_mb": 0.1, "subtitle": ""}
+    big = [
+        {"id": f"d{i}", "objects": 10_000 - i, "raw_mb": 10.0, "subtitle": ""}
+        for i in range(figures.FORMAT_PANELS)
+    ]
+    picked = figures._panel_pick([*big, tiny], figures.FORMAT_PANELS)
+    assert tiny not in picked
+
+    ordering = {
+        "tiny": [{"objects": 1, "below_floor": True, "delta_s": 0.0}],
+        "real": [{"objects": 5_000, "below_floor": True, "delta_s": 0.001}],
+    }
+    assert [ds for ds, _ in figures._ordering_pick(ordering)] == ["real"]

@@ -41,6 +41,10 @@ class Inputs:
         return self.bench_dir / "compression_results"
 
     @property
+    def ordering_dir(self) -> Path:
+        return self.bench_dir / "ordering_results"
+
+    @property
     def sizes_csv(self) -> Path:
         return self.read_dir / SIZES_CSV_NAME
 
@@ -71,6 +75,14 @@ class Inputs:
 
 BASELINE_FORMAT = "cityjsonseq"
 CITATION_FLOOR_S = 0.010
+
+# The ROW-ORDERING axis, mirroring `Format::ORDERING_SET`
+# (crates/cityparquet-readbench/src/format.rs). Both members are the same
+# writer, reader and scenarios; the only difference is the order rows were
+# written in, which is why its baseline is the source-order package and NOT
+# `BASELINE_FORMAT` -- an ordering run has no CityJSONSeq row to divide by.
+ORDERING_BASELINE = "cityparquet"
+ORDERING_VARIANT = "cityparquet-hilbert"
 
 KNOWN_FORMATS = (
     "citygml",
@@ -469,6 +481,9 @@ def load_read(
                         not in GRAIN_INCOMPARABLE_SCENARIOS,
                         "time_s": time_s,
                         "time_mad_s": _float(row["time_mad_s"]),
+                        # The reference's own seconds, so a view can turn a
+                        # ratio back into wall-clock without re-deriving it.
+                        "base_time_s": base_time,
                         "heap_b": heap_b,
                         "rss_b": rss_b,
                         "result_count": _int(row["result_count"]),
@@ -485,6 +500,76 @@ def load_read(
                     }
                 )
     return records, anomalies
+
+
+# --------------------------------------------------------------------------
+# ordering
+# --------------------------------------------------------------------------
+
+
+def load_ordering(inputs: Inputs) -> list[dict]:
+    """One record per (dataset, scenario) of the row-ordering run.
+
+    A corpus with no ordering run at all is normal, not an error: it is a
+    separate pass with its own recipe (`just ordering-bench`), and its corpus
+    need not match the read benchmark's -- it routinely covers datasets the
+    read benchmark never measured. Records therefore carry the dataset shape
+    they need (object count, and the baseline's own absolute time) rather than
+    expecting a `datasets` entry to exist for them.
+    """
+    records: list[dict] = []
+
+    for path in _dataset_csvs(inputs.ordering_dir):
+        dataset = path.stem
+        rows = _read_rows(path, READ_COLUMNS)
+        groups: dict[str, dict[str, dict[str, str]]] = {}
+        for row in rows:
+            if COLD_RE.search(row["notes"]):
+                continue
+            if row["format"] not in (ORDERING_BASELINE, ORDERING_VARIANT):
+                continue
+            bucket = groups.setdefault(_scenario_key(row), {})
+            if row["format"] in bucket:
+                raise PrepError(
+                    f"{dataset}: duplicate ordering row for "
+                    f"({_scenario_key(row)}, {row['format']})"
+                )
+            bucket[row["format"]] = row
+
+        objects = None
+        for bucket in groups.values():
+            variant = bucket.get(ORDERING_VARIANT) or bucket.get(ORDERING_BASELINE)
+            if variant is not None and variant["scenario"] == "full-read":
+                objects = _int(variant["result_count"])
+
+        for key in sorted(groups):
+            bucket = groups[key]
+            base, variant = bucket.get(ORDERING_BASELINE), bucket.get(ORDERING_VARIANT)
+            if base is None or variant is None:
+                continue  # a half-measured scenario answers no question
+            base_t, variant_t = _float(base["time_s"]), _float(variant["time_s"])
+            base_m = _float(base["peak_rss_bytes"])
+            variant_m = _float(variant["peak_rss_bytes"])
+            if base_t is None or variant_t is None:
+                continue
+            records.append(
+                {
+                    "dataset": dataset,
+                    "scenario_key": key,
+                    "objects": objects,
+                    "base_time_s": base_t,
+                    "variant_time_s": variant_t,
+                    "base_rss_b": _int(base["peak_rss_bytes"]),
+                    "variant_rss_b": _int(variant["peak_rss_bytes"]),
+                    # Speed-up of the Hilbert package over the source-order one:
+                    # >1 means ordering paid, <1 means it cost.
+                    "time_ratio": _ratio(base_t, variant_t),
+                    "rss_ratio": _ratio(base_m, variant_m),
+                    "delta_s": abs(base_t - variant_t),
+                    "below_floor": abs(base_t - variant_t) < CITATION_FLOOR_S,
+                }
+            )
+    return records
 
 
 # --------------------------------------------------------------------------
@@ -668,6 +753,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     size_records, raw_mb = load_sizes(inputs, excluded)
     datasets = build_datasets(read_records, raw_mb)
     compression_records, compression_gaps = load_compression(inputs)
+    ordering_records = load_ordering(inputs)
 
     order = {d["id"]: i for i, d in enumerate(datasets)}
     read_records.sort(
@@ -683,6 +769,15 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     compression_records.sort(
         key=lambda r: (order.get(r["dataset"], len(order)), r["variant"])
     )
+    # The ordering corpus is not a subset of `datasets`, so datasets it alone
+    # measured sort after the shared ones rather than being dropped.
+    ordering_records.sort(
+        key=lambda r: (
+            order.get(r["dataset"], len(order)),
+            r["dataset"],
+            r["scenario_key"],
+        )
+    )
 
     data = {
         "meta": {
@@ -691,11 +786,14 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
                 "read": inputs.label(inputs.read_dir),
                 "sizes": inputs.label(inputs.sizes_csv),
                 "compression": inputs.label(inputs.compression_dir),
+                "ordering": inputs.label(inputs.ordering_dir),
             },
             "caveats_read": read_caveats(inputs),
             "caveats_compression": compression_caveats(inputs),
             "codec_level_note": CODEC_LEVEL_NOTE,
             "citation_floor_s": CITATION_FLOOR_S,
+            "ordering_baseline": ORDERING_BASELINE,
+            "ordering_variant": ORDERING_VARIANT,
             "format_axis": list(FORMAT_AXIS),
             "object_grain_formats": list(OBJECT_GRAIN_FORMATS),
             "feature_grain_formats": list(FEATURE_GRAIN_FORMATS),
@@ -706,6 +804,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
         "sizes": size_records,
         "compression": compression_records,
         "compression_gaps": compression_gaps,
+        "ordering": ordering_records,
     }
     return data, anomalies + excluded.notes()
 
@@ -723,7 +822,9 @@ def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
         f"  {len(data['datasets'])} datasets, {len(data['read'])} read records, "
         f"{len(data['sizes'])} size records, "
         f"{len(data['compression'])} compression records, "
-        f"{len(data['compression_gaps'])} compression gaps"
+        f"{len(data['compression_gaps'])} compression gaps, "
+        f"{len(data['ordering'])} ordering records "
+        f"({len({r['dataset'] for r in data['ordering']})} datasets)"
     )
     for note in anomalies:
         print(f"  anomaly: {note}")
