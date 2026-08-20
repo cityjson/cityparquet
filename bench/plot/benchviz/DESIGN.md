@@ -29,7 +29,10 @@ calls the same code with its own `--html`/`--figures` destinations.
   a format already on the axis) and `duckdb-parquet` (an SQL-engine baseline) are
   NOT formats: their rows stay in `bench_data.json` when a run opts in, no view
   plots them, and the page says so once. Ordering is a separate question with its
-  own run (`Format::ORDERING_SET`, `bench/ordering_results/`).
+  own run (`Format::ORDERING_SET`, `bench/ordering_results/`), its own baseline
+  (the source-order package, not CityJSONSeq) and its own static figure; it is
+  never mixed onto the format axis, which is the confound the two sets exist to
+  keep apart.
 - **Color/markers**: accent `#e41a1c` (light) / `#fc8d62` (dark) for
   `cityparquet` (filled circle); same accent, open circle for
   `cityparquet-hilbert`; gray `#666`/`#999` for the rest with distinct shapes:
@@ -95,56 +98,115 @@ an explicit gap, never drop silently).
 {
   "meta": {
     "baseline": "cityjsonseq",
-    "sources": {"read": "...", "sizes": "...", "compression": "..."},
-    "caveats_read": ["<verbatim caveat 1>", "..."],          // as many as the
-                                                             // source lists,
-                                                             // numbered 1..n
+    "sources": { "read": "...", "sizes": "...", "compression": "..." },
+    "caveats_read": ["<verbatim caveat 1>", "..."], // as many as the
+    // source lists,
+    // numbered 1..n
     "caveats_compression": ["<verbatim baseline-geometry-coverage text>"],
     "codec_level_note": "<the recipe.rs-sourced mismatch note>",
-    "citation_floor_s": 0.010,
-    "format_axis": ["cityparquet-hilbert", "citygml", "cityjson",
-                    "cityjsonseq", "flatcitybuf"],   // = Format::DEFAULT_SET
-    "object_grain_formats": ["cityparquet", "cityparquet-hilbert", "cityjson",
-                             "duckdb-parquet"],      // caveat 1's own table
-    "feature_grain_formats": ["citygml", "cityjsonseq", "cityjsonseq-gz",
-                              "flatcitybuf"],
-    "excluded_formats": [               // measured but unplottable: no colour,
-                                        // marker or caption exists for them.
-                                        // Stated in the page's coverage notes,
-                                        // never averaged in, never hidden.
-      {"format": "<tag>", "rows": 144, "where": ["read", "sizes"]}
-    ]
+    "citation_floor_s": 0.01,
+    "format_axis": [
+      "cityparquet-hilbert",
+      "citygml",
+      "cityjson",
+      "cityjsonseq",
+      "flatcitybuf",
+    ], // = Format::DEFAULT_SET
+    "object_grain_formats": [
+      "cityparquet",
+      "cityparquet-hilbert",
+      "cityjson",
+      "duckdb-parquet",
+    ], // caveat 1's own table
+    "feature_grain_formats": [
+      "citygml",
+      "cityjsonseq",
+      "cityjsonseq-gz",
+      "flatcitybuf",
+    ],
+    "excluded_formats": [
+      // measured but unplottable: no colour,
+      // marker or caption exists for them.
+      // Stated in the page's coverage notes,
+      // never averaged in, never hidden.
+      { "format": "<tag>", "rows": 144, "where": ["read", "sizes"] },
+    ],
   },
-  "datasets": [                       // ordered by objects desc
-    {"id": "Zurich", "objects": 198699, "features": 52834,
-     "raw_mb": 247.0, "subtitle": "198,699 CityObjects · 247 MB CityJSONSeq"}
+  "datasets": [
+    // ordered by objects desc
+    {
+      "id": "Zurich",
+      "objects": 198699,
+      "features": 52834,
+      "raw_mb": 247.0,
+      "subtitle": "198,699 CityObjects · 247 MB CityJSONSeq",
+    },
   ],
   "read": [
-    {"dataset": "delft", "format": "cityparquet", "scenario_key": "bbox-5pct",
-     "grain_comparable": false,       // † scenarios: full-read, count, bbox-*
-     "time_s": 0.000975, "time_mad_s": 0.000001,
-     "heap_b": 358363, "rss_b": 9879552, "result_count": 2,
-     "time_ratio": 0.035, "heap_ratio": 0.099, "rss_ratio": 0.754,
-     "below_floor": false             // |time_s - baseline_time_s| < 0.010
-    }
+    {
+      "dataset": "delft",
+      "format": "cityparquet",
+      "scenario_key": "bbox-5pct",
+      "grain_comparable": false, // † scenarios: full-read, count, bbox-*
+      "time_s": 0.000975,
+      "time_mad_s": 0.000001,
+      "heap_b": 358363,
+      "rss_b": 9879552,
+      "result_count": 2,
+      "time_ratio": 0.035,
+      "heap_ratio": 0.099,
+      "rss_ratio": 0.754,
+      "below_floor": false, // |time_s - baseline_time_s| < 0.010
+    },
   ],
   "sizes": [
-    {"dataset": "delft", "format": "cityparquet", "bytes": 0,
-     "frac_of_baseline": 0.38}        // bytes / cityjsonseq bytes; <1 smaller
+    {
+      "dataset": "delft",
+      "format": "cityparquet",
+      "bytes": 0,
+      "frac_of_baseline": 0.38,
+    }, // bytes / cityjsonseq bytes; <1 smaller
   ],
   "compression": [
-    {"dataset": "delft", "variant": "cityparquet+gzip", "kind": "codec",
-     // kind: "default" | "codec" | "rowgroup"  (rg512/rg4096 are not codecs)
-     "write_s": 0.179, "total_bytes": 2287085,
-     "full_scan_s": 0.0104, "window_query_s": 0.0101,
-     "write_ratio": 1.23, "size_ratio": 0.98,   // vs the dataset's "cityparquet" default row
-     "roundtrip": true}
+    {
+      "dataset": "delft",
+      "variant": "cityparquet+gzip",
+      "kind": "codec",
+      // kind: "default" | "codec" | "rowgroup"  (rg512/rg4096 are not codecs)
+      "write_s": 0.179,
+      "total_bytes": 2287085,
+      "full_scan_s": 0.0104,
+      "window_query_s": 0.0101,
+      "write_ratio": 1.23,
+      "size_ratio": 0.98, // vs the dataset's "cityparquet" default row
+      "roundtrip": true,
+    },
   ],
   "compression_gaps": [
     // two kinds, both derived from the CSVs themselves:
-    {"dataset": "<id>", "issue": "all roundtrip_equal=false (undocumented)"},
-    {"dataset": "<id>", "issue": "CSV present but header-only"}
-  ]
+    { "dataset": "<id>", "issue": "all roundtrip_equal=false (undocumented)" },
+    { "dataset": "<id>", "issue": "CSV present but header-only" },
+  ],
+  "ordering": [
+    // The row-ordering run, baselined against the SOURCE-ORDER package rather
+    // than CityJSONSeq: an ordering run has no cityjsonseq row to divide by.
+    // Its corpus is NOT a subset of "datasets" -- it routinely covers datasets
+    // the read benchmark never measured -- so each record carries the shape a
+    // view needs instead of expecting a "datasets" entry to look it up in.
+    {
+      "dataset": "<id>",
+      "scenario_key": "bbox-5pct",
+      "objects": 129738,
+      "base_time_s": 0.1039,
+      "variant_time_s": 0.0015,
+      "base_rss_b": 0,
+      "variant_rss_b": 0,
+      "time_ratio": 70.79, // source ÷ hilbert; >1 = ordering paid
+      "rss_ratio": 1.0,
+      "delta_s": 0.1024,
+      "below_floor": false,
+    },
+  ],
 }
 ```
 
@@ -166,8 +228,8 @@ Motivation: the per-dataset small multiples answer "what happens on dataset X"
 but not the two top-level questions. Chart-type choice follows the data
 structure:
 
-- *Few items × few ordered criteria* → **slopegraph** (parallel log axes).
-- *Many repeated observations per category* → **distribution dot-strips**
+- _Few items × few ordered criteria_ → **slopegraph** (parallel log axes).
+- _Many repeated observations per category_ → **distribution dot-strips**
   (each dataset an individual dot; median marked; spread = consistency).
 
 Placement: first view section, immediately after "How to read this page".
@@ -235,6 +297,40 @@ baseline, floor) → Pareto → Heatmap → Sizes → Compression → Fairness c
 (verbatim) → Coverage notes. Every view carries an `aria-label` with its key
 finding and has a text/table fallback.
 
+## The two print-only figures
+
+The four views above answer "how does the corpus behave". A journal page asks a
+narrower question — what happens on THIS dataset, for THIS query, in time and in
+memory — and asks it at a size where 21 panels are unreadable. Two figures serve
+that, and neither has an HTML counterpart: the page already carries every number
+they select from.
+
+5. **`formats`** — one row per dataset, scenarios down the panel, the four
+   non-baseline formats per scenario, read time and peak memory side by side.
+   Bars grow out of the 1× rule on a LOG axis for the reason the size grid does,
+   only more so: within a single scenario the formats span up to five orders of
+   magnitude, so a zero-anchored linear bar renders everything but the fastest as
+   a sliver. The baseline's own absolute time is printed beside each scenario, so
+   a ratio can be read back into seconds and the citation floor is legible in
+   context.
+6. **`configuration`** — the row-ordering axis: the Hilbert package against the
+   same package written in source order, same two metrics, same anchoring. Its
+   panels are the dataset where the most scenarios clear the citation floor and
+   the one where the largest difference is smallest, because whether ordering is
+   measurable at all is a property of the input rather than of the ordering.
+
+Both **derive their panels rather than naming them** — the conventions above
+forbid a dataset name in this package, and these two would otherwise smuggle one
+in as a "representative" choice. `formats` spreads its panels across the corpus
+by CityObject count; `configuration` brackets the axis by floor-clearing count.
+Both skip inputs too small to exercise a selective query (the corpus holds a
+one-object tile, and every filter on it matches all of it or none), which would
+otherwise report fixed open cost as a finding about a format or a configuration.
+
+Both **print what they leave out**: the datasets drawn against the datasets
+measured, the windows omitted, and the scenarios a run never measured. A reader
+must never have to infer that a sheet is a selection.
+
 ## Build layout
 
 ```
@@ -246,7 +342,8 @@ bench/plot/                 # uv project, shared with readbench_plot
   benchviz/figures.py       # bench_data.json -> *.{svg,png}
   benchviz/__main__.py      # python -m benchviz [prep|html|figures] [paths]
   tests/test_benchviz.py    # contract + path-flag tests (`just plot-test`)
-  tests/fixtures/benchviz/  # three datasets of a pinned real run
+  tests/fixtures/benchviz/  # pinned real runs: three datasets read +
+                            #   compression, two more ordering-only
 bench/summary/              # generated: JSON + page + figures (gitignored)
 ```
 
@@ -255,8 +352,12 @@ bench/summary/              # generated: JSON + page + figures (gitignored)
   move any path. Nothing is written outside the repository by default.
 - HTML output is fully self-contained: inline SVG rendered by a small inline
   JS module from embedded JSON; no external requests; works from file://.
-- Static figures: `pareto-full-read`, `pareto-bbox-5pct`, `heatmap`, `sizes`,
-  `compression` as `.svg` + `.png` (Typst cannot embed PDF). 300 dpi PNG.
+- Static figures: `formats`, `configuration`, `pareto-full-read`,
+  `pareto-bbox-5pct`, `heatmap`, `sizes`, `compression` as `.svg` + `.png`
+  (Typst cannot embed PDF). 300 dpi PNG. The static set is NOT the view set:
+  `formats` and `configuration` are print-only, and `compression` and
+  `configuration` are each skipped with a printed reason when their run is
+  absent.
 - **Nothing in a figure is typed by hand about the data.** Every headline
   sentence, count and median is computed from the run being plotted, and the
   comparative words ("faster than", "at parity with") come from the same
