@@ -732,6 +732,138 @@ fn crs_less_delft(dir: &std::path::Path, name: &str) -> PathBuf {
     dest
 }
 
+/// Finds the first non-null number nested anywhere under `v` and replaces it
+/// with `new_value`, returning whether it found one. Used only to bump one
+/// material index inside an already-sliced feature's `material` map — the
+/// nesting depth of `values` differs by geometry type, so this walks
+/// generically rather than special-casing a shape. Mirrors
+/// `crates/cityparquet/tests/convert_real_data.rs`'s helper of the same name.
+fn bump_first_number(v: &mut serde_json::Value, new_value: i64) -> bool {
+    match v {
+        serde_json::Value::Number(_) => {
+            *v = serde_json::json!(new_value);
+            true
+        }
+        serde_json::Value::Array(items) => {
+            items.iter_mut().any(|x| bump_first_number(x, new_value))
+        }
+        serde_json::Value::Object(map) => map.values_mut().any(|x| bump_first_number(x, new_value)),
+        _ => false,
+    }
+}
+
+/// Writes a CityJSONSeq rendering of the real railway fixture with one
+/// feature's own material index pushed past that feature's local (already-
+/// sliced) materials array — a dangling appearance reference for
+/// `--tolerate-invalid-appearance` to drop. Same construction as
+/// `crates/cityparquet/tests/convert_real_data.rs::dangling_material_variant`
+/// (see that function's doc comment for why this must be built as Seq, via
+/// cjseq's own doc->seq slicing, rather than by mutating the whole-document
+/// `.city.json` directly).
+fn dangling_material_variant() -> (tempfile::TempDir, PathBuf) {
+    use cjseq::CityJSON;
+
+    let text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+    let doc = CityJSON::from_str(&text).unwrap();
+
+    let mut header: serde_json::Value = serde_json::to_value(doc.get_metadata()).unwrap();
+    header["geometry-templates"] = serde_json::Value::Null;
+    header["appearance"] = serde_json::Value::Null;
+
+    let mut lines = vec![serde_json::to_string(&header).unwrap()];
+    let mut mutated = false;
+    let mut i = 0usize;
+    while let Some(f) = doc.get_cjfeature(i) {
+        i += 1;
+        let mut fv: serde_json::Value = serde_json::to_value(&f).unwrap();
+        if !mutated {
+            let materials_len = fv["appearance"]["materials"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0);
+            if materials_len > 0
+                && fv
+                    .get_mut("CityObjects")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .into_iter()
+                    .flat_map(|co| co.values_mut())
+                    .filter_map(|co| {
+                        co.get_mut("geometry")
+                            .and_then(serde_json::Value::as_array_mut)
+                    })
+                    .flatten()
+                    .filter_map(|g| g.get_mut("material"))
+                    .any(|material| bump_first_number(material, materials_len as i64 + 1000))
+            {
+                mutated = true;
+            }
+        }
+        lines.push(serde_json::to_string(&fv).unwrap());
+    }
+    assert!(
+        mutated,
+        "the fixture must carry a feature with its own material reference"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_dangling_material.city.jsonl");
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    (dir, path)
+}
+
+/// `--partition`'s own conversion path must surface
+/// `invalid_appearance_refs_dropped` too, not just the single-source path
+/// (`convert_compatibility_reports_sidecar_counts` above) — the flag's own
+/// doc comment claims "counted ... never silent" unconditionally, but
+/// `sub_opts = opts.clone()` in the partition path propagates the flag
+/// while the CLI's own report line never printed the resulting count.
+#[test]
+fn partition_convert_reports_invalid_appearance_refs_dropped() {
+    let (_variant_dir, invalid_path) = dangling_material_variant();
+
+    let out = tempfile::tempdir().unwrap();
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let output = Command::new(binary)
+        .arg("convert")
+        .arg(invalid_path)
+        .arg("-o")
+        .arg(out.path())
+        .arg("--partition")
+        .arg("count")
+        .arg("--number")
+        .arg("1")
+        .arg("--tolerate-invalid-appearance")
+        .output()
+        .expect("run");
+
+    assert!(
+        output.status.success(),
+        "tolerated partition convert failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("invalid_appearance_refs_dropped"),
+        "the --partition report must name the counter, got: {stdout}"
+    );
+    // Every non-zero digit somewhere after the label — the exact placement
+    // (summary line vs per-partition line) is this crate's choice; a dropped
+    // reference existing at all and being silently absent from stdout is
+    // what this test guards against.
+    let dropped_count: usize = stdout
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("partitions=")
+                .and_then(|rest| rest.split("invalid_appearance_refs_dropped=").nth(1))
+                .and_then(|n| n.trim().parse().ok())
+        })
+        .expect("summary line must carry invalid_appearance_refs_dropped=<n>");
+    assert!(
+        dropped_count > 0,
+        "a dangling material reference was dropped; the count must be non-zero, got: {stdout}"
+    );
+}
+
 /// The footer `city` object of one table in a written package.
 fn city_footer(table: &std::path::Path) -> cityparquet_schema::CityMetadata {
     use cityparquet::reader::CityParquetReaderBuilder;

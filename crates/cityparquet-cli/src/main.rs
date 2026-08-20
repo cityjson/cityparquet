@@ -561,13 +561,31 @@ fn main() -> std::process::ExitCode {
                                     report.unresolvable_refs
                                 );
                             }
+                            // Summed across partitions and printed once,
+                            // same shape as `partitions=`/`duplicate_ids=`
+                            // above: a dataset-level fact, not a
+                            // per-partition one. Also appended to each
+                            // partition's own line, since a dropped
+                            // reference is meaningful at that granularity
+                            // too and the flag's own doc comment promises
+                            // it is "counted ... never silent" regardless
+                            // of which convert path took it.
+                            let invalid_appearance_refs_dropped: usize = report
+                                .partitions
+                                .iter()
+                                .map(|(_, r)| r.invalid_appearance_refs_dropped)
+                                .sum();
                             println!(
-                                "partitions={} duplicate_ids={}",
+                                "partitions={} duplicate_ids={} invalid_appearance_refs_dropped={}",
                                 report.partitions.len(),
-                                report.duplicate_ids
+                                report.duplicate_ids,
+                                invalid_appearance_refs_dropped
                             );
                             for (label, r) in &report.partitions {
-                                println!("{} {}", label, r.object_count);
+                                println!(
+                                    "{} {} {}",
+                                    label, r.object_count, r.invalid_appearance_refs_dropped
+                                );
                             }
                             std::process::ExitCode::SUCCESS
                         }
