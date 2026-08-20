@@ -80,7 +80,12 @@ fn project_metadata_onto(actual: &Schema, canonical: &Schema) -> Schema {
             Err(_) => f.as_ref().clone(),
         })
         .collect();
-    Schema::new(fields)
+    // The fields are the file's; the SCHEMA-level metadata is the file's too
+    // — `actual` is `parquet`'s own reconstruction of this file's Parquet
+    // key-value metadata (the `city`/`geo` footer KVs), which `canonical`
+    // (a freshly synthesised ideal schema, carrying none of that) cannot
+    // supply.
+    Schema::new_with_metadata(fields, actual.metadata().clone())
 }
 
 /// Extension type name tagging a Utf8 column whose values are JSON text —
@@ -436,7 +441,18 @@ impl Iterator for CityParquetRecordBatchReader {
                 Err(_) => f.as_ref().clone(),
             })
             .collect();
-        let schema = Arc::new(Schema::new(fields));
+        // `Schema::new_with_metadata`, not `Schema::new`: the rendered
+        // `self.schema` carries the footer's own `city`/`geo` KV metadata
+        // (via `project_metadata_onto`, which now threads it from `parquet`'s
+        // OWN reconstructed schema) — `self.schema`, not `batch.schema()`,
+        // since `ParquetRecordBatchReader` builds each batch's schema fresh
+        // from the array reader's data type alone (`Schema::new(fields)`,
+        // arrow-rs internal), never carrying schema-level metadata forward
+        // at all; `self.schema` is this wrapper's own authority on it.
+        let schema = Arc::new(Schema::new_with_metadata(
+            fields,
+            self.schema.metadata().clone(),
+        ));
         let rebuilt = RecordBatch::try_new(schema, batch.columns().to_vec());
         Some(rebuilt.map_err(CityParquetError::from))
     }

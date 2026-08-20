@@ -300,6 +300,33 @@ fn record_batch_reader_yields_all_rows_with_schema_metadata_preserved() {
     assert_eq!(total_rows, 2231);
 }
 
+/// `parquet`'s own reconstructed schema (from the embedded `ARROW:schema`)
+/// carries the Parquet footer's key-value metadata — the `city`/`geo` KVs —
+/// on `RecordBatch::schema().metadata()`. `CityParquetRecordBatchReader::next`
+/// rebuilds the batch's schema from scratch (`Schema::new(fields)`) to
+/// re-attach field metadata by name; that rebuild must not drop the
+/// SCHEMA-level footer metadata it did not touch.
+#[test]
+fn record_batch_reader_preserves_the_footers_schema_level_metadata() {
+    let out = convert_delft_small_row_groups();
+
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let rendered_schema = builder.cityparquet_arrow_schema().unwrap();
+    let parquet_reader = builder.build().unwrap();
+    let reader = CityParquetRecordBatchReader::new(parquet_reader, rendered_schema);
+
+    for batch in reader {
+        let batch = batch.unwrap();
+        assert!(
+            batch.schema().metadata().contains_key("city"),
+            "every emitted batch's schema must still carry the footer's own \
+             'city' key-value metadata, got: {:?}",
+            batch.schema().metadata()
+        );
+    }
+}
+
 #[test]
 fn with_bbox_row_groups_prunes_a_tight_corner_query_but_keeps_the_whole_extent() {
     let out = convert_delft_small_row_groups();
