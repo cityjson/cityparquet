@@ -1475,6 +1475,7 @@ pub(crate) fn convert_source_impl(
 mod tests {
     use super::*;
 
+    use arrow_array::StringArray;
     use arrow_array::builder::StringDictionaryBuilder;
     use arrow_array::types::Int32Type;
     use arrow_schema::{DataType, Field};
@@ -1493,6 +1494,21 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "object_type",
             DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+    }
+
+    /// Plain-`Utf8` counterpart of [`object_type_only_batch`] — a foreign
+    /// writer may leave `object_type` undictionaried (spec: a reader must
+    /// accept either physical representation), so `TableWriters::write_batch`
+    /// must partition correctly off THIS shape too, not just the
+    /// dictionary encoding `crate::encode::BatchBuilder` always emits.
+    fn object_type_only_batch_plain(types: &[&str]) -> RecordBatch {
+        let array = StringArray::from(types.to_vec());
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "object_type",
+            DataType::Utf8,
             false,
         )]));
         RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
@@ -1759,6 +1775,32 @@ mod tests {
     fn write_batch_routes_different_modules_into_different_tables() {
         let tmp = tempfile::tempdir().unwrap();
         let batch = object_type_only_batch(&["TINRelief", "WaterBody", "CityFurniture"]);
+        let mut writers = writers_with(tmp.path(), batch.schema(), ExtensionRegistry::new());
+        writers.write_batch(&batch).unwrap();
+        let tables: std::collections::HashSet<String> =
+            writers.finish().unwrap().into_iter().collect();
+        assert_eq!(
+            tables,
+            std::collections::HashSet::from([
+                "relief.parquet".to_string(),
+                "water_body.parquet".to_string(),
+                "city_furniture.parquet".to_string(),
+            ])
+        );
+    }
+
+    /// The `Task 4` review's actionable finding: every `package.rs` fixture
+    /// above builds `object_type` via `StringDictionaryBuilder`, so
+    /// `write_batch`'s `Plain` `arrow_compat::string_view` arm was never
+    /// reached through this crate's own writer/partitioning path — only
+    /// incidentally, through `decode.rs`'s foreign-file test, which never
+    /// calls into `package.rs` at all. This is the missing witness: the
+    /// exact scenario above, [`write_batch_routes_different_modules_into_different_tables`],
+    /// replayed against a plain-`Utf8` `object_type` column.
+    #[test]
+    fn write_batch_partitions_a_plain_utf8_object_type_column() {
+        let tmp = tempfile::tempdir().unwrap();
+        let batch = object_type_only_batch_plain(&["TINRelief", "WaterBody", "CityFurniture"]);
         let mut writers = writers_with(tmp.path(), batch.schema(), ExtensionRegistry::new());
         writers.write_batch(&batch).unwrap();
         let tables: std::collections::HashSet<String> =
