@@ -140,6 +140,15 @@ fn classify_assets(item: &Item) -> Result<(Vec<String>, Vec<String>)> {
             if SIDECAR_BASENAMES.contains(&name.as_str()) {
                 sidecar_files.push(name);
             } else {
+                // Same guard as the role-based loop above: a describing pass
+                // must not be more permissive than the pass that consumes
+                // the description — two no-role assets naming the same href
+                // must not silently double-count that table's objects.
+                if !seen_tables.insert(name.clone()) {
+                    return Err(CityParquetError::Metadata(format!(
+                        "package lists duplicate object table '{name}'"
+                    )));
+                }
                 tables.push(name);
             }
         }
@@ -152,9 +161,9 @@ fn classify_assets(item: &Item) -> Result<(Vec<String>, Vec<String>)> {
     }
 
     if tables.is_empty() {
-        return Err(CityParquetError::Metadata(
-            "package lists no object tables".to_string(),
-        ));
+        return Err(CityParquetError::Metadata(format!(
+            "package lists no object tables (no asset carries the {ROLE_OBJECT_TABLE} role)"
+        )));
     }
 
     Ok((tables, sidecar_files))
@@ -634,6 +643,7 @@ mod tests {
 
     use super::{PackageTables, classify_assets, merge_attributes, row_has_semantics};
     use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder};
+    use crate::stac::assets::ROLE_OBJECT_TABLE;
 
     /// The union/dedup semantics [`merge_attributes`] promises, proven
     /// directly against two synthetic tables' worth of definitions — plain
@@ -735,6 +745,54 @@ mod tests {
         let (tables, sidecars) = classify_assets(&item).expect("no roles must not be fatal");
         assert_eq!(tables, vec!["building.parquet"]);
         assert_eq!(sidecars, vec!["materials.parquet"]);
+    }
+
+    /// The role-based loop guards against a package naming the same object
+    /// table twice with `seen_tables` (a describing pass must not be more
+    /// permissive than the pass that consumes the description); the no-roles
+    /// fallback must refuse the same corruption, not silently double-count
+    /// the table's objects.
+    #[test]
+    fn a_package_with_no_declared_roles_rejects_a_duplicate_table_href() {
+        let item: city3d_stac_types::stac::types::Item = serde_json::from_str(
+            r#"{
+              "type": "Feature", "stac_version": "1.1.0", "id": "pkg",
+              "geometry": null, "properties": {}, "links": [],
+              "assets": {
+                "building": {"href": "building.parquet", "roles": ["data"]},
+                "building-again": {"href": "building.parquet", "roles": ["data"]}
+              }
+            }"#,
+        )
+        .expect("item");
+
+        let err = classify_assets(&item)
+            .expect_err("two no-role assets naming the same href must be rejected");
+        assert!(
+            err.to_string().contains("duplicate object table"),
+            "got: {err}"
+        );
+    }
+
+    /// The empty-package error must say *why* no object tables were found —
+    /// the diagnostic clause this fallback's error message used to carry.
+    #[test]
+    fn no_object_tables_error_explains_the_missing_role() {
+        let item: city3d_stac_types::stac::types::Item = serde_json::from_str(
+            r#"{
+              "type": "Feature", "stac_version": "1.1.0", "id": "pkg",
+              "geometry": null, "properties": {}, "links": [],
+              "assets": {}
+            }"#,
+        )
+        .expect("item");
+
+        let err = classify_assets(&item).expect_err("an empty asset map has no object tables");
+        assert!(
+            err.to_string()
+                .contains(&format!("no asset carries the {ROLE_OBJECT_TABLE} role")),
+            "got: {err}"
+        );
     }
 
     /// Every stored geometry gets a `geometry_properties` cell carrying at
