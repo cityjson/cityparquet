@@ -130,6 +130,17 @@ impl AttributeType {
                 Some(Self::Timestamp)
             }
             DataType::Utf8 => Some(Self::String),
+            // A VARCHAR column dictionary-encoded as `Dictionary(Int32,
+            // Utf8)` — a writer's physical-encoding choice CityParquet is
+            // agnostic to (spec "Physical encoding and conformance"). Same
+            // Utf8-vs-Json ambiguity as the bare `Utf8` arm above; the caller
+            // upgrades to `Json` from the field's `arrow.json` extension tag,
+            // independent of the physical shape.
+            DataType::Dictionary(key, value)
+                if key.as_ref() == &DataType::Int32 && value.as_ref() == &DataType::Utf8 =>
+            {
+                Some(Self::String)
+            }
             DataType::List(field) if field.data_type() == &DataType::Utf8 => Some(Self::StringList),
             _ => None,
         }
@@ -351,6 +362,26 @@ mod tests {
                 "{unit:?} is a permitted CityParquet timestamp unit"
             );
         }
+    }
+
+    /// A `VARCHAR` attribute column dictionary-encoded as
+    /// `Dictionary(Int32, Utf8)`: the physical shape this crate's OWN writer
+    /// never emits for an attribute column, but a foreign writer may (spec
+    /// "Physical encoding and conformance": "a reader MUST NOT require a
+    /// particular in-memory representation of a VARCHAR column, dictionary-
+    /// encoded or not"). `query_core.rs` already tolerates
+    /// `DataType::Dictionary` for attribute predicates — proof the shape is
+    /// expected — but `from_arrow` had no arm for it, so such a column was
+    /// rejected outright before decode ever got a chance to try.
+    #[test]
+    fn from_arrow_accepts_dictionary_encoded_varchar() {
+        assert_eq!(
+            AttributeType::from_arrow(&DataType::Dictionary(
+                Box::new(DataType::Int32),
+                Box::new(DataType::Utf8)
+            )),
+            Some(AttributeType::String)
+        );
     }
 
     #[test]

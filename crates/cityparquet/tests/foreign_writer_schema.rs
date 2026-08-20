@@ -8,8 +8,10 @@
 
 use std::sync::Arc;
 
+use arrow_array::types::Int32Type;
 use arrow_array::{
-    Array, ArrayRef, ListArray, RecordBatch, StringArray, TimestampMicrosecondArray, new_null_array,
+    Array, ArrayRef, DictionaryArray, ListArray, RecordBatch, StringArray,
+    TimestampMicrosecondArray, new_null_array,
 };
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
@@ -519,5 +521,89 @@ fn tail_projection_carries_canonical_metadata_onto_a_geometry_bearing_foreign_fi
     assert_eq!(
         geom.metadata().get("cityparquet:lod").map(String::as_str),
         Some("1.0")
+    );
+}
+
+/// A minimal, conformant `city` footer with one dictionary-encoded VARCHAR
+/// attribute.
+const DICT_ATTR_CITY_JSON: &str = r#"{
+  "version": "0.1.0-draft",
+  "attributes": ["street_name"]
+}"#;
+
+/// An attribute column dictionary-encoded `Dictionary(Int32, Utf8)` — a
+/// writer's physical-encoding choice (spec "Physical encoding and
+/// conformance": "a reader MUST NOT require a particular in-memory
+/// representation of a VARCHAR column, dictionary-encoded or not"). This
+/// crate's own writer never dictionary-encodes an ATTRIBUTE column (only
+/// `object_type`), so this shape only arises from a foreign writer.
+fn dictionary_attribute_foreign_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("feature_id", DataType::Utf8, false),
+        Field::new("object_type", DataType::Utf8, false),
+        Field::new(
+            "street_name",
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            true,
+        ),
+    ]));
+
+    let ids: ArrayRef = Arc::new(StringArray::from(vec!["obj-1"]));
+    let feature_ids: ArrayRef = Arc::new(StringArray::from(vec!["obj-1"]));
+    let types: ArrayRef = Arc::new(StringArray::from(vec!["Bridge"]));
+    let street_name: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::from_iter(vec![Some(
+        "Main St",
+    )]));
+
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![ids, feature_ids, types, street_name],
+    )
+    .expect("dictionary-attribute foreign batch");
+
+    let props = WriterProperties::builder()
+        .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new(
+            "city".to_string(),
+            DICT_ATTR_CITY_JSON.to_string(),
+        )]))
+        .build();
+    let file = std::fs::File::create(path).expect("create");
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("writer");
+    writer.write(&batch).expect("write");
+    writer.close().expect("close");
+}
+
+#[test]
+fn a_dictionary_encoded_varchar_attribute_column_is_not_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("dict_attr.parquet");
+    dictionary_attribute_foreign_file(&path);
+
+    let file = std::fs::File::open(&path).expect("open");
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("builder");
+    let meta = builder.cityparquet_metadata().expect("metadata");
+    let schema = builder
+        .cityparquet_arrow_schema()
+        .expect("a Dictionary(Int32, Utf8) attribute column must not be rejected outright");
+    let reader = CityParquetRecordBatchReader::new(builder.build().expect("build"), schema);
+
+    let mut objects = Vec::new();
+    for batch in reader {
+        let batch = batch.expect("batch");
+        objects.extend(
+            cityparquet::decode::decode_batch(&batch, &meta)
+                .expect("a dictionary-encoded attribute must decode"),
+        );
+    }
+    assert_eq!(objects.len(), 1);
+    assert_eq!(
+        objects[0]
+            .object
+            .attributes
+            .as_ref()
+            .and_then(|a| a.get("street_name"))
+            .and_then(|v| v.as_str()),
+        Some("Main St")
     );
 }
