@@ -154,8 +154,10 @@ svg .mk-line { fill: none; stroke-width: 1.1; }
 svg .bar { fill: var(--mark); }
 svg .bar.muted { opacity: .3; }
 svg .qlab { font-size: 7px; fill: var(--fg); }
+svg .val { font-size: 5.6px; fill: var(--fg); font-variant-numeric: tabular-nums; }
+svg .val.muted { fill: var(--faint); }
 svg .grouprule { stroke: var(--rule); stroke-width: .5; }
-.grid.wide { grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
+.grid.wide { grid-template-columns: repeat(auto-fill, minmax(455px, 1fr)); }
 .key { display: flex; flex-wrap: wrap; gap: .1rem 1.1rem; font-size: .8rem;
   color: var(--fg); margin: .2rem 0 .6rem; }
 .keyitem { display: inline-flex; align-items: center; gap: .35rem; }
@@ -1952,11 +1954,12 @@ JS = r"""
      so reading down a column is reading one format across all of them. */
   function datasetPanel(d, scens, tlo, thi, mlo, mhi) {
     var fmts = FORMATS.filter(function (f) { return f !== META.baseline; });
-    var W = 340, ML = 74, GAP = 14, MT = 4;
-    var barH = 4.6, groupPad = 6;
+    var W = 470, ML = 80, GAP = 16, MT = 4;
+    var barH = 6.6, groupPad = 7;
     var half = (W - ML - GAP) / 2;
-    var sx = logScale(tlo, thi, ML, ML + half);
-    var mx = logScale(mlo, mhi, ML + half + GAP, W);
+    var PAD = 26;  // a value label past the longest bar's tip
+    var sx = logScale(tlo, thi, ML, ML + half - PAD);
+    var mx = logScale(mlo, mhi, ML + half + GAP, W - PAD);
     var groupH = fmts.length * barH + groupPad;
     var plotH = scens.length * groupH;
     var H = MT + plotH + 26;
@@ -1990,18 +1993,26 @@ JS = r"""
                 ? secs(r.time_s) + " = " + ratio(v) + " the baseline's speed"
                 : bytes(r.rss_b) + " peak RSS = " + ratio(v) + " leaner") +
               (m[3] ? "\nwithin the " + (FLOOR * 1000) + " ms citation floor" : "");
+            /* The printed value is the datum; the bar is the second reading.
+               Anchored past the tip and away from the 1x rule, so it never sits
+               on top of the bar it labels or of its neighbour's. */
+            var grew = x2 >= x1;
             svg += '<g class="pt" tabindex="0" role="img" aria-label="' +
               esc(sc + " " + SHORT[f] + " " + ratio(v)) + '" data-tip="' + esc(tipTxt) + '">' +
               '<rect class="bar' + (isAccent(f) ? " accent" : "") + (m[3] ? " muted" : "") +
               '" x="' + bx.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw.toFixed(1) +
-              '" height="' + (barH - 0.9).toFixed(1) + '"/></g>';
+              '" height="' + (barH - 1.1).toFixed(1) + '"/>' +
+              '<text class="val' + (m[3] ? " muted" : "") + '" x="' +
+              (grew ? x2 + 2.5 : x2 - 2.5).toFixed(1) + '" y="' +
+              (y + barH - 2).toFixed(1) + '"' + (grew ? "" : ' text-anchor="end"') + ">" +
+              esc(ratio(v)) + "</text></g>";
           });
       });
     });
 
     var ay = MT + plotH;
-    [[sx, tlo, thi, ML, ML + half, "read time (× faster)"],
-     [mx, mlo, mhi, ML + half + GAP, W, "peak memory (× leaner)"]].forEach(function (a) {
+    [[sx, tlo, thi, ML, ML + half - PAD, "read time (× faster)"],
+     [mx, mlo, mhi, ML + half + GAP, W - PAD, "peak memory (× leaner)"]].forEach(function (a) {
       svg += '<line class="axis" x1="' + a[3] + '" y1="' + ay + '" x2="' + a[4] +
         '" y2="' + ay + '"/>';
       /* Six decades in ~130px overprints every label, so thin the decades
@@ -2093,7 +2104,7 @@ JS = r"""
     lo = Math.min(lo / 1.6, 0.5); hi = Math.max(hi * 1.6, 2);
 
     var W = 620, ML = 210, rowH = 14, MT = 6;
-    var sx = logScale(lo, hi, ML, W - 46);
+    var sx = logScale(lo, hi, ML, W - 62);
     var H = MT + mine.length * rowH + 20;
     var svg = '<line class="refline" x1="' + sx(1).toFixed(1) + '" y1="' + MT +
       '" x2="' + sx(1).toFixed(1) + '" y2="' + (MT + mine.length * rowH) + '"/>';
@@ -2109,16 +2120,20 @@ JS = r"""
         '<rect class="bar accent' + (r.below_floor ? " muted" : "") + '" x="' +
         bx.toFixed(1) + '" y="' + y + '" width="' + bw.toFixed(1) + '" height="' + bh + '"/>' +
         '<text class="tick" x="' + (ML - 4) + '" y="' + (y + bh - 1) +
-        '" text-anchor="end">' + esc(r.dataset) + "</text></g>";
+        '" text-anchor="end">' + esc(r.dataset) + "</text>" +
+        '<text class="val' + (r.below_floor ? " muted" : "") + '" x="' +
+        (x2 >= x1 ? x2 + 3 : x2 - 3).toFixed(1) + '" y="' + (y + bh - 1) + '"' +
+        (x2 >= x1 ? "" : ' text-anchor="end"') + ">" + esc(ratio(r.time_ratio)) +
+        "</text></g>";
     });
     var ay = MT + mine.length * rowH;
-    svg += '<line class="axis" x1="' + ML + '" y1="' + ay + '" x2="' + (W - 46) +
+    svg += '<line class="axis" x1="' + ML + '" y1="' + ay + '" x2="' + (W - 62) +
       '" y2="' + ay + '"/>';
     logTicks(lo, hi).forEach(function (t) {
       svg += '<text class="tick" x="' + sx(t).toFixed(1) + '" y="' + (ay + 10) +
         '" text-anchor="middle">' + esc(tickText(t)) + "</text>";
     });
-    svg += '<text class="tick" x="' + ((ML + W - 46) / 2) + '" y="' + (ay + 18) +
+    svg += '<text class="tick" x="' + ((ML + W - 62) / 2) + '" y="' + (ay + 18) +
       '" text-anchor="middle">Hilbert order vs source order (x faster)</text>';
     var cleared = mine.filter(function (r) { return !r.below_floor; }).length;
     el("config-order-fig").innerHTML =
