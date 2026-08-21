@@ -303,9 +303,15 @@ the two comparisons, then the trend:
 1. **The corpus** — a table, not a chart: which datasets, how many CityObjects,
    and the bytes in each format. The question is a lookup and the answer wants
    exact figures, which is what a table is for.
-2. **Read time and peak memory, per dataset** — paired bars per dataset, one
-   scenario at a time, both metrics against the CityJSONSeq artefact. Bars grow
-   out of the 1× rule on a log axis, per the size grid's reasoning.
+2. **Read time and peak memory, per dataset** — one chart per dataset, with
+   every query a subgroup of format bars inside it and read time beside peak
+   memory. Deliberately NOT one mini-plot per (dataset, query, metric): that is
+   three hundred fragments carrying three hundred axes, and comparing two of
+   them means comparing two rulers. Grouped onto one pair of axes per dataset,
+   a format holds the same row position in every query, so reading down a
+   column reads that format across all of them. One log scale is shared by
+   every panel — a bar means the same thing everywhere — and the bars grow out
+   of the 1× rule, per the size grid's reasoning.
 3. **Configuration axes** — row ordering across the whole ordering run, then
    codec and row-group size on the scaling corpus. The second is a table: those
    are write-side axes, and the harness reports bytes, write time and row-group

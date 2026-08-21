@@ -153,6 +153,14 @@ svg .leader { stroke: var(--rule-strong); stroke-width: 0.4; fill: none; }
 svg .mk-line { fill: none; stroke-width: 1.1; }
 svg .bar { fill: var(--mark); }
 svg .bar.muted { opacity: .3; }
+svg .qlab { font-size: 7px; fill: var(--fg); }
+svg .grouprule { stroke: var(--rule); stroke-width: .5; }
+.grid.wide { grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
+.key { display: flex; flex-wrap: wrap; gap: .1rem 1.1rem; font-size: .8rem;
+  color: var(--fg); margin: .2rem 0 .6rem; }
+.keyitem { display: inline-flex; align-items: center; gap: .35rem; }
+.swatch { width: 14px; height: 7px; background: var(--mark); display: inline-block; }
+.swatch.accent { background: var(--accent); }
 svg .line { fill: none; stroke: var(--mark); stroke-width: 1.2; }
 svg .line.accent { stroke: var(--accent); stroke-width: 1.6; }
 svg .endlab { font-size: 8px; font-weight: 500; fill: var(--muted); }
@@ -293,13 +301,8 @@ BODY = r"""
   <section id="view-formats" aria-labelledby="h-formats">
     <h2 id="h-formats">2 &middot; Read time and peak memory, per dataset</h2>
     <p class="small" id="formats-lede"></p>
-    <div class="controls" id="formats-controls" role="group" aria-label="Per-dataset format controls">
-      <label for="formats-scen">Scenario
-        <select id="formats-scen"></select>
-      </label>
-      <span id="formats-scen-note"></span>
-    </div>
-    <div class="grid" id="formats-grid"></div>
+    <p class="key" id="formats-key"></p>
+    <div class="grid wide" id="formats-grid"></div>
   </section>
 
   <hr class="rule">
@@ -1942,93 +1945,95 @@ JS = r"""
       "This is the lookup the rest of the page refers back to.";
   }
 
-  /* ---- 2 - read time and peak memory, per dataset -----------------------
-     Bars grow out of the 1x rule on a LOG axis, not out of zero on a linear
-     one: within one scenario the formats span several orders of magnitude,
-     and a zero-anchored bar renders everything but the fastest as a sliver. */
-  function pairedPanel(d, sc, tlo, thi, mlo, mhi) {
+  /* One chart per dataset, queries as subgroups down a shared pair of axes.
+     Not one mini-plot per (dataset, query, metric): that is 300-odd fragments
+     with 300-odd axes, and comparing two of them means comparing two rulers.
+     Grouped on one axis, a format keeps the same row position in every query,
+     so reading down a column is reading one format across all of them. */
+  function datasetPanel(d, scens, tlo, thi, mlo, mhi) {
     var fmts = FORMATS.filter(function (f) { return f !== META.baseline; });
-    var W = 300, ML = 56, GAP = 12, rowH = 15, MT = 4;
+    var W = 340, ML = 74, GAP = 14, MT = 4;
+    var barH = 4.6, groupPad = 6;
     var half = (W - ML - GAP) / 2;
     var sx = logScale(tlo, thi, ML, ML + half);
     var mx = logScale(mlo, mhi, ML + half + GAP, W);
-    var H = MT + fmts.length * rowH + 18;
+    var groupH = fmts.length * barH + groupPad;
+    var plotH = scens.length * groupH;
+    var H = MT + plotH + 26;
+
     var svg = "";
-    [[sx, tlo, thi], [mx, mlo, mhi]].forEach(function (a) {
-      svg += '<line class="refline" x1="' + a[0](1).toFixed(1) + '" y1="' + MT +
-        '" x2="' + a[0](1).toFixed(1) + '" y2="' + (MT + fmts.length * rowH) + '"/>';
+    [sx, mx].forEach(function (s) {
+      svg += '<line class="refline" x1="' + s(1).toFixed(1) + '" y1="' + MT +
+        '" x2="' + s(1).toFixed(1) + '" y2="' + (MT + plotH) + '"/>';
     });
-    var any = false;
-    fmts.forEach(function (f, i) {
-      var r = rec(d.id, sc, f);
-      var y = MT + i * rowH + 3, bh = 9;
-      svg += '<text class="tick" x="' + (ML - 4) + '" y="' + (y + bh - 1.5) +
-        '" text-anchor="end">' + esc(ABBR[f]) + "</text>";
-      if (!r) { return; }
-      any = true;
-      [[sx, r.time_ratio, "time", r.below_floor], [mx, r.rss_ratio, "rss", false]]
-        .forEach(function (m) {
-          if (m[1] == null || m[1] <= 0) { return; }
-          var v = 1 / m[1];
-          var x2 = m[0](v), x1 = m[0](1);
-          var bx = Math.min(x1, x2), bw = Math.max(0.8, Math.abs(x2 - x1));
-          var cls = "bar" + (isAccent(f) ? " accent" : "") + (m[3] ? " muted" : "");
-          var tipTxt = SHORT[f] + "\n" + d.id + " - " + sc + "\n" +
-            (m[2] === "time"
-              ? secs(r.time_s) + " = " + ratio(v) + " the baseline's speed"
-              : bytes(r.rss_b) + " peak RSS = " + ratio(v) + " leaner") +
-            (m[3] ? "\nwithin the 10 ms citation floor" : "");
-          svg += '<g class="pt" tabindex="0" role="img" aria-label="' +
-            esc(SHORT[f] + " " + ratio(v)) + '" data-tip="' + esc(tipTxt) + '">' +
-            '<rect class="' + cls + '" x="' + bx.toFixed(1) + '" y="' + y +
-            '" width="' + bw.toFixed(1) + '" height="' + bh + '"/></g>';
-        });
-    });
-    if (!any) {
-      return '<figure class="panel"><figcaption><span class="name">' + esc(d.id) +
-        '</span><span class="sub">' + esc(d.subtitle) + "</span></figcaption>" +
-        '<p class="small">not measured in this run</p></figure>';
-    }
-    var ay = MT + fmts.length * rowH;
-    [[sx, tlo, thi, ML, ML + half], [mx, mlo, mhi, ML + half + GAP, W]]
-      .forEach(function (a) {
-        svg += '<line class="axis" x1="' + a[3] + '" y1="' + ay + '" x2="' + a[4] +
-          '" y2="' + ay + '"/>';
-        logTicks(a[1], a[2]).forEach(function (t) {
-          svg += '<text class="tick" x="' + a[0](t).toFixed(1) + '" y="' + (ay + 10) +
-            '" text-anchor="middle">' + esc(tickText(t)) + "</text>";
-        });
+
+    scens.forEach(function (sc, si) {
+      var top = MT + si * groupH;
+      if (si) {
+        svg += '<line class="grouprule" x1="' + (ML - 68) + '" y1="' + (top - groupPad / 2).toFixed(1) +
+          '" x2="' + W + '" y2="' + (top - groupPad / 2).toFixed(1) + '"/>';
+      }
+      svg += '<text class="qlab" x="' + (ML - 6) + '" y="' +
+        (top + fmts.length * barH / 2 + 2).toFixed(1) + '" text-anchor="end">' +
+        esc(sc + (dagger(sc) ? "†" : "")) + "</text>";
+      fmts.forEach(function (f, fi) {
+        var r = rec(d.id, sc, f);
+        if (!r) { return; }
+        var y = top + fi * barH;
+        [[sx, r.time_ratio, "time", r.below_floor], [mx, r.rss_ratio, "rss", false]]
+          .forEach(function (m) {
+            if (m[1] == null || m[1] <= 0) { return; }
+            var v = 1 / m[1], x2 = m[0](v), x1 = m[0](1);
+            var bx = Math.min(x1, x2), bw = Math.max(0.7, Math.abs(x2 - x1));
+            var tipTxt = SHORT[f] + "\n" + d.id + " · " + sc + "\n" +
+              (m[2] === "time"
+                ? secs(r.time_s) + " = " + ratio(v) + " the baseline's speed"
+                : bytes(r.rss_b) + " peak RSS = " + ratio(v) + " leaner") +
+              (m[3] ? "\nwithin the " + (FLOOR * 1000) + " ms citation floor" : "");
+            svg += '<g class="pt" tabindex="0" role="img" aria-label="' +
+              esc(sc + " " + SHORT[f] + " " + ratio(v)) + '" data-tip="' + esc(tipTxt) + '">' +
+              '<rect class="bar' + (isAccent(f) ? " accent" : "") + (m[3] ? " muted" : "") +
+              '" x="' + bx.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw.toFixed(1) +
+              '" height="' + (barH - 0.9).toFixed(1) + '"/></g>';
+          });
       });
-    svg += '<text class="tick" x="' + (ML + half / 2) + '" y="' + (ay + 18) +
-      '" text-anchor="middle">time (x faster)</text>';
-    svg += '<text class="tick" x="' + (ML + half + GAP + half / 2) + '" y="' + (ay + 18) +
-      '" text-anchor="middle">memory (x leaner)</text>';
-    return '<figure class="panel"><figcaption><span class="name">' + esc(d.id) +
+    });
+
+    var ay = MT + plotH;
+    [[sx, tlo, thi, ML, ML + half, "read time (× faster)"],
+     [mx, mlo, mhi, ML + half + GAP, W, "peak memory (× leaner)"]].forEach(function (a) {
+      svg += '<line class="axis" x1="' + a[3] + '" y1="' + ay + '" x2="' + a[4] +
+        '" y2="' + ay + '"/>';
+      /* Six decades in ~130px overprints every label, so thin the decades
+         until they fit and keep 1x, which is the reference the bars grow from. */
+      var ticks = logTicks(a[1], a[2]);
+      var step = Math.ceil(ticks.length / 4);
+      ticks = ticks.filter(function (t, i) { return t === 1 || i % step === 0; });
+      ticks.forEach(function (t) {
+        svg += '<text class="tick" x="' + a[0](t).toFixed(1) + '" y="' + (ay + 9) +
+          '" text-anchor="middle">' + esc(tickText(t)) + "</text>";
+      });
+      svg += '<text class="tick" x="' + ((a[3] + a[4]) / 2) + '" y="' + (ay + 20) +
+        '" text-anchor="middle">' + esc(a[5]) + "</text>";
+    });
+
+    return '<figure class="panel wide"><figcaption><span class="name">' + esc(d.id) +
       '</span><span class="sub">' + esc(d.subtitle) + "</span></figcaption>" +
       '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' +
-      esc(d.id + " read time and peak memory by format") + '">' + svg + "</svg></figure>";
+      esc(d.id + ": read time and peak memory by query and format") + '">' +
+      svg + "</svg></figure>";
   }
 
   function renderFormats() {
-    var sel = el("formats-scen");
-    if (!sel.options.length) {
-      var present = [];
-      DATA.read.forEach(function (r) {
-        if (present.indexOf(r.scenario_key) < 0) { present.push(r.scenario_key); }
-      });
-      present.sort(function (a, b) { return SCEN_ORDER.indexOf(a) - SCEN_ORDER.indexOf(b); });
-      present.forEach(function (sc) {
-        var o = document.createElement("option");
-        o.value = sc; o.textContent = sc + (dagger(sc) ? " (grain-incomparable)" : "");
-        sel.appendChild(o);
-      });
-      sel.value = present.indexOf("full-read") >= 0 ? "full-read" : present[0];
-      sel.addEventListener("change", renderFormats);
-    }
-    var sc = sel.value;
+    var scens = [];
+    DATA.read.forEach(function (r) {
+      if (scens.indexOf(r.scenario_key) < 0) { scens.push(r.scenario_key); }
+    });
+    scens.sort(function (a, b) { return SCEN_ORDER.indexOf(a) - SCEN_ORDER.indexOf(b); });
+
     var tlo = Infinity, thi = 0, mlo = Infinity, mhi = 0;
     DATA.read.forEach(function (r) {
-      if (r.scenario_key !== sc || r.format === META.baseline) { return; }
+      if (r.format === META.baseline) { return; }
       if (r.time_ratio) { var t = 1 / r.time_ratio; tlo = Math.min(tlo, t); thi = Math.max(thi, t); }
       if (r.rss_ratio) { var m = 1 / r.rss_ratio; mlo = Math.min(mlo, m); mhi = Math.max(mhi, m); }
     });
@@ -2037,16 +2042,27 @@ JS = r"""
     tlo = Math.min(tlo / 1.6, 0.5); thi = Math.max(thi * 1.6, 2);
     mlo = Math.min(mlo / 1.6, 0.5); mhi = Math.max(mhi * 1.6, 2);
 
+    /* One shared scale across every dataset, so a bar means the same thing in
+       every panel — the whole point of a small multiple. */
     el("formats-grid").innerHTML = DATASETS.map(function (d) {
-      return pairedPanel(d, sc, tlo, thi, mlo, mhi);
+      return datasetPanel(d, scens, tlo, thi, mlo, mhi);
     }).join("");
-    el("formats-scen-note").textContent = dagger(sc)
-      ? "grain-incomparable - see fairness caveat 1" : "";
+    el("formats-key").innerHTML = fmtKey();
     el("formats-lede").textContent =
-      "One panel per dataset: read time on the left, peak memory on the right, " +
-      "both against the CityJSONSeq artefact for the same dataset and scenario. " +
-      "Bars grow out of the 1x rule on a shared log scale; right is better in both. " +
-      "A muted bar is inside the 10 ms citation floor.";
+      "One chart per dataset. Inside it, every query is a subgroup of " +
+      (FORMATS.length - 1) + " format bars, in the same order throughout, with read " +
+      "time on the left and peak memory on the right. Bars grow out of the 1× rule " +
+      "— the CityJSONSeq artefact for that dataset and query — on one log scale " +
+      "shared by every panel, so right is better and a bar means the same thing " +
+      "everywhere. A muted bar is inside the " + (FLOOR * 1000) + " ms citation floor.";
+  }
+
+  function fmtKey() {
+    return FORMATS.filter(function (f) { return f !== META.baseline; })
+      .map(function (f) {
+        return '<span class="keyitem"><span class="swatch' +
+          (isAccent(f) ? " accent" : "") + '"></span>' + esc(SHORT[f]) + "</span>";
+      }).join("");
   }
 
   /* ---- 3 - configuration axes ------------------------------------------ */
