@@ -182,12 +182,13 @@ library `ConvertOptions` is source-faithful unless `generate_lod0` is set.
 
 ### Bounding box & spatial ordering
 
-Every row has a 3D `bbox` in the geometry CRS. For an object whose geometry
-lives on its descendants (a `Building` with geometry only on its
-`BuildingPart`s), `bbox` is the **union of the descendants' geometry**; it is
-null only when nothing in the object's subtree has geometry. Null bboxes
-don't enter Parquet min/max statistics, so row-group pruning stays sound.
-When a row carries multiple LoDs, `bbox` is taken from the highest LoD.
+Every row has a 3D `bbox` in the geometry CRS. `bbox` is the union of the
+object's own geometry bboxes and a cycle-guarded recursive union over its whole
+descendant subtree; it is null only when nothing in the object's subtree has
+geometry. This ensures a consumer pruning on a parent's `bbox` never misses
+geometry held by its descendants. Null bboxes don't enter Parquet min/max
+statistics, so row-group pruning stays sound. When a row carries multiple LoDs,
+`bbox` is taken from the highest LoD.
 
 Rows can optionally be reordered along a **2D Hilbert curve** over the
 bbox centroid (`x`/`y` only — city models are height-thin, so `z` would waste

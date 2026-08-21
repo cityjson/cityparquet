@@ -173,9 +173,9 @@ fn own_geometry_bbox(co: &CityObject, pool: &VertexPool) -> Result<Option<[f64; 
     Ok(acc)
 }
 
-/// Recursive descendant-bbox fallback: union over every descendant's own
-/// bbox (recursing further when a child itself has no geometry), cycle
-/// guarded with a visited set.
+/// Recursive descendant-bbox union: every descendant's own bbox, unioned
+/// over the whole subtree (a child's own geometry does not stop the walk —
+/// its own children may extend further), cycle guarded with a visited set.
 fn descendant_bbox(
     co: &CityObject,
     feature: &CityJSONFeature,
@@ -191,22 +191,23 @@ fn descendant_bbox(
             let Some(child) = feature.city_objects.get(child_id) else {
                 continue;
             };
-            match own_geometry_bbox(child, pool)? {
-                Some(bbox) => union_bbox(&mut acc, bbox),
-                None => {
-                    if let Some(bbox) = descendant_bbox(child, feature, pool, visited)? {
-                        union_bbox(&mut acc, bbox);
-                    }
-                }
+            if let Some(bbox) = own_geometry_bbox(child, pool)? {
+                union_bbox(&mut acc, bbox);
+            }
+            if let Some(bbox) = descendant_bbox(child, feature, pool, visited)? {
+                union_bbox(&mut acc, bbox);
             }
         }
     }
     Ok(acc)
 }
 
-/// `bbox` binding rule: the object's own geometry bboxes, falling back to a
-/// cycle-guarded recursive union over descendant bboxes when the object has
-/// none of its own; `None` if the whole subtree has no geometry.
+/// `bbox` binding rule: the union of the object's own geometry bboxes and a
+/// cycle-guarded recursive union over its whole descendant subtree (spec
+/// "Spatial metadata"). `None` only when nothing in the subtree has
+/// geometry. Unioned, not own-first: a `Building` carrying a flat LoD0
+/// footprint over solid `BuildingPart`s would otherwise get a z-flat box
+/// that prunes the building away from any query above ground.
 fn resolve_bbox(
     own_bbox: Option<[f64; 6]>,
     id: &str,
@@ -214,12 +215,13 @@ fn resolve_bbox(
     feature: &CityJSONFeature,
     pool: &VertexPool,
 ) -> Result<Option<[f64; 6]>> {
-    if own_bbox.is_some() {
-        return Ok(own_bbox);
-    }
+    let mut acc = own_bbox;
     let mut visited = HashSet::new();
     visited.insert(id.to_string());
-    descendant_bbox(co, feature, pool, &mut visited)
+    if let Some(bbox) = descendant_bbox(co, feature, pool, &mut visited)? {
+        union_bbox(&mut acc, bbox);
+    }
+    Ok(acc)
 }
 
 /// Count how many writer-dropped flat face positions fall inside one
