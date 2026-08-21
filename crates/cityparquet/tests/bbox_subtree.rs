@@ -90,7 +90,9 @@ fn zmax_for_pair(batches: &[RecordBatch], parent_id: &str, child_id: &str) -> (f
 
 /// A declared `geographicalExtent` may only ever widen `bbox`, never narrow
 /// it. 3DBAG declares an extent that fails to contain its own geometry, so
-/// the computed box must win on every bound it is larger on.
+/// the computed box must win on every bound it is larger on. This test pins
+/// the union: the declared zmax (16.19086265563965) is strictly above the
+/// computed subtree zmax (16.19), and the final bbox must include both.
 #[test]
 fn declared_extent_never_narrows_bbox() {
     let dir = tempfile::tempdir().unwrap();
@@ -104,12 +106,15 @@ fn declared_extent_never_narrows_bbox() {
         "NL.IMBAG.Pand.0503100000030621",
         "NL.IMBAG.Pand.0503100000030621-0",
     );
-    // The source declares an extent for this Building whose zmax is 16.191,
-    // and its part reaches 16.19; the union must cover both.
+    // Delft fixture declares an extent for this Building with
+    // zmax = 16.19086265563965 (strictly above the geometry's 16.19).
+    // The computed subtree must reach at least the declared extent,
+    // proving the union actually happened.
+    const DECLARED_ZMAX: f64 = 16.19086265563965;
     assert!(parent_zmax >= child_zmax);
     assert!(
-        parent_zmax >= 16.19,
-        "declared extent must be unioned in, got {parent_zmax}"
+        parent_zmax >= DECLARED_ZMAX,
+        "declared extent must be unioned in; parent_zmax={parent_zmax} must be >= declared {DECLARED_ZMAX}"
     );
 }
 

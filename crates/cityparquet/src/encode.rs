@@ -1630,10 +1630,10 @@ impl RowWriter {
         let address_rows = build_address_rows(&co_json, &pool)?;
 
         // `other`: the source object's members that have no dedicated column
-        // (§5.1, G9) — a per-object `geographicalExtent`, Extension
-        // `+members`. `address` has its own reserved column (below) and is already
-        // excluded here (`OTHER_RESERVED_MEMBERS`). Stored verbatim as a
-        // JSON object string; null when the object has no such members (so a
+        // (§5.1, G9) — Extension `+members` and other unmapped fields. `address`
+        // and `geographicalExtent` have their own reserved columns (below) and
+        // are already excluded here (`OTHER_RESERVED_MEMBERS`). Stored verbatim
+        // as a JSON object string; null when the object has no such members (so a
         // null count = rows carrying unmapped members).
         let unmapped = unmapped_from_json(co_json);
         if unmapped.is_empty() {

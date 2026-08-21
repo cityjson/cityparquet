@@ -88,8 +88,8 @@ fn err(msg: impl Into<String>) -> CityParquetError {
 }
 
 /// Merge the `other` column's unmapped members into the JSON that rebuilds a
-/// CityObject (§5.1, G9): members with no dedicated column — a per-object
-/// `geographicalExtent`, Extension `+members`. Typed fields route home; the
+/// CityObject (§5.1, G9): members with no dedicated column — Extension
+/// `+members` and other unmapped fields. Typed fields route home; the
 /// rest ride cjseq's private flatten and re-serialise on export. A
 /// `None`/empty-`{}` cell contributes nothing.
 ///

@@ -978,8 +978,9 @@ fn helsinki_non_postal_address_members_are_dropped_not_corrupted() {
 
     // Direct proof the drop is clean: every source object's TWO address
     // entries survive (same cardinality), each now an empty object (every
-    // non-recognised member gone, nothing spuriously kept or corrupted),
-    // and `geographicalExtent` is untouched.
+    // non-recognised member gone, nothing spuriously kept or corrupted).
+    // The address drop is independent of other members like `geographicalExtent`
+    // (consumed into bbox and not yet re-derived on export — see Task 4).
     let read_field = |path: &std::path::Path, field: &str| -> Vec<(String, serde_json::Value)> {
         let text = std::fs::read_to_string(path).unwrap();
         let mut out = Vec::new();
@@ -1024,6 +1025,11 @@ fn helsinki_non_postal_address_members_are_dropped_not_corrupted() {
         }
     }
 
+    // `geographicalExtent` is no longer carried in the `other` column — it is
+    // consumed into `bbox` at encode time (unioned with computed subtree extent).
+    // A later task (Task 4) derives it back from `bbox` on export, so this
+    // point-in-time check expects it to be absent in the export (consumed but
+    // not yet re-derived). The fixture carries it; the export does not.
     let source_extent = read_field(
         &data_fixture("helsinki_address.city.jsonl"),
         "geographicalExtent",
@@ -1033,9 +1039,9 @@ fn helsinki_non_postal_address_members_are_dropped_not_corrupted() {
         !source_extent.is_empty(),
         "fixture must actually carry geographicalExtent"
     );
-    assert_eq!(
-        source_extent, export_extent,
-        "geographicalExtent is unrelated to the address drop and must round-trip verbatim"
+    assert!(
+        export_extent.is_empty(),
+        "geographicalExtent is not re-derived yet, so export carries none"
     );
 }
 
