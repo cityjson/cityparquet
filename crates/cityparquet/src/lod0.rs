@@ -39,7 +39,9 @@ impl Face {
     }
 }
 
-/// How a synthesised footprint was derived — for provenance/statistics.
+/// How a synthesised footprint was derived (ground semantics vs. the
+/// geometric heuristic). Carried on [`Footprint`] for tests to assert
+/// against; nothing surfaces it as a per-row or footer marker in output today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lod0Source {
     /// Taken from faces the source labelled `GroundSurface`.
@@ -501,7 +503,7 @@ pub fn faces_from_geometry(
 /// Convert a synthesised [`Footprint`] into a raw vertex list and a
 /// `MultiSurface` `cjseq::Geometry` (LoD `"0"`) indexing it — ready to feed the
 /// existing WKB writer via [`VertexPool::raw`]. Vertices are de-duplicated on a
-/// 1 mm grid. The provenance marker is attached by the encoder, not here.
+/// 1 mm grid.
 pub fn footprint_to_geometry(fp: &Footprint) -> (Vec<Vec<f64>>, Geometry) {
     use std::collections::HashMap;
     let mut verts: Vec<Vec<f64>> = Vec::new();

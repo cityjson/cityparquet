@@ -66,9 +66,11 @@ fn detect_geometry_encoding(
 /// The canonical render supplies METADATA ONLY. The fields themselves are the
 /// file's: its names, its order, its physical types. CityParquet conformance is
 /// at the Parquet logical-type level (spec "Physical encoding and conformance"),
-/// so a conformant writer may order reserved columns differently, leave
-/// `other` out, store `object_type` undictionaried, or name a LIST's
-/// child `element`. Returning the canonical field list instead would reject every
+/// so a conformant writer may order reserved columns differently, store
+/// `object_type` undictionaried, or name a LIST's child `element` — and this
+/// reader tolerates a foreign writer leaving `other` out too, as robustness
+/// towards writers this codebase does not control rather than a spec
+/// entitlement. Returning the canonical field list instead would reject every
 /// one of those, and — because `parents`, `children` and `children_roles` share a
 /// DataType — the field-count check would not even catch a transposition.
 fn project_metadata_onto(actual: &Schema, canonical: &Schema) -> Schema {

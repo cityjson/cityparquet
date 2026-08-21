@@ -984,7 +984,8 @@ fn helsinki_non_postal_address_members_are_dropped_not_corrupted() {
     // entries survive (same cardinality), each now an empty object (every
     // non-recognised member gone, nothing spuriously kept or corrupted).
     // The address drop is independent of other members like `geographicalExtent`
-    // (consumed into bbox and not yet re-derived on export — see Task 4).
+    // (consumed into `bbox` at encode time and re-derived from it on export —
+    // asserted below).
     let read_field = |path: &std::path::Path, field: &str| -> Vec<(String, serde_json::Value)> {
         let text = std::fs::read_to_string(path).unwrap();
         let mut out = Vec::new();
@@ -1029,11 +1030,11 @@ fn helsinki_non_postal_address_members_are_dropped_not_corrupted() {
         }
     }
 
-    // `geographicalExtent` is no longer carried in the `other` column — it is
-    // consumed into `bbox` at encode time (unioned with computed subtree extent).
-    // Task 4 derives it back from `bbox` on export, so every exported object
-    // carries a six-number `geographicalExtent` (the spatial extent, not a
-    // verbatim copy of the source member, which may differ).
+    // `geographicalExtent` is not carried in the `other` column — it is consumed
+    // into `bbox` at encode time (unioned with the computed subtree extent) and
+    // derived back from `bbox` on export, so every exported object carries a
+    // six-number `geographicalExtent` (the spatial extent, not a verbatim copy
+    // of the source member, which may differ).
     let source_extent = read_field(
         &data_fixture("helsinki_address.city.jsonl"),
         "geographicalExtent",

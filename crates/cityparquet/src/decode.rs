@@ -138,15 +138,16 @@ fn get_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a arrow_array:
         .ok_or_else(|| err(format!("record batch missing expected column '{name}'")))
 }
 
-/// `name`'s column, tolerant of the WHOLE column being absent from `batch`
-/// (spec "Optional data is `NULL`" — a reader MUST tolerate an absent
-/// `other`, and by the same information-equivalence any other nullable
-/// reserved column a writer omits outright, e.g. duckdb-cityjson's
-/// `address`/`template`/`children_roles`): an absent column and an all-null
-/// one of `data_type` carry identical information to every caller below,
-/// which already treats a null cell as "no value". `id`/`feature_id`/
-/// `object_type` are non-null per spec and stay on the strict
-/// [`get_column`] instead.
+/// `name`'s column, tolerant of the WHOLE column being absent from `batch`.
+/// Robustness towards foreign writers, not a spec entitlement: the spec's
+/// "Optional data is `NULL`, not an omitted column" rule requires `address`/
+/// `template` (and by the same reasoning, any other nullable reserved
+/// column, e.g. `other`/`children_roles`) to stay present as an all-null
+/// column, but duckdb-cityjson omits them outright — and an absent column
+/// carries identical information to an all-null one of `data_type` for
+/// every caller below, which already treats a null cell as "no value".
+/// `id`/`feature_id`/`object_type` are non-null per spec and stay on the
+/// strict [`get_column`] instead.
 fn optional_column(batch: &RecordBatch, name: &str, data_type: &DataType) -> ArrayRef {
     match batch.column_by_name(name) {
         Some(col) => std::sync::Arc::clone(col),

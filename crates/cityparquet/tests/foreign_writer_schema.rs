@@ -350,10 +350,11 @@ fn minimal_foreign_file(path: &std::path::Path) {
 
 #[test]
 fn a_table_omitting_the_optional_reserved_columns_decodes() {
-    // duckdb-cityjson emits none of address/template/other, and the spec
-    // permits an absent `other` outright. An absent nullable column and an
-    // all-null one carry the same information, so the reader treats the
-    // first as the second rather than refusing the file.
+    // duckdb-cityjson emits none of address/template/other. The spec requires
+    // these stay present as all-null columns ("Optional data is `NULL`, not
+    // an omitted column"), but an absent nullable column and an all-null one
+    // carry the same information, so this reader tolerates the omission as
+    // robustness towards a foreign writer rather than refusing the file.
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("bridge.parquet");
     minimal_foreign_file(&path);
