@@ -591,10 +591,19 @@ def _replace_axes(fig: Figure, ax: Axes) -> Axes:
 
 
 def _save(fig: Figure, name: str, out_dir: Path) -> list[Path]:
+    """Write the figure as SVG + PNG, byte-identical for identical data.
+
+    Matplotlib stamps an SVG with the wall-clock time and salts its element ids
+    from it, so re-rendering an unchanged corpus produced a few hundred lines of
+    diff that said nothing. These figures are committed artefacts and get
+    re-rendered whenever anything upstream moves; a rebuild has to be a no-op in
+    `git status` unless a number actually changed.
+    """
     written = []
     for suffix in (".svg", ".png"):
         path = out_dir / f"{name}{suffix}"
-        fig.savefig(path, dpi=300, facecolor=BG)
+        metadata = {"Date": None} if suffix == ".svg" else None
+        fig.savefig(path, dpi=300, facecolor=BG, metadata=metadata)
         written.append(path)
     plt.close(fig)
     return written
@@ -2426,6 +2435,8 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
     _check_capacity(data)
     out_dir.mkdir(parents=True, exist_ok=True)
     plt.rcParams.update(TUFTE_RC)
+    # Deterministic SVG element ids (see _save).
+    plt.rcParams["svg.hashsalt"] = "benchviz"
     _scale_panel_fonts(*_grid(len(data["datasets"]) + 1))
 
     written: list[Path] = []
