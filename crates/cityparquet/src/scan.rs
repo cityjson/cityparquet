@@ -507,17 +507,12 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
     // hands it a colliding attribute (the two share one reserved-name
     // definition).
     //
-    // `other` is ITSELF a reserved name (spec "Column naming and reservation
-    // rules"), so an attribute literally named `other` collides too and is
-    // diverted exactly like any other collision: its value ends up as an
-    // `"other"`-keyed entry inside the `other` column's own JSON payload,
-    // which a reader restores into `attributes.other` without incident —
-    // `other`'s whole contract is "every entry lands in `attributes`",
-    // regardless of what its key happens to spell, so nothing here needs to
-    // special-case it. An attribute still named `other` reaching
-    // `CityParquetSchema::validate` (which this loop never lets happen) would
-    // be rejected outright by `reserved_and_geometry_column_names`, so the
-    // two paths can never disagree.
+    // `other` is ITSELF the divert target, so an attribute literally named
+    // `other` has nowhere further to divert to (diverting it into the very
+    // column named after it would be circular) and is rejected outright —
+    // the same self-collision rule `other_attributes` used to get when IT
+    // was the divert target, inherited unchanged. Every OTHER reserved-name
+    // collision still diverts into `other` as usual.
     // Reserved/diverted against the REAL encoding this scan is being
     // performed for (`geometry_vertices_lod*` is reserved only under
     // `GeometryEncoding::ArrowNative` — see
@@ -526,6 +521,11 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
     let mut attributes = Vec::new();
     let mut diverted_attribute_names = BTreeSet::new();
     for (name, ty) in inferer.finish() {
+        if name == "other" {
+            return Err(CityParquetError::Schema(format!(
+                "attribute column '{name}' collides with a reserved or geometry column name"
+            )));
+        }
         if reserved.contains(&name) {
             diverted_attribute_names.insert(name);
         } else {

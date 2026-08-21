@@ -83,6 +83,53 @@ fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
+/// spec "Column naming and reservation rules": `other` is itself the divert
+/// target for a colliding attribute name, so a source attribute literally
+/// called `other` has nowhere further to divert to and is rejected outright
+/// — the same error path as any other undiverted reserved-name collision
+/// ([`cityparquet_schema::model::CityParquetSchema::validate`]'s "collides
+/// with a reserved or geometry column name" text). Derived from the real
+/// `delft` fixture with one injected attribute named `other`.
+#[test]
+fn attribute_literally_named_other_is_rejected() {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut injected = false;
+    let mut out_lines = Vec::new();
+    for line in text.lines() {
+        let mut doc: serde_json::Value = serde_json::from_str(line).unwrap();
+        if !injected && let Some(cos) = doc.get_mut("CityObjects").and_then(|v| v.as_object_mut()) {
+            for co in cos.values_mut() {
+                if let Some(attrs) = co.get_mut("attributes").and_then(|v| v.as_object_mut()) {
+                    attrs.insert(
+                        "other".to_string(),
+                        serde_json::json!("should-be-rejected"),
+                    );
+                    injected = true;
+                    break;
+                }
+            }
+        }
+        out_lines.push(serde_json::to_string(&doc).unwrap());
+    }
+    assert!(
+        injected,
+        "delft fixture must carry at least one object with attributes to inject into"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("delft_other_collision.city.jsonl");
+    std::fs::write(&input, out_lines.join("\n") + "\n").unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let opts = ConvertOptions::new(input, out.path().to_path_buf());
+    let err = convert(&opts).expect_err("an attribute literally named other must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("other") && msg.contains("collides"),
+        "error must name the offending attribute and the reserved-name collision, got: {msg}"
+    );
+}
+
 /// spec "Appearance & templates" (gap 13): a `transformationMatrix` that
 /// isn't exactly 16 values is rejected at convert time, not silently
 /// truncated/padded. Derived from the real `lod3_railway` fixture (with an
