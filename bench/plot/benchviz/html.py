@@ -152,6 +152,19 @@ svg .mk-gray-open { fill: none; stroke: var(--mark); stroke-width: 1.1; }
 svg .leader { stroke: var(--rule-strong); stroke-width: 0.4; fill: none; }
 svg .mk-line { fill: none; stroke-width: 1.1; }
 svg .bar { fill: var(--mark); }
+svg .bar.muted { opacity: .3; }
+svg .line { fill: none; stroke: var(--mark); stroke-width: 1.2; }
+svg .line.accent { stroke: var(--accent); stroke-width: 1.6; }
+svg .endlab { font-size: 8px; font-weight: 500; fill: var(--muted); }
+svg .endlab.accent { fill: var(--accent); }
+svg .floorband { fill: var(--band); }
+table.corpus { border-collapse: collapse; font-size: .82rem; width: 100%; }
+table.corpus caption { text-align: left; color: var(--muted); font-size: .78rem;
+  padding: 0 0 .45rem; }
+table.corpus th, table.corpus td { padding: .22rem .5rem; text-align: right;
+  border-bottom: 1px solid var(--rule); white-space: nowrap; }
+table.corpus th[scope="row"], table.corpus thead th:first-child { text-align: left; }
+table.corpus tbody th { font-weight: 400; }
 svg .bar.accent { fill: var(--accent); }
 svg .bar.accent-open { fill: none; stroke: var(--accent); stroke-width: 1; }
 svg .pt { cursor: crosshair; }
@@ -269,11 +282,67 @@ BODY = r"""
 
   <hr class="rule">
 
+  <section id="view-corpus" aria-labelledby="h-corpus">
+    <h2 id="h-corpus">1 &middot; The corpus &mdash; what was measured, and how big it is</h2>
+    <p class="small" id="corpus-lede"></p>
+    <div id="corpus-table"></div>
+  </section>
+
+  <hr class="rule">
+
+  <section id="view-formats" aria-labelledby="h-formats">
+    <h2 id="h-formats">2 &middot; Read time and peak memory, per dataset</h2>
+    <p class="small" id="formats-lede"></p>
+    <div class="controls" id="formats-controls" role="group" aria-label="Per-dataset format controls">
+      <label for="formats-scen">Scenario
+        <select id="formats-scen"></select>
+      </label>
+      <span id="formats-scen-note"></span>
+    </div>
+    <div class="grid" id="formats-grid"></div>
+  </section>
+
+  <hr class="rule">
+
+  <section id="view-config" aria-labelledby="h-config">
+    <h2 id="h-config">3 &middot; Configuration axes &mdash; ordering, codec, row-group size</h2>
+    <p class="small" id="config-lede"></p>
+
+    <h3 id="h-config-order">3a &middot; Row ordering, across the whole ordering run</h3>
+    <p class="small" id="config-order-lede"></p>
+    <div class="controls" id="config-order-controls" role="group" aria-label="Ordering controls">
+      <label for="config-order-scen">Scenario
+        <select id="config-order-scen"></select>
+      </label>
+    </div>
+    <figure class="solo" id="config-order-fig"></figure>
+
+    <h3 id="h-config-var">3b &middot; Codec and row-group size, on the scaling corpus</h3>
+    <p class="small" id="config-var-lede"></p>
+    <div id="config-var-table"></div>
+  </section>
+
+  <hr class="rule">
+
+  <section id="view-scaling" aria-labelledby="h-scaling">
+    <h2 id="h-scaling">4 &middot; How each format scales with CityObject count</h2>
+    <p class="small" id="scaling-lede"></p>
+    <div class="controls" id="scaling-controls" role="group" aria-label="Scaling controls">
+      <label for="scaling-scen">Scenario
+        <select id="scaling-scen"></select>
+      </label>
+      <span id="scaling-scen-note"></span>
+    </div>
+    <div class="grid" id="scaling-grid"></div>
+  </section>
+
+  <hr class="rule">
+
   <section id="view-overview" aria-labelledby="h-overview">
-    <h2 id="h-overview">0 &middot; Format profiles across the whole corpus</h2>
+    <h2 id="h-overview">5 &middot; Format profiles across the whole corpus</h2>
     <p class="rationale" id="overview-rationale"></p>
 
-    <h3 id="h-slope">0a &middot; The trade-off, at a glance</h3>
+    <h3 id="h-slope">5a &middot; The trade-off, at a glance</h3>
     <p class="small" id="slope-lede"></p>
     <div class="controls" id="slope-controls" role="group" aria-label="Trade-off slopegraph controls">
       <label for="slope-scen">Scenario
@@ -283,7 +352,7 @@ BODY = r"""
     </div>
     <figure class="solo" id="slope-fig"></figure>
 
-    <h3 id="h-strips">0b &middot; Is the win consistent across datasets?</h3>
+    <h3 id="h-strips">5b &middot; Is the win consistent across datasets?</h3>
     <p class="small" id="strip-lede"></p>
     <div class="controls" id="strip-controls" role="group" aria-label="Dot-strip controls">
       <fieldset>
@@ -300,7 +369,7 @@ BODY = r"""
   <hr class="rule">
 
   <section id="view-pareto" aria-labelledby="h-pareto">
-    <h2 id="h-pareto">1 &middot; Speed against memory, per dataset</h2>
+    <h2 id="h-pareto">6 &middot; Speed against memory, per dataset</h2>
     <p class="small" id="pareto-lede"></p>
     <div class="controls" id="pareto-controls" role="group" aria-label="Pareto grid controls">
       <label for="scen-select">Scenario
@@ -320,7 +389,7 @@ BODY = r"""
   <hr class="rule">
 
   <section id="view-heat" aria-labelledby="h-heat">
-    <h2 id="h-heat">2 &middot; Read speedup against CityJSONSeq, every scenario</h2>
+    <h2 id="h-heat">7 &middot; Read speedup against CityJSONSeq, every scenario</h2>
     <p class="small" id="heat-lede"></p>
     <div class="grid wide" id="heat-grid"></div>
     <div id="heat-details"></div>
@@ -329,7 +398,7 @@ BODY = r"""
   <hr class="rule">
 
   <section id="view-size" aria-labelledby="h-size">
-    <h2 id="h-size">3 &middot; Bytes on disk, as a fraction of CityJSONSeq</h2>
+    <h2 id="h-size">8 &middot; Bytes on disk, as a fraction of CityJSONSeq</h2>
     <p class="small" id="size-lede"></p>
     <div class="grid" id="size-grid"></div>
   </section>
@@ -337,7 +406,7 @@ BODY = r"""
   <hr class="rule">
 
   <section id="view-comp" class="deemph" aria-labelledby="h-comp">
-    <h2 id="h-comp">4 &middot; Compression and row-group variants (not citable as a codec ranking)</h2>
+    <h2 id="h-comp">9 &middot; Compression and row-group variants (not citable as a codec ranking)</h2>
     <div class="callout warn" id="codec-note"></div>
     <p class="small" id="comp-lede"></p>
     <div class="grid" id="comp-grid"></div>
@@ -1830,6 +1899,401 @@ JS = r"""
      Caveats + coverage
      ========================================================= */
 
+  /* ---- 1 - the corpus table --------------------------------------------
+     A table, not a chart: the question is "which datasets, and how big",
+     which is a lookup rather than a pattern, and a reader wants the exact
+     bytes. Sizes are per format so the encoding comparison is visible in
+     the same row as the shape of the dataset it applies to. */
+  var TABLE_FORMATS = ["citygml", "cityjson", "cityjsonseq", "flatcitybuf",
+                       "cityparquet-hilbert"];
+
+  function renderCorpus() {
+    var present = TABLE_FORMATS.filter(function (f) {
+      return DATASETS.some(function (d) { return SIZES[d.id] && SIZES[d.id][f]; });
+    });
+    var head = '<tr><th scope="col">Dataset</th><th scope="col">CityObjects</th>';
+    present.forEach(function (f) {
+      head += '<th scope="col">' + esc(SHORT[f]) + "</th>";
+    });
+    head += '<th scope="col">Factor</th></tr>';
+
+    var body = "";
+    DATASETS.forEach(function (d) {
+      var row = '<tr><th scope="row">' + esc(d.id) + "</th><td>" + num(d.objects) + "</td>";
+      var seq = SIZES[d.id] && SIZES[d.id].cityjsonseq;
+      var cpq = SIZES[d.id] && (SIZES[d.id]["cityparquet-hilbert"] || SIZES[d.id].cityparquet);
+      present.forEach(function (f) {
+        var s = SIZES[d.id] && SIZES[d.id][f];
+        row += "<td>" + (s ? esc(bytes(s.bytes)) : "&mdash;") + "</td>";
+      });
+      var factor = (seq && cpq && cpq.bytes) ? seq.bytes / cpq.bytes : null;
+      row += "<td>" + (factor ? esc(ratio(factor)) : "&mdash;") + "</td></tr>";
+      body += row;
+    });
+
+    el("corpus-table").innerHTML =
+      '<div class="tablewrap"><table class="corpus"><caption>' +
+      esc(DATASETS.length + " datasets, ordered by CityObject count. Factor is " +
+          "CityJSONSeq bytes divided by CityParquet bytes; a dash is a format " +
+          "this dataset has no conversion for.") +
+      "</caption><thead>" + head + "</thead><tbody>" + body + "</tbody></table></div>";
+    el("corpus-lede").textContent =
+      "Every dataset the read benchmark measured, with its size in each format. " +
+      "This is the lookup the rest of the page refers back to.";
+  }
+
+  /* ---- 2 - read time and peak memory, per dataset -----------------------
+     Bars grow out of the 1x rule on a LOG axis, not out of zero on a linear
+     one: within one scenario the formats span several orders of magnitude,
+     and a zero-anchored bar renders everything but the fastest as a sliver. */
+  function pairedPanel(d, sc, tlo, thi, mlo, mhi) {
+    var fmts = FORMATS.filter(function (f) { return f !== META.baseline; });
+    var W = 300, ML = 56, GAP = 12, rowH = 15, MT = 4;
+    var half = (W - ML - GAP) / 2;
+    var sx = logScale(tlo, thi, ML, ML + half);
+    var mx = logScale(mlo, mhi, ML + half + GAP, W);
+    var H = MT + fmts.length * rowH + 18;
+    var svg = "";
+    [[sx, tlo, thi], [mx, mlo, mhi]].forEach(function (a) {
+      svg += '<line class="refline" x1="' + a[0](1).toFixed(1) + '" y1="' + MT +
+        '" x2="' + a[0](1).toFixed(1) + '" y2="' + (MT + fmts.length * rowH) + '"/>';
+    });
+    var any = false;
+    fmts.forEach(function (f, i) {
+      var r = rec(d.id, sc, f);
+      var y = MT + i * rowH + 3, bh = 9;
+      svg += '<text class="tick" x="' + (ML - 4) + '" y="' + (y + bh - 1.5) +
+        '" text-anchor="end">' + esc(ABBR[f]) + "</text>";
+      if (!r) { return; }
+      any = true;
+      [[sx, r.time_ratio, "time", r.below_floor], [mx, r.rss_ratio, "rss", false]]
+        .forEach(function (m) {
+          if (m[1] == null || m[1] <= 0) { return; }
+          var v = 1 / m[1];
+          var x2 = m[0](v), x1 = m[0](1);
+          var bx = Math.min(x1, x2), bw = Math.max(0.8, Math.abs(x2 - x1));
+          var cls = "bar" + (isAccent(f) ? " accent" : "") + (m[3] ? " muted" : "");
+          var tipTxt = SHORT[f] + "\n" + d.id + " - " + sc + "\n" +
+            (m[2] === "time"
+              ? secs(r.time_s) + " = " + ratio(v) + " the baseline's speed"
+              : bytes(r.rss_b) + " peak RSS = " + ratio(v) + " leaner") +
+            (m[3] ? "\nwithin the 10 ms citation floor" : "");
+          svg += '<g class="pt" tabindex="0" role="img" aria-label="' +
+            esc(SHORT[f] + " " + ratio(v)) + '" data-tip="' + esc(tipTxt) + '">' +
+            '<rect class="' + cls + '" x="' + bx.toFixed(1) + '" y="' + y +
+            '" width="' + bw.toFixed(1) + '" height="' + bh + '"/></g>';
+        });
+    });
+    if (!any) {
+      return '<figure class="panel"><figcaption><span class="name">' + esc(d.id) +
+        '</span><span class="sub">' + esc(d.subtitle) + "</span></figcaption>" +
+        '<p class="small">not measured in this run</p></figure>';
+    }
+    var ay = MT + fmts.length * rowH;
+    [[sx, tlo, thi, ML, ML + half], [mx, mlo, mhi, ML + half + GAP, W]]
+      .forEach(function (a) {
+        svg += '<line class="axis" x1="' + a[3] + '" y1="' + ay + '" x2="' + a[4] +
+          '" y2="' + ay + '"/>';
+        logTicks(a[1], a[2]).forEach(function (t) {
+          svg += '<text class="tick" x="' + a[0](t).toFixed(1) + '" y="' + (ay + 10) +
+            '" text-anchor="middle">' + esc(tickText(t)) + "</text>";
+        });
+      });
+    svg += '<text class="tick" x="' + (ML + half / 2) + '" y="' + (ay + 18) +
+      '" text-anchor="middle">time (x faster)</text>';
+    svg += '<text class="tick" x="' + (ML + half + GAP + half / 2) + '" y="' + (ay + 18) +
+      '" text-anchor="middle">memory (x leaner)</text>';
+    return '<figure class="panel"><figcaption><span class="name">' + esc(d.id) +
+      '</span><span class="sub">' + esc(d.subtitle) + "</span></figcaption>" +
+      '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' +
+      esc(d.id + " read time and peak memory by format") + '">' + svg + "</svg></figure>";
+  }
+
+  function renderFormats() {
+    var sel = el("formats-scen");
+    if (!sel.options.length) {
+      var present = [];
+      DATA.read.forEach(function (r) {
+        if (present.indexOf(r.scenario_key) < 0) { present.push(r.scenario_key); }
+      });
+      present.sort(function (a, b) { return SCEN_ORDER.indexOf(a) - SCEN_ORDER.indexOf(b); });
+      present.forEach(function (sc) {
+        var o = document.createElement("option");
+        o.value = sc; o.textContent = sc + (dagger(sc) ? " (grain-incomparable)" : "");
+        sel.appendChild(o);
+      });
+      sel.value = present.indexOf("full-read") >= 0 ? "full-read" : present[0];
+      sel.addEventListener("change", renderFormats);
+    }
+    var sc = sel.value;
+    var tlo = Infinity, thi = 0, mlo = Infinity, mhi = 0;
+    DATA.read.forEach(function (r) {
+      if (r.scenario_key !== sc || r.format === META.baseline) { return; }
+      if (r.time_ratio) { var t = 1 / r.time_ratio; tlo = Math.min(tlo, t); thi = Math.max(thi, t); }
+      if (r.rss_ratio) { var m = 1 / r.rss_ratio; mlo = Math.min(mlo, m); mhi = Math.max(mhi, m); }
+    });
+    if (!isFinite(tlo)) { tlo = 0.5; thi = 2; }
+    if (!isFinite(mlo)) { mlo = 0.5; mhi = 2; }
+    tlo = Math.min(tlo / 1.6, 0.5); thi = Math.max(thi * 1.6, 2);
+    mlo = Math.min(mlo / 1.6, 0.5); mhi = Math.max(mhi * 1.6, 2);
+
+    el("formats-grid").innerHTML = DATASETS.map(function (d) {
+      return pairedPanel(d, sc, tlo, thi, mlo, mhi);
+    }).join("");
+    el("formats-scen-note").textContent = dagger(sc)
+      ? "grain-incomparable - see fairness caveat 1" : "";
+    el("formats-lede").textContent =
+      "One panel per dataset: read time on the left, peak memory on the right, " +
+      "both against the CityJSONSeq artefact for the same dataset and scenario. " +
+      "Bars grow out of the 1x rule on a shared log scale; right is better in both. " +
+      "A muted bar is inside the 10 ms citation floor.";
+  }
+
+  /* ---- 3 - configuration axes ------------------------------------------ */
+  function renderConfigOrdering() {
+    var rows = DATA.ordering || [];
+    if (!rows.length) {
+      el("config-order-fig").innerHTML =
+        '<p class="small">No ordering run in this corpus - `just ordering-bench` produces it.</p>';
+      return;
+    }
+    var sel = el("config-order-scen");
+    var keys = [];
+    rows.forEach(function (r) { if (keys.indexOf(r.scenario_key) < 0) { keys.push(r.scenario_key); } });
+    keys.sort(function (a, b) { return SCEN_ORDER.indexOf(a) - SCEN_ORDER.indexOf(b); });
+    if (!sel.options.length) {
+      keys.forEach(function (k) {
+        var o = document.createElement("option");
+        o.value = k; o.textContent = k; sel.appendChild(o);
+      });
+      sel.value = keys.indexOf("bbox-5pct") >= 0 ? "bbox-5pct" : keys[0];
+      sel.addEventListener("change", renderConfigOrdering);
+    }
+    var sc = sel.value;
+    var mine = rows.filter(function (r) { return r.scenario_key === sc && r.time_ratio; });
+    mine.sort(function (a, b) { return b.time_ratio - a.time_ratio; });
+    var lo = Infinity, hi = 0;
+    mine.forEach(function (r) { lo = Math.min(lo, r.time_ratio); hi = Math.max(hi, r.time_ratio); });
+    lo = Math.min(lo / 1.6, 0.5); hi = Math.max(hi * 1.6, 2);
+
+    var W = 620, ML = 210, rowH = 14, MT = 6;
+    var sx = logScale(lo, hi, ML, W - 46);
+    var H = MT + mine.length * rowH + 20;
+    var svg = '<line class="refline" x1="' + sx(1).toFixed(1) + '" y1="' + MT +
+      '" x2="' + sx(1).toFixed(1) + '" y2="' + (MT + mine.length * rowH) + '"/>';
+    mine.forEach(function (r, i) {
+      var y = MT + i * rowH + 3, bh = 8;
+      var x2 = sx(r.time_ratio), x1 = sx(1);
+      var bx = Math.min(x1, x2), bw = Math.max(0.8, Math.abs(x2 - x1));
+      svg += '<g class="pt" tabindex="0" role="img" aria-label="' +
+        esc(r.dataset + " " + ratio(r.time_ratio)) + '" data-tip="' +
+        esc(r.dataset + "\n" + sc + "\nsource order " + secs(r.base_time_s) +
+            " -> Hilbert " + secs(r.variant_time_s) + " = " + ratio(r.time_ratio) +
+            (r.below_floor ? "\nwithin the 10 ms citation floor" : "")) + '">' +
+        '<rect class="bar accent' + (r.below_floor ? " muted" : "") + '" x="' +
+        bx.toFixed(1) + '" y="' + y + '" width="' + bw.toFixed(1) + '" height="' + bh + '"/>' +
+        '<text class="tick" x="' + (ML - 4) + '" y="' + (y + bh - 1) +
+        '" text-anchor="end">' + esc(r.dataset) + "</text></g>";
+    });
+    var ay = MT + mine.length * rowH;
+    svg += '<line class="axis" x1="' + ML + '" y1="' + ay + '" x2="' + (W - 46) +
+      '" y2="' + ay + '"/>';
+    logTicks(lo, hi).forEach(function (t) {
+      svg += '<text class="tick" x="' + sx(t).toFixed(1) + '" y="' + (ay + 10) +
+        '" text-anchor="middle">' + esc(tickText(t)) + "</text>";
+    });
+    svg += '<text class="tick" x="' + ((ML + W - 46) / 2) + '" y="' + (ay + 18) +
+      '" text-anchor="middle">Hilbert order vs source order (x faster)</text>';
+    var cleared = mine.filter(function (r) { return !r.below_floor; }).length;
+    el("config-order-fig").innerHTML =
+      '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' +
+      esc("Hilbert ordering speed-up by dataset for " + sc) + '">' + svg + "</svg>";
+    el("config-order-lede").textContent =
+      "The Hilbert-ordered package against the same package written in source order - " +
+      "same writer, same reader, same scenarios. " + cleared + " of " + mine.length +
+      " datasets clear the 10 ms citation floor on this scenario; the muted bars do not, " +
+      "and their position is noise.";
+  }
+
+  function renderConfigVariants() {
+    var recs = (DATA.scaling && DATA.scaling.compression) || [];
+    if (!recs.length) {
+      el("config-var-table").innerHTML =
+        '<p class="small">No codec or row-group run in this corpus - ' +
+        '`just compression-bench` over the scaling corpus produces it.</p>';
+      return;
+    }
+    var slices = [];
+    recs.forEach(function (r) {
+      if (!slices.some(function (s) { return s.id === r.dataset; })) {
+        slices.push({ id: r.dataset, objects: r.objects });
+      }
+    });
+    slices.sort(function (a, b) { return a.objects - b.objects; });
+    var variants = [];
+    recs.forEach(function (r) { if (variants.indexOf(r.variant) < 0) { variants.push(r.variant); } });
+
+    var head = '<tr><th scope="col">Variant</th><th scope="col">Axis</th>';
+    slices.forEach(function (s) {
+      head += '<th scope="col">' + num(s.objects) + " obj</th>";
+    });
+    head += '<th scope="col">Row groups touched</th></tr>';
+    var body = "";
+    variants.forEach(function (v) {
+      var kind = "";
+      var row = '<tr><th scope="row">' + esc(v.replace("cityparquet+", "").replace("cityparquet", "default")) + "</th>";
+      var cells = "", touched = "";
+      slices.forEach(function (s) {
+        var r = recs.filter(function (x) { return x.variant === v && x.dataset === s.id; })[0];
+        kind = r ? r.kind : kind;
+        cells += "<td>" + (r ? esc(bytes(r.total_bytes)) : "&mdash;") + "</td>";
+        if (r && r.row_groups_total) {
+          touched = r.row_groups_touched + " / " + r.row_groups_total;
+        }
+      });
+      body += row + "<td>" + esc(kind) + "</td>" + cells + "<td>" + esc(touched || "&mdash;") + "</td></tr>";
+    });
+    el("config-var-table").innerHTML =
+      '<div class="tablewrap"><table class="corpus"><caption>' +
+      esc("Bytes written by each writer configuration, at four cardinalities of the " +
+          "same city model. Row groups touched is for the widest spatial window at the " +
+          "largest slice - it is what row-group size actually buys.") +
+      "</caption><thead>" + head + "</thead><tbody>" + body + "</tbody></table></div>";
+    el("config-var-lede").textContent =
+      "Codec and row-group size are write-side axes: the harness reports bytes, write " +
+      "time and row-group counts for them, but no peak RSS and only two query types, so " +
+      "they cannot be drawn in the shape used above.";
+  }
+
+  /* ---- 4 - scaling trend ------------------------------------------------
+     The one view on this page that plots ABSOLUTE seconds and bytes rather
+     than a ratio to CityJSONSeq. That is deliberate: the quantity being read
+     is the SLOPE of the line on log-log axes - flat means the cost does not
+     grow with the model, and a ratio to a baseline that is itself growing
+     hides exactly that. */
+  function scalingPanel(metric, sc, slices) {
+    var recs = (DATA.scaling && DATA.scaling.read) || [];
+    var fmts = [];
+    recs.forEach(function (r) { if (fmts.indexOf(r.format) < 0) { fmts.push(r.format); } });
+    fmts.sort(function (a, b) { return FORMATS.indexOf(a) - FORMATS.indexOf(b); });
+
+    var key = metric === "time" ? "time_s" : "rss_b";
+    var xlo = Infinity, xhi = 0, ylo = Infinity, yhi = 0;
+    recs.forEach(function (r) {
+      if (r.scenario_key !== sc || r[key] == null || r[key] <= 0) { return; }
+      xlo = Math.min(xlo, r.objects); xhi = Math.max(xhi, r.objects);
+      ylo = Math.min(ylo, r[key]); yhi = Math.max(yhi, r[key]);
+    });
+    if (!isFinite(xlo) || !isFinite(ylo)) {
+      return '<figure class="panel"><figcaption><span class="name">' +
+        esc(metric === "time" ? "read time" : "peak memory") +
+        '</span></figcaption><p class="small">not measured in this run</p></figure>';
+    }
+    var W = 300, H = 210, ML = 48, MR = 62, MT = 8, MB = 30;
+    var sx = logScale(xlo / 1.3, xhi * 1.3, ML, W - MR);
+    var sy = logScale(ylo / 1.6, yhi * 1.6, H - MB, MT);
+    var svg = "";
+
+    if (metric === "time") {
+      /* Honesty rule 1, carried into an absolute-value view: anything under
+         the 10 ms floor is a timing this benchmark will not cite. */
+      var floor = DATA.meta.citation_floor_s;
+      if (floor > ylo / 1.6) {
+        var fy = Math.min(H - MB, sy(floor));
+        svg += '<rect class="floorband" x="' + ML + '" y="' + fy.toFixed(1) +
+          '" width="' + (W - MR - ML) + '" height="' + (H - MB - fy).toFixed(1) + '"/>';
+        svg += '<text class="tick" x="' + (ML + 3) + '" y="' + (fy - 2).toFixed(1) +
+          '">10 ms citation floor</text>';
+      }
+    }
+    var ends = [];
+    fmts.forEach(function (f) {
+      var pts = recs.filter(function (r) {
+        return r.format === f && r.scenario_key === sc && r[key] != null && r[key] > 0;
+      }).sort(function (a, b) { return a.objects - b.objects; });
+      if (!pts.length) { return; }
+      var dstr = pts.map(function (p, i) {
+        return (i ? "L" : "M") + sx(p.objects).toFixed(1) + " " + sy(p[key]).toFixed(1);
+      }).join(" ");
+      svg += '<path class="line' + (isAccent(f) ? " accent" : "") + '" d="' + dstr + '"/>';
+      pts.forEach(function (p) {
+        svg += point(f, sx(p.objects), sy(p[key]), 3,
+          SHORT[f] + "\n" + num(p.objects) + " CityObjects, " + sc + "\n" +
+          (metric === "time" ? secs(p[key]) : bytes(p[key])));
+      });
+      var last = pts[pts.length - 1];
+      ends.push({ x: sx(last.objects) + 4, y: sy(last[key]), t: ABBR[f], f: f });
+    });
+    placeEndLabels(ends, { top: MT, bottom: H - MB });
+    ends.forEach(function (e) {
+      svg += '<text class="endlab' + (isAccent(e.f) ? " accent" : "") + '" x="' +
+        e.x.toFixed(1) + '" y="' + e.y.toFixed(1) + '">' + esc(e.t) + "</text>";
+    });
+    svg += '<line class="axis" x1="' + ML + '" y1="' + (H - MB) + '" x2="' + (W - MR) +
+      '" y2="' + (H - MB) + '"/>';
+    slices.forEach(function (s) {
+      svg += '<text class="tick" x="' + sx(s.objects).toFixed(1) + '" y="' + (H - MB + 10) +
+        '" text-anchor="middle">' + esc(num(s.objects)) + "</text>";
+    });
+    logTicks(ylo / 1.6, yhi * 1.6).forEach(function (t) {
+      svg += '<text class="tick" x="' + (ML - 4) + '" y="' + (sy(t) + 3).toFixed(1) +
+        '" text-anchor="end">' +
+        esc(metric === "time" ? secs(t) : bytes(t)) + "</text>";
+    });
+    svg += '<text class="tick" x="' + ((ML + W - MR) / 2) + '" y="' + (H - MB + 22) +
+      '" text-anchor="middle">CityObjects (log)</text>';
+    return '<figure class="panel"><figcaption><span class="name">' +
+      esc(metric === "time" ? "read time" : "peak memory") +
+      '</span><span class="sub">' + esc("absolute " + (metric === "time" ? "seconds" : "bytes") +
+      ", log-log - a flat line is a cost that does not grow") + "</span></figcaption>" +
+      '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' +
+      esc((metric === "time" ? "Read time" : "Peak memory") +
+          " against CityObject count by format for " + sc) + '">' + svg + "</svg></figure>";
+  }
+
+  function renderScaling() {
+    var recs = (DATA.scaling && DATA.scaling.read) || [];
+    if (!recs.length) {
+      el("scaling-grid").innerHTML =
+        '<p class="small">No scaling corpus in this run - `just fetch-scaling-data` ' +
+        'builds it and the bench recipes measure it into bench/scaling_*_results.</p>';
+      el("scaling-lede").textContent = "";
+      return;
+    }
+    var slices = [];
+    recs.forEach(function (r) {
+      if (!slices.some(function (s) { return s.id === r.dataset; })) {
+        slices.push({ id: r.dataset, objects: r.objects });
+      }
+    });
+    slices.sort(function (a, b) { return a.objects - b.objects; });
+
+    var sel = el("scaling-scen");
+    if (!sel.options.length) {
+      var keys = [];
+      recs.forEach(function (r) { if (keys.indexOf(r.scenario_key) < 0) { keys.push(r.scenario_key); } });
+      keys.sort(function (a, b) { return SCEN_ORDER.indexOf(a) - SCEN_ORDER.indexOf(b); });
+      keys.forEach(function (k) {
+        var o = document.createElement("option");
+        o.value = k; o.textContent = k + (dagger(k) ? " (grain-incomparable)" : "");
+        sel.appendChild(o);
+      });
+      sel.value = keys.indexOf("full-read") >= 0 ? "full-read" : keys[0];
+      sel.addEventListener("change", renderScaling);
+    }
+    var sc = sel.value;
+    el("scaling-grid").innerHTML =
+      scalingPanel("time", sc, slices) + scalingPanel("rss", sc, slices);
+    el("scaling-scen-note").textContent = dagger(sc)
+      ? "grain-incomparable - see fairness caveat 1" : "";
+    el("scaling-lede").textContent =
+      "One city model cut to " + slices.length + " cardinalities (" +
+      slices.map(function (s) { return num(s.objects); }).join(", ") +
+      " CityObjects), so the only thing changing along the x axis is how much data " +
+      "there is. Both panels are absolute values on log-log axes rather than ratios: " +
+      "the slope IS the answer, and dividing by a baseline that grows too would hide it.";
+  }
+
   function renderCaveats() {
     el("caveats").innerHTML = META.caveats_read.map(function (c, i) {
       return '<li id="caveat-' + (i + 1) + '"><div class="verbatim">' + esc(c) + "</div></li>";
@@ -1966,6 +2430,11 @@ JS = r"""
   }());
 
   renderHeadline();
+  renderCorpus();
+  renderFormats();
+  renderConfigOrdering();
+  renderConfigVariants();
+  renderScaling();
   renderOverview();
   renderPareto();
   renderHeat();
@@ -2034,7 +2503,16 @@ def main(data_path: Path | None = None, out_path: Path | None = None) -> Path:
             f"benchviz: {data_path} is missing — run `python -m benchviz prep` first."
         )
     data = json.loads(data_path.read_text(encoding="utf-8"))
-    for key in ("meta", "datasets", "read", "sizes", "compression", "compression_gaps"):
+    for key in (
+        "meta",
+        "datasets",
+        "read",
+        "sizes",
+        "compression",
+        "compression_gaps",
+        "ordering",
+        "scaling",
+    ):
         if key not in data:
             raise SystemExit(
                 f"benchviz: bench_data.json has no '{key}' key — it does not match "

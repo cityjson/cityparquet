@@ -18,6 +18,11 @@ calls the same code with its own `--html`/`--figures` destinations.
 - **Every plotted metric is a unitless ratio vs the CityJSONSeq baseline** for
   the same (dataset, scenario). Lower/left = better, everywhere. The baseline
   sits at 1× and is drawn as a reference cross/line in every panel.
+  **One documented exception**: the scaling view plots absolute seconds and
+  bytes on log-log axes, because the quantity being read there is the SLOPE of
+  cost against cardinality — a flat line is a cost that does not grow with the
+  model — and dividing by a baseline that is itself growing hides exactly that.
+  It is the only view allowed to; anything else stays a ratio.
 - **Per-dataset small multiples** at shared scale, ordered by CityObject count
   descending. The order is computed from the data, so each run's corpus orders
   itself and no dataset name is written down anywhere in this package.
@@ -187,6 +192,31 @@ an explicit gap, never drop silently).
     { "dataset": "<id>", "issue": "all roundtrip_equal=false (undocumented)" },
     { "dataset": "<id>", "issue": "CSV present but header-only" },
   ],
+  "scaling": {
+    // One city model cut to N cardinalities: the corpus the CONFIGURATION axes
+    // are measured on, because a codec or a row-group size answers "how does
+    // this scale", not "how does this compare to Vienna". A separate key, never
+    // merged into "read"/"datasets" -- a slice is not a peer of a real city
+    // model, and one leaking in grows a synthetic panel onto every grid.
+    // Object counts come from the RUN: the slices are named for the cardinality
+    // asked for and hold what a strict prefix actually contains (n5000 is 5,001).
+    "read": [
+      {
+        "dataset": "<slice>",
+        "objects": 50001,
+        "format": "cityparquet-hilbert",
+        "scenario_key": "full-read",
+        "time_s": 1.9, // absolutes kept: the trend view plots them
+        "rss_b": 0,
+        "time_ratio": 1.02,
+        "rss_ratio": 0.58,
+        "below_floor": false,
+      },
+    ],
+    "sizes": [], // slice rows only; the source sweeps a shared directory
+    "ordering": [], // source vs hilbert, per slice
+    "compression": [], // codec x row-group, per slice, with row_groups_touched
+  },
   "ordering": [
     // The row-ordering run, baselined against the SOURCE-ORDER package rather
     // than CityJSONSeq: an ordering run has no cityjsonseq row to divide by.
@@ -264,6 +294,27 @@ Both charts read only `bench_data.json` (read ratios + sizes
 `frac_of_baseline`); medians computed in the page JS over non-null values.
 Static paper figures for View 0 are **not** produced yet (HTML only until
 requested).
+
+## The page's sections
+
+The page opens with what a reader looks up before reading anything else, then
+the two comparisons, then the trend:
+
+1. **The corpus** — a table, not a chart: which datasets, how many CityObjects,
+   and the bytes in each format. The question is a lookup and the answer wants
+   exact figures, which is what a table is for.
+2. **Read time and peak memory, per dataset** — paired bars per dataset, one
+   scenario at a time, both metrics against the CityJSONSeq artefact. Bars grow
+   out of the 1× rule on a log axis, per the size grid's reasoning.
+3. **Configuration axes** — row ordering across the whole ordering run, then
+   codec and row-group size on the scaling corpus. The second is a table: those
+   are write-side axes, and the harness reports bytes, write time and row-group
+   counts for them but no peak RSS and only two query types, so they cannot take
+   the shape used above. `row_groups_touched / row_groups_total` is the honest
+   pruning metric — it counts skipping directly, and is immune to the 10 ms floor.
+4. **Scaling** — see the ratio-rule exception above.
+
+Then the four corpus-wide views, unchanged:
 
 ## The four views
 

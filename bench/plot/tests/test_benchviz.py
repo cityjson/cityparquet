@@ -48,6 +48,7 @@ def test_prep_builds_the_design_contract_from_result_csvs(tmp_path):
         "compression",
         "compression_gaps",
         "ordering",
+        "scaling",
     ):
         assert key in data, f"bench_data.json lacks '{key}'"
     assert [d["id"] for d in data["datasets"]] == ["Zurich", "delft", "Ingolstadt"]
@@ -340,3 +341,40 @@ def test_both_panel_picks_refuse_a_degenerate_dataset(tmp_path):
         "real": [{"objects": 5_000, "below_floor": True, "delta_s": 0.001}],
     }
     assert [ds for ds, _ in figures._ordering_pick(ordering)] == ["real"]
+
+
+def test_scaling_slices_are_measured_not_named(tmp_path):
+    """The scaling corpus is one model at several cardinalities.
+
+    Its slices are NAMED for the size they were asked for and HOLD whatever a
+    strict prefix of the source actually contains, so the object count has to
+    come from the run. It also stays out of `datasets`: a slice is not a peer
+    of Vienna, and letting one in would grow a synthetic panel onto every
+    per-dataset grid on the page.
+    """
+    data, _ = prep.build(prep.Inputs(_bench_dir(tmp_path)))
+    scaling = data["scaling"]
+
+    assert scaling["read"], "the fixture has a scaling run"
+    slice_ids = {r["dataset"] for r in scaling["read"]}
+    assert not (slice_ids & {d["id"] for d in data["datasets"]})
+    for record in scaling["read"]:
+        assert record["objects"], "no CityObject count to place the slice on the x axis"
+        # Absolutes, not only ratios: a trend view reads the SLOPE of time
+        # against cardinality, which a ratio to a growing baseline destroys.
+        assert record["time_s"] is not None
+        assert record["rss_b"] is not None
+
+    # sizes.csv sweeps the shared prepared-artefact directory, so it carries
+    # rows for the catalogue corpus too. Only the measured slices survive.
+    assert {r["dataset"] for r in scaling["sizes"]} <= slice_ids
+
+
+def test_a_corpus_with_no_scaling_run_is_stated_not_crashed(tmp_path):
+    """Same contract as compression and ordering: absence is normal."""
+    bench = _bench_dir(tmp_path)
+    shutil.rmtree(bench / "scaling_read_results")
+
+    data, _ = prep.build(prep.Inputs(bench))
+    assert data["scaling"]["read"] == []
+    assert data["scaling"]["sizes"] == []

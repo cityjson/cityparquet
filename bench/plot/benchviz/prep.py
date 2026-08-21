@@ -44,6 +44,21 @@ class Inputs:
     def ordering_dir(self) -> Path:
         return self.bench_dir / "ordering_results"
 
+    # The scaling corpus: one city model cut to four cardinalities, which is
+    # how the configuration axes are measured -- a codec or a row-group size
+    # answers "how does this scale", not "how does this compare to Vienna".
+    @property
+    def scaling_read_dir(self) -> Path:
+        return self.bench_dir / "scaling_read_results"
+
+    @property
+    def scaling_ordering_dir(self) -> Path:
+        return self.bench_dir / "scaling_ordering_results"
+
+    @property
+    def scaling_compression_dir(self) -> Path:
+        return self.bench_dir / "scaling_compression_results"
+
     @property
     def sizes_csv(self) -> Path:
         return self.read_dir / SIZES_CSV_NAME
@@ -573,6 +588,167 @@ def load_ordering(inputs: Inputs) -> list[dict]:
 
 
 # --------------------------------------------------------------------------
+# scaling corpus
+# --------------------------------------------------------------------------
+
+
+def _scaling_objects(rows: list[dict[str, str]]) -> int | None:
+    """CityObject count for a slice, read from the run rather than its name.
+
+    The slices are named for the cardinality they were ASKED for, and the
+    generator gives what a strict prefix of the source actually holds --
+    `n5000` is 5,001 objects and `n50000` is 50,001. Naming is not measurement.
+    """
+    for row in rows:
+        if row["scenario"] == "full-read" and row["format"].startswith("cityparquet"):
+            return _int(row["result_count"])
+    return None
+
+
+def load_scaling(inputs: Inputs) -> dict:
+    """The scaling corpus: one dataset at four cardinalities.
+
+    A separate key, never merged into `read`/`datasets`. The slices are the
+    same city model cut to different sizes, so putting them beside a corpus of
+    unrelated models would answer a different question -- and would grow four
+    synthetic panels onto every per-dataset grid.
+
+    Absolute seconds and bytes are kept alongside the ratios: a trend view
+    plots the absolutes, because the SLOPE of time against cardinality on
+    log-log axes is the quantity being read, and a ratio flattens it.
+    """
+    read_dir = inputs.scaling_read_dir
+    slices = {p.stem: _read_rows(p, READ_COLUMNS) for p in _dataset_csvs(read_dir)}
+    if not slices:
+        return {"read": [], "sizes": [], "ordering": [], "compression": []}
+
+    objects = {name: _scaling_objects(rows) for name, rows in slices.items()}
+
+    read_records: list[dict] = []
+    for name, rows in slices.items():
+        groups: dict[str, dict[str, dict[str, str]]] = {}
+        for row in rows:
+            if COLD_RE.search(row["notes"]) or row["format"] not in KNOWN_FORMATS:
+                continue
+            groups.setdefault(_scenario_key(row), {})[row["format"]] = row
+        for key in sorted(groups):
+            bucket = groups[key]
+            base = bucket.get(BASELINE_FORMAT)
+            base_t = _float(base["time_s"]) if base else None
+            base_rss = _float(base["peak_rss_bytes"]) if base else None
+            for fmt, row in sorted(bucket.items()):
+                time_s = _float(row["time_s"])
+                rss_b = _int(row["peak_rss_bytes"])
+                read_records.append(
+                    {
+                        "dataset": name,
+                        "objects": objects.get(name),
+                        "format": fmt,
+                        "scenario_key": key,
+                        "time_s": time_s,
+                        "rss_b": rss_b,
+                        "time_ratio": _ratio(time_s, base_t),
+                        "rss_ratio": _ratio(
+                            float(rss_b) if rss_b is not None else None, base_rss
+                        ),
+                        "below_floor": (
+                            None
+                            if time_s is None
+                            else time_s < CITATION_FLOOR_S
+                        ),
+                    }
+                )
+
+    # sizes.csv sweeps the SHARED prepared-artefact directory, so it carries the
+    # catalogue corpus too. Keep only the slices this run measured -- derived
+    # from the directory's own CSV stems, so no dataset name is written here.
+    size_records: list[dict] = []
+    sizes_csv = read_dir / SIZES_CSV_NAME
+    if sizes_csv.exists():
+        for row in _read_rows(sizes_csv, SIZES_COLUMNS):
+            if row["dataset"] not in slices or row["format"] not in KNOWN_FORMATS:
+                continue
+            size_records.append(
+                {
+                    "dataset": row["dataset"],
+                    "objects": objects.get(row["dataset"]),
+                    "format": row["format"],
+                    "bytes": _int(row["bytes"]),
+                    "mb": _float(row["mb"]),
+                    "ratio_vs_cityjsonseq": _float(row["ratio_vs_cityjsonseq"]),
+                }
+            )
+
+    ordering_records: list[dict] = []
+    for path in _dataset_csvs(inputs.scaling_ordering_dir):
+        name = path.stem
+        groups: dict[str, dict[str, dict[str, str]]] = {}
+        for row in _read_rows(path, READ_COLUMNS):
+            if row["format"] not in (ORDERING_BASELINE, ORDERING_VARIANT):
+                continue
+            groups.setdefault(_scenario_key(row), {})[row["format"]] = row
+        for key in sorted(groups):
+            base = groups[key].get(ORDERING_BASELINE)
+            variant = groups[key].get(ORDERING_VARIANT)
+            if not base or not variant:
+                continue
+            bt, vt = _float(base["time_s"]), _float(variant["time_s"])
+            if bt is None or vt is None:
+                continue
+            ordering_records.append(
+                {
+                    "dataset": name,
+                    "objects": objects.get(name),
+                    "scenario_key": key,
+                    "base_time_s": bt,
+                    "variant_time_s": vt,
+                    "time_ratio": _ratio(bt, vt),
+                    "below_floor": abs(bt - vt) < CITATION_FLOOR_S,
+                }
+            )
+
+    compression_records: list[dict] = []
+    for path in _dataset_csvs(inputs.scaling_compression_dir):
+        name = path.stem
+        rows = _read_rows(path, COMPRESSION_COLUMNS)
+        default = next((r for r in rows if _compression_kind(r["variant"]) == "default"), None)
+        base_bytes = _float(default["total_bytes"]) if default else None
+        base_write = _float(default["write_s"]) if default else None
+        for row in rows:
+            total = _float(row["total_bytes"])
+            groups_total = _int(row["row_groups_total"])
+            touched = _int(row["row_groups_touched"])
+            compression_records.append(
+                {
+                    "dataset": name,
+                    "objects": objects.get(name),
+                    "variant": row["variant"],
+                    "kind": _compression_kind(row["variant"]),
+                    "write_s": _float(row["write_s"]),
+                    "total_bytes": _int(row["total_bytes"]),
+                    "full_scan_s": _float(row["full_scan_s"]),
+                    "window_query_s": _float(row["window_query_s"]),
+                    "row_groups_total": groups_total,
+                    "row_groups_touched": touched,
+                    "touched_frac": _ratio(
+                        float(touched) if touched is not None else None,
+                        float(groups_total) if groups_total else None,
+                    ),
+                    "size_ratio": _ratio(total, base_bytes),
+                    "write_ratio": _ratio(_float(row["write_s"]), base_write),
+                    "roundtrip": row["roundtrip_equal"].strip().lower() == "true",
+                }
+            )
+
+    return {
+        "read": read_records,
+        "sizes": size_records,
+        "ordering": ordering_records,
+        "compression": compression_records,
+    }
+
+
+# --------------------------------------------------------------------------
 # sizes
 # --------------------------------------------------------------------------
 
@@ -754,6 +930,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     datasets = build_datasets(read_records, raw_mb)
     compression_records, compression_gaps = load_compression(inputs)
     ordering_records = load_ordering(inputs)
+    scaling = load_scaling(inputs)
 
     order = {d["id"]: i for i, d in enumerate(datasets)}
     read_records.sort(
@@ -787,6 +964,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
                 "sizes": inputs.label(inputs.sizes_csv),
                 "compression": inputs.label(inputs.compression_dir),
                 "ordering": inputs.label(inputs.ordering_dir),
+                "scaling": inputs.label(inputs.scaling_read_dir),
             },
             "caveats_read": read_caveats(inputs),
             "caveats_compression": compression_caveats(inputs),
@@ -805,6 +983,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
         "compression": compression_records,
         "compression_gaps": compression_gaps,
         "ordering": ordering_records,
+        "scaling": scaling,
     }
     return data, anomalies + excluded.notes()
 
@@ -824,7 +1003,9 @@ def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
         f"{len(data['compression'])} compression records, "
         f"{len(data['compression_gaps'])} compression gaps, "
         f"{len(data['ordering'])} ordering records "
-        f"({len({r['dataset'] for r in data['ordering']})} datasets)"
+        f"({len({r['dataset'] for r in data['ordering']})} datasets), "
+        f"{len(data['scaling']['read'])} scaling read records "
+        f"({len({r['dataset'] for r in data['scaling']['read']})} slices)"
     )
     for note in anomalies:
         print(f"  anomaly: {note}")
