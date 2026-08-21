@@ -170,7 +170,15 @@ fn an_unknown_crs_in_small_local_coordinates_claims_no_wgs84_extent() {
     let mut out_text = serde_json::to_string(&header).unwrap();
     for line in lines {
         out_text.push('\n');
-        out_text.push_str(line);
+        // Remove per-object geographicalExtent declarations: they are stated in
+        // the ORIGINAL coordinates and would contradict the re-quantised vertices.
+        let mut feature: serde_json::Value = serde_json::from_str(line).unwrap();
+        if let Some(objs) = feature["CityObjects"].as_object_mut() {
+            for obj in objs.values_mut() {
+                obj.as_object_mut().unwrap().remove("geographicalExtent");
+            }
+        }
+        out_text.push_str(&serde_json::to_string(&feature).unwrap());
     }
     let input = tmp.path().join("local_coords_no_crs.city.jsonl");
     fs::write(&input, out_text).unwrap();
