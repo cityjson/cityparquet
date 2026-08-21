@@ -35,16 +35,12 @@ use crate::source::{FeatureIter, Source};
 use crate::wkb_read::DecodedGeometry;
 use crate::wkb_write::{VertexPool, geometry_bbox, geometry_to_wkb, point_to_wkb};
 
-/// CityObject members carried by a dedicated column, and therefore stripped
-/// from the catch-all `other` column (§5.1, G9). `children_roles` has its own
-/// column (G5); `address` has its own reserved struct column (spec
-/// "Addresses", gap 10); the rest are cjseq's typed fields — **except**
-/// `geographicalExtent`, which cjseq types but the encoder never stores
-/// (`bbox` is derived from the geometry union, not from the source extent), so
-/// a per-object `geographicalExtent` legitimately rides `other` and
-/// round-trips straight back into the typed field on decode. This same set is
-/// the decode-time guard: an `other` cell may never carry any of these keys.
-pub(crate) const OTHER_RESERVED_MEMBERS: [&str; 7] = [
+/// Members carried by a dedicated column, stripped from the `other` payload
+/// (§5.1). `children_roles` rides the flatten member but has its own column
+/// (G5); `address` has its own reserved struct column; `geographicalExtent`
+/// is carried by `bbox`, which unions it with the object's computed subtree
+/// extent; the rest are cjseq's typed fields.
+pub(crate) const OTHER_RESERVED_MEMBERS: [&str; 8] = [
     "type",
     "attributes",
     "geometry",
@@ -52,6 +48,7 @@ pub(crate) const OTHER_RESERVED_MEMBERS: [&str; 7] = [
     "parents",
     "children_roles",
     "address",
+    "geographicalExtent",
 ];
 
 /// The object serialised to its JSON member map — computed ONCE per row by
@@ -156,6 +153,15 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
             cur
         }
     });
+}
+
+/// The source's declared per-object `geographicalExtent` as a bbox, when it
+/// is well-formed — exactly six finite numbers (CityJSON 2.0.1 §2). A
+/// malformed extent is ignored rather than fatal: it is an optional,
+/// derivable source member, and `bbox` is fully recoverable from geometry.
+fn source_extent(co: &CityObject) -> Option<[f64; 6]> {
+    let extent: [f64; 6] = co.geographical_extent.as_ref()?.as_slice().try_into().ok()?;
+    extent.iter().all(|v| v.is_finite()).then_some(extent)
 }
 
 /// Union of bboxes over an object's own geometries only (no descendant
@@ -1693,7 +1699,15 @@ impl RowWriter {
             }
         }
 
-        let bbox = resolve_bbox(acc.own_bbox, id, co, feature, &pool)?;
+        // `bbox` is the union of the object's stored geometry (whole subtree,
+        // all LoDs) and the source's declared extent. A declared extent may
+        // only widen the box: sources routinely declare one that does not
+        // contain their own geometry, and a box narrower than the geometry
+        // silently prunes the row out of spatial queries.
+        let mut bbox = resolve_bbox(acc.own_bbox, id, co, feature, &pool)?;
+        if let Some(extent) = source_extent(co) {
+            union_bbox(&mut bbox, extent);
+        }
         self.push_bbox(bbox);
         self.push_template(acc.template);
 

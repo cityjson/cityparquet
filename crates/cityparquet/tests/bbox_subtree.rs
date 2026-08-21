@@ -87,3 +87,50 @@ fn zmax_for_pair(batches: &[RecordBatch], parent_id: &str, child_id: &str) -> (f
         child.expect("child row present"),
     )
 }
+
+/// A declared `geographicalExtent` may only ever widen `bbox`, never narrow
+/// it. 3DBAG declares an extent that fails to contain its own geometry, so
+/// the computed box must win on every bound it is larger on.
+#[test]
+fn declared_extent_never_narrows_bbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("pkg");
+    let opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.clone());
+    convert(&opts).unwrap();
+
+    let batches = read_table(&out.join("building.parquet"));
+    let (parent_zmax, child_zmax) = zmax_for_pair(
+        &batches,
+        "NL.IMBAG.Pand.0503100000030621",
+        "NL.IMBAG.Pand.0503100000030621-0",
+    );
+    // The source declares an extent for this Building whose zmax is 16.191,
+    // and its part reaches 16.19; the union must cover both.
+    assert!(parent_zmax >= child_zmax);
+    assert!(
+        parent_zmax >= 16.19,
+        "declared extent must be unioned in, got {parent_zmax}"
+    );
+}
+
+/// `geographicalExtent` is carried by `bbox`, not by `other`.
+#[test]
+fn geographical_extent_does_not_ride_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("pkg");
+    let opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.clone());
+    convert(&opts).unwrap();
+
+    let batches = read_table(&out.join("building.parquet"));
+    for batch in &batches {
+        let col = batch.column_by_name("other").unwrap();
+        let col = col.as_any().downcast_ref::<StringArray>().unwrap();
+        for row in 0..col.len() {
+            assert!(
+                col.is_null(row),
+                "delft has no unmapped members, got: {}",
+                col.value(row)
+            );
+        }
+    }
+}

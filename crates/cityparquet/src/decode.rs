@@ -117,16 +117,6 @@ fn merge_other_members(json: &mut Map<String, Value>, cell: Option<&str>, id: &s
                 "object '{id}': 'other' column carries reserved member '{key}'"
             )));
         }
-        // `geographicalExtent` routes into cjseq's typed `Vec<f64>`, so a
-        // corrupt cell (wrong length, null, non-numbers) would decode and then
-        // export as invalid CityJSON. CityJSON 2.0.1 §2 fixes it at exactly six
-        // numbers.
-        if key == "geographicalExtent" && !is_geographical_extent(&value) {
-            return Err(err(format!(
-                "object '{id}': 'other' geographicalExtent must be an array of exactly six \
-                 numbers, got: {value}"
-            )));
-        }
         json.insert(key, value);
     }
     Ok(())
@@ -176,14 +166,6 @@ fn merge_other_attributes(
         attrs_map.insert(key, value);
     }
     Ok(())
-}
-
-/// A CityJSON `geographicalExtent`: exactly six finite numbers
-/// `[minx, miny, minz, maxx, maxy, maxz]` (CityJSON 2.0.1 §2).
-fn is_geographical_extent(value: &Value) -> bool {
-    value
-        .as_array()
-        .is_some_and(|a| a.len() == 6 && a.iter().all(|n| n.as_f64().is_some_and(f64::is_finite)))
 }
 
 fn get_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a arrow_array::ArrayRef> {
@@ -820,11 +802,11 @@ mod tests {
         json.insert("type".to_string(), json!("Building"));
         merge_other_members(
             &mut json,
-            Some(r#"{"geographicalExtent":[0,0,0,1,1,1]}"#),
+            Some(r#"{"unreserved_member":"value"}"#),
             "obj-1",
         )
         .unwrap();
-        assert_eq!(json["geographicalExtent"], json!([0, 0, 0, 1, 1, 1]));
+        assert_eq!(json["unreserved_member"], json!("value"));
         assert_eq!(
             json["type"],
             json!("Building"),
@@ -925,27 +907,16 @@ mod tests {
     }
 
     #[test]
-    fn merge_other_members_validates_geographical_extent_shape() {
-        // G9 sol-review Finding 3: a corrupt `geographicalExtent` in `other`
-        // routes into cjseq's typed `Vec<f64>` and would export as invalid
-        // CityJSON, so it must be rejected before merging.
+    fn merge_other_members_rejects_geographical_extent() {
+        // `geographicalExtent` is a reserved member carried by `bbox`, not by
+        // `other`. A well-formed encoder never places it there; if found, it is
+        // a corrupt or foreign file.
         let mut json = Map::new();
+        let err = merge_other_members(&mut json, Some(r#"{"geographicalExtent":[0]}"#), "o")
+            .expect_err("geographicalExtent in `other` must be an error");
         assert!(
-            merge_other_members(&mut json, Some(r#"{"geographicalExtent":[0]}"#), "o").is_err(),
-            "fewer than six numbers must be rejected"
+            format!("{err:?}").contains("reserved member 'geographicalExtent'"),
+            "error must name the offending member, got: {err:?}"
         );
-        assert!(
-            merge_other_members(&mut json, Some(r#"{"geographicalExtent":null}"#), "o").is_err(),
-            "a null extent must be rejected, not silently dropped"
-        );
-        // A valid six-number extent passes.
-        let mut json = Map::new();
-        merge_other_members(
-            &mut json,
-            Some(r#"{"geographicalExtent":[0,0,0,1,1,1]}"#),
-            "o",
-        )
-        .unwrap();
-        assert_eq!(json["geographicalExtent"], json!([0, 0, 0, 1, 1, 1]));
     }
 }
