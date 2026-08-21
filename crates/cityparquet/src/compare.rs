@@ -1712,6 +1712,11 @@ fn compare_object(id: &str, a: &ObjectData, b: &ObjectData, tol: [f64; 3], out: 
             a.attributes, b.attributes
         ));
     }
+    // `geographicalExtent` is not compared: it is derived from `bbox` on
+    // export, so the exported value is the stored spatial extent rather than
+    // a reproduction of the source member. Neither side's `other` carries it
+    // (`unmapped_object_members` strips it).
+    //
     // Exact structural equality, NOT `values_equal`: `other` must round-trip
     // verbatim, so the attribute-oriented tolerances (numeric/date fuzz, and
     // treating a null-valued member as absent) would hide a real loss here.
@@ -1951,6 +1956,8 @@ pub fn compare_datasets(a: &Path, b: &Path, opts: &CompareOptions) -> Result<Com
             ));
         }
     }
+
+    excluded.push("geographicalExtent (derived from bbox)".to_string());
 
     let scale_a = transform_axes(&side_a.header.transform);
     let scale_b = transform_axes(&side_b.header.transform);

@@ -372,6 +372,35 @@ fn decode_address_column(col: &ListArray, row: usize) -> Result<Option<Vec<Addre
     Ok(Some(out))
 }
 
+/// The row's `bbox` as CityJSON's six-number `geographicalExtent`, in the
+/// struct's field order (`xmin, ymin, zmin, xmax, ymax, zmax`). `None` when
+/// the column is absent or the row's cell is null.
+fn bbox_extent(col: &StructArray, row: usize) -> Option<[f64; 6]> {
+    if col.is_null(row) {
+        return None;
+    }
+    let mut out = [0.0f64; 6];
+    for (i, name) in ["xmin", "ymin", "zmin", "xmax", "ymax", "zmax"]
+        .into_iter()
+        .enumerate()
+    {
+        let field = col.column_by_name(name)?;
+        let field = field.as_any().downcast_ref::<Float64Array>()?;
+        if field.is_null(row) {
+            return None;
+        }
+        out[i] = field.value(row);
+    }
+    Some(out)
+}
+
+/// A finite `f64` as a JSON number; non-finite coordinates cannot appear in
+/// a bbox written by this crate, so they degrade to `null` rather than
+/// panicking on an unrepresentable value.
+fn json_number(v: f64) -> Value {
+    serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number)
+}
+
 /// One attribute column's per-batch constants — name lookup, array, arrow
 /// type, and the `arrow.json` extension tag — resolved ONCE by
 /// [`decode_batch`] before its row loop. These used to be re-derived per
@@ -531,6 +560,9 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
     let other_attributes_col =
         downcast::<StringArray>(other_attributes_array.as_ref(), "other_attributes")?;
 
+    let bbox_array = optional_column(batch, "bbox", &cityparquet_schema::model::bbox_data_type());
+    let bbox_col = downcast::<StructArray>(bbox_array.as_ref(), "bbox")?;
+
     let template_array = optional_column(batch, "template", &template_data_type());
     let template_col = downcast::<StructArray>(template_array.as_ref(), "template")?;
     let template_id_col = downcast::<Int64Array>(
@@ -636,6 +668,15 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         let other_attributes_cell =
             (!other_attributes_col.is_null(row)).then(|| other_attributes_col.value(row));
         merge_other_attributes(&mut json, other_attributes_cell, &id)?;
+        // `geographicalExtent` is derived from `bbox` on export: the format
+        // stores one spatial extent per row, and `bbox` is it (spec
+        // "Spatial metadata"). Emitted for every row that has a bbox.
+        if let Some(extent) = bbox_extent(bbox_col, row) {
+            json.insert(
+                "geographicalExtent".to_string(),
+                Value::Array(extent.iter().map(|v| json_number(*v)).collect()),
+            );
+        }
         let object: cjseq::CityObject = serde_json::from_value(Value::Object(json))?;
 
         let address = decode_address_column(address_col, row)?;

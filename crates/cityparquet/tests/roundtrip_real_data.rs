@@ -246,9 +246,10 @@ fn every_recipe_preset_round_trips_delft_losslessly() {
             .count();
         assert_eq!(
             (degenerate, non_header_excluded.len()),
-            (16, 16),
+            (16, 17),
             "preset {}'s only non-header exclusions must be the 16 pinned \
-             coordinate-degenerate-ring drops (8 objects, source + export side each), got: {:#?}",
+             coordinate-degenerate-ring drops (8 objects, source + export side each) plus \
+             geographicalExtent (derived from bbox), got: {:#?}",
             preset.name(),
             non_header_excluded
         );
@@ -320,9 +321,9 @@ fn delft_round_trips_losslessly() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (16, 16),
+        (16, 17),
         "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
-         drops (8 objects, source + export side each), got: {:#?}",
+         drops (8 objects, source + export side each) plus geographicalExtent (derived from bbox), got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -409,9 +410,9 @@ fn railway_round_trips_losslessly_modulo_documented_drops() {
     );
     assert_eq!(
         non_header_excluded.len(),
-        264,
-        "210 appearance + 30 instances + 24 degenerate = 264 total non-header exclusions, \
-         nothing else, got: {:#?}",
+        265,
+        "210 appearance + 30 instances + 24 degenerate + 1 geographicalExtent (derived from bbox) \
+         = 265 total non-header exclusions, nothing else, got: {:#?}",
         non_header_excluded
     );
 
@@ -527,9 +528,9 @@ fn railway_compatibility_round_trips_losslessly_with_no_exclusions() {
     );
     assert_eq!(
         non_header_excluded.len(),
-        24,
+        25,
         "with appearance and instances now round-tripping, every non-header exclusion must be \
-         one of the 24 pinned degenerate-ring notes, nothing else, got: {:#?}",
+         one of the 24 pinned degenerate-ring notes or geographicalExtent (derived from bbox), got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -572,10 +573,10 @@ fn delft_compatibility_round_trips_losslessly_with_only_header_exclusions() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (16, 16),
+        (16, 17),
         "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
          drops (8 objects, source + export side each; see `delft_round_trips_losslessly` for \
-         the full explanation), got: {:#?}",
+         the full explanation) plus geographicalExtent (derived from bbox), got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -669,14 +670,20 @@ fn delft_derived_solid_face_drop_round_trips_and_comparator_agrees_with_the_writ
         .partition(|e| e.starts_with("header: metadata member"));
     assert_eq!(
         non_header_excluded.len(),
-        1,
-        "the only non-header exclusion must be the single degenerate-ring/surface drop, got: {:#?}",
+        2,
+        "the only non-header exclusions must be the single degenerate-ring/surface drop and \
+         geographicalExtent (derived from bbox), got: {:#?}",
         non_header_excluded
     );
     assert!(
-        non_header_excluded[0].contains("normalised away 1 degenerate ring(s), 1 surface(s)"),
-        "got: {}",
-        non_header_excluded[0]
+        non_header_excluded.iter().any(|e| e.contains("normalised away 1 degenerate ring(s), 1 surface(s)")),
+        "one exclusion must be the degenerate-ring/surface drop, got: {:#?}",
+        non_header_excluded
+    );
+    assert!(
+        non_header_excluded.iter().any(|e| e.contains("geographicalExtent")),
+        "one exclusion must be the geographicalExtent, got: {:#?}",
+        non_header_excluded
     );
     assert!(
         !header_excluded.is_empty(),
@@ -759,10 +766,10 @@ fn delft_by_type_round_trips_losslessly() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (16, 16),
+        (16, 17),
         "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
          drops (8 objects, source + export side each; see `delft_round_trips_losslessly` for \
-         the full explanation), got: {:#?}",
+         the full explanation) plus geographicalExtent (derived from bbox), got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -812,9 +819,9 @@ fn railway_by_type_compatibility_round_trips_losslessly_with_no_exclusions() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (24, 24),
-        "the 24 pinned degenerate-ring drops must still be the only \
-         non-header exclusions, got: {:#?}",
+        (24, 25),
+        "the 24 pinned degenerate-ring drops plus geographicalExtent (derived from bbox) \
+         must be the only non-header exclusions, got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -861,10 +868,10 @@ fn delft_hilbert_and_by_type_compose_and_round_trip_losslessly() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (16, 16),
+        (16, 17),
         "delft's only non-header exclusions must be the 16 pinned coordinate-degenerate-ring \
          drops (8 objects, source + export side each; see `delft_round_trips_losslessly` for \
-         the full explanation), got: {:#?}",
+         the full explanation) plus geographicalExtent (derived from bbox), got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -1027,9 +1034,9 @@ fn helsinki_non_postal_address_members_are_dropped_not_corrupted() {
 
     // `geographicalExtent` is no longer carried in the `other` column — it is
     // consumed into `bbox` at encode time (unioned with computed subtree extent).
-    // A later task (Task 4) derives it back from `bbox` on export, so this
-    // point-in-time check expects it to be absent in the export (consumed but
-    // not yet re-derived). The fixture carries it; the export does not.
+    // Task 4 derives it back from `bbox` on export, so every exported object
+    // carries a six-number `geographicalExtent` (the spatial extent, not a
+    // verbatim copy of the source member, which may differ).
     let source_extent = read_field(
         &data_fixture("helsinki_address.city.jsonl"),
         "geographicalExtent",
@@ -1040,9 +1047,19 @@ fn helsinki_non_postal_address_members_are_dropped_not_corrupted() {
         "fixture must actually carry geographicalExtent"
     );
     assert!(
-        export_extent.is_empty(),
-        "geographicalExtent is not re-derived yet, so export carries none"
+        !export_extent.is_empty(),
+        "geographicalExtent is re-derived from bbox on export"
     );
+    for (_, extent) in &export_extent {
+        let arr = extent
+            .as_array()
+            .expect("geographicalExtent must be an array");
+        assert_eq!(
+            arr.len(),
+            6,
+            "exported geographicalExtent carries six coordinates [xmin, ymin, zmin, xmax, ymax, zmax]"
+        );
+    }
 }
 
 /// spec "Addresses" (gap 10): a real address with a `location` `MultiPoint`

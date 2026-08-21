@@ -1157,10 +1157,10 @@ fn hilbert_ordering_never_changes_delft_semantics() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (16, 16),
+        (16, 17),
         "Hilbert ordering must not introduce any new exclusion beyond delft's usual header \
-         metadata members and the 16 pinned coordinate-degenerate-ring drops (8 objects, \
-         source + export side each), got: {:#?}",
+         metadata members, the 16 pinned coordinate-degenerate-ring drops (8 objects, \
+         source + export side each), and geographicalExtent (derived from bbox), got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -1219,8 +1219,8 @@ fn hilbert_ordering_never_changes_railway_compatibility_semantics() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (24, 24),
-        "the only non-header exclusions must be the 24 pinned degenerate-ring drops, got: {:#?}",
+        (24, 25),
+        "the only non-header exclusions must be the 24 pinned degenerate-ring drops plus geographicalExtent (derived from bbox), got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -2040,9 +2040,9 @@ fn arrow_native_roundtrip_decodes_back_to_the_same_semantic_geometry() {
         .count();
     assert_eq!(
         (degenerate, non_header_excluded.len()),
-        (16, 16),
+        (16, 17),
         "arrow-native delft's only non-header exclusions must be the 16 pinned coordinate-\
-         degenerate-ring drops, exactly matching the WKB path's own pin; got: {:#?}",
+         degenerate-ring drops (matching the WKB path's own pin) plus geographicalExtent (derived from bbox); got: {:#?}",
         non_header_excluded
     );
     assert!(
@@ -2146,10 +2146,10 @@ fn arrow_native_roundtrip_railway_multisurface_only_decodes_back_to_the_same_sem
         .count();
     assert_eq!(
         (degenerate, instances, non_header_excluded.len()),
-        (24, 30, 54),
+        (24, 30, 55),
         "arrow-native railway's only non-header exclusions must be the 24 pinned degenerate-ring \
-         drops plus the 30 pinned geometry-instance exclusions, exactly matching the WKB path's \
-         own pins; got: {:#?}",
+         drops plus the 30 pinned geometry-instance exclusions (exactly matching the WKB path's \
+         own pins) plus geographicalExtent (derived from bbox); got: {:#?}",
         non_header_excluded
     );
     assert!(
