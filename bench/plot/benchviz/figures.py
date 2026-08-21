@@ -201,15 +201,20 @@ SIZE_FORMATS = [
 ]
 
 # Bar fills for the per-dataset panels. The marker vocabulary in FORMAT_STYLE
-# identifies a format by SHAPE, which a filled bar has no room for; these are
-# the same idea in the one channel a bar does have. CityParquet keeps the
-# accent, and the rest are separated by value rather than by hue so the panels
-# stay readable in greyscale and to a colour-blind reader.
+# identifies a format by SHAPE, which a filled bar has no room for; hue is the
+# one channel a bar does have. Separating them by value alone was tried first
+# and failed the only test that matters — four bars of grey in one group are
+# not tellable apart at panel scale.
+#
+# Hues are chosen away from the accent so CityParquet still reads as the
+# subject, and away from each other in lightness as well as hue, so the figure
+# survives a greyscale print. The row order is fixed in every group, and the
+# panels print their values, so hue is never the sole channel.
 FORMAT_GREY = {
-    "citygml": "#c6c5bb",
-    "cityjson": "#9d9c95",
+    "citygml": "#7a4fa3",
+    "cityjson": "#00786b",
     "cityjsonseq": "#6b6b66",
-    "flatcitybuf": "#6b6b66",
+    "flatcitybuf": "#1c63a8",
     "cityjsonseq-gz": "#b9b9ae",
     "duckdb-parquet": "#b9b9ae",
 }

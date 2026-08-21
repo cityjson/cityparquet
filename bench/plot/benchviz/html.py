@@ -36,17 +36,20 @@ CSS = r"""
   --heat-pos: #1b7837;
   --heat-neg: #b2182b;
   --chip: rgba(120, 120, 100, 0.10);
+  --c-gml: #7a4fa3; --c-cj: #00786b; --c-fcb: #1c63a8;
 }
 :root[data-theme="light"] {
   --bg: #fffff8; --fg: #111111; --muted: #666666; --faint: #8a8a80;
   --rule: #dddddd; --rule-strong: #999999; --accent: #e41a1c; --mark: #666666;
   --band: rgba(120, 120, 100, 0.16); --heat-pos: #1b7837; --heat-neg: #b2182b;
   --chip: rgba(120, 120, 100, 0.10);
+  --c-gml: #7a4fa3; --c-cj: #00786b; --c-fcb: #1c63a8;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #151515; --fg: #e9e9e1; --muted: #999999; --faint: #7d7d75;
     --rule: #333333; --rule-strong: #555555; --accent: #fc8d62; --mark: #999999;
+  --c-gml: #bda1e8; --c-cj: #4cc4a4; --c-fcb: #74b3e8;
     --band: rgba(200, 200, 180, 0.12); --heat-pos: #66bd63; --heat-neg: #ef6548;
     --chip: rgba(200, 200, 180, 0.08);
   }
@@ -54,6 +57,7 @@ CSS = r"""
 :root[data-theme="dark"] {
   --bg: #151515; --fg: #e9e9e1; --muted: #999999; --faint: #7d7d75;
   --rule: #333333; --rule-strong: #555555; --accent: #fc8d62; --mark: #999999;
+  --c-gml: #bda1e8; --c-cj: #4cc4a4; --c-fcb: #74b3e8;
   --band: rgba(200, 200, 180, 0.12); --heat-pos: #66bd63; --heat-neg: #ef6548;
   --chip: rgba(200, 200, 180, 0.08);
 }
@@ -156,6 +160,21 @@ svg .bar.muted { opacity: .3; }
 svg .qlab { font-size: 7px; fill: var(--fg); }
 svg .val { font-size: 5.6px; fill: var(--fg); font-variant-numeric: tabular-nums; }
 svg .val.muted { fill: var(--faint); }
+/* Per-format hue. Placed after the neutral .bar/.mk rules deliberately: the
+   selectors are the same specificity, so source order is what decides, and a
+   format colour must win over the default mark. */
+svg .f-citygml, svg .f-citygml.mk-gray { fill: var(--c-gml); stroke: var(--c-gml); }
+svg .f-cityjson, svg .f-cityjson.mk-gray { fill: var(--c-cj); stroke: var(--c-cj); }
+svg .f-flatcitybuf, svg .f-flatcitybuf.mk-gray { fill: var(--c-fcb); stroke: var(--c-fcb); }
+svg path.f-citygml { fill: none; stroke: var(--c-gml); }
+svg path.f-cityjson { fill: none; stroke: var(--c-cj); }
+svg path.f-flatcitybuf { fill: none; stroke: var(--c-fcb); }
+.swatch.f-citygml { background: var(--c-gml); }
+.swatch.f-cityjson { background: var(--c-cj); }
+.swatch.f-flatcitybuf { background: var(--c-fcb); }
+svg .endlab.f-citygml { fill: var(--c-gml); }
+svg .endlab.f-cityjson { fill: var(--c-cj); }
+svg .endlab.f-flatcitybuf { fill: var(--c-fcb); }
 svg .grouprule { stroke: var(--rule); stroke-width: .5; }
 .grid.wide { grid-template-columns: repeat(auto-fill, minmax(455px, 1fr)); }
 .key { display: flex; flex-wrap: wrap; gap: .1rem 1.1rem; font-size: .8rem;
@@ -332,13 +351,8 @@ BODY = r"""
   <section id="view-scaling" aria-labelledby="h-scaling">
     <h2 id="h-scaling">4 &middot; How each format scales with CityObject count</h2>
     <p class="small" id="scaling-lede"></p>
-    <div class="controls" id="scaling-controls" role="group" aria-label="Scaling controls">
-      <label for="scaling-scen">Scenario
-        <select id="scaling-scen"></select>
-      </label>
-      <span id="scaling-scen-note"></span>
-    </div>
-    <div class="grid" id="scaling-grid"></div>
+    <p class="key" id="scaling-key"></p>
+    <div class="grid wide" id="scaling-grid"></div>
   </section>
 
   <hr class="rule">
@@ -590,6 +604,11 @@ JS = r"""
 
   /* ---------------- markers ---------------- */
 
+  function fmtCls(fmt) {
+    return fmt === "citygml" || fmt === "cityjson" || fmt === "flatcitybuf"
+      ? " f-" + fmt : "";
+  }
+
   function marker(fmt, x, y, s) {
     var g = "";
     x = Math.round(Number(x) * 10) / 10;
@@ -614,7 +633,7 @@ JS = r"""
         pts += (k ? "L" : "M") + (x + rr * Math.cos(aa)).toFixed(1) + " " +
           (y + rr * Math.sin(aa)).toFixed(1);
       }
-      g = '<path class="mk-gray" d="' + pts + 'Z"/>';
+      g = '<path class="mk-gray' + fmtCls(fmt) + '" d="' + pts + 'Z"/>';
     } else if (fmt === "cityjson") {
       var t = s * 0.45;
       g = '<path class="mk-gray" d="M' + (x - t) + ' ' + (y - s) + 'h' + (2 * t) + 'v' +
@@ -1999,7 +2018,7 @@ JS = r"""
             var grew = x2 >= x1;
             svg += '<g class="pt" tabindex="0" role="img" aria-label="' +
               esc(sc + " " + SHORT[f] + " " + ratio(v)) + '" data-tip="' + esc(tipTxt) + '">' +
-              '<rect class="bar' + (isAccent(f) ? " accent" : "") + (m[3] ? " muted" : "") +
+              '<rect class="bar' + (isAccent(f) ? " accent" : fmtCls(f)) + (m[3] ? " muted" : "") +
               '" x="' + bx.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw.toFixed(1) +
               '" height="' + (barH - 1.1).toFixed(1) + '"/>' +
               '<text class="val' + (m[3] ? " muted" : "") + '" x="' +
@@ -2058,7 +2077,8 @@ JS = r"""
     el("formats-grid").innerHTML = DATASETS.map(function (d) {
       return datasetPanel(d, scens, tlo, thi, mlo, mhi);
     }).join("");
-    el("formats-key").innerHTML = fmtKey();
+    el("formats-key").innerHTML =
+      fmtKey(FORMATS.filter(function (f) { return f !== META.baseline; }));
     el("formats-lede").textContent =
       "One chart per dataset. Inside it, every query is a subgroup of " +
       (FORMATS.length - 1) + " format bars, in the same order throughout, with read " +
@@ -2068,11 +2088,15 @@ JS = r"""
       "everywhere. A muted bar is inside the " + (FLOOR * 1000) + " ms citation floor.";
   }
 
-  function fmtKey() {
-    return FORMATS.filter(function (f) { return f !== META.baseline; })
+  /* The key names the formats a view ACTUALLY draws, not the format axis: the
+     scaling run has no CityGML (no .gml exists for a generated slice) and does
+     draw CityJSONSeq, because that view plots absolutes and the baseline is a
+     line like any other rather than the thing everything is divided by. */
+  function fmtKey(list) {
+    return list
       .map(function (f) {
         return '<span class="keyitem"><span class="swatch' +
-          (isAccent(f) ? " accent" : "") + '"></span>' + esc(SHORT[f]) + "</span>";
+          (isAccent(f) ? " accent" : fmtCls(f)) + '"></span>' + esc(SHORT[f]) + "</span>";
       }).join("");
   }
 
@@ -2201,128 +2225,130 @@ JS = r"""
      than a ratio to CityJSONSeq. That is deliberate: the quantity being read
      is the SLOPE of the line on log-log axes - flat means the cost does not
      grow with the model, and a ratio to a baseline that is itself growing
-     hides exactly that. */
-  function scalingPanel(metric, sc, slices) {
-    var recs = (DATA.scaling && DATA.scaling.read) || [];
-    var fmts = [];
-    recs.forEach(function (r) { if (fmts.indexOf(r.format) < 0) { fmts.push(r.format); } });
-    fmts.sort(function (a, b) { return FORMATS.indexOf(a) - FORMATS.indexOf(b); });
+     hides exactly that.
 
-    var key = metric === "time" ? "time_s" : "rss_b";
-    var xlo = Infinity, xhi = 0, ylo = Infinity, yhi = 0;
-    recs.forEach(function (r) {
-      if (r.scenario_key !== sc || r[key] == null || r[key] <= 0) { return; }
-      xlo = Math.min(xlo, r.objects); xhi = Math.max(xhi, r.objects);
-      ylo = Math.min(ylo, r[key]); yhi = Math.max(yhi, r[key]);
-    });
-    if (!isFinite(xlo) || !isFinite(ylo)) {
-      return '<figure class="panel"><figcaption><span class="name">' +
-        esc(metric === "time" ? "read time" : "peak memory") +
-        '</span></figcaption><p class="small">not measured in this run</p></figure>';
-    }
-    var W = 300, H = 210, ML = 48, MR = 62, MT = 8, MB = 30;
-    var sx = logScale(xlo / 1.3, xhi * 1.3, ML, W - MR);
-    var sy = logScale(ylo / 1.6, yhi * 1.6, H - MB, MT);
+     One panel per query, both metrics inside it, every panel on the same two
+     scales - so the panels are a small multiple that can be read against each
+     other rather than nine charts with nine rulers. */
+  function scalingQueryPanel(sc, slices, fmts, sc_) {
+    var recs = DATA.scaling.read;
+    var W = 470, GAP = 18, ML = 44, MT = 6, MB = 26, PADR = 30;
+    var half = (W - ML - GAP - PADR) / 2;
+    var H = 132;
+    var x0 = logScale(sc_.xlo, sc_.xhi, ML, ML + half);
+    var x1 = logScale(sc_.xlo, sc_.xhi, ML + half + GAP + PADR, W - PADR + 4);
+    var yT = logScale(sc_.tlo, sc_.thi, H - MB, MT);
+    var yM = logScale(sc_.mlo, sc_.mhi, H - MB, MT);
     var svg = "";
 
-    if (metric === "time") {
-      /* Honesty rule 1, carried into an absolute-value view: anything under
-         the 10 ms floor is a timing this benchmark will not cite. */
-      var floor = DATA.meta.citation_floor_s;
-      if (floor > ylo / 1.6) {
-        var fy = Math.min(H - MB, sy(floor));
-        svg += '<rect class="floorband" x="' + ML + '" y="' + fy.toFixed(1) +
-          '" width="' + (W - MR - ML) + '" height="' + (H - MB - fy).toFixed(1) + '"/>';
-        svg += '<text class="tick" x="' + (ML + 3) + '" y="' + (fy - 2).toFixed(1) +
-          '">10 ms citation floor</text>';
-      }
+    /* Honesty rule 1, carried into an absolute-value view: anything under the
+       floor is a timing this benchmark will not cite. */
+    if (FLOOR > sc_.tlo) {
+      var fy = Math.min(H - MB, yT(FLOOR));
+      svg += '<rect class="floorband" x="' + ML + '" y="' + fy.toFixed(1) +
+        '" width="' + half + '" height="' + (H - MB - fy).toFixed(1) + '"/>';
     }
-    var ends = [];
-    fmts.forEach(function (f) {
-      var pts = recs.filter(function (r) {
-        return r.format === f && r.scenario_key === sc && r[key] != null && r[key] > 0;
-      }).sort(function (a, b) { return a.objects - b.objects; });
-      if (!pts.length) { return; }
-      var dstr = pts.map(function (p, i) {
-        return (i ? "L" : "M") + sx(p.objects).toFixed(1) + " " + sy(p[key]).toFixed(1);
-      }).join(" ");
-      svg += '<path class="line' + (isAccent(f) ? " accent" : "") + '" d="' + dstr + '"/>';
-      pts.forEach(function (p) {
-        svg += point(f, sx(p.objects), sy(p[key]), 3,
-          SHORT[f] + "\n" + num(p.objects) + " CityObjects, " + sc + "\n" +
-          (metric === "time" ? secs(p[key]) : bytes(p[key])));
+
+    [["time_s", x0, yT], ["rss_b", x1, yM]].forEach(function (m) {
+      var ends = [];
+      fmts.forEach(function (f) {
+        var pts = recs.filter(function (r) {
+          return r.format === f && r.scenario_key === sc && r[m[0]] != null && r[m[0]] > 0;
+        }).sort(function (a, b) { return a.objects - b.objects; });
+        if (!pts.length) { return; }
+        svg += '<path class="line' + (isAccent(f) ? " accent" : fmtCls(f)) + '" d="' +
+          pts.map(function (p, i) {
+            return (i ? "L" : "M") + m[1](p.objects).toFixed(1) + " " + m[2](p[m[0]]).toFixed(1);
+          }).join(" ") + '"/>';
+        pts.forEach(function (p) {
+          svg += point(f, m[1](p.objects), m[2](p[m[0]]), 2.6,
+            SHORT[f] + "\n" + num(p.objects) + " CityObjects · " + sc + "\n" +
+            (m[0] === "time_s" ? secs(p[m[0]]) : bytes(p[m[0]])));
+        });
+        var last = pts[pts.length - 1];
+        ends.push({ x: m[1](last.objects) + 3, y: m[2](last[m[0]]), t: ABBR[f], f: f });
       });
-      var last = pts[pts.length - 1];
-      ends.push({ x: sx(last.objects) + 4, y: sy(last[key]), t: ABBR[f], f: f });
+      placeEndLabels(ends, { top: MT, bottom: H - MB });
+      ends.forEach(function (e) {
+        svg += '<text class="endlab' + (isAccent(e.f) ? " accent" : fmtCls(e.f)) + '" x="' +
+          e.x.toFixed(1) + '" y="' + e.y.toFixed(1) + '">' + esc(e.t) + "</text>";
+      });
     });
-    placeEndLabels(ends, { top: MT, bottom: H - MB });
-    ends.forEach(function (e) {
-      svg += '<text class="endlab' + (isAccent(e.f) ? " accent" : "") + '" x="' +
-        e.x.toFixed(1) + '" y="' + e.y.toFixed(1) + '">' + esc(e.t) + "</text>";
-    });
-    svg += '<line class="axis" x1="' + ML + '" y1="' + (H - MB) + '" x2="' + (W - MR) +
-      '" y2="' + (H - MB) + '"/>';
-    slices.forEach(function (s) {
-      svg += '<text class="tick" x="' + sx(s.objects).toFixed(1) + '" y="' + (H - MB + 10) +
-        '" text-anchor="middle">' + esc(num(s.objects)) + "</text>";
-    });
-    logTicks(ylo / 1.6, yhi * 1.6).forEach(function (t) {
-      svg += '<text class="tick" x="' + (ML - 4) + '" y="' + (sy(t) + 3).toFixed(1) +
-        '" text-anchor="end">' +
-        esc(metric === "time" ? secs(t) : bytes(t)) + "</text>";
-    });
-    svg += '<text class="tick" x="' + ((ML + W - MR) / 2) + '" y="' + (H - MB + 22) +
-      '" text-anchor="middle">CityObjects (log)</text>';
-    return '<figure class="panel"><figcaption><span class="name">' +
-      esc(metric === "time" ? "read time" : "peak memory") +
-      '</span><span class="sub">' + esc("absolute " + (metric === "time" ? "seconds" : "bytes") +
-      ", log-log - a flat line is a cost that does not grow") + "</span></figcaption>" +
+
+    [[x0, yT, sc_.tlo, sc_.thi, ML, ML + half, "read time"],
+     [x1, yM, sc_.mlo, sc_.mhi, ML + half + GAP + PADR, W - PADR + 4, "peak memory"]]
+      .forEach(function (a) {
+        svg += '<line class="axis" x1="' + a[4] + '" y1="' + (H - MB) + '" x2="' + a[5] +
+          '" y2="' + (H - MB) + '"/>';
+        slices.forEach(function (s, i) {
+          if (i && i < slices.length - 1) { return; }  // ends only: four labels overprint
+          svg += '<text class="tick" x="' + a[0](s.objects).toFixed(1) + '" y="' +
+            (H - MB + 9) + '" text-anchor="middle">' + esc(num(s.objects)) + "</text>";
+        });
+        var ticks = logTicks(a[2], a[3]);
+        var step = Math.ceil(ticks.length / 3);
+        ticks.filter(function (t, i) { return i % step === 0; }).forEach(function (t) {
+          svg += '<text class="tick" x="' + (a[4] - 3) + '" y="' + (a[1](t) + 2.5).toFixed(1) +
+            '" text-anchor="end">' +
+            esc(a[6] === "read time" ? secs(t) : bytes(t)) + "</text>";
+        });
+        svg += '<text class="tick" x="' + ((a[4] + a[5]) / 2) + '" y="' + (H - MB + 19) +
+          '" text-anchor="middle">' + esc(a[6] + " vs CityObjects (log-log)") + "</text>";
+      });
+
+    return '<figure class="panel wide"><figcaption><span class="name">' +
+      esc(sc + (dagger(sc) ? "†" : "")) +
+      '</span><span class="sub">' + esc("absolute values; a flat line is a cost that does not grow") +
+      "</span></figcaption>" +
       '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' +
-      esc((metric === "time" ? "Read time" : "Peak memory") +
-          " against CityObject count by format for " + sc) + '">' + svg + "</svg></figure>";
+      esc("Read time and peak memory against CityObject count by format for " + sc) +
+      '">' + svg + "</svg></figure>";
   }
 
   function renderScaling() {
     var recs = (DATA.scaling && DATA.scaling.read) || [];
     if (!recs.length) {
       el("scaling-grid").innerHTML =
-        '<p class="small">No scaling corpus in this run - `just fetch-scaling-data` ' +
+        '<p class="small">No scaling corpus in this run — `just fetch-scaling-data` ' +
         'builds it and the bench recipes measure it into bench/scaling_*_results.</p>';
       el("scaling-lede").textContent = "";
       return;
     }
-    var slices = [];
+    var slices = [], fmts = [], scens = [];
     recs.forEach(function (r) {
       if (!slices.some(function (s) { return s.id === r.dataset; })) {
         slices.push({ id: r.dataset, objects: r.objects });
       }
+      if (fmts.indexOf(r.format) < 0) { fmts.push(r.format); }
+      if (scens.indexOf(r.scenario_key) < 0) { scens.push(r.scenario_key); }
     });
     slices.sort(function (a, b) { return a.objects - b.objects; });
+    fmts.sort(function (a, b) { return FORMATS.indexOf(a) - FORMATS.indexOf(b); });
+    scens.sort(function (a, b) { return SCEN_ORDER.indexOf(a) - SCEN_ORDER.indexOf(b); });
 
-    var sel = el("scaling-scen");
-    if (!sel.options.length) {
-      var keys = [];
-      recs.forEach(function (r) { if (keys.indexOf(r.scenario_key) < 0) { keys.push(r.scenario_key); } });
-      keys.sort(function (a, b) { return SCEN_ORDER.indexOf(a) - SCEN_ORDER.indexOf(b); });
-      keys.forEach(function (k) {
-        var o = document.createElement("option");
-        o.value = k; o.textContent = k + (dagger(k) ? " (grain-incomparable)" : "");
-        sel.appendChild(o);
-      });
-      sel.value = keys.indexOf("full-read") >= 0 ? "full-read" : keys[0];
-      sel.addEventListener("change", renderScaling);
-    }
-    var sc = sel.value;
-    el("scaling-grid").innerHTML =
-      scalingPanel("time", sc, slices) + scalingPanel("rss", sc, slices);
-    el("scaling-scen-note").textContent = dagger(sc)
-      ? "grain-incomparable - see fairness caveat 1" : "";
+    /* Shared scales across every query panel: the point of listing them all is
+       comparing them, and nine panels with nine rulers cannot be compared. */
+    var s = { xlo: Infinity, xhi: 0, tlo: Infinity, thi: 0, mlo: Infinity, mhi: 0 };
+    recs.forEach(function (r) {
+      s.xlo = Math.min(s.xlo, r.objects); s.xhi = Math.max(s.xhi, r.objects);
+      if (r.time_s > 0) { s.tlo = Math.min(s.tlo, r.time_s); s.thi = Math.max(s.thi, r.time_s); }
+      if (r.rss_b > 0) { s.mlo = Math.min(s.mlo, r.rss_b); s.mhi = Math.max(s.mhi, r.rss_b); }
+    });
+    s.xlo /= 1.35; s.xhi *= 1.35;
+    s.tlo /= 1.8; s.thi *= 1.8; s.mlo /= 1.6; s.mhi *= 1.6;
+
+    el("scaling-grid").innerHTML = scens.map(function (sc) {
+      return scalingQueryPanel(sc, slices, fmts, s);
+    }).join("");
+    el("scaling-key").innerHTML = fmtKey(fmts);
     el("scaling-lede").textContent =
       "One city model cut to " + slices.length + " cardinalities (" +
-      slices.map(function (s) { return num(s.objects); }).join(", ") +
+      slices.map(function (s2) { return num(s2.objects); }).join(", ") +
       " CityObjects), so the only thing changing along the x axis is how much data " +
-      "there is. Both panels are absolute values on log-log axes rather than ratios: " +
-      "the slope IS the answer, and dividing by a baseline that grows too would hide it.";
+      "there is. One panel per query, read time left and peak memory right, every " +
+      "panel on the same two scales. Both are absolute values on log-log axes rather " +
+      "than ratios: the slope IS the answer, and dividing by a baseline that grows " +
+      "too would hide it. The shaded band is the " + (FLOOR * 1000) + " ms citation floor.";
   }
 
   function renderCaveats() {

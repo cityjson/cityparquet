@@ -38,6 +38,16 @@ calls the same code with its own `--html`/`--figures` destinations.
   (the source-order package, not CityJSONSeq) and its own static figure; it is
   never mixed onto the format axis, which is the confound the two sets exist to
   keep apart.
+- **Bars and lines carry HUE; markers still carry shape.** The colour rule
+  below was written for scatter marks, where shape is the identity channel and
+  grey keeps the panel quiet. A filled bar has no shape, and four greys in one
+  group are not tellable apart at panel scale — so the bar and line views give
+  each format a hue: `#7a4fa3` CityGML, `#00786b` CityJSON, `#1c63a8`
+  FlatCityBuf, grey for the CityJSONSeq baseline, accent for CityParquet. The
+  hues differ in lightness as well, so a greyscale print still separates them,
+  and hue is never the sole channel: the row order is fixed in every group and
+  the views print their values. The marker views are unchanged in shape and
+  pick up the same hues, so one format looks the same everywhere on the page.
 - **Color/markers**: accent `#e41a1c` (light) / `#fc8d62` (dark) for
   `cityparquet` (filled circle); same accent, open circle for
   `cityparquet-hilbert`; gray `#666`/`#999` for the rest with distinct shapes:
