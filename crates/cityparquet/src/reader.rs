@@ -67,7 +67,7 @@ fn detect_geometry_encoding(
 /// file's: its names, its order, its physical types. CityParquet conformance is
 /// at the Parquet logical-type level (spec "Physical encoding and conformance"),
 /// so a conformant writer may order reserved columns differently, leave
-/// `other_attributes` out, store `object_type` undictionaried, or name a LIST's
+/// `other` out, store `object_type` undictionaried, or name a LIST's
 /// child `element`. Returning the canonical field list instead would reject every
 /// one of those, and — because `parents`, `children` and `children_roles` share a
 /// DataType — the field-count check would not even catch a transposition.

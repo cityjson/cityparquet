@@ -219,7 +219,6 @@ const RESERVED_COLUMN_NAMES: &[&str] = &[
     "bbox",
     "template",
     "other",
-    "other_attributes",
 ];
 
 /// Every column name an attribute column must not collide with, for a schema
@@ -429,10 +428,6 @@ impl CityParquetSchema {
             json_field("other", true).as_ref().clone(),
             &[(ROLE_KEY, ROLE_RESERVED)],
         ));
-        fields.push(with_meta(
-            json_field("other_attributes", true).as_ref().clone(),
-            &[(ROLE_KEY, ROLE_RESERVED)],
-        ));
 
         for (name, attr_type) in &self.attributes {
             let role = if name.starts_with(EXTENSION_ATTR_PREFIX) {
@@ -526,7 +521,6 @@ mod tests {
                 "texture_lod2_2",
                 "template",
                 "other",
-                "other_attributes",
                 "yoc",
                 "ex_height",
             ]
@@ -821,12 +815,7 @@ mod tests {
     #[test]
     fn json_columns_carry_arrow_json_extension() {
         let schema = sample().to_arrow_schema().unwrap();
-        for name in [
-            "material_lod1_0",
-            "texture_lod2_2",
-            "other",
-            "other_attributes",
-        ] {
+        for name in ["material_lod1_0", "texture_lod2_2", "other"] {
             let field = schema.field_with_name(name).unwrap();
             assert_eq!(
                 field
@@ -939,7 +928,7 @@ mod tests {
 
     #[test]
     fn attribute_colliding_with_reserved_column_is_an_error() {
-        for bad_name in ["id", "material", "address", "other_attributes"] {
+        for bad_name in ["id", "material", "address", "template"] {
             let schema = CityParquetSchema {
                 lods: vec![],
                 attributes: vec![(bad_name.to_string(), AttributeType::String)],
@@ -1050,26 +1039,6 @@ mod tests {
         };
         assert_eq!(item.data_type(), &DataType::Float64);
         assert!(!item.is_nullable(), "matrix entries are non-null");
-    }
-
-    /// `other_attributes` is a reserved `JSON` column (spec "Column naming
-    /// and reservation rules"), sitting after `other`.
-    #[test]
-    fn other_attributes_is_reserved_json_after_other() {
-        let schema = sample().to_arrow_schema().unwrap();
-        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        let other_pos = names.iter().position(|n| *n == "other").unwrap();
-        let other_attrs_pos = names.iter().position(|n| *n == "other_attributes").unwrap();
-        assert_eq!(other_attrs_pos, other_pos + 1);
-        assert_eq!(
-            schema
-                .field_with_name("other_attributes")
-                .unwrap()
-                .metadata()
-                .get(ROLE_KEY)
-                .map(String::as_str),
-            Some(ROLE_RESERVED)
-        );
     }
 
     #[test]

@@ -83,56 +83,6 @@ fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
-/// spec "Column naming and reservation rules" (gap 14): `other_attributes` is
-/// itself a reserved name, so a source attribute literally called that has
-/// nowhere further to divert to and is rejected outright — the same error
-/// path as any other undiverted reserved-name collision
-/// ([`cityparquet_schema::model::CityParquetSchema::validate`]'s "collides
-/// with a reserved or geometry column name" text). Derived from the real
-/// `delft` fixture with one injected attribute named `other_attributes`.
-#[test]
-fn attribute_literally_named_other_attributes_is_rejected() {
-    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
-    let mut injected = false;
-    let mut out_lines = Vec::new();
-    for line in text.lines() {
-        let mut doc: serde_json::Value = serde_json::from_str(line).unwrap();
-        if !injected && let Some(cos) = doc.get_mut("CityObjects").and_then(|v| v.as_object_mut()) {
-            for co in cos.values_mut() {
-                if let Some(attrs) = co.get_mut("attributes").and_then(|v| v.as_object_mut()) {
-                    attrs.insert(
-                        "other_attributes".to_string(),
-                        serde_json::json!("should-be-rejected"),
-                    );
-                    injected = true;
-                    break;
-                }
-            }
-        }
-        out_lines.push(serde_json::to_string(&doc).unwrap());
-    }
-    assert!(
-        injected,
-        "delft fixture must carry at least one object with attributes to inject into"
-    );
-
-    let dir = tempfile::tempdir().unwrap();
-    let input = dir
-        .path()
-        .join("delft_other_attributes_collision.city.jsonl");
-    std::fs::write(&input, out_lines.join("\n") + "\n").unwrap();
-
-    let out = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(input, out.path().to_path_buf());
-    let err =
-        convert(&opts).expect_err("an attribute literally named other_attributes must be rejected");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("other_attributes") && msg.contains("collides"),
-        "error must name the offending attribute and the reserved-name collision, got: {msg}"
-    );
-}
-
 /// spec "Appearance & templates" (gap 13): a `transformationMatrix` that
 /// isn't exactly 16 values is rejected at convert time, not silently
 /// truncated/padded. Derived from the real `lod3_railway` fixture (with an
@@ -1216,12 +1166,12 @@ fn address_location_round_trips() {
 }
 
 /// G12/gap 14 (§5.2): a source attribute whose name collides with a reserved
-/// column name (here `bbox`) is diverted into the reserved `other_attributes`
-/// column — a genuine physical column, not a magic
-/// `cityparquet:diverted_attributes` key riding inside `other` (the pre-gap-14
-/// mechanism) — and restored on export, rather than aborting the whole
-/// conversion. Fixture is real Helsinki objects with one injected `bbox`
-/// attribute alongside 27 genuine (non-colliding) attributes.
+/// column name (here `bbox`) is diverted into `other` — the format's single
+/// escape hatch, shared with unmapped source members rather than riding a
+/// dedicated column or a magic `cityparquet:diverted_attributes` key (both
+/// earlier mechanisms) — and restored on export, rather than aborting the
+/// whole conversion. Fixture is real Helsinki objects with one injected
+/// `bbox` attribute alongside 27 genuine (non-colliding) attributes.
 ///
 /// Hand-derived from the City of Helsinki open 3D city model (an injected
 /// colliding attribute on real objects); no public URL, so committed in-tree
@@ -1238,7 +1188,7 @@ fn colliding_attribute_is_diverted_and_round_trips() {
     .unwrap();
     assert!(
         report.equal,
-        "a colliding attribute must round-trip via `other_attributes`; differences: {:#?}",
+        "a colliding attribute must round-trip via `other`; differences: {:#?}",
         report.differences
     );
 
@@ -1272,10 +1222,10 @@ fn colliding_attribute_is_diverted_and_round_trips() {
     }
     assert_eq!(checked, 2, "fixture has two objects, both must be checked");
 
-    // Physical proof (not just decoded values): the PACKAGE's own
-    // `other_attributes` Parquet column actually carries the diverted value,
-    // and its `other` column does NOT — the divert-key transport mechanism
-    // this superseded is gone.
+    // Physical proof (not just decoded values): the PACKAGE's own `other`
+    // Parquet column actually carries the diverted value — `other` is the
+    // format's single escape hatch, so the diverted attribute has nowhere
+    // else to ride.
     let tables = PackageTables::open(package_dir.path()).unwrap().tables;
     assert_eq!(tables.len(), 1, "both fixture objects are Buildings");
     let file = std::fs::File::open(&tables[0]).unwrap();
@@ -1283,40 +1233,26 @@ fn colliding_attribute_is_diverted_and_round_trips() {
         .unwrap()
         .build()
         .unwrap();
-    let mut other_attributes_seen = 0;
+    let mut other_seen = 0;
     for batch in reader {
         let batch = batch.unwrap();
-        let other_attributes = batch
-            .column_by_name("other_attributes")
-            .expect("other_attributes must be a real physical column")
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
         let other = batch
             .column_by_name("other")
-            .unwrap()
+            .expect("other must be a real physical column")
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
         for row in 0..batch.num_rows() {
             assert!(
-                !other_attributes.is_null(row),
-                "the diverted attribute must land in the physical other_attributes cell"
+                !other.is_null(row),
+                "the diverted attribute must land in the physical other cell"
             );
-            let cell: serde_json::Value =
-                serde_json::from_str(other_attributes.value(row)).unwrap();
+            let cell: serde_json::Value = serde_json::from_str(other.value(row)).unwrap();
             assert_eq!(cell, serde_json::json!({"bbox": "diverted-sentinel"}));
-            if !other.is_null(row) {
-                let other_cell: serde_json::Value = serde_json::from_str(other.value(row)).unwrap();
-                assert!(
-                    other_cell.get("bbox").is_none(),
-                    "the diverted attribute must not ALSO ride inside other"
-                );
-            }
-            other_attributes_seen += 1;
+            other_seen += 1;
         }
     }
-    assert_eq!(other_attributes_seen, 2);
+    assert_eq!(other_seen, 2);
 }
 
 /// Spec §metadata "CRS rules", as amended: the whole unknown-CRS path, on a

@@ -1,10 +1,10 @@
 //! A CityParquet file from a foreign writer must read. The physical conventions
 //! here are duckdb-cityjson's: its reserved-column order, plain Utf8 for
 //! `object_type`, `element` as the LIST child name, and microsecond
-//! timestamps. `address`/`template`/`children_roles`/`other`/
-//! `other_attributes` are present but all-null on every row — `decode_batch`
-//! requires the columns to exist, so this exercises them as absent-in-effect
-//! without pretending a foreign writer would physically omit them.
+//! timestamps. `address`/`template`/`children_roles`/`other` are present but
+//! all-null on every row — `decode_batch` requires the columns to exist, so
+//! this exercises them as absent-in-effect without pretending a foreign
+//! writer would physically omit them.
 
 use std::sync::Arc;
 
@@ -64,7 +64,6 @@ fn foreign_file(path: &std::path::Path) {
         Field::new("address", address_data_type(), true),
         Field::new("template", template_data_type(), true),
         Field::new("other", DataType::Utf8, true),
-        Field::new("other_attributes", DataType::Utf8, true),
     ]));
 
     let ids: ArrayRef = Arc::new(StringArray::from(vec!["obj-1"]));
@@ -97,7 +96,6 @@ fn foreign_file(path: &std::path::Path) {
     let address: ArrayRef = new_null_array(&address_data_type(), 1);
     let template: ArrayRef = new_null_array(&template_data_type(), 1);
     let other: ArrayRef = new_null_array(&DataType::Utf8, 1);
-    let other_attributes: ArrayRef = new_null_array(&DataType::Utf8, 1);
 
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
@@ -112,7 +110,6 @@ fn foreign_file(path: &std::path::Path) {
             address,
             template,
             other,
-            other_attributes,
         ],
     )
     .expect("foreign batch");
@@ -159,7 +156,6 @@ fn renders_the_foreign_writers_own_fields_not_the_canonical_set() {
             "address",
             "template",
             "other",
-            "other_attributes",
         ],
         "the rendered schema must be the file's own fields, in the file's order"
     );
@@ -299,10 +295,10 @@ const MINIMAL_CITY_JSON: &str = r#"{
 
 /// What duckdb-cityjson actually writes: only the non-null reserved
 /// columns (`id`, `feature_id`, `object_type`, `parents`, `children`) —
-/// `children_roles`, `address`, `template`, `other`, and `other_attributes`
-/// are omitted OUTRIGHT, not present-and-null. Kept separate from
-/// [`foreign_file`] rather than folded into it — three existing tests
-/// depend on that helper's exact shape.
+/// `children_roles`, `address`, `template`, and `other` are omitted
+/// OUTRIGHT, not present-and-null. Kept separate from [`foreign_file`]
+/// rather than folded into it — three existing tests depend on that
+/// helper's exact shape.
 fn minimal_foreign_file(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
@@ -354,10 +350,10 @@ fn minimal_foreign_file(path: &std::path::Path) {
 
 #[test]
 fn a_table_omitting_the_optional_reserved_columns_decodes() {
-    // duckdb-cityjson emits none of address/template/other_attributes, and the
-    // spec permits an absent other_attributes outright. An absent nullable
-    // column and an all-null one carry the same information, so the reader
-    // treats the first as the second rather than refusing the file.
+    // duckdb-cityjson emits none of address/template/other, and the spec
+    // permits an absent `other` outright. An absent nullable column and an
+    // all-null one carry the same information, so the reader treats the
+    // first as the second rather than refusing the file.
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("bridge.parquet");
     minimal_foreign_file(&path);

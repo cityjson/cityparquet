@@ -87,21 +87,20 @@ fn err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Metadata(msg.into())
 }
 
-/// Merge the `other` column's unmapped members into the JSON that rebuilds a
-/// CityObject (§5.1, G9): members with no dedicated column — Extension
-/// `+members` and other unmapped fields. Typed fields route home; the
-/// rest ride cjseq's private flatten and re-serialise on export. A
-/// `None`/empty-`{}` cell contributes nothing.
-///
-/// Errors on a non-object cell or one carrying a reserved member. A well-formed
-/// encoder strips the reserved keys (they have their own columns), so their
-/// presence means a corrupt or foreign file — and on a losslessness-critical
-/// path, silently dropping either side would mask that corruption.
+/// Merge the `other` column into the object's `attributes` (§5.1). `other`
+/// is the format's single escape hatch, and this is its whole reader
+/// contract: every entry is restored as an attribute, keyed by its map key.
+/// A reader never tries to infer why a writer put an entry there — a
+/// CityParquet file may come from any writer, and a foreign writer's
+/// encoding of an unmapped source member is outside this specification.
+/// A `None`/absent cell contributes nothing. Errors on a non-object cell,
+/// or an entry duplicating an attribute decoded from its own column — both
+/// mean a corrupt or foreign file, and dropping either would mask it.
 fn merge_other_members(json: &mut Map<String, Value>, cell: Option<&str>, id: &str) -> Result<()> {
     let Some(cell) = cell else {
         return Ok(());
     };
-    let Value::Object(members) = serde_json::from_str::<Value>(cell).map_err(|e| {
+    let Value::Object(entries) = serde_json::from_str::<Value>(cell).map_err(|e| {
         err(format!(
             "object '{id}': 'other' column is not valid JSON: {e}"
         ))
@@ -111,44 +110,9 @@ fn merge_other_members(json: &mut Map<String, Value>, cell: Option<&str>, id: &s
             "object '{id}': 'other' column must be a JSON object, got: {cell}"
         )));
     };
-    for (key, value) in members {
-        if crate::encode::OTHER_RESERVED_MEMBERS.contains(&key.as_str()) {
-            return Err(err(format!(
-                "object '{id}': 'other' column carries reserved member '{key}'"
-            )));
-        }
-        json.insert(key, value);
-    }
-    Ok(())
-}
-
-/// Merge the `other_attributes` column's diverted entries back into the
-/// object's `attributes` (spec "Column naming and reservation rules"; gap 14
-/// — this used to ride inside `other` under a `cityparquet:diverted_attributes`
-/// transport key, now it is its own reserved column keyed directly by the
-/// diverted attribute's source name), creating `attributes` if the row had
-/// none from its own columns. A `None`/absent cell contributes nothing.
-/// Errors on a non-object cell, or a diverted name duplicating a decoded
-/// column attribute — both mean a corrupt or foreign file, and silently
-/// dropping either would mask it.
-fn merge_other_attributes(
-    json: &mut Map<String, Value>,
-    cell: Option<&str>,
-    id: &str,
-) -> Result<()> {
-    let Some(cell) = cell else {
+    if entries.is_empty() {
         return Ok(());
-    };
-    let Value::Object(diverted) = serde_json::from_str::<Value>(cell).map_err(|e| {
-        err(format!(
-            "object '{id}': 'other_attributes' column is not valid JSON: {e}"
-        ))
-    })?
-    else {
-        return Err(err(format!(
-            "object '{id}': 'other_attributes' column must be a JSON object, got: {cell}"
-        )));
-    };
+    }
     let attrs = json
         .entry("attributes")
         .or_insert_with(|| Value::Object(Map::new()));
@@ -157,10 +121,10 @@ fn merge_other_attributes(
             "object '{id}': 'attributes' is not a JSON object"
         )));
     };
-    for (key, value) in diverted {
+    for (key, value) in entries {
         if attrs_map.contains_key(&key) {
             return Err(err(format!(
-                "object '{id}': diverted attribute '{key}' duplicates a column attribute"
+                "object '{id}': 'other' entry '{key}' duplicates a column attribute"
             )));
         }
         attrs_map.insert(key, value);
@@ -176,13 +140,13 @@ fn get_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a arrow_array:
 
 /// `name`'s column, tolerant of the WHOLE column being absent from `batch`
 /// (spec "Optional data is `NULL`" — a reader MUST tolerate an absent
-/// `other_attributes`, and by the same information-equivalence any other
-/// nullable reserved column a writer omits outright, e.g.
-/// duckdb-cityjson's `address`/`template`/`children_roles`/
-/// `other_attributes`): an absent column and an all-null one of `data_type`
-/// carry identical information to every caller below, which already treats
-/// a null cell as "no value". `id`/`feature_id`/`object_type` are non-null
-/// per spec and stay on the strict [`get_column`] instead.
+/// `other`, and by the same information-equivalence any other nullable
+/// reserved column a writer omits outright, e.g. duckdb-cityjson's
+/// `address`/`template`/`children_roles`): an absent column and an all-null
+/// one of `data_type` carry identical information to every caller below,
+/// which already treats a null cell as "no value". `id`/`feature_id`/
+/// `object_type` are non-null per spec and stay on the strict
+/// [`get_column`] instead.
 fn optional_column(batch: &RecordBatch, name: &str, data_type: &DataType) -> ArrayRef {
     match batch.column_by_name(name) {
         Some(col) => std::sync::Arc::clone(col),
@@ -541,10 +505,10 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         crate::arrow_compat::string_view(object_type_array.as_ref(), "object_type")?;
 
     // Every column below is nullable per spec, so its WHOLE column may be
-    // absent (duckdb-cityjson omits `children_roles`/`address`/`template`/
-    // `other_attributes` outright) — `optional_column` synthesises an
-    // all-null fallback of the right shape rather than erroring, per the
-    // module docs on `optional_column`.
+    // absent (duckdb-cityjson omits `children_roles`/`address`/`template`
+    // outright) — `optional_column` synthesises an all-null fallback of the
+    // right shape rather than erroring, per the module docs on
+    // `optional_column`.
     let parents_array = optional_column(batch, "parents", &string_list_type());
     let parents_col = downcast::<ListArray>(parents_array.as_ref(), "parents")?;
     let children_array = optional_column(batch, "children", &string_list_type());
@@ -556,9 +520,6 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
     let address_col = downcast::<ListArray>(address_array.as_ref(), "address")?;
     let other_array = optional_column(batch, "other", &DataType::Utf8);
     let other_col = downcast::<StringArray>(other_array.as_ref(), "other")?;
-    let other_attributes_array = optional_column(batch, "other_attributes", &DataType::Utf8);
-    let other_attributes_col =
-        downcast::<StringArray>(other_attributes_array.as_ref(), "other_attributes")?;
 
     let bbox_array = optional_column(batch, "bbox", &cityparquet_schema::model::bbox_data_type());
     let bbox_col = downcast::<StructArray>(bbox_array.as_ref(), "bbox")?;
@@ -665,9 +626,6 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
         }
         let other_cell = (!other_col.is_null(row)).then(|| other_col.value(row));
         merge_other_members(&mut json, other_cell, &id)?;
-        let other_attributes_cell =
-            (!other_attributes_col.is_null(row)).then(|| other_attributes_col.value(row));
-        merge_other_attributes(&mut json, other_attributes_cell, &id)?;
         // `geographicalExtent` is derived from `bbox` on export: the format
         // stores one spatial extent per row, and `bbox` is it (spec
         // "Spatial metadata"). Emitted for every row that has a bbox.
@@ -833,9 +791,11 @@ mod tests {
         );
     }
 
-    // G9 decode guard: the `other`-column merge is a losslessness-critical,
-    // corruption-sensitive path, so it is unit-tested directly (building a full
-    // reserved-column RecordBatch just to reach it would be disproportionate).
+    // `other` is the format's single escape hatch (§5.1): every entry, no
+    // matter why a writer put it there, is restored into `attributes` on
+    // decode. This merge is a losslessness-critical, corruption-sensitive
+    // path, so it is unit-tested directly (building a full reserved-column
+    // RecordBatch just to reach it would be disproportionate).
 
     #[test]
     fn merge_other_members_injects_unmapped_members() {
@@ -847,7 +807,11 @@ mod tests {
             "obj-1",
         )
         .unwrap();
-        assert_eq!(json["unreserved_member"], json!("value"));
+        assert_eq!(json["attributes"], json!({"unreserved_member": "value"}));
+        assert!(
+            !json.contains_key("unreserved_member"),
+            "must land in attributes, not the top level"
+        );
         assert_eq!(
             json["type"],
             json!("Building"),
@@ -855,20 +819,18 @@ mod tests {
         );
     }
 
-    /// `address` has its own reserved column now (gap 10) — a well-formed
-    /// `other` cell must never carry it.
     #[test]
-    fn merge_other_members_rejects_address() {
+    fn merge_other_members_restores_into_attributes() {
+        // G12/gap 14: a diverted attribute (collected alongside unmapped
+        // members in the same `other` cell) merges into `attributes`
+        // (creating it if the row had no column attributes), never the top
+        // level.
         let mut json = Map::new();
-        let err = merge_other_members(
-            &mut json,
-            Some(r#"{"address":[{"locality":"Helsinki"}]}"#),
-            "obj-1",
-        )
-        .expect_err("address in `other` must be an error");
+        merge_other_members(&mut json, Some(r#"{"bbox":"x","id":42}"#), "o").unwrap();
+        assert_eq!(json["attributes"], json!({"bbox": "x", "id": 42}));
         assert!(
-            format!("{err:?}").contains("reserved member 'address'"),
-            "error must name the offending member, got: {err:?}"
+            !json.contains_key("bbox"),
+            "diverted attrs must not land at the top level"
         );
     }
 
@@ -882,18 +844,16 @@ mod tests {
         assert!(json.is_empty(), "an empty `{{}}` cell contributes nothing");
     }
 
+    /// `other` no longer guards against reserved-looking member names on
+    /// decode (only the encoder's strip set keeps them out of a
+    /// well-formed file in the first place): an entry named like a reserved
+    /// column merges into `attributes` just like any other, proving the
+    /// removed guard was never load-bearing for a well-formed file.
     #[test]
-    fn merge_other_members_rejects_a_reserved_member() {
-        // A rogue `geometry` in `other` must NOT reach the typed field — decode's
-        // assembled JSON never sets `geometry`, so a `contains_key` guard would
-        // miss it; the static reserved-set guard catches it.
+    fn merge_other_members_does_not_guard_reserved_looking_names() {
         let mut json = Map::new();
-        let err = merge_other_members(&mut json, Some(r#"{"geometry":[]}"#), "obj-1")
-            .expect_err("a reserved member in `other` must be an error");
-        assert!(
-            format!("{err:?}").contains("reserved member 'geometry'"),
-            "error must name the offending member, got: {err:?}"
-        );
+        merge_other_members(&mut json, Some(r#"{"geometry":[1,2,3]}"#), "obj-1").unwrap();
+        assert_eq!(json["attributes"], json!({"geometry": [1, 2, 3]}));
     }
 
     #[test]
@@ -910,54 +870,12 @@ mod tests {
     }
 
     #[test]
-    fn merge_other_attributes_restores_into_attributes() {
-        // G12/gap 14: the `other_attributes` column's map merges into
-        // `attributes` (creating it if the row had no column attributes),
-        // never the top level.
-        let mut json = Map::new();
-        merge_other_attributes(&mut json, Some(r#"{"bbox":"x","id":42}"#), "o").unwrap();
-        assert_eq!(json["attributes"], json!({"bbox": "x", "id": 42}));
-        assert!(
-            !json.contains_key("bbox"),
-            "diverted attrs must not land at the top level"
-        );
-    }
-
-    #[test]
-    fn merge_other_attributes_null_is_a_no_op() {
-        let mut json = Map::new();
-        merge_other_attributes(&mut json, None, "o").unwrap();
-        assert!(json.is_empty());
-    }
-
-    #[test]
-    fn merge_other_attributes_guards() {
-        // Non-object cell → error.
-        let mut json = Map::new();
-        assert!(
-            merge_other_attributes(&mut json, Some("\"nope\""), "o").is_err(),
-            "a non-object other_attributes cell must error"
-        );
-        // A diverted name duplicating a decoded column attribute → error.
+    fn merge_other_members_rejects_a_diverted_name_duplicating_a_column_attribute() {
         let mut json = Map::new();
         json.insert("attributes".to_string(), json!({"bbox": "from-column"}));
         assert!(
-            merge_other_attributes(&mut json, Some(r#"{"bbox":"x"}"#), "o").is_err(),
-            "a diverted attr colliding with a column attr must error"
-        );
-    }
-
-    #[test]
-    fn merge_other_members_rejects_geographical_extent() {
-        // `geographicalExtent` is a reserved member carried by `bbox`, not by
-        // `other`. A well-formed encoder never places it there; if found, it is
-        // a corrupt or foreign file.
-        let mut json = Map::new();
-        let err = merge_other_members(&mut json, Some(r#"{"geographicalExtent":[0]}"#), "o")
-            .expect_err("geographicalExtent in `other` must be an error");
-        assert!(
-            format!("{err:?}").contains("reserved member 'geographicalExtent'"),
-            "error must name the offending member, got: {err:?}"
+            merge_other_members(&mut json, Some(r#"{"bbox":"x"}"#), "o").is_err(),
+            "an `other` entry colliding with a column attribute must error"
         );
     }
 }

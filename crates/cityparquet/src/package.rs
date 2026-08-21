@@ -579,7 +579,7 @@ fn module_geo_by_file(
 /// unlike [`CityParquetSchema::to_arrow_schema`]'s dataset-wide
 /// zero-analysis-geometry rendering, which is a DIFFERENT case this function
 /// is never asked to reproduce — see [`TableWriters::projection_for`]'s doc
-/// comment for why), then `template`, `other`, `other_attributes`, then the
+/// comment for why), then `template`, `other`, then the
 /// dataset's attribute columns in scan order. Mirrors
 /// `CityParquetSchema::to_arrow_schema`'s non-empty-lods field order exactly,
 /// so every name here is guaranteed to resolve in the dataset-wide (wide)
@@ -618,7 +618,6 @@ fn module_column_names(
     }
     names.push("template".to_string());
     names.push("other".to_string());
-    names.push("other_attributes".to_string());
     names.extend(attributes.iter().map(|(name, _)| name.clone()));
     names
 }
