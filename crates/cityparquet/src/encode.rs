@@ -23,7 +23,7 @@ use cjseq::{CityJSON, CityJSONFeature, CityObject, Geometry, GeometryType, Trans
 use serde_json::Value;
 
 use cityparquet_schema::{
-    AttributeType, CityParquetError, GeometryEncoding, Lod, Result, geometry_column_name,
+    AttributeType, CityParquetError, GeometryEncoding, Lod, Result,
     normalise_attribute_name,
 };
 
@@ -1027,12 +1027,8 @@ fn accumulate_geometry(
 /// slot payload (a `MultiPolygonZ`-shaped [`GeometryPayload`] — WKB bytes or
 /// a compacted arrow-native [`DecodedGeometry`], depending on `encoding` —
 /// plus `geometry_properties`, with no `"lod"` field — the struct carries no
-/// such field, and the LoD lives only in the column name), the footprint
-/// bbox, and the SOURCE column the
-/// footprint was derived from (e.g. `"geometry_lod2_2"`) — the caller
-/// records that as the row's `other.cityparquet:lod0_0_source` provenance
-/// (spec "LoD0 synthesis"): `geometry_properties`'s struct shape has no slot
-/// for it. `None` when the object has no footprint-able geometry or no
+/// such field, and the LoD lives only in the column name) and the footprint
+/// bbox. `None` when the object has no footprint-able geometry or no
 /// acceptable ground is found.
 ///
 /// `encoding` picks the returned slot's [`GeometryPayload`] variant, exactly
@@ -1045,7 +1041,7 @@ fn synthesize_footprint(
     pool: &VertexPool,
     opts: &crate::lod0::Lod0Options,
     encoding: GeometryEncoding,
-) -> Result<Option<(GeometrySlotData, [f64; 6], String)>> {
+) -> Result<Option<(GeometrySlotData, [f64; 6])>> {
     use crate::lod0::{faces_from_geometry, footprint_to_geometry, synthesize_lod0};
 
     let Some(geoms) = &co.geometry else {
@@ -1074,7 +1070,7 @@ fn synthesize_footprint(
             best = Some((lod, geom));
         }
     }
-    let Some((source_lod, geom)) = best else {
+    let Some((_source_lod, geom)) = best else {
         return Ok(None);
     };
 
@@ -1126,8 +1122,7 @@ fn synthesize_footprint(
         material: None,
         texture: None,
     };
-    let source_column = geometry_column_name("geometry", &source_lod);
-    Ok(Some((data, bbox, source_column)))
+    Ok(Some((data, bbox)))
 }
 
 /// One typed builder per inferred attribute column.
@@ -1583,11 +1578,9 @@ impl RowWriter {
         Self::push_string_list(&mut self.children, co.children.as_deref());
         let children_roles = Self::children_roles(co, &co_json, id)?;
         Self::push_string_list(&mut self.children_roles, children_roles.as_deref());
-        // Geometry accumulation (incl. optional LoD0 synthesis) runs BEFORE
-        // `other` is finalised below: a synthesised footprint's provenance
-        // (which SOURCE column it was derived from) has to land in this
-        // row's `other` cell (spec "LoD0 synthesis") — `geometry_properties`
-        // has no field for it — so `other` cannot be closed off first.
+        // Geometry accumulation (incl. optional LoD0 synthesis) populates
+        // geometry slots and bboxes that are written to columns below; both
+        // must be complete before row output begins.
         let mut acc = GeometryAccumulator::default();
         let defs = LocalDefs {
             materials: feature_local_materials(feature),
@@ -1610,19 +1603,17 @@ impl RowWriter {
         // enabled and the object has no source LoD0 (spec "LoD0 synthesis").
         // The footprint slot key is LoD0's column suffix (`lod0_0`), the same
         // key `accumulate_geometry` would use for a real LoD0.
-        let mut lod0_source_column = None;
         if let Some(opts) = &self.synthesize_lod0 {
             let key = Lod::parse("0")
                 .expect("literal 0 is a valid LoD")
                 .column_suffix();
             if !acc.slots.contains_key(&key)
-                && let Some((data, bbox, source_column)) =
+                && let Some((data, bbox)) =
                     synthesize_footprint(co, &pool, opts, self.encoding)?
             {
                 union_bbox(&mut acc.own_bbox, bbox);
                 acc.slots.insert(key, data);
                 stats.synthesized_lod0_footprints += 1;
-                lod0_source_column = Some(source_column);
             }
         }
 
@@ -1632,18 +1623,11 @@ impl RowWriter {
 
         // `other`: the source object's members that have no dedicated column
         // (§5.1, G9) — a per-object `geographicalExtent`, Extension
-        // `+members`, plus the LoD0-synthesis provenance marker above, if
-        // any. `address` has its own reserved column (below) and is already
+        // `+members`. `address` has its own reserved column (below) and is already
         // excluded here (`OTHER_RESERVED_MEMBERS`). Stored verbatim as a
         // JSON object string; null when the object has no such members (so a
         // null count = rows carrying unmapped members).
-        let mut unmapped = unmapped_from_json(co_json);
-        if let Some(source_column) = lod0_source_column {
-            unmapped.insert(
-                "cityparquet:lod0_0_source".to_string(),
-                Value::String(source_column),
-            );
-        }
+        let unmapped = unmapped_from_json(co_json);
         if unmapped.is_empty() {
             self.other.append_null();
         } else {

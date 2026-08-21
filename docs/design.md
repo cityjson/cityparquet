@@ -175,10 +175,7 @@ does not apply once any LoD is present. A second geometry for the same
 **LoD0 synthesis** (`src/lod0.rs`): when an object has no source LoD0, the
 writer can synthesise a footprint from its lowest higher LoD — semantics-first
 (`GroundSurface` faces), else a geometric fallback (downward-facing faces →
-2D union → Z re-drape → `MultiPolygonZ`). `geometry_properties`'s struct shape
-has no field for provenance, so the row's `other` column instead gets a
-`cityparquet:lod0_0_source` key naming the source geometry column the
-footprint was derived from (e.g. `"geometry_lod2_2"`). The footprint is
+2D union → Z re-drape → `MultiPolygonZ`). The footprint is
 exported as a real `lod:"0.0"` geometry, landing in `geometry_lod0_0` like any
 other LoD. The CLI enables it by default (`--no-lod0` to disable); the
 library `ConvertOptions` is source-faithful unless `generate_lod0` is set.
