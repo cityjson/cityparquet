@@ -89,12 +89,18 @@ stage "benchmark/databases: pytest (unit)" \
     "$(have uv || echo 'uv not on PATH')" -- \
     bash -c 'cd benchmark/databases && uv run --quiet pytest -q -m "not integration"'
 
-# --- 3. the catalogue driver -----------------------------------------------
-stage "cityparquet-rs: just catalog-test" \
-    "$(have uv || echo 'uv not on PATH')" -- \
-    bash -c 'cd lib/cityparquet-rs && just catalog-test'
+# --- 3. the read-benchmark harness (its own Cargo workspace) ---------------
+#
+# Its tests read the library's real fixtures, so they share that precondition.
+stage "benchmark/readbench: cargo test" \
+    "${rs_skip:-$(have cargo || echo 'cargo not on PATH')}" -- \
+    cargo test --manifest-path benchmark/readbench/Cargo.toml
 
-# --- 4. the DuckDB extensions ----------------------------------------------
+# --- 4. the catalogue driver -----------------------------------------------
+stage "scripts/catalog2cityparquet: just catalog-test" \
+    "$(have uv || echo 'uv not on PATH')" -- just catalog-test
+
+# --- 5. the DuckDB extensions ----------------------------------------------
 #
 # Built, not building: a from-source extension build compiles DuckDB itself and
 # takes tens of minutes, which is not something a test runner should start
@@ -118,7 +124,7 @@ d3_skip=""
 stage "duckdb-3d: make test" "$d3_skip" -- \
     bash -c 'cd lib/duckdb-3d && make test'
 
-# --- 5. citylake -----------------------------------------------------------
+# --- 6. citylake -----------------------------------------------------------
 #
 # Work in progress: it builds, and that is the whole assertion for now.
 stage "citylake: cargo build" \

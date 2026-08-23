@@ -3,7 +3,7 @@
 #
 # The BENCHMARK recipes are NOT here. They live in the monorepo's root
 # `justfile`, because the harness spans two trees: its code is a workspace
-# crate (`crates/cityparquet-readbench`) and the scripts under `scripts/`,
+# crate (`benchmark/readbench`) and the scripts under `scripts/`,
 # while its corpora, results and plotting project are evidence and live under
 # `../../benchmark/`. Run `just bench`, `just fetch-data`, `just plot-pretty`,
 # `just convert-all`, `just plot-test` and `just scripts-test` from the
@@ -88,78 +88,10 @@ fixtures:
     # Zero-object CityJSONSeq fixture (synthetic, no network fetch needed):
     # a single CityJSON header line, empty CityObjects/vertices, no feature
     # lines — the minimal input that scans to zero city-object rows. Used by
-    # `zero_object_input_is_rejected` (crates/cityparquet/tests/bytype_layout.rs)
+    # `zero_object_input_is_rejected` (crates/core/tests/bytype_layout.rs)
     # to prove a zero-object conversion is rejected rather than silently
     # producing an empty package.
     printf '%s\n' '{"type":"CityJSON","version":"2.0","transform":{"scale":[0.001,0.001,0.001],"translate":[0.0,0.0,0.0]},"CityObjects":{},"vertices":[]}' > tests/fixtures/empty.city.jsonl
 
 interop:
     ./scripts/interop.sh
-
-# ---------------------------------------------------------------------------
-# STAC catalogue -> CityParquet mirror (tools/catalog2cityparquet)
-# ---------------------------------------------------------------------------
-
-# Build the two release binaries the Python driver shells out to: the
-# `cityparquet` converter (one package per catalogue item) and the vendored
-# `city3dstac` aggregator (collection.json / items.parquet / catalog.json).
-# The driver's own defaults point at exactly these two paths, so building them
-# here is what makes the `catalog-*` recipes below runnable from a clean tree.
-# Compiling only; kept OUT of `just check`, which builds and tests both trees
-# anyway (see `vendor-check`).
-catalog-tools:
-    cargo build --release -p cityparquet-cli
-    cargo build --release --manifest-path vendor/city3d-stac-tool/Cargo.toml
-
-# Convert every collection of the published City3D STAC catalogue into a
-# CityParquet mirror under OUT. Resumable: an item whose package already
-# carries a valid STAC Item is skipped, so a re-run continues where the last
-# one stopped. Failures never abort the run — each is recorded in
-# OUT/_reports/ and the next item (or collection) starts, which is what makes
-# the end-of-run histogram a measurement rather than a crash report. Extra
-# driver flags go after the OUT argument (e.g. `just catalog-convert out/x
-# --jobs 4`). Network-dependent, and hours long on the whole catalogue; kept
-# OUT of `just check`/CI.
-catalog-convert OUT='out/cityparquet-catalog' *ARGS: catalog-tools
-    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
-        --out {{OUT}} {{ARGS}}
-
-# Convert a single collection (e.g. `just catalog-convert-collection
-# rotterdam-3d`), which is how a change to the driver or the converter is
-# proven against real data without paying for the whole catalogue.
-# Network-dependent; kept OUT of `just check`/CI.
-catalog-convert-collection ID OUT='out/cityparquet-catalog' *ARGS: catalog-tools
-    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
-        --out {{OUT}} --collection {{ID}} {{ARGS}}
-
-# Rebuild the mirror's ROOT catalog.json from the collection.json files an
-# earlier run left under OUT — no downloads, no conversions, no per-collection
-# re-aggregation. Reach for it when a run was interrupted after its collections
-# were written but before they were linked together. Rebuilding a single
-# collection.json/items.parquet instead needs a plain `catalog-convert` for that
-# collection (already-converted items are skipped, and the aggregation step
-# still runs). Contacts the catalogue root for the mirror's identity metadata,
-# and degrades to defaults if it cannot; kept OUT of `just check`/CI.
-catalog-aggregate OUT='out/cityparquet-catalog': catalog-tools
-    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
-        --out {{OUT}} --aggregate-only
-
-# Reduce a run's cumulative ledger (OUT/_reports) to one outcome per item and
-# print the conformance histogram. This — not a hand roll-up of the JSONL — is
-# how the published number is produced: the files are append-only and
-# resumption re-attempts a previously FAILED item, so an item legitimately
-# appears twice with two different outcomes and counting lines over-counts
-# failures. Needs no network and no binaries.
-catalog-histogram OUT='out/cityparquet-catalog':
-    uv run --project tools/catalog2cityparquet python -m catalog2cityparquet \
-        histogram {{OUT}}/_reports
-
-# The driver's own test suite. No network and no binaries: every origin,
-# subprocess and catalogue document is faked, so this is safe to run anywhere.
-# Not part of `just check`, which is the Rust workspace's gate — run both.
-# `--directory`, not `--project`: pytest's rootdir follows the working
-# directory, so `--project tools/catalog2cityparquet` alone would leave it here
-# and collection would wander into a different project's tests. That made this
-# recipe exit 2 on a healthy tree.
-catalog-test:
-    uv run --directory tools/catalog2cityparquet --extra dev pytest -v

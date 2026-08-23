@@ -1,7 +1,7 @@
 # The retired 30-dataset city3d-STAC catalogue corpus, in CORPUS_MANIFEST format.
 # Re-fetch it with:
 #   CORPUS_MANIFEST=benchmark/formats/archive/2026-08-17-catalogue-corpus/corpus.manifest just fetch-data benchmark/formats/data/legacy all
-# Format: local_name|wire_bytes|form|sets|url   (see ../../../scripts/fetch_benchmark.sh)
+# Format: local_name|wire_bytes|form|sets|url   (see ../../../benchmark/scripts/fetch_benchmark.sh)
 # Byte sizes were measured 2026-08-16 and are NOT re-verified; an origin that has
 # re-published since will now hard-fail the size check. That is the intended
 # behaviour — it says the bytes moved, not that the fetcher broke.

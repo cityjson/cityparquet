@@ -1,7 +1,7 @@
 """Chart cityparquet-rs's cross-format read-benchmark result CSVs."""
 
 # The 13-column header `cityparquet-readbench`'s coordinator writes (see
-# `crates/cityparquet-readbench/src/coordinator.rs`'s `CSV_HEADER`, which is
+# `benchmark/readbench/src/coordinator.rs`'s `CSV_HEADER`, which is
 # the single authority on this contract — this list mirrors it, and
 # `tests/test_csv_contract.py` reads that literal out of the Rust source to
 # keep the two honest). A CSV whose first line doesn't *begin* with these
@@ -25,7 +25,7 @@ CSV_HEADER = [
 
 # The formats this benchmark measures, in the canonical order
 # `Format::ALL` declares (see
-# `crates/cityparquet-readbench/src/format.rs`, which is the single authority
+# `benchmark/readbench/src/format.rs`, which is the single authority
 # on both the spelling and the order — `tests/test_formats.py` reads the
 # `Format::as_str` match arms out of that source to keep the two honest).
 # The order is the benchmark's argument, read left to right: the formats a

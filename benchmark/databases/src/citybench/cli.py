@@ -20,13 +20,11 @@ from citybench.systems.duckdb_cp import DuckDBCityParquet
 from citybench.systems.readbench import ReadbenchSystem
 
 ROOT = Path(__file__).resolve().parents[2]
-# ROOT is benchmark/databases/; the read harness this shells out to is a crate
-# in the other half of the monorepo, built by
-# `cargo build --release -p cityparquet-readbench` in lib/cityparquet-rs.
-MONO_ROOT = ROOT.parents[1]
-READBENCH_BIN = (
-    MONO_ROOT / "lib" / "cityparquet-rs" / "target" / "release" / "cityparquet-readbench"
-)
+# ROOT is benchmark/databases/; the read harness this shells out to is its own
+# Cargo workspace next door, built by
+# `cargo build --release --manifest-path benchmark/readbench/Cargo.toml`.
+BENCHMARK_DIR = ROOT.parent
+READBENCH_BIN = BENCHMARK_DIR / "readbench" / "target" / "release" / "cityparquet-readbench"
 
 
 def _dataset(source: Path) -> Dataset:

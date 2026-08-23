@@ -225,7 +225,7 @@ export OUT=/tmp/cp_test && rm -rf $OUT && mkdir -p $OUT
 and a prettier pass over the Markdown, in that order.
 
 > **`just check` cannot pass on this machine — environmental, not a code
-> defect.** `test` runs second, and `crates/cityparquet-readbench`'s
+> defect.** `test` runs second, and `benchmark/readbench`'s
 > `attr_consistency` test shells out to the external `fcb` binary with `-i`/
 > `-o`. The installed **`fcb` 0.7.8** takes positional `<INPUT>... <OUTPUT>` and
 > has no `-i`/`-o` flags at all, so the test fails identically on an unmodified
@@ -539,7 +539,7 @@ Expected: `interop ok`. It converts both fixtures and has DuckDB assert the
 results natively — 2231 Delft buildings, a `bbox.xmin` query, the 85/34/3
 sidecars, and 121 rows unioned across railway's 9 module tables.
 
-> **FIXED 2026-08-16 (was BROKEN).** `scripts/interop.sh` still passed
+> **FIXED 2026-08-16 (was BROKEN).** `lib/cityparquet-rs/scripts/interop.sh` still passed
 > `--profile compatibility`, removed with the by-module layout in `25d471b`, so
 > the recipe died on `unexpected argument '--profile' found`. `just check` does
 > not run `interop`, so CI never noticed. The railway convert now also prints
@@ -629,7 +629,7 @@ glob query returns `2231` — every object, exactly once. `--partition count
 --number N` and
 `--partition box --cell-size METRES` are the other two methods.
 
-### 1.10 The STAC catalogue driver (`tools/catalog2cityparquet`)
+### 1.10 The STAC catalogue driver (`scripts/catalog2cityparquet`, run from the repo root)
 
 New Python driver that walks the published City3D STAC catalogue (~74k items,
 53 collections), converts each item, and ledgers *why* each one did or did not
@@ -1597,7 +1597,7 @@ just bench benchmark/formats/data benchmark/formats/read_results
 
 `readbench_prepare.sh` **skips any package directory that already exists**, so
 delete first whenever the format has moved. Table lookups go through
-`scripts/package_tables.py`, which mirrors the Rust `PackageTables::open`
+`benchmark/scripts/package_tables.py`, which mirrors the Rust `PackageTables::open`
 (object tables = assets with the `cityparquet-objects` role).
 
 New since the last pass: an **HTTP transport**. `--transport local|http`
@@ -1644,7 +1644,7 @@ was the conformant side throughout.
 | 2 | **A duckdb-cityjson-written package could not be read by cityparquet-rs** — `geometry_templates.id` was `BIGINT` from duckdb-cityjson and `VARCHAR` from cityparquet-rs. | **Settled in cityparquet-rs's favour of the spec, against its own prior schema**: the spec's `04-appearance-templates.mdx` mandates `id BIGINT`, and cityparquet-rs's `geometry_templates_schema` now matches it. The full six-hop round trip is lossless. Verified in 4.5 |
 | 3 | **`make release` failed** — `src/libduckdb.dylib` did not link flatcitybuf | The deferred link fixup that already existed for `unittest` now also covers DuckDB's `duckdb` SHARED target (`cityjson_fcb_link_upstream_targets`, `CMakeLists.txt`). Verified in 0.4 |
 | 4 | **Both `test/cpp/*.sh` harnesses could not run** | Fixed by #3, plus `run_encoder_tests.sh` gained the missing `-I"$FCB_PREFIX/include"` and `run_fcb_selective_tests.sh`'s stale-library guard is no longer hardcoded to the Linux `libduckdb.so`. Verified in 2.10 |
-| 5 | **`just interop` was broken** — `scripts/interop.sh` still passed the removed `--profile compatibility` | Flag dropped; stale by-family comments corrected to by-module; the cross-module union now uses `union_by_name = true`. Verified in 1.7 |
+| 5 | **`just interop` was broken** — `lib/cityparquet-rs/scripts/interop.sh` still passed the removed `--profile compatibility` | Flag dropped; stale by-family comments corrected to by-module; the cross-module union now uses `union_by_name = true`. Verified in 1.7 |
 | 7 | **`Railway.city.jsonl` fails conversion** — `material index 2 in theme 'visual' out of range (local defs len 2)` | **No longer an open decision.** cityparquet-rs gained `--tolerate-invalid-appearance`, which drops the dangling reference and counts it in the report's tenth field rather than aborting the whole conversion. Strict remains the default — a bare `convert` still refuses the file with the message above. Verified: `convert benchmark/formats/data/Railway.city.jsonl -o … --tolerate-invalid-appearance` reports `121 13 0 0 6 6 84 34 3 1` (84 materials written, one dropped) and exits 0 |
 | 10 | `cityparquet-rs/CLAUDE.md` + `AGENTS.md` documented `convert INPUT OUTPUT_DIR` positionally | Both now show `--output`, list the flags added since (`--geometry-encoding`, `--partition`, `--crs`, `--no-lod0`), and the catalogue suite count is 265, not 219 |
 
@@ -1665,7 +1665,7 @@ was the conformant side throughout.
 
 | # | Issue | Status |
 |---|---|---|
-| 8 | Read-bench runner rejects multi-table packages | Unchanged; one test `#[ignore]`d. `crates/cityparquet-readbench/src/formats/cityparquet.rs` |
+| 8 | Read-bench runner rejects multi-table packages | Unchanged; one test `#[ignore]`d. `benchmark/readbench/src/formats/cityparquet.rs` |
 | 9 | Default LoD0 synthesis breaks a naive round-trip `compare` | Unchanged (behavioural, by design). Needs `--no-lod0` |
 | 6 | `vendor-check` + the new CityGML fixtures are undocumented prerequisites | Documented here in 0.1 / 0.2 rather than changed in code |
 
@@ -1673,7 +1673,7 @@ was the conformant side throughout.
 
 | # | Issue | Resolution |
 |---|---|---|
-| 11 | justfile did not parse; `readbench_duckdb.sh` and the `bench` recipe read the removed `manifest['tables']` key; `convert-all` / `encode_3dbag_tiles.sh` passed the output dir positionally | Merged into `develop` as `3e263ad` (2026-08-10); table lookups go through `scripts/package_tables.py` |
+| 11 | justfile did not parse; `readbench_duckdb.sh` and the `bench` recipe read the removed `manifest['tables']` key; `convert-all` / `encode_3dbag_tiles.sh` passed the output dir positionally | Merged into `develop` as `3e263ad` (2026-08-10); table lookups go through `benchmark/scripts/package_tables.py` |
 | 12 | `benchmark/formats/data/readbench/` prepared artefacts carried the pre-by-type manifest | Regenerated 2026-07-24 |
 
 ---

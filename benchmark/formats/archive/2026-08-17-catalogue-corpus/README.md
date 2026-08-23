@@ -3,7 +3,7 @@
 Everything here measured the **previous** read-benchmark corpus — 30 published
 city models sampled from the city3d STAC catalogue, 6.5 GB on the wire, run on
 **2026-08-17**. It was retired on **2026-08-23** and replaced by the six-dataset
-cityjson.org corpus now pinned in `scripts/fetch_benchmark.sh`.
+cityjson.org corpus now pinned in `benchmark/scripts/fetch_benchmark.sh`.
 
 Nothing in here is read by any recipe. `just plot` / `just plot-pretty` chart
 `benchmark/formats/read_results/` and `benchmark/formats/ordering_results/`, which this directory has
@@ -51,7 +51,7 @@ transcript:
 
 ```sh
 CORPUS_MANIFEST=benchmark/formats/archive/2026-08-17-catalogue-corpus/corpus.manifest \
-  ./scripts/fetch_benchmark.sh --only all benchmark/formats/data/legacy
+  ./benchmark/scripts/fetch_benchmark.sh --only all benchmark/formats/data/legacy
 just bench benchmark/formats/data/legacy benchmark/formats/data/legacy_results
 ```
 

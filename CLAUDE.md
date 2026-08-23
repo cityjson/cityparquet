@@ -19,17 +19,17 @@ with the reasoning in `04-design-decisions/` and the genuinely unsettled parts i
 
 ## Layout
 
-| Path                     | What                                                                                                                  | Authoritative instructions          |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `documents/`             | Blume docs site — the **normative CityParquet specification**, design decisions, open questions                       | `documents/blume.config.ts`; skill: `blume` |
-| `lib/cityparquet-rs/`    | **Rust reference implementation** — the reader/writer that _owns_ the encoding; the `cityparquet` CLI                  | its `CLAUDE.md`                     |
-| `lib/citylake/`          | Rust data-lake framework + web API; the lakehouse runtime. **Work in progress.** Its own Cargo workspace               | its `CLAUDE.md`                     |
-| `lib/duckdb-cityjson/`   | DuckDB CityJSON extension — SQL-native CityJSON I/O and an executable prototype of the encoding. **Submodule**         | its `CLAUDE.md`                     |
-| `lib/duckdb-3d/`         | DuckDB 3D extension — 3D solid processing (`SOLID_3D`). Strict TDD. **Submodule**                                      | its `CLAUDE.md`                     |
-| `benchmark/`             | Three benchmark families: `formats/` (cross-format), `databases/` (vs cjdb / 3DCityDB v5), `plot/` (renderers)          | `benchmark/README.md`               |
-| `test/`                  | `TESTING.md`, the cross-module manual walkthrough, and `run-all.sh`                                                    | —                                   |
-| `ai/design-notes/`       | Dated, unmaintained plans and specs — the record of decisions, not a description of the code                            | `ai/design-notes/README.md`         |
-| `example/`               | Small inputs; anything worth measuring is fetch-scripted                                                                | —                                   |
+| Path                   | What                                                                                                           | Authoritative instructions                  |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `documents/`           | Blume docs site — the **normative CityParquet specification**, design decisions, open questions                | `documents/blume.config.ts`; skill: `blume` |
+| `lib/cityparquet-rs/`  | **Rust reference implementation** — the reader/writer that _owns_ the encoding; the `cityparquet` CLI          | its `CLAUDE.md`                             |
+| `lib/citylake/`        | Rust data-lake framework + web API; the lakehouse runtime. **Work in progress.** Its own Cargo workspace       | its `CLAUDE.md`                             |
+| `lib/duckdb-cityjson/` | DuckDB CityJSON extension — SQL-native CityJSON I/O and an executable prototype of the encoding. **Submodule** | its `CLAUDE.md`                             |
+| `lib/duckdb-3d/`       | DuckDB 3D extension — 3D solid processing (`SOLID_3D`). Strict TDD. **Submodule**                              | its `CLAUDE.md`                             |
+| `benchmark/`           | Three benchmark families: `formats/` (cross-format), `databases/` (vs cjdb / 3DCityDB v5), `plot/` (renderers) | `benchmark/README.md`                       |
+| `test/`                | `TESTING.md`, the cross-module manual walkthrough, and `run-all.sh`                                            | —                                           |
+| `ai/design-notes/`     | Dated, unmaintained plans and specs — the record of decisions, not a description of the code                   | `ai/design-notes/README.md`                 |
+| `example/`             | Small inputs; anything worth measuring is fetch-scripted                                                       | —                                           |
 
 ## How the pieces fit together
 
@@ -52,24 +52,37 @@ with the reasoning in `04-design-decisions/` and the genuinely unsettled parts i
 - Recurring design principle: **separation of geometry from appearance**
   (material/texture), following OBJ/COLLADA/glTF precedent.
 
-## The one structural surprise
+## Two Cargo workspaces, and why
 
-**The benchmark harness deliberately spans two trees.** Its code is a workspace
-crate (`lib/cityparquet-rs/crates/cityparquet-readbench`) plus the shell scripts
-in `lib/cityparquet-rs/scripts/`; its corpora, results and plotting project are
-evidence and live under `benchmark/`. Consequences:
+`lib/cityparquet-rs` is the library. `benchmark/readbench` is the read
+benchmark's harness — **its own workspace**, living with the corpora, results,
+scripts and renderers it belongs to. `lib/citylake` is a third. Consequences:
 
-- Every recipe that reaches both halves — `bench`, `convert-all`, `write-bench`,
-  `compression-bench`, the fetchers, the renderers, `plot-test`, `scripts-test`
-  — is in the **root `justfile`** and runs from the repository root.
-- `lib/cityparquet-rs/justfile` keeps only the crate's own tasks, and `just
-check` there stays self-contained: no `uv`, no `jq`, no corpus.
+- `cd lib/cityparquet-rs && just check` gates the **library alone** and is
+  self-contained: no `uv`, no `jq`, no corpus. That is the point of the split.
+  The root `just check` runs both workspaces plus the two harness suites.
+- `benchmark/readbench` path-depends on `../../lib/cityparquet-rs/crates/core`
+  and **must repeat the `[patch.crates-io] cjseq` line** — `[patch]` is honoured
+  only in the workspace root being built, and without it the benchmark would
+  silently resolve the unpatched upstream.
+- Its `fcb_core`/`cjseq2` pins are **exact** (`=0.7.6`, `=0.1.0`). They are a
+  measured format's reader; a caret range would let a later release change what
+  the published figures mean.
+- Recipes that reach both the library and the benchmark — `bench`,
+  `convert-all`, `write-bench`, `compression-bench`, the fetchers, the
+  renderers, `plot-test`, `scripts-test`, `catalog-*` — are in the **root
+  `justfile`** and run from the repository root.
 - The four per-dataset recipes live in ONE file because
-  `crates/cityparquet-readbench/tests/strip_extension.rs` extracts all four and
-  runs them to prove the input-extension convention has not drifted. Do not split
-  them.
-- Scripts reach the evidence through `$BENCH_ROOT` (default
-  `<repo>/benchmark/formats`), never a second hardcoded relative path.
+  `benchmark/readbench/tests/strip_extension.rs` extracts all four and runs them
+  to prove the input-extension convention has not drifted. Do not split them.
+
+## Crate directories vs package names
+
+Directories under `crates/` are short — `core`, `schema`, `cli` — because the
+enclosing directory already says `cityparquet-rs`. The **package** names stay
+namespaced (`cityparquet`, `cityparquet-schema`, `cityparquet-cli`) because
+those are global on crates.io, where `core`, `schema` and `cli` are taken or
+reserved. Do not "tidy" the package names to match the directories.
 
 ## Build and gates
 
@@ -93,7 +106,7 @@ and the database family needs rootless podman.
 `lib/duckdb-cityjson` and `lib/duckdb-3d` are independent git repositories with
 their own `CLAUDE.md`, tests and CI. **Do not edit them from this repository** —
 consult their own instructions and work in their own repos; here we only record
-which commit we pin. `lib/cityparquet-rs` and `lib/citylake` are *not*
+which commit we pin. `lib/cityparquet-rs` and `lib/citylake` are _not_
 submodules: they live in this tree and are edited here.
 
 `lib/cityparquet-rs/vendor/cjseq` is a **patched vendored copy**, not a

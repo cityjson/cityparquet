@@ -7,7 +7,7 @@ wrong rather than loudly broken:
    once in `sizes.py` (five, missing `duckdb-parquet`). A copy of a vocabulary
    is exactly how this benchmark's CSV header contract drifted into three
    incompatible versions, so the canonical list is read out of
-   `crates/cityparquet-readbench/src/format.rs` here, the same trick
+   `benchmark/readbench/src/format.rs` here, the same trick
    `test_csv_contract.py` uses for the CSV header and
    `scripts/tests/readbench_prepare_test.sh` case 9 uses for the prepare
    script's tag list.
@@ -31,14 +31,14 @@ from readbench_plot import FORMAT_COLORS, FORMAT_ORDER, bar_style
 from readbench_plot import plot as plot_mod
 from readbench_plot import sizes as sizes_mod
 
-# benchmark/plot/tests/ -> the monorepo root; the harness crate whose enum
-# this mirrors lives in the other half of the tree.
-REPO = Path(__file__).resolve().parents[3] / "lib" / "cityparquet-rs"
+# benchmark/plot/tests/ -> the monorepo root. The harness crate and the shell
+# scripts this reads now live under benchmark/ too, beside this project.
+REPO = Path(__file__).resolve().parents[3]
 
 
 def _rust_format_tags() -> list[str]:
     """The canonical tag list, read from `Format::as_str`'s match arms."""
-    src = (REPO / "crates/cityparquet-readbench/src/format.rs").read_text()
+    src = (REPO / "benchmark/readbench/src/format.rs").read_text()
     m = re.search(r"pub fn as_str\(self\).*?\n    \}", src, re.S)
     assert m, "could not find Format::as_str in format.rs"
     tags = re.findall(r'=> "([a-z0-9-]+)",', m.group(0))

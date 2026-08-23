@@ -161,7 +161,7 @@ FORMAT_STYLE: dict[str, dict[str, Any]] = {
 }
 
 # What the views plot: the FORMAT-COMPARISON axis of
-# `Format::DEFAULT_SET` (crates/cityparquet-readbench/src/format.rs) — the
+# `Format::DEFAULT_SET` (benchmark/readbench/src/format.rs) — the
 # formats a city model can ship as, one tag per family, CityParquet represented
 # by the Hilbert-ordered package it would actually ship as.
 #

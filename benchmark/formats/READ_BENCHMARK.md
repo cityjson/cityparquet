@@ -32,7 +32,7 @@ size, write time, row-group pruning) is already covered by `benchmark/formats/RE
 ## Formats
 
 Eight format tags. The canonical vocabulary, spelling and order are owned by
-`Format::ALL` in `crates/cityparquet-readbench/src/format.rs` — this table is
+`Format::ALL` in `benchmark/readbench/src/format.rs` — this table is
 a copy of it, and the CSV's `format` column, the `--formats` flag, the
 `readbench_prepare.sh` artefact names and the plotter's ordering all use the
 same eight strings. They run left-to-right from "what the data ships as
@@ -96,7 +96,7 @@ Three deliberate choices in that first row:
   ```
 
   `duckdb-parquet` is the _only_ thing that triggers the
-  `scripts/readbench_duckdb.sh` append step. This is pinned in both
+  `benchmark/scripts/readbench_duckdb.sh` append step. This is pinned in both
   directions — a bare run must not append it, naming it must — by
   `scripts/tests/bench_recipe_test.sh`, which extracts the `bench` recipe's
   own format-selection block from the justfile and runs it. The justfile used
@@ -126,7 +126,7 @@ just how long it takes locally.
 - **Real cloud storage, not a bundled server.** `--base-url` must point at a
   real HTTPS endpoint (S3, Cloudflare R2, or any static host serving `Range`
   requests) hosting a `just readbench-prepare`d directory uploaded wholesale
-  — see `scripts/readbench_upload.md`. There is no local HTTP server this
+  — see `benchmark/scripts/readbench_upload.md`. There is no local HTTP server this
   repo spins up for a real run (only test-only in-process servers inside
   `cargo test`, never part of the measured path).
 - **Network variance is real and disclosed, not hidden.** Unlike the local,
@@ -149,16 +149,16 @@ just how long it takes locally.
   formats' _access patterns_ against each other, which is what this
   benchmark is for.
   - `cityparquet`: an `object_store`/`ParquetObjectReader`-based async
-    reader (`crates/cityparquet/src/query_async.rs`) shares the exact same
+    reader (`crates/core/src/query_async.rs`) shares the exact same
     row-group-pruning/projection/predicate logic as the local sync reader
-    (`crates/cityparquet/src/query.rs`) — same query, same pruning
+    (`crates/core/src/query.rs`) — same query, same pruning
     decisions, only the I/O source differs. A `CountingObjectStore`
-    decorator (`crates/cityparquet/src/counting_store.rs`) tallies every
+    decorator (`crates/core/src/counting_store.rs`) tallies every
     range request the reader actually makes.
   - `flatcitybuf`: `fcb_core`'s own `HttpFcbReader`
     (`fcb_core::http_reader`) drives its native R-tree/B+-tree indexes over
     HTTP range requests, tallied by a `CountingRangeClient` wrapper
-    (`crates/cityparquet-readbench/src/formats/flatcitybuf.rs`).
+    (`benchmark/readbench/src/formats/flatcitybuf.rs`).
   - `citygml`, `cityjson`, `cityjsonseq`(+gz) — every unindexed format: a
     single **whole-object GET** — exactly 1 request, the whole file's byte
     length, by construction, regardless of scenario (there is no index to
@@ -166,7 +166,7 @@ just how long it takes locally.
     the same `CountingObjectStore` as `cityparquet`, so the tally is measured
     rather than asserted.
   - `duckdb-parquet` has no HTTP-transport row; it is a local-only SQL
-    baseline (`scripts/readbench_duckdb.sh`), unaffected by `--transport`.
+    baseline (`benchmark/scripts/readbench_duckdb.sh`), unaffected by `--transport`.
 
   This is the benchmark's headline cloud-native argument: CityParquet and
   FlatCityBuf pull kilobytes via a handful of range requests for a selective
@@ -178,7 +178,7 @@ just how long it takes locally.
 - **The coordinator's own `QueryParams` derivation stays local regardless of
   `--transport`.** The dataset bbox, the sampled `object_type`/numeric
   attribute/id, and the shared CityObject total are always read directly
-  from the local `--prepared-dir` (see `crates/cityparquet-readbench/src/
+  from the local `--prepared-dir` (see `benchmark/readbench/src/
 coordinator.rs`'s own module doc). This means an http-transport run still
   needs the prepared artefacts present _locally_ too (to derive query
   parameters), in addition to uploaded to the served URL.
@@ -198,7 +198,7 @@ coordinator.rs`'s own module doc). This means an http-transport run still
 
 Six published city models from the CityJSON project's own dataset page
 (<https://www.cityjson.org/datasets/>), 423 MB on the wire, pinned by byte
-size in `scripts/fetch_benchmark.sh` with per-entry provenance in
+size in `benchmark/scripts/fetch_benchmark.sh` with per-entry provenance in
 `benchmark/formats/corpus_urls.txt`. Counts measured 2026-08-23 from the source CityJSON.
 
 | dataset                | source CityJSON | objects | LoD                     | numeric attribute     |
@@ -291,7 +291,7 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
   (`cityparquet`/`cityparquet-hilbert`/`flatcitybuf`/`cityjsonseq`/
   `cityjsonseq-gz`), or a separate untimed `/usr/bin/time -l`/`-v` capture
   around the same query (`duckdb-parquet`). **Normalised to bytes on every
-  platform** by `rss_to_bytes` in `crates/cityparquet-readbench/src/main.rs`
+  platform** by `rss_to_bytes` in `benchmark/readbench/src/main.rs`
   (`ru_maxrss` is natively KiB on Linux per `getrusage(2)`, bytes on
   macOS/BSD). Every committed CSV was produced after that normalisation, so
   the column is bytes throughout.
@@ -308,7 +308,7 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
   - `attr-filter-count-mismatch` — the resolved formats disagreed on
     `attr-filter`'s `result_count`, so this run's object-level rows are not
     all measuring the same query (see "Self-consistency" in
-    `crates/cityparquet-readbench/src/coordinator.rs`).
+    `benchmark/readbench/src/coordinator.rs`).
 - `bytes_read` / `http_requests` — **empty for every `--transport local`
   row** (no HTTP concept locally); for a `--transport http` row, the total
   bytes transferred and HTTP request count that scenario's own
@@ -321,7 +321,7 @@ processes (default 7), a further discarded warmup beforehand, OS page cache
 and (for the in-process formats) allocator state left however the previous
 sample left them — i.e. "warm" describes the OS/filesystem cache, not a
 long-lived process, since every sample is already a brand-new process (see
-`crates/cityparquet-readbench/src/coordinator.rs`'s own module doc on why:
+`benchmark/readbench/src/coordinator.rs`'s own module doc on why:
 independent peak-RSS and independent cache state per sample, mirroring
 FlatCityBuf's own `benches/read.rs` harness).
 
@@ -437,7 +437,7 @@ AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
    applied — and that native decode does not support the multi-surface/
    solid WKB shapes our LoD1.2/LoD1.3/LoD2 geometries use, failing with
    `Invalid Input Error: Unsupported geometry type in WKB`.
-   `scripts/readbench_duckdb.sh` sets `enable_geoparquet_conversion=false`
+   `benchmark/scripts/readbench_duckdb.sh` sets `enable_geoparquet_conversion=false`
    on every invocation to work around this, which makes every geometry
    column read back as plain `BLOB` instead. **Anyone running an ad-hoc
    DuckDB query against a `cityparquet-rs` package that touches a geometry
@@ -449,7 +449,7 @@ AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
    per-invocation DuckDB process-startup overhead (~0.06 s on the
    committed-run machine below; plain `read_parquet()` needs no
    `INSTALL`/`LOAD`, so this is pure process/interpreter startup, not
-   extension loading). `scripts/readbench_duckdb.sh` measures this via 5
+   extension loading). `benchmark/scripts/readbench_duckdb.sh` measures this via 5
    timed `SELECT 1;` calls and prints it as a `# calibration:` stderr line
    before every run — it is **disclosed, never subtracted**, from any
    reported `time_s`/`time_mad_s`.
@@ -493,7 +493,7 @@ AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
      row the guard exists to prevent. Draining is in any case what an
      unindexed format must do to know an id is _absent_, so the cost is
      honest rather than added. Pinned in
-     `crates/cityparquet-readbench/src/formats/citygml.rs` (`stream_members`,
+     `benchmark/readbench/src/formats/citygml.rs` (`stream_members`,
      and the `Scenario::IdLookup` arm's own "deliberately no early exit"
      comment).
    - **`cityjson` cannot exit early in principle.** A whole-document
@@ -602,7 +602,7 @@ AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
 
 14. **Conversion provenance: the chain runs FORWARDS ONLY, and nothing
     derives from CityParquet.** Every measured artefact is derived from the
-    published source document by `scripts/readbench_prepare.sh`, in one
+    published source document by `benchmark/scripts/readbench_prepare.sh`, in one
     direction:
 
     ```
@@ -701,7 +701,7 @@ AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
       it — the coordinator's cross-format self-consistency check covers
       `attr-filter(object_type)` only, never `id-lookup`.
 
-    `scripts/readbench_prepare.sh` therefore refuses such a document whenever
+    `benchmark/scripts/readbench_prepare.sh` therefore refuses such a document whenever
     `citygml` is in the format set — in its preflight for a CityGML input,
     before anything is written, and immediately after writing for a
     synthesised one (Caveat 14). Real example, measured 2026-08-16: **Riga's
@@ -817,7 +817,7 @@ run against different bytes — not merely a different machine.
 
 ### Conversion-chain tools (pinned)
 
-Owned by `scripts/fetch_tools.sh` (`just fetch-tools`), which hardcodes the
+Owned by `benchmark/scripts/fetch_tools.sh` (`just fetch-tools`), which hardcodes the
 version, download URL and archive sha256 rather than resolving "latest", and
 retries once before hard-failing on a mismatch. The versions actually used
 are written to `benchmark/formats/tools/tool_versions.txt` on every fetch; the values
@@ -853,7 +853,7 @@ cat benchmark/formats/tools/tool_versions.txt      # the pinned conversion chain
 ```
 
 `peak_rss_bytes` is in **bytes** on every platform (`rss_to_bytes` in
-`crates/cityparquet-readbench/src/main.rs` normalises the KiB `ru_maxrss` that
+`benchmark/readbench/src/main.rs` normalises the KiB `ru_maxrss` that
 Linux reports), so a Linux run and a macOS run are directly comparable in that
 column.
 
@@ -897,7 +897,7 @@ the whole folder loop rather than lose their own row:
 
 ```sh
 CORPUS_MANIFEST=benchmark/formats/archive/2026-08-17-catalogue-corpus/corpus.manifest \
-    ./scripts/fetch_benchmark.sh --only all benchmark/formats/data/legacy
+    ./benchmark/scripts/fetch_benchmark.sh --only all benchmark/formats/data/legacy
 just bench benchmark/formats/data/legacy benchmark/formats/data/legacy_results \
     "cityjson,cityjsonseq,flatcitybuf,cityparquet-hilbert"
 ```
@@ -910,7 +910,7 @@ just readbench-prepare <input> benchmark/formats/data/readbench        # artefac
 cargo run --release -p cityparquet-readbench -- run \
     --input <input> --prepared-dir benchmark/formats/data/readbench \
     --out benchmark/formats/read_results/<name>.csv --repeat 7
-./scripts/readbench_duckdb.sh benchmark/formats/data/readbench/<name>.parquet \
+./benchmark/scripts/readbench_duckdb.sh benchmark/formats/data/readbench/<name>.parquet \
     benchmark/formats/read_results/<name>.csv --numeric-column <col>
 ```
 
@@ -925,5 +925,5 @@ baseline is wanted — it is opt-in, and `just bench` appends it **only when
 `--numeric-column` is in turn only needed to enable that baseline's
 `attr-stats` row; omit it for datasets with no numeric attribute (e.g.
 `lod3_railway.city.json`, where `attr-stats` is skipped for every format —
-see `crates/cityparquet-readbench/src/coordinator.rs`'s own
+see `benchmark/readbench/src/coordinator.rs`'s own
 `pick_numeric_attribute`, logged on stderr, never fabricated).

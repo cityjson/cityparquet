@@ -12,7 +12,7 @@
 # Usage — the usable list is exactly:
 #   grep -v '^#' benchmark/formats/corpus_urls.txt
 # `scripts/tests/fetch_benchmark_test.sh` requires that list to be the same set
-# as `scripts/fetch_benchmark.sh`'s CORPUS table, so the two cannot drift.
+# as `benchmark/scripts/fetch_benchmark.sh`'s CORPUS table, so the two cannot drift.
 #
 # Ordering: smallest first, so a truncated fetch still leaves a size ladder.
 #
@@ -107,7 +107,7 @@ https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V1
 # EXCLUDED — offered by cityjson.org, not measurable here
 # --------------------------------------------------------------------------
 #
-# Both fail gate 2 of scripts/fetch_benchmark.sh's verification: a dataset must
+# Both fail gate 2 of benchmark/scripts/fetch_benchmark.sh's verification: a dataset must
 # resolve to ONE CityParquet object table, because `cityparquet-readbench`'s
 # coordinator refuses a multi-table package outright
 # (`locate_cityparquet_table`). Not measured poorly — not measurable.

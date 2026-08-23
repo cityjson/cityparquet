@@ -1,6 +1,6 @@
 # CityGML 2.0 reader/writer — supported scope & known limitations
 
-Status as of 2026-07-17. The native CityGML 2.0 reader (`crates/cityparquet/src/citygml/`)
+Status as of 2026-07-17. The native CityGML 2.0 reader (`crates/core/src/citygml/`)
 and writer round-trip 3D city models through the CityParquet package. This
 document records what is supported and what remains, for the paper's scope
 section and future work. The **package round-trip is lossless** for everything

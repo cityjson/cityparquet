@@ -1,6 +1,7 @@
 name: Rust
 
-# The Rust gate for lib/cityparquet-rs, plus the benchmark harness's own two
+# The gate for both Rust workspaces — the library (lib/cityparquet-rs) and the
+# read-benchmark harness (benchmark/readbench) — plus the harness's own two
 # non-Rust suites.
 #
 # The BENCHMARKS THEMSELVES ARE NOT HERE and should not be added: they are
@@ -13,13 +14,15 @@ on:
     branches: [main, develop]
     paths:
       - "lib/cityparquet-rs/**"
-      - "benchmark/plot/**"
+      - "benchmark/**"
+      - "scripts/**"
       - "justfile"
       - ".github/workflows/rust.yml"
   pull_request:
     paths:
       - "lib/cityparquet-rs/**"
-      - "benchmark/plot/**"
+      - "benchmark/**"
+      - "scripts/**"
       - "justfile"
       - ".github/workflows/rust.yml"
   workflow_dispatch:
@@ -141,6 +144,43 @@ jobs:
 
       - name: just scripts-test
         run: just scripts-test
+
+  readbench:
+    name: readbench workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            benchmark/readbench/target
+          key: readbench-${{ runner.os }}-${{ hashFiles('benchmark/readbench/Cargo.lock') }}
+          restore-keys: readbench-${{ runner.os }}-
+
+      - uses: extractions/setup-just@v4
+
+      - name: Install rustfmt and clippy
+        working-directory: benchmark/readbench
+        run: rustup component add rustfmt clippy
+
+      # Its tests read the library's real CityJSON fixtures, so they have to be
+      # fetched first — the harness measures real data, not synthetic input.
+      - name: Fetch fixtures
+        working-directory: lib/cityparquet-rs
+        run: just fixtures
+
+      - name: clippy, tests, fmt
+        working-directory: benchmark/readbench
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+          cargo fmt --check
 
   citylake:
     name: citylake build

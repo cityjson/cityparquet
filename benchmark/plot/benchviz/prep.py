@@ -92,7 +92,7 @@ BASELINE_FORMAT = "cityjsonseq"
 CITATION_FLOOR_S = 0.010
 
 # The ROW-ORDERING axis, mirroring `Format::ORDERING_SET`
-# (crates/cityparquet-readbench/src/format.rs). Both members are the same
+# (benchmark/readbench/src/format.rs). Both members are the same
 # writer, reader and scenarios; the only difference is the order rows were
 # written in, which is why its baseline is the source-order package and NOT
 # `BASELINE_FORMAT` -- an ordering run has no CityJSONSeq row to divide by.
@@ -111,7 +111,7 @@ KNOWN_FORMATS = (
 )
 
 # The FORMAT-COMPARISON axis, mirroring `Format::DEFAULT_SET`
-# (crates/cityparquet-readbench/src/format.rs): one tag per format family, with
+# (benchmark/readbench/src/format.rs): one tag per format family, with
 # CityParquet represented by the Hilbert-ordered package — the configuration
 # that would actually ship, so the comparison is not handicapped by an ordering
 # choice no other format faces. Ordering is its own question, asked by
@@ -189,7 +189,7 @@ CODEC_LEVEL_NOTE = (
     "Codec levels are mismatched across the compression variants: zstd is "
     "written at level 3, gzip at level 6 and brotli at level 1. These are the "
     "parquet-rs defaults carried by the writer recipe "
-    "(crates/cityparquet/src/recipe.rs), as benchmark/formats/README.md states, so the "
+    "(crates/core/src/recipe.rs), as benchmark/formats/README.md states, so the "
     "codec comparison is a comparison of implementation defaults, not of codecs "
     "at equal effort. \"Smallest codec\" is therefore not a citable claim from "
     "this benchmark."

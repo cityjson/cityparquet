@@ -46,7 +46,7 @@ Neither is `just bench` — that is the cross-format **read** benchmark, writes 
 ## The codec levels are NOT matched
 
 The codec variants are written at the `parquet-rs` defaults carried by
-`crates/cityparquet/src/recipe.rs`: **zstd at level 3, gzip at level 6, brotli
+`crates/core/src/recipe.rs`: **zstd at level 3, gzip at level 6, brotli
 at level 1**. They are therefore a comparison of _implementation defaults_, not
 of codecs at equal effort, and **"the smallest codec" is not a citable claim
 from this benchmark**. Anyone wanting a codec ranking has to re-run with levels
@@ -55,7 +55,7 @@ and cites this section.
 
 ## Baseline geometry coverage — the DuckDB `duckdb-copy` rows
 
-`scripts/bench_duckdb.sh` appends `duckdb-copy` / `duckdb-copy-zstd` rows to the
+`benchmark/scripts/bench_duckdb.sh` appends `duckdb-copy` / `duckdb-copy-zstd` rows to the
 same CSV at the same precision and sample count: it reads the source through the
 community `cityjson` extension's `read_cityjson`/`read_cityjsonseq` and re-writes
 it with `COPY … TO (FORMAT PARQUET)`.
@@ -115,7 +115,7 @@ Per-dataset, without the recipes:
 
 ```sh
 cargo run --release -p cityparquet-cli -- bench --input <file> --out <csv>
-./scripts/bench_duckdb.sh <file> <csv>
+./benchmark/scripts/bench_duckdb.sh <file> <csv>
 ```
 
 **Record the machine with the run.** Nothing in the CSVs carries machine

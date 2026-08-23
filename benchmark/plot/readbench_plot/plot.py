@@ -3,7 +3,7 @@
 Each CSV in a results directory is expected to begin with the 13-column
 read-benchmark contract `cityparquet-readbench`'s coordinator writes (see
 `CSV_HEADER` in the package `__init__`, mirroring
-`crates/cityparquet-readbench/src/coordinator.rs`):
+`benchmark/readbench/src/coordinator.rs`):
 
     dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,
     peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests

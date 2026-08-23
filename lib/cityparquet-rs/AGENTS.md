@@ -9,17 +9,21 @@ and round-trips back to CityJSON / CityJSONSeq with **semantic** losslessness.
 
 ## Where you are
 
-`lib/cityparquet-rs/` inside the CityParquet monorepo. Two things follow:
+`lib/cityparquet-rs/` inside the CityParquet monorepo. Four things follow:
 
-- **The benchmark harness is split on purpose.** Its code is here
-  (`crates/cityparquet-readbench`, `scripts/`); its corpora, results and plotting
-  project are evidence and live in `../../benchmark/`. Every recipe that reaches both
-  — `bench`, `convert-all`, `write-bench`, `compression-bench`, the fetchers, the
-  renderers, `plot-test`, `scripts-test` — is in the **root** `justfile` and is run
-  from the repository root. `$BENCH_ROOT` (default `../../benchmark/formats`) is the
-  seam the scripts use.
-- **This `justfile` keeps only what belongs to the crate**, and `just check` here is
-  self-contained: no `uv`, no `jq`, no corpus.
+- **The benchmark is not here.** All of it — the harness crate, its scripts, its
+  corpora, its results, its renderers — lives in `../../benchmark/`, and
+  `benchmark/readbench` is its own Cargo workspace. What stays here is the
+  library it measures.
+- **The catalogue driver is not here either**: `../../scripts/catalog2cityparquet`.
+- **`just check` here gates the library alone**, and is self-contained: no `uv`,
+  no `jq`, no corpus. Recipes that reach both the library and the benchmark —
+  `bench`, `convert-all`, `write-bench`, `compression-bench`, the fetchers, the
+  renderers, `plot-test`, `scripts-test`, `catalog-*` — are in the **root**
+  `justfile` and run from the repository root.
+- **Directory names under `crates/` are short** (`core`, `schema`, `cli`); the
+  package names stay namespaced (`cityparquet`, `cityparquet-schema`,
+  `cityparquet-cli`) because those are global on crates.io. Do not align them.
 
 ## Relationship to the specification
 
@@ -32,16 +36,15 @@ implementation-status table (`../../documents/docs/06-resources/02-software.mdx`
 
 ## Components
 
-Four crates in the Cargo workspace, plus one Python driver that is deliberately outside
-it (it orchestrates the binaries rather than linking against them):
+Three crates in the Cargo workspace. The read-benchmark harness and the
+catalogue driver used to be listed here; both have moved out (see above).
 
-| Component                   | Purpose                                                                                                                                                                                                                                                                                                                                                                    |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cityparquet-schema`        | Type system, CityGML taxonomy, Arrow schema, sidecar schemas, manifest — **the spec as code**. Kept free of `arrow-array`/`parquet` (enforced by `just isolation`) so it stays an executable specification.                                                                                                                                                                |
-| `cityparquet`               | Parquet writer/reader, WKB, appearance interning, sidecars, export, comparator, Hilbert ordering, recipe presets.                                                                                                                                                                                                                                                          |
-| `cityparquet-cli`           | The `cityparquet` binary and the benchmark harness.                                                                                                                                                                                                                                                                                                                        |
-| `cityparquet-readbench`     | Read-path benchmark harness.                                                                                                                                                                                                                                                                                                                                               |
-| `tools/catalog2cityparquet` | Python driver converting the published City3D STAC catalogue (53 collections, ~74k items) into a CityParquet mirror, and ledgering **why** each item did or did not convert. Shells out to `cityparquet` and to the vendored `city3dstac`; interprets no format itself. Its own suite is `just catalog-test`, not `just check`. See `tools/catalog2cityparquet/README.md`. |
+| Component                           | Purpose                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cityparquet-schema`                | Type system, CityGML taxonomy, Arrow schema, sidecar schemas, manifest — **the spec as code**. Kept free of `arrow-array`/`parquet` (enforced by `just isolation`) so it stays an executable specification.                                                                                                                                                                  |
+| `cityparquet`                       | Parquet writer/reader, WKB, appearance interning, sidecars, export, comparator, Hilbert ordering, recipe presets.                                                                                                                                                                                                                                                            |
+| `cityparquet-cli`                   | The `cityparquet` binary and the benchmark harness.                                                                                                                                                                                                                                                                                                                          |
+| `../../scripts/catalog2cityparquet` | Python driver converting the published City3D STAC catalogue (53 collections, ~74k items) into a CityParquet mirror, and ledgering **why** each item did or did not convert. Shells out to `cityparquet` and to the vendored `city3dstac`; interprets no format itself. Its own suite is `just catalog-test`, not `just check`. See `scripts/catalog2cityparquet/README.md`. |
 
 ## Commands
 
@@ -54,7 +57,7 @@ just fmt          # rustfmt + Prettier over the Markdown
 just interop      # convert both fixtures and have DuckDB read the Parquet natively
 ```
 
-Catalogue driver (`tools/catalog2cityparquet`; all but `catalog-test` need the network,
+Catalogue driver (`scripts/catalog2cityparquet`; all but `catalog-test` need the network,
 and none of them is part of `just check`):
 
 ```bash

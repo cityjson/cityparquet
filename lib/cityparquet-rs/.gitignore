@@ -28,9 +28,9 @@ target
 # CityParquet packages produced by `just convert-all` (default OUT root)
 /out/
 
-# tools/catalog2cityparquet/'s own uv-managed venv + pytest cache — its source
+# scripts/catalog2cityparquet/'s own uv-managed venv + pytest cache — its source
 # (pyproject.toml, *.py, uv.lock) IS committed.
-/tools/catalog2cityparquet/.venv/
+# (catalog2cityparquet moved to the repo root; its ignore lives there now)
 **/__pycache__/
 **/.pytest_cache/
 

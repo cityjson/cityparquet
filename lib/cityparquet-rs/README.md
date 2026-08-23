@@ -23,11 +23,11 @@ semantic losslessness.
   — the cross-format read benchmark's methodology, fairness caveats, and the
   CSVs' provenance.
 
-The benchmark harness's **code** lives here (`crates/cityparquet-readbench`,
-`scripts/`); its **corpora, results and plotting project** live one level up,
-in the monorepo's [`benchmark/`](../../benchmark/README.md) tree, and so do the
-`just` recipes that drive it. Run those from the repository root, not from
-here.
+The benchmark does not live here at all — harness crate, scripts, corpora,
+results and renderers are all in the monorepo's
+[`benchmark/`](../../benchmark/README.md) tree, and so are the `just` recipes
+that drive it. Run those from the repository root. What is here is the library
+they measure.
 
 ## Crates
 
@@ -187,14 +187,13 @@ export+compare check. See
 **From this directory** — the crate's own gate, self-contained (no `uv`, no
 `jq`, no corpus):
 
-| Recipe                                 | What it does                                                          |
-| -------------------------------------- | --------------------------------------------------------------------- |
-| `just fixtures`                        | download the CityJSON test fixtures into `tests/fixtures/`            |
-| `just check`                           | clippy, tests, schema/Parquet isolation, `fmt --check`, prettier      |
-| `just test` / `just lint` / `just fmt` | the individual gates                                                  |
-| `just vendor-check`                    | fmt + clippy + test the vendored `city3d-stac-tool`                   |
-| `just interop`                         | convert both fixtures and have DuckDB read the Parquet natively       |
-| `just catalog-*`                       | the STAC catalogue → CityParquet mirror (`tools/catalog2cityparquet`) |
+| Recipe                                 | What it does                                                     |
+| -------------------------------------- | ---------------------------------------------------------------- |
+| `just fixtures`                        | download the CityJSON test fixtures into `tests/fixtures/`       |
+| `just check`                           | clippy, tests, schema/Parquet isolation, `fmt --check`, prettier |
+| `just test` / `just lint` / `just fmt` | the individual gates                                             |
+| `just vendor-check`                    | fmt + clippy + test the vendored `city3d-stac-tool`              |
+| `just interop`                         | convert both fixtures and have DuckDB read the Parquet natively  |
 
 **From the repository root** — everything that reaches both this crate and the
 `benchmark/` tree:
@@ -209,12 +208,12 @@ export+compare check. See
 | `just write-bench FOLDER [OUT]`        | encoding-variant WRITE benchmark + the DuckDB `COPY` baseline, one CSV per input                                                                                                                                                    |
 | `just compression-bench FOLDER [OUT]`  | codec + row-group WRITE-bench matrix, one CSV per input, plus charts                                                                                                                                                                |
 | `just plot` / `just plot-pretty`       | render charts and the cross-dataset summary page from CSVs already measured                                                                                                                                                         |
-| `just plot-test` / `just scripts-test` | the harness's two non-Rust test suites (`benchmark/plot`'s pytest, this directory's `scripts/` bash suite) — outside `just check`, which is the Rust gate                                                                           |
+| `just plot-test` / `just scripts-test` | the harness's two non-Rust test suites (`benchmark/plot`'s pytest, `benchmark/scripts/`'s bash suite) — outside `just check`, which is the Rust gate                                                                                |
 
 Every recipe that walks a `FOLDER` discovers and names its inputs through the
 one input-extension convention at the top of the **root** `justfile`
 (`KNOWN_INPUT_EXTENSIONS`/`KNOWN_INPUT_FIND`), which CityGML inputs are part
-of; `crates/cityparquet-readbench/tests/strip_extension.rs` holds it in
+of; `benchmark/readbench/tests/strip_extension.rs` holds it in
 lockstep with the Rust and shell implementations of the same rule.
 
 Downloaded benchmark data (`benchmark/formats/data/`) and generated packages

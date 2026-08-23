@@ -1,7 +1,7 @@
 """Compression-codec and row-group-size comparison charts.
 
 Reads every `cityparquet bench` write-bench CSV in a results directory (see
-`just compression-bench`, `crates/cityparquet-cli/src/bench.rs`'s
+`just compression-bench`, `crates/cli/src/bench.rs`'s
 `CSV_HEADER`) and, per dataset, renders two axes of the writer-tuning space:
 
 - **codec axis**: the variants sharing the default row-group size (65536)
@@ -48,7 +48,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # The exact CSV header `cityparquet bench` writes (see `CSV_HEADER` in
-# crates/cityparquet-cli/src/bench.rs). A CSV whose first line doesn't match
+# crates/cli/src/bench.rs). A CSV whose first line doesn't match
 # this exactly is not a write-bench result and is skipped.
 WRITE_BENCH_HEADER = [
     "dataset",

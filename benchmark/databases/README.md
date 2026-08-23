@@ -427,7 +427,7 @@ but a real step, not nothing.
   `cityparquet-readbench` build that produced those files read `ru_maxrss`
   directly with no `cfg`-gated conversion. That reader is now fixed
   upstream — `max_rss_bytes()` routes through a `cfg`-gated `rss_to_bytes`
-  (`crates/cityparquet-readbench/src/main.rs`), so a run made with the
+  (`benchmark/readbench/src/main.rs`), so a run made with the
   current binary reports true bytes on Linux and macOS alike. The
   already-committed numbers are **not** rewritten in place; the correction
   is a re-run, recorded as the erratum under Caveat 6 below.

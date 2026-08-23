@@ -21,7 +21,7 @@ def parse_child_stdout(stdout: str) -> tuple[int, float, int, int]:
     """Parse one `--child` invocation's stdout line.
 
     Confirmed empirically against the built `cityparquet-readbench` binary
-    (crates/cityparquet-readbench/src/main.rs, whose own
+    (benchmark/readbench/src/main.rs, whose own
     `readbench_smoke.rs` test asserts the same shape): the child prints
     exactly ONE line of SPACE-SEPARATED fields, never JSON:
 
@@ -57,7 +57,7 @@ def build_child_args(scenario: str, params: Params, input_path: str,
     """The argv for one `--child` invocation.
 
     The flag-per-scenario mapping below is read from
-    `crates/cityparquet-readbench/src/formats/cityparquet.rs`'s own
+    `benchmark/readbench/src/formats/cityparquet.rs`'s own
     `Scenario` match, not guessed. In particular: `attr-filter` and
     `project` both take a `--attr-column` flag, but it must carry
     DIFFERENT `Params` fields for each. `attr-filter` needs the

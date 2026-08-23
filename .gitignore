@@ -11,12 +11,12 @@
 #
 # ~24 GB of city models, all fetched from pinned URLs with pinned byte sizes
 # by `just fetch-data` / `just fetch-scaling-data`. The pins live in
-# lib/cityparquet-rs/scripts/fetch_benchmark.sh and benchmark/formats/
+# benchmark/scripts/fetch_benchmark.sh and benchmark/formats/
 # corpus_urls.txt, both committed — the bytes themselves never were.
 /benchmark/formats/data/
 
 # External converters fetched by `just fetch-tools` (citygml-tools). The PINS
-# live in lib/cityparquet-rs/scripts/fetch_tools.sh, which IS committed; the
+# live in benchmark/scripts/fetch_tools.sh, which IS committed; the
 # unpacked ~28 MB of JARs is not.
 /benchmark/formats/tools/
 
@@ -47,3 +47,9 @@ dist/
 .claudian/
 apm_modules/
 ai/skills/
+
+# scripts/catalog2cityparquet's own uv-managed venv — its source
+# (pyproject.toml, *.py, uv.lock) IS committed.
+/scripts/catalog2cityparquet/.venv/
+# benchmark/readbench is its own Cargo workspace.
+/benchmark/readbench/target/

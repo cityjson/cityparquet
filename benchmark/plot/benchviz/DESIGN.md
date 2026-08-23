@@ -27,7 +27,7 @@ calls the same code with its own `--html`/`--figures` destinations.
   descending. The order is computed from the data, so each run's corpus orders
   itself and no dataset name is written down anywhere in this package.
 - **The format axis is the harness's, not this package's.** The views plot
-  `Format::DEFAULT_SET` (crates/cityparquet-readbench/src/format.rs), carried in
+  `Format::DEFAULT_SET` (benchmark/readbench/src/format.rs), carried in
   `meta.format_axis`: `citygml`, `cityjson`, `cityjsonseq`, `flatcitybuf` and
   `cityparquet-hilbert` — one tag per format family, CityParquet represented by
   the configuration it would ship as. `cityjsonseq-gz` (a compression variant of
@@ -79,7 +79,7 @@ calls the same code with its own `--html`/`--figures` destinations.
    "n/a — out-of-process"); carries ~0.06 s un-subtracted startup overhead —
    footnote + tooltip note.
 5. **Compression codec levels are mismatched** — zstd@3 vs gzip@6 vs brotli@1
-   (parquet-rs defaults; `crates/cityparquet/src/recipe.rs`). NOT documented in
+   (parquet-rs defaults; `crates/core/src/recipe.rs`). NOT documented in
    benchmark/formats/README.md. The codec view carries this inline, phrased as sourced from
    implementation defaults, and the section is visually de-emphasized:
    "smallest codec" is not a citable claim.

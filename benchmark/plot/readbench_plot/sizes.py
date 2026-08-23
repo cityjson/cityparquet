@@ -1,10 +1,10 @@
 """On-disk size + compression-ratio report from the readbench prepared dir.
 
-`readbench_prepare.sh` (see `scripts/readbench_prepare.sh`) leaves, for every
+`readbench_prepare.sh` (see `benchmark/scripts/readbench_prepare.sh`) leaves, for every
 benchmarked dataset `<name>`, one artefact per format it was asked to build
 under a "prepared dir" (default `benchmark/formats/data/readbench/`) — the same names
 `Format::artefact` resolves in
-`crates/cityparquet-readbench/src/format.rs`:
+`benchmark/readbench/src/format.rs`:
 
     <name>.gml               CityGML 2.0 source (only for a CityGML input)
     <name>.city.json         whole-document CityJSON
@@ -165,7 +165,7 @@ def measure_dataset(name: str, prepared_dir: Path) -> list[dict[str, object]]:
     """Bytes per available format for one dataset; missing artefacts are skipped.
 
     The per-format artefact names mirror `Format::artefact`
-    (`crates/cityparquet-readbench/src/format.rs`). `duckdb-parquet` is
+    (`benchmark/readbench/src/format.rs`). `duckdb-parquet` is
     absent because it has no artefact of its own (`Artefact::NotCoordinated`
     — it is an SQL engine reading the CityParquet package).
     """
@@ -401,7 +401,7 @@ def main() -> None:
     parser.add_argument(
         "prepared_dir",
         type=Path,
-        help="directory of per-format readbench artefacts (see scripts/readbench_prepare.sh)",
+        help="directory of per-format readbench artefacts (see benchmark/scripts/readbench_prepare.sh)",
     )
     parser.add_argument(
         "out_dir",

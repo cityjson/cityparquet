@@ -43,7 +43,7 @@
 #
 # WHICH BENCHMARK SET AN ENTRY SERVES: most usable entries serve the DEFAULT
 # format set, `citygml` row included. Two serve every format EXCEPT `citygml`
-# and say so in their own comment below. `scripts/fetch_benchmark.sh` pins the
+# and say so in their own comment below. `benchmark/scripts/fetch_benchmark.sh` pins the
 # same 30 URLs with a local name, a byte size and that set membership, and
 # `scripts/tests/fetch_benchmark_test.sh` requires the two lists to stay the
 # same set — so a URL added here and not there (or vice versa) fails a test
@@ -206,7 +206,7 @@ https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
 # SINGLE-TABLE VERIFICATION (2026-08-16)
 # ---------------------------------------------------------------------------
 # Every URL above was checked before being pinned into
-# `scripts/fetch_benchmark.sh`, because `cityparquet-readbench`'s coordinator
+# `benchmark/scripts/fetch_benchmark.sh`, because `cityparquet-readbench`'s coordinator
 # REFUSES a multi-table CityParquet package (`locate_cityparquet_table`): a
 # dataset whose objects span two CityGML modules cannot be measured at all.
 #
@@ -216,7 +216,7 @@ https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
 # reports the declared CityGML version and how many members carry a gml:id;
 # the CityJSON entries were counted with jq. Thirteen of them were
 # additionally CONVERTED with `cityparquet convert` and their object tables
-# listed with `scripts/package_tables.py`, which is what confirmed the
+# listed with `benchmark/scripts/package_tables.py`, which is what confirmed the
 # module -> table mapping the census relies on.
 #
 # Result: every entry above declares CityGML 2.0 (or CityJSON 2.0), every
@@ -284,7 +284,7 @@ https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
 # tools; URLs deliberately commented out so the default grep skips them.
 # ---------------------------------------------------------------------------
 #
-# The reader (crates/cityparquet/src/citygml/reader.rs) streams bldg:Building
+# The reader (crates/core/src/citygml/reader.rs) streams bldg:Building
 # plus a fixed list of 1st-level non-building types (WaterBody, LandUse,
 # CityFurniture, SolitaryVegetationObject, PlantCover, Bridge, Tunnel,
 # GenericCityObject, CityObjectGroup, Road, Railway, TransportSquare). A
@@ -304,7 +304,7 @@ https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
 # `cityparquet-readbench --child --format citygml --scenario count`. The dem
 # entry is INFERRED, not measured — the tile is 599 MB and was never downloaded;
 # dem:ReliefFeature is unmapped by explicit decision in the reader's own type
-# map (crates/cityparquet/src/citygml/reader.rs, the ReliefFeature comment in
+# map (crates/core/src/citygml/reader.rs, the ReliefFeature comment in
 # `citygml_object_type`), so the refusal follows by construction rather than
 # from a run.
 #
@@ -320,7 +320,7 @@ https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
 #   CityGML 2.0, .gml, 535 KB
 #   -> 11 of 11 members are tran:Track (was: count = 0)
 #   A three-member verbatim fragment of this tile is committed as
-#   crates/cityparquet/tests/data/plateau_trk_fragment.gml, and is the fixture
+#   crates/core/tests/data/plateau_trk_fragment.gml, and is the fixture
 #   that pins the refusal.
 # https://assets.cms.plateau.reearth.io/assets/0f/dbc1ba-d722-455f-8193-bc6ed930fd0e/13202_tachikawa-shi_pref_2023_citygml_2_op/udx/trk/53394343_trk_6697_op.gml
 #

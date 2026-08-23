@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["crates/cityparquet-schema", "crates/cityparquet", "crates/cityparquet-cli", "crates/cityparquet-readbench"]
+# Directories are short because the enclosing directory already says
+# "cityparquet"; the PACKAGE names stay namespaced (`cityparquet`,
+# `cityparquet-schema`, `cityparquet-cli`) because those are global on
+# crates.io, where `core`, `schema` and `cli` are taken or reserved.
+members = ["crates/schema", "crates/core", "crates/cli"]
+# `cityparquet-readbench` is NOT a member: it is benchmark code, it lives with
+# the rest of the benchmark under ../../benchmark/readbench, and it is its own
+# workspace there (see the migration note's D6 — independent workspaces are the
+# established pattern in this tree).
 # Vendored submodules are independent Cargo projects with their own lockfiles and
 # toolchains; they must not be pulled into this workspace.
 exclude = ["vendor"]
@@ -39,7 +47,7 @@ geo = "0.30"
 tempfile = "3"
 fcb_core = "0.7"
 peak_alloc = "0.3.0"
-cityparquet-schema = { path = "crates/cityparquet-schema", version = "0.1.0" }
+cityparquet-schema = { path = "crates/schema", version = "0.1.0" }
 city3d-stac-types = { git = "https://github.com/cityjson/city3d-stac-tool", rev = "743199c9b9ff566ec42c4023ce0968e9ac6af485" }
 jsonschema = "0.26"
 

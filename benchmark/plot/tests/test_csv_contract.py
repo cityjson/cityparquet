@@ -16,14 +16,14 @@ from pathlib import Path
 
 from readbench_plot import CSV_HEADER
 
-# benchmark/plot/tests/ -> the monorepo root; the harness crate this contract
-# is read from lives in the other half of the tree.
-REPO = Path(__file__).resolve().parents[3] / "lib" / "cityparquet-rs"
+# benchmark/plot/tests/ -> the monorepo root. The harness crate and the shell
+# scripts this reads now live under benchmark/ too, beside this project.
+REPO = Path(__file__).resolve().parents[3]
 
 
 def _coordinator_header() -> list[str]:
     """The header literal the Rust coordinator writes, read from its source."""
-    src = (REPO / "crates/cityparquet-readbench/src/coordinator.rs").read_text()
+    src = (REPO / "benchmark/readbench/src/coordinator.rs").read_text()
     m = re.search(r'const CSV_HEADER: &str = "(.*?)";', src, re.S)
     assert m, "could not find CSV_HEADER in coordinator.rs"
     # The literal is line-continued with a trailing backslash; rejoin it.
@@ -37,7 +37,7 @@ def test_plotter_header_matches_the_coordinator():
 
 
 def test_duckdb_script_header_matches_the_coordinator():
-    src = (REPO / "scripts/readbench_duckdb.sh").read_text()
+    src = (REPO / "benchmark/scripts/readbench_duckdb.sh").read_text()
     m = re.search(r'^CSV_HEADER=(?:"|\')(.+?)(?:"|\')$', src, re.M)
     assert m, "could not find CSV_HEADER in readbench_duckdb.sh"
     assert m.group(1).split(",") == _coordinator_header()

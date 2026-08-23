@@ -21,14 +21,12 @@ from benchviz import __main__ as cli
 from benchviz import prep
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "benchviz"
-# benchmark/plot/tests/ -> benchmark/ -> the monorepo root. The read
-# benchmark's evidence and methodology docs are one sibling away; the harness
-# crate they must agree with is in the other half of the tree.
+# benchmark/plot/tests/ -> benchmark/. Everything this reads is a sibling: the
+# read benchmark's evidence and methodology docs in formats/, the harness crate
+# they must agree with in readbench/.
 BENCHMARK_ROOT = Path(__file__).resolve().parents[2]
 LIVE_BENCH_DIR = BENCHMARK_ROOT / "formats"
-READBENCH_SRC = (
-    BENCHMARK_ROOT.parent / "lib/cityparquet-rs/crates/cityparquet-readbench/src"
-)
+READBENCH_SRC = BENCHMARK_ROOT / "readbench" / "src"
 
 
 def _bench_dir(tmp_path: Path) -> Path:

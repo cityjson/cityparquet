@@ -324,7 +324,7 @@ sidecar file present on disk but absent from the manifest is ignored, and one
 listed but missing is an error, never a silent drop.
 
 `metadata.json` is a **STAC Item** (the 3D city models `city3d:*` extension)
-describing that one package — see `crates/cityparquet/src/stac/`. A
+describing that one package — see `crates/core/src/stac/`. A
 dataset-level `collection.json` (a STAC **Collection** curating _multiple_
 CityParquet packages/tiles into one aggregated dataset) is **not yet
 implemented** — it needs a multi-package conversion workflow this CLI doesn't

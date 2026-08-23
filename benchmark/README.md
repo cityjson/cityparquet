@@ -5,40 +5,52 @@ corpus and its own caveats. This page is the map: what each one measures, what
 it will and will not support as a claim, and which caveats are load-bearing. The
 methodology lives with each family; nothing here restates a number.
 
-| Directory                        | Question                                                                      | Compared against                                             |
-| -------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| [`formats/`](formats/README.md)  | How does CityParquet read, write and compress against the other file formats? | CityGML, CityJSON, CityJSONSeq, gzipped CityJSONSeq, FlatCityBuf |
-| [`databases/`](databases/README.md) | How does reading CityParquet compare with querying a 3D city model _database_? | cjdb, 3DCityDB v5 (both PostgreSQL), DuckDB over CityParquet |
-| [`plot/`](plot/)                 | Neither — it renders. A uv project holding the two chart packages.            | —                                                             |
+| Directory                           | Question                                                                       | Compared against                                                 |
+| ----------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| [`formats/`](formats/README.md)     | How does CityParquet read, write and compress against the other file formats?  | CityGML, CityJSON, CityJSONSeq, gzipped CityJSONSeq, FlatCityBuf |
+| [`databases/`](databases/README.md) | How does reading CityParquet compare with querying a 3D city model _database_? | cjdb, 3DCityDB v5 (both PostgreSQL), DuckDB over CityParquet     |
+| [`plot/`](plot/)                    | Neither — it renders. A uv project holding the two chart packages.             | —                                                                |
 
-## Where the code is, and why it is not here
+## What is in here
 
-`benchmark/` holds **evidence**: corpora, results CSVs, methodology, and the
-code that draws pictures of them. The read benchmark's **harness** is a Rust
-workspace crate (`lib/cityparquet-rs/crates/cityparquet-readbench`) plus a set of
-shell scripts (`lib/cityparquet-rs/scripts/`), and it stays there, because it is
-code and it is tested by that workspace's gate.
+Everything the benchmark is:
 
-The split is deliberate and it is the thing most likely to look like a mistake:
-after a run, the binary and the CSVs it wrote live in different trees. The
-recipes that bridge them are in the **root** `justfile` — `just bench`, `just
-fetch-data`, `just plot-pretty` and the rest run from the repository root, and
-`$BENCH_ROOT` (default `benchmark/formats`) is the seam the scripts use.
+|              |                                                                    |
+| ------------ | ------------------------------------------------------------------ |
+| `readbench/` | the cross-format read harness — its **own Cargo workspace**        |
+| `scripts/`   | the conversion chain, the fetchers, and their own bash test suites |
+| `formats/`   | the read/write/compression corpora, results and methodology        |
+| `databases/` | the database comparison — its own uv project and justfile          |
+| `plot/`      | the renderers; measures nothing                                    |
 
-`databases/` is self-contained by contrast: its own `pyproject.toml`, `uv.lock`
-and `justfile`, driven with `just db <recipe>` from the root.
+**The recipes are not here, and that is deliberate.** `just bench`,
+`just fetch-data`, `just plot-pretty` and the rest live in the **root**
+`justfile` and run from the repository root, because a benchmark run has to
+reach the _library_ as well — it builds the `cityparquet` converter it measures,
+from `lib/cityparquet-rs`. A recipe that spans both belongs above both.
+
+`readbench/` is a separate workspace from the library on purpose: it keeps
+`cd lib/cityparquet-rs && just check` a gate on the **library alone**, runnable
+with no `uv`, no `jq` and no corpus. The root `just check` runs both.
+
+Two things in `readbench/Cargo.toml` are load-bearing and easy to "tidy" away:
+it repeats the `[patch.crates-io] cjseq` line (a `[patch]` is honoured only in
+the workspace root being built, so without it the benchmark would silently use
+the unpatched upstream), and its `fcb_core`/`cjseq2` pins are **exact** — they
+are a measured format's reader, and a caret range would let a later release
+change what the published numbers mean.
 
 ## What is in git and what is not
 
-| Artefact                                                     | Committed?  |
-| ------------------------------------------------------------ | ----------- |
-| `formats/scaling_{read,write,compression,ordering}_results/` | **yes** — the configuration-axis evidence, four cardinalities of one 3DBAG slice |
-| `formats/archive/2026-08-17-catalogue-corpus/`               | **yes** — the retired 30-dataset corpus and its results, kept so the earlier claims stay checkable |
-| `formats/READ_BENCHMARK.md`, `formats/README.md`             | **yes** — the methodology, including all 18 fairness caveats |
+| Artefact                                                     | Committed?                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `formats/scaling_{read,write,compression,ordering}_results/` | **yes** — the configuration-axis evidence, four cardinalities of one 3DBAG slice                                                                                                                                                                               |
+| `formats/archive/2026-08-17-catalogue-corpus/`               | **yes** — the retired 30-dataset corpus and its results, kept so the earlier claims stay checkable                                                                                                                                                             |
+| `formats/READ_BENCHMARK.md`, `formats/README.md`             | **yes** — the methodology, including all 18 fairness caveats                                                                                                                                                                                                   |
 | `databases/results/`                                         | **no, currently** — the CSVs were removed with the read benchmark's, for the same reason and a second one: on Linux the harness recorded `peak_rss_bytes` in KiB, not bytes, so five result files were 1024× wrong. `just db bench <dataset>` repopulates them |
-| `formats/read_results/`, `formats/ordering_results/`          | **no, currently** — the CSVs were removed when the read corpus was replaced (six fully-comparable cityjson.org datasets in place of thirty partly-comparable ones). `just bench` repopulates them |
-| `formats/data/` (~24 GB), `formats/tools/`                    | **no** — fetched from pinned URLs with pinned byte sizes by `just fetch-data` / `just fetch-scaling-data` / `just fetch-tools` |
-| `summary/`, `**/plots/`                                       | **no** — derived from the CSVs in seconds by `just plot-pretty` / `just plot` |
+| `formats/read_results/`, `formats/ordering_results/`         | **no, currently** — the CSVs were removed when the read corpus was replaced (six fully-comparable cityjson.org datasets in place of thirty partly-comparable ones). `just bench` repopulates them                                                              |
+| `formats/data/` (~24 GB), `formats/tools/`                   | **no** — fetched from pinned URLs with pinned byte sizes by `just fetch-data` / `just fetch-scaling-data` / `just fetch-tools`                                                                                                                                 |
+| `summary/`, `**/plots/`                                      | **no** — derived from the CSVs in seconds by `just plot-pretty` / `just plot`                                                                                                                                                                                  |
 
 Because the read CSVs are not currently committed, `just plot-pretty` produces a
 summary page whose read views say so rather than showing an empty grid. That is

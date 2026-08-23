@@ -98,7 +98,7 @@ independent defects in `src/lib.rs` compound:
 Both defects are entirely inside `cjseq`; nothing in `cityparquet-rs`'s own
 encode/export/appearance/compare code is at fault (its `.city.jsonl`
 writer never calls this merge and round-trips textures losslessly). See
-`crates/cityparquet/tests/doc_export_textures.rs` for the regression test
+`crates/core/tests/doc_export_textures.rs` for the regression test
 against the real `lod3_railway.city.json` fixture (a multi-object feature
 with 53 CityObjects sharing one `vertices_texture` pool, run repeatedly in
 CI to guard against the HashMap-order-dependent recurrence described

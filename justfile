@@ -3,21 +3,22 @@
 #
 # WHAT LIVES HERE, AND WHY.
 #
-# The benchmark harness spans two trees: its code is a workspace crate
-# (`lib/cityparquet-rs/crates/cityparquet-readbench`) and a set of shell
-# scripts (`lib/cityparquet-rs/scripts/`), while its corpora, its results and
-# its plotting project are evidence and live under `benchmark/`. A recipe
-# that has to reach both cannot sit inside either, so every such recipe sits
-# HERE and every path below is relative to the repository root.
+# The benchmark is ONE tree: `benchmark/` holds the harness crate
+# (`readbench/`), its scripts (`scripts/`), its corpora and results
+# (`formats/`, `databases/`) and its renderers (`plot/`). But a benchmark
+# recipe still has to reach the LIBRARY — to build the converter it measures —
+# and the catalogue driver reaches it too, so those recipes sit HERE, where
+# both are visible. Every path below is relative to the repository root.
 #
-# `lib/cityparquet-rs/justfile` keeps what belongs to the crate alone —
-# `test`, `lint`, `fmt`, `check`, `vendor-check`, `fixtures`, `interop` and
-# the `catalog-*` driver. Run those from inside that directory.
+# `lib/cityparquet-rs/justfile` keeps what belongs to the library alone:
+# `test`, `lint`, `fmt`, `check`, `vendor-check`, `fixtures`, `interop`. Run
+# those from inside that directory; its `check` needs no `uv`, no `jq` and no
+# corpus, which is the point of the split.
 #
 # The four per-dataset recipes (`convert-all`, `bench`, `write-bench`,
 # `compression-bench`) are deliberately in ONE file: they share the
 # input-extension convention below verbatim, and
-# `crates/cityparquet-readbench/tests/strip_extension.rs` extracts all four
+# `benchmark/readbench/tests/strip_extension.rs` extracts all four
 # out of this file and RUNS them to prove they have not drifted apart. Split
 # them across two justfiles and that check has nothing to compare.
 # ===========================================================================
@@ -25,7 +26,12 @@
 RS := "lib/cityparquet-rs"
 BENCH := "benchmark/formats"
 PLOT := "benchmark/plot"
+BENCH_SCRIPTS := "benchmark/scripts"
+# Two workspaces, two manifests. The library's builds the converter; the
+# benchmark harness is its own workspace under benchmark/, so `cargo` has to be
+# told which one each recipe means.
 CARGO := "--manifest-path " + RS + "/Cargo.toml"
+READBENCH_CARGO := "--manifest-path benchmark/readbench/Cargo.toml"
 
 default:
     @just --list
@@ -60,11 +66,16 @@ hooks:
 # ---------------------------------------------------------------------------
 
 # Everything that gates a change to the Rust library and the benchmark
-# harness. `cargo`-only work can stop at the first line; touching
-# `benchmark/plot/` or `lib/cityparquet-rs/scripts/` needs the other two.
-[doc("The full gate: the Rust workspace, the plotting suite, the shell suites")]
+# harness. The library and the harness are separate Cargo workspaces, so each
+# needs its own clippy/test/fmt pass — `cd lib/cityparquet-rs && just check`
+# deliberately does NOT reach the harness, which is what keeps that gate
+# runnable with no `uv`, no `jq` and no corpus.
+[doc("The full gate: both Rust workspaces, the plotting suite, the shell suites")]
 check:
     cd {{RS}} && just check
+    cargo clippy {{READBENCH_CARGO}} --all-targets -- -D warnings
+    cargo test {{READBENCH_CARGO}}
+    cargo fmt {{READBENCH_CARGO}} --check
     just plot-test
     just scripts-test
 
@@ -96,12 +107,12 @@ docs-build: docs-install
 # A benchmark input is `<dataset><ext>`, and `<dataset>` names everything
 # derived from it (a package directory, a results CSV, every prepared
 # artefact). The rule is implemented four times over — here, in
-# `lib/cityparquet-rs/crates/cityparquet-readbench/src/naming.rs`, in
-# `lib/cityparquet-rs/scripts/readbench_prepare.sh`, and (as its composable
-# package-name counterpart) in `lib/cityparquet-rs/scripts/readbench_duckdb.sh`
+# `benchmark/readbench/src/naming.rs`, in
+# `benchmark/scripts/readbench_prepare.sh`, and (as its composable
+# package-name counterpart) in `benchmark/scripts/readbench_duckdb.sh`
 # — because a shell script cannot import a Rust function and `just` has no
 # functions of its own.
-# `lib/cityparquet-rs/crates/cityparquet-readbench/tests/strip_extension.rs`
+# `benchmark/readbench/tests/strip_extension.rs`
 # extracts the shell ones from their own source files and RUNS them over the
 # same table, so a copy that drifts fails `just check`.
 #
@@ -130,7 +141,7 @@ KNOWN_INPUT_FIND := "-name '*.json' -o -name '*.jsonl' -o -name '*.gml' -o -name
 # CityJSON project's own dataset page, into DEST (default
 # benchmark/formats/data/benchmark/, gitignored). Every entry's byte size is
 # pinned and verified and an already-present file is skipped — see
-# lib/cityparquet-rs/scripts/fetch_benchmark.sh for the table and
+# benchmark/scripts/fetch_benchmark.sh for the table and
 # benchmark/formats/corpus_urls.txt for each URL's provenance. Needs curl;
 # network-dependent; kept OUT of `just check`/CI.
 #
@@ -155,7 +166,7 @@ KNOWN_INPUT_FIND := "-name '*.json' -o -name '*.jsonl' -o -name '*.gml' -o -name
 # same directory (`--allow-foreign` overrides).
 [doc("Fetch the read benchmark's six-dataset corpus (423 MB, pinned)")]
 fetch-data DEST=(BENCH / "data/benchmark") ONLY='default':
-    ./{{RS}}/scripts/fetch_benchmark.sh --only {{ONLY}} {{DEST}}
+    ./{{BENCH_SCRIPTS}}/fetch_benchmark.sh --only {{ONLY}} {{DEST}}
 
 # Fetch the pinned external converters the read benchmark's conversion chain
 # needs: citygml-tools (CityGML -> CityJSON) into benchmark/formats/tools/
@@ -166,7 +177,7 @@ fetch-data DEST=(BENCH / "data/benchmark") ONLY='default':
 # benchmark/formats/READ_BENCHMARK.md's Environment block.
 [doc("Fetch the pinned external converters (citygml-tools, cjseq)")]
 fetch-tools:
-    ./{{RS}}/scripts/fetch_tools.sh
+    ./{{BENCH_SCRIPTS}}/fetch_tools.sh
 
 # Fetch the SCALING corpus source — one 7.6 GB FlatCityBuf export of a
 # 3DBAG subset (flatcitybuf.open3d.city, pinned byte size, resumable,
@@ -204,7 +215,7 @@ fetch-scaling-data DEST=(BENCH / "data/scaling") SIZES='1000,5000,10000,50000':
             exit 1
         fi
     fi
-    cargo run --release {{CARGO}} -p cityparquet-readbench --bin scaling-corpus -- \
+    cargo run --release {{READBENCH_CARGO}} --bin scaling-corpus -- \
         --input "$src" --out-dir "{{DEST}}" --stem 3dbag --sizes "{{SIZES}}"
 
 # ---------------------------------------------------------------------------
@@ -249,11 +260,11 @@ convert-all FOLDER OUT='out/cityparquet':
 # Prepare the per-format artefacts for ONE input, WITHOUT measuring anything
 # (`just bench FOLDER` runs exactly this as its first step, for every input
 # under FOLDER). A thin wrapper over
-# `lib/cityparquet-rs/scripts/readbench_prepare.sh`, which owns the conversion
+# `benchmark/scripts/readbench_prepare.sh`, which owns the conversion
 # chain, its per-format tool guards and its refusals.
 #
 # It exists because four of the coordinator's own error messages
-# (lib/cityparquet-rs/crates/cityparquet-readbench/src/coordinator.rs) tell the
+# (benchmark/readbench/src/coordinator.rs) tell the
 # operator to run `just readbench-prepare <input>` when an artefact is missing,
 # and benchmark/formats/READ_BENCHMARK.md documents it as the per-dataset
 # manual path — a recipe named by an error message has to be a recipe that
@@ -262,7 +273,7 @@ convert-all FOLDER OUT='out/cityparquet':
 #
 # FORMATS is a comma-separated list of artefact-BEARING format names
 # (`Format::ALL` minus `duckdb-parquet`, which has no artefact of its own —
-# see lib/cityparquet-rs/crates/cityparquet-readbench/src/format.rs); empty
+# see benchmark/readbench/src/format.rs); empty
 # (the default) builds every artefact the script knows how to build. Needs
 # whichever external tools the requested hop of the chain uses (`just
 # fetch-tools` for citygml-tools + cjseq; `fcb`, `jq`, `gzip`);
@@ -278,12 +289,12 @@ readbench-prepare INPUT OUTDIR=(BENCH / "data/readbench") FORMATS='':
     if [[ -n "{{FORMATS}}" ]]; then
         args=(--formats "{{FORMATS}}")
     fi
-    ./{{RS}}/scripts/readbench_prepare.sh ${args[@]+"${args[@]}"} "{{INPUT}}" "{{OUTDIR}}"
+    ./{{BENCH_SCRIPTS}}/readbench_prepare.sh ${args[@]+"${args[@]}"} "{{INPUT}}" "{{OUTDIR}}"
 
 # Cross-format READ benchmark (see benchmark/formats/READ_BENCHMARK.md): for
 # every CityGML/CityJSON/CityJSONSeq file found under FOLDER (recursive),
 # prepare every compared format
-# (`lib/cityparquet-rs/scripts/readbench_prepare.sh`), then run the
+# (`benchmark/scripts/readbench_prepare.sh`), then run the
 # `cityparquet-readbench` coordinator across the whole (format x scenario)
 # matrix into one OUT/<name>.csv. Each OUT/<name>.csv is removed first so a
 # re-run is always clean. Once every dataset is done, renders charts from the
@@ -293,7 +304,7 @@ readbench-prepare INPUT OUTDIR=(BENCH / "data/readbench") FORMATS='':
 # already-fetched inputs; kept OUT of `just check`/CI.
 #
 # FORMATS is a comma-separated format list (`Format::ALL`'s canonical names,
-# lib/cityparquet-rs/crates/cityparquet-readbench/src/format.rs) threaded to
+# benchmark/readbench/src/format.rs) threaded to
 # BOTH the prepare script and the coordinator, so exactly the requested
 # artefacts are built and exactly they are measured. Empty (the default) means:
 # prepare every artefact, measure `Format::DEFAULT_SET` — the five-tag
@@ -303,7 +314,7 @@ readbench-prepare INPUT OUTDIR=(BENCH / "data/readbench") FORMATS='':
 # existing `just bench FOLDER OUT` call's second argument.
 #
 # THE `duckdb-parquet` BASELINE IS OPT-IN. It is appended to the same CSV
-# (`lib/cityparquet-rs/scripts/readbench_duckdb.sh`, auto-detecting a numeric
+# (`benchmark/scripts/readbench_duckdb.sh`, auto-detecting a numeric
 # attribute column via a `DESCRIBE` query where possible — omitted, skipping
 # attr-stats, if none is found) ONLY when `duckdb-parquet` is named in FORMATS.
 # It is an SQL-ENGINE baseline over a file already in the set, not a format, so
@@ -311,7 +322,7 @@ readbench-prepare INPUT OUTDIR=(BENCH / "data/readbench") FORMATS='':
 # `Format::DEFAULT_SET` excludes it, and this recipe now agrees rather than
 # quietly adding a sixth, non-format series to a CSV that
 # benchmark/formats/READ_BENCHMARK.md documents as holding five.
-# `lib/cityparquet-rs/scripts/tests/bench_recipe_test.sh` pins that both ways —
+# `benchmark/scripts/tests/bench_recipe_test.sh` pins that both ways —
 # a bare run must not append it, naming it must.
 [doc("Cross-format READ benchmark over every input under FOLDER")]
 bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
@@ -332,7 +343,7 @@ bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
     # run — the default format comparison, or `ordering-bench` — must not have
     # an extra series quietly added to its CSV.
     # BEGIN format-selection (extracted and RUN by
-    # lib/cityparquet-rs/scripts/tests/bench_recipe_test.sh — keep both markers
+    # benchmark/scripts/tests/bench_recipe_test.sh — keep both markers
     # in column 5, and keep this block free of anything the test cannot
     # evaluate standalone)
     prepare_formats=""
@@ -373,10 +384,10 @@ bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
         echo ">> ${f} -> ${out}"
         rm -f "$out"
 
-        ./{{RS}}/scripts/readbench_prepare.sh ${prepare_args[@]+"${prepare_args[@]}"} \
+        ./{{BENCH_SCRIPTS}}/readbench_prepare.sh ${prepare_args[@]+"${prepare_args[@]}"} \
             "$f" '{{BENCH}}/data/readbench'
 
-        cargo run --release {{CARGO}} -p cityparquet-readbench -- run \
+        cargo run --release {{READBENCH_CARGO}} -- run \
             --input "$f" \
             --prepared-dir '{{BENCH}}/data/readbench' \
             --out "$out" \
@@ -393,7 +404,7 @@ bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
             # dataset; an empty `main_table` here just skips the optional
             # attr-stats column detection, and `readbench_duckdb.sh` below
             # still hard-fails clearly for a multi-family/multi-table package.
-            main_table="$(./{{RS}}/scripts/package_tables.py "$pkg" --single 2>/dev/null || true)"
+            main_table="$(./{{BENCH_SCRIPTS}}/package_tables.py "$pkg" --single 2>/dev/null || true)"
             numeric_col=""
             if [[ -n "$main_table" ]]; then
                 numeric_col="$(duckdb -csv -noheader -c "
@@ -410,10 +421,10 @@ bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
 
             if [[ -n "$numeric_col" ]]; then
                 echo "-- numeric attribute column for attr-stats: ${numeric_col}"
-                ./{{RS}}/scripts/readbench_duckdb.sh "$pkg" "$out" --numeric-column "$numeric_col" --repeat 7
+                ./{{BENCH_SCRIPTS}}/readbench_duckdb.sh "$pkg" "$out" --numeric-column "$numeric_col" --repeat 7
             else
                 echo "-- no numeric attribute column detected; skipping attr-stats for duckdb-parquet"
-                ./{{RS}}/scripts/readbench_duckdb.sh "$pkg" "$out" --repeat 7
+                ./{{BENCH_SCRIPTS}}/readbench_duckdb.sh "$pkg" "$out" --repeat 7
             fi
         else
             echo "-- duckdb-parquet not requested; the SQL-engine baseline is not appended"
@@ -440,7 +451,7 @@ bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
 
 # The ORDERING-COMPARISON run: the same benchmark, restricted to
 # `Format::ORDERING_SET`
-# (lib/cityparquet-rs/crates/cityparquet-readbench/src/format.rs) — a
+# (benchmark/readbench/src/format.rs) — a
 # source-order CityParquet package and a Hilbert-ordered one, same writer,
 # same reader, same scenarios, so the ONLY variable is the row order.
 #
@@ -479,7 +490,7 @@ write-bench FOLDER OUT=(BENCH / "results"):
 
         cargo run --release {{CARGO}} -p cityparquet-cli --bin cityparquet -- bench \
             --input "$f" --out "$out"
-        ./{{RS}}/scripts/bench_duckdb.sh "$f" "$out"
+        ./{{BENCH_SCRIPTS}}/bench_duckdb.sh "$f" "$out"
 
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
@@ -614,7 +625,7 @@ sizes PREPARED_DIR=(BENCH / "data/readbench") OUT=(BENCH / "read_results"):
 # The one convention that MUST NOT drift silently — the input-extension rule
 # this justfile and those scripts each implement — is instead enforced from
 # inside the Rust gate, by
-# `lib/cityparquet-rs/crates/cityparquet-readbench/tests/strip_extension.rs`.
+# `benchmark/readbench/tests/strip_extension.rs`.
 # ---------------------------------------------------------------------------
 
 # `benchmark/plot`'s pytest suite (CSV-header contract + chart building). Needs
@@ -640,9 +651,9 @@ plot-test:
 # `zip`/`unzip`.
 [doc("The benchmark shell scripts' own suites (needs jq)")]
 scripts-test:
-    ./{{RS}}/scripts/tests/readbench_prepare_test.sh
-    ./{{RS}}/scripts/tests/fetch_benchmark_test.sh
-    ./{{RS}}/scripts/tests/bench_recipe_test.sh
+    ./{{BENCH_SCRIPTS}}/tests/readbench_prepare_test.sh
+    ./{{BENCH_SCRIPTS}}/tests/fetch_benchmark_test.sh
+    ./{{BENCH_SCRIPTS}}/tests/bench_recipe_test.sh
 
 # ---------------------------------------------------------------------------
 # Database benchmark (benchmark/databases) — its own uv project and justfile
@@ -653,3 +664,71 @@ scripts-test:
 [doc("Forward a recipe to the database comparison's own justfile")]
 db *ARGS:
     cd benchmark/databases && just {{ARGS}}
+
+# ---------------------------------------------------------------------------
+# STAC catalogue -> CityParquet mirror (scripts/catalog2cityparquet)
+# ---------------------------------------------------------------------------
+
+# Build the two release binaries the Python driver shells out to: the
+# `cityparquet` converter (one package per catalogue item) and the vendored
+# `city3dstac` aggregator (collection.json / items.parquet / catalog.json).
+# The driver's own defaults point at exactly these two paths, so building them
+# here is what makes the `catalog-*` recipes below runnable from a clean tree.
+# Compiling only; kept OUT of `just check`, which builds and tests both trees
+# anyway (see `vendor-check`).
+catalog-tools:
+    cargo build --release {{CARGO}} -p cityparquet-cli
+    cargo build --release --manifest-path {{RS}}/vendor/city3d-stac-tool/Cargo.toml
+
+# Convert every collection of the published City3D STAC catalogue into a
+# CityParquet mirror under OUT. Resumable: an item whose package already
+# carries a valid STAC Item is skipped, so a re-run continues where the last
+# one stopped. Failures never abort the run — each is recorded in
+# OUT/_reports/ and the next item (or collection) starts, which is what makes
+# the end-of-run histogram a measurement rather than a crash report. Extra
+# driver flags go after the OUT argument (e.g. `just catalog-convert out/x
+# --jobs 4`). Network-dependent, and hours long on the whole catalogue; kept
+# OUT of `just check`/CI.
+catalog-convert OUT='out/cityparquet-catalog' *ARGS: catalog-tools
+    uv run --project scripts/catalog2cityparquet python -m catalog2cityparquet \
+        --out {{OUT}} {{ARGS}}
+
+# Convert a single collection (e.g. `just catalog-convert-collection
+# rotterdam-3d`), which is how a change to the driver or the converter is
+# proven against real data without paying for the whole catalogue.
+# Network-dependent; kept OUT of `just check`/CI.
+catalog-convert-collection ID OUT='out/cityparquet-catalog' *ARGS: catalog-tools
+    uv run --project scripts/catalog2cityparquet python -m catalog2cityparquet \
+        --out {{OUT}} --collection {{ID}} {{ARGS}}
+
+# Rebuild the mirror's ROOT catalog.json from the collection.json files an
+# earlier run left under OUT — no downloads, no conversions, no per-collection
+# re-aggregation. Reach for it when a run was interrupted after its collections
+# were written but before they were linked together. Rebuilding a single
+# collection.json/items.parquet instead needs a plain `catalog-convert` for that
+# collection (already-converted items are skipped, and the aggregation step
+# still runs). Contacts the catalogue root for the mirror's identity metadata,
+# and degrades to defaults if it cannot; kept OUT of `just check`/CI.
+catalog-aggregate OUT='out/cityparquet-catalog': catalog-tools
+    uv run --project scripts/catalog2cityparquet python -m catalog2cityparquet \
+        --out {{OUT}} --aggregate-only
+
+# Reduce a run's cumulative ledger (OUT/_reports) to one outcome per item and
+# print the conformance histogram. This — not a hand roll-up of the JSONL — is
+# how the published number is produced: the files are append-only and
+# resumption re-attempts a previously FAILED item, so an item legitimately
+# appears twice with two different outcomes and counting lines over-counts
+# failures. Needs no network and no binaries.
+catalog-histogram OUT='out/cityparquet-catalog':
+    uv run --project scripts/catalog2cityparquet python -m catalog2cityparquet \
+        histogram {{OUT}}/_reports
+
+# The driver's own test suite. No network and no binaries: every origin,
+# subprocess and catalogue document is faked, so this is safe to run anywhere.
+# Not part of `just check`, which is the Rust workspace's gate — run both.
+# `--directory`, not `--project`: pytest's rootdir follows the working
+# directory, so `--project scripts/catalog2cityparquet` alone would leave it at
+# the repo root and collection would wander into other projects' test trees.
+# That made this recipe exit 2 on a healthy tree.
+catalog-test:
+    uv run --directory scripts/catalog2cityparquet --extra dev pytest -v
