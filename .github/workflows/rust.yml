@@ -36,12 +36,28 @@ env:
   # out to the git CLI does honour them. Cargo's own error message recommends
   # exactly this.
   CARGO_NET_GIT_FETCH_WITH_CLI: true
+  # This workspace links ~20 test binaries against arrow + parquet + reqwest +
+  # geo. With full debug info that is enough to make `ld` die on a hosted runner
+  # with SIGBUS mid-link (a 14 GB disk and 16 GB of RAM, most of both already
+  # spoken for). Nothing here reads a backtrace, so drop the debug info: the
+  # tests assert on values, not on line numbers.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
   check:
     name: clippy, tests, isolation, fmt
     runs-on: ubuntu-latest
     steps:
+      # A hosted runner ships ~30 GB of preinstalled toolchains this job never
+      # touches, on a disk small enough that linking the test binaries runs out.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /usr/local/lib/node_modules \
+                      "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
       - uses: actions/checkout@v4
         with:
           # vendor/city3d-stac-tool only: `just vendor-check` gates on it, and
