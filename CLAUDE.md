@@ -98,4 +98,4 @@ round-trip is proven by `convert` → `export` → `compare` against the source.
 - `docs/design.md` — data model & format (package layout, columns, geometry/appearance encoding, round-trip semantics).
 - `docs/architecture.md` — the code: crates, the two-pass conversion pipeline, reader/export/compare, the benchmark harness.
 - `bench/README.md` — the write/compression benchmark's methodology and comparability caveats (no CSVs committed).
-- `bench/READ_BENCHMARK.md` — the cross-format read benchmark: methodology, the two benchmark sets, 18 fairness caveats, and the committed `bench/read_results/` + `bench/ordering_results/` CSVs.
+- `bench/READ_BENCHMARK.md` — the cross-format read benchmark: methodology, the six-dataset cityjson.org corpus, the two benchmark sets, and 18 fairness caveats. No CSVs are committed; `bench/read_results/` and `bench/ordering_results/` are populated by `just bench` / `just ordering-bench`.
