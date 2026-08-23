@@ -5,7 +5,6 @@ message: >-
   the benchmark results — please cite this repository.
 type: software
 authors:
-  # Add `orcid: "https://orcid.org/…"` here before the first release.
   - given-names: Hidemichi
     family-names: Baba
     affiliation: "3D Geoinformation, Delft University of Technology"
