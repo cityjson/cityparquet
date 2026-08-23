@@ -1,0 +1,1 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal

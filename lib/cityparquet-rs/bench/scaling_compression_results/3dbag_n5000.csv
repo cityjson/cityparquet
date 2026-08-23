@@ -1,0 +1,9 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
+3dbag_n5000.city.jsonl,cityparquet,5001,0.611804,3789527,3783229,0,0.030034,0.030710,1,1,true
+3dbag_n5000.city.jsonl,cityparquet+uncompressed,5001,0.576308,19781233,19774933,0,0.012560,0.015339,1,1,true
+3dbag_n5000.city.jsonl,cityparquet+snappy,5001,0.587667,5883811,5877513,0,0.024546,0.024605,1,1,true
+3dbag_n5000.city.jsonl,cityparquet+gzip,5001,0.821713,3501145,3494847,0,0.032847,0.032743,1,1,true
+3dbag_n5000.city.jsonl,cityparquet+lz4,5001,0.581464,6084943,6078645,0,0.019711,0.019587,1,1,true
+3dbag_n5000.city.jsonl,cityparquet+brotli,5001,0.656880,4057888,4051590,0,0.095847,0.095171,1,1,true
+3dbag_n5000.city.jsonl,cityparquet+rg512,5001,0.619830,4098584,4092286,0,0.042078,0.000915,10,0,true
+3dbag_n5000.city.jsonl,cityparquet+rg4096,5001,0.604274,3820262,3813964,0,0.032981,0.000504,2,0,true

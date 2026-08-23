@@ -1,0 +1,45 @@
+[package]
+name = "cityparquet"
+description = "CityParquet reader and writer (Arrow + Parquet)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cityparquet-schema = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-select = { workspace = true }
+parquet = { workspace = true }
+cjseq = { workspace = true }
+glob = { workspace = true }
+quick-xml = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+geo = { workspace = true }
+city3d-stac-types = { workspace = true }
+object_store = { workspace = true, optional = true }
+futures = { version = "0.3", optional = true }
+futures-util = { version = "0.3", optional = true }
+async-trait = { workspace = true, optional = true }
+
+[dev-dependencies]
+wkb = { workspace = true }
+geo-traits = { workspace = true }
+tempfile = { workspace = true }
+jsonschema = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+
+[features]
+object-store = [
+    "dep:object_store",
+    "dep:futures",
+    "dep:futures-util",
+    "dep:async-trait",
+    "parquet/object_store",
+]

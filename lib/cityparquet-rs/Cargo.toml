@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+members = ["crates/cityparquet-schema", "crates/cityparquet", "crates/cityparquet-cli", "crates/cityparquet-readbench"]
+# Vendored submodules are independent Cargo projects with their own lockfiles and
+# toolchains; they must not be pulled into this workspace.
+exclude = ["vendor"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/HideBa/cityparquet-rs"
+
+[workspace.dependencies]
+arrow-schema = "58"
+arrow-array = "58"
+arrow-buffer = "58"
+arrow-select = "58"
+parquet = { version = "58", features = ["zstd"] }
+geoarrow-schema = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+cjseq = "0.4"
+quick-xml = "0.37"
+chrono = "0.4"
+flate2 = "1"
+object_store = { version = "0.13", features = ["http"] }
+tokio = { version = "1.53.1", features = ["rt", "macros", "rt-multi-thread"] }
+axum = "0.8.9"
+tower-http = { version = "0.6", features = ["fs"] }
+bytes = "1.12.1"
+async-trait = "0.1.91"
+clap = { version = "4", features = ["derive"] }
+glob = "0.3"
+wkb = "0.9"
+geo-traits = "0.3"
+geo = "0.30"
+tempfile = "3"
+fcb_core = "0.7"
+peak_alloc = "0.3.0"
+cityparquet-schema = { path = "crates/cityparquet-schema" }
+city3d-stac-types = { git = "https://github.com/cityjson/city3d-stac-tool", rev = "743199c9b9ff566ec42c4023ce0968e9ac6af485" }
+jsonschema = "0.26"
+
+# vendor/cjseq carries a patched 0.4.1: upstream's `add_cjfeature`/
+# `update_texture` mis-base merged texture UV-vertex indices, corrupting
+# `.city.json` (Doc-format) export. See vendor/cjseq/PATCHES.md.
+[patch.crates-io]
+cjseq = { path = "vendor/cjseq" }

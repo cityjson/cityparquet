@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/HideBa/cityparquet-rs/main/crates/cityparquet-schema/assets/city.schema.json",
+  "title": "CityParquet city metadata",
+  "description": "Parquet footer key-value metadata carried under the `city` key (../../../documents/docs/03-specification/05-metadata.mdx, \"The `city` object\"). Describes the Parquet file it lives in; requirements depend on the file's role (object table vs. sidecar) as described in the prose spec — this schema validates the shape every `city` object (of either role) must have, not the conditional cross-field rules beyond `columns` => `primary_column`.",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "CityParquet format version, e.g. \"0.1.0-draft\" (see the dataset-package spec's Versioning section)."
+    },
+    "source_format": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provenance: \"CityJSON\", \"CityJSONSeq\", \"CityGML\", or any other open-ended source token (e.g. \"3DCityDB\") this document doesn't enumerate. Omitted entirely, not a placeholder value, when a table has no single source."
+    },
+    "source_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Source schema version (e.g. CityJSON 2.0), when there is a source."
+    },
+    "crs": {
+      "type": "object",
+      "description": "The file CRS as PROJJSON. Required (in the prose spec, not enforced here) whenever the file holds any CRS-bearing coordinate. Loosely typed: this schema does not validate full PROJJSON structure."
+    },
+    "primary_column": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Name of the primary geometry column used with no LoD preference. MAY name a Solid column; independent of geo.primary_column."
+    },
+    "columns": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One entry per geometry column -- every geometry column, Solid-family included. Present only when the table has any geometry column (a sidecar with no geometry omits this key entirely rather than writing an empty array).",
+      "items": {
+        "type": "object",
+        "required": ["name", "encoding", "geometry_types", "orientation_3d"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The column name (geometry_lod0_0, geometry_lod2_2, ...)."
+          },
+          "encoding": {
+            "type": "string",
+            "minLength": 1,
+            "description": "\"WKB\" (normative) or \"CityParquetArrowNative-v1\" (experimental, arrow-native-type branch) -- an unconstrained-but-documented string rather than a closed enum, so a future encoding this schema doesn't yet know about isn't rejected outright."
+          },
+          "geometry_types": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "The WKB type names present in the column, each with the 3D \" Z\" suffix -- this is a fixed shape-category vocabulary shared by every `encoding` value (a `CityParquetArrowNative-v1` column still names its geometries using these same WKB type strings, e.g. a CityJSON Solid column reads \"PolyhedralSurface Z\" here regardless of its physical Arrow layout). May name Solid-family types (which geo may not).",
+            "items": {
+              "type": "string",
+              "pattern": "^(GeometryCollection|(Multi)?(Point|LineString|Polygon)|PolyhedralSurface|TIN) Z$"
+            }
+          },
+          "crs": {
+            "type": "object",
+            "description": "PROJJSON; defaults to the file-level city.crs when absent."
+          },
+          "orientation_3d": {
+            "type": "string",
+            "enum": ["right-handed", "left-handed"],
+            "description": "3D surface winding. A conforming writer states this explicitly on every entry."
+          },
+          "edges": {
+            "type": "string",
+            "enum": ["planar"],
+            "description": "CityParquet coordinates are Cartesian in a projected CRS."
+          },
+          "bbox": {
+            "description": "Dataset-level bounding box of the column's geometries. Loosely typed -- not yet populated by this writer."
+          },
+          "epoch": {
+            "type": "number",
+            "description": "Coordinate epoch (decimal year) for a dynamic CRS, when relevant."
+          }
+        }
+      }
+    },
+    "attributes": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The list of inferred attribute columns (object tables). Present only when the table has any (omitted, not an empty array, otherwise).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Extension / ADE declarations: the real declaration JSON plus a source-name/class/module mapping. Loosely typed -- the spec leaves the internal shape open."
+    },
+    "appearance_defaults": {
+      "type": "object",
+      "description": "Source default material / texture theme, when present."
+    },
+    "other": {
+      "type": "object",
+      "description": "Free-form object for anything not covered above. Informational only: a reader MUST NOT need this to decode the file."
+    }
+  },
+  "if": {
+    "required": ["columns"]
+  },
+  "then": {
+    "required": ["primary_column"],
+    "description": "primary_column is required whenever the table has any geometry column (05-metadata.mdx)."
+  }
+}

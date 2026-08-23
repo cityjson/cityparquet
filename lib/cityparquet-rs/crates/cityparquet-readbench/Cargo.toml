@@ -1,0 +1,52 @@
+[package]
+name = "cityparquet-readbench"
+description = "Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParquet, etc.)"
+# Two [[bin]]s live here (the coordinator and `scaling-corpus`); a bare
+# `cargo run -p cityparquet-readbench` — the `bench` recipe's own
+# invocation — must keep meaning the coordinator.
+default-run = "cityparquet-readbench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "cityparquet-readbench"
+path = "src/main.rs"
+doc = false
+
+[[bin]]
+name = "scaling-corpus"
+path = "src/bin/scaling_corpus.rs"
+doc = false
+
+[dependencies]
+cityparquet = { path = "../cityparquet", features = ["object-store"] }
+cityparquet-schema = { workspace = true }
+fcb_core = { workspace = true }
+# fcb_core 0.7's own `CityJSONFeature`/`CityObject` types come from this
+# crate (published as `cjseq2`, distinct from the `cjseq` 0.4 crate
+# `cityparquet`/this crate's own `cityjsonseq` runner uses) — pinned to the
+# exact version `fcb_core` 0.7.6 itself depends on.
+cjseq2 = "0.1.0"
+peak_alloc = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true }
+libc = "0.2"
+anyhow = "1"
+tokio = { workspace = true }
+object_store = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+http-range-client = { version = "0.9", default-features = false, features = ["reqwest-async"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tempfile.workspace = true
+url = "2"
+
+[dev-dependencies]
+axum = { workspace = true }
+tower-http = { workspace = true }

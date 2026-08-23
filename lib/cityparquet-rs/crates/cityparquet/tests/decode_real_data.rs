@@ -1,0 +1,353 @@
+//! RED (M3 task 5): decode — RecordBatch -> `DecodedObject` (`cjseq`-model
+//! objects), exercised against real converted delft/railway packages.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use cityparquet::decode::decode_batch;
+use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
+use cityparquet::stac::properties::PackageTables;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+fn fixture(name: &str) -> PathBuf {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(name);
+    assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
+    p
+}
+
+/// `metadata.json`'s object-table file names for the package at `dir`
+/// (`PackageTables::open`'s `cityparquet-objects`-role assets) — by-type is
+/// the only, mandatory table layout, so this is 1..N main-table file names,
+/// one per 1st-level CityObject family actually present.
+fn manifest_tables(dir: &std::path::Path) -> Vec<String> {
+    PackageTables::open(dir)
+        .unwrap()
+        .tables
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Convert `input` into a fresh tempdir and decode every row across every
+/// main table back into `DecodedObject`s (by-type may split `input` into
+/// several family tables — see `manifest_tables` — so every one of them
+/// must be read, never a single hardcoded main-table name).
+fn convert_and_decode(input: &str) -> Vec<cityparquet::decode::DecodedObject> {
+    convert_and_decode_path(&fixture(input), input)
+}
+
+/// The real `lod3_railway.city.json` fixture carries no `referenceSystem` at
+/// all. Since `scan` now hard-fails on coordinate-bearing input with no
+/// resolvable CRS (spec "CRS rules"), writes a small on-disk COPY with a CRS
+/// injected via JSON mutation of the real fixture — never hand-written
+/// CityJSON.
+fn railway_fixture_with_crs() -> (tempfile::TempDir, PathBuf) {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap())
+            .unwrap();
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("railway_with_crs.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, path)
+}
+
+/// [`convert_and_decode`] taking an already-resolved path, so a CRS-injected
+/// derivative can be passed directly. `label` is used only for the progress
+/// `eprintln!`.
+fn convert_and_decode_path(
+    path: &std::path::Path,
+    label: &str,
+) -> Vec<cityparquet::decode::DecodedObject> {
+    let out = tempfile::tempdir().unwrap();
+    let report = convert(&ConvertOptions::new(
+        path.to_path_buf(),
+        out.path().to_path_buf(),
+    ))
+    .unwrap();
+    eprintln!("{label}: converted {} objects", report.object_count);
+
+    let mut all = Vec::new();
+    for table in manifest_tables(out.path()) {
+        let file = std::fs::File::open(out.path().join(&table)).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let meta = builder.cityparquet_metadata().unwrap();
+        let schema = builder.cityparquet_arrow_schema().unwrap();
+        let parquet_reader = builder.build().unwrap();
+        let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
+
+        for batch in reader {
+            let batch = batch.unwrap();
+            all.extend(decode_batch(&batch, &meta).unwrap());
+        }
+    }
+    all
+}
+
+/// Recounted directly from `tests/fixtures/delft.city.jsonl` with python3:
+/// `Counter(co['type'] for line in file for co in line['CityObjects'].values())`
+/// over every non-header line -> `{'BuildingPart': 1116, 'Building': 1115}`,
+/// 2231 objects total (matches `convert_real_data.rs`'s pinned object count).
+#[test]
+fn delft_decodes_every_object_with_correct_types_and_attributes() {
+    let objects = convert_and_decode("delft.city.jsonl");
+    assert_eq!(objects.len(), 2231);
+
+    let mut type_counts: HashMap<String, usize> = HashMap::new();
+    let mut total_geometries = 0usize;
+    for obj in &objects {
+        assert!(!obj.id.is_empty(), "every id must be non-empty");
+        *type_counts.entry(obj.object.thetype.clone()).or_default() += 1;
+
+        for (lod, _decoded, _props) in &obj.geometries {
+            let lod = lod.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "delft has per-LoD columns, so no unsuffixed geometry expected on object {}",
+                    obj.id
+                )
+            });
+            let s = lod.to_string();
+            assert!(
+                ["0.0", "1.2", "1.3", "2.2"].contains(&s.as_str()),
+                "unexpected LoD {s} on object {}",
+                obj.id
+            );
+        }
+        total_geometries += obj.geometries.len();
+    }
+    assert_eq!(
+        type_counts,
+        HashMap::from([
+            ("Building".to_string(), 1115),
+            ("BuildingPart".to_string(), 1116),
+        ]),
+        "object_type multiset must match the recount above"
+    );
+
+    // Total decoded geometries must equal total non-null geometry cells
+    // across every geometry_lod* column, counted independently from the
+    // written Parquet file.
+    let out = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        fixture("delft.city.jsonl"),
+        out.path().to_path_buf(),
+    ))
+    .unwrap();
+    // delft is a single 1st-level family, so by-type conversion writes
+    // exactly one main table: building.parquet.
+    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+    let schema = builder.cityparquet_arrow_schema().unwrap();
+    let geom_cols: Vec<String> = schema
+        .fields()
+        .iter()
+        .filter_map(|f| {
+            let name = f.name();
+            if name.starts_with("geometry_") && !name.starts_with("geometry_properties_") {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        !geom_cols.is_empty(),
+        "delft must have geometry_lod* columns"
+    );
+    let reader = builder.build().unwrap();
+    let mut non_null_cells = 0usize;
+    for batch in reader {
+        let batch = batch.unwrap();
+        for name in &geom_cols {
+            let col = batch.column_by_name(name).unwrap();
+            non_null_cells += col.len() - col.null_count();
+        }
+    }
+    assert_eq!(
+        total_geometries, non_null_cells,
+        "decoded geometry count must equal non-null geometry cells across all geometry_lod* columns"
+    );
+
+    // A known Date-inferred attribute column ("begingeldigheid", "YYYY-MM-DD"
+    // shaped in the source fixture) survives decode as a "%Y-%m-%d" JSON
+    // string on at least one object.
+    let mut date_checked = 0usize;
+    let mut int_checked = 0usize;
+    let mut float_checked = 0usize;
+    for obj in &objects {
+        let Some(attrs) = obj.object.attributes.as_ref().and_then(|v| v.as_object()) else {
+            continue;
+        };
+        if let Some(v) = attrs.get("begingeldigheid") {
+            let s = v.as_str().unwrap_or_else(|| {
+                panic!("begingeldigheid must decode as a JSON string, got {v:?}")
+            });
+            assert_eq!(s.len(), 10, "expected YYYY-MM-DD, got {s:?}");
+            assert_eq!(&s[4..5], "-");
+            assert_eq!(&s[7..8], "-");
+            date_checked += 1;
+        }
+        if let Some(v) = attrs.get("oorspronkelijkbouwjaar") {
+            assert!(
+                v.is_i64(),
+                "oorspronkelijkbouwjaar must decode as a JSON integer, got {v:?}"
+            );
+            int_checked += 1;
+        }
+        if let Some(v) = attrs.get("b3_h_dak_max") {
+            assert!(
+                v.is_f64() || v.is_i64(),
+                "b3_h_dak_max must decode as a JSON number, got {v:?}"
+            );
+            float_checked += 1;
+        }
+    }
+    assert!(date_checked > 0, "expected >0 objects with begingeldigheid");
+    assert!(
+        int_checked > 0,
+        "expected >0 objects with oorspronkelijkbouwjaar"
+    );
+    assert!(float_checked > 0, "expected >0 objects with b3_h_dak_max");
+}
+
+/// Recounted from `tests/fixtures/lod3_railway.city.json` with python3: 121
+/// `CityObjects` total (matches `convert_real_data.rs`'s pinned count);
+/// exactly 15 objects carry a `GeometryInstance` geometry
+/// (`sum(1 for co in data['CityObjects'].values() if any(g['type'] ==
+/// 'GeometryInstance' for g in co.get('geometry', [])))` == 15, all
+/// `SolitaryVegetationObject`s); exactly 8 STORED geometries carry a
+/// `semantics` block (replaying the writer's binding rule in python — first
+/// geometry per (object, LoD) slot kept, `GeometryInstance` and lod-less
+/// entries excluded — also yields 8, so the raw count and the stored count
+/// coincide for this fixture).
+#[test]
+fn railway_decodes_templates_and_semantics() {
+    let (_crs_dir, railway_path) = railway_fixture_with_crs();
+    let objects = convert_and_decode_path(&railway_path, "lod3_railway.city.json");
+    assert_eq!(objects.len(), 121);
+
+    let template_count = objects.iter().filter(|o| o.template.is_some()).count();
+    assert_eq!(
+        template_count, 15,
+        "expected exactly 15 objects with a template (the recount above)"
+    );
+
+    let mut semantics_found = 0usize;
+    for obj in &objects {
+        for (_lod, _decoded, props) in &obj.geometries {
+            // G7: semantics are the flattened top-level `surfaces` +
+            // `face_semantics` (§8), no nested `semantics` object.
+            if let Some(props) = props
+                && props.get("surfaces").is_some()
+            {
+                semantics_found += 1;
+            }
+        }
+    }
+    assert_eq!(
+        semantics_found, 8,
+        "expected exactly 8 geometry_properties entries carrying semantics (the recount above)"
+    );
+}
+
+/// The zero-analysis-geometry case that G3 preserves: a dataset whose only
+/// geometry is `GeometryInstance`s (plus objects with no geometry) has no LoD
+/// to suffix, so — per spec "Levels of detail" ("a table whose objects have no
+/// analysis geometry ... simply carries no geometry column") — it carries NO
+/// geometry column at all; the instances route to `template`. This is the ONLY
+/// way `lods` is empty now: a lod-less NON-instance geometry is rejected at
+/// scan (§9, CityJSON 2.0 §3), covered in `scan_real_data.rs`.
+///
+/// Derived from `lod3_railway.city.json` by removing every non-instance
+/// geometry, keeping its 15 `GeometryInstance`s. Decode must handle a table
+/// with no geometry column without error and still route the instances to
+/// template.
+#[test]
+fn instances_only_dataset_carries_no_geometry_column() {
+    let text = std::fs::read_to_string(fixture("lod3_railway.city.json")).unwrap();
+    let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let mut kept_instances = 0usize;
+    for (_, co) in doc["CityObjects"].as_object_mut().unwrap() {
+        let Some(geoms) = co.get_mut("geometry").and_then(|g| g.as_array_mut()) else {
+            continue;
+        };
+        geoms.retain(|g| {
+            let is_instance = g.get("type").and_then(|t| t.as_str()) == Some("GeometryInstance");
+            if is_instance {
+                kept_instances += 1;
+            }
+            is_instance
+        });
+    }
+    assert_eq!(
+        kept_instances, 15,
+        "railway must carry 15 GeometryInstances to keep"
+    );
+    // A GeometryInstance's `template.point` (the placement anchor, in
+    // DATASET coordinates) is itself a CRS-bearing coordinate (spec "CRS
+    // rules"), so this instances-only derivative still needs a CRS, even
+    // though it has no LoD-bearing analysis geometry at all.
+    doc["metadata"]["referenceSystem"] =
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415");
+    let src_dir = tempfile::tempdir().unwrap();
+    let path = src_dir.path().join("railway_instances_only.city.json");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let report = convert(&ConvertOptions::new(path, out.path().to_path_buf())).unwrap();
+    assert_eq!(report.object_count, 121);
+
+    // Stripping geometry (not object_type) leaves railway's same 10
+    // 1st-level families, so by-type conversion still writes 10 main
+    // tables — every one of them must be read, never a single hardcoded
+    // main-table name. Every table shares the IDENTICAL schema (the by-type
+    // writer partitions strictly after encode), so the schema-level checks
+    // below only need the first table.
+    let tables = manifest_tables(out.path());
+    let first_file = std::fs::File::open(out.path().join(&tables[0])).unwrap();
+    let first_builder = ParquetRecordBatchReaderBuilder::try_new(first_file).unwrap();
+    let schema = first_builder.cityparquet_arrow_schema().unwrap();
+
+    // No analysis geometry -> no geometry column at all (spec "Levels of
+    // detail"): neither the bare quartet nor a suffixed geometry_lod* column.
+    for col in ["geometry", "geometry_properties", "material", "texture"] {
+        assert!(
+            schema.field_with_name(col).is_err(),
+            "a zero-analysis-geometry dataset must not carry the bare '{col}' column"
+        );
+    }
+    assert!(
+        !schema
+            .fields()
+            .iter()
+            .any(|f| f.name().starts_with("geometry_lod")),
+        "a zero-analysis-geometry dataset must have no geometry_lod* columns"
+    );
+
+    let mut objects = Vec::new();
+    for table in &tables {
+        let file = std::fs::File::open(out.path().join(table)).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let meta = builder.cityparquet_metadata().unwrap();
+        let table_schema = builder.cityparquet_arrow_schema().unwrap();
+        let parquet_reader = builder.build().unwrap();
+        let reader = CityParquetRecordBatchReader::new(parquet_reader, table_schema);
+        for batch in reader {
+            let batch = batch.unwrap();
+            // There is no geometry column to read.
+            assert!(batch.column_by_name("geometry").is_none());
+            objects.extend(decode_batch(&batch, &meta).unwrap());
+        }
+    }
+    assert_eq!(objects.len(), 121);
+    let total_geometries: usize = objects.iter().map(|o| o.geometries.len()).sum();
+    assert_eq!(total_geometries, 0, "no non-instance geometry survives");
+
+    // The 15 GeometryInstances still route to template.
+    let template_count = objects.iter().filter(|o| o.template.is_some()).count();
+    assert_eq!(template_count, 15);
+}
