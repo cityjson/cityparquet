@@ -51,11 +51,15 @@ jobs:
     steps:
       # A hosted runner ships ~30 GB of preinstalled toolchains this job never
       # touches, on a disk small enough that linking the test binaries runs out.
+      #
+      # NOT /usr/local/lib/node_modules: `just check` ends with a Prettier run
+      # over the Markdown, and `npx` is a symlink into that directory. Removing
+      # it turns the last line of the gate into `npx: not found` after
+      # everything else has already passed.
       - name: Free disk space
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-                      /usr/local/share/boost /usr/local/lib/node_modules \
-                      "$AGENT_TOOLSDIRECTORY" || true
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
           df -h /
 
       - uses: actions/checkout@v4
@@ -90,6 +94,12 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
 
       - uses: extractions/setup-just@v4
+
+      # `just check`'s last step runs Prettier through npx. Installing Node
+      # explicitly rather than relying on whatever the runner image preinstalls.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
 
       - name: Install rustfmt and clippy
         working-directory: lib/cityparquet-rs
