@@ -465,7 +465,7 @@ fn bump_first_number(v: &mut Value, new_value: i64) -> bool {
 /// array by every raw index found, with no bounds check) — a dangling
 /// reference is only reachable past that panic in Seq form, where each line
 /// is parsed as-is with no re-slicing pass, exactly like the real
-/// `bench/data/Railway.city.jsonl` corpus case this option exists for.
+/// `benchmark/formats/data/Railway.city.jsonl` corpus case this option exists for.
 /// `geometry-templates` is dropped from the header: this test targets a
 /// regular feature's own material reference, not a template's, and
 /// `get_metadata`'s header pairs a RENUMBERED `appearance` with an

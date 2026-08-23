@@ -101,7 +101,7 @@
 # the ORIGINAL input's file name, e.g. `9-196-328.city.json`, WITH
 # extension). It derives `dataset` from the package directory's own base
 # name with a trailing `.parquet` and (if present) `-hilbert` suffix
-# stripped, e.g. `bench/data/readbench/9-196-328.parquet` and
+# stripped, e.g. `benchmark/formats/data/readbench/9-196-328.parquet` and
 # `9-196-328-hilbert.parquet` both yield `dataset=9-196-328` — matching how
 # the coordinator itself uses ONE shared `dataset` string across its own
 # `cityparquet`/`cityparquet-hilbert` rows for the same package. Rows from
@@ -127,7 +127,7 @@ DUCKDB=${DUCKDB:-duckdb}
 # Must stay identical to the coordinator's own `CSV_HEADER`
 # (`crates/cityparquet-readbench/src/coordinator.rs`), which is the single
 # authority on this contract — this script appends rows to CSVs the
-# coordinator wrote. `bench/plot/tests/test_csv_contract.py` reads both
+# coordinator wrote. `benchmark/plot/tests/test_csv_contract.py` reads both
 # literals out of their sources and asserts they agree.
 CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests"
 

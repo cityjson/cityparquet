@@ -2547,12 +2547,12 @@ mod tests {
     /// exterior ring `[49590, 49127, 49595]` whose three DISTINCT vertex
     /// indices are all duplicate entries of the identical quantised vertex
     /// `(31653, 359040, -33533)` (verified against the raw tile JSON:
-    /// `bench/data/9-284-556.city.json`, run `just bench-data` to fetch it —
+    /// `benchmark/formats/data/9-284-556.city.json`, run `just bench-data` to fetch it —
     /// the CLI `convert`/`export`/`compare` sequence on just that one
     /// extracted object reproduces this exact "boundary/coordinates differ"
     /// and "semantics differ" failure, confirming this derived fixture
     /// exercises the same bug). Fixtures are always present (unlike
-    /// `bench/data/`, network-only), so THIS is the binding gate; the real
+    /// `benchmark/formats/data/`, network-only), so THIS is the binding gate; the real
     /// tile is manual-verification-only.
     ///
     /// Derived from delft's `NL.IMBAG.Pand.0503100000012869-0` lod-1.2 Solid

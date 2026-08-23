@@ -7,7 +7,7 @@
 #                                                            |--fcb ser -A--> FlatCityBuf
 #                                                            |--cityparquet convert--> CityParquet
 #
-# citygml-tools is unpacked into bench/tools/ (gitignored, like bench/data/);
+# citygml-tools is unpacked into benchmark/formats/tools/ (gitignored, like benchmark/formats/data/);
 # cjseq is a Rust binary and goes wherever `cargo install` puts it.
 #
 # Reproducibility beats freshness: the
@@ -15,7 +15,7 @@
 # HARDCODED below rather than re-derived from "latest" at run time, and a
 # mismatch retries the download ONCE before hard-failing — the benchmark must
 # never quietly measure artefacts produced by a different converter than the
-# one bench/READ_BENCHMARK.md's Environment block names.
+# one benchmark/formats/READ_BENCHMARK.md's Environment block names.
 #
 # WHY BOTH TOOLS. citygml-tools converts CityGML to CityJSON; cjseq performs
 # the CityJSON -> CityJSONSeq hop. FlatCityBuf and CityParquet are then both
@@ -25,14 +25,18 @@
 # alone, and an already-installed cjseq is never reinstalled (a version other
 # than the pin is reported loudly, not silently downgraded — it is the
 # developer's machine, and the version actually used is recorded in
-# bench/tools/tool_versions.txt for the Environment block).
+# benchmark/formats/tools/tool_versions.txt for the Environment block).
 #
 # Network-dependent; like the other fetch_*.sh scripts it is NOT wired into
 # `just check`/CI.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TOOLS_DIR="$REPO_ROOT/bench/tools"
+# See fetch_benchmark.sh: this script is code, the tools it unpacks are part of
+# the benchmark's environment and live under the monorepo's benchmark/ tree.
+MONO_ROOT="$(cd "$REPO_ROOT/../.." && pwd)"
+BENCH_ROOT="${BENCH_ROOT:-$MONO_ROOT/benchmark/formats}"
+TOOLS_DIR="$BENCH_ROOT/tools"
 
 # --- the pins --------------------------------------------------------------
 # citygml-tools 2.5.0 (2026-04-19), the current release of citygml4j/
@@ -173,7 +177,7 @@ install_cjseq() {
       echo "warn cjseq: installed version '$have' is not the pinned ${CJSEQ_VERSION};" \
         "leaving it alone (run \`cargo install cjseq --version ${CJSEQ_VERSION} --locked\`" \
         "to match the pin). The version actually used is recorded in" \
-        "bench/tools/tool_versions.txt." >&2
+        "benchmark/formats/tools/tool_versions.txt." >&2
     fi
     return
   fi
@@ -187,14 +191,14 @@ install_cjseq() {
 }
 
 # --- provenance ------------------------------------------------------------
-# The exact versions used, for bench/READ_BENCHMARK.md's Environment block.
+# The exact versions used, for benchmark/formats/READ_BENCHMARK.md's Environment block.
 # Written from what the binaries REPORT, not from the pins, so a warned-about
 # version drift is visible in the record rather than papered over.
 write_versions() {
   local file="$TOOLS_DIR/tool_versions.txt"
   {
     echo "# Conversion-chain tool versions, written by scripts/fetch_tools.sh."
-    echo "# Copy into bench/READ_BENCHMARK.md's Environment block."
+    echo "# Copy into benchmark/formats/READ_BENCHMARK.md's Environment block."
     echo "citygml-tools = $("$CITYGML_TOOLS_LINK/citygml-tools" --version 2>&1 | head -1)"
     echo "cjseq = $(cjseq --version 2>&1 | head -1)"
     echo "java = $(java -version 2>&1 | head -1)"

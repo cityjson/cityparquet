@@ -11,7 +11,7 @@ use crate::error::{CityParquetError, Result};
 /// sibling holding the shared vertex pool, so a reader can project a single
 /// ring without decoding a whole solid. It is opt-in (`--geometry-encoding
 /// arrow-native`), written and read by this workspace but declared by nothing
-/// in the specification, and no benchmark row in `bench/` uses it.
+/// in the specification, and no benchmark row in `benchmark/formats/` uses it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GeometryEncoding {
     #[default]

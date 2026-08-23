@@ -8,10 +8,11 @@
 //! recipes name a CSV/package directory after it. The rule is therefore
 //! implemented four times over — once in Rust
 //! ([`strip_known_extension`]), once in `scripts/readbench_prepare.sh`,
-//! four identical times in the `justfile`, and once (as its composable
-//! package-name counterpart) in `scripts/readbench_duckdb.sh` — because a
-//! shell script cannot import a Rust function and `just` has no functions
-//! of its own.
+//! four identical times in the MONOREPO's root `justfile` (which is where
+//! the per-dataset recipes live: they reach both this crate and the corpora
+//! under `benchmark/`), and once (as its composable package-name
+//! counterpart) in `scripts/readbench_duckdb.sh` — because a shell script
+//! cannot import a Rust function and `just` has no functions of its own.
 //!
 //! Every one of them used to know only `.json`/`.jsonl`. A `.gml` input was
 //! therefore invisible to every `find` pattern in the justfile, and a
@@ -60,8 +61,32 @@ fn repo_root() -> PathBuf {
         .expect("the workspace root is two levels above this crate")
 }
 
+/// The MONOREPO root, two levels above this crate's workspace
+/// (`lib/cityparquet-rs`).
+///
+/// The four per-dataset recipes checked below live in the monorepo's own
+/// `justfile`, not this workspace's: they reach both the harness code (here)
+/// and its corpora and results (`benchmark/`), so neither tree can own them.
+/// The shell implementations they are compared against are still local, which
+/// is why both roots exist.
+fn mono_root() -> PathBuf {
+    repo_root()
+        .join("..")
+        .join("..")
+        .canonicalize()
+        .expect("the monorepo root is two levels above the cityparquet-rs workspace")
+}
+
 fn read(relative: &str) -> String {
-    let path = repo_root().join(relative);
+    read_from(repo_root(), relative)
+}
+
+fn read_mono(relative: &str) -> String {
+    read_from(mono_root(), relative)
+}
+
+fn read_from(root: PathBuf, relative: &str) -> String {
+    let path = root.join(relative);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
@@ -234,7 +259,7 @@ fn justfile_stripper_blocks(justfile: &str) -> Vec<String> {
 
 #[test]
 fn the_justfile_has_exactly_one_stripper_repeated_verbatim() {
-    let justfile = read("justfile");
+    let justfile = read_mono("justfile");
     let blocks = justfile_stripper_blocks(&justfile);
     // convert-all, bench, write-bench, compression-bench.
     assert_eq!(
@@ -266,7 +291,7 @@ fn the_justfile_has_exactly_one_stripper_repeated_verbatim() {
 
 #[test]
 fn the_justfile_strips_identically() {
-    let justfile = read("justfile");
+    let justfile = read_mono("justfile");
     let extensions = just_variable(&justfile, "KNOWN_INPUT_EXTENSIONS");
     let block = justfile_stripper_blocks(&justfile)
         .into_iter()
@@ -281,7 +306,7 @@ fn the_justfile_strips_identically() {
 
 #[test]
 fn the_justfile_carries_the_same_extension_list() {
-    let justfile = read("justfile");
+    let justfile = read_mono("justfile");
     let listed: Vec<String> = just_variable(&justfile, "KNOWN_INPUT_EXTENSIONS")
         .split_whitespace()
         .map(str::to_string)
@@ -306,7 +331,7 @@ fn the_justfile_carries_the_same_extension_list() {
 /// recipe.
 #[test]
 fn every_known_extension_is_discoverable() {
-    let justfile = read("justfile");
+    let justfile = read_mono("justfile");
     let pattern = just_variable(&justfile, "KNOWN_INPUT_FIND");
     let globs: Vec<String> = pattern
         .split_whitespace()
@@ -324,7 +349,7 @@ fn every_known_extension_is_discoverable() {
 
 #[test]
 fn every_recipe_discovers_inputs_through_the_shared_pattern() {
-    let justfile = read("justfile");
+    let justfile = read_mono("justfile");
     assert_eq!(
         justfile.matches("{{KNOWN_INPUT_FIND}}").count(),
         4,
@@ -370,7 +395,7 @@ fn the_duckdb_baseline_recovers_the_justfile_dataset_name() {
             let program = format!(
                 "set -euo pipefail\nPKG_BASE=\"$(basename \"$1\")\"\n{stripper}printf '%s' \"$PKG_BASE\"\n"
             );
-            let package = format!("bench/data/readbench/{dataset}{suffix}");
+            let package = format!("benchmark/formats/data/readbench/{dataset}{suffix}");
             let out = Command::new("bash")
                 .arg("-c")
                 .arg(&program)

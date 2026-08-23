@@ -11,7 +11,7 @@
 #                                                so its `REPO_ROOT` (derived
 #                                                from `BASH_SOURCE`) is the
 #                                                sandbox, never this checkout
-#                                                (and so `bench/tools/` — where
+#                                                (and so `benchmark/formats/tools/` — where
 #                                                `scripts/fetch_tools.sh` puts
 #                                                citygml-tools — is absent)
 #   $SANDBOX/bin/{cargo,fcb,citygml-tools,cjseq}  stubs, prepended to PATH
@@ -1368,7 +1368,7 @@ case_artefact_names_match_the_rust_enum() {
 # Case 8e: artefacts built by an OLDER derivation chain must not be reused.
 #
 # The prepare script skips an artefact that already exists and passes its
-# validity check, and `bench/data/readbench/` persists across runs — so a
+# validity check, and `benchmark/formats/data/readbench/` persists across runs — so a
 # directory prepared before the chain changed keeps serving artefacts derived
 # from a stage that no longer exists, and nothing says so. That is C1's bug
 # class one level up: a pre-fix `<base>.jsonl.gz` is a gzip of the WHOLE
@@ -1491,7 +1491,7 @@ case_current_chain_artefacts_are_reused() {
 # vocabulary is exactly how this benchmark's CSV header contract drifted into
 # three incompatible versions. This case reads BOTH lists out of their own
 # source files and compares them, the same trick
-# `bench/plot/tests/test_csv_contract.py` uses for the CSV header.
+# `benchmark/plot/tests/test_csv_contract.py` uses for the CSV header.
 #
 # `duckdb-parquet` is deliberately excluded: it is an SQL-engine baseline
 # driven by `scripts/readbench_duckdb.sh` over an already-prepared

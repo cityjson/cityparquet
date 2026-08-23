@@ -22,37 +22,23 @@ target
 
 .superpowers/
 
+# Reader/writer fixtures, all fetched from pinned URLs by `just fixtures`.
 /tests/fixtures/
-# Benchmark input data is fetched (scripts/fetch_3dbag.sh) and stays out of
-# git; bench/results/*.csv and bench/README.md ARE committed — they are the
-# paper's measurement artefacts.
-/bench/data/
-
-# External converters fetched by scripts/fetch_tools.sh (citygml-tools). The
-# PINS live in that script, which IS committed; the unpacked ~28 MB of JARs
-# does not.
-/bench/tools/
 
 # CityParquet packages produced by `just convert-all` (default OUT root)
 /out/
 
-# Generated read-benchmark charts (`just plot`/`just bench`) — the
-# committed inputs are the CSVs under bench/read_results/, not these PNGs.
-/bench/**/plots/
-
-# `just plot-pretty` output (bench_data.json, bench-summary.html, figures/):
-# all three are derived from the committed CSVs and regenerate in seconds.
-/bench/summary/
-
-# bench/plot/'s own uv-managed venv + Python bytecode cache — its source
-# (pyproject.toml, *.py, uv.lock) IS committed.
-/bench/plot/.venv/
-**/__pycache__/
-
 # tools/catalog2cityparquet/'s own uv-managed venv + pytest cache — its source
 # (pyproject.toml, *.py, uv.lock) IS committed.
 /tools/catalog2cityparquet/.venv/
+**/__pycache__/
 **/.pytest_cache/
 
 
 .DS_Store
+
+# The benchmark harness's ignores are NOT here. Its corpora, results and
+# plotting project live under the monorepo's benchmark/ tree, so the entries
+# that used to sit here (`/bench/data/`, `/bench/tools/`, …) live in the root
+# .gitignore instead. Nothing under this directory is benchmark evidence any
+# more.

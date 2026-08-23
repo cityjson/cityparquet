@@ -121,7 +121,7 @@ struct RunArgs {
 
     /// Directory `just readbench-prepare` wrote the per-format artefacts
     /// into.
-    #[arg(long, default_value = "bench/data/readbench")]
+    #[arg(long, default_value = "benchmark/formats/data/readbench")]
     prepared_dir: PathBuf,
 
     /// Result CSV path. This run OWNS the file: a fresh truncate + write, so

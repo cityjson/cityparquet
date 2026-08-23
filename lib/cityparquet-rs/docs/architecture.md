@@ -178,8 +178,8 @@ unconditionally, so the harness stays uniform across variants and datasets
 (sidecars cost nothing when there's no appearance data).
 
 The methodology and its comparability caveats live in
-[`../bench/README.md`](../bench/README.md) (write side) and
-[`../bench/READ_BENCHMARK.md`](../bench/READ_BENCHMARK.md) (read side, which is
+[`../benchmark/formats/README.md`](../benchmark/formats/README.md) (write side) and
+[`../benchmark/formats/READ_BENCHMARK.md`](../benchmark/formats/READ_BENCHMARK.md) (read side, which is
 where the committed CSVs are).
 
 ### Recipe presets (the benchmark variable)

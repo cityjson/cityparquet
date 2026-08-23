@@ -2,7 +2,7 @@
 # DuckDB `COPY` baseline for the cityparquet bench CSV (M5 task 7).
 #
 # GEOMETRY COVERAGE DISCLOSURE (M5 final-review fix; verified 2026-07-07
-# against every dataset this script is run on — see bench/README.md's
+# against every dataset this script is run on — see benchmark/formats/README.md's
 # "Baseline geometry coverage" section for the full per-column query
 # outputs): the `cityjson` extension does NOT populate every geometry
 # column it declares. All four real datasets (delft + all three 3DBAG

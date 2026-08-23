@@ -9,13 +9,13 @@
 # benchmark's claim is a comparison BETWEEN formats, so a dataset that cannot
 # produce every format contributes a row with a hole in it — and the previous
 # corpus had holes in exactly the datasets a reader recognises. See
-# bench/archive/2026-08-17-catalogue-corpus/README.md for what was retired and
+# benchmark/formats/archive/2026-08-17-catalogue-corpus/README.md for what was retired and
 # why. Depth over breadth: six datasets that are fully comparable beat thirty
 # that are partly comparable.
 #
 # Provenance: every entry is from the CityJSON project's own dataset page,
 #   https://www.cityjson.org/datasets/
-# recorded with its verification date in `bench/corpus_urls.txt` — read that
+# recorded with its verification date in `benchmark/formats/corpus_urls.txt` — read that
 # file for WHY an entry is here, and why the two datasets that page offers but
 # this corpus omits are omitted. This script is the other half: WHAT gets
 # fetched, under which local name, and at exactly which byte size. Its test
@@ -25,14 +25,14 @@
 # EVERY ENTRY IS FETCHED AS CityJSON, and the `citygml` artefact is SYNTHESISED
 # from it by `readbench_prepare.sh` (`citygml-tools from-cityjson -v 2.0`).
 # That is a deliberate reversal of an earlier rule — see the CityGML synthesis
-# section of bench/READ_BENCHMARK.md, which states what it costs. In short: the
+# section of benchmark/formats/READ_BENCHMARK.md, which states what it costs. In short: the
 # cityjson.org page publishes a matching `.gml` beside each `.city.json`, but
 # NOT ONE of them is readable here — six are CityGML 1.0, two are 3.0, and this
 # repository's reader accepts only 2.0. Deriving every artefact, CityGML
 # included, from one source document is what makes the eight rows comparable.
 #
-# Downloaded to DEST (default bench/data/benchmark/, an optional positional
-# argument; the whole of bench/data/ is gitignored — see .gitignore).
+# Downloaded to DEST (default benchmark/formats/data/benchmark/, an optional positional
+# argument; the whole of benchmark/formats/data/ is gitignored — see .gitignore).
 #
 # Reproducibility beats freshness. Each entry pins the byte size of the
 # download itself, measured 2026-08-23; the size is verified after every
@@ -50,6 +50,11 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# This script is code and lives in the cityparquet-rs workspace; the corpus it
+# fetches is evidence and lives in the monorepo's benchmark/ tree. $BENCH_ROOT
+# is the seam between them, and overriding it moves the whole corpus.
+MONO_ROOT="$(cd "$REPO_ROOT/../.." && pwd)"
+BENCH_ROOT="${BENCH_ROOT:-$MONO_ROOT/benchmark/formats}"
 
 # --- the pinned corpus -----------------------------------------------------
 #
@@ -76,7 +81,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #             because $CORPUS_MANIFEST inputs (the archived corpus among them)
 #             still carry entries that cannot serve a default-set run.
 #
-# url         Verbatim from bench/corpus_urls.txt.
+# url         Verbatim from benchmark/formats/corpus_urls.txt.
 #
 # Ordered by wire size, smallest first, so a truncated fetch still leaves a
 # usable size ladder.
@@ -114,7 +119,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # four. Its `citygml` row is therefore NOT content-equivalent to its other
 # seven. Kept deliberately (it is the only entry exercising the per-LoD
 # geometry columns, and the collapse is itself a finding about CityGML), and
-# disclosed in bench/READ_BENCHMARK.md — do not quote its `citygml` bytes or
+# disclosed in benchmark/formats/READ_BENCHMARK.md — do not quote its `citygml` bytes or
 # parse time against another format's without saying so.
 CORPUS=(
   "rotterdam_delfshaven.city.json|2731804|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json"
@@ -149,7 +154,7 @@ usage: fetch_benchmark.sh [--only SET] [--allow-foreign] [DEST]
   --allow-foreign  proceed even though DEST holds city-model files this
                    table does not describe (they will still be measured by
                    `just bench DEST` — this only says you meant it)
-  DEST             destination directory (default bench/data/benchmark)
+  DEST             destination directory (default benchmark/formats/data/benchmark)
 
   $CORPUS_MANIFEST  fetch a manifest file's entries instead of the pinned
                     corpus. Same `name|bytes|form|sets|url` line format;
@@ -212,10 +217,14 @@ if [[ "$set_is_valid" -ne 1 ]]; then
   exit 1
 fi
 
-DEST=${DEST:-bench/data/benchmark}
+DEST=${DEST:-$BENCH_ROOT/data/benchmark}
 case "$DEST" in
   /*) DATA_DIR="$DEST" ;;
-  *) DATA_DIR="$REPO_ROOT/$DEST" ;;
+  # A relative DEST resolves against the MONOREPO root, which is where `just
+  # fetch-data` runs and what every path in the root justfile is relative to.
+  # Resolving it against this script's own workspace would bury the corpus
+  # under lib/cityparquet-rs/.
+  *) DATA_DIR="$MONO_ROOT/$DEST" ;;
 esac
 
 # The entries to fetch: the pinned corpus, or a manifest handed in through

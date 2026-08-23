@@ -87,7 +87,7 @@
 # document, which is what makes the eight rows content-comparable in the first
 # place. The cost is real and must be quoted with the numbers: the `citygml`
 # row then measures citygml-tools' SERIALISATION, not a published file. Two
-# things bound that cost, both in bench/READ_BENCHMARK.md's CityGML synthesis
+# things bound that cost, both in benchmark/formats/READ_BENCHMARK.md's CityGML synthesis
 # section — the synthesised document is close in size to the published
 # original where one exists (Rotterdam: 14.0 MB vs 16.5 MB), and a source
 # whose LoDs CityGML 2.0 cannot express loses some (3DBAG's LoD 1.2/1.3 both
@@ -109,7 +109,7 @@
 # FlatCityBuf.
 #
 # citygml-tools comes from `just fetch-tools` (scripts/fetch_tools.sh, which
-# owns the pinned version and its sha256) and is resolved via bench/tools/,
+# owns the pinned version and its sha256) and is resolved via benchmark/formats/tools/,
 # $CITYGML_TOOLS or PATH — this script never repeats the version pin.
 #
 # A REQUESTED FORMAT THAT CANNOT BE BUILT IS AN ERROR HERE, never a silent
@@ -175,7 +175,7 @@ usage() {
 usage: $0 [--formats a,b,c] INPUT [OUTDIR]
   INPUT      CityGML (.gml/.citygml), CityJSON (.city.json) or CityJSONSeq
              (.city.jsonl) file
-  OUTDIR     default: bench/data/readbench
+  OUTDIR     default: benchmark/formats/data/readbench
   --formats  comma-separated formats to build, from: ${VALID_FORMATS[*]}
              (default: ${DEFAULT_BUILD_FORMATS[*]})
 EOF
@@ -215,10 +215,17 @@ if [[ ${#POSITIONAL[@]} -lt 1 || ${#POSITIONAL[@]} -gt 2 ]]; then
   exit 1
 fi
 
-INPUT=${POSITIONAL[0]}
-OUTDIR=${POSITIONAL[1]:-bench/data/readbench}
-
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# See fetch_benchmark.sh: this script is code and lives in the cityparquet-rs
+# workspace, while the prepared artefacts it writes are benchmark inputs and
+# live under the monorepo's benchmark/ tree. An OUTDIR given explicitly is
+# taken as-is (relative to the caller's directory, which `just` sets to the
+# monorepo root); only the DEFAULT is re-rooted here.
+MONO_ROOT="$(cd "$REPO_ROOT/../.." && pwd)"
+BENCH_ROOT="${BENCH_ROOT:-$MONO_ROOT/benchmark/formats}"
+
+INPUT=${POSITIONAL[0]}
+OUTDIR=${POSITIONAL[1]:-$BENCH_ROOT/data/readbench}
 
 if [[ ! -f "$INPUT" ]]; then
   echo "error: input file not found: $INPUT" >&2
@@ -413,7 +420,7 @@ if want cityjson || [[ "$SEQ_FROM" == "cjseq-cat" ]] || [[ "$SYNTH_CITYGML" -eq 
 fi
 
 # citygml-tools is resolved, never version-pinned here: the pin lives in
-# scripts/fetch_tools.sh, which unpacks it under bench/tools/ behind a
+# scripts/fetch_tools.sh, which unpacks it under benchmark/formats/tools/ behind a
 # version-independent symlink. $CITYGML_TOOLS overrides, PATH is the fallback
 # for a system-wide install.
 CITYGML_TOOLS_BIN=""
@@ -424,8 +431,8 @@ resolve_citygml_tools() {
       exit 1
     fi
     CITYGML_TOOLS_BIN="$CITYGML_TOOLS"
-  elif [[ -x "$REPO_ROOT/bench/tools/citygml-tools/citygml-tools" ]]; then
-    CITYGML_TOOLS_BIN="$REPO_ROOT/bench/tools/citygml-tools/citygml-tools"
+  elif [[ -x "$BENCH_ROOT/tools/citygml-tools/citygml-tools" ]]; then
+    CITYGML_TOOLS_BIN="$BENCH_ROOT/tools/citygml-tools/citygml-tools"
   elif command -v citygml-tools >/dev/null 2>&1; then
     CITYGML_TOOLS_BIN="$(command -v citygml-tools)"
   else
@@ -563,7 +570,7 @@ same_file() {
 # WHY A STAMP AND NOT A SENTENCE IN THE DOCS.
 #
 # This script skips an artefact that already exists and passes its validity
-# check, and OUTDIR (bench/data/readbench by default) persists across runs and
+# check, and OUTDIR (benchmark/formats/data/readbench by default) persists across runs and
 # across checkouts. So a directory prepared before the derivation chain
 # changed keeps serving artefacts derived from a stage that no longer exists —
 # silently, under the same names, with nothing to look at. The sharp case is
@@ -1019,7 +1026,7 @@ if want flatcitybuf; then
   FCB_INFO="$(fcb info -i "$FCB_OUT")"
   # `[[:space:]]`, not `\s`: `\s` is a GNU extension that POSIX ERE does not
   # define, so BSD/macOS `grep -E` matches nothing with it — and the
-  # measurement machine (bench/READ_BENCHMARK.md's own record) is Darwin
+  # measurement machine (benchmark/formats/READ_BENCHMARK.md's own record) is Darwin
   # arm64, where this block therefore failed EVERY FlatCityBuf prepare.
   #
   # No `| head -1` either: `head` exiting early can hand `grep` a SIGPIPE,

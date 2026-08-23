@@ -13,7 +13,7 @@
 # recorded-invocation theatre.
 #
 # The last case is different in kind: it lints the script's OWN pinned table
-# and cross-checks it against `bench/corpus_urls.txt`. Those two files are a
+# and cross-checks it against `benchmark/formats/corpus_urls.txt`. Those two files are a
 # corpus definition kept in two places, which is exactly how five PLATEAU
 # modules blocked under the previous corpus stayed "usable" in one of them for
 # a while. The lint makes the drift a test failure.
@@ -21,9 +21,14 @@ set -euo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
+# The script under test is code and lives here; the corpus catalogue it is
+# cross-checked against is evidence and lives in the monorepo's benchmark/
+# tree, as does the `fetch-data` recipe (the root justfile owns every recipe
+# that reaches both). Hence two roots.
+MONO_ROOT="$(cd "$REPO_ROOT/../.." && pwd)"
 FETCH="$REPO_ROOT/scripts/fetch_benchmark.sh"
-CATALOGUE="$REPO_ROOT/bench/corpus_urls.txt"
-JUSTFILE="$REPO_ROOT/justfile"
+CATALOGUE="$MONO_ROOT/benchmark/formats/corpus_urls.txt"
+JUSTFILE="$MONO_ROOT/justfile"
 
 PASSED=0
 FAILED=0
@@ -512,7 +517,7 @@ case_unreadable_manifest_is_reported() {
 # it, silently.
 #
 # The documented happy path is `just fetch-data && just bench
-# bench/data/benchmark`. That path must therefore not put those two files in
+# benchmark/formats/data/benchmark`. That path must therefore not put those two files in
 # the folder by default. This case pins the ONE character that guarantees it.
 # --------------------------------------------------------------------------
 case_fetch_data_defaults_to_the_default_set() {
@@ -528,7 +533,7 @@ case_fetch_data_defaults_to_the_default_set() {
     return
   fi
   # BOTH defaults, not just the justfile's. The script is run directly too
-  # (bench/READ_BENCHMARK.md documents it), and its own `ONLY=` is the
+  # (benchmark/formats/READ_BENCHMARK.md documents it), and its own `ONLY=` is the
   # fallback whenever `--only` is absent — so pinning only the recipe left
   # `ONLY=all` in the script itself free to put the two abort-causing
   # datasets into the folder that `just bench` measures.
@@ -542,7 +547,7 @@ case_fetch_data_defaults_to_the_default_set() {
 
 # --------------------------------------------------------------------------
 # Case 14: the script's own pinned table is well-formed, and it agrees with
-# `bench/corpus_urls.txt`.
+# `benchmark/formats/corpus_urls.txt`.
 #
 # The provenance file records where each URL came from and why the excluded
 # ones are excluded; the script's table is what actually gets fetched. Two
@@ -595,7 +600,7 @@ case_pinned_table_is_well_formed() {
     # incidental one. The read benchmark compares eight formats; an entry that
     # cannot serve a default-set run contributes seven rows and a hole, which
     # is precisely the defect the previous corpus was retired for (see
-    # bench/archive/2026-08-17-catalogue-corpus/README.md). It would also
+    # benchmark/formats/archive/2026-08-17-catalogue-corpus/README.md). It would also
     # abort the run outright — `just bench` measures the whole directory under
     # `set -e`, so one unfit file takes every dataset sorting after it down
     # too. $CORPUS_MANIFEST remains the way to fetch such an entry knowingly.

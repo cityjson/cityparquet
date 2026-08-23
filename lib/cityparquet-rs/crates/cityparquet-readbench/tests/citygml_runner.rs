@@ -351,7 +351,7 @@ fn count_is_member_level_while_attr_scenarios_reach_nested_city_objects() {
 /// So the runner now hard-fails, naming the offending types and counts. The
 /// fixture is three `tran:Track` members lifted verbatim from the real
 /// Tachikawa `trk` tile named in the retired catalogue corpus's provenance
-/// file, `bench/archive/2026-08-17-catalogue-corpus/catalogue_benchmark_urls.txt`.
+/// file, `benchmark/formats/archive/2026-08-17-catalogue-corpus/catalogue_benchmark_urls.txt`.
 #[test]
 fn an_unmapped_member_type_fails_loudly_instead_of_counting_zero() {
     let input = data_fixture("plateau_trk_fragment.gml");

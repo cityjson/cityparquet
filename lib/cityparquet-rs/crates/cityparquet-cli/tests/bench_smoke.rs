@@ -119,7 +119,7 @@ fn bench_run_produces_the_default_nine_variant_matrix_for_delft() {
     // (2423 objects) in a single group, demonstrating nothing. With real
     // groups to prune, Hilbert ordering must do no worse than source order
     // on the window query (measured: source order touches 2 of 5, Hilbert
-    // 1 of 5 — see `bench/README.md`'s pruning numbers).
+    // 1 of 5 — see `benchmark/formats/README.md`'s pruning numbers).
     let (rg512_total, rg512_touched) = *by_variant
         .get("cityparquet+rg512")
         .expect("the default set must include 'cityparquet+rg512'");

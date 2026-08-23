@@ -1470,7 +1470,7 @@ pre-v1.5.0 storage-version database file; it does not affect the load.)
 
 A fresh read + ordering benchmark run landed since the last pass
 (`01b719d`, Linux/EPYC, 2026-08-17), and the `benchviz` summary-page pipeline
-arrived with it (`c87aaa9`, `bench/plot/benchviz`). §5.6 below now points at
+arrived with it (`c87aaa9`, `benchmark/plot/benchviz`). §5.6 below now points at
 that pipeline's repo-level recipe rather than invoking a report script
 directly.
 
@@ -1483,20 +1483,20 @@ deleted. Two commands answer the question at the moment you ask it:
 
 ```sh
 cd cityparquet-rs
-ls bench/data bench/read_results bench/ordering_results bench/compression_results 2>&1
-git log --oneline -3 -- bench/read_results bench/ordering_results
+ls benchmark/formats/data benchmark/formats/read_results benchmark/formats/ordering_results benchmark/formats/compression_results 2>&1
+git log --oneline -3 -- benchmark/formats/read_results benchmark/formats/ordering_results
 ```
 
 The two methodology documents beside them state what a committed run means, and
-are kept current: `bench/READ_BENCHMARK.md` (the cross-format read benchmark and
+are kept current: `benchmark/formats/READ_BENCHMARK.md` (the cross-format read benchmark and
 its fairness caveats — the CSVs it describes are committed) and
-`bench/README.md` (the write/compression benchmark — no CSVs committed; run the
+`benchmark/formats/README.md` (the write/compression benchmark — no CSVs committed; run the
 recipes to produce them).
 
 Two things worth knowing before a re-run, because neither is visible from a
 directory listing:
 
-- `bench/data/readbench/` prepared artefacts carry the version of the conversion
+- `benchmark/formats/data/readbench/` prepared artefacts carry the version of the conversion
   chain that built them; a stale stamp makes `readbench_prepare.sh` refuse the
   dataset and print the exact `rm -rf` that clears it. Delete the tree if in
   doubt — nothing there is expensive to rebuild except the downloads.
@@ -1529,8 +1529,8 @@ Verify a source's declaration before blaming the writer:
 ```sh
 python3 - <<'EOF'
 import json, glob, os
-for f in sorted(glob.glob('cityparquet-rs/bench/data/*.jsonl') +
-                glob.glob('cityparquet-rs/bench/data/*.json')):
+for f in sorted(glob.glob('benchmark/formats/data/*.jsonl') +
+                glob.glob('benchmark/formats/data/*.json')):
     d = json.loads(open(f).readline())
     print('%-28s %s' % (os.path.basename(f),
           d.get('metadata', {}).get('referenceSystem') or 'ABSENT'))
@@ -1542,24 +1542,24 @@ EOF
 ```sh
 cd cityparquet-rs
 rm -rf out/cityparquet
-just convert-all bench/data out/cityparquet
+just convert-all benchmark/formats/data out/cityparquet
 ```
 
 One package directory per input. Includes `3dbag_subset.city.jsonl` (2.8 GB) —
-drop it from `bench/data` for a quick pass. Since `0c9c917` a CRS-less dataset
+drop it from `benchmark/formats/data` for a quick pass. Since `0c9c917` a CRS-less dataset
 no longer aborts the loop (it warns and writes `city.crs: null`), so the whole
 corpus converts in one go except `Railway`: `just convert-all` runs a bare
 `convert` and does not pass `--tolerate-invalid-appearance`, so Railway's
 dangling material reference still aborts it under strict mode (Known issues,
 "Fixed in this pass" #7 — the fix is a flag, not a default, and this recipe
-does not opt in). The `bench/data/_run` hard-link staging directory remains
+does not opt in). The `benchmark/formats/data/_run` hard-link staging directory remains
 useful for skipping it.
 
 ### 5.3 Compression benchmark
 
 ```sh
 cd cityparquet-rs
-just compression-bench bench/data bench/compression_results
+just compression-bench benchmark/formats/data benchmark/formats/compression_results
 ```
 
 8 variants per dataset (codec axis: default-zstd, uncompressed, snappy, gzip,
@@ -1574,7 +1574,7 @@ lz4, brotli; row-group axis: default, rg512, rg4096), then charts via `uv`.
 
 ```sh
 cd cityparquet-rs
-just write-bench bench/data          # -> bench/results/ (not committed)
+just write-bench benchmark/formats/data          # -> benchmark/formats/results/ (not committed)
 ```
 
 Needs network on first run (installs the `cityjson` community extension for the
@@ -1584,8 +1584,8 @@ DuckDB `COPY` baseline).
 
 ```sh
 cd cityparquet-rs
-rm -rf bench/data/readbench          # only if you want a clean prepare
-just bench bench/data bench/read_results
+rm -rf benchmark/formats/data/readbench          # only if you want a clean prepare
+just bench benchmark/formats/data benchmark/formats/read_results
 ```
 
 `readbench_prepare.sh` **skips any package directory that already exists**, so
@@ -1597,7 +1597,7 @@ New since the last pass: an **HTTP transport**. `--transport local|http`
 (default `local`) plus `--base-url` makes every format read over HTTP instead of
 from a local file, and populates the trailing `bytes_read` / `http_requests`
 CSV columns (empty for every local row). Upload steps and methodology are in
-`bench/READ_BENCHMARK.md`; `duckdb-parquet` has no HTTP row — it is a local-only
+`benchmark/formats/READ_BENCHMARK.md`; `duckdb-parquet` has no HTTP row — it is a local-only
 SQL baseline.
 
 > **Still blocked: multi-module datasets.** The `CityParquetRunner` supports
@@ -1606,7 +1606,7 @@ SQL baseline.
 
 ### 5.6 Aggregate results into one page
 
-The renderer itself lives in the submodule (`bench/plot/benchviz`, its own
+The renderer itself lives in the submodule (`benchmark/plot/benchviz`, its own
 `just plot-pretty`); from the repo root, `just bench-summary` points it at the
 paper's two destinations and measures nothing itself:
 
@@ -1614,8 +1614,8 @@ paper's two destinations and measures nothing itself:
 just bench-summary
 ```
 
-This rebuilds `docs/bench-summary.html` and `paper/assets/bench/` from the
-CSVs already committed under `cityparquet-rs/bench/`. Read the messages it
+This rebuilds `docs/bench-summary.html` and `paper/assets/benchmark/formats/` from the
+CSVs already committed under `benchmark/formats/`. Read the messages it
 prints — the figures step can refuse (existing print-sheet captions are tied
 to the corpus they were drawn from) while still writing the HTML page.
 
@@ -1636,7 +1636,7 @@ was the conformant side throughout.
 | 3 | **`make release` failed** — `src/libduckdb.dylib` did not link flatcitybuf | The deferred link fixup that already existed for `unittest` now also covers DuckDB's `duckdb` SHARED target (`cityjson_fcb_link_upstream_targets`, `CMakeLists.txt`). Verified in 0.4 |
 | 4 | **Both `test/cpp/*.sh` harnesses could not run** | Fixed by #3, plus `run_encoder_tests.sh` gained the missing `-I"$FCB_PREFIX/include"` and `run_fcb_selective_tests.sh`'s stale-library guard is no longer hardcoded to the Linux `libduckdb.so`. Verified in 2.10 |
 | 5 | **`just interop` was broken** — `scripts/interop.sh` still passed the removed `--profile compatibility` | Flag dropped; stale by-family comments corrected to by-module; the cross-module union now uses `union_by_name = true`. Verified in 1.7 |
-| 7 | **`Railway.city.jsonl` fails conversion** — `material index 2 in theme 'visual' out of range (local defs len 2)` | **No longer an open decision.** cityparquet-rs gained `--tolerate-invalid-appearance`, which drops the dangling reference and counts it in the report's tenth field rather than aborting the whole conversion. Strict remains the default — a bare `convert` still refuses the file with the message above. Verified: `convert bench/data/Railway.city.jsonl -o … --tolerate-invalid-appearance` reports `121 13 0 0 6 6 84 34 3 1` (84 materials written, one dropped) and exits 0 |
+| 7 | **`Railway.city.jsonl` fails conversion** — `material index 2 in theme 'visual' out of range (local defs len 2)` | **No longer an open decision.** cityparquet-rs gained `--tolerate-invalid-appearance`, which drops the dangling reference and counts it in the report's tenth field rather than aborting the whole conversion. Strict remains the default — a bare `convert` still refuses the file with the message above. Verified: `convert benchmark/formats/data/Railway.city.jsonl -o … --tolerate-invalid-appearance` reports `121 13 0 0 6 6 84 34 3 1` (84 materials written, one dropped) and exits 0 |
 | 10 | `cityparquet-rs/CLAUDE.md` + `AGENTS.md` documented `convert INPUT OUTPUT_DIR` positionally | Both now show `--output`, list the flags added since (`--geometry-encoding`, `--partition`, `--crs`, `--no-lod0`), and the catalogue suite count is 265, not 219 |
 
 ### Open — needing a decision, not a patch
@@ -1665,7 +1665,7 @@ was the conformant side throughout.
 | # | Issue | Resolution |
 |---|---|---|
 | 11 | justfile did not parse; `readbench_duckdb.sh` and the `bench` recipe read the removed `manifest['tables']` key; `convert-all` / `encode_3dbag_tiles.sh` passed the output dir positionally | Merged into `develop` as `3e263ad` (2026-08-10); table lookups go through `scripts/package_tables.py` |
-| 12 | `bench/data/readbench/` prepared artefacts carried the pre-by-type manifest | Regenerated 2026-07-24 |
+| 12 | `benchmark/formats/data/readbench/` prepared artefacts carried the pre-by-type manifest | Regenerated 2026-07-24 |
 
 ---
 

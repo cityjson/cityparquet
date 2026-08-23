@@ -83,7 +83,7 @@ pub struct RunOptions {
     /// artefact `scripts/readbench_prepare.sh` built there.
     pub input: PathBuf,
     /// Directory `just readbench-prepare` wrote the per-format artefacts
-    /// into (default `bench/data/readbench`).
+    /// into (default `benchmark/formats/data/readbench`).
     pub prepared_dir: PathBuf,
     /// Result CSV path; this run OWNS the file (fresh truncate + write).
     pub out: PathBuf,
@@ -427,7 +427,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 peak_rss_bytes: line.ru_maxrss_bytes,
                 repeat: 1,
                 // Exactly `cold`, and nothing else ever appended:
-                // `bench/plot/readbench_plot/plot.py` drops a cold row with
+                // `benchmark/plot/readbench_plot/plot.py` drops a cold row with
                 // an EXACT `notes == "cold"` test, so a tag alongside it
                 // would put the purged-cache measurement into the warm
                 // charts. Nothing is lost by it — the only disclosures a
@@ -1222,7 +1222,7 @@ mod tests {
     }
 
     /// A `cold` row is excluded from the charts by an EXACT `notes == "cold"`
-    /// test in `bench/plot/readbench_plot/plot.py`, so its `notes` field must
+    /// test in `benchmark/plot/readbench_plot/plot.py`, so its `notes` field must
     /// render as exactly that — a purged-cache measurement plotted among the
     /// warm ones would be read as a warm number.
     #[test]

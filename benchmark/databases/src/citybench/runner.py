@@ -27,7 +27,7 @@ SELECTIVITY_TARGETS = (0.01, 0.05, 0.25)
 _WINDOW_TAGS = {0.01: "bbox-1pct", 0.05: "bbox-5pct", 0.25: "bbox-25pct"}
 
 # Scenarios for which the `selectivity` column is left blank. Per the
-# inherited contract (cityparquet-rs/bench/READ_BENCHMARK.md's CSV section):
+# inherited contract (benchmark/formats/READ_BENCHMARK.md's CSV section):
 # "selectivity = result_count / total_object_count, empty where N/A (count,
 # full-read)". Both of these scenarios answer over the whole dataset, so a
 # result_count/total ratio would not describe a selection at all; every

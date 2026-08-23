@@ -1,7 +1,7 @@
 """The results CSV contract.
 
 The first eleven columns (``dataset`` through ``notes``) match the sibling
-``cityparquet-rs`` harness's own *committed* CSVs (``bench/read_results/
+``cityparquet-rs`` harness's own *committed* CSVs (``benchmark/formats/read_results/
 *.csv``) in name and order. ``bytes_read``/``http_requests`` are columns
 12-13 of that harness's *documented* contract but are absent from every one
 of its committed files; this harness carries them anyway (always empty

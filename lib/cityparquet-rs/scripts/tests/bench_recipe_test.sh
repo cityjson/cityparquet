@@ -14,7 +14,7 @@
 # so a run labelled "format comparison" must not carry it unasked. The
 # justfile disagreed: `want_duckdb` started at 1 and was only cleared when
 # FORMATS was NON-EMPTY, so a bare `just bench <folder>` appended a sixth,
-# non-format series to a CSV that `bench/READ_BENCHMARK.md` describes as
+# non-format series to a CSV that `benchmark/formats/READ_BENCHMARK.md` describes as
 # holding five. Two sources of truth for one decision, disagreeing silently in
 # the default case — the one nobody passes flags to.
 #
@@ -35,7 +35,11 @@ set -euo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-JUSTFILE="$REPO_ROOT/justfile"
+# The `bench` recipe lives in the MONOREPO's root justfile — it reaches both
+# this workspace's harness crate and the corpora under benchmark/, so neither
+# tree can own it. `Format::DEFAULT_SET`, which it must agree with, is local.
+MONO_ROOT="$(cd "$REPO_ROOT/../.." && pwd)"
+JUSTFILE="$MONO_ROOT/justfile"
 FORMAT_RS="$REPO_ROOT/crates/cityparquet-readbench/src/format.rs"
 
 PASSED=0

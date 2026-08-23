@@ -3,7 +3,7 @@
 Cross-system benchmark comparing CityParquet — via its native Rust reader
 (`cityparquet`/`cityparquet-hilbert`) and via DuckDB (`duckdb-cityparquet`)
 — against two PostgreSQL-based 3D city model databases, **cjdb** and
-**3DCityDB v5**. Same discipline as `cityparquet-rs/bench/READ_BENCHMARK.md`
+**3DCityDB v5**. Same discipline as `benchmark/formats/READ_BENCHMARK.md`
 (real fixtures, warm medians + MAD at 6-decimal precision, disclosed rather
 than hidden overheads), extended with what a cross-**system** (not just
 cross-**format**) comparison additionally has to control for: server
@@ -73,7 +73,7 @@ For `delft.city.jsonl` (`params/delft.json`):
 
 `bbox-query`'s three windows (1%/5%/25% of `bbox_full`'s own x/y area) are
 derived from this same `bbox_full`, anchored at its lower-left corner —
-the same window construction `cityparquet-rs/bench/READ_BENCHMARK.md`'s
+the same window construction `benchmark/formats/READ_BENCHMARK.md`'s
 harness uses, so selectivity tags stay comparable across the two
 benchmarks. **The window's z range is never narrowed** (`BBox.window()`
 always keeps `minz`/`maxz` at the dataset's full extent) — every object is
@@ -382,7 +382,7 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
 **Relationship to the sibling harness's CSVs, verified directly against
 its committed files, not assumed from its documentation**: our first
 **eleven** columns (`dataset` through `notes`) are identical in name and
-order to every one of `cityparquet-rs/bench/read_results/*.csv`'s
+order to every one of `benchmark/formats/read_results/*.csv`'s
 committed files — checked against all eleven scenario-shaped CSVs there
 (`3DBAG`, `9-284-556`, `Ingolstadt`, `Montreal`, `NYC`, `Railway`,
 `Rotterdam`, `Vienna`, `Zurich`, `delft`, `lod3_railway`; that directory
