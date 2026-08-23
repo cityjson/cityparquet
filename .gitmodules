@@ -1,3 +1,9 @@
 [submodule "lib/cityparquet-rs/vendor/city3d-stac-tool"]
 	path = lib/cityparquet-rs/vendor/city3d-stac-tool
 	url = https://github.com/cityjson/city3d-stac-tool.git
+[submodule "lib/duckdb-cityjson"]
+	path = lib/duckdb-cityjson
+	url = https://github.com/cityjson/duckdb-cityjson.git
+[submodule "lib/duckdb-3d"]
+	path = lib/duckdb-3d
+	url = https://github.com/HideBa/duckdb-3d.git
