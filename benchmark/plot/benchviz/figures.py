@@ -1,4 +1,4 @@
-"""``bench_data.json`` -> static paper figures in ``paper/assets/benchmark/formats/``.
+"""``bench_data.json`` -> static paper figures in ``paper/assets/bench/``.
 
 Five figures, each written as ``.svg`` (Typst primary — it cannot embed PDF)
 and ``.png`` at 300 dpi:
