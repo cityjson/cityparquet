@@ -9,10 +9,15 @@ authors:
   - given-names: Hidemichi
     family-names: Baba
     affiliation: "3D Geoinformation, Delft University of Technology"
+    orcid: "https://orcid.org/0009-0001-6468-0928"
+  - given-names: Hugo
+    family-names: Ledoux
+    affiliation: "3D Geoinformation, Delft University of Technology"
+    orcid: "https://orcid.org/0000-0002-1251-8654"
 repository-code: "https://github.com/cityjson/cityparquet"
 abstract: >-
   CityParquet is a columnar Parquet encoding for 3D city models. It stores a
-  CityJSON / CityGML model as a directory of Parquet files split by CityGML
+  CityGML data model as a directory of Parquet files split by CityGML
   module — one row per city object, WKB geometry in a per-LoD column paired with
   a struct carrying the semantics WKB cannot hold, and optional sidecar tables
   for materials, textures and geometry templates — so national-to-global city
