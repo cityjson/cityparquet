@@ -567,8 +567,6 @@ dependencies = [
 [[package]]
 name = "cjseq"
 version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e58f6317b6aa59fe2f9d7d8ea07890c305dd168f336be83e9f76872cb26e52a"
 dependencies = [
  "clap",
  "console_error_panic_hook",
