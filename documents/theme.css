@@ -1,0 +1,27 @@
+/*
+ * CityParquet docs — typography overrides.
+ * Injected by Blume after its own tokens (highest priority), so these mirror
+ * Blume's own `.prose` selectors and win by load order.
+ *
+ * Goal: slightly larger body text, and a gentler size step from headings down
+ * to paragraphs (Blume's defaults are body 0.875rem vs H1 3rem / H2 1.875rem,
+ * which reads as a big jump).
+ */
+
+/* Body / prose text: 0.875rem (14px) -> 1rem (16px). */
+.prose {
+  font-size: 1rem;
+}
+
+/* Headings: pull the largest ones down so the gap to body text is smaller. */
+.prose :where(h1) {
+  font-size: 2.25rem; /* was 3rem */
+}
+
+.prose :where(h2) {
+  font-size: 1.5rem; /* was 1.875rem */
+}
+
+.prose :where(h3) {
+  font-size: 1.2rem; /* was 1.25rem */
+}

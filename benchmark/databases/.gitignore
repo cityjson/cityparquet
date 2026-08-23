@@ -1,0 +1,10 @@
+data/
+.venv/
+__pycache__/
+*.egg-info/
+
+# Built by scripts/patch_cjdb.sh (`just patch-cjdb`): a downloaded,
+# patched local copy of cjdb. Reproducible from vendor/cjdb/*.patch,
+# which IS committed — the build output itself is not, matching data/'s
+# own "regeneratable, not source" treatment.
+.cjdb-patched/

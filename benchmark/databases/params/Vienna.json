@@ -1,0 +1,16 @@
+{
+  "attr_column": "object_type",
+  "attr_eq": "BuildingPart",
+  "bbox_full": {
+    "maxx": 1510.432,
+    "maxy": 341048.5,
+    "maxz": 84.987,
+    "minx": 983.16,
+    "miny": 340433.878,
+    "minz": 27.861
+  },
+  "numeric_column": "measuredHeight",
+  "parent_id": "UUID_LOD2_011387-0ac2659d-7a17-41d3-b489",
+  "target_id": "UUID_LOD2_011387-0ac2659d-7a17-41d3-b489",
+  "total_city_objects": 1322
+}

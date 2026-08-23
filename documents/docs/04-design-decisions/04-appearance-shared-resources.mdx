@@ -1,0 +1,39 @@
+---
+title: D · Appearance & shared resources
+description: Geometry separated from appearance; shared resources in deduplicated sidecars.
+sidebar:
+  label: D · Appearance
+---
+
+How CityParquet handles resources shared across many objects: materials and textures are separated from geometry and deduplicated into sidecar files referenced by global id, and reusable geometry templates live in their own sidecar with instances carrying only a small `template` struct. Prior art weighed here: 3DCityDB's appearance table and CityJSON's shared appearance/geometry-template pools, following the OBJ / COLLADA / glTF principle of separating geometry from appearance.
+
+## Geometry separated from appearance; shared resources in deduplicated sidecars
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** `materials.parquet` and `textures.parquet` hold reusable definitions; the object table's nullable `material_lod*`/`texture_lod*` JSON columns reference them by the sidecar's **dataset-global `id`** — matched against the `id` column, never a row position. Texture UV coordinates are **inlined** into the object table's texture map. See the [specification](/specification/appearance-templates) → *Appearance encoding*.
+
+**Alternatives considered.**
+
+- **3DCityDB** keeps a separate appearance table with a foreign key to the feature table;
+- **CityJSON** keeps an `appearance` object with a shared material/texture pool referenced by feature-local indices.
+
+**Why this.** Follows the recurring project principle — geometry and appearance should be *separable*, as in OBJ / COLLADA / glTF. Materials and textures are referenced by *many* objects, so storing them once and referencing beats duplicating them per object; global dedup (by canonical JSON) is the columnar analogue of CityJSON's shared appearance pool. Two normalisations were needed relative to the source: references become **dataset-global** sidecar `id` values (not CityJSONSeq's feature-local indices), and UV indices are replaced inline by the actual `[u, v]` pairs so the object table is self-contained.
+
+**Trade-off.** Resolving appearance needs a sidecar lookup; because indices are global, the exporter must re-intern feature-local pools (and re-derive UV indices into a `vertices-texture` pool) on the way back to CityJSON.
+
+**Status.** Decided and implemented; a sidecar definition file is written exactly when the source has definitions to put in it. The global-id + inline-UV normalisation was settled during implementation.
+
+## Geometry templates in a sidecar, instances via a template struct
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** Reusable templates live in `geometry_templates.parquet`, using the same geometry strategy as the object table — including the per-LoD column grammar: `geometry_lod*` + nullable `geometry_properties_lod*` / `material_lod*` / `texture_lod*`. An instancing object stores a `template` STRUCT `{id, point (WKB PointZ), transformationMatrix (LIST<DOUBLE>, a flat 16-element row-major 4×4)}` in the object table. See the [specification](/specification/appearance-templates) → *geometry_templates.parquet*.
+
+**Alternatives considered.** Inline the template geometry at each instance (simple, but defeats the whole point of an implicit/instanced geometry) vs reference a shared template (chosen).
+
+**Why this.** Implicit geometries exist precisely to share one geometry across many instances; a sidecar of templates referenced by id preserves that compaction. Template vertices are in **local** coordinates and are **not** subject to any dataset-level transform, so template WKB stores raw doubles. The sidecar follows the per-LoD column grammar so that one LoD-naming rule holds across the whole format, rather than making this the sole place where an LoD rides in a value.
+
+**Trade-off.** Resolving an instance needs a sidecar lookup plus applying its `transformationMatrix` and reference `point`. A template is one geometry at one LoD, so the per-LoD columns leave each row sparse — accepted as the price of the uniform naming rule.
+
+**Status.** Decided and implemented; 🟡 an object instantiating *several* templates remains an [open question](/open-questions), since `template` is a single struct.

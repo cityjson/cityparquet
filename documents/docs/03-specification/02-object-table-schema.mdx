@@ -1,0 +1,254 @@
+---
+title: Object table schema
+description: Reserved structural columns, typed attribute columns, and addresses.
+sidebar:
+  label: Object table schema
+---
+
+Each row of an object table represents one **city object** — a feature of the CityGML
+conceptual model. The table stores identity, hierarchy, attributes, addresses,
+geometry, semantics, appearance references, geometry-template instances, and spatial
+metadata.
+
+## Reserved columns
+
+Reserved columns appear in the order below, before any attribute columns. "Req." =
+required and non-null on every row.
+
+| Column | Logical type | Req. | Physical / nullability notes | Description |
+|---|---|:--:|---|---|
+| `id` | `VARCHAR` | ✔ | non-null | The city object's identifier, or a generated one |
+| `feature_id` | `VARCHAR` | ✔ | non-null | Root-parent id of the object's feature family: equals `id` for a root object, else the `id` of its root parent (see rule below) |
+| `object_type` | `VARCHAR` | ✔ | non-null; **SHOULD** be dictionary-encoded | The object's **CityGML 3.0 feature class** (`Building`, `BuildingPart`, `Road`, `Square`, …) — see the note below |
+| `parents` | `LIST<VARCHAR>` |  | nullable list, nullable items | Parent city object ids |
+| `children` | `LIST<VARCHAR>` |  | nullable list, nullable items | Child city object ids |
+| `children_roles` | `LIST<VARCHAR>` |  | nullable; when present its length **MUST** equal `children`, with `null` for a child that has no role | One role per child, positionally aligned to `children` |
+| `address` | `LIST<STRUCT<…>>` |  | nullable | Addresses of the object (see below) |
+| `bbox` | `STRUCT<xmin,ymin,zmin,xmax,ymax,zmax DOUBLE>` |  | column nullable; the six struct fields are non-null | Bounding box in the geometry CRS (see [spatial metadata](/specification/geometry-semantics)) |
+| `geometry_lod*` | `BLOB` |  | nullable | WKB 3D geometry; one column per LoD, named per the [LoD suffix grammar](/specification/geometry-semantics) |
+| `geometry_properties_lod*` | `STRUCT<type VARCHAR, surfaces JSON, face_semantics LIST<INT>, shells LIST<LIST<INT>>>` |  | nullable | The CityGML CM geometry information WKB cannot encode — chiefly the **semantic surfaces** — plus geometry type and shell structure; one per LoD ([details](/specification/geometry-semantics)) |
+| `material_lod*` | `JSON` |  | nullable | Surface-to-material mapping for the geometry in the matching `geometry_lod*` cell, referencing `materials.parquet` (see [appearance & templates](/specification/appearance-templates)); one per LoD |
+| `texture_lod*` | `JSON` |  | nullable | Surface-to-texture mapping for the geometry in the matching `geometry_lod*` cell, referencing `textures.parquet`; one per LoD |
+| `template` | `STRUCT<id BIGINT, point BLOB, transformationMatrix LIST<DOUBLE>>` |  | column and all fields nullable | Geometry-template instance data (the matrix is a flat 16-element row-major 4×4) |
+| `other` | `JSON` |  | nullable | Source data with no column of its own — a member the format does not map, or an attribute whose name collides with a reserved column. A reader restores every entry into the object's `attributes`; see [the escape-hatch rule](#the-other-column) |
+
+:::note[bbox field names]
+The `bbox` struct field names follow GeoParquet's bounding-box convention
+(`xmin`/`ymin`/`zmin`/`xmax`/`ymax`/`zmax`), consistent with CityParquet's use of
+GeoParquet's `crs` key and `geo` object elsewhere in this specification.
+:::
+
+:::note[feature_id rule]
+Every row **MUST** carry a non-null `feature_id` identifying the feature family it
+belongs to. For a **root** object (no parent), `feature_id == id`. For a **child**
+object, `feature_id` is the `id` of its **root** parent (the top of its parent chain).
+This lets a consumer group an object with all of its descendants by a single equality
+filter, without walking `parents`.
+
+An object may have **several** parents — `CityObjectGroup` membership routinely produces
+this — and then more than one chain leads to a root. The chain to follow is the one
+through the **first** entry of `parents`. Without that rule `feature_id` would depend on
+which chain an implementation happened to walk first, and two conforming writers could
+disagree about the same object.
+:::
+
+:::note[object_type vocabulary]
+`object_type` uses the **CityGML 3.0 feature-class name** — consistent with the
+[by-module file layout](/specification/dataset-package), which is also keyed on the
+CityGML CM. For most types the CityGML class name equals the CityJSON type name; the
+four that differ are mapped on import (and back on export):
+
+| CityJSON type | `object_type` (CityGML class) |
+|---|---|
+| `TransportSquare` | `Square` |
+| `GenericCityObject` | `GenericOccupiedSpace` |
+| `BuildingStorey` | `Storey` |
+| `TunnelHollowSpace` | `HollowSpace` |
+
+An extension (ADE / CityJSON Extension) type keeps its own class name, with the CityJSON
+`+` prefix stripped.
+:::
+
+### The `other` column
+
+`other` is the single escape hatch for source data no column carries, and its
+reader contract is one rule: **every entry is restored into the object's
+`attributes`**, keyed by its map key.
+
+An `other` cell **MUST** hold a JSON object. A cell that does not — a JSON array or
+scalar, or text that is not valid JSON at all — is invalid input, and a reader **MUST**
+treat it as an error rather than ignore the cell. A `NULL` cell remains the ordinary
+"nothing to restore" case, not an error.
+
+Two kinds of entry share the column — a source member the format does not map, and
+an attribute whose name collides with a reserved column — and a reader **MUST NOT**
+attempt to distinguish them. A CityParquet file may come from any writer, and how a
+writer chose to encode an unmapped source member is outside this specification; a
+reader that inferred intent from a key would be reading one writer's convention
+rather than the format.
+
+A source attribute named `other` is **invalid input**: it has nowhere to divert to,
+since diverting it into the column named after it would be circular.
+
+An `other` entry whose key duplicates an attribute already decoded from its own
+column is likewise **invalid input**: the two copies cannot be reconciled without
+inventing a preference the format does not state. A reader **MUST** treat the
+collision as an error rather than silently keeping one copy and discarding the
+other, since it signals a corrupt or foreign file rather than a legitimate encoding.
+
+A writer **MUST NOT** emit an `other` entry whose key duplicates an attribute the
+same row carries in a column — such a file is exactly what the reader-side rule
+above rejects.
+
+**Optional data is `NULL`, not an omitted column.** `address` and `template` remain
+part of the schema even when no row has a value for them, and every LoD that has a
+`geometry_lod*` column also has its matching `geometry_properties_lod*`,
+`material_lod*` and `texture_lod*` columns, whether or not any row carries values for
+them.
+
+The per-LoD column *set* is a different matter: which LoDs exist is a property of the
+dataset, so a table carries exactly the LoD columns its data needs — and a table whose
+objects have [no analysis geometry at all](/specification/geometry-semantics) carries
+none of them.
+
+**Example (real records).** Read with DuckDB from a CityParquet `building.parquet`
+produced by the reference implementation from a 3DBAG subset. A `Building` and its
+`BuildingPart` are shown; ids are abbreviated (`…711926` =
+`NL.IMBAG.Pand.0200100000711926`), coordinates rounded. Note the `feature_id` rule in
+real data — the root `Building` has `feature_id == id`, and the child inherits it. Note
+also that although the `Building` itself carries only the LoD0 footprint while the 3D
+solids live on its `BuildingPart`, its `bbox` still spans the part's full z-range: `bbox`
+is [unioned across the whole subtree](/specification/geometry-semantics), so a consumer
+pruning on a parent's `bbox` never misses geometry held by its descendants.
+
+| id | feature_id | object_type | parents | children | bbox (xmin, ymin, zmin, xmax, ymax, zmax) |
+|---|---|---|---|---|---|
+| `…711926` | `…711926` | `Building` | `NULL` | `[…711926-0]` | `{111970.858, 443555.458, 45.648, 111989.694, 443588.204, 59.142}` |
+| `…711926-0` | `…711926` | `BuildingPart` | `[…711926]` | `NULL` | `{111970.858, 443555.458, 53.290, 111989.694, 443588.204, 59.142}` |
+
+## Column naming and reservation rules
+
+- Reserved column names are exactly those in the table above, with the per-LoD
+  `geometry_lod*` / `geometry_properties_lod*` / `material_lod*` / `texture_lod*`
+  forms expanded per the [LoD suffix grammar](/specification/geometry-semantics).
+- Attribute column names **MUST NOT** collide with a reserved name. A source carrying
+  an attribute whose name is reserved — an attribute literally called `children`, say
+  — is **invalid input**. How a tool responds is outside this specification: it may
+  reject the input, or accommodate it in some tool-specific way, and different
+  encoders may reasonably differ.
+- **`other` is itself a reserved name.** A source attribute literally named `other`
+  is invalid input, exactly as one named `children` or `bbox` would be: it is the
+  column collisions divert *into*, so it has nowhere further to go.
+- Extension attributes use the `ex_` prefix — see [extensions](/specification/extensions).
+- A reader distinguishes reserved from attribute columns using the `attributes`
+  metadata key: a column listed there is an attribute, and every other column is a
+  reserved structural column whose name is fixed by this specification.
+
+## Physical encoding and conformance
+
+CityParquet is defined at the level of **Parquet logical types**. A column's identity
+is its name, its logical type, and its nullability; how a writer encodes that column
+physically is not part of the format.
+
+A writer **MAY** therefore choose any Parquet-legal physical encoding — dictionary or
+plain, any compression codec, any page and row-group sizing — and a reader **MUST
+NOT** depend on that choice. In particular, a reader **MUST NOT** require:
+
+- a particular in-memory representation of a `VARCHAR` column, dictionary-encoded or
+  not;
+- a particular child field name inside a `LIST` column;
+- the presence of a writer-specific schema-mirroring key in the Parquet footer, such
+  as Arrow's `ARROW:schema`.
+
+A reader **MUST** match columns by **name**, never by ordinal position. The reserved
+column order above is normative for writers, so that files from different writers
+look alike; but several reserved columns share a logical type — `parents`, `children`
+and `children_roles` are all `LIST<VARCHAR>` — so a reader that trusted position
+rather than name would misread a differently ordered file **silently**, producing
+plausible values attached to the wrong column.
+
+## Attribute types and promotion
+
+CityParquet stores **one typed column per attribute** where practical — not a single
+JSON field, and not a 3DCityDB-style entity–attribute–value table (see the
+[schema-strategy decision](/design-decisions/schema-strategy)). A source value maps to a
+Parquet column type as follows.
+
+Recommended primitive mapping:
+
+| Source value | Column type |
+|---|---|
+| boolean | `BOOLEAN` |
+| integer | `BIGINT` |
+| floating point | `DOUBLE` |
+| string | `VARCHAR` |
+| date/time-like string | `DATE`, `TIME`, or `TIMESTAMP` when confidently detected |
+| array of strings | `LIST<VARCHAR>` |
+| object or heterogeneous array | `JSON` |
+| inconsistent types across objects | promote if safe, else fall back |
+
+Promotion lattice, when one attribute name carries mixed types across objects: `BIGINT`
+→ `DOUBLE` (safe widening); anything not safely unifiable → `VARCHAR`, or `JSON` for
+structured values. The mapping **SHOULD** be deterministic for a given input. Reserved
+columns always take precedence over attribute columns.
+
+**Temporal columns.** A `TIMESTAMP` column **MUST** be marked as UTC-adjusted
+(`isAdjustedToUTC = true`): CityJSON date-times are ISO 8601 instants carrying an
+offset, so a stored value denotes an instant, never a timezone-naive wall-clock
+reading, and a column that failed to say so would be read as a different quantity
+than it holds. The **unit** is a writer's choice between `MILLIS` and `MICROS`; a
+reader **MUST** accept either and **MUST NOT** treat a differing unit as an error.
+A `DATE` column stores days since the Unix epoch.
+
+**Example (real records).** Attribute columns from the same 3DBAG rows as the reserved
+example — the column type is shown under each name. In this dataset the source
+attributes sit on the `Building` row while the detailed geometry sits on the
+`BuildingPart`, so the part's attribute cells are `NULL` — an illustration of the
+wide-table sparsity the design accepts.
+
+| id | object_type | oorspronkelijkbouwjaar `BIGINT` | status `VARCHAR` | b3_dak_type `VARCHAR` | b3_h_dak_max `DOUBLE` | b3_volume_lod22 `DOUBLE` | b3_succes `BOOLEAN` |
+|---|---|---|---|---|---|---|---|
+| `…711926` | `Building` | `1996` | `Pand in gebruik` | `slanted` | `13.555` | `1377.762` | `true` |
+| `…711926-0` | `BuildingPart` | `NULL` | `NULL` | `NULL` | `NULL` | `NULL` | `NULL` |
+
+The 3DBAG attribute names (`oorspronkelijkbouwjaar`, the `b3_*` reconstruction outputs)
+are the source's own; their column types follow from the source values.
+
+## Addresses
+
+An address is a property of the city object, so it is stored **inline** in a reserved
+`address` column — an **array of address structs** (`LIST<STRUCT<…>>`), since a city
+object may have several — rather than in a separate address table that would force a
+join on read.
+
+Each list element is a `STRUCT` holding the common structured address fields (a lean
+subset of **3DCityDB v5's `ADDRESS` table**):
+
+| Field | Type | Description |
+|---|---|---|
+| `street` | `VARCHAR` | Street or road name |
+| `house_number` | `VARCHAR` | Building or house number |
+| `po_box` | `VARCHAR` | Post office box |
+| `zip_code` | `VARCHAR` | Postal or ZIP code |
+| `city` | `VARCHAR` | City or locality |
+| `state` | `VARCHAR` | State, province, or region |
+| `country` | `VARCHAR` | Country |
+| `free_text` | `VARCHAR` | Address as unstructured text |
+| `location` | `BLOB` | WKB `MultiPointZ` — the address's geolocation |
+
+All fields are nullable.
+
+**`location` is geometry, not a boundary.** It is a WKB `MultiPointZ` in the file CRS,
+encoded exactly as any other geometry — not a reference into a vertex pool. This is
+the one point where CityParquet's address differs structurally from CityJSON's, where
+`address[].location` is a `MultiPoint` geometry whose `boundaries` index the source
+vertex list. Because CityParquet resolves and discards that vertex list, an index
+would dangle; a coordinate does not.
+
+**Scope.** CityJSON deliberately does not prescribe address members ("the members of an
+address JSON object are not prescribed, to accommodate the different ways addresses are
+structured in different countries"), and 3DCityDB's `ADDRESS` table carries additional
+bookkeeping (an id, cross-system identifiers, an original-payload blob). CityParquet
+keeps only the fields above; `free_text` absorbs unstructured content. A source address
+member outside this set is **not** separately retained — a deliberate simplification
+(see the [round-trip note](/specification/dataset-package)).

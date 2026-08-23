@@ -1,0 +1,21 @@
+{
+  "name": "cityparquet-docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "blume dev",
+    "build": "blume build",
+    "preview": "blume preview",
+    "lint": "vp lint",
+    "format": "vp format",
+    "format:check": "vp format --check"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "vite-plus": "^0.2.5"
+  },
+  "dependencies": {
+    "blume": "^1.1.3"
+  }
+}

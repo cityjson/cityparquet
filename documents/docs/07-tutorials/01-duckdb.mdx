@@ -1,0 +1,165 @@
+---
+title: Example with DuckDB
+description: Query and convert CityParquet using plain DuckDB.
+sidebar:
+  badge: WIP
+  label: DuckDB
+---
+
+CityParquet is Parquet, so plain DuckDB reads it with no extension at all. This
+walkthrough opens a converted package, uses Parquet's projection and predicate
+pushdown to read only what a query needs, and shows the two ways to produce a
+package in the first place. Unlike the Getting Started page, every step here is
+explained so you can adapt it.
+
+:::note[Run it at cloud scale]
+This walkthrough uses a local package. The same reads — projection, predicate, and
+bounding-box pruning — run unchanged over a public bucket of 1000 3DBAG tiles in
+[Working with 3DBAG at cloud scale](/tutorials/cloud-scale-3dbag).
+:::
+
+## Load a CityParquet package
+
+A CityParquet package is a directory of Parquet files — one per CityGML module
+(`building.parquet`, `transportation.parquet`, …), each with one row
+per city object, typed attribute columns, and one WKB geometry column per Level of
+Detail. Any Parquet reader can open one. Point `read_parquet` at the object table
+you want:
+
+```sql
+SELECT id, object_type, measuredHeight
+FROM read_parquet('delft/building.parquet')
+LIMIT 10;
+```
+
+The geometry columns are a different matter. To core DuckDB, a `geometry_lod*`
+column is an opaque `BLOB` — the bytes are WKB, but core DuckDB has no function
+that interprets them, so it will happily return the blob and nothing more.
+
+The exception is the LoD0 footprint. It is GeoParquet-legal, so DuckDB's `spatial`
+extension can decode it directly. Every geometry column is LoD-suffixed — there is
+no column simply called `geometry` — and the one a reader should use by default is
+whichever the package declares in the `city.primary_column` metadata key (GeoParquet
+tools read the legal footprint via `geo.primary_column`), commonly the footprint:
+
+```sql
+LOAD spatial;
+
+SELECT id,
+       ST_Area(ST_GeomFromWKB(geometry_lod0_0)) AS footprint_m2
+FROM read_parquet('delft/building.parquet')
+WHERE geometry_lod0_0 IS NOT NULL
+ORDER BY footprint_m2 DESC
+LIMIT 10;
+```
+
+The higher-LoD `Solid` columns stay opaque to `spatial` — a `PolyhedralSurface Z`
+is not legal GeoParquet, so strict GeoParquet readers ignore it. To turn those
+solids into measurable values you need the [`three_d`](/tutorials/duckdb-3d)
+extension. This is exactly where CityParquet stops being a GeoParquet superset:
+it *is* one wherever the geometry stays within GeoParquet's WKB subset (the LoD0
+footprint is conformant GeoParquet), and steps beyond only for the 3D solids. See
+how the [geometry layout is chosen](/design-decisions/spatial-access).
+
+## Filter and project
+
+The reason to store a city model columnar is that a reader touches only the bytes
+a query asks for.
+
+**Projection pushdown — read only the LoD column you SELECT.** A model may carry
+several LoDs, each in its own column. A query over `geometry_lod2_2` never reads
+the `geometry_lod1_2` bytes:
+
+```sql
+SELECT id, geometry_lod2_2
+FROM read_parquet('delft/building.parquet')
+WHERE geometry_lod2_2 IS NOT NULL;
+```
+
+**Predicate pushdown — skip rows before decoding them.** Equality and range
+predicates on scalar columns such as `id`, `feature_id`, and `object_type` let
+DuckDB prune row groups from Parquet's footer statistics rather than scanning
+every row:
+
+```sql
+-- Count objects by type
+SELECT object_type, COUNT(*) AS cnt
+FROM read_parquet('delft/building.parquet')
+GROUP BY object_type
+ORDER BY cnt DESC;
+
+-- Locate a single object
+SELECT *
+FROM read_parquet('delft/building.parquet')
+WHERE id = 'NL.IMBAG.Pand.0503100000012869-0';
+```
+
+**Spatial window pruning.** Every row carries a `bbox` STRUCT of its 3D extent.
+Because that column feeds Parquet's per-row-group min/max statistics, a bounding-box
+window can prune whole row groups without downloading them:
+
+```sql
+SELECT id, object_type
+FROM read_parquet('delft/building.parquet')
+WHERE bbox.xmin < 85000 AND bbox.xmax > 84000
+  AND bbox.ymin < 447000 AND bbox.ymax > 446000;
+```
+
+Tighter row groups make this more selective — the pruning story is measured on the
+[benchmark](/benchmark) page and argued in the spatial-access design decision.
+
+## Convert CityJSON to CityParquet
+
+There are two ways to produce a package.
+
+### Path A — the DuckDB one-liner
+
+With the [`cityjson`](/tutorials/duckdb-cityjson) extension you can read CityJSON and
+write Parquet in a single `COPY`. Because `COPY`'s `KV_METADATA` cannot contain a
+subquery, first capture the GeoParquet `geo` metadata into a variable with
+`cityjson_geoparquet_geo`, then write it into the Parquet footer so GeoParquet-aware
+tools recognise the geometry:
+
+```sql
+INSTALL cityjson FROM community;
+LOAD cityjson;
+
+SET VARIABLE geo = (
+  SELECT geo FROM cityjson_geoparquet_geo('https://storage.googleapis.com/cityjson/delft.city.jsonl')
+);
+
+COPY (SELECT * FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl'))
+TO 'delft.parquet'
+(FORMAT PARQUET, KV_METADATA {geo: getvariable('geo')});
+```
+
+The resulting `delft.parquet` opens as a GeoParquet file: its LoD0 footprint column
+reads in GeoPandas or DuckDB `spatial` with the correct CRS, while the `Solid`
+columns remain opaque blobs those readers ignore. This is the executable prototype
+of the encoding — each LoD becomes its own WKB column, and `COPY ... TO (FORMAT
+PARQUET)` yields a Parquet-encoded city model directly.
+
+Note that `COPY` writes a **single Parquet file** of all object types — handy for
+quick analysis and GeoParquet-compatible, but not the canonical CityParquet
+package, which is a per-module directory (`building.parquet`, …). For that, use
+Path B.
+
+### Path B — the cityparquet-rs CLI
+
+The Rust reference writer produces the full package — the per-module object tables
+plus `metadata.json`, and optional sidecars — with round-trip guarantees:
+
+```bash
+cargo run -p cityparquet-cli -- convert delft.city.jsonl delft/ --overwrite
+```
+
+`convert` writes one object table per CityGML module (`delft/building.parquet`,
+`delft/transportation.parquet`, …) plus `delft/metadata.json`, readable by any
+Parquet reader. The object tables are the core of the package; alongside them the
+writer emits the optional sidecars — `materials.parquet`, `textures.parquet`,
+`geometry_templates.parquet` — **only when the source actually has that data**, so
+a model with no appearance simply yields no appearance files. See the
+[dataset package](/specification/dataset-package) for the layout in full.
+
+See the [Software](/resources/software) page for the CLI's other flags (row-group
+size, Hilbert ordering, recipe presets) and its conformance status.

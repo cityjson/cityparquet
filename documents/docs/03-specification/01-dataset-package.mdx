@@ -1,0 +1,164 @@
+---
+title: The dataset package
+description: Directory layout, file roles, the by-module object-table split, versioning, and round-trip losslessness.
+sidebar:
+  label: The dataset package
+---
+
+A CityParquet dataset is a package of files, not a single Parquet file. This page
+defines the directory layout, the role of each file, the rule for splitting the
+object table by feature type, the format's versioning, and what a round trip
+preserves.
+
+## Directory layout
+
+A CityParquet dataset is always a **directory** of Parquet files, never a single
+combined file — the guiding analogy is the **shapefile**, whose core file is usable
+on its own and whose companions add what they have to add. The object table is split
+into one file per CityGML module (see below), so a dataset that contains only buildings
+has a single `building.parquet`, while a richer one has `building.parquet`,
+`transportation.parquet`, and so on — each alongside the shared `metadata.json`.
+
+```text
+amsterdam/
+  metadata.json              # STAC Item
+  building.parquet           # object tables — one file per CityGML module
+  transportation.parquet
+  water_body.parquet
+  materials.parquet          # sidecar — only if the source has materials
+  textures.parquet           # sidecar — only if the source has textures
+  geometry_templates.parquet # sidecar — only if the source has templates
+```
+
+## File roles
+
+- **Object tables** — the **core** of the package: one Parquet file per CityGML module
+  (`building.parquet`, `transportation.parquet`, …). At least one is required. There is
+  no single combined object table; a dataset spanning only one module simply has one
+  such file.
+- **Sidecar files** — `materials.parquet`, `textures.parquet`,
+  `geometry_templates.parquet`. All are **optional**, and each is written exactly
+  when the source has something to put in it. A source with no textures produces no
+  `textures.parquet` — as CityGML and CityJSON datasets routinely carry no
+  appearance, material or template data at all.
+- **`metadata.json`** — the package-level STAC **Item**, using the 3D city model STAC
+  extension.
+- **`collection.json`** — an optional dataset-level STAC **Collection** curating
+  multiple Items (packages / tiles) together.
+
+The object tables are self-contained for analysis: geometry, attributes and `bbox`
+are all there, and a consumer that never resolves a material can ignore the sidecars
+entirely.
+
+## By-module object-table layout
+
+The object table is **always** [split by CityGML module](/design-decisions/files-crs-metadata):
+one file per **CityGML 3.0 thematic module**. There is no combined object table.
+
+This is one uniform rule — **a feature's file is its module**: a `BuildingPart` is in
+the Building module exactly as a `Building` is, so both are in `building.parquet`;
+`Road`, `Railway`, `Waterway` and `Square` are all in the Transportation module, so all
+are in `transportation.parquet`. Within a file, the `object_type` column distinguishes
+each row's actual type. Every feature class belongs to exactly one module, so the
+assignment is total and unambiguous. The module is the partition **native to the CityGML
+CM**; following it — rather than CityJSON's flat list of object types — keeps the split
+consistent with the model CityParquet encodes.
+
+**File-name rule.** A file is named after its module, converted to **snake_case**: the
+CamelCase module name is split at each word boundary (before an upper-case letter that
+follows a lower-case letter, and before an upper-case letter followed by a lower-case
+letter), lower-cased, and joined with `_`. So the `WaterBody` module →
+`water_body.parquet`, `CityFurniture` → `city_furniture.parquet`. Extension modules are
+named per the [extensions rules](/specification/extensions).
+
+### The standard object-table files
+
+The CityGML 3.0 modules that hold feature objects are the complete set of standard
+object-table files. A dataset has a file only for the modules it actually contains.
+
+| CityGML module | Object-table file | CityObject types it holds (`object_type` values) |
+|---|---|---|
+| Building | `building.parquet` | `Building`, `BuildingPart`, `BuildingInstallation`, `BuildingConstructiveElement`, `BuildingFurniture`, `Storey`, `BuildingRoom`, `BuildingUnit` |
+| Bridge | `bridge.parquet` | `Bridge`, `BridgePart`, `BridgeInstallation`, `BridgeConstructiveElement`, `BridgeRoom`, `BridgeFurniture` |
+| Tunnel | `tunnel.parquet` | `Tunnel`, `TunnelPart`, `TunnelInstallation`, `TunnelConstructiveElement`, `HollowSpace`, `TunnelFurniture` |
+| Construction | `construction.parquet` | `OtherConstruction` |
+| Transportation | `transportation.parquet` | `Road`, `Railway`, `Waterway`, `Square` |
+| Vegetation | `vegetation.parquet` | `PlantCover`, `SolitaryVegetationObject` |
+| Relief | `relief.parquet` | `TINRelief` |
+| WaterBody | `water_body.parquet` | `WaterBody` |
+| LandUse | `land_use.parquet` | `LandUse` |
+| CityFurniture | `city_furniture.parquet` | `CityFurniture` |
+| Generics | `generics.parquet` | `GenericOccupiedSpace`, `CityObjectGroup` |
+
+The `object_type` values above are the **CityGML 3.0 class names**. Four differ from
+their CityJSON spelling — `Square` (`TransportSquare`), `GenericOccupiedSpace`
+(`GenericCityObject`), `Storey` (`BuildingStorey`), `HollowSpace` (`TunnelHollowSpace`)
+— and are mapped on import; the rest are identical (see
+[object_type vocabulary](/specification/object-table-schema)).
+
+**On `CityObjectGroup`.** A CityObjectGroup is a *logical* grouping object, not a
+thematic feature, and it gets no file of its own. What a group conveys — which objects
+belong to it, and each member's role — is exactly the
+[`children` / `children_roles`](/specification/object-table-schema) (and reciprocal
+`parents`) already carried by every row. The group **object** is retained, so its
+membership list and any attributes survive, but it folds into `generics.parquet`
+alongside `GenericOccupiedSpace`. (The group row must persist for those hierarchy columns
+to resolve — that is precisely how the grouping is "represented with `parents` /
+`children`".)
+
+**No file for a module with no rows, and no file per bare module name that has no
+feature type.** `Core` is a module of abstract base classes, never instantiated
+directly, so there is no `core.parquet`.
+
+**Extension modules** add further files beyond this table — an ADE with its own module
+gets a file named after that module (`Energy` ADE → `energy.parquet`), while a type
+that specialises an existing class joins that class's module file. See
+[extensions](/specification/extensions).
+
+## Versioning
+
+The format version is a string in the `city.version`
+[metadata key](/specification/metadata), following semantic-versioning intent
+(`MAJOR.MINOR.PATCH`). A reader **SHOULD** read a file whose `MINOR`/`PATCH` is newer
+than it implements, ignoring unknown metadata keys and unknown columns. This document
+specifies version **0.1.0-draft**.
+
+## Round-trip losslessness
+
+CityParquet encodes what the source model carries, and nothing else. A source without
+textures yields no texture data; a source without geometry templates yields no
+template sidecar. There is no notion of a reduced or enriched package — the question
+is only whether what *was* present survives.
+
+The honest answer is a spectrum, not a single "lossless" claim. A CityGML/CityJSON →
+CityParquet → CityGML/CityJSON round trip preserves the **model** — object identity and
+meaning — but not every source model element survives byte-for-byte, and a few are not
+yet fully preserved at all. This table is the contract:
+
+| Source element | Round-trip fidelity |
+|---|---|
+| Object identity and hierarchy (`id`, `parents`, `children`, roles) | **Exact.** |
+| Typed attributes with a consistent source type | **Exact.** |
+| Attributes with mixed types across objects | **Lossy on type** — promoted (`BIGINT`→`DOUBLE`) or widened to `VARCHAR`/`JSON`; values preserved, declared type may differ from any single source value. |
+| Extension attributes | **Exact in value;** name is transformed (`+height` ⇄ `ex_height`). |
+| Geometry (one per object per LoD) | **Exact as a model.** |
+| Per-surface semantics | **Exact up to null-expansion** (see below). |
+| Appearance — materials, textures | **Exact,** via sidecars + inline-UV re-interning. |
+| Geometry templates and a **single** instance per object | **Exact.** |
+| **Additional** instances on one object | 🟡 **Lossy** — only the first is kept ([open](/open-questions)). |
+| **Duplicate** geometry at one (object, LoD) | 🟡 **Lossy** — extras dropped ([open](/open-questions)). |
+| Addresses | **Exact for the kept fields** (street/number/postcode/city/state/country/free-text + `location`); source members outside that set are dropped. |
+| Unmapped source members | **Exact in value;** held in `other`, returned as `attributes` members on export. |
+| ADE namespace / object-class metadata | 🟡 **Partial** — attributes and types survive; full namespace fidelity is [open](/open-questions). |
+| Synthesised LoD0 footprint ([writer enrichment](/specification/geometry-semantics#lod0-synthesis-writer-feature)) | **Not a round trip** — the object gains a footprint the source lacked; kept on export. |
+
+One deliberate **canonicalisation** — where the result is equal to the source as a
+model but not byte-for-byte as a document:
+
+- **Per-face semantics are expanded.** CityJSON permits a single `null` to stand for a
+  whole shell or solid carrying no semantics; CityParquet stores one entry per face.
+  The two are semantically equal, and reconstruction yields the expanded form.
+
+The 🟡 rows are the genuine losses, each tracked in the [open questions](/open-questions);
+they arise from source models richer than the current single-slot object-table shape,
+not from the encoding of what does fit.

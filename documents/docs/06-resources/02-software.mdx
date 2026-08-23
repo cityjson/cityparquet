@@ -1,0 +1,106 @@
+---
+title: Software
+description: Tools that read and write CityParquet, and their current conformance.
+sidebar:
+  badge: WIP
+  label: Software
+---
+
+Three reference tools read and write CityParquet today. All are **experimental** —
+under active development, with APIs, output schemas, and on-disk formats that may
+change without notice, and bugs (including ones affecting data correctness) are
+expected. Verify results against a trusted source before relying on them.
+
+## cityparquet-rs
+
+The **Rust reference implementation** of CityParquet — the reader/writer that owns
+the encoding. It stores a city model as a directory of Parquet files (one object
+table per feature type, one row per city object, WKB geometry per LoD,
+typed attribute columns, and optional sidecar tables for materials, textures, and
+geometry templates written only when the source has that data), with an Arrow
+in-memory representation, and round-trips back to CityJSON / CityJSONSeq with
+semantic losslessness. It ships a `cityparquet` CLI with four subcommands —
+`convert` (CityJSON/Seq → package), `export` (package → CityJSON/Seq), `compare`
+(semantic equality, the round-trip proof), and `bench` (the variant-matrix
+[benchmark](/benchmark) harness) — plus Hilbert row ordering and recipe presets.
+Milestones M1–M5 are complete; async / object-store I/O, native (non-WKB) geometry,
+and Python bindings are post-1.0 future work.
+
+Repository: [`HideBa/cityparquet-rs`](https://github.com/HideBa/cityparquet-rs)
+
+## DuckDB CityJSON extension
+
+A **C++ DuckDB extension** (`cityjson`) that reads, queries, and writes CityJSON,
+CityJSONSeq, and optionally FlatCityBuf directly in SQL, mapping each CityObject to a
+row. It is the **executable prototype of the CityParquet encoding**: its default
+wide layout emits one WKB `geometry_lod*` column per LoD plus a `bbox` extent and the
+matching [`geometry_properties_lod*`](/specification/geometry-semantics) column, so a plain `COPY ... TO (FORMAT PARQUET)` — tagged
+with the `geo` metadata from `cityjson_geoparquet_geo` — yields a GeoParquet-readable
+CityParquet file. It supports remote HTTP(S)/S3/GCS reads, dataset metadata
+functions, automatic schema inference, filter pushdown on `id` / `feature_id` /
+`object_type`, and streaming CityJSONSeq. See the
+[walkthrough](/tutorials/duckdb-cityjson).
+
+It now also carries a **package mutation layer**: a CityParquet package is opened as a
+DuckDB **schema** whose tables are named by the spec's file basenames, so a package
+becomes editable in SQL rather than only readable. `cityparquet_read` loads a package
+directory into a schema and `cityparquet_write` writes it back out (assembling the
+`city`/`geo` footer and `metadata.json`); `cityparquet_init` creates the bookkeeping
+table; `insert_cityjson` / `insert_cityjsonseq` / `insert_flatcitybuf` add a source
+file, routed to the right module table; `cityparquet_delete` deletes by predicate with
+cascade to descendants; `cityparquet_merge` merges one package into another, remapping
+sidecar ids; `cityparquet_reconcile` re-derives `feature_id`, hierarchy, and `bbox`;
+and `cityparquet_validate` / `cityparquet_orphans` / `cityparquet_vacuum` report and
+clear inconsistencies and unreferenced sidecar rows. Everything but `cityparquet_write`
+is a `PRAGMA` that returns SQL text executed inside the caller's transaction, so edits
+are **atomic within DuckDB** — writing a package back to disk is per-file atomic but
+**not** atomic across files.
+
+**Known deviations from the specification.** `object_type` is written with the source
+CityJSON spelling rather than the CityGML 3.0 class name, so the four types that differ
+(`TransportSquare`, `GenericCityObject`, `BuildingStorey`, `TunnelHollowSpace`) are
+non-conformant; this is deliberate pending a decision that would change both reference
+implementations together. `cityparquet_write` also still declares the STAC **Table**
+extension and writes `table:row_count`, which [the metadata
+rules](/specification/metadata) no longer ask for.
+
+Repository: [`cityjson/duckdb-cityjson`](https://github.com/cityjson/duckdb-cityjson)
+
+## DuckDB 3D extension
+
+A **C++ DuckDB extension** (`duckdb-3d`, loaded as `three_d`) for 3D solid
+processing. It makes the polyhedral solids a CityParquet model carries first-class,
+queryable SQL values through a dedicated `SOLID_3D` type (and a general `GEOM_3D`
+type), consuming the WKB + `geometry_properties` pair via
+`ST_3DFromWKB(geometry, geometry_properties)`. It offers a curated `ST_3D*` family
+(namespaced to coexist with DuckDB `spatial`) — measurement (`ST_3DVolume`, `ST_3DFootprintArea`, `ST_3DSurfaceArea`),
+validation (`ST_3DValidationReport` and friends — it validates, never silently
+repairs), and 3D distance queries — on a self-contained C++ geometry kernel with no
+CGAL/SFCGAL dependency. It targets DuckDB `v1.5.x` and is built from source
+(`GEN=ninja make`). See the [walkthrough](/tutorials/duckdb-3d).
+
+Repository: [`HideBa/duckdb-3d`](https://github.com/HideBa/duckdb-3d)
+
+## Implementation status
+
+A coarse view of where the reference implementation (`cityparquet-rs`) meets the
+specification today. This tracks decided requirements the code is catching up to;
+genuinely undecided design questions live on the [open questions](/open-questions)
+page. It covers `cityparquet-rs` only — the DuckDB extension's conformance is
+summarised in its own section above.
+
+| Specification area | Status | Notes |
+| --- | --- | --- |
+| Object table schema | <Badge variant="warning">partial</Badge> | Identity, hierarchy, `children_roles`, typed attributes, unmapped members in `other`, and reserved-name collision handling (an attribute literally named `other` is rejected outright; any other colliding name diverts into `other`) are done. Not yet aligned to the spec: the **by-module file split** (the writer still splits per 1st-level type, and snake_cases differently) and the reserved `address` column. Duplicate-per-LoD geometry and deep (3+ level) whole-document hierarchies remain open edge cases. |
+| Geometry & semantics | <Badge variant="warning">partial</Badge> | WKB per LoD and the flattened, face-aligned `geometry_properties_lod*` are done, as is `bbox` — a full union across every stored LoD, the whole descendant subtree, and the source's declared extent. The suffix grammar has not caught up: the writer still emits a bare `geometry` column for the footprint and omits the minor from whole-number LoDs. |
+| Appearance & templates | <Badge variant="warning">partial</Badge> | Per-LoD `material_lod*` / `texture_lod*` columns and the `textures.parquet` schema are done; the stricter sidecar column types, the per-LoD template sidecar, geometry-template instances, and unreferenced appearance definitions are not yet done. |
+| Metadata & CRS | <Badge variant="warning">partial</Badge> | GeoParquet-conformant `geo` (PROJJSON CRS, legal columns only) and `metadata.json` as a STAC Item are done. Not yet aligned: the footer metadata is a set of flat keys, not the spec's single [`city` object](/specification/metadata) (with `city.columns`, `orientation_3d`, and the removed `bbox_column`/`sidecar_files`/`source_metadata`). The dataset-level `collection.json`, full `city3d:*` population, informational `transform`, and the planned `city` JSON Schema are open. |
+| Validation | <Badge variant="warning">planned</Badge> | No standalone `validate` command yet — some [package invariants](/specification/dataset-package) are enforced incidentally at read/export time, but the full validator is future work. |
+
+The GeoParquet relationship is load-bearing: CityParquet is a **superset of
+GeoParquet as far as the shared WKB vocabulary reaches** — its GeoParquet-legal
+columns (the LoD0 footprint) are conformant GeoParquet, and it steps beyond only
+to carry the 3D `Solid` columns, encoded as `PolyhedralSurface Z`, which strict
+GeoParquet readers cannot parse and correctly ignore. See the
+[spatial-access decision](/design-decisions/spatial-access) and the
+[metadata decisions](/design-decisions/files-crs-metadata).

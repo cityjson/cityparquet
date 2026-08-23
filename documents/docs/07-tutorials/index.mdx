@@ -1,0 +1,30 @@
+---
+title: Tutorials
+description: Task-oriented walkthroughs for working with CityParquet.
+sidebar:
+  badge: WIP
+  label: Overview
+---
+
+Explained, task-oriented walkthroughs. For the bare copy-paste path, see
+[Getting started](/getting-started).
+
+The first three take one tool and one local file each. The capstone puts them
+together on a real, national-scale dataset **on a cloud bucket** — start there for
+the full picture, or use the focused three as reference.
+
+<CardGroup cols={2}>
+  <Card title="Working with 3DBAG at cloud scale" href="/tutorials/cloud-scale-3dbag" icon="cloud">
+    End-to-end: bounding-box search across 1000 files, 3D measurement, semantic roof
+    analysis, and format conversion — straight off object storage.
+  </Card>
+  <Card title="DuckDB" href="/tutorials/duckdb" icon="database">
+    Query and convert CityParquet with plain DuckDB.
+  </Card>
+  <Card title="DuckDB 3D extension" href="/tutorials/duckdb-3d" icon="box">
+    Validate and measure 3D solids.
+  </Card>
+  <Card title="DuckDB CityJSON extension" href="/tutorials/duckdb-cityjson" icon="arrow-right-left">
+    Read and write CityJSON / CityJSONSeq.
+  </Card>
+</CardGroup>

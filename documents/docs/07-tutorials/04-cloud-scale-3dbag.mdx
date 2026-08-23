@@ -1,0 +1,444 @@
+---
+title: Working with 3DBAG at cloud scale
+description: Query a national-scale 3D city model directly on object storage with DuckDB — bounding-box search across 1000 files, 3D solid measurement, semantic roof analysis, and format conversion, without downloading anything.
+sidebar:
+  badge: WIP
+  label: 3DBAG at cloud scale
+  icon: cloud
+---
+
+The earlier tutorials each take one tool and one local file. This one puts them
+together on a real, national-scale dataset that lives **on a cloud bucket**: the
+[3DBAG](https://3dbag.nl) reconstruction of the Netherlands, converted to
+CityParquet and split into **1000 tiles** on public Google Cloud Storage. Nothing
+is downloaded up front — every query below reads only the columns and row groups it
+needs, straight off the bucket.
+
+That is the whole argument for storing a city model as CityParquet: because it is
+**columnar**, a reader touches a tiny fraction of the bytes, so a single laptop can
+sweep a million buildings across a thousand remote files in seconds. This walkthrough
+shows six things end to end — reading across all the files at once, bounding-box
+search, GeoParquet interoperability, 3D solid measurement, semantic roof analysis,
+and conversion back to CityJSONSeq.
+
+:::warning[Experimental]
+The `cityjson` and `three_d` extensions used here are under active development and
+should be considered experimental. Their APIs, output schemas, and payloads may
+change without notice, and bugs — including ones affecting data correctness — are
+expected. Verify results against a trusted source before relying on them.
+:::
+
+## The dataset: 3DBAG as CityParquet on a bucket
+
+The bucket `gs://cityparquet/3dbag_tiled/` holds one directory per 3DBAG tile, and
+each directory is a minimal CityParquet package — a `building.parquet` object table
+plus a `metadata.json`:
+
+```text
+gs://cityparquet/3dbag_tiled/
+  10-640-324/
+    building.parquet      -- one row per Building / BuildingPart
+    metadata.json         -- STAC Item (city3d extension)
+  10-640-326/
+    building.parquet
+    metadata.json
+  …                       -- 1000 tiles
+```
+
+Each `building.parquet` carries the full CityParquet shape: typed attribute columns
+(the 3DBAG `b3_*` set), a `bbox` STRUCT of every object's 3D extent, and — one per
+Level of Detail present (`0.0`, `1.2`, `1.3`, `2.2`) — a `geometry_lod*` column with
+its paired `geometry_properties_lod*`, `material_lod*`, and `texture_lod*`. As in
+raw 3DBAG, geometry lives on `BuildingPart` rows while the descriptive attributes
+live on the parent `Building`; the two are linked by `parents` / `children`.
+
+The per-tile `metadata.json` is a [STAC](https://stacspec.org/) Item using the
+city3d extension, so the bucket is also a discoverable STAC catalogue:
+
+```json
+{
+  "type": "Feature", "stac_version": "1.1.0",
+  "id": "10-640-324",
+  "geometry": { "type": "Polygon", "coordinates": [ … ] },
+  "properties": {
+    "city3d:version": "2.0",
+    "city3d:city_objects": 2166,
+    "city3d:lods": ["0.0", "1.2", "1.3", "2.2"],
+    "city3d:co_types": ["Building", "BuildingPart"]
+  }
+}
+```
+
+## Connect to the bucket
+
+`gs://` access needs the `httpfs` extension. The bucket is public, so a secret with
+no credentials is enough to read it anonymously:
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+CREATE SECRET gcs_public (TYPE gcs, PROVIDER config);   -- anonymous, public bucket
+```
+
+:::note[Wildcards need object-storage listing]
+A plain `https://…` URL cannot list a directory, so wildcards only work over the
+`gs://` (or `s3://`) protocol, which lists through the storage API. Use `gs://` URLs
+for every multi-file query below — not the `https://storage.googleapis.com/…` form.
+:::
+
+Peek at one tile to see the schema — a single `DESCRIBE` reads only the Parquet
+footer, not the data:
+
+```sql
+DESCRIBE SELECT * FROM read_parquet('gs://cityparquet/3dbag_tiled/10-640-324/building.parquet');
+```
+
+## Read across 1000 files at once
+
+A `*` wildcard in the path makes DuckDB treat every matching file as one table.
+Counting the buildings in the **entire** bucket is a single query — and because a
+`COUNT` over `object_type` never touches the geometry columns, DuckDB reads only the
+file footers and that one column:
+
+```sql
+SELECT count(*) AS buildings
+FROM read_parquet('gs://cityparquet/3dbag_tiled/*/building.parquet')
+WHERE object_type = 'Building';
+```
+
+```text
+┌───────────┐
+│ buildings │
+├───────────┤
+│  1168347  │   -- 1.17 M buildings across 1000 files, ~22 s over the network
+└───────────┘
+```
+
+Add `filename := true` to learn which file each row came from — useful when the
+directory name encodes something (here, the tile id):
+
+```sql
+SELECT split_part(filename, '/', 5) AS tile, count(*) AS n
+FROM read_parquet('gs://cityparquet/3dbag_tiled/10-64*/building.parquet', filename := true)
+WHERE object_type = 'Building'
+GROUP BY tile ORDER BY n DESC;
+```
+
+**Wildcards vs. Hive partitioning.** This bucket is laid out as one directory per
+tile (`<tile>/building.parquet`), so you address it with a glob and recover the
+partition key from `filename`. DuckDB also understands *Hive partitioning*, where the
+key is written into the path as `key=value` — a bucket laid out as
+`tile=10-640-324/building.parquet` could be read with
+`read_parquet('…/*/building.parquet', hive_partitioning := true)`, exposing `tile` as
+a real, prunable column. Either way the principle is the same: the directory
+structure becomes a coarse index that lets the reader skip whole files.
+
+## Bounding-box queries that prune files
+
+Every row carries a `bbox` STRUCT — `{xmin, ymin, zmin, xmax, ymax, zmax}` — and
+because those fields feed Parquet's per-row-group min/max statistics, a bounding-box
+window prunes whole row groups, and whole files, without downloading them. Here is an
+area-of-interest window (300 m, in the RD New / EPSG:7415 coordinates 3DBAG uses)
+evaluated across a 12-tile neighbourhood:
+
+```sql
+SELECT split_part(filename, '/', 5) AS tile, count(*) AS n
+FROM read_parquet('gs://cityparquet/3dbag_tiled/10-64*/building.parquet', filename := true)
+WHERE object_type = 'Building'
+  AND bbox.xmin < 174300 AND bbox.xmax > 173900     -- overlaps the window in X
+  AND bbox.ymin < 388600 AND bbox.ymax > 388100     -- … and in Y
+GROUP BY tile ORDER BY n DESC;
+```
+
+```text
+┌────────────┬─────┐
+│    tile    │  n  │
+├────────────┼─────┤
+│ 10-640-324 │ 387 │
+│ 10-642-326 │ 346 │
+│ 10-642-324 │ 243 │
+│ 10-640-326 │ 212 │
+└────────────┴─────┘
+-- 4 tiles overlap the window; the other 8 are pruned. ~0.9 s.
+```
+
+The query considers 12 files but answers from the 4 whose extent overlaps the window,
+in well under a second — versus ~22 s to scan every file's rows. That difference is
+the payoff of storing the extent as a first-class column: the
+[spatial-access design decision](/design-decisions/spatial-access) argues why, and
+the [benchmark](/benchmark) page measures it.
+
+## The footprint is GeoParquet
+
+At LoD0 a CityParquet building is just a footprint, and a footprint is legal
+GeoParquet — so DuckDB's `spatial` extension decodes it with no help from any city
+model tooling. The file's GeoParquet `geo` footer even names the column:
+
+```sql
+SELECT value::VARCHAR AS geo
+FROM parquet_kv_metadata('gs://cityparquet/3dbag_tiled/10-640-324/building.parquet')
+WHERE key = 'geo';
+-- {"version":"1.1.0","primary_column":"geometry_lod0_0",
+--  "columns":{"geometry_lod0_0":{"encoding":"WKB","geometry_types":["MultiPolygon Z"],…}}}
+```
+
+Load `spatial` and treat the footprint like any other geometry column — `ST_Area`,
+`ST_Centroid`, `ST_AsText`, and the rest work directly:
+
+```sql
+INSTALL spatial; LOAD spatial;
+
+SELECT id,
+       ST_GeometryType(geometry_lod0_0)         AS geom_type,
+       ROUND(ST_Area(geometry_lod0_0), 1)       AS footprint_m2,
+       ST_AsText(ST_Centroid(geometry_lod0_0))  AS centroid
+FROM read_parquet('gs://cityparquet/3dbag_tiled/10-640-324/building.parquet')
+WHERE object_type = 'Building'
+LIMIT 4;
+```
+
+```text
+┌────────────────────────────────┬──────────────┬──────────────┬──────────────────────────────────┐
+│               id               │  geom_type   │ footprint_m2 │             centroid             │
+├────────────────────────────────┼──────────────┼──────────────┼──────────────────────────────────┤
+│ NL.IMBAG.Pand.0794100000345380 │ MULTIPOLYGON │      9.4     │ POINT Z (174013.4 388103.0 0.0)  │
+│ NL.IMBAG.Pand.0794100000345381 │ MULTIPOLYGON │     24.0     │ POINT Z (174012.7 388107.5 0.0)  │
+│ …                              │              │              │                                  │
+└────────────────────────────────┴──────────────┴──────────────┴──────────────────────────────────┘
+```
+
+Any GeoParquet-aware tool — GeoPandas, GDAL/OGR, QGIS — reads that same
+`geometry_lod0_0` column with the correct CRS. The higher-LoD `Solid` columns are a
+different matter: a `PolyhedralSurface Z` is not legal GeoParquet, so the `geo`
+footer deliberately does **not** declare it and strict readers ignore it. This is
+exactly the boundary where [CityParquet stops being a GeoParquet
+superset](/design-decisions/geometry-encoding) — conformant wherever the geometry
+stays in GeoParquet's WKB vocabulary, and beyond it only for the 3D solids, which the
+next section measures.
+
+## Measure the 3D solids with `three_d`
+
+To turn the `Solid` columns into measurable values, use the
+[`three_d`](/tutorials/duckdb-3d) extension. It is built from source (see that
+tutorial for the build), producing a DuckDB shell with `three_d` preloaded.
+
+:::note[`three_d` loads alongside `spatial`]
+`three_d` exposes its 3D operations under `ST_3D*` names, so it shares a session with
+the `spatial` extension from the previous section — load both, in any order.
+`spatial` owns the generic 2D `GEOMETRY` vocabulary, `three_d` owns the 3D solids.
+:::
+
+```sql
+LOAD three_d;
+INSTALL httpfs; LOAD httpfs;
+CREATE SECRET gcs_public (TYPE gcs, PROVIDER config);
+```
+
+`ST_3DFromWKB` takes the WKB geometry and its properties. In a package the geometry
+is `geometry_lod2_2` and its metadata is the `geometry_properties_lod2_2` **struct**,
+which `three_d` reads directly — no `to_json(...)` conversion needed. Join each
+`BuildingPart` (which holds the geometry) to its parent `Building` (which holds the
+ground-truth attributes), and use `ST_3DTryFromWKB` so an unsupported geometry yields
+`NULL` instead of aborting the query:
+
+```sql
+CREATE TEMP TABLE t AS
+  SELECT id, parents, b3_dak_type, b3_volume_lod22,
+         geometry_lod2_2 AS g, geometry_properties_lod2_2 AS gp   -- three_d reads the STRUCT directly
+  FROM read_parquet('gs://cityparquet/3dbag_tiled/10-640-324/building.parquet');
+
+CREATE TEMP TABLE parts AS
+  SELECT p.id, ST_3DTryFromWKB(p.g, p.gp) AS solid, b.b3_dak_type, b.b3_volume_lod22
+  FROM t p JOIN t b ON b.id = p.parents[1]
+  WHERE p.g IS NOT NULL;
+```
+
+`ST_3DVolume` and `ST_3DSurfaceArea` **raise** on an open or non-manifold solid, and
+real reconstructions always contain a few — so check the tile's health first:
+
+```sql
+SELECT count(*)                                                     AS parts,
+       count(*) FILTER (WHERE ST_3DValidationReport(solid).is_valid) AS valid,
+       count(*) FILTER (WHERE ST_3DIsClosed(solid))                 AS closed
+FROM parts;
+-- parts 1083 · valid 1076 · closed 1080
+```
+
+With measurement guarded to valid solids, the metrics that matter for buildings are
+short expressions — and they check out against 3DBAG's own numbers:
+
+```sql
+SELECT id,
+       ROUND(ST_3DVolume(solid), 1)            AS volume_m3,
+       ROUND(b3_volume_lod22, 1)               AS volume_3dbag,   -- ground truth
+       ROUND(ST_3DFootprintArea(solid), 1)     AS footprint_m2,
+       ROUND(ST_3DZMax(solid) - ST_3DZMin(solid), 1) AS height_m
+FROM parts
+WHERE ST_3DValidationReport(solid).is_valid
+LIMIT 4;
+```
+
+```text
+┌────────────────────────────────────┬───────────┬──────────────┬──────────────┬──────────┐
+│                 id                 │ volume_m3 │ volume_3dbag │ footprint_m2 │ height_m │
+├────────────────────────────────────┼───────────┼──────────────┼──────────────┼──────────┤
+│ NL.IMBAG.Pand.0794100000345380-0   │    24.1   │     24.1     │      9.4     │    2.6   │
+│ NL.IMBAG.Pand.0794100000345381-0   │    63.6   │     63.7     │     24.0     │    2.7   │
+│ NL.IMBAG.Pand.0794100000345389-0   │    23.7   │     23.7     │      9.9     │    2.4   │
+│ NL.IMBAG.Pand.0794100000345390-0   │    25.1   │     25.1     │      9.8     │    2.6   │
+└────────────────────────────────────┴───────────┴──────────────┴──────────────┴──────────┘
+```
+
+The volume the kernel computes from the stored WKB matches `b3_volume_lod22` to the
+decimal — a live check that the encoding preserved the geometry losslessly. `three_d`
+**validates, it never silently repairs**; the full function surface (distance
+queries, transforms, serialisation) is in the
+[`three_d` tutorial](/tutorials/duckdb-3d).
+
+## Roof-type analysis over semantics and geometry
+
+CityParquet keeps CityGML's semantics queryable, which lets you ask domain questions
+that need both attributes and geometry. 3DBAG classifies every building's roof, and
+that lands as ordinary columns — so a roof-type breakdown, with the flat and sloped
+roof areas 3DBAG measured, is plain SQL over the `Building` rows:
+
+```sql
+SELECT b3_dak_type,
+       count(*)                       AS n,
+       ROUND(avg(b3_opp_dak_plat), 1)  AS avg_flat_m2,
+       ROUND(avg(b3_opp_dak_schuin), 1) AS avg_sloped_m2
+FROM read_parquet('gs://cityparquet/3dbag_tiled/10-640-324/building.parquet')
+WHERE object_type = 'Building'
+GROUP BY b3_dak_type ORDER BY n DESC;
+```
+
+```text
+┌─────────────────────┬─────┬─────────────┬───────────────┐
+│     b3_dak_type     │  n  │ avg_flat_m2 │ avg_sloped_m2 │
+├─────────────────────┼─────┼─────────────┼───────────────┤
+│ slanted             │ 547 │    102.6    │      69.6     │
+│ horizontal          │ 507 │     19.1    │       0.5     │
+│ multiple horizontal │  29 │     79.6    │       2.0     │
+└─────────────────────┴─────┴─────────────┴───────────────┘
+```
+
+The finer semantics are one level down, in `geometry_properties`. Its `surfaces`
+array is the CityGML surface list verbatim (a `RoofSurface` / `WallSurface` /
+`GroundSurface` `type` plus 3DBAG's per-surface `b3_azimut`, `b3_hellingshoek`, …),
+and `face_semantics` maps each WKB face to an entry in it. Unnest `surfaces` to
+profile the semantic surfaces directly — here, the average azimuth and slope of every
+roof surface in the tile:
+
+```sql
+SELECT s->>'type'                                          AS surface_type,
+       count(*)                                            AS n,
+       ROUND(avg(TRY_CAST(s->>'b3_azimut'      AS DOUBLE)), 1) AS avg_azimuth,
+       ROUND(avg(TRY_CAST(s->>'b3_hellingshoek' AS DOUBLE)), 1) AS avg_slope_deg
+FROM (
+  SELECT unnest(geometry_properties_lod2_2.surfaces::JSON[]) AS s
+  FROM read_parquet('gs://cityparquet/3dbag_tiled/10-640-324/building.parquet')
+  WHERE geometry_lod2_2 IS NOT NULL
+)
+GROUP BY surface_type ORDER BY n DESC;
+```
+
+```text
+┌───────────────┬──────┬─────────────┬───────────────┐
+│ surface_type  │  n   │ avg_azimuth │ avg_slope_deg │
+├───────────────┼──────┼─────────────┼───────────────┤
+│ RoofSurface   │ 2753 │    168.0    │      20.6     │
+│ WallSurface   │ 2166 │     NULL    │      NULL     │  -- walls carry no azimuth/slope
+│ GroundSurface │ 1083 │     NULL    │      NULL     │
+└───────────────┴──────┴─────────────┴───────────────┘
+```
+
+Finally, cross the semantic roof label with geometry the kernel measures. Back in the
+`three_d` session, group the computed volumes and heights by roof type — the payoff of
+carrying attributes, semantics, and 3D geometry in one columnar row:
+
+```sql
+SELECT b3_dak_type,
+       count(*)                                     AS n,
+       ROUND(SUM(ST_3DVolume(solid)), 0)            AS total_volume_m3,
+       ROUND(avg(ST_3DZMax(solid) - ST_3DZMin(solid)), 1) AS avg_height_m
+FROM parts
+WHERE ST_3DValidationReport(solid).is_valid
+GROUP BY b3_dak_type ORDER BY total_volume_m3 DESC;
+```
+
+```text
+┌─────────────────────┬─────┬─────────────────┬──────────────┐
+│     b3_dak_type     │  n  │ total_volume_m3 │ avg_height_m │
+├─────────────────────┼─────┼─────────────────┼──────────────┤
+│ slanted             │ 540 │     675273      │      8.7     │
+│ horizontal          │ 507 │      42763      │      3.2     │
+│ multiple horizontal │  29 │      13413      │      6.0     │
+└─────────────────────┴─────┴─────────────────┴──────────────┘
+```
+
+Slanted-roof buildings hold the bulk of the tile's built volume and stand more than
+twice as tall on average as the flat-roofed ones — a result that needed the roof
+semantics, the 3DBAG attributes, and the measured 3D geometry together, all in one
+scan of one columnar file.
+
+## Convert to CityJSONSeq (and other formats)
+
+Because the [`cityjson`](/tutorials/duckdb-cityjson) extension also *writes* city
+models, `COPY … TO` turns CityParquet back into CityJSON, CityJSONSeq, or FlatCityBuf
+— DuckDB as a format converter. It consumes the wide layout directly: a plain
+`SELECT *` becomes one **multi-LoD** CityObject per feature, and the STRUCT
+`geometry_properties` is reconstructed into CityJSON semantics — no per-LoD
+projection, no `to_json`:
+
+```sql
+INSTALL cityjson FROM community; LOAD cityjson;
+
+COPY (
+  SELECT * FROM read_parquet('gs://cityparquet/3dbag_tiled/10-640-324/building.parquet')
+  WHERE object_type IN ('Building', 'BuildingPart')
+)
+TO 'delft_tile.city.jsonl'
+  (FORMAT cityjsonseq, crs 'https://www.opengis.net/def/crs/EPSG/0/7415');
+```
+
+That writes a streaming CityJSONSeq file — one metadata header line, then one
+`CityJSONFeature` per line, each carrying its LoD 1.2 / 1.3 / 2.2 geometries with the
+roof/wall/ground semantics intact — which reads straight back in to prove the round
+trip:
+
+```sql
+SELECT count(*) AS features FROM read_cityjsonseq('delft_tile.city.jsonl');
+-- 2166 features
+```
+
+CityJSONSeq is the right target for large or streamed data (per-feature vertex pools,
+low memory); `FORMAT cityjson` writes a single document with one global vertex pool
+instead.
+
+:::note[FlatCityBuf needs a build flag]
+`COPY … TO (FORMAT flatcitybuf)` produces the cloud-optimised
+[FlatCityBuf](https://github.com/cityjson/flatcitybuf) binary (spatial index, HTTP
+range requests), but it is a **compile-time option** (`-DCITYJSON_ENABLE_FCB=ON`) and
+is not present in the community build. Build the `cityjson` extension from source with
+that flag to write `.fcb`.
+:::
+
+## Why this is fast
+
+Every query on this page ran against files on a bucket, from a laptop, in seconds —
+because CityParquet is columnar and DuckDB exploits it at three levels:
+
+- **Projection pushdown** — a query reads only the columns it names. Counting a
+  million buildings never touches a geometry byte; measuring `geometry_lod2_2` never
+  reads `geometry_lod1_2`.
+- **Predicate & row-group pruning** — the `bbox` STRUCT and scalar columns feed
+  Parquet's footer statistics, so a bounding-box window skips whole row groups, and
+  the directory-per-tile layout skips whole files, before any data is fetched.
+- **Read-in-place** — `httpfs` fetches byte ranges over HTTP, so nothing is
+  downloaded whole; the STAC `metadata.json` per tile lets a catalogue narrow the
+  file set before DuckDB is even involved.
+
+The same three properties are what make CityParquet a *delivery* format for 3D city
+models, not just a storage one. To reproduce these numbers on your own data, convert
+a CityJSON source with the [`cityparquet-rs`](/resources/software) reference writer or
+the [`cityjson` one-liner](/tutorials/duckdb-cityjson), and point the queries at your
+package.

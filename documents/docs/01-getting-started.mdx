@@ -1,0 +1,109 @@
+---
+title: Getting started
+description: Query a 3D city model with DuckDB in five minutes — including 3D volumes, without downloading the whole file.
+sidebar:
+  badge: WIP
+  icon: rocket
+---
+
+The fastest way to feel what CityParquet is for: run an analytical query over a
+3D city model with [DuckDB](https://duckdb.org/) — including a **3D measurement
+over a whole tile without downloading it**. This page is the **copy-paste happy
+path**, no theory. For explained, task-oriented walkthroughs, see
+[Tutorials](/tutorials).
+
+<Steps>
+  <Step title="Install DuckDB and the extensions">
+    Grab a [DuckDB](https://duckdb.org/) binary from duckdb.org (or your package
+    manager), then load the `cityjson` community extension so DuckDB can read
+    CityJSON / CityJSONSeq directly and produce the CityParquet wide layout:
+
+    ```sql
+    INSTALL cityjson FROM community;
+    LOAD cityjson;
+    ```
+
+    For the 3D step below you also need the `three_d` extension, which turns the
+    stored WKB geometry into measurable solids (volume, height, validation). It is
+    not yet on the community registry — see the
+    [duckdb-3d tutorial](/tutorials/duckdb-3d) to build and load it — after which:
+
+    ```sql
+    LOAD three_d;
+    ```
+
+    A plain DuckDB build already reads Parquet, so no extra extension is needed to
+    open a converted CityParquet package.
+  </Step>
+
+  <Step title="Open a CityParquet file">
+    A CityParquet package is a directory of Parquet files — one per CityGML
+    module. Read one of them with DuckDB's built-in `read_parquet` — no extension
+    required:
+
+    ```sql
+    SELECT * FROM read_parquet('mycityparquet/building.parquet');
+    ```
+
+    Or read a CityJSON / CityJSONSeq source directly through the `cityjson`
+    extension — remote URLs work too (the `httpfs` extension is auto-loaded):
+
+    ```sql
+    SELECT * FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl');
+    ```
+  </Step>
+
+  <Step title="Run your first query">
+    Project a few columns and filter by object type — equality filters on
+    `id`, `feature_id`, and `object_type` are pushed down into the scan:
+
+    ```sql
+    -- How many objects of each type?
+    SELECT object_type, COUNT(*) AS cnt
+    FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl')
+    GROUP BY object_type;
+
+    -- Just the buildings
+    SELECT id, object_type
+    FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl')
+    WHERE object_type = 'Building';
+    ```
+  </Step>
+
+  <Step title="Measure 3D geometry — read only what you need">
+    Now the payoff: compute the **total built volume** of a whole tile with the
+    `three_d` extension. `ST_3DFromWKB` turns each stored solid into a measurable
+    `SOLID_3D`, and `ST_3DVolume` measures it. Guard with `ST_3DTryFromWKB` and the
+    validation report, because real reconstructions always contain a few invalid
+    solids:
+
+    ```sql
+    LOAD cityjson;
+    LOAD three_d;
+
+    SELECT ROUND(SUM(ST_3DVolume(solid)), 0) AS total_volume_m3
+    FROM (
+      SELECT ST_3DTryFromWKB(geometry, geometry_properties) AS solid
+      FROM read_cityjsonseq(
+        'https://storage.googleapis.com/cityjson/delft.city.jsonl', lod => '2.2')
+      WHERE geometry IS NOT NULL
+    )
+    WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;
+    ```
+
+    Against a **CityParquet package on object storage**, the same query is the
+    cloud-native win: because only the geometry column is referenced, DuckDB fetches
+    only that column's bytes (**projection pushdown**) and prunes the row groups it
+    cannot match — so you compute over a national-scale model **without downloading
+    it**. Point `read_parquet` at the package's object table and select the
+    LoD-suffixed pair the same way — `geometry_lod2_2` /
+    `geometry_properties_lod2_2` for the LoD 2.2 solids above.
+  </Step>
+</Steps>
+
+:::note[This is the unexplained happy path]
+Nothing here is explained — it is the shortest route from zero to a first query.
+The [Introduction](/#why-a-new-format) explains what CityParquet is and why, and
+the [Tutorials](/tutorials) walk through each task step by step, including the
+[duckdb-3d walkthrough](/tutorials/duckdb-3d) behind the volume query above.
+:::

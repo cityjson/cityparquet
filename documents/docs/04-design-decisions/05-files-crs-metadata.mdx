@@ -1,0 +1,50 @@
+---
+title: E · Files, CRS & metadata
+description: The core + sidecar file package, CRS once per file, and dataset metadata.
+sidebar:
+  label: E · Files & metadata
+---
+
+How a CityParquet dataset is packaged on disk: a directory with a self-contained core table plus optional sidecars, split by CityGML module, the CRS stored once per file rather than per record, and dataset metadata written to both the Parquet footer and a package-level `metadata.json` STAC Item. Prior art weighed here: the shapefile package, PostGIS EWKB, and GeoParquet's metadata conventions.
+
+## Core + sidecar file package; by-module split
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** A dataset is a *directory* of per-module object tables plus optional sidecars — one file per **CityGML 3.0 module**, never a single combined table. Every type in a module shares the module's file, distinguished by the `object_type` column; a `BuildingPart` is a Building-module row, the four Transportation types all live in `transportation.parquet`. See the [specification](/specification/dataset-package) → *Dataset package layout*.
+
+**Alternatives considered.** A single monolithic file vs a multi-file package; splitting by individual object type (`road`, `railway`, … each their own file) vs splitting by module.
+
+**Why this.** The guiding analogy is the **shapefile**: the core file is usable for analysis on its own, even without the sidecars (like using a `.shp` without its `.prj`). Splitting by module gives schema clarity and narrower scans; the module is the CM's own thematic partition, and it keeps a feature family (a Building with its parts, the transportation types) in one file, preserving locality for hierarchy traversal. A finer split — one file per individual object type — would instead fragment those closely-related families across files and inflate the file count for little gain.
+
+**Trade-off.** A shared file mixes several types; consumers filter on `object_type` to separate them, and a single-leaf-type query scans its whole module file.
+
+**Status.** Decided; the by-module split is the layout the specification defines, delivering the per-module pruning argued in [the schema strategy](/design-decisions/schema-strategy).
+
+## CRS once per file, not per record
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** The CRS is stored once per file as **PROJJSON** in Parquet metadata (GeoParquet convention), not as a per-record SRID. See the [specification](/specification/metadata) → *Metadata*.
+
+**Alternatives considered.** **PostGIS EWKB** embeds an SRID per geometry record (allowing a different CRS per row); **GeoParquet** deliberately uses one CRS per column and defaults to WGS84 if unspecified.
+
+**Why this.** City models share a single CRS per file, so a per-record SRID is redundant overhead. It also matters for statistics: Parquet keeps column statistics at the column level, and a different CRS per row would make per-row-group min/max meaningless — undermining the very pruning that [spatial access](/design-decisions/spatial-access) relies on. GeoParquet reached the same conclusion.
+
+**Trade-off.** Merging datasets in mixed CRSs requires reprojection to a common CRS first; there is no per-row CRS escape hatch. Revisit only if mixed-CRS merges become a real requirement.
+
+**Status.** Decided and implemented.
+
+## Dataset metadata: a `city` object mirroring GeoParquet's `geo`
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** Dataset-level metadata (version, provenance, CRS, the geometry-column registry, the `attributes` list, extensions, and an `other` catch-all for arbitrary fields such as the source `transform` and the source's own header metadata) is written to Parquet footer key-value metadata under a single **`city`** object — deliberately shaped like GeoParquet's `geo` object (`version`, `primary_column`, `columns`, …). A GeoParquet-conformant `geo` object is written *alongside* it for interop, and a package-level `metadata.json` STAC Item mirrors it for discovery. See the [specification](/specification/metadata) → *Metadata*.
+
+**Alternatives considered.** A flat set of scalar footer keys vs one structured `city` object. Putting **all** geometry-column metadata into GeoParquet's `geo` object was also considered and rejected: declaring a solid column there can make the whole file unreadable to GeoParquet tools (see the [declaration rule](/specification/metadata)).
+
+**Why this.** One `city` object that mirrors `geo` is legible to anyone who knows GeoParquet, keeps the `cityparquet:` namespace off individual keys, and gives solid columns a home (`city.columns`) that `geo` cannot provide.
+
+**Trade-off.** The legal columns are described twice — in `city.columns` and in `geo.columns` — which must be kept consistent; accepted, because the alternative (one object) breaks solid-bearing files for GeoParquet readers.
+
+**Status.** Decided.

@@ -1,0 +1,168 @@
+---
+title: Metadata
+description: The city and geo Parquet key-value metadata objects, and the STAC Item.
+sidebar:
+  label: Metadata
+---
+
+CityParquet carries two layers of metadata: the **Parquet footer key-value metadata**
+(authoritative for decoding a single file) and the package-level **`metadata.json`
+STAC Item** (the discovery mirror). The footer holds two JSON objects — `city` and,
+for interoperability, `geo`.
+
+## Parquet key-value metadata
+
+Two keys live in the footer:
+
+- **`city`** — CityParquet's own metadata object: version, provenance, CRS, the
+  geometry-column registry, the attribute list, and extensions. A CityParquet reader
+  uses this; it is **authoritative**.
+- **`geo`** — a GeoParquet 1.1 object, so GeoParquet-aware tools recognise the geometry
+  columns they *can* read. Conditional: omitted when no column qualifies.
+
+**Why two keys, not one.** The `city` object registers **every** geometry column,
+including `Solid`-family ones. GeoParquet's `geo` object **cannot** — declaring a
+`PolyhedralSurfaceZ` column there risks making the whole file unreadable to GeoParquet
+tools (see [the declaration rule](#the-geo-object--geoparquet-compatibility)). So `geo`
+carries only the GeoParquet-legal subset for interop, while `city` carries the full
+picture. The two overlap on the legal columns; the duplication is deliberate and small.
+
+Both objects are JSON, so there is no value-encoding ambiguity. Where the footer and
+the STAC Item disagree, the **footer is authoritative** for decoding.
+
+**The footer describes the file it lives in — nothing wider.** `city`/`geo` are
+per-Parquet-file metadata: a dataset's `building.parquet` and `transportation.parquet`
+each carry their own footer, and — because each module's table carries only the
+[LoD/appearance columns its own rows need](/specification/object-table-schema) — two
+files' `columns`/`geometry_types` **legitimately differ**, without that being an
+inconsistency to reconcile. The [`metadata.json` STAC Item](#metadatajson--stac-item) is
+the **dataset-level** view: it aggregates across every file in the package (e.g.
+`city3d:lods` is the union over all tables), where the footer answers only for the one
+file a reader has open.
+
+### The `city` object
+
+| Field | Req. | Description |
+|---|:--:|---|
+| `version` | ✔ | CityParquet [format version](/specification/dataset-package), e.g. `"0.1.0-draft"`. |
+| `source_format` |  | Provenance — one of `CityJSON`, `CityJSONSeq`, `CityGML`, or an open-ended other-source token (e.g. `"3DCityDB"`) for a source this document doesn't enumerate. Optional: a table may be authored natively, with no single source, and omits this field entirely — omission, not an `"Other"` placeholder value, is how "no source" is expressed. |
+| `source_version` |  | Source schema version (e.g. CityJSON 2.0), when there is a source. |
+| `crs` | cond. | The file CRS, following **GeoParquet's convention** for the key itself. Three states: a **PROJJSON** object when the CRS is known; an explicit **`null`** when the file holds CRS-bearing coordinates whose CRS is unknown or unresolvable ("no CRS / unknown", exactly GeoParquet's meaning for a null `crs`); **absent** only when the file holds no CRS-bearing coordinate at all (e.g. a `geometry_templates.parquet` sidecar whose templates are stored in purely local, unplaced coordinates) — per GeoParquet an absent key is read as **OGC:CRS84**, so a conforming writer never relies on the default. CRS-bearing coordinates are object geometry, an address `location`, a `bbox`, and a [geometry-template instance's `point`](/specification/object-table-schema). When present as an object, it is the one CRS every geometry and the `bbox` column share. |
+| `primary_column` | cond. | Name of the primary geometry column — the one a reader uses with no LoD preference. **Required whenever the table has any geometry column.** It **MAY** name a `Solid` column; it is **independent** of `geo.primary_column` (see the note under `geo`). A consumer **MUST** read this rather than assume a column name. |
+| `columns` | cond. | A **list** of column-metadata structs, one per geometry column — **every** geometry column, `Solid`-family included. See [below](#citycolumns-entries). Present whenever the table has any geometry column. |
+| `attributes` | cond. | The list of inferred attribute columns (object tables). Every other column is a reserved [structural column](/specification/object-table-schema). |
+| `extensions` |  | Extension / ADE declarations: the real declaration JSON plus a source-name ↔ class ↔ module mapping, consulted on export (see [extensions](/specification/extensions)). |
+| `appearance_defaults` |  | Source default material / texture theme, when present. |
+| `other` |  | Free-form object for anything not covered above — the source `transform`, the source's own dataset-level metadata header, or any producer-defined field. **Informational only:** a reader **MUST NOT** need `other` to [decode the file](/specification/geometry-semantics). Mirrors the object-table `other` column. |
+
+**Requirements depend on the file's role.** The marks above are for an **object table**.
+A sidecar (`materials.parquet`, `textures.parquet`, `geometry_templates.parquet`)
+carries `city.version` plus only what is meaningful to it (`crs` when it has
+CRS-bearing coordinates), and none of `source_format`, `attributes`, `primary_column`
+or `columns`.
+
+The bbox column is always named `bbox`, so a reader checks the schema for it; a reader
+finds the package's files by listing the directory or reading the
+[STAC Item's assets](#metadatajson--stac-item), which already signal whether semantics,
+textures and materials are present.
+
+### `city.columns` entries
+
+Each entry describes one geometry column. Unlike `geo`, this list covers **all**
+geometry columns, so it is where a `Solid` column's type and winding are recorded.
+
+| Field | Req. | Value |
+|---|:--:|---|
+| `name` | ✔ | The column name (`geometry_lod0_0`, `geometry_lod2_2`, …). |
+| `encoding` | ✔ | `"WKB"` — the only **normative** encoding. `"CityParquetArrowNative-v1"` is an experimental alternative under evaluation on the `arrow-native-type` branch — see [the geometry-encoding design decision](/design-decisions/geometry-encoding) and its [draft schema](/specification/geometry-semantics#arrow-native-geometry-encoding-experimental-arrow-native-type-branch). |
+| `geometry_types` | ✔ | The WKB type names present in the column, with the `" Z"` (3D) suffix — e.g. `["MultiPolygon Z"]`, `["PolyhedralSurface Z"]`, `["GeometryCollection Z"]`. May name `Solid`-family types (which `geo` may not). This vocabulary is **encoding-independent**: it names the logical shape category the same way regardless of `encoding`, so an arrow-native `MultiSurface` column still reads `"MultiPolygon Z"` here, exactly like its WKB counterpart — never a CityJSON type name such as `"Solid"`. |
+| `crs` | opt. | **PROJJSON**; defaults to the file-level `city.crs`. |
+| `orientation_3d` | ✔ | 3D surface winding: **`"right-handed"`** (each exterior ring wound so the right-hand rule gives the outward-facing normal, interior rings reversed) or **`"left-handed"`**. A writer **MUST** state it explicitly on every entry — including the common `"right-handed"` case — rather than relying on an absent-field default; a value absent from an *older* file (written before this field was required) is still read as `"right-handed"`, but a conforming writer never relies on that fallback itself. This replaces GeoParquet's planar `orientation`, which cannot express 3D winding. |
+| `edges` | opt. | `"planar"` — CityParquet coordinates are Cartesian in a projected CRS. |
+| `bbox` | opt. | Dataset-level bounding box of the column's geometries. |
+| `epoch` | opt. | Coordinate epoch (decimal year) for a dynamic CRS, when relevant. |
+
+### The `geo` object — GeoParquet compatibility
+
+CityParquet also embeds a **GeoParquet 1.1-conformant `geo` object** so GeoParquet-aware
+tools recognise the geometry columns they can read (see
+[files, CRS & metadata](/design-decisions/files-crs-metadata)). It is a *pure*
+GeoParquet object — no CityParquet extension fields (3D winding lives in
+`city.columns[].orientation_3d`). It carries `version`, `primary_column`, and a
+`columns` map, restricted to the GeoParquet-legal columns.
+
+| Field | Req. | CityParquet value |
+|---|:--:|---|
+| `version` | ✔ | GeoParquet spec version implemented, e.g. `"1.1.0"`. |
+| `primary_column` | ✔ | The geometry column a **GeoParquet** reader uses by default; **MUST** be one of the declared (legal) `columns`. **Independent of `city.primary_column`** — see the note below. |
+| `columns` | ✔ | Map from a legal geometry column name to a GeoParquet column-metadata object (`encoding`, `geometry_types`, `crs`, `edges`, `bbox`, `epoch`). One entry per GeoParquet-legal column. |
+
+:::note[Why `city.primary_column` and `geo.primary_column` can differ]
+CityParquet's primary is usually the finest analysis geometry — commonly the highest
+LoD, which is often a `Solid`. GeoParquet's primary **must** be a legal (non-solid)
+column. So when the CityParquet primary is a solid, the two necessarily name *different*
+columns: `city.primary_column` points at the solid, `geo.primary_column` at a legal
+footprint. There is therefore **no** rule that they match. A writer **MAY** point both
+at the same column when that column is legal, but is not required to.
+:::
+
+:::note[The declaration rule, and why it is strict]
+A geometry column **MUST** be declared in `geo.columns` **if and only if** every WKB
+type code it carries falls inside GeoParquet's `[1001,1007]` subset. A column carrying
+`PolyhedralSurfaceZ` (1015 — any solid-family geometry) **MUST NOT** be declared, and
+neither may a `GeometryCollectionZ` whose members are polyhedral surfaces. (Such columns
+are still fully described in `city.columns`.)
+
+The rule is strict because the failure need not be local. A GeoParquet reader that
+decodes every declared column **eagerly** rejects the *whole file* on an undecodable
+one, not merely that column. This is not hypothetical: with a `PolyhedralSurfaceZ`
+column declared, Shapely/GeoPandas raise `ParseException: Unknown WKB type 15` and
+DuckDB spatial `Unsupported geometry type in WKB` — and the file's perfectly legal
+footprint column goes down with it. Left undeclared, the same column is an opaque
+`BLOB` every reader ignores, and the file opens. Tools that understand ISO WKB beyond
+GeoParquet's subset (GDAL/OGR, PostGIS with SFCGAL) read the solid column either way.
+
+Because GeoParquet requires at least one entry in `columns` and a non-empty
+`primary_column`, a table whose geometry is *entirely* solid has no legal `geo` object
+at all. Such a table **MUST NOT** write a `geo` key — it is a valid CityParquet table
+(fully described in `city`) that is simply not a GeoParquet file, the case for a
+solid-only 3DBAG tile with no footprints.
+:::
+
+:::note[Why no `covering`]
+GeoParquet's Bounding Box Columns rule is strict: *"A row MUST contain a bounding box value if and only if the row contains a geometry value… the repetition of a bounding box column MUST match the geometry column's repetition."* CityParquet's [`bbox`](/specification/geometry-semantics) is deliberately **neither** per-column nor null-aligned: it is one column per row, unioned across every stored LoD *and* across the object's descendants, so it is populated precisely where GeoParquet forbids it. It is a hierarchy-aware pruning aid, not a per-geometry covering, and declaring it as one would be a false claim, so `covering` is **not** written.
+
+A conformant per-LoD covering would need separate `bbox_lod*` columns null-aligned with each `geometry_lod*`. This draft does not define them: they cost ~48 bytes per row per LoD, and the in-progress GeoParquet 2.0 draft (still `2.0-dev`; the current release is 1.1.0) proposes dropping `covering` in favour of Parquet-native geospatial statistics — which carry `zmin`/`zmax` natively and would be the better forward path for a 3D format. [Revisited in Open questions](/open-questions).
+:::
+
+### CRS rules
+
+- A known CRS **MUST** be encoded as **PROJJSON**. A source identifier (an EPSG code, or an OGC CRS URL such as `https://www.opengis.net/def/crs/EPSG/0/7415`) **MUST** be resolved to PROJJSON at import.
+- `city.crs` is the **one CRS** every geometry column and the `bbox` column share; a per-column `crs` (in `city.columns` or `geo.columns`) is **optional**, and *when present* it mirrors the file-level state — including a `null`. An absent per-column `crs` defaults to the file-level `city.crs` (a sibling key in the same footer, so no CRS84 ambiguity arises). There is no per-row or per-column CRS escape hatch.
+- **The key is tri-state, exactly as in GeoParquet: object, `null`, or absent.** Per GeoParquet, an **absent** `crs` is assumed to be **OGC:CRS84** (WGS 84 lon/lat), and an explicit **`null`** means the CRS is unknown or unspecified. CityParquet adopts both readings for `city.crs`, so the `city` and `geo` objects carry one shared convention. The CRS84 default speaks to **interpreting coordinates**: in a conforming file the key is absent only when there are no CRS-bearing coordinates, so the default has nothing to apply to and such a file exports with no reference system. Only a *foreign* file that carries coordinates **and** an absent key — conforming GeoParquet, nonconforming CityParquet — is read as CRS84.
+- **A writer never relies on the absent-CRS default.** Because city models are almost always in a projected national CRS (e.g. EPSG:28992 / EPSG:7415), a file whose coordinates really were CRS84 would still declare it explicitly: whenever the file holds any CRS-bearing coordinate, a writer **MUST** write the key — as a PROJJSON object or as `null` — never omit it. Absence is legitimate only for files with no CRS-bearing coordinates at all.
+- **An unresolvable CRS is declared, not fatal.** A source that carries CRS-bearing coordinates (geometry, `bbox`, address `location`, template `point`) but declares no CRS the writer can resolve to PROJJSON is encoded with an explicit `city.crs: null`. A writer **MUST NOT** guess a CRS and **MUST NOT** omit the key in this situation (absence would assert CRS84, silently mis-georeferencing the data), and **SHOULD** surface a conversion diagnostic. A reader treats such a file's coordinates as bare Cartesian values with no georeference; on export the reconstructed model carries no reference system — matching the source. Any `geo` mirror uses the same `null`, which is GeoParquet-legal. *(This amends an earlier draft in which an unresolvable CRS was a hard conversion error.)*
+
+## metadata.json — STAC Item
+
+The package-level `metadata.json` **MUST** be a valid **STAC Item** describing the dataset, and **MUST** use the 3D city models STAC extension (`city3d:*`) — [cityjson/stac-city3d](https://github.com/cityjson/stac-city3d). This makes CityParquet packages discoverable through the same STAC layer used elsewhere in the project.
+
+- Populate `city3d:` fields from the source where available: `city3d:version`, `city3d:lods`, `city3d:co_types`, `city3d:city_objects`, `city3d:semantic_surfaces`, `city3d:textures`, `city3d:materials`, `city3d:attributes`. These already signal whether semantics, textures and materials are present — which is why the footer needs no sidecar manifest. `city3d:co_types` uses the **source** type vocabulary — including CityJSON's `+` prefix on extension types — not `object_type`'s stripped, CityGML-class form; the STAC Item is a discovery mirror of the *source* model's type inventory, independent of how `object_type`/[`ModuleKey`](/specification/extensions) internally route rows to files.
+- **`city3d:lods` is the opposite case: it carries the _normalised_ LoD spelling**, as produced by the [LoD suffix grammar](/specification/geometry-semantics) — a source LoD of `"0"` appears as `"0.0"`, matching the `geometry_lod0_0` column it names. Unlike `co_types`, the source spelling is **not** recoverable: a CityParquet package records an LoD only in a column name, so there is no second place the original string survives. Readers **MUST NOT** expect `city3d:lods` to reproduce the source file's LoD strings verbatim.
+- Each `.parquet` file **SHOULD** be a STAC **Asset**; the Item's `assets` map is the package's file inventory. The Item **SHOULD** also use the standard **Projection** (CRS) and **File** (checksums/sizes) extensions.
+- **Asset roles carry the package's file inventory.** Every `.parquet` asset **MUST**
+  declare its role in the package: `cityparquet-objects` for an object table,
+  `cityparquet-sidecar` for a sidecar (`materials.parquet`, `textures.parquet`,
+  `geometry_templates.parquet`), each alongside the conventional STAC `data` role.
+  This is how a reader separates object tables from sidecars without parsing
+  filenames — which matters because the by-module layout means an object table's name
+  is drawn from the CityGML module vocabulary and is not a closed set. A reader
+  **SHOULD** fall back to inspecting each asset's schema when a package declares no
+  roles at all.
+- **No per-asset row count is written.** Earlier drafts also called for a "Statistics" extension; no registered STAC extension by that name defines a row count, and the one that does — **Table** (`table:row_count`) — would restate at asset level what [`city3d:city_objects`](https://github.com/cityjson/stac-city3d) already carries for the package. A writer **SHOULD NOT** declare the Table extension merely to publish a row count. (Counting rows and counting city objects coincide here: the object tables hold [one row per city object](/specification/object-table-schema).)
+- **Dataset-level `collection.json`.** A dataset spanning multiple CityParquet packages (e.g. tiles) **SHOULD** be curated by a STAC **Collection** (`collection.json`) that aggregates the individual Items.
+- **Precedence:** where the STAC Item and the Parquet footer disagree, the **footer is authoritative** for decoding; the STAC Item and Collection are the discovery mirror.
+
+## Recommended writer defaults (informative)
+
+As implementation guidance, not a format requirement: **zstd level 3** compression and **65 536-row** row groups for the object table tend to balance size against spatial-pruning selectivity; smaller row groups prune better at some size cost (see [appearance & shared resources](/design-decisions/appearance-shared-resources) and the [metadata layout decision](/design-decisions/files-crs-metadata)). A conforming file may use any Parquet-legal compression and row-group sizing.

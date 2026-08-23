@@ -1,0 +1,16 @@
+{
+  "attr_column": "object_type",
+  "attr_eq": "BuildingPart",
+  "bbox_full": {
+    "maxx": 2689381.984,
+    "maxy": 1254150.95,
+    "maxz": 1044.25,
+    "minx": 2677116.375,
+    "miny": 1241839.025,
+    "minz": 0.0
+  },
+  "numeric_column": "Geomtype",
+  "parent_id": "UUID_00024863-0e11-4178-9e6b-83d00e0bd57e",
+  "target_id": "UUID_0000252b-f7ce-4130-ae1d-b8cbc87baaa0",
+  "total_city_objects": 198699
+}

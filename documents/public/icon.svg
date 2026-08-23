@@ -1,0 +1,25 @@
+<!-- Favicon: cityparquet-mark.svg with a squared viewBox so the tab icon fills
+     the square instead of being letterboxed. Paths are untouched; the viewBox is
+     the mark's content bbox (x 10.4-479.6, y 10.7-297.3) expanded about its
+     centre (245, 154) to a 469.2 square. Blume auto-detects public/icon.svg. -->
+<svg width="512" height="512" viewBox="10.4 -80.6 469.2 469.2" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M245 62.7L359.6 120L305 147.3L190.4 90L245 62.7Z" fill="#6BB1E8"/>
+<path d="M185 92.7L239.6 120L185 147.3L130.4 120L185 92.7Z" fill="#6BB1E8"/>
+<path d="M365 182.7L419.6 210L365 237.3L310.4 210L365 182.7Z" fill="#6BB1E8"/>
+<path d="M245 182.7L359.6 240L305 267.3L190.4 210L245 182.7Z" fill="#6BB1E8"/>
+<path d="M65 152.7L119.6 180L65 207.3L10.4 180L65 152.7Z" fill="#6BB1E8"/>
+<path d="M125 182.7L239.6 240L185 267.3L70.4 210L125 182.7Z" fill="#6BB1E8"/>
+<path d="M245 242.7L299.6 270L245 297.3L190.4 270L245 242.7Z" fill="#6BB1E8"/>
+<path d="M310.4 98L425 155.3V207.3L310.4 150V98Z" fill="#C4851C"/>
+<path d="M425 155.3L479.6 128V180L425 207.3V155.3Z" fill="#A77118"/>
+<path d="M365 70.7L310.4 98V150L365 122.7V70.7Z" fill="#DD9520"/>
+<path d="M365 70.7L479.6 128L425 155.3L310.4 98L365 70.7Z" fill="#F5A623"/>
+<path d="M190.4 72L305 129.3V207.3L190.4 150V72Z" fill="#5B4FB6"/>
+<path d="M305 129.3L359.6 102V180L305 207.3V129.3Z" fill="#4E439B"/>
+<path d="M245 44.7L190.4 72V150L245 122.7V44.7Z" fill="#6759CD"/>
+<path d="M245 44.7L359.6 102L305 129.3L190.4 72L245 44.7Z" fill="#7263E4"/>
+<path d="M70.4 38L185 95.3V207.3L70.4 150V38Z" fill="#639AC2"/>
+<path d="M185 95.3L239.6 68V180L185 207.3V95.3Z" fill="#5483A5"/>
+<path d="M125 10.7L70.4 38V150L125 122.7V10.7Z" fill="#70ADDA"/>
+<path d="M125 10.7L239.6 68L185 95.2999L70.4 38L125 10.7Z" fill="#7CC0F2"/>
+</svg>

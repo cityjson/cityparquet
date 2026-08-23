@@ -1,0 +1,1400 @@
+---
+// CityParquet landing page — design "1b" (technical brief: numbered, dense,
+// fact-first) from the claude.ai/design project "CityParquet landing page
+// design". It owns `/`; the former root page now lives at `/intro`.
+//
+// Chrome comes from PageLayout (header with logo, search, GitHub, and theme
+// toggle; no docs sidebar or TOC). The mock's own header row is reduced to the
+// section-link strip below it, since the site header carries the rest.
+import PageLayout from "blume/components/layout/PageLayout.astro";
+import data from "blume:data";
+
+const { config } = data;
+
+// Blume's Markdown rewriter applies `deployment.base` to links in content, but
+// a custom .astro page is outside it — so root-absolute URLs would 404 on the
+// GitHub Pages project subpath. Prefix BASE_URL ourselves; the collapse keeps
+// it right whether BASE_URL is "/" (dev) or "/cityparquet-docs" (deployed).
+const url = (path: string) =>
+  `${import.meta.env.BASE_URL}/${path}`.replace(/\/{2,}/g, "/");
+
+const repo = "https://github.com/HideBa/cityparquet-rs";
+
+// `/intro` is the former root page. Nothing else on this page links to it, and
+// it holds the long-form comparisons this page only summarises, so it leads.
+const sections = [
+  { label: "Introduction", href: url("intro") },
+  { label: "Specification", href: url("specification") },
+  { label: "Tutorials", href: url("tutorials") },
+  { label: "Benchmark", href: url("benchmark") },
+];
+
+// The four properties that decide whether CityParquet fits a reader's problem.
+const facts = [
+  { key: "Storage", value: "Static files", note: "No database server" },
+  { key: "Layout", value: "One object per row", note: "No joins on read" },
+  { key: "Geometry", value: "WKB, multi-LoD", note: "GeoParquet at LoD0" },
+  { key: "Metadata", value: "STAC Item", note: "Catalogue-ready" },
+];
+
+const problems = [
+  {
+    title: "Download first",
+    body: "CityGML and CityJSON are text. A query normally begins by pulling gigabytes of a single region to a local machine.",
+  },
+  {
+    title: "Parse everything",
+    body: "Even locally, every query parses the whole document into memory before computing anything. Slow and memory-hungry.",
+  },
+  {
+    title: "Or run a database",
+    body: "3DCityDB works, but you host a server and load the data — and hit cost and scale limits at national size.",
+  },
+];
+
+const family = [
+  { name: "CityGML", shape: "GML / XML", logo: "img/formats/citygml.png" },
+  { name: "CityJSON", shape: "JSON text", logo: "img/formats/cityjson.png" },
+  { name: "3DCityDB", shape: "Relational", logo: "img/formats/3dcitydb.png" },
+  {
+    name: "FlatCityBuf",
+    shape: "Row binary",
+    logo: "img/formats/flatcitybuf.png",
+  },
+];
+
+// Every figure is the one published on the benchmark page; the caveat box below
+// carries the same warning that page opens with.
+const measurements = [
+  {
+    figure: "34%",
+    label: "row groups pruned by a window query",
+    detail: "NYC scale, 512-row groups",
+  },
+  {
+    figure: "~2×",
+    label: "faster spatial window query",
+    detail: "median of 5 repeats",
+  },
+  {
+    figure: "zstd 3",
+    label: "default writer recipe",
+    detail: "6 presets compared",
+  },
+];
+
+const tools = [
+  {
+    name: "cityparquet-rs",
+    body: "Reference implementation and CLI: convert, export, compare, bench.",
+  },
+  {
+    name: "duckdb-cityjson",
+    body: "Community extension reading CityJSON and CityJSONSeq into the wide layout.",
+  },
+  {
+    name: "duckdb-3d",
+    body: "Measurable solids from stored WKB: volume, height, validation reports.",
+  },
+  {
+    name: "Arrow · pandas · Spark",
+    body: "A package is Parquet, so mature readers open it with no extension at all.",
+  },
+];
+
+// Measured, not illustrative: this is the query below run against tile
+// 10-640-324 of the public demo bucket (2166 rows, 1083 carrying LoD 2.2), with
+// the time the median of three warm repeats. Re-measure before changing them.
+const result = {
+  volume: "731449",
+  solids: "1076",
+  status: "1 row · 0.14 s · 1076 solids measured",
+  scanning: "scanning gs://cityparquet/3dbag_tiled/10-640-324/building.parquet",
+};
+
+const query = `LOAD cityjson; LOAD three_d;
+
+SELECT ROUND(SUM(ST_3DVolume(solid)), 0) AS total_volume_m3
+FROM (SELECT ST_3DTryFromWKB(geometry_lod2_2,
+             geometry_properties_lod2_2) AS solid
+      FROM read_parquet(
+        'gs://cityparquet/3dbag_tiled/10-640-324/building.parquet'))
+WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
+---
+
+<PageLayout
+  site={{ title: config.title, description: config.description }}
+  logo={config.logo}
+  favicon={config.favicon}
+  appleIcon={config.appleIcon}
+  banner={config.banner}
+  analytics={config.analytics}
+  navigation={data.navigation}
+  fontCssVars={data.fontCssVars}
+  themeMode={config.theme.mode}
+  searchEnabled={config.search.enabled}
+  siteUrl={config.site}
+  ogEnabled={config.og.enabled}
+  page={{
+    title: "CityParquet — a columnar encoding of the CityGML data model",
+    description: config.description,
+    route: "/",
+  }}
+>
+  <div class="cp">
+    <nav class="cp-sections" aria-label="Documentation sections">
+      <div class="cp-shell cp-sections-row">
+        {
+          sections.map((section) => (
+            <a class="cp-pill" href={section.href}>
+              {section.label}
+            </a>
+          ))
+        }
+        <a class="cp-pill" href={repo} rel="noopener">GitHub</a>
+      </div>
+    </nav>
+
+    <header class="cp-hero">
+      <div class="cp-shell cp-hero-inner">
+        <p class="cp-eyebrow">Format specification · v0.1.0-draft</p>
+        {/* The animated lockup loops forever and carries no reduced-motion
+            guard of its own — an <img> can't be reached by page CSS — so the
+            <picture> hands reduced-motion readers the static lockup instead. */}
+        <picture>
+          <source
+            media="(prefers-reduced-motion: reduce)"
+            srcset={url("brand/cityparquet-lockup-stacked.svg")}
+          />
+          <img
+            class="cp-lockup"
+            src={url("brand/cityparquet-lockup-stacked-animated.svg")}
+            alt="CityParquet"
+            width="462"
+            height="315"
+          />
+        </picture>
+        <h1 class="cp-title">A columnar encoding of the CityGML data model</h1>
+        <p class="cp-typed" aria-live="off">
+          <span data-cp-typed>no database</span><span
+            class="cp-caret"
+            aria-hidden="true"></span>
+        </p>
+        <div class="cp-hero-actions">
+          <a class="cp-button" href={url("getting-started")}>
+            Run your first query
+          </a>
+          <code class="cp-chip">read_parquet('city/building.parquet')</code>
+        </div>
+      </div>
+    </header>
+
+    <section class="cp-facts" aria-label="Format at a glance">
+      <div class="cp-shell">
+        <div class="cp-facts-grid">
+          {
+            facts.map((fact) => (
+              <div class="cp-fact">
+                <span class="cp-key">{fact.key}</span>
+                <span class="cp-fact-value">{fact.value}</span>
+                <span class="cp-fact-note">{fact.note}</span>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    </section>
+
+    <section class="cp-section">
+      <div class="cp-shell">
+        <div class="cp-heading">
+          <span class="cp-number">01</span>
+          <h2>The problem</h2>
+          <span class="cp-heading-note">Today's workflow</span>
+        </div>
+        <div class="cp-cards cp-cards-3">
+          {
+            problems.map((problem) => (
+              <article class="cp-card">
+                <h3>{problem.title}</h3>
+                <p>{problem.body}</p>
+              </article>
+            ))
+          }
+        </div>
+        <div class="cp-card cp-note">
+          <span class="cp-tag">Aim</span>
+          <p>
+            Infinite scalability, fast delivery, and low cost from static files
+            on commodity object storage; interoperability with the tools and
+            data that already exist; and ultra-fast analytical queries from the
+            columnar encoding.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="cp-section cp-ruled cp-section-surface">
+      <div class="cp-shell">
+        <div class="cp-heading">
+          <span class="cp-number">02</span>
+          <h2>Where it sits in the family</h2>
+          <span class="cp-heading-note">Encodings</span>
+        </div>
+        <p class="cp-lede">
+          One conceptual model, several encodings. Each writes the same
+          semantics — a wall is a <code>WallSurface</code> — for a different job.
+          CityParquet is the columnar member and replaces none of the others.{" "}
+          <a href={url("intro")}>Compare it with each of them</a>.
+        </p>
+        <div class="cp-family">
+          {
+            family.map((member) => (
+              <div class="cp-format">
+                <img src={url(member.logo)} alt={member.name} loading="lazy" />
+                <span class="cp-key">{member.shape}</span>
+              </div>
+            ))
+          }
+          <div class="cp-format cp-format-self">
+            <span class="cp-badge">New</span>
+            <img src={url("brand/cityparquet-mark.svg")} alt="CityParquet" />
+            <span class="cp-key">Columnar</span>
+          </div>
+        </div>
+        <div class="cp-cards cp-cards-2">
+          <article class="cp-card">
+            <h3>Use CityParquet when the job is analysis</h3>
+            <p>
+              Filtering, aggregating, or measuring over a large collection in
+              object storage. The query reads the bytes it needs, not the file.
+            </p>
+          </article>
+          <article class="cp-card">
+            <h3>Use CityJSON when the job is exchange</h3>
+            <p>
+              Handing data to another tool or person, or editing it. CityParquet
+              round-trips back, so deliver in one and exchange in the other.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="cp-section cp-ruled cp-section-accent">
+      <div class="cp-shell">
+        <div class="cp-heading">
+          <span class="cp-number">03</span>
+          <h2>Measured behaviour</h2>
+          <span class="cp-heading-note">Benchmark</span>
+        </div>
+        <div class="cp-stats">
+          {
+            measurements.map((measurement) => (
+              <div class="cp-stat">
+                <span class="cp-figure">{measurement.figure}</span>
+                <span class="cp-stat-label">{measurement.label}</span>
+                <span class="cp-key">{measurement.detail}</span>
+              </div>
+            ))
+          }
+        </div>
+        <div class="cp-cards cp-cards-2">
+          <article class="cp-card">
+            <h3>Projection pushdown, per LoD</h3>
+            <p>
+              A model carries one geometry column per LoD. A query on
+              <code>geometry_lod2_2</code> never reads the LoD 1.2 bytes.
+            </p>
+          </article>
+          <article class="cp-card">
+            <h3>Spatial row-group pruning</h3>
+            <p>
+              The bbox column feeds per-row-group statistics; Hilbert ordering
+              clusters near rows so more groups can be skipped.
+            </p>
+          </article>
+        </div>
+        <div class="cp-caveat">
+          <span class="cp-tag cp-tag-warn">Caveat</span>
+          <p>
+            The reference implementation is experimental and the codec
+            comparison uses defaults at mismatched levels, so no “smallest
+            codec” claim is supportable. Treat every figure as indicative, and
+            read the <a href={url("benchmark")}>benchmark page</a> before quoting
+            one.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="cp-section cp-ruled">
+      <div class="cp-shell">
+        <div class="cp-heading">
+          <span class="cp-number">04</span>
+          <h2>Tooling</h2>
+          <span class="cp-heading-note">Ecosystem</span>
+        </div>
+        <div class="cp-tools">
+          {
+            tools.map((tool) => (
+              <div class="cp-tool">
+                <span class="cp-tool-name">{tool.name}</span>
+                <p>{tool.body}</p>
+              </div>
+            ))
+          }
+        </div>
+        {/* The query below is real: it was run against the public demo bucket
+            and every figure in the result strip is its actual output. The
+            typing is a replay, not a live connection. */}
+        {/* Server-rendered in its finished state — full query, result showing —
+            so no-JS and reduced-motion readers get the answer, not a blank
+            panel. The replay script rewinds it before it starts. */}
+        <figure
+          class="cp-terminal"
+          data-cp-terminal
+          data-cp-phase="result"
+          data-scanning={result.scanning}
+        >
+          <figcaption class="cp-terminal-bar">
+            <span class="cp-terminal-dots" aria-hidden="true">
+              <i></i><i></i><i></i>
+            </span>
+            Total built volume of a tile, without downloading it
+          </figcaption>
+          {/* The untyped tail stays in the DOM as hidden text, so the panel
+              reserves its full height from the first paint and the section
+              below it never shifts as the replay runs. */}
+          <pre class="cp-terminal-body"><code><span data-sql-typed>{query}</span><span class="cp-terminal-cursor" data-sql-cursor aria-hidden="true"></span><span class="cp-terminal-rest" data-sql-rest></span></code></pre>
+          <div class="cp-terminal-result" data-sql-result>
+            <div>
+              <span class="cp-terminal-key">total_volume_m3</span>
+              <span class="cp-terminal-figure">{result.volume}</span>
+            </div>
+            <div>
+              <span class="cp-terminal-key">solids measured</span>
+              <span class="cp-terminal-figure cp-terminal-figure-plain">
+                {result.solids}
+              </span>
+            </div>
+          </div>
+          <div class="cp-terminal-status">
+            <span class="cp-spinner" data-sql-spinner aria-hidden="true"></span>
+            <span data-sql-label>{result.status}</span>
+          </div>
+        </figure>
+      </div>
+    </section>
+
+    <section class="cp-cta">
+      <div class="cp-shell cp-cta-inner">
+        <div class="cp-cta-copy">
+          <h2>Five minutes to the first query</h2>
+          <p>
+            Install DuckDB, load two extensions, point a query at a package. The
+            draft spec and its open questions are in the docs.
+          </p>
+        </div>
+        <div class="cp-cta-actions">
+          <a class="cp-button" href={url("getting-started")}>Get started</a>
+          <a class="cp-button cp-button-quiet" href={url("open-questions")}>
+            Open questions
+          </a>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <footer class="cp cp-footer" slot="footer">
+    <div class="cp-shell cp-footer-row">
+      <span>CityParquet · v0.1.0-draft</span>
+      <nav aria-label="Footer">
+        <a href={url("specification")}>Specification</a>
+        <a href={url("design-decisions")}>Design decisions</a>
+        <a href={url("resources")}>Resources</a>
+        <a href={repo} rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+</PageLayout>
+
+<style is:global>
+  /*
+   * Two surfaces, swapped by mode: in light the page ground is grey and cards
+   * are white; in dark the ground is the darkest layer and cards sit above it.
+   * Blume's own tokens already hold both values, so the landing page tracks the
+   * theme (and the header chrome) without a parallel palette.
+   */
+  .cp {
+    --cp-ground: var(--blume-muted);
+    --cp-surface: var(--blume-background);
+    --cp-line: var(--blume-border);
+    --cp-ink: var(--blume-foreground);
+    --cp-ink-2: var(--blume-muted-foreground);
+    --cp-accent: var(--blume-accent);
+    --cp-accent-wash: color-mix(in srgb, var(--blume-accent) 7%, var(--cp-surface));
+    /* Mixed into the page ground rather than the card surface, so the white
+       cards inside section 03 keep their lift in dark mode too. */
+    --cp-accent-wash-section: color-mix(
+      in srgb,
+      var(--blume-accent) 5%,
+      var(--blume-background)
+    );
+    --cp-radius: var(--blume-radius, 4px);
+    --cp-warn-bg: #fffbf2;
+    --cp-warn-line: #f0dfc0;
+    --cp-warn-ink: #5c4a24;
+    --cp-warn-tag-bg: #f9edd6;
+    --cp-warn-tag-ink: #8a6410;
+    --cp-shell: 1180px;
+    --cp-pad: clamp(1.25rem, 4vw, 2.5rem);
+
+    background: var(--cp-ground);
+    color: var(--cp-ink);
+    font-family: var(--blume-font-body);
+  }
+
+  :root[data-theme="dark"] .cp {
+    --cp-ground: var(--blume-background);
+    --cp-surface: var(--blume-muted);
+    --cp-warn-bg: color-mix(in srgb, #f0b429 8%, var(--blume-muted));
+    --cp-warn-line: color-mix(in srgb, #f0b429 28%, var(--blume-muted));
+    --cp-warn-ink: #e8d3a8;
+    --cp-warn-tag-bg: color-mix(in srgb, #f0b429 18%, var(--blume-muted));
+    --cp-warn-tag-ink: #f0c76a;
+  }
+
+  .cp-shell {
+    max-width: var(--cp-shell);
+    margin-inline: auto;
+    padding-inline: var(--cp-pad);
+  }
+
+  .cp a:focus-visible,
+  .cp button:focus-visible {
+    outline: 2px solid var(--cp-accent);
+    outline-offset: 2px;
+    border-radius: var(--cp-radius);
+  }
+
+  /* Shared label style: the uppercase mono key that titles every small field. */
+  .cp .cp-key {
+    font-family: var(--blume-font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--cp-ink-2);
+  }
+
+  /* --- section links ------------------------------------------------ */
+
+  .cp-sections {
+    background: var(--cp-surface);
+    border-bottom: 1px solid var(--cp-line);
+  }
+
+  .cp-sections-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding-block: 0.75rem;
+  }
+
+  .cp-pill {
+    font-family: var(--blume-font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--cp-ink-2);
+    text-decoration: none;
+    border: 1px solid var(--cp-line);
+    border-radius: var(--cp-radius);
+    padding: 0.375rem 0.625rem;
+    transition: color 0.15s, border-color 0.15s;
+  }
+
+  .cp-pill:hover {
+    color: var(--cp-accent);
+    border-color: var(--cp-accent);
+  }
+
+  /* --- hero ---------------------------------------------------------- */
+
+  .cp-hero {
+    background: var(--cp-surface);
+    border-bottom: 1px solid var(--cp-line);
+  }
+
+  .cp-hero-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding-block: clamp(3rem, 8vw, 5rem) clamp(2.5rem, 6vw, 4rem);
+  }
+
+  .cp-eyebrow {
+    margin: 0 0 clamp(1.5rem, 4vw, 2.5rem);
+    font-family: var(--blume-font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--cp-ink-2);
+  }
+
+  .cp-hero picture {
+    display: block;
+  }
+
+  .cp-lockup {
+    height: clamp(6.5rem, 18vw, 10.625rem);
+    width: auto;
+    display: block;
+    margin-bottom: clamp(1.5rem, 4vw, 2.25rem);
+  }
+
+  .cp-title {
+    margin: 0;
+    max-width: 54ch;
+    font-size: clamp(1.75rem, 4.5vw, 2.75rem);
+    line-height: 1.22;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    color: var(--cp-ink);
+    text-wrap: pretty;
+  }
+
+  /* Reserves its own line height so the typing loop never reflows the CTAs. */
+  .cp-typed {
+    margin: 1.25rem 0 0;
+    min-height: 2.125rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--blume-font-mono);
+    font-size: clamp(1rem, 2.6vw, 1.375rem);
+    letter-spacing: -0.01em;
+    color: var(--cp-accent);
+  }
+
+  .cp-caret {
+    display: inline-block;
+    width: 0.625rem;
+    margin-left: 0.1875rem;
+    border-bottom: 2px solid var(--cp-accent);
+    animation: cp-caret 1s steps(1) infinite;
+  }
+
+  @keyframes cp-caret {
+    0%,
+    45% {
+      opacity: 1;
+    }
+    50%,
+    95% {
+      opacity: 0;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+
+  .cp-hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    margin-top: 1.875rem;
+  }
+
+  .cp-button {
+    background: var(--cp-accent);
+    color: var(--blume-accent-foreground, #fff);
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-decoration: none;
+    padding: 0.75rem 1.375rem;
+    border: 1px solid transparent;
+    border-radius: var(--cp-radius);
+    transition: filter 0.15s;
+  }
+
+  .cp-button:hover {
+    filter: brightness(1.12);
+  }
+
+  .cp-button-quiet {
+    background: transparent;
+    color: var(--cp-ink);
+    border-color: var(--cp-line);
+  }
+
+  .cp-button-quiet:hover {
+    filter: none;
+    border-color: var(--cp-accent);
+    color: var(--cp-accent);
+  }
+
+  .cp-chip {
+    font-family: var(--blume-font-mono);
+    font-size: 0.8125rem;
+    color: var(--cp-ink-2);
+    background: var(--cp-ground);
+    border: 1px solid var(--cp-line);
+    border-radius: var(--cp-radius);
+    padding: 0.75rem 1rem;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  /* --- fact strip ---------------------------------------------------- */
+
+  .cp-facts {
+    background: var(--cp-surface);
+    border-bottom: 1px solid var(--cp-line);
+  }
+
+  /* The strip runs the full width of the content shell — its cells carry their
+     own inset, the way the mock's do — so the shell's own gutter is dropped and
+     the 1px gaps stop at the shell edge instead of bleeding into the margins. */
+  .cp-facts > .cp-shell {
+    padding-inline: 0;
+  }
+
+  .cp-facts-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--cp-line);
+  }
+
+  .cp-fact {
+    background: var(--cp-surface);
+    padding: 1.375rem clamp(1rem, 2.5vw, 1.5rem);
+    display: flex;
+    flex-direction: column;
+    gap: 0.3125rem;
+  }
+
+  .cp-fact-value {
+    font-size: 1.1875rem;
+    color: var(--cp-ink);
+  }
+
+  .cp-fact-note {
+    font-size: 0.8125rem;
+    color: var(--cp-ink-2);
+  }
+
+  /* --- numbered sections --------------------------------------------- */
+
+  .cp-section {
+    padding-block: clamp(2.5rem, 6vw, 3.5rem);
+  }
+
+  .cp-ruled {
+    border-top: 1px solid var(--cp-line);
+  }
+
+  .cp-heading {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+    padding-bottom: 1rem;
+    margin-bottom: 1.625rem;
+    border-bottom: 1px solid var(--cp-line);
+  }
+
+  .cp-number {
+    font-family: var(--blume-font-mono);
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    color: var(--blume-accent-foreground, #fff);
+    background: var(--cp-accent);
+    border-radius: 3px;
+    padding: 0.375rem 0.5625rem;
+  }
+
+  .cp-heading h2 {
+    margin: 0;
+    font-size: clamp(1.25rem, 3vw, 1.625rem);
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    color: var(--cp-ink);
+  }
+
+  .cp-heading-note {
+    margin-left: auto;
+    font-family: var(--blume-font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--cp-ink-2);
+  }
+
+  /* Section 02 lifts to the card surface; 03 takes an accent wash so the
+     benchmark block reads as its own chapter. */
+  .cp-section-surface {
+    background: var(--cp-surface);
+  }
+
+  .cp-section-accent {
+    background: var(--cp-accent-wash-section);
+  }
+
+  .cp-section-accent .cp-heading {
+    border-bottom-color: color-mix(in srgb, var(--cp-accent) 22%, var(--cp-line));
+  }
+
+  .cp-section-accent .cp-heading-note {
+    color: var(--cp-accent);
+  }
+
+  .cp-lede {
+    margin: 0 0 1.375rem;
+    max-width: 74ch;
+    font-size: 0.9375rem;
+    line-height: 1.7;
+    color: var(--cp-ink-2);
+  }
+
+  .cp-lede a {
+    color: var(--cp-accent);
+    text-decoration: none;
+  }
+
+  .cp-lede a:hover {
+    text-decoration: underline;
+  }
+
+  .cp-cards {
+    display: grid;
+    gap: 1.25rem;
+  }
+
+  .cp-cards-3 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .cp-cards-2 {
+    grid-template-columns: repeat(2, 1fr);
+    margin-top: 1.25rem;
+  }
+
+  .cp-card {
+    background: var(--cp-surface);
+    border: 1px solid var(--cp-line);
+    border-radius: var(--cp-radius);
+    padding: 1.5rem;
+  }
+
+  .cp-card h3 {
+    margin: 0 0 0.5rem;
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: var(--cp-ink);
+  }
+
+  .cp-card p {
+    margin: 0;
+    font-size: 0.875rem;
+    line-height: 1.65;
+    color: var(--cp-ink-2);
+  }
+
+  .cp code {
+    font-family: var(--blume-font-mono);
+    font-size: 0.8125em;
+  }
+
+  .cp-note {
+    display: flex;
+    gap: 0.875rem;
+    align-items: flex-start;
+    margin-top: 1.25rem;
+  }
+
+  .cp-note p {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.7;
+    color: var(--cp-ink);
+  }
+
+  .cp-tag {
+    flex: none;
+    font-family: var(--blume-font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--cp-accent);
+    background: var(--cp-accent-wash);
+    border-radius: var(--cp-radius);
+    padding: 0.3125rem 0.5rem;
+  }
+
+  /* --- format family -------------------------------------------------- */
+
+  .cp-family {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 1px;
+    background: var(--cp-line);
+    border: 1px solid var(--cp-line);
+    border-radius: var(--cp-radius);
+    overflow: hidden;
+  }
+
+  .cp-format {
+    background: var(--cp-surface);
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.875rem;
+    align-items: flex-start;
+  }
+
+  .cp-format img {
+    height: 2.375rem;
+    width: auto;
+    max-width: 100%;
+    object-fit: contain;
+    object-position: left;
+  }
+
+  /* The other four logos are dark-on-white bitmaps; a light plate keeps them
+     legible when the page is in dark mode. */
+  :root[data-theme="dark"] .cp-format:not(.cp-format-self) img {
+    background: #fff;
+    border-radius: 2px;
+    padding: 4px;
+  }
+
+  /* The pulse is drawn with an inset ring rather than an outer glow: the grid
+     clips to its rounded corners, so an outward shadow would be amputated. */
+  .cp-format-self {
+    position: relative;
+    background: var(--cp-accent-wash);
+    animation: cp-glow 2.6s ease-in-out infinite;
+  }
+
+  @keyframes cp-glow {
+    0%,
+    100% {
+      box-shadow: inset 0 0 0 1px var(--cp-accent);
+    }
+    50% {
+      box-shadow: inset 0 0 0 3px
+        color-mix(in srgb, var(--cp-accent) 25%, transparent);
+    }
+  }
+
+  .cp-format-self .cp-key {
+    color: var(--cp-accent);
+    font-weight: 500;
+  }
+
+  .cp-badge {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+    font-family: var(--blume-font-mono);
+    font-size: 0.625rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--blume-accent-foreground, #fff);
+    background: var(--cp-accent);
+    border-radius: 3px;
+    padding: 0.25rem 0.4375rem;
+  }
+
+  /* --- measurements --------------------------------------------------- */
+
+  .cp-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--cp-line);
+    border: 1px solid var(--cp-line);
+    border-radius: var(--cp-radius);
+    overflow: hidden;
+  }
+
+  .cp-stat {
+    background: var(--cp-surface);
+    padding: 1.75rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .cp-figure {
+    font-size: clamp(2rem, 5vw, 2.5rem);
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    color: var(--cp-accent);
+  }
+
+  .cp-stat-label {
+    font-size: 0.875rem;
+    color: var(--cp-ink);
+  }
+
+  .cp-caveat {
+    display: flex;
+    gap: 0.875rem;
+    align-items: flex-start;
+    margin-top: 1.25rem;
+    background: var(--cp-warn-bg);
+    border: 1px solid var(--cp-warn-line);
+    border-radius: var(--cp-radius);
+    padding: 1.125rem 1.25rem;
+  }
+
+  .cp-caveat p {
+    margin: 0;
+    font-size: 0.875rem;
+    line-height: 1.65;
+    color: var(--cp-warn-ink);
+  }
+
+  .cp-caveat a {
+    color: inherit;
+    text-underline-offset: 0.2em;
+  }
+
+  .cp-tag-warn {
+    color: var(--cp-warn-tag-ink);
+    background: var(--cp-warn-tag-bg);
+  }
+
+  /* --- tooling -------------------------------------------------------- */
+
+  .cp-tools {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1px;
+    background: var(--cp-line);
+    border: 1px solid var(--cp-line);
+    border-radius: var(--cp-radius);
+    overflow: hidden;
+  }
+
+  .cp-tool {
+    background: var(--cp-surface);
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5625rem;
+  }
+
+  .cp-tool-name {
+    font-family: var(--blume-font-mono);
+    font-size: 0.875rem;
+    color: var(--cp-ink);
+  }
+
+  .cp-tool p {
+    margin: 0;
+    font-size: 0.875rem;
+    line-height: 1.65;
+    color: var(--cp-ink-2);
+  }
+
+  /* The query panel stays dark in both modes — it is the one place on the page
+     that reads as a terminal rather than a document. */
+  .cp-terminal {
+    margin: 1.625rem 0 0;
+    background: #1d1d20;
+    border: 1px solid #2e2e33;
+    border-radius: var(--cp-radius);
+    overflow: hidden;
+  }
+
+  .cp-terminal-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.8125rem 1.25rem;
+    border-bottom: 1px solid #2e2e33;
+    font-family: var(--blume-font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #8a8a90;
+  }
+
+  .cp-terminal-dots {
+    display: flex;
+    gap: 0.375rem;
+    flex: none;
+  }
+
+  .cp-terminal-dots i {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #3a3a40;
+  }
+
+  .cp-terminal-body {
+    margin: 0;
+    padding: 1.375rem 1.5rem;
+    overflow-x: auto;
+    font-family: var(--blume-font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.75;
+    color: #e6e6ea;
+  }
+
+  /* Holds the not-yet-typed remainder: present for layout, invisible to the
+     eye. Without it the panel would grow line by line as the replay runs. */
+  .cp-terminal-rest {
+    visibility: hidden;
+  }
+
+  /* The block cursor is drawn only while the query is being typed, so the
+     finished panel reads as output rather than as a waiting prompt. */
+  [data-cp-phase="typing"] .cp-terminal-cursor::after {
+    content: "▋";
+    color: var(--cp-accent);
+  }
+
+  .cp-terminal-result {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 2rem;
+    padding: 1.25rem 1.5rem;
+    border-top: 1px solid #2e2e33;
+    /* Always in flow — only its paint is toggled — so the panel keeps one
+       height across the whole replay cycle. */
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.35s ease-out;
+  }
+
+  .cp-terminal-result > div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4375rem;
+  }
+
+  [data-cp-phase="result"] .cp-terminal-result {
+    visibility: visible;
+    opacity: 1;
+  }
+
+  .cp-terminal-key {
+    font-family: var(--blume-font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.08em;
+    color: #8a8a90;
+  }
+
+  .cp-terminal-figure {
+    font-family: var(--blume-font-mono);
+    font-size: clamp(1.375rem, 4vw, 1.875rem);
+    line-height: 1;
+    letter-spacing: -0.01em;
+    color: #b9a5ff;
+  }
+
+  .cp-terminal-figure-plain {
+    color: #e6e6ea;
+  }
+
+  .cp-terminal-status {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.75rem 1.5rem;
+    border-top: 1px solid #2e2e33;
+    background: #161619;
+    font-family: var(--blume-font-mono);
+    font-size: 0.75rem;
+    color: #8a8a90;
+  }
+
+  /* The bucket URL is long; it truncates rather than wrapping the status bar. */
+  .cp-terminal-status span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cp-spinner {
+    flex: none;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    border: 2px solid #3a3a40;
+    border-top-color: var(--cp-accent);
+    animation: cp-spin 0.7s linear infinite;
+    display: none;
+  }
+
+  [data-cp-phase="running"] .cp-spinner {
+    display: block;
+  }
+
+  @keyframes cp-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* --- closing call to action ----------------------------------------- */
+
+  .cp-cta {
+    background: var(--cp-surface);
+    border-top: 1px solid var(--cp-line);
+  }
+
+  .cp-cta-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 2.5rem;
+    padding-block: clamp(2.25rem, 5vw, 3.25rem);
+  }
+
+  .cp-cta-copy {
+    max-width: 39rem;
+  }
+
+  .cp-cta-copy h2 {
+    margin: 0 0 0.5rem;
+    font-size: clamp(1.25rem, 3vw, 1.5rem);
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: var(--cp-ink);
+  }
+
+  .cp-cta-copy p {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.65;
+    color: var(--cp-ink-2);
+  }
+
+  .cp-cta-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  /* --- footer --------------------------------------------------------- */
+
+  .cp-footer {
+    border-top: 1px solid var(--cp-line);
+    font-family: var(--blume-font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--cp-ink-2);
+  }
+
+  .cp-footer-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+    padding-block: 1.375rem;
+  }
+
+  .cp-footer nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+  }
+
+  .cp-footer a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .cp-footer a:hover {
+    color: var(--cp-accent);
+  }
+
+  /* --- responsive ------------------------------------------------------ */
+
+  @media (max-width: 60rem) {
+    .cp-facts-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .cp-family {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .cp-cards-3,
+    .cp-stats {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 44rem) {
+    .cp-cards-2,
+    .cp-tools {
+      grid-template-columns: 1fr;
+    }
+    .cp-family {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .cp-cta-inner {
+      gap: 1.5rem;
+    }
+  }
+
+  @media (max-width: 30rem) {
+    .cp-facts-grid {
+      grid-template-columns: 1fr;
+    }
+    .cp-chip {
+      font-size: 0.75rem;
+    }
+  }
+
+  /* Reduced motion gets the finished state of every loop: no caret, no pulse,
+     no spinner, and the query result shown outright rather than replayed. */
+  @media (prefers-reduced-motion: reduce) {
+    .cp-caret,
+    .cp-format-self,
+    .cp-spinner {
+      animation: none;
+    }
+    .cp-format-self {
+      box-shadow: inset 0 0 0 1px var(--cp-accent);
+    }
+    .cp-button,
+    .cp-terminal-result {
+      transition: none;
+    }
+    .cp-terminal-result {
+      visibility: visible;
+      opacity: 1;
+    }
+  }
+</style>
+
+<script>
+  // Types the hero's four claims one character at a time. Bails out under
+  // reduced-motion, leaving the first phrase rendered from the server.
+  const target = document.querySelector<HTMLElement>("[data-cp-typed]");
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (target && !still) {
+    const phrases = [
+      "no database",
+      "no server",
+      "globally scalable",
+      "ultra fast",
+    ];
+    let index = 0;
+    let count = phrases[0].length;
+    let deleting = true;
+
+    const tick = () => {
+      const word = phrases[index];
+      let delay: number;
+
+      if (!deleting) {
+        if (count < word.length) {
+          count += 1;
+          delay = 62;
+        } else {
+          deleting = true;
+          delay = 1400;
+        }
+      } else if (count > 0) {
+        count -= 1;
+        delay = 28;
+      } else {
+        index = (index + 1) % phrases.length;
+        deleting = false;
+        delay = 220;
+      }
+
+      target.textContent = phrases[index].slice(0, count);
+      setTimeout(tick, delay);
+    };
+
+    setTimeout(tick, 1400);
+  }
+
+  // Replays the section-04 query: type it out, spin briefly, reveal the result,
+  // hold, restart. The figures it reveals are server-rendered and real — this
+  // only stages when they appear. Under reduced motion the CSS already shows
+  // the finished state, so the replay never starts.
+  const terminal = document.querySelector<HTMLElement>("[data-cp-terminal]");
+  const rest = terminal?.querySelector<HTMLElement>("[data-sql-rest]");
+  const typed = terminal?.querySelector<HTMLElement>("[data-sql-typed]");
+  const label = terminal?.querySelector<HTMLElement>("[data-sql-label]");
+
+  if (terminal && rest && typed && label && !still) {
+    type Phase = "typing" | "running" | "result";
+
+    const sql = typed.textContent ?? "";
+    const doneLabel = label.textContent ?? "";
+    const scanning = terminal.dataset.scanning ?? "";
+    let n = 0;
+    let phase: Phase = "typing";
+
+    const paint = () => {
+      typed.textContent = sql.slice(0, n);
+      rest.textContent = sql.slice(n);
+      terminal.dataset.cpPhase = phase;
+      label.textContent =
+        phase === "typing"
+          ? "typing query"
+          : phase === "running"
+            ? scanning
+            : doneLabel;
+    };
+
+    // The delay is how long the CURRENT phase holds; the next state is applied
+    // when it elapses. Computing it the other way round would blank the result
+    // the instant it appeared and then idle for five seconds.
+    const step = () => {
+      let nextN = n;
+      let nextPhase = phase;
+      let delay: number;
+
+      if (phase === "typing") {
+        if (n < sql.length) {
+          const newline = sql[n] === "\n";
+          nextN = Math.min(n + (newline ? 1 : 2), sql.length);
+          delay = newline ? 130 : 16;
+        } else {
+          nextPhase = "running";
+          delay = 520;
+        }
+      } else if (phase === "running") {
+        nextPhase = "result";
+        delay = 900;
+      } else {
+        nextPhase = "typing";
+        nextN = 0;
+        delay = 5200;
+      }
+
+      setTimeout(() => {
+        n = nextN;
+        phase = nextPhase;
+        paint();
+        step();
+      }, delay);
+    };
+
+    paint();
+    step();
+  }
+</script>

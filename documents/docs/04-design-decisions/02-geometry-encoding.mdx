@@ -1,0 +1,79 @@
+---
+title: B · Geometry encoding
+description: WKB geometry, parallel property columns, one geometry column per LoD, and encode-time transform.
+sidebar:
+  label: B · Geometry encoding
+---
+
+How CityParquet stores geometry: as WKB blobs for interoperability today, with everything WKB cannot carry pushed into parallel JSON columns, one geometry column per level of detail, and CityJSON's quantised vertices expanded to world-coordinate doubles at encode time. Prior art weighed here: GeoParquet, Apache Iceberg, PostGIS EWKB, GeoArrow, and 3DCityDB.
+
+## WKB geometry (including 3D), not native geometry or EWKB
+
+<Badge variant="warning">open</Badge>
+
+**Decision.** Geometry is stored as WKB `BLOB` in the dataset CRS. 3D solids → `PolyhedralSurfaceZ`; multi/composite solids → `GeometryCollectionZ`; surfaces → `MultiPolygonZ`. See the [specification](/specification/geometry-semantics) → *Geometry encoding*.
+
+**Alternatives considered.**
+
+- (a) **WKB blob** — the OGC Simple Features encoding; interoperable but opaque to the columnar engine. Used by **GeoParquet** and **Apache Iceberg** for their geometry columns.
+- (b) **PostGIS EWKB** — WKB plus a per-record SRID (see [the CRS decision](/design-decisions/files-crs-metadata) for the CRS angle).
+- (c) **native Parquet `GEOMETRY`** — the GeoParquet 2.0 direction (vectorisable, coordinate-level pushdown).
+- (d) **custom Arrow / GeoArrow** packed-coordinate extension type (typed, zero-copy).
+
+**Why this.** **Interoperability today.** WKB opens unmodified in DuckDB-spatial, GDAL, QGIS, and PostGIS; it is the common denominator that GeoParquet and Iceberg both settled on. Native GeoParquet 2.0 `GEOMETRY` and GeoArrow are the more "correct" columnar direction, but their **3D** support is thin and immature right now — and CityParquet's whole point is 3D solids. We follow 3DCityDB's precedent of using WKB even for 3D.
+
+**Trade-off.** WKB is opaque to the columnar engine — parsed on every access, poorer compression, no coordinate-level predicate pushdown. Concrete tooling limit found in practice: **DuckDB-spatial cannot decode our multi-surface/solid WKB**. That limit is itself a reportable finding (columnar-3D tooling is immature). Many libraries advertise WKB support but only for 2D simple features.
+
+**Status.** WKB is decided for v1; native/Arrow geometry is explicitly **deferred to future work**. This is the decision we are least settled on — the open aspect is tracked under [Open questions](/open-questions).
+
+**Update (2026-07-26).** Option (d) — a custom Arrow/GeoArrow-adjacent packed extension type — is now under active evaluation on the `arrow-native-type` branch (`cityparquet-rs`, with `duckdb-cityjson` and `duckdb-3d` to follow). It covers `MultiSurface`, `CompositeSurface`, `Solid`, `MultiSolid` and `CompositeSolid` as an opt-in alternative to WKB, declared per column via [`city.columns[].encoding`](/specification/metadata) (`"CityParquetArrowNative-v1"`) alongside the existing `"WKB"` value. Rather than GeoArrow's coordinate-inline storage, it uses an **indexed per-row vertex pool**: CityParquet's shell/solid nesting goes a level deeper than GeoArrow's own native geometry types support, and an index-based layout matches both `cityparquet-rs`'s and `duckdb-3d`'s existing in-memory models more closely. The draft schema is documented, marked experimental, in [the geometry-semantics specification](/specification/geometry-semantics#arrow-native-geometry-encoding-experimental-arrow-native-type-branch). This section will be updated once the DuckDB query/scan performance benchmark — the branch's stated success criterion — concludes, either promoting this to a decided alternative encoding or recording why it was not adopted.
+
+## Non-WKB geometry information lives in parallel columns
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** A `geometry_properties_lod*` **`STRUCT`** column (per LoD) holds what WKB cannot: the geometry type, the semantic-surface definitions (`surfaces`), the surface→face mapping, and the solid shell structure. The fixed-shape parts are typed struct fields (`type`, `face_semantics LIST<INT>`, `shells LIST<LIST<INT>>`); only `surfaces` — heterogeneous per surface — stays `JSON`. Appearance goes in separate `material_lod*` / `texture_lod*` columns (see [appearance and shared resources](/design-decisions/appearance-shared-resources)). Crucially, the surface→face mapping is stored **flattened and aligned to WKB face order** — a flat `face_semantics` array where `face_semantics[i]` is the surface index of WKB face `i` — rather than as a nested per-shell tree (the shape CityJSON's `values` uses). See the [specification](/specification/geometry-semantics) → *Geometry properties and semantics*.
+
+**Alternatives considered.**
+
+- (a) copy CityJSON's nested `semantics.values` verbatim (simplest, faithful, but analysis-hostile — a nested tree keyed by shell/surface that must be walked and index-resolved);
+- (b) **3DCityDB's** `geometry_properties`: a flat hierarchy descriptor keyed by `geometryIndex` into the polyhedral surface — but it carries *only* geometric hierarchy, **not** semantic surface types/attributes (3DCityDB keeps those as separate features);
+- (c) the flattened, face-aligned form — chosen: 3DCityDB's flat index-into-the-polyhedral-surface idea, but keeping the CityGML CM's semantic surface definitions inline.
+
+**Why this.** WKB / OGC Simple Features has **no slot** for the CityGML CM's semantic surfaces (WallSurface/RoofSurface…), materials, textures, LoD, or template references — once geometry is a blob these must live somewhere explicit. And for the *analytical* target workload, the mapping must be cheap to use: with `face_semantics` aligned to WKB faces, "the roof faces of this solid" is a positional filter and per-surface attributes are one dereference into `surfaces`, instead of a nested-tree traversal. Verbatim CityJSON `values` would force procedural JSON walking on every surface-level query.
+
+**Trade-off.** Semantics live *beside* geometry rather than inside it (the consumer zips the two columns by face index); and aligning `face_semantics` to the *emitted* faces means a strict 1:1 with the source's surfaces is not guaranteed where faces are dropped (a future consideration, noted under open questions).
+
+**Status.** Decided and implemented. A native `LIST<INT>` `face_semantics` column and a strict-1:1 guarantee are [future work](/open-questions).
+
+## One geometry column per LoD
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** Each LoD gets its own `geometry_lod*` + `geometry_properties_lod*` column pair, and every geometry column is LoD-suffixed — there is no un-suffixed `geometry` column, and a suffix always carries a minor version (`geometry_lod1_0`, never `geometry_lod1`). The primary geometry column is *declared* in metadata rather than identified by name. See the [specification](/specification/geometry-semantics) → *Levels of detail*.
+
+**Alternatives considered.**
+
+- (a) **one column per LoD** (`geometry_lod1_0`, `geometry_lod2_2`, …) — chosen;
+- (b) **one long column, one row per LoD** (extra `lod` column);
+- (c) **one file per LoD** (`cityobjects_lod1.parquet`, …).
+
+**Why this.** A query wanting only LoD2 reads only the LoD2 column (projection pushdown) and never touches the LoD1 bytes — the columnar win. The expected access pattern is "the same LoD across many objects" or "several LoDs of one object", not "different objects each at a different LoD", so option (b) would sacrifice pruning for a case we do not expect. Option (b) also breaks **attribute encoding**: with one row per LoD, either every attribute is **duplicated** across an object's per-LoD rows, or only the highest-LoD row carries them — neither works well. Option (c) makes the reader resolve which file holds which LoD.
+
+**Trade-off.** Wider schema as the LoD count grows; each LoD needs its matching `geometry_properties_lod*`. Uniform suffixes cost a small canonicalisation of the LoD *string* — a source LoD of `1` names the column `geometry_lod1_0` and exports as `1.0` — but the LoD *value* is unaffected, and the suffix is the single source of truth (no redundant `lod` value is stored).
+
+**Status.** Decided and implemented. Column-per-LoD is the normative layout; the row-per-LoD and file-per-LoD alternatives are rejected.
+
+## transform applied at encode time, not a structural key
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** CityJSON's quantised integer vertices and `transform` (scale + translate) are applied during encoding; coordinates are stored as world-coordinate doubles. The source `transform` is **not** a structural metadata key — re-quantisation on decode is the decoder's choice, with parameters it selects. A producer MAY still carry the source `transform` (and other source-dependent header fields) informationally in the catch-all `other` metadata key. See the [specification](/specification/geometry-semantics) → *Geometry encoding*.
+
+**Alternatives considered.** Preserve the quantised integers + `transform` (better compression, byte-exact round-trip) vs expand to doubles and discard the transform (simpler analysis representation).
+
+**Why this.** A world-coordinate double representation is the simplest thing for analytical consumers and for feeding WKB to GIS tooling — no client needs to know the quantisation scheme. Quantisation is fundamentally a *decoding* concern: a consumer that wants compact integer output picks a `transform` suited to its own precision/extent needs, so reproducing the source's transform buys nothing that the decoder can't choose better itself.
+
+**Trade-off.** We lose the exact original quantisation, so a strict byte-level round-trip of vertices is not offered; model-level round-trip (identity, hierarchy, attributes, semantics, appearance, templates) is unaffected.
+
+**Status.** Decided — transform applied at encode; not a structural key, but MAY be carried informationally in `other`.
