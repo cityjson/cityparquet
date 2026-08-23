@@ -17,10 +17,17 @@ semantic losslessness.
   semantics.
 - **[docs/architecture.md](docs/architecture.md)** — the code: crates, the
   two-pass conversion pipeline, reader/export/compare, the benchmark harness.
-- **[benchmark/formats/README.md](benchmark/formats/README.md)** — the write/compression benchmark's
-  methodology and comparability caveats.
-- **[benchmark/formats/READ_BENCHMARK.md](benchmark/formats/READ_BENCHMARK.md)** — the cross-format read
-  benchmark's methodology, fairness caveats, and the committed CSVs' provenance.
+- **[benchmark/formats/README.md](../../benchmark/formats/README.md)** — the
+  write/compression benchmark's methodology and comparability caveats.
+- **[benchmark/formats/READ_BENCHMARK.md](../../benchmark/formats/READ_BENCHMARK.md)**
+  — the cross-format read benchmark's methodology, fairness caveats, and the
+  CSVs' provenance.
+
+The benchmark harness's **code** lives here (`crates/cityparquet-readbench`,
+`scripts/`); its **corpora, results and plotting project** live one level up,
+in the monorepo's [`benchmark/`](../../benchmark/README.md) tree, and so do the
+`just` recipes that drive it. Run those from the repository root, not from
+here.
 
 ## Crates
 
@@ -172,36 +179,52 @@ Appends one CSV row per variant. `--variants` takes a comma-separated list in
 the grammar `<preset>[+hilbert][+rg<N>]` (omit for the default
 9-variant set); `--repeat` (default 5) reports the median; `--window-frac`
 (default 0.05) sizes the spatial window query; `--skip-roundtrip` skips the
-export+compare check. See [benchmark/formats/README.md](benchmark/formats/README.md).
+export+compare check. See
+[benchmark/formats/README.md](../../benchmark/formats/README.md).
 
 ## `just` recipes
 
-| Recipe                                 | What it does                                                                                                                                                                                                                                     |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `just fixtures`                        | download the CityJSON test fixtures into `tests/fixtures/`                                                                                                                                                                                       |
-| `just check`                           | clippy, tests, schema/Parquet isolation, `fmt --check`                                                                                                                                                                                           |
-| `just test` / `just lint` / `just fmt` | the individual gates                                                                                                                                                                                                                             |
-| `just interop`                         | convert both fixtures and have DuckDB read the Parquet natively                                                                                                                                                                                  |
-| `just convert-all FOLDER [OUT]`        | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`)                                                                                                                                             |
-| `just fetch-data [DEST] [ONLY]`        | fetch the catalogue benchmark corpus (30 real CityGML/CityJSON datasets, 6.5 GB) into `DEST` (default `benchmark/formats/data/benchmark/`); `ONLY` picks the entries serving one benchmark set — `default` (the default), `no-citygml`, or `all` |
-| `just fetch-tools`                     | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq)                                                                                                                                          |
-| `just bench FOLDER [OUT] [FORMATS]`    | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `benchmark/formats/read_results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set                   |
-| `just ordering-bench FOLDER [OUT]`     | the same run restricted to the ordering axis (source-order vs Hilbert CityParquet), into `OUT` (default `benchmark/formats/ordering_results`)                                                                                                    |
-| `just write-bench FOLDER [OUT]`        | encoding-variant WRITE benchmark + the DuckDB `COPY` baseline, one CSV per input                                                                                                                                                                 |
-| `just compression-bench FOLDER [OUT]`  | codec + row-group WRITE-bench matrix, one CSV per input, plus charts                                                                                                                                                                             |
-| `just plot-test` / `just scripts-test` | the two non-Rust test suites (`benchmark/plot`'s pytest, `scripts/`'s bash suite) — outside `just check`, which is the Rust gate                                                                                                                 |
+**From this directory** — the crate's own gate, self-contained (no `uv`, no
+`jq`, no corpus):
+
+| Recipe                                 | What it does                                                    |
+| -------------------------------------- | --------------------------------------------------------------- |
+| `just fixtures`                        | download the CityJSON test fixtures into `tests/fixtures/`      |
+| `just check`                           | clippy, tests, schema/Parquet isolation, `fmt --check`, prettier |
+| `just test` / `just lint` / `just fmt` | the individual gates                                            |
+| `just vendor-check`                    | fmt + clippy + test the vendored `city3d-stac-tool`             |
+| `just interop`                         | convert both fixtures and have DuckDB read the Parquet natively |
+| `just catalog-*`                       | the STAC catalogue → CityParquet mirror (`tools/catalog2cityparquet`) |
+
+**From the repository root** — everything that reaches both this crate and the
+`benchmark/` tree:
+
+| Recipe                                 | What it does                                                                                                                                                                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `just convert-all FOLDER [OUT]`        | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`)                                                                                                                           |
+| `just fetch-data [DEST] [ONLY]`        | fetch the read benchmark's corpus (six real CityJSON datasets, 423 MB) into `DEST` (default `benchmark/formats/data/benchmark/`); `ONLY` picks the entries serving one benchmark set — `default` (the default), `no-citygml`, `all` |
+| `just fetch-tools`                     | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq)                                                                                                                        |
+| `just bench FOLDER [OUT] [FORMATS]`    | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `benchmark/formats/read_results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set  |
+| `just ordering-bench FOLDER [OUT]`     | the same run restricted to the ordering axis (source-order vs Hilbert CityParquet), into `OUT` (default `benchmark/formats/ordering_results`)                                                                                   |
+| `just write-bench FOLDER [OUT]`        | encoding-variant WRITE benchmark + the DuckDB `COPY` baseline, one CSV per input                                                                                                                                               |
+| `just compression-bench FOLDER [OUT]`  | codec + row-group WRITE-bench matrix, one CSV per input, plus charts                                                                                                                                                           |
+| `just plot` / `just plot-pretty`       | render charts and the cross-dataset summary page from CSVs already measured                                                                                                                                                    |
+| `just plot-test` / `just scripts-test` | the harness's two non-Rust test suites (`benchmark/plot`'s pytest, this directory's `scripts/` bash suite) — outside `just check`, which is the Rust gate                                                                       |
 
 Every recipe that walks a `FOLDER` discovers and names its inputs through the
-one input-extension convention at the top of the `justfile`
+one input-extension convention at the top of the **root** `justfile`
 (`KNOWN_INPUT_EXTENSIONS`/`KNOWN_INPUT_FIND`), which CityGML inputs are part
 of; `crates/cityparquet-readbench/tests/strip_extension.rs` holds it in
 lockstep with the Rust and shell implementations of the same rule.
 
-Downloaded benchmark data (`benchmark/formats/data/`) and generated packages (`out/`) are
-gitignored. The committed measurement artefacts are the read benchmark's CSVs
-(`benchmark/formats/read_results/`, `benchmark/formats/ordering_results/`) and the two methodology
-documents beside them (`benchmark/formats/READ_BENCHMARK.md`, `benchmark/formats/README.md`); the
-write-side CSVs are not committed — see `benchmark/formats/README.md`.
+Downloaded benchmark data (`benchmark/formats/data/`) and generated packages
+(`out/`) are gitignored. The committed measurement artefacts are the
+configuration-axis CSVs (`benchmark/formats/scaling_*_results/`) and the two
+methodology documents beside them
+(`benchmark/formats/READ_BENCHMARK.md`, `benchmark/formats/README.md`); the
+read-side CSVs are not currently committed — see
+[benchmark/README.md](../../benchmark/README.md) for which evidence is in git
+and which is re-measured.
 
 ## Development
 

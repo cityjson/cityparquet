@@ -1,6 +1,8 @@
 # CityParquet stack — manual test guide
 
-A step-by-step walkthrough for verifying the three implementation submodules.
+A step-by-step walkthrough for verifying the three implementations: the Rust
+reference library (`lib/cityparquet-rs`, in-tree) and the two DuckDB extensions
+(`lib/duckdb-cityjson`, `lib/duckdb-3d`, both submodules).
 
 Every command below was **executed on 2026-08-20** (macOS arm64, DuckDB v1.5.4,
 Rust 1.93.1) against these exact commits, and the expected outputs are the
@@ -28,8 +30,18 @@ but the multi-hour runs were not re-executed today.
 Run everything from the repo root unless stated otherwise:
 
 ```sh
-cd ~/tudelft/papers/citypaquet-paper
+cd cityparquet          # wherever you cloned github.com/cityjson/cityparquet
 ```
+
+> **Since the monorepo migration (2026-08-23) the layout this pass was written
+> against has moved.** `cityparquet-rs`, `citylake` and the two DuckDB
+> extensions are now under `lib/`; the benchmark corpora, results and plotting
+> project are under `benchmark/`; and every recipe that reaches both halves of
+> the benchmark harness — `bench`, `convert-all`, `write-bench`,
+> `compression-bench`, the fetchers, the renderers, `plot-test`,
+> `scripts-test` — is in the **root** `justfile` rather than
+> `lib/cityparquet-rs/justfile`. The commands below are updated to match. The
+> findings, commit references and dates are the record of the pass and are not.
 
 > ### What changed since the 2026-07-23 pass
 >
@@ -65,7 +77,7 @@ cd ~/tudelft/papers/citypaquet-paper
 > | **`geometry_templates.id` divergence is settled** | spec `documents/` `d7b373c` region, duckdb-cityjson | Closes former Known issue #2 |
 > | **Reserved object-table columns now emitted in the spec's normative order**, with `address`/`template` present but always NULL | duckdb-cityjson | Re-run in 2.7 |
 > | **CRS survives `cityparquet_read` → `cityparquet_write`** without passing `crs =>` | duckdb-cityjson | The old §2.7 CRS note asserted the opposite; corrected below |
-> | **A fresh read + ordering benchmark run, and the benchviz pipeline** | cityparquet-rs `01b719d` (2026-08-17, Linux/EPYC), `c87aaa9` | Part 5 — `just bench-summary` replaces the old direct script invocation |
+> | **A fresh read + ordering benchmark run, and the benchviz pipeline** | cityparquet-rs `01b719d` (2026-08-17, Linux/EPYC), `c87aaa9` | Part 5 — `just plot-pretty` replaces the old direct script invocation |
 >
 > One divergence remains open and is **not** part of this closure: a
 > sidecar-bearing package still fails rs export on a degenerate ring that
@@ -88,11 +100,11 @@ benchmark charts **and for the catalogue driver's test suite**.
 
 ### 0.1 Check out cityparquet-rs's vendored submodule — new, and `just check` fails without it
 
-`cityparquet-rs` now vendors `city3d-stac-tool` under `vendor/`, and `just
+`lib/cityparquet-rs` vendors `city3d-stac-tool` under `vendor/`, and `just
 check` gates on it (`vendor-check`).
 
 ```sh
-(cd cityparquet-rs && git submodule update --init)
+(cd lib/cityparquet-rs && git submodule update --init)
 ```
 
 ### 0.2 Refresh the CityJSON/CityGML fixtures — new fixtures landed 2026-08-11
@@ -104,8 +116,8 @@ objects) plus the synthetic `empty.city.jsonl`. Without them `just check` fails
 with `fixture must exist; run 'just fixtures'`.
 
 ```sh
-(cd cityparquet-rs && just fixtures)
-ls cityparquet-rs/tests/fixtures/
+(cd lib/cityparquet-rs && just fixtures)
+ls lib/cityparquet-rs/tests/fixtures/
 # b1_lod2_cs_w_sem.gml  b1_lod2_s.gml  berlin_citygml1.gml  delft.city.jsonl
 # empty.city.jsonl  freiburg_no_preamble_srs.gml  lod3_railway.city.json
 ```
@@ -165,13 +177,13 @@ Restore your previous state afterwards with
 
 ```sh
 # 1. cityparquet-rs (Rust) — ~25 s incremental
-(cd cityparquet-rs && cargo build --release -p cityparquet-cli)
+(cd lib/cityparquet-rs && cargo build --release -p cityparquet-cli)
 
 # 2. duckdb-cityjson — use `just rebuild`, NOT `just build` / `make release`
-(cd duckdb-cityjson && just rebuild)
+(cd lib/duckdb-cityjson && just rebuild)
 
 # 3. duckdb-3d
-(cd duckdb-3d && just build)
+(cd lib/duckdb-3d && just build)
 ```
 
 > **FIXED 2026-08-16 (was BROKEN).** `make release` used to die linking
@@ -187,11 +199,11 @@ Artefacts you will reference later:
 
 | Component | Path |
 |---|---|
-| `cityparquet` CLI | `cityparquet-rs/target/release/cityparquet` |
-| cityjson extension | `duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension` |
-| three_d extension | `duckdb-3d/build/release/extension/three_d/three_d.duckdb_extension` |
-| DuckDB shell w/ three_d preloaded | `duckdb-3d/build/release/duckdb` |
-| DuckDB shell w/ cityjson preloaded | `duckdb-cityjson/build/release/duckdb` |
+| `cityparquet` CLI | `lib/lib/cityparquet-rs/target/release/cityparquet` |
+| cityjson extension | `lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension` |
+| three_d extension | `lib/duckdb-3d/build/release/extension/three_d/three_d.duckdb_extension` |
+| DuckDB shell w/ three_d preloaded | `lib/duckdb-3d/build/release/duckdb` |
+| DuckDB shell w/ cityjson preloaded | `lib/duckdb-cityjson/build/release/duckdb` |
 
 > **Note.** Each submodule's `build/release/duckdb` shell has *its own*
 > extension statically preloaded. To use both together, load the other one's
@@ -203,7 +215,7 @@ Artefacts you will reference later:
 ## Part 1 — cityparquet-rs: write CityParquet
 
 ```sh
-export CP=cityparquet-rs/target/release/cityparquet
+export CP=lib/cityparquet-rs/target/release/cityparquet
 export OUT=/tmp/cp_test && rm -rf $OUT && mkdir -p $OUT
 ```
 
@@ -223,10 +235,10 @@ and a prettier pass over the Markdown, in that order.
 > them individually instead:
 >
 > ```sh
-> (cd cityparquet-rs && just lint)                    # exit 0
-> (cd cityparquet-rs && just isolation)                # exit 0
-> (cd cityparquet-rs && cargo fmt --all --check)       # exit 0
-> (cd cityparquet-rs && just vendor-check)             # exit 0
+> (cd lib/cityparquet-rs && just lint)                    # exit 0
+> (cd lib/cityparquet-rs && just isolation)                # exit 0
+> (cd lib/cityparquet-rs && cargo fmt --all --check)       # exit 0
+> (cd lib/cityparquet-rs && just vendor-check)             # exit 0
 > ```
 >
 > All four verified green on this machine today. `vendor-check` runs
@@ -239,7 +251,7 @@ For the test suite itself, exclude the affected crate — this is the working
 substitute, not a code change:
 
 ```sh
-(cd cityparquet-rs && cargo test --workspace --exclude cityparquet-readbench)
+(cd lib/cityparquet-rs && cargo test --workspace --exclude cityparquet-readbench)
 ```
 
 Expected: **43 targets, 713 passed, 0 failed, 0 ignored**
@@ -248,7 +260,7 @@ Expected: **43 targets, 713 passed, 0 failed, 0 ignored**
 The aggregate is easier to read than the 43 per-target lines:
 
 ```sh
-(cd cityparquet-rs && cargo test --workspace --exclude cityparquet-readbench 2>&1 \
+(cd lib/cityparquet-rs && cargo test --workspace --exclude cityparquet-readbench 2>&1 \
   | grep -E '^test result:' \
   | awk '{p+=$4; f+=$6; i+=$8; n++} END {print "targets:",n,"passed:",p,"failed:",f,"ignored:",i}')
 # targets: 43 passed: 713 failed: 0 ignored: 0
@@ -520,7 +532,7 @@ exit=0
 ### 1.7 The bundled interop script
 
 ```sh
-(cd cityparquet-rs && just interop)
+(cd lib/cityparquet-rs && just interop)
 ```
 
 Expected: `interop ok`. It converts both fixtures and has DuckDB assert the
@@ -625,7 +637,7 @@ convert. Its own suite fakes every origin and subprocess — no network, no
 binaries:
 
 ```sh
-(cd cityparquet-rs && just catalog-test)
+(cd lib/cityparquet-rs && just catalog-test)
 ```
 
 Expected: **265 passed, 7 skipped**.
@@ -636,8 +648,8 @@ catalogue. To prove a change on real data, one small collection is the intended
 unit:
 
 ```sh
-(cd cityparquet-rs && just catalog-convert-collection rotterdam-3d out/e2e)
-(cd cityparquet-rs && just catalog-histogram out/e2e)
+(cd lib/cityparquet-rs && just catalog-convert-collection rotterdam-3d out/e2e)
+(cd lib/cityparquet-rs && just catalog-histogram out/e2e)
 ```
 
 Roll the ledger up with `catalog-histogram`, never by counting lines in
@@ -651,7 +663,7 @@ previously failed item, so line-counting over-counts failures.
 ### 2.1 SQL test suite
 
 ```sh
-(cd duckdb-cityjson && ./build/release/test/unittest "test/sql/*")
+(cd lib/duckdb-cityjson && ./build/release/test/unittest "test/sql/*")
 ```
 
 Expected: `All tests passed (3 skipped tests, 1331 assertions in 53 test cases)`.
@@ -663,7 +675,7 @@ FlatCityBuf range-read test, 2.9) and `test/sql/cityjson_remote.test` +
 ### 2.2 Read CityJSONSeq
 
 ```sh
-./duckdb-cityjson/build/release/duckdb -c "
+./lib/duckdb-cityjson/build/release/duckdb -c "
 SELECT count(*) AS objects
 FROM read_cityjsonseq('cityparquet-rs/tests/fixtures/delft.city.jsonl');"
 ```
@@ -680,7 +692,7 @@ grammar the Parquet file uses: `geometry_lodX_Y` (BLOB/WKB) +
 from the column name, and what lets `COPY TO cityjson` re-emit it.
 
 ```sh
-./duckdb-cityjson/build/release/duckdb -c "
+./lib/duckdb-cityjson/build/release/duckdb -c "
 SELECT id, geometry_properties_lod2_2
 FROM read_cityjsonseq('cityparquet-rs/tests/fixtures/delft.city.jsonl', lod => '2.2')
 WHERE geometry_lod2_2 IS NOT NULL LIMIT 2;"
@@ -704,7 +716,7 @@ extension is not a dependency of this one.
 ### 2.4 Arrow-native geometry encoding
 
 ```sh
-./duckdb-cityjson/build/release/duckdb -c "
+./lib/duckdb-cityjson/build/release/duckdb -c "
 DESCRIBE SELECT * FROM read_cityjsonseq('cityparquet-rs/tests/fixtures/delft.city.jsonl',
                                         lod => '2.2', geometry_encoding := 'arrow-native');"
 ```
@@ -720,9 +732,9 @@ geometry_properties_lod2_2  struct("type" varchar, surfaces varchar, face_semant
 ### 2.5 GeoParquet `geo` footer generation
 
 ```sh
-./duckdb-cityjson/build/release/duckdb -noheader -list -c "
+./lib/duckdb-cityjson/build/release/duckdb -noheader -list -c "
 SELECT geo IS NOT NULL FROM cityjson_geoparquet_geo('cityparquet-rs/tests/fixtures/delft.city.jsonl');"
-./duckdb-cityjson/build/release/duckdb -noheader -list -c "
+./lib/duckdb-cityjson/build/release/duckdb -noheader -list -c "
 SELECT geo IS NULL FROM cityjson_geoparquet_geo('cityparquet-rs/tests/fixtures/delft.city.jsonl',
                                                 geometry_encoding := 'arrow-native');"
 ```
@@ -733,7 +745,7 @@ arrow-native — matching cityparquet-rs's own footer decision in 1.8.
 Used with `COPY`, this is the SQL-native executable prototype of the encoding:
 
 ```sh
-./duckdb-cityjson/build/release/duckdb -unsigned -c "
+./lib/duckdb-cityjson/build/release/duckdb -unsigned -c "
 SET VARIABLE geo = (SELECT geo FROM cityjson_geoparquet_geo('cityparquet-rs/tests/fixtures/delft.city.jsonl'));
 COPY (SELECT * FROM read_cityjsonseq('cityparquet-rs/tests/fixtures/delft.city.jsonl'))
   TO '/tmp/cp_test/delft_duckdb.parquet'
@@ -750,7 +762,7 @@ across the whole file:
 
 ```sh
 F=cityparquet-rs/tests/fixtures/lod3_railway.city.json
-./duckdb-cityjson/build/release/duckdb -c "
+./lib/duckdb-cityjson/build/release/duckdb -c "
 SELECT (SELECT count(*) FROM cityjson_materials('$F'))          AS materials,
        (SELECT count(*) FROM cityjson_textures('$F'))           AS textures,
        (SELECT count(*) FROM cityjson_geometry_templates('$F')) AS templates;"
@@ -764,7 +776,7 @@ cardinality is the strongest cheap check in this document.
 it emits global sidecar ids instead of file-local ones.
 
 ```sh
-./duckdb-cityjson/build/release/duckdb -c "
+./lib/duckdb-cityjson/build/release/duckdb -c "
 SELECT count(*) AS rows, count(material_lod3_0) AS with_material
 FROM read_cityjson('$F', lod => '3', appearance := 'sidecar');"
 # 121 | 24
@@ -792,7 +804,7 @@ the caller's transaction.
 > Also: PRAGMA named parameters use `=`, not `:=`.
 
 ```sh
-cd duckdb-cityjson
+cd lib/duckdb-cityjson
 rm -f /tmp/cp_test/mut.db && rm -rf /tmp/cp_test/pkg_out
 D=/tmp/cp_test/mut.db
 F=../cityparquet-rs/tests/fixtures/delft.city.jsonl
@@ -997,7 +1009,7 @@ which is the fastest way to see what a call would do.
 ### 2.8 Metadata functions
 
 ```sh
-./duckdb-cityjson/build/release/duckdb -c "
+./lib/duckdb-cityjson/build/release/duckdb -c "
 SELECT version, title, city_objects_count, reference_system
 FROM cityjsonseq_metadata('cityparquet-rs/tests/fixtures/delft.city.jsonl');"
 ```
@@ -1014,7 +1026,7 @@ decodes only what the query projects (`FcbFieldMask`), and supports bbox
 (`min_x`/`min_y`/`max_x`/`max_y`) and attribute-WHERE pushdown.
 
 ```sh
-(cd duckdb-cityjson && ./build/release/duckdb -c "
+(cd lib/duckdb-cityjson && ./build/release/duckdb -c "
 SELECT count(*) FROM read_flatcitybuf('test/data/fcb_bbox_attr.fcb');
 SELECT count(*) FROM read_flatcitybuf('test/data/fcb_bbox_attr.fcb') WHERE height >= 10;")
 ```
@@ -1024,7 +1036,7 @@ Expected: `3` and `3`.
 Network-gated remote range reads are opt-in and skipped by 2.1:
 
 ```sh
-(cd duckdb-cityjson && just test-fcb-remote)   # HTTP range requests, ~2.3 GB hosted 3DBAG
+(cd lib/duckdb-cityjson && just test-fcb-remote)   # HTTP range requests, ~2.3 GB hosted 3DBAG
 ```
 
 **Caveat:** the bbox in that test is a 500 m square hard-wired to the default
@@ -1038,7 +1050,7 @@ Neither runs under `make test`.
   this pass:
 
   ```sh
-  (cd duckdb-cityjson && just wasm-setup && just wasm && just test-wasm)
+  (cd lib/duckdb-cityjson && just wasm-setup && just wasm && just test-wasm)
   ```
 
   The Node smoke harness asserts `pragma_platform() = wasm_mvp`, that the
@@ -1081,7 +1093,7 @@ one command, and — unlike a bare `make test` — it **stages the `cityjson` an
 skipping**:
 
 ```sh
-(cd duckdb-3d && make test_full)
+(cd lib/duckdb-3d && make test_full)
 ```
 
 Expected:
@@ -1099,7 +1111,7 @@ loop but reverts to the old behaviour — the `require cityjson` / `require
 spatial` tests skip because the sqllogic runner cannot autoload them:
 
 ```sh
-(cd duckdb-3d && make test && make test_cpp)
+(cd lib/duckdb-3d && make test && make test_cpp)
 ```
 
 - SQL: `All tests passed (5 skipped tests, 469 assertions in 28 test cases)`
@@ -1116,7 +1128,7 @@ covers them manually) and 1 × `require spatial` (the coexistence test).
 ### 3.2 Hollow solid / inner shell (spec §8 `shells`)
 
 ```sh
-(cd duckdb-3d && THREE_D_TEST_FIXTURES=1 ./build/release/test/unittest "test/sql/st_3d_hollow_solid.test")
+(cd lib/duckdb-3d && THREE_D_TEST_FIXTURES=1 ./build/release/test/unittest "test/sql/st_3d_hollow_solid.test")
 ```
 
 Expected: `All tests passed (17 assertions in 1 test case)`.
@@ -1137,7 +1149,7 @@ Every name that would otherwise collide with `spatial` now lives under
 (`a6b1f1d`, breaking). Confirm what the build actually registers:
 
 ```sh
-./duckdb-3d/build/release/duckdb -noheader -list -c "
+./lib/duckdb-3d/build/release/duckdb -noheader -list -c "
 SELECT DISTINCT function_name FROM duckdb_functions()
 WHERE function_name LIKE 'st\_3d%'     ESCAPE '\'
    OR function_name LIKE 'st\_geom3d%' ESCAPE '\'
@@ -1158,7 +1170,7 @@ Constructors now return the real `SOLID_3D` type rather than `BLOB`
 `THREE_D_TEST_FIXTURES` (`15659f4`). Both at once:
 
 ```sh
-THREE_D_TEST_FIXTURES=1 ./duckdb-3d/build/release/duckdb -unsigned -c "
+THREE_D_TEST_FIXTURES=1 ./lib/duckdb-3d/build/release/duckdb -unsigned -c "
 SELECT typeof(ST_3DFromWKB(ST_AsWKBPolyhedralTetra()))       AS typed,
        ST_3DVolume(ST_3DFromWKB(ST_AsWKBHollowCube()))       AS hollow_vol;"
 ```
@@ -1170,10 +1182,10 @@ SOLID_3D | 56.0
 Count the gated functions to see the gate itself:
 
 ```sh
-./duckdb-3d/build/release/duckdb -noheader -list -c \
+./lib/duckdb-3d/build/release/duckdb -noheader -list -c \
   "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'st\_aswkb%' ESCAPE '\';"
 # 1   -- only the real ST_AsWKB exporter
-THREE_D_TEST_FIXTURES=1 ./duckdb-3d/build/release/duckdb -noheader -list -c \
+THREE_D_TEST_FIXTURES=1 ./lib/duckdb-3d/build/release/duckdb -noheader -list -c \
   "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'st\_aswkb%' ESCAPE '\';"
 # 12  -- plus the 11 fixture builders
 ```
@@ -1198,8 +1210,8 @@ required). Note the **suffixed** column names and that the STRUCT
 round-trip, thanks to the `(BLOB, ANY)` overload:
 
 ```sh
-./duckdb-3d/build/release/duckdb -unsigned -c "
-LOAD '$(pwd)/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
+./lib/duckdb-3d/build/release/duckdb -unsigned -c "
+LOAD '$(pwd)/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
 SELECT id,
        ST_3DNumFaces(solid)              AS faces,
        ST_3DIsClosed(solid)              AS closed,
@@ -1219,8 +1231,8 @@ cube | 6 | true | 6.0 | 1.0
 ### 4.2 The `shells` contract — a cavity must subtract
 
 ```sh
-./duckdb-3d/build/release/duckdb -unsigned -c "
-LOAD '$(pwd)/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
+./lib/duckdb-3d/build/release/duckdb -unsigned -c "
+LOAD '$(pwd)/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
 SELECT geometry_properties_lod2_0
 FROM read_cityjson('duckdb-3d/test/data/hollow_solid.city.json', lod => '2');
 SELECT ST_3DNumShells(s) AS shells, ST_3DIsClosed(s) AS closed, ROUND(ST_3DVolume(s),6) AS volume
@@ -1246,7 +1258,7 @@ The payoff test: 3D analysis straight off a CityParquet package written by the
 Rust reference implementation, with no CityJSON in the loop.
 
 ```sh
-./duckdb-3d/build/release/duckdb -unsigned -c "
+./lib/duckdb-3d/build/release/duckdb -unsigned -c "
 WITH solids AS (
   SELECT id, ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS s
   FROM read_parquet('/tmp/cp_test/delft/building.parquet')
@@ -1285,7 +1297,7 @@ Building parents); and 18 real-world solids are non-manifold.
 ### 4.4 The same chain, arrow-native — the parity check
 
 ```sh
-./duckdb-3d/build/release/duckdb -unsigned -c "
+./lib/duckdb-3d/build/release/duckdb -unsigned -c "
 WITH solids AS (
   SELECT id, ST_3DTryFromArrowNative(geometry_lod2_2, geometry_vertices_lod2_2,
                                      geometry_properties_lod2_2) AS s
@@ -1314,8 +1326,8 @@ The direct duckdb-cityjson → duckdb-3d arrow-native pairing works for
 single-shell geometry:
 
 ```sh
-./duckdb-3d/build/release/duckdb -unsigned -c "
-LOAD '$(pwd)/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
+./lib/duckdb-3d/build/release/duckdb -unsigned -c "
+LOAD '$(pwd)/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
 SELECT id, ST_3DNumFaces(s) AS faces, ROUND(ST_3DVolume(s),6) AS vol
 FROM (SELECT id, ST_3DFromArrowNative(geometry_lod2_2, geometry_vertices_lod2_2,
                                       geometry_properties_lod2_2) AS s
@@ -1328,8 +1340,8 @@ FROM (SELECT id, ST_3DFromArrowNative(geometry_lod2_2, geometry_vertices_lod2_2,
 …and, since the encoder fix below, on a **hollow** solid too:
 
 ```sh
-./duckdb-3d/build/release/duckdb -unsigned -c "
-LOAD '$(pwd)/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
+./lib/duckdb-3d/build/release/duckdb -unsigned -c "
+LOAD '$(pwd)/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
 SELECT ST_3DNumShells(s) AS shells, ST_3DIsClosed(s) AS closed, ROUND(ST_3DVolume(s),6) AS volume
 FROM (SELECT ST_3DFromArrowNative(geometry_lod2_0, geometry_vertices_lod2_0, geometry_properties_lod2_0) AS s
       FROM read_cityjson('duckdb-3d/test/data/hollow_solid.city.json', lod => '2',
@@ -1368,7 +1380,7 @@ cityparquet-rs → CityJSON
 
 ```sh
 rm -rf /tmp/n && mkdir -p /tmp/n
-cityparquet-rs/target/release/cityparquet convert cityparquet-rs/tests/fixtures/delft.city.jsonl -o /tmp/n/rs --no-lod0 --overwrite
+lib/cityparquet-rs/target/release/cityparquet convert cityparquet-rs/tests/fixtures/delft.city.jsonl -o /tmp/n/rs --no-lod0 --overwrite
 ```
 
 ```
@@ -1376,7 +1388,7 @@ cityparquet-rs/target/release/cityparquet convert cityparquet-rs/tests/fixtures/
 ```
 
 ```sh
-duckdb-cityjson/build/release/duckdb -c "
+lib/duckdb-cityjson/build/release/duckdb -c "
 SET enable_geoparquet_conversion=false;
 CREATE SCHEMA d;
 PRAGMA cityparquet_read('/tmp/n/rs','d');
@@ -1389,8 +1401,8 @@ metadata.json    | written |    0 |    6749
 ```
 
 ```sh
-cityparquet-rs/target/release/cityparquet export /tmp/n/rt /tmp/n/rt.city.jsonl
-cityparquet-rs/target/release/cityparquet compare cityparquet-rs/tests/fixtures/delft.city.jsonl /tmp/n/rt.city.jsonl
+lib/cityparquet-rs/target/release/cityparquet export /tmp/n/rt /tmp/n/rt.city.jsonl
+lib/cityparquet-rs/target/release/cityparquet compare cityparquet-rs/tests/fixtures/delft.city.jsonl /tmp/n/rt.city.jsonl
 echo "exit=$?"
 ```
 
@@ -1418,7 +1430,7 @@ exit=0
 still fails rs export:
 
 ```sh
-cityparquet-rs/target/release/cityparquet export /tmp/cp_test/pkg_out /tmp/cp_test/pkg_out.city.jsonl
+lib/cityparquet-rs/target/release/cityparquet export /tmp/cp_test/pkg_out /tmp/cp_test/pkg_out.city.jsonl
 ```
 
 ```
@@ -1433,11 +1445,11 @@ converting that same source with `--tolerate-invalid-appearance` reports
 (`2 2 0 0`, exit 0):
 
 ```sh
-cityparquet-rs/target/release/cityparquet convert duckdb-cityjson/test/data/railway_appearance.city.jsonl \
+lib/cityparquet-rs/target/release/cityparquet convert duckdb-cityjson/test/data/railway_appearance.city.jsonl \
     -o /tmp/cp_test/railway_appearance_tolerant --tolerate-invalid-appearance --overwrite
 # warning: source carries a CRS-bearing coordinate ... (as in 1.5)
 # 2 6 0 0 1 1 3 4 3 1
-cityparquet-rs/target/release/cityparquet export /tmp/cp_test/railway_appearance_tolerant /tmp/cp_test/railway_appearance_tolerant.city.jsonl
+lib/cityparquet-rs/target/release/cityparquet export /tmp/cp_test/railway_appearance_tolerant /tmp/cp_test/railway_appearance_tolerant.city.jsonl
 echo "exit=$?"
 # 2 2 0 0
 # exit=0
@@ -1454,7 +1466,7 @@ The gap is one-directional — DuckDB reads both its own output and the Rust
 writer's:
 
 ```sh
-(cd duckdb-cityjson && rm -f /tmp/cp_test/rt.db \
+(cd lib/duckdb-cityjson && rm -f /tmp/cp_test/rt.db \
   && ./build/release/duckdb /tmp/cp_test/rt.db -c "CREATE SCHEMA x;" \
   && ./build/release/duckdb /tmp/cp_test/rt.db -c "PRAGMA cityparquet_read('/tmp/cp_test/pkg_out', 'x');" \
   && ./build/release/duckdb /tmp/cp_test/rt.db -c "SELECT table_name, role FROM x.__cityparquet ORDER BY 1;")
@@ -1482,7 +1494,6 @@ results were regenerated, the compression CSVs of the superseded corpus were
 deleted. Two commands answer the question at the moment you ask it:
 
 ```sh
-cd cityparquet-rs
 ls benchmark/formats/data benchmark/formats/read_results benchmark/formats/ordering_results benchmark/formats/compression_results 2>&1
 git log --oneline -3 -- benchmark/formats/read_results benchmark/formats/ordering_results
 ```
@@ -1540,7 +1551,6 @@ EOF
 ### 5.2 Regenerate all CityParquet packages
 
 ```sh
-cd cityparquet-rs
 rm -rf out/cityparquet
 just convert-all benchmark/formats/data out/cityparquet
 ```
@@ -1558,7 +1568,6 @@ useful for skipping it.
 ### 5.3 Compression benchmark
 
 ```sh
-cd cityparquet-rs
 just compression-bench benchmark/formats/data benchmark/formats/compression_results
 ```
 
@@ -1573,7 +1582,6 @@ lz4, brotli; row-group axis: default, rg512, rg4096), then charts via `uv`.
 ### 5.4 Write benchmark
 
 ```sh
-cd cityparquet-rs
 just write-bench benchmark/formats/data          # -> benchmark/formats/results/ (not committed)
 ```
 
@@ -1583,7 +1591,6 @@ DuckDB `COPY` baseline).
 ### 5.5 Read benchmark
 
 ```sh
-cd cityparquet-rs
 rm -rf benchmark/formats/data/readbench          # only if you want a clean prepare
 just bench benchmark/formats/data benchmark/formats/read_results
 ```
@@ -1606,18 +1613,20 @@ SQL baseline.
 
 ### 5.6 Aggregate results into one page
 
-The renderer itself lives in the submodule (`benchmark/plot/benchviz`, its own
-`just plot-pretty`); from the repo root, `just bench-summary` points it at the
-paper's two destinations and measures nothing itself:
-
 ```sh
-just bench-summary
+just plot-pretty
 ```
 
-This rebuilds `docs/bench-summary.html` and `paper/assets/benchmark/formats/` from the
-CSVs already committed under `benchmark/formats/`. Read the messages it
-prints — the figures step can refuse (existing print-sheet captions are tied
-to the corpus they were drawn from) while still writing the HTML page.
+The renderer (`benchmark/plot/benchviz`) reads what the runs above left under
+`benchmark/formats/` and writes `benchmark/summary/` — `bench_data.json`, a
+self-contained `bench-summary.html`, and the static print figures. It measures
+nothing, so re-running it is free. Read the messages it prints: the figures step
+can refuse (existing print-sheet captions are tied to the corpus they were drawn
+from) while still writing the HTML page.
+
+The **paper** repository runs the same renderer against this repository as a
+submodule, pointing its figure output at `paper/assets/bench/` — that is
+`just bench-summary` there, not here.
 
 ---
 

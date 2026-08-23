@@ -11,6 +11,11 @@ under active development, with APIs, output schemas, and on-disk formats that ma
 change without notice, and bugs (including ones affecting data correctness) are
 expected. Verify results against a trusted source before relying on them.
 
+All three live in the [`cityjson/cityparquet`](https://github.com/cityjson/cityparquet)
+monorepo, alongside this specification and the benchmarks: the Rust library
+in-tree under `lib/cityparquet-rs/`, the two DuckDB extensions as submodules
+under `lib/`. Clone it with `--recurse-submodules`.
+
 ## cityparquet-rs
 
 The **Rust reference implementation** of CityParquet — the reader/writer that owns
@@ -26,7 +31,10 @@ semantic losslessness. It ships a `cityparquet` CLI with four subcommands —
 Milestones M1–M5 are complete; async / object-store I/O, native (non-WKB) geometry,
 and Python bindings are post-1.0 future work.
 
-Repository: [`HideBa/cityparquet-rs`](https://github.com/HideBa/cityparquet-rs)
+Source: [`cityjson/cityparquet`](https://github.com/cityjson/cityparquet), under
+`lib/cityparquet-rs/`. It was developed as a standalone repository at
+`HideBa/cityparquet-rs`, which is now **archived** — its full history is
+preserved in the monorepo.
 
 ## DuckDB CityJSON extension
 
@@ -64,7 +72,8 @@ implementations together. `cityparquet_write` also still declares the STAC **Tab
 extension and writes `table:row_count`, which [the metadata
 rules](/specification/metadata) no longer ask for.
 
-Repository: [`cityjson/duckdb-cityjson`](https://github.com/cityjson/duckdb-cityjson)
+Repository: [`cityjson/duckdb-cityjson`](https://github.com/cityjson/duckdb-cityjson),
+consumed by the monorepo as a submodule at `lib/duckdb-cityjson/`.
 
 ## DuckDB 3D extension
 
@@ -79,7 +88,17 @@ repairs), and 3D distance queries — on a self-contained C++ geometry kernel wi
 CGAL/SFCGAL dependency. It targets DuckDB `v1.5.x` and is built from source
 (`GEN=ninja make`). See the [walkthrough](/tutorials/duckdb-3d).
 
-Repository: [`HideBa/duckdb-3d`](https://github.com/HideBa/duckdb-3d)
+Repository: [`HideBa/duckdb-3d`](https://github.com/HideBa/duckdb-3d), consumed
+by the monorepo as a submodule at `lib/duckdb-3d/`.
+
+## Archived
+
+- [`HideBa/cityparquet-prototype`](https://github.com/HideBa/cityparquet-prototype)
+  — a Python workspace used to test schema and geometry-encoding alternatives
+  (wide vs multi-table layouts, WKB vs Arrow-native geometry, quantisation,
+  shared vertices) before the specification committed to them. Nothing in the
+  current stack depends on it; it is kept read-only as a record of the
+  alternatives that lost.
 
 ## Implementation status
 

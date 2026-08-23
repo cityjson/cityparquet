@@ -85,9 +85,9 @@ def get_ground_surfaces(polygons: List[Polygon]) -> List[Polygon]:
 ```
 
 A working patch against `cjdb==2.2.0` implementing exactly this is
-available at `benchmarking/vendor/cjdb/ground-surfaces-tie.patch` in the
+available at `benchmark/databases/vendor/cjdb/ground-surfaces-tie.patch` in the
 cityparquet-paper repository, along with a minimal regression test
-(`benchmarking/tests/test_cjdb_patch.py`).
+(`benchmark/databases/tests/test_cjdb_patch.py`).
 
 ---
 

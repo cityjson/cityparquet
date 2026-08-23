@@ -147,10 +147,13 @@ Path B.
 ### Path B — the cityparquet-rs CLI
 
 The Rust reference writer produces the full package — the per-module object tables
-plus `metadata.json`, and optional sidecars — with round-trip guarantees:
+plus `metadata.json`, and optional sidecars — with round-trip guarantees. It lives
+in the monorepo at `lib/cityparquet-rs/`:
 
 ```bash
-cargo run -p cityparquet-cli -- convert delft.city.jsonl delft/ --overwrite
+git clone https://github.com/cityjson/cityparquet.git
+cd cityparquet/lib/cityparquet-rs
+cargo run -p cityparquet-cli -- convert delft.city.jsonl --output delft/ --overwrite
 ```
 
 `convert` writes one object table per CityGML module (`delft/building.parquet`,

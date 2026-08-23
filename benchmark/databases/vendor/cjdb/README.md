@@ -25,7 +25,7 @@ Any two non-vertical faces that happen to share a mean Z overwrite one
 another — only the last one processed survives. This is an entirely
 ordinary shape for a building with a flat-planed roof or ground: nothing
 contrived about it. Measured directly against the delft fixture this
-benchmark ships (`benchmarking/data/delft.city.jsonl`, 2231 CityObjects):
+benchmark ships (`benchmark/databases/data/delft.city.jsonl`, 2231 CityObjects):
 **9 of the 1116 BuildingParts** that reach this code path have two or more
 tied faces, silently losing up to 8 of them in one case. The practical
 effect is a `ground_geometry` polygon that is smaller — sometimes much
@@ -51,7 +51,7 @@ derived from it appears:
 
 - `results/<dataset>.manifest.json`'s `patches.cjdb` (built by
   `citybench.systems.cjdb.patch_disclosure()`) and `versions.cjdb`.
-- `benchmarking/README.md`.
+- `benchmark/databases/README.md`.
 - This file.
 
 ## The patch
@@ -84,7 +84,7 @@ just patch-cjdb
 Downloads the pinned `cjdb-2.2.0.tar.gz` sdist from PyPI (checksum-verified
 against a pinned SHA-256 — see the script), extracts it, and applies
 `ground-surfaces-tie.patch` with `patch -p1`. The result is written to
-`benchmarking/.cjdb-patched/cjdb-2.2.0+<patch-hash>/` — a directory whose
+`benchmark/databases/.cjdb-patched/cjdb-2.2.0+<patch-hash>/` — a directory whose
 name embeds the patch file's own sha256 prefix, **not** committed
 (git-ignored, like `data/`): it is a deterministic build artefact,
 reproducible from this committed patch by anyone who runs the command

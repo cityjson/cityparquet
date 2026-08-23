@@ -3,7 +3,7 @@
 The tool itself is a Java CLI, run from a pinned container image
 (`docker/citydb.Dockerfile`) rather than needing a specific JRE on the
 host. The container runtime is rootless podman (`just up`/`just down`
-drive `podman-compose`; see `benchmarking/justfile`), not docker — the
+drive `podman-compose`; see `benchmark/databases/justfile`), not docker — the
 `docker` binary happens to exist on this host too, but is not the
 runtime this harness's containers run under.
 """

@@ -43,9 +43,11 @@ pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).parent / "fixtures" / "lod_divergence.city.jsonl"
 OBJECT_ID = "roof-at-lod1-only"
+# tests/ -> benchmark/databases -> benchmark -> the monorepo root; the
+# converter lives in the other half of the tree.
 CITYPARQUET_BIN = (
-    Path(__file__).resolve().parents[2]
-    / "cityparquet-rs" / "target" / "release" / "cityparquet"
+    Path(__file__).resolve().parents[3]
+    / "lib" / "cityparquet-rs" / "target" / "release" / "cityparquet"
 )
 
 # semantic-surface's own SQL branches take none of Params' other fields, so

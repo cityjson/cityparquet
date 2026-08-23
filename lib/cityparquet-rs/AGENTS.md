@@ -7,14 +7,28 @@ per city object, WKB geometry per LoD, typed attribute columns, optional
 material/texture/geometry-template sidecars), with an Arrow in-memory representation,
 and round-trips back to CityJSON / CityJSONSeq with **semantic** losslessness.
 
+## Where you are
+
+`lib/cityparquet-rs/` inside the CityParquet monorepo. Two things follow:
+
+- **The benchmark harness is split on purpose.** Its code is here
+  (`crates/cityparquet-readbench`, `scripts/`); its corpora, results and plotting
+  project are evidence and live in `../../benchmark/`. Every recipe that reaches both
+  — `bench`, `convert-all`, `write-bench`, `compression-bench`, the fetchers, the
+  renderers, `plot-test`, `scripts-test` — is in the **root** `justfile` and is run
+  from the repository root. `$BENCH_ROOT` (default `../../benchmark/formats`) is the
+  seam the scripts use.
+- **This `justfile` keeps only what belongs to the crate**, and `just check` here is
+  self-contained: no `uv`, no `jq`, no corpus.
+
 ## Relationship to the specification
 
-The **normative CityParquet specification** lives in the parent workspace at
-`../documents/docs/03-specification/` (reasoning in `04-design-decisions/`, undecided
-items in `05-open-questions/`). This repo _implements_ that spec. This repo's own
-`docs/design.md` is the local design doc; where it and the parent spec disagree, the
-**parent spec is authoritative on the format**. Track any divergence in the spec's
-implementation-status table (`../documents/docs/06-resources/02-software.mdx`).
+The **normative CityParquet specification** lives in the monorepo at
+`../../documents/docs/03-specification/` (reasoning in `04-design-decisions/`,
+undecided items in `05-open-questions/`). This crate _implements_ that spec. Its own
+`docs/design.md` is the local design doc; where it and the spec disagree, the **spec is
+authoritative on the format**. Track any divergence in the spec's
+implementation-status table (`../../documents/docs/06-resources/02-software.mdx`).
 
 ## Components
 
@@ -32,7 +46,6 @@ it (it orchestrates the binaries rather than linking against them):
 ## Commands
 
 ```bash
-just hooks        # activate .githooks/pre-commit (one-off per clone)
 just fixtures     # download the real CityJSON test fixtures (one-off, network)
 just check        # clippy -D warnings + tests + schema isolation + fmt --check (Rust and Markdown)
 just test         # tests only
@@ -70,7 +83,7 @@ declares none — without it such a source still converts, writing `city.crs: nu
 aborting; off by default — strict is the oracle). The
 round-trip is proven by `convert` → `export` → `compare` against the source. See
 `README.md` for the full flag tables and the per-command stdout report formats, and
-`benchmark/formats/README.md` for benchmark methodology and comparability caveats.
+`../../benchmark/formats/README.md` for benchmark methodology and comparability caveats.
 
 ## Development discipline
 
@@ -78,7 +91,7 @@ round-trip is proven by `convert` → `export` → `compare` against the source.
 - **Tests read real CityJSON fixtures** (`just fixtures` first; e.g. `tests/fixtures/delft.city.jsonl`, `tests/fixtures/lod3_railway.city.json`) — **never** inline hand-written CityJSON.
 - **Keep `cityparquet-schema` free of `arrow-array`/`parquet`** (`just isolation`) so it remains an executable spec.
 - **Breaking changes are welcome** — pick the right design, do not carry compatibility shims, deprecation paths, or legacy branches for the old one. Update every call site instead.
-- **The pre-commit hook formats source and docs on every commit** — `.githooks/pre-commit` runs rustfmt and Prettier over the staged files; activate it once per clone with `just hooks`, and never bypass it with `--no-verify`.
+- **The pre-commit hook formats source and docs on every commit** — the monorepo's `.githooks/pre-commit` runs rustfmt and Prettier over the staged files; activate it once per clone with `just hooks` **from the repository root**, and never bypass it with `--no-verify`.
 - **`just check` is the gate** before declaring work done or opening a PR.
 - Run an external Codex CLI review at the end of each milestone.
 
@@ -97,5 +110,6 @@ round-trip is proven by `convert` → `export` → `compare` against the source.
 
 - `docs/design.md` — data model & format (package layout, columns, geometry/appearance encoding, round-trip semantics).
 - `docs/architecture.md` — the code: crates, the two-pass conversion pipeline, reader/export/compare, the benchmark harness.
-- `benchmark/formats/README.md` — the write/compression benchmark's methodology and comparability caveats (no CSVs committed).
-- `benchmark/formats/READ_BENCHMARK.md` — the cross-format read benchmark: methodology, the six-dataset cityjson.org corpus, the two benchmark sets, and 18 fairness caveats. No CSVs are committed; `benchmark/formats/read_results/` and `benchmark/formats/ordering_results/` are populated by `just bench` / `just ordering-bench`.
+- `../../benchmark/README.md` — what the three benchmark families measure, which evidence is committed and which is re-measured, and the caveats that are load-bearing.
+- `../../benchmark/formats/README.md` — the write/compression benchmark's methodology and comparability caveats (no CSVs committed).
+- `../../benchmark/formats/READ_BENCHMARK.md` — the cross-format read benchmark: methodology, the six-dataset cityjson.org corpus, the two benchmark sets, and 18 fairness caveats. No CSVs are committed; `benchmark/formats/read_results/` and `benchmark/formats/ordering_results/` are populated by `just bench` / `just ordering-bench` from the repository root.

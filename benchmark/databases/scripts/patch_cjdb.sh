@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Build a patched local copy of cjdb==2.2.0 that CjdbSystem drives instead
-# of stock cjdb from PyPI. See benchmarking/vendor/cjdb/README.md for why.
+# of stock cjdb from PyPI. See benchmark/databases/vendor/cjdb/README.md for why.
 #
 # Reproducible: downloads the exact pinned sdist (checksum-verified below),
 # extracts it, and applies the committed patch
-# (benchmarking/vendor/cjdb/ground-surfaces-tie.patch) with `patch -p1` --
+# (benchmark/databases/vendor/cjdb/ground-surfaces-tie.patch) with `patch -p1` --
 # no hand-editing of anything under a venv or a cache directory. Anyone
 # cloning this repo gets byte-identical patched source from this one
 # command.
 #
 # Idempotent and content-addressed: the output directory's name embeds the
 # patch file's own sha256 prefix
-# (benchmarking/.cjdb-patched/cjdb-2.2.0+<patch-hash>/), so editing the
+# (benchmark/databases/.cjdb-patched/cjdb-2.2.0+<patch-hash>/), so editing the
 # patch produces a NEW directory rather than silently reusing stale
 # content -- this also sidesteps a real `uv run --with <local-dir>`
 # gotcha, confirmed while building this script: uv's build cache for a

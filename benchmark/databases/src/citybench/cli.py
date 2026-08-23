@@ -20,8 +20,12 @@ from citybench.systems.duckdb_cp import DuckDBCityParquet
 from citybench.systems.readbench import ReadbenchSystem
 
 ROOT = Path(__file__).resolve().parents[2]
+# ROOT is benchmark/databases/; the read harness this shells out to is a crate
+# in the other half of the monorepo, built by
+# `cargo build --release -p cityparquet-readbench` in lib/cityparquet-rs.
+MONO_ROOT = ROOT.parents[1]
 READBENCH_BIN = (
-    ROOT.parent / "cityparquet-rs" / "target" / "release" / "cityparquet-readbench"
+    MONO_ROOT / "lib" / "cityparquet-rs" / "target" / "release" / "cityparquet-readbench"
 )
 
 

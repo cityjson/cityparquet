@@ -1130,7 +1130,7 @@ also accepts the `.jsonl` form directly).
 ## Reproduction
 
 ```sh
-cd benchmarking
+cd benchmark/databases
 just up            # start both PostgreSQL containers (podman-compose), wait for health
 just patch-cjdb    # build patched cjdb once (see Caveat 2); re-run after editing the patch
 just build-citydb  # build the pinned citydb-tool image once

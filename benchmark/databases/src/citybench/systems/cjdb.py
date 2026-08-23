@@ -28,7 +28,7 @@ from citybench.scenarios import registry, sql_cjdb
 from citybench.systems import pg
 from citybench.systems.base import register
 
-# Matches docker/compose.yml's cjdb-db service exactly (see benchmarking's
+# Matches docker/compose.yml's cjdb-db service exactly (see this harness's
 # docker-compose file): password is supplied via PGPASSWORD, never a CLI
 # flag — `cjdb import` has no positional filepath argument either, only
 # `-f`/`--filepath`.
@@ -37,7 +37,7 @@ _USER = "bench"
 _DATABASE = "bench"
 _PASSWORD = "bench"
 
-# benchmarking/src/citybench/systems/cjdb.py -> parents[3] == benchmarking/
+# benchmark/databases/src/citybench/systems/cjdb.py -> parents[3] == benchmark/databases/
 _BENCH_ROOT = Path(__file__).resolve().parents[3]
 _PATCH_FILE = _BENCH_ROOT / "vendor" / "cjdb" / "ground-surfaces-tie.patch"
 _POINTER_FILE = _BENCH_ROOT / ".cjdb-patched" / "current-path"

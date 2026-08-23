@@ -35,10 +35,14 @@ build; installing [ccache](https://ccache.dev) and [ninja](https://ninja-build.o
 makes incremental builds much faster:
 
 ```sh
-git clone --recurse-submodules <repo-url>
+git clone --recurse-submodules https://github.com/HideBa/duckdb-3d.git
 cd duckdb-3d
 GEN=ninja make          # first build compiles DuckDB too; later builds are incremental
 ```
+
+Inside a checkout of the [`cityjson/cityparquet`](https://github.com/cityjson/cityparquet)
+monorepo it is already present as a submodule: run `just setup`, then
+`cd lib/duckdb-3d` and build the same way.
 
 That produces `build/release/duckdb` — a DuckDB shell with `three_d` preloaded. To
 read real CityJSON you also want the `cityjson` community extension available

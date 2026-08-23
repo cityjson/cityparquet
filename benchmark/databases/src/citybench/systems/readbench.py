@@ -130,7 +130,7 @@ class ReadbenchSystem:
         if not self._binary.exists():
             raise FileNotFoundError(
                 f"{self._binary} not found; build it with "
-                "`cargo build --release -p cityparquet-readbench` in cityparquet-rs"
+                "`cargo build --release -p cityparquet-readbench` in lib/cityparquet-rs"
             )
 
     def ingest(self, dataset: Dataset) -> IngestResult:
