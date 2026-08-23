@@ -21,14 +21,14 @@ all, is enough for those.
 
 What each area needs installed:
 
-| Area                              | Needs                                          |
-| --------------------------------- | ---------------------------------------------- |
-| `documents/` (the specification)  | Node 24, pnpm 10                                |
-| `lib/cityparquet-rs`              | Rust (pinned in `rust-toolchain.toml`), `just`  |
-| `lib/citylake`                    | Rust                                            |
-| `lib/duckdb-*`                    | a C++ toolchain, `ninja`, `ccache` (recommended) |
+| Area                                    | Needs                                                   |
+| --------------------------------------- | ------------------------------------------------------- |
+| `documents/` (the specification)        | Node 24, pnpm 10                                        |
+| `lib/cityparquet-rs`                    | Rust (pinned in `rust-toolchain.toml`), `just`          |
+| `lib/citylake`                          | Rust                                                    |
+| `lib/duckdb-*`                          | a C++ toolchain, `ninja`, `ccache` (recommended)        |
 | `benchmark/plot`, `benchmark/databases` | `uv`; the database harness also needs rootless `podman` |
-| the benchmark shell suites        | `jq`, `zip`/`unzip`                             |
+| the benchmark shell suites              | `jq`, `zip`/`unzip`                                     |
 
 ## Where a change goes
 
@@ -81,6 +81,38 @@ corpus-dependent, and they are not in CI.
 - **British English** in prose.
 - `AGENTS.md` mirrors `CLAUDE.md` at each level — edit one, copy it to the
   other.
+
+## Releasing
+
+The three consumable crates — `cityparquet-schema`, `cityparquet`,
+`cityparquet-cli` — share one version, `[workspace.package] version` in
+`lib/cityparquet-rs/Cargo.toml`, so one tag releases all of them and the tag
+carries no crate name.
+
+```sh
+# 1. bump [workspace.package] version, commit, and tag it
+git tag v0.1.0 && git push origin v0.1.0    # -> .github/workflows/release.yml
+# 2. check the artefacts on the GitHub Release, then dispatch
+#    .github/workflows/publish.yml (dry run first)
+```
+
+`release.yml` re-runs the gate, builds the `cityparquet` CLI for five targets
+and creates the GitHub Release. It refuses a tag that disagrees with the
+workspace version. It does **not** touch crates.io: publishing is a separate
+manual dispatch, because a version number on the registry is permanent —
+yanking hides a release, it never frees the number.
+
+`cityparquet-readbench` is `publish = false`: it is evidence, and only means
+anything next to the corpora under `benchmark/`.
+
+**Only `cityparquet-schema` can be published today.** `cityparquet` depends on
+`city3d-stac-types` by git revision and that crate is not on crates.io, which
+`cargo publish` refuses outright; `cityparquet-cli` inherits the block. And the
+`[patch.crates-io]` entry for `cjseq` applies to this workspace only, so a
+registry consumer would get upstream 0.4.x with the texture UV-index bug
+`vendor/cjseq/PATCHES.md` documents patching. Both have to clear before
+`cityparquet` belongs on the registry; `publish.yml` explains what clearing
+them means.
 
 ## Measurements
 

@@ -1,0 +1,221 @@
+name: Release
+
+# Cuts a GitHub Release for the Rust workspace under lib/cityparquet-rs.
+#
+# The three consumable crates share ONE version (`[workspace.package] version`
+# in lib/cityparquet-rs/Cargo.toml), so one tag releases all of them together
+# and the tag carries no crate name: `v0.1.0`, not `cityparquet-v0.1.0`.
+#
+# This workflow does NOT push to crates.io. Publishing is a separate, manual
+# workflow (publish.yml) because the registry is the one step that cannot be
+# undone — a yanked version still occupies its number forever. Cut the release
+# here, check the artefacts, then dispatch publish.yml.
+#
+# citylake and the two DuckDB extensions are not released here: citylake is a
+# work in progress, and the extensions live in their own repositories with
+# their own release machinery.
+
+# workflow_dispatch takes no inputs on purpose: the "Run workflow" ref picker
+# already lists tags, and selecting the tag there is what makes `github.ref`
+# the tag for EVERY job — including the reusable gate below, which checks out
+# the caller's ref and cannot be handed a different one.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # `cityparquet` depends on `city3d-stac-types` by git rev. libgit2 does not
+  # honour the HTTPS credentials `actions/checkout` installs, falls through to
+  # ssh-agent, and fails with "no authentication methods succeeded"; shelling
+  # out to the git CLI does honour them. See the same note in rust.yml.
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  # The Rust gate, run again against the tagged commit. This CALLS rust.yml
+  # rather than repeating it: that job carries a runner-specific dance (freeing
+  # disk before the link step, CARGO_NET_GIT_FETCH_WITH_CLI for the
+  # city3d-stac-types git dependency, an SSH-to-HTTPS rewrite for the vendored
+  # submodule) which a second copy would drift out of step with.
+  #
+  # A tag is usually cut from a commit rust.yml has already passed, so this is
+  # insurance rather than discovery — but a release is exactly the moment where
+  # "it was green last week" is not good enough.
+  #
+  # Cheap, and first: a tag that disagrees with the version the crates would
+  # actually carry is the single most likely way to start a bad release, and
+  # finding out after five release builds and a full gate is a waste of half an
+  # hour. Everything below waits on this.
+  preflight:
+    name: Check the tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # workflow_dispatch's ref picker lists branches too, and a release built
+      # from a branch would produce archives named after it.
+      - name: Refuse a ref that is not a tag
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref_type }}" != "tag" ]; then
+            echo "::error::this workflow releases a tag; ${{ github.ref_name }} is a ${{ github.ref_type }}"
+            exit 1
+          fi
+
+      - name: Check the tag matches the workspace version
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/p' lib/cityparquet-rs/Cargo.toml \
+                     | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"
+          if [ "${tag}" != "v${version}" ]; then
+            echo "::error::tag ${tag} does not match workspace version ${version} (expected v${version})"
+            exit 1
+          fi
+          echo "tag ${tag} matches workspace version ${version}"
+
+  # A local `uses:` path resolves against the caller's own commit, so this runs
+  # the tagged commit's gate against the tagged commit — both the definition and
+  # the code under test come from the tag.
+  gate:
+    name: Rust gate
+    needs: preflight
+    uses: ./.github/workflows/rust.yml
+
+  # The `cityparquet` CLI binary, for people who want the tool without a Rust
+  # toolchain. Nothing here needs a submodule: vendor/cjseq is an in-tree
+  # vendored copy, and city3d-stac-types is a git dependency cargo fetches
+  # itself.
+  binaries:
+    name: ${{ matrix.target }}
+    needs: gate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          # Native ARM runner rather than a cross toolchain: parquet's zstd
+          # pulls in a C build, and cross-compiling that is more moving parts
+          # than it is worth when GitHub hosts the hardware.
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          # macos-latest is Apple silicon; the Intel image is the separate
+          # `-intel` label since GitHub retired macos-13.
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # rust-toolchain.toml pins the version; rustup honours it on first use.
+      # The target is added explicitly so the pinned toolchain owns it too.
+      - name: Add the target
+        working-directory: lib/cityparquet-rs
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lib/cityparquet-rs/target
+          key: release-${{ matrix.target }}-${{ hashFiles('lib/cityparquet-rs/Cargo.lock') }}
+          restore-keys: release-${{ matrix.target }}-
+
+      - name: Build the CLI
+        working-directory: lib/cityparquet-rs
+        run: cargo build --release --locked -p cityparquet-cli --target ${{ matrix.target }}
+
+      # One archive per target, carrying the binary and both licences. The name
+      # is the tag, not the workspace version, so a re-tagged build is never
+      # mistaken for the original.
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          stage="cityparquet-${tag}-${{ matrix.target }}"
+          mkdir -p "dist/${stage}"
+          cp "lib/cityparquet-rs/target/${{ matrix.target }}/release/cityparquet" "dist/${stage}/"
+          cp LICENSE-MIT LICENSE-APACHE README.md "dist/${stage}/"
+          tar -C dist -czf "dist/${stage}.tar.gz" "${stage}"
+          rm -rf "dist/${stage}"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          stage="cityparquet-${tag}-${{ matrix.target }}"
+          mkdir -p "dist/${stage}"
+          cp "lib/cityparquet-rs/target/${{ matrix.target }}/release/cityparquet.exe" "dist/${stage}/"
+          cp LICENSE-MIT LICENSE-APACHE README.md "dist/${stage}/"
+          (cd dist && 7z a -tzip "${stage}.zip" "${stage}" >/dev/null)
+          rm -rf "dist/${stage}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cityparquet-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish the GitHub Release
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # creating a release and uploading its assets
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: cityparquet-*
+          merge-multiple: true
+
+      # One checksum file for the whole release, so a verifier needs one
+      # download rather than one per archive.
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./* > SHA256SUMS
+          cat SHA256SUMS
+
+      # --generate-notes writes the commit/PR summary; --verify-tag refuses to
+      # invent a tag that does not exist. A pre-release is anything with a
+      # hyphen in it (v0.2.0-rc.1), which is also the semver rule.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          prerelease=""
+          case "${tag}" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "${tag}" dist/* \
+            --title "${tag}" \
+            --generate-notes \
+            --verify-tag \
+            ${prerelease}

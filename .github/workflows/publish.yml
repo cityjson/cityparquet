@@ -1,0 +1,138 @@
+name: Publish crates
+
+# Pushes the Rust workspace's crates to crates.io. Deliberately manual: a
+# version number on crates.io is permanent — yanking hides a release, it never
+# frees the number — so this never fires off a tag or a merge. Cut the release
+# with release.yml, look at the artefacts, then dispatch this.
+#
+# ---------------------------------------------------------------------------
+# TWO CRATES CANNOT BE PUBLISHED YET, and neither is a CI problem:
+#
+#   1. `cityparquet` depends on `city3d-stac-types` by git revision, and that
+#      crate is not on crates.io. `cargo publish` refuses outright:
+#      "all dependencies must have a version requirement specified when
+#      publishing". `cityparquet-cli` depends on `cityparquet`, so it inherits
+#      the block. Unblocking means publishing city3d-stac-types from
+#      cityjson/city3d-stac-tool, then giving the dependency a `version`
+#      alongside its `git` (cargo strips the git specification on publish).
+#
+#   2. `[patch.crates-io] cjseq = { path = "vendor/cjseq" }` applies to THIS
+#      workspace only. Registry consumers get upstream cjseq 0.4.x, whose
+#      `add_cjfeature`/`update_texture` mis-base merged texture UV-vertex
+#      indices — the exact bug vendor/cjseq/PATCHES.md documents patching.
+#      A published `cityparquet` would silently corrupt Doc-format export.
+#      Unblocking means upstreaming that fix and depending on the release.
+#
+# Until both clear, dispatch with `packages: cityparquet-schema` — it has
+# neither problem and publishes cleanly today. The default input publishes all
+# three, in dependency order, and will fail loudly at the manifest check rather
+# than half-publish.
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "Space-separated crates, in dependency order"
+        required: true
+        default: "cityparquet-schema cityparquet cityparquet-cli"
+        type: string
+      dry_run:
+        description: "Verify and package without uploading"
+        required: false
+        default: true
+        type: boolean
+      ref:
+        description: "Tag or commit to publish from (defaults to the branch this is dispatched on)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: publish-crates
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # `cargo publish` verifies each crate by building the packaged .crate, which
+  # reaches city3d-stac-types over git. libgit2 does not honour the HTTPS
+  # credentials `actions/checkout` installs; the git CLI does. See rust.yml.
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  publish:
+    name: cargo publish
+    runs-on: ubuntu-latest
+    # An environment, so the registry token sits behind whatever protection
+    # rule the repository wants — required reviewers, a branch/tag filter — and
+    # is not simply readable by any workflow. GitHub creates it on first run;
+    # add the protection rules in Settings → Environments.
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: false
+
+      # `cargo publish` builds each crate from the packaged .crate file, so the
+      # gate release.yml already ran is the safety net; this job only has to
+      # prove the packaged form compiles, which --dry-run and the real publish
+      # both do for us.
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lib/cityparquet-rs/target
+          key: publish-${{ runner.os }}-${{ hashFiles('lib/cityparquet-rs/Cargo.lock') }}
+          restore-keys: publish-${{ runner.os }}-
+
+      # Refuse to publish a version that is already released. crates.io would
+      # reject it anyway, but it does so partway through a multi-crate publish,
+      # which is a worse place to find out.
+      - name: Check the versions are unpublished
+        working-directory: lib/cityparquet-rs
+        run: |
+          set -euo pipefail
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/p' Cargo.toml \
+                     | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"
+          echo "workspace version: ${version}"
+          for crate in ${{ inputs.packages }}; do
+            # A 404 means the crate has never been published, which is fine.
+            body="$(curl -sS --max-time 30 \
+                      -H 'User-Agent: cityjson/cityparquet release CI' \
+                      "https://crates.io/api/v1/crates/${crate}/${version}" || true)"
+            if printf '%s' "${body}" | grep -q '"num"'; then
+              echo "::error::${crate} ${version} is already on crates.io"
+              exit 1
+            fi
+            echo "${crate} ${version} is free"
+          done
+
+      # cargo 1.90+ orders a multi-package publish itself and waits for each
+      # crate to appear in the index before publishing its dependents, so the
+      # sleep-and-hope loop this used to need is gone. It also verifies EVERY
+      # named crate's manifest before uploading ANY of them — which is why the
+      # git-dependency block above stops the whole run rather than leaving a
+      # half-published set behind.
+      - name: Publish
+        working-directory: lib/cityparquet-rs
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          args=""
+          for crate in ${{ inputs.packages }}; do
+            args="${args} -p ${crate}"
+          done
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "dry run: packaging and verifying, not uploading"
+            cargo publish --dry-run --locked ${args}
+          else
+            if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+              echo "::error::CARGO_REGISTRY_TOKEN is not set on the crates-io environment"
+              exit 1
+            fi
+            cargo publish --locked ${args}
+          fi

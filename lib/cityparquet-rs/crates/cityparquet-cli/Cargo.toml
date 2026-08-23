@@ -12,7 +12,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-cityparquet = { path = "../cityparquet" }
+cityparquet = { path = "../cityparquet", version = "0.1.0" }
 cityparquet-schema = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 arrow-array = { workspace = true }

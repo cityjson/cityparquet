@@ -23,6 +23,12 @@ on:
       - "justfile"
       - ".github/workflows/rust.yml"
   workflow_dispatch:
+  # release.yml re-runs this gate against the tagged commit. Calling the real
+  # workflow rather than copying its steps: this job has accumulated a runner
+  # -specific dance — freeing disk, the git-CLI fetch for the city3d-stac-types
+  # git dependency, the SSH-to-HTTPS submodule rewrite — and a copy of it in
+  # the release pipeline would drift out of step with this one.
+  workflow_call:
 
 concurrency:
   group: rust-${{ github.ref }}
