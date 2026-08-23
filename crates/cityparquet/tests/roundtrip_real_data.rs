@@ -100,10 +100,7 @@ fn attribute_literally_named_other_is_rejected() {
         if !injected && let Some(cos) = doc.get_mut("CityObjects").and_then(|v| v.as_object_mut()) {
             for co in cos.values_mut() {
                 if let Some(attrs) = co.get_mut("attributes").and_then(|v| v.as_object_mut()) {
-                    attrs.insert(
-                        "other".to_string(),
-                        serde_json::json!("should-be-rejected"),
-                    );
+                    attrs.insert("other".to_string(), serde_json::json!("should-be-rejected"));
                     injected = true;
                     break;
                 }
@@ -673,12 +670,16 @@ fn delft_derived_solid_face_drop_round_trips_and_comparator_agrees_with_the_writ
         non_header_excluded
     );
     assert!(
-        non_header_excluded.iter().any(|e| e.contains("normalised away 1 degenerate ring(s), 1 surface(s)")),
+        non_header_excluded
+            .iter()
+            .any(|e| e.contains("normalised away 1 degenerate ring(s), 1 surface(s)")),
         "one exclusion must be the degenerate-ring/surface drop, got: {:#?}",
         non_header_excluded
     );
     assert!(
-        non_header_excluded.iter().any(|e| e.contains("geographicalExtent")),
+        non_header_excluded
+            .iter()
+            .any(|e| e.contains("geographicalExtent")),
         "one exclusion must be the geographicalExtent, got: {:#?}",
         non_header_excluded
     );

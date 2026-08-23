@@ -2,7 +2,7 @@
 //! alone (spec "Object table schema" — "a consumer pruning on a parent's
 //! `bbox` never misses geometry held by its descendants").
 
-use arrow_array::{Array, StructArray, Float64Array, RecordBatch, StringArray};
+use arrow_array::{Array, Float64Array, RecordBatch, StringArray, StructArray};
 use cityparquet::package::{ConvertOptions, convert};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::path::PathBuf;
@@ -18,11 +18,7 @@ fn fixture(name: &str) -> PathBuf {
 fn read_table(path: &std::path::Path) -> Vec<RecordBatch> {
     let file = std::fs::File::open(path).unwrap();
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    builder
-        .build()
-        .unwrap()
-        .map(|b| b.unwrap())
-        .collect()
+    builder.build().unwrap().map(|b| b.unwrap()).collect()
 }
 
 /// A 3DBAG `Building` carries only a flat LoD0 footprint while its

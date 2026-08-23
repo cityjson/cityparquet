@@ -359,7 +359,9 @@ fn synthesised_footprint_writes_no_provenance_marker() {
         .collect();
 
     assert!(
-        other_values.iter().all(|cell| !cell.contains("cityparquet:")),
+        other_values
+            .iter()
+            .all(|cell| !cell.contains("cityparquet:")),
         "no row may carry a cityparquet: provenance key, got: {other_values:?}"
     );
 }

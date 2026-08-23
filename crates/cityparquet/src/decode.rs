@@ -802,12 +802,7 @@ mod tests {
     fn merge_other_members_injects_unmapped_members() {
         let mut json = Map::new();
         json.insert("type".to_string(), json!("Building"));
-        merge_other_members(
-            &mut json,
-            Some(r#"{"unreserved_member":"value"}"#),
-            "obj-1",
-        )
-        .unwrap();
+        merge_other_members(&mut json, Some(r#"{"unreserved_member":"value"}"#), "obj-1").unwrap();
         assert_eq!(json["attributes"], json!({"unreserved_member": "value"}));
         assert!(
             !json.contains_key("unreserved_member"),
