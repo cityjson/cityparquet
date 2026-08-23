@@ -23,8 +23,7 @@ use cjseq::{CityJSON, CityJSONFeature, CityObject, Geometry, GeometryType, Trans
 use serde_json::Value;
 
 use cityparquet_schema::{
-    AttributeType, CityParquetError, GeometryEncoding, Lod, Result,
-    normalise_attribute_name,
+    AttributeType, CityParquetError, GeometryEncoding, Lod, Result, normalise_attribute_name,
 };
 
 use crate::appearance::AppearanceInterner;
@@ -118,7 +117,7 @@ fn collect_diverted_attributes(
 
 /// Counters for the row-population edge cases the binding rules ask us to
 /// track rather than surface as errors.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EncodeStats {
     /// Extra geometries for an (object, LoD) pair beyond the first one kept.
     pub skipped_same_lod_geometries: usize,
@@ -142,6 +141,20 @@ pub struct EncodeStats {
     /// LoD0 footprints synthesised into the `geometry_lod0_0` column for
     /// objects lacking a source LoD0 (spec "LoD0 synthesis").
     pub synthesized_lod0_footprints: usize,
+    /// Unmapped top-level members dropped because an attribute of the same
+    /// name exists on the object (diverted or column-backed): the attribute
+    /// wins ("warn and prefer attribute"), so `other` never carries an entry
+    /// duplicating one of the object's own attributes — a reader
+    /// MUST-errors on that (`merge_other_members` in `src/decode.rs`), so
+    /// keeping the member would make this writer produce a file its own
+    /// reader rejects. Counted over all objects; see
+    /// [`Self::dropped_colliding_member_diagnostics`] for the per-drop detail.
+    pub dropped_colliding_members: usize,
+    /// One diagnostic per member [`Self::dropped_colliding_members`] counts,
+    /// naming the object id and the colliding key — the same
+    /// library-diagnostic idiom as [`crate::scan::ScanResult::crs_diagnostic`],
+    /// which the CLI prints as a `warning:` line.
+    pub dropped_colliding_member_diagnostics: Vec<String>,
 }
 
 /// Expand `acc` to also cover `bbox` (same union rule as [`crate::scan`]'s).
@@ -163,7 +176,12 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 /// malformed extent is ignored rather than fatal: it is an optional,
 /// derivable source member, and `bbox` is fully recoverable from geometry.
 fn source_extent(co: &CityObject) -> Option<[f64; 6]> {
-    let extent: [f64; 6] = co.geographical_extent.as_ref()?.as_slice().try_into().ok()?;
+    let extent: [f64; 6] = co
+        .geographical_extent
+        .as_ref()?
+        .as_slice()
+        .try_into()
+        .ok()?;
     extent.iter().all(|v| v.is_finite()).then_some(extent)
 }
 
@@ -1612,8 +1630,7 @@ impl RowWriter {
                 .expect("literal 0 is a valid LoD")
                 .column_suffix();
             if !acc.slots.contains_key(&key)
-                && let Some((data, bbox)) =
-                    synthesize_footprint(co, &pool, opts, self.encoding)?
+                && let Some((data, bbox)) = synthesize_footprint(co, &pool, opts, self.encoding)?
             {
                 union_bbox(&mut acc.own_bbox, bbox);
                 acc.slots.insert(key, data);
@@ -1631,17 +1648,44 @@ impl RowWriter {
         // deliberately not distinguished: the column's whole contract is
         // that a reader restores every entry into `attributes`. Null when
         // the object has neither.
-        let mut unmapped = unmapped_from_json(co_json);
+        //
+        // Where an unmapped top-level member and an attribute (diverted or
+        // column-backed) share a key, the attribute wins ("warn and prefer
+        // attribute"): keeping the member would either silently lose the
+        // attribute's value (diverted case) or make this writer emit an
+        // `other` entry duplicating the attribute's own column, which a
+        // reader MUST-errors on (`merge_other_members` in `src/decode.rs`).
+        // The member is dropped instead, counted and diagnosed rather than
+        // failing the conversion.
+        let unmapped = unmapped_from_json(co_json);
         let diverted = collect_diverted_attributes(co, &self.diverted_attributes);
         stats.diverted_attribute_values += diverted.as_ref().map_or(0, serde_json::Map::len);
-        if let Some(diverted) = diverted {
-            unmapped.extend(diverted);
+
+        let attrs = co.attributes.as_ref().and_then(Value::as_object);
+        let mut merged = serde_json::Map::new();
+        for (key, value) in unmapped {
+            let collides = attrs.is_some_and(|attrs| attrs.get(&key).is_some_and(|v| !v.is_null()));
+            if collides {
+                stats.dropped_colliding_members += 1;
+                stats.dropped_colliding_member_diagnostics.push(format!(
+                    "object '{id}': unmapped member '{key}' dropped from 'other' — an \
+                     attribute of the same name takes precedence"
+                ));
+                continue;
+            }
+            merged.insert(key, value);
         }
-        if unmapped.is_empty() {
+        // Every key `diverted` carries came from `co.attributes` itself, so
+        // the loop above has already dropped any unmapped member that would
+        // collide with it — `extend` can never overwrite an entry here.
+        if let Some(diverted) = diverted {
+            merged.extend(diverted);
+        }
+        if merged.is_empty() {
             self.other.append_null();
         } else {
             self.other
-                .append_value(serde_json::to_string(&Value::Object(unmapped))?);
+                .append_value(serde_json::to_string(&Value::Object(merged))?);
         }
 
         // `address`: the reserved struct column (spec "Addresses", gap 10).
@@ -1880,7 +1924,7 @@ impl BatchIter<'_> {
     /// Running totals of the row-population edge cases counted so far
     /// (final once the iterator is exhausted).
     pub fn stats(&self) -> EncodeStats {
-        self.stats
+        self.stats.clone()
     }
 
     /// The dataset-global material/texture interner accumulated so far

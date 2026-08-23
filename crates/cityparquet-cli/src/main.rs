@@ -561,6 +561,15 @@ fn main() -> std::process::ExitCode {
                                     report.unresolvable_refs
                                 );
                             }
+                            // Unlike the CRS diagnostic above, this is
+                            // OBJECT-level, not dataset-level — every
+                            // partition's own drops are printed, not just
+                            // the first partition that has one.
+                            for (_, r) in &report.partitions {
+                                for message in &r.dropped_colliding_member_diagnostics {
+                                    eprintln!("warning: {message}");
+                                }
+                            }
                             // Summed across partitions and printed once,
                             // same shape as `partitions=`/`duplicate_ids=`
                             // above: a dataset-level fact, not a
@@ -611,6 +620,13 @@ fn main() -> std::process::ExitCode {
                             // positional line — the same idiom as the
                             // `skipped_non_files` warning above.
                             if let Some(message) = &report.crs_diagnostic {
+                                eprintln!("warning: {message}");
+                            }
+                            // One line per dropped member (§5.1 "warn and
+                            // prefer attribute"): each names the object and
+                            // the colliding key, the same `warning:` idiom
+                            // as the CRS diagnostic above.
+                            for message in &report.dropped_colliding_member_diagnostics {
                                 eprintln!("warning: {message}");
                             }
                             println!(

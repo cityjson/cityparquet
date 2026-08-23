@@ -137,7 +137,10 @@ import:
 Reserved columns win any name clash. CityJSON extension attributes (`+name`)
 are renamed to `ex_name` and tagged with the `extension` role. The inferred
 attribute-column list is recorded in metadata so a reader can tell source
-attributes from structural columns.
+attributes from structural columns. Where a source object carries both an
+unmapped top-level member and an attribute of the same name, the attribute
+wins: the member is dropped from `other` with a warning, so the writer never
+emits an `other` entry that duplicates an attribute.
 
 ### Geometry
 

@@ -213,6 +213,14 @@ pub struct ConvertReport {
     /// Distinct from [`crate::export::ExportReport::appearance_refs_dropped`],
     /// which counts a different thing on the export side.
     pub invalid_appearance_refs_dropped: usize,
+    /// Unmapped top-level members dropped because an attribute of the same
+    /// name existed on the object; see
+    /// [`crate::encode::EncodeStats::dropped_colliding_members`].
+    pub dropped_colliding_members: usize,
+    /// One diagnostic per [`Self::dropped_colliding_members`] drop, naming
+    /// the object id and the colliding key. The CLI prints each as a
+    /// `warning:` line, the same idiom as [`Self::crs_diagnostic`].
+    pub dropped_colliding_member_diagnostics: Vec<String>,
 }
 
 fn err(msg: String) -> CityParquetError {
@@ -467,6 +475,8 @@ struct WrittenPackage {
     textures_written: usize,
     templates_written: usize,
     invalid_appearance_refs_dropped: usize,
+    dropped_colliding_members: usize,
+    dropped_colliding_member_diagnostics: Vec<String>,
 }
 
 /// Buffers every feature `source` yields (RowOrder::Hilbert's documented
@@ -1222,6 +1232,8 @@ fn write_package(
         textures_written,
         templates_written,
         invalid_appearance_refs_dropped,
+        dropped_colliding_members: encode_stats.dropped_colliding_members,
+        dropped_colliding_member_diagnostics: encode_stats.dropped_colliding_member_diagnostics,
     })
 }
 
@@ -1493,6 +1505,8 @@ pub(crate) fn convert_source_impl(
         templates_written: written.templates_written,
         crs_diagnostic: scan_result.crs_diagnostic.clone(),
         invalid_appearance_refs_dropped: written.invalid_appearance_refs_dropped,
+        dropped_colliding_members: written.dropped_colliding_members,
+        dropped_colliding_member_diagnostics: written.dropped_colliding_member_diagnostics,
     })
 }
 
