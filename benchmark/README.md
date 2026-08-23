@@ -35,7 +35,7 @@ and `justfile`, driven with `just db <recipe>` from the root.
 | `formats/scaling_{read,write,compression,ordering}_results/` | **yes** — the configuration-axis evidence, four cardinalities of one 3DBAG slice |
 | `formats/archive/2026-08-17-catalogue-corpus/`               | **yes** — the retired 30-dataset corpus and its results, kept so the earlier claims stay checkable |
 | `formats/READ_BENCHMARK.md`, `formats/README.md`             | **yes** — the methodology, including all 18 fairness caveats |
-| `databases/results/`                                         | **yes** where present, with a per-dataset `.manifest.json` recording the environment |
+| `databases/results/`                                         | **no, currently** — the CSVs were removed with the read benchmark's, for the same reason and a second one: on Linux the harness recorded `peak_rss_bytes` in KiB, not bytes, so five result files were 1024× wrong. `just db bench <dataset>` repopulates them |
 | `formats/read_results/`, `formats/ordering_results/`          | **no, currently** — the CSVs were removed when the read corpus was replaced (six fully-comparable cityjson.org datasets in place of thirty partly-comparable ones). `just bench` repopulates them |
 | `formats/data/` (~24 GB), `formats/tools/`                    | **no** — fetched from pinned URLs with pinned byte sizes by `just fetch-data` / `just fetch-scaling-data` / `just fetch-tools` |
 | `summary/`, `**/plots/`                                       | **no** — derived from the CSVs in seconds by `just plot-pretty` / `just plot` |
@@ -43,6 +43,12 @@ and `justfile`, driven with `just db <recipe>` from the root.
 Because the read CSVs are not currently committed, `just plot-pretty` produces a
 summary page whose read views say so rather than showing an empty grid. That is
 the intended behaviour, not a failure.
+
+**`databases/README.md` still cites "the currently committed `results/…`"** in
+half a dozen places, and quotes numbers from them. Those files were removed in
+the same sweep and the prose has not caught up; the figures it quotes were
+measured, but you cannot check them against a file in this repository until a
+re-run puts one back. Treat every such number there as provisional.
 
 ## Caveats that are load-bearing
 
