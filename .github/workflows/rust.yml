@@ -61,7 +61,7 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('lib/cityparquet-rs/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      - uses: extractions/setup-just@v3
+      - uses: extractions/setup-just@v4
 
       - name: Install rustfmt and clippy
         working-directory: lib/cityparquet-rs
@@ -86,8 +86,8 @@ jobs:
         with:
           submodules: false
 
-      - uses: extractions/setup-just@v3
-      - uses: astral-sh/setup-uv@v5
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v10
 
       # Neither suite needs a corpus or a network: the shell tests stub every
       # external binary and serve file:// URLs to the real fetcher, and the
