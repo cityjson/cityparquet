@@ -83,7 +83,8 @@
 //!   let that qualification hide inside a number, a document that exercises it
 //!   is refused outright ([`ensure_every_member_was_mapped`]). Which modules
 //!   that rules out of the corpus is recorded in
-//!   `bench/catalogue_benchmark_urls.txt`.
+//!   `bench/archive/2026-08-17-catalogue-corpus/catalogue_benchmark_urls.txt`
+//!   (that dataset came from the retired catalogue corpus).
 //!
 //! None of this is silently normalised to match another format; the
 //! methodology doc is responsible for disclosing it alongside the numbers.

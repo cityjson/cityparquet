@@ -4,7 +4,7 @@
   13202_tachikawa-shi_pref_2023_citygml_2_op), CityGML 2.0 module `trk`
   (Track / footpaths), tile 53394343_trk_6697_op.gml (547 KB, 11 Tracks).
   Licence: CC BY 4.0 (Project PLATEAU, MLIT Japan). The source URL is the
-  `trk` entry in bench/catalogue_benchmark_urls.txt.
+  `trk` entry in bench/archive/2026-08-17-catalogue-corpus/catalogue_benchmark_urls.txt.
 
   Root CityModel + gml:Envelope + THREE of the tile's eleven
   cityObjectMembers (the three smallest, kept in document order), verbatim.

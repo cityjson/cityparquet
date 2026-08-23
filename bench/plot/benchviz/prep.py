@@ -922,8 +922,35 @@ def build_datasets(
 # --------------------------------------------------------------------------
 
 
+def _require_read_results(inputs: Inputs) -> None:
+    """Fail with an actionable message when the read results are absent.
+
+    The read results are the spine of the summary page: every other view is
+    keyed by the datasets found there, so an empty `read_dir` produces not an
+    empty page but a `FileNotFoundError` on `sizes.csv` from three frames
+    down. That is a legitimate state rather than a broken checkout — the
+    corpus was replaced on 2026-08-23 and the previous run's CSVs were
+    archived rather than left where this would chart them as current — so it
+    deserves a sentence naming the recipe that fixes it, not a traceback.
+    """
+    if inputs.sizes_csv.exists() and _dataset_csvs(inputs.read_dir):
+        return
+    raise PrepError(
+        f"no read-benchmark results in {inputs.read_dir}.\n"
+        "  The summary page is built from them, so there is nothing to plot "
+        "yet.\n"
+        "  Produce them with:\n"
+        "      just fetch-tools                 # once, needs java 17+\n"
+        "      just fetch-data                  # the corpus (network, 423 MB)\n"
+        "      just bench bench/data/benchmark  # the format comparison\n"
+        "  The previous corpus's results were archived on 2026-08-23 under\n"
+        "  bench/archive/2026-08-17-catalogue-corpus/ — see its README."
+    )
+
+
 def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     inputs = inputs or Inputs()
+    _require_read_results(inputs)
     excluded = ExcludedFormats()
     read_records, anomalies = load_read(inputs, excluded)
     size_records, raw_mb = load_sizes(inputs, excluded)

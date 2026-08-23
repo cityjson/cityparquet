@@ -107,7 +107,7 @@ just compression-bench tests/fixtures  # codec / row-group matrix -> bench/compr
 ```
 
 Any folder of CityJSON/CityJSONSeq works — `just fetch-data` fetches the
-30-dataset catalogue corpus the read benchmark uses, and both recipes walk a
+six-dataset cityjson.org corpus the read benchmark uses, and both recipes walk a
 folder recursively. Each removes `OUT/<name>.csv` before writing it, never
 appends, so a committed run is one machine, one sitting, per dataset.
 

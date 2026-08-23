@@ -106,7 +106,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except prep.PrepError as exc:
+        # A PrepError is a statement about the INPUT CSVs — a missing results
+        # directory, an unexpected column, an unparseable value — and every
+        # one of them is phrased for the operator who has to fix it. A
+        # traceback buries that sentence under frames from this tool's own
+        # internals, none of which are the reader's problem.
+        print(f"benchviz: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -5,7 +5,7 @@
 # are built is chosen with `--formats`; by default every artefact this script
 # knows how to build:
 #
-#   citygml              OUTDIR/<x>.gml               the CityGML source itself (only from a CityGML INPUT)
+#   citygml              OUTDIR/<x>.gml               CityGML 2.0 — copied from a CityGML INPUT, else synthesised
 #   cityjson             OUTDIR/<x>.city.json         one whole-document CityJSON
 #   cityjsonseq          OUTDIR/<x>.city.jsonl        CityJSONSeq
 #   cityparquet          OUTDIR/<x>.parquet/          core-profile CityParquet package (source order)
@@ -34,8 +34,11 @@
 # THE CONVERSION CHAIN, AND WHY IT RUNS FORWARDS ONLY:
 #
 #   CityGML --citygml-tools to-cityjson--> CityJSON --cjseq cat--> CityJSONSeq
-#                                                             |--fcb ser -A--------> FlatCityBuf
-#                                                             |--cityparquet convert-> CityParquet
+#                                                 |           |--fcb ser -A--------> FlatCityBuf
+#                                                 |           |--cityparquet convert-> CityParquet
+#                                                 |
+#                                                 |--citygml-tools from-cityjson -v 2.0--> CityGML
+#                                                    (only when INPUT is not itself CityGML)
 #
 # Each artefact derives from the one before it, and FlatCityBuf and
 # CityParquet derive from the SAME CityJSONSeq — that is what makes their
@@ -64,12 +67,34 @@
 # CityJSON artefact is cut by `cjseq collect`, which citygml-tools cannot do at
 # all — and never by a CityParquet export.
 #
-# CITYGML IS NOT SYNTHESISED. From a CityJSON/CityJSONSeq INPUT the `citygml`
-# artefact is reported as not derivable and skipped — the only way to produce
-# one would be a reverse conversion, and a round-trip artefact is not the
-# source data, so measuring it would be dishonest. This is the ONE exception
-# to the "a requested format that cannot be built is an error here" rule
-# below; it is reported in full, never silent.
+# CITYGML IS SYNTHESISED FROM A NON-CityGML INPUT, and this reverses an
+# earlier rule of this script. It used to report the `citygml` artefact as
+# "not derivable" and skip it, on the grounds that a round-trip artefact is
+# not the source data. That was the right call for a corpus of published
+# `.gml` files. It is the wrong one for the corpus this benchmark now uses,
+# for a reason that outweighs it:
+#
+#   The read benchmark's claim is a comparison BETWEEN formats. A dataset that
+#   produces seven artefacts and skips the eighth does not weaken that
+#   comparison, it removes the baseline from it — and under the previous
+#   corpus the skipped ones were exactly the datasets a reader recognises
+#   (3DBAG, Rotterdam, Vienna, NYC, Zurich all ship as CityJSON). Worse, the
+#   published `.gml` beside a `.city.json` is usually NOT a usable substitute:
+#   of the nine on cityjson.org, six are CityGML 1.0 and two are 3.0, and this
+#   repository's reader accepts only 2.0.
+#
+# So every artefact, CityGML included, is now derived from ONE source
+# document, which is what makes the eight rows content-comparable in the first
+# place. The cost is real and must be quoted with the numbers: the `citygml`
+# row then measures citygml-tools' SERIALISATION, not a published file. Two
+# things bound that cost, both in bench/READ_BENCHMARK.md's CityGML synthesis
+# section — the synthesised document is close in size to the published
+# original where one exists (Rotterdam: 14.0 MB vs 16.5 MB), and a source
+# whose LoDs CityGML 2.0 cannot express loses some (3DBAG's LoD 1.2/1.3 both
+# collapse to `lod1Solid`).
+#
+# A CityGML INPUT is still COPIED, never round-tripped: where the source data
+# is already CityGML, that is what gets measured.
 #
 # The `-A` (index-all-attributes) flag on `fcb ser` is REQUIRED, not
 # cosmetic: the later attribute-filter benchmark needs FCB's B+-tree
@@ -328,15 +353,23 @@ case "$INPUT" in
   *.city.jsonl|*.jsonl) INPUT_KIND="cityjsonseq" ;;
 esac
 
-# `citygml` from a non-CityGML input: reported, never synthesised (see the
-# header). Every later `want citygml` is paired with this flag.
+# `citygml` is built for EVERY input kind (see the header). Two flags, because
+# the two paths differ in kind and in what has to be verified:
+#
+#   BUILD_CITYGML  a `citygml` artefact will exist in OUTDIR. Every later
+#                  `want citygml` is paired with this flag.
+#   SYNTH_CITYGML  ...and it is being SYNTHESISED from the CityJSON stage
+#                  rather than copied from a CityGML INPUT. This decides where
+#                  the fitness checks read from: a copied artefact is verified
+#                  in the preflight against INPUT (an unfit input must cost
+#                  nothing and leave nothing behind), a synthesised one can
+#                  only be verified after it exists.
 BUILD_CITYGML=0
-SKIP_CITYGML_REASON=""
+SYNTH_CITYGML=0
 if want citygml; then
-  if [[ "$INPUT_KIND" == "citygml" ]]; then
-    BUILD_CITYGML=1
-  else
-    SKIP_CITYGML_REASON="not derivable from a CityJSON input"
+  BUILD_CITYGML=1
+  if [[ "$INPUT_KIND" != "citygml" ]]; then
+    SYNTH_CITYGML=1
   fi
 fi
 
@@ -369,11 +402,13 @@ if [[ "$NEED_SEQ" -eq 1 ]]; then
   fi
 fi
 
-# NEED_CITYJSON: requested outright, or needed as the stage the CityJSONSeq is
+# NEED_CITYJSON: requested outright, needed as the stage the CityJSONSeq is
 # cut from (never for the copy case — a `.city.jsonl` input needs no CityJSON
-# to become a `.city.jsonl` artefact).
+# to become a `.city.jsonl` artefact), or needed as the stage the synthesised
+# CityGML is converted BACK from. That last one is why `--formats citygml`
+# alone, on a CityJSON input, still produces a CityJSON intermediate.
 NEED_CITYJSON=0
-if want cityjson || [[ "$SEQ_FROM" == "cjseq-cat" ]]; then
+if want cityjson || [[ "$SEQ_FROM" == "cjseq-cat" ]] || [[ "$SYNTH_CITYGML" -eq 1 ]]; then
   NEED_CITYJSON=1
 fi
 
@@ -394,13 +429,14 @@ resolve_citygml_tools() {
   elif command -v citygml-tools >/dev/null 2>&1; then
     CITYGML_TOOLS_BIN="$(command -v citygml-tools)"
   else
-    echo "error: citygml-tools not found (needed to convert the CityGML input to CityJSON)" >&2
+    echo "error: citygml-tools not found (needed for the CityGML <-> CityJSON conversion)" >&2
     echo "       run \`just fetch-tools\`, or point \$CITYGML_TOOLS at an install" >&2
     exit 1
   fi
 }
 
-if [[ "$INPUT_KIND" == "citygml" && "$NEED_CITYJSON" -eq 1 ]]; then
+if [[ "$INPUT_KIND" == "citygml" && "$NEED_CITYJSON" -eq 1 ]] \
+  || [[ "$SYNTH_CITYGML" -eq 1 ]]; then
   resolve_citygml_tools
 fi
 # cjseq performs whichever CityJSON <-> CityJSONSeq hop this request needs:
@@ -668,11 +704,12 @@ INTERMEDIATES=()
 # comparison fair.
 SEQ_INPUT="$INPUT"
 
-# 1. CityGML: the source document itself, placed where the coordinator looks
-# for it (--prepared-dir/<base>.gml). Copied, not converted: this artefact is
-# the input data, and the moment it were round-tripped out of another format
-# it would stop being that.
-if [[ "$BUILD_CITYGML" -eq 1 ]]; then
+# 1. CityGML, from a CityGML INPUT: the source document itself, placed where
+# the coordinator looks for it (--prepared-dir/<base>.gml). Copied, never
+# round-tripped — where the source data IS CityGML, that is what gets
+# measured. The synthesis path for every other input kind is step 2b below,
+# which has to wait for the CityJSON stage to exist.
+if [[ "$BUILD_CITYGML" -eq 1 && "$SYNTH_CITYGML" -eq 0 ]]; then
   if file_is_valid "$GML_OUT" && same_file "$INPUT" "$GML_OUT"; then
     echo "skip $GML_OUT (the input is already the artefact)"
   elif file_is_valid "$GML_OUT"; then
@@ -682,10 +719,6 @@ if [[ "$BUILD_CITYGML" -eq 1 ]]; then
     cp "$INPUT" "$GML_OUT"
   fi
   BUILT+=("$GML_OUT")
-elif [[ -n "$SKIP_CITYGML_REASON" ]]; then
-  echo "-- citygml: $SKIP_CITYGML_REASON; synthesising one by reverse conversion"
-  echo "   would measure a round-trip artefact rather than the source data, so it"
-  echo "   is skipped rather than faked"
 fi
 
 # 2. CityJSON: one whole document. From CityGML via citygml-tools (the head
@@ -733,6 +766,80 @@ if [[ "$NEED_CITYJSON" -eq 1 ]]; then
   else
     INTERMEDIATES+=("$CITYJSON_OUT")
   fi
+fi
+
+# 2b. CityGML, synthesised: converted BACK from the CityJSON stage step 2 just
+# produced, for an INPUT that is not itself CityGML. Numbered out of order
+# because it cannot run in step 1 — there is no CityJSON to convert yet.
+#
+# It derives from $CITYJSON_OUT rather than from $INPUT even when the two hold
+# the same content, so that the chain's one rule (each artefact derives from
+# the one before it) stays true here too, and so a `.city.jsonl` INPUT — whose
+# CityJSON stage is `cjseq collect`'s output — takes the same path as a
+# `.city.json` one.
+#
+# `-v 2.0` because this repository's reader accepts only CityGML 2.0
+# (`sniff_citygml`); the tool's own default is 3.0, which would produce an
+# artefact that converts cleanly and can never be read.
+#
+# `--no-pretty-print` is a MEASUREMENT decision, not a tidiness one. On
+# Rotterdam the same content serialises to 18.8 MB indented and 14.0 MB
+# compact, against a 16.5 MB published original — so indentation alone would
+# move the `citygml` row by a third. Compact is the conservative choice: it
+# gives the baseline this benchmark argues against its BEST case, so no size
+# or parse-time gap can be dismissed as an artefact of whitespace.
+if [[ "$SYNTH_CITYGML" -eq 1 ]]; then
+  if file_is_valid "$GML_OUT"; then
+    echo "skip $GML_OUT (already present)"
+  else
+    echo "-- citygml-tools from-cityjson -v 2.0 $CITYJSON_OUT -> $GML_OUT"
+    # Same shape as the to-cityjson hop above: citygml-tools writes
+    # <basename>.gml into an output DIRECTORY, not to a path of our choosing,
+    # so it converts into a scratch directory that is cleaned up whatever
+    # happens and the single result is moved into place.
+    GML_TMP="$(mktemp -d "$OUTDIR/.citygml.XXXXXX")"
+    trap 'rm -rf "$GML_TMP"' EXIT
+    "$CITYGML_TOOLS_BIN" from-cityjson -v 2.0 --no-pretty-print \
+      -o "$GML_TMP" "$CITYJSON_OUT"
+    GML_PRODUCED=()
+    while IFS= read -r -d '' produced; do
+      GML_PRODUCED+=("$produced")
+    done < <(find "$GML_TMP" -maxdepth 1 -type f -name '*.gml' -print0)
+    if [[ ${#GML_PRODUCED[@]} -ne 1 ]]; then
+      echo "error: citygml-tools produced ${#GML_PRODUCED[@]} .gml files for $CITYJSON_OUT (expected exactly 1)" >&2
+      exit 1
+    fi
+    mv "${GML_PRODUCED[0]}" "$GML_OUT"
+    rm -rf "$GML_TMP"
+    trap - EXIT
+  fi
+
+  # The same two fitness checks the preflight runs against a CityGML INPUT,
+  # run here instead because the artefact did not exist until a moment ago.
+  # Neither is expected to fire — `-v 2.0` settles the version, and an object
+  # that reached the CityJSON stage has a key, which is what becomes the
+  # gml:id — but "not expected to fire" is exactly the assumption that stops
+  # being true after a tool upgrade, and both failures are silent in the
+  # results CSV rather than loud.
+  read -r GML_OBJECTS GML_WITH_IDS <<<"$(citygml_counts "$GML_OUT")"
+  if [[ "$GML_OBJECTS" -le 0 ]]; then
+    echo "error: the synthesised $GML_OUT contains no <cityObjectMember> elements (expected > 0)" >&2
+    exit 1
+  fi
+  SYNTH_VERSION="$(citygml_declared_version "$GML_OUT")"
+  if [[ "$SYNTH_VERSION" != "2.0" ]]; then
+    echo "error: the synthesised $GML_OUT declares CityGML '${SYNTH_VERSION:-none}', not 2.0;" >&2
+    echo "       the benchmark's reader supports only 2.0, so it could never be measured" >&2
+    exit 1
+  fi
+  if [[ "$GML_WITH_IDS" -lt "$GML_OBJECTS" ]]; then
+    echo "error: only $GML_WITH_IDS of $GML_OBJECTS top-level objects carry a gml:id in the" >&2
+    echo "       synthesised $GML_OUT; citygml-tools mints a fresh random id for each of the" >&2
+    echo "       rest, so the id the benchmark samples would be absent from this artefact and" >&2
+    echo "       the id-lookup scenario would measure a miss against every other format's hit" >&2
+    exit 1
+  fi
+  BUILT+=("$GML_OUT")
 fi
 
 # 3. CityJSONSeq: cut from the CityJSON above, or copied when INPUT already
@@ -840,15 +947,30 @@ SEQ_FEATURES=""
 if [[ "$BUILD_CITYGML" -eq 1 ]]; then
   file_is_valid "$GML_OUT" || { echo "error: missing/empty file: $GML_OUT" >&2; exit 1; }
 fi
-# The counts come from the preflight, which already read the source document
-# (and refused it if it was empty, the wrong version, or short of gml:ids).
-# They are reported here, beside the other artefacts' counts, and used as the
-# baseline the derived CityJSON is compared against — which is why they are
-# taken even by a run that never asked for the `citygml` artefact: the
-# CityGML -> CityJSON hop is where loss is likeliest (citygml-tools skips ADE
-# content it has no extension for), and it would otherwise go unmeasured.
+# Where the CityGML counts came from depends on which way the conversion ran,
+# and so does what they can be compared against:
+#
+#   COPIED (CityGML INPUT)  the preflight read them off the source document
+#     and refused it if it was empty, the wrong version, or short of gml:ids.
+#     They are the BASELINE the derived CityJSON is checked against — which is
+#     why they are taken even by a run that never asked for the `citygml`
+#     artefact: the CityGML -> CityJSON hop is where loss is likeliest
+#     (citygml-tools skips ADE content it has no extension for), and it would
+#     otherwise go unmeasured.
+#
+#   SYNTHESISED  step 2b read them off the artefact it had just written, and
+#     the CityJSON is UPSTREAM of it rather than downstream. No drift check is
+#     run in that direction, and it would be wrong to run one: CityGML nests a
+#     BuildingPart inside its parent Building where CityJSON lists both at top
+#     level, so the two counts legitimately differ — on the corpus's 3DBAG
+#     tile, 1,110 top-level GML members against 2,221 CityObjects. Comparing
+#     them would report a 50% "loss" that did not happen.
+GML_COUNTED_IN="$INPUT"
+if [[ "$SYNTH_CITYGML" -eq 1 ]]; then
+  GML_COUNTED_IN="$GML_OUT"
+fi
 if [[ -n "$GML_OBJECTS" ]]; then
-  echo "  citygml: $GML_OBJECTS top-level object(s) in $INPUT"
+  echo "  citygml: $GML_OBJECTS top-level object(s) in $GML_COUNTED_IN"
   if [[ "$BUILD_CITYGML" -eq 1 ]]; then
     echo "  citygml: all $GML_WITH_IDS object(s) carry a gml:id (id-lookup is comparable)"
   fi
@@ -861,7 +983,7 @@ if [[ "$NEED_CITYJSON" -eq 1 ]]; then
     exit 1
   fi
   echo "  cityjson: $CITYJSON_OBJECTS top-level object(s) in $CITYJSON_OUT"
-  if [[ -n "$GML_OBJECTS" ]]; then
+  if [[ -n "$GML_OBJECTS" && "$SYNTH_CITYGML" -eq 0 ]]; then
     report_count_drift "$INPUT" "$GML_OBJECTS" "$CITYJSON_OUT" "$CITYJSON_OBJECTS"
   fi
 fi

@@ -245,12 +245,20 @@ CARGO_STUB
         chmod +x "$dir/bin/cargo"
         ;;
       citygml-tools)
-        # `citygml-tools to-cityjson -o DIR FILE` writes DIR/<base>.json (the
-        # real tool's naming: the input's basename with its extension replaced,
-        # NOT the .city.json the benchmark's artefact names use).
+        # `citygml-tools to-cityjson -o DIR FILE` writes DIR/<base>.json, and
+        # `from-cityjson -o DIR FILE` writes DIR/<base>.gml (the real tool's
+        # naming in both directions: the input's basename with its extension
+        # replaced, NOT the .city.json/.gml the benchmark's artefact names use
+        # — the script globs for the one file produced and renames it).
         #
         # $STUB_CITYJSON_OBJECTS (default 1) is how a case makes the converter
         # emit a well-formed but object-less — or a lossy — CityJSON.
+        #
+        # The from-cityjson direction has three knobs of its own, one per
+        # check `readbench_prepare.sh` runs against the artefact it gets back:
+        #   $STUB_GML_OBJECTS      (default 1) top-level members written
+        #   $STUB_GML_WITHOUT_IDS  (default 0) how many of them lack a gml:id
+        #   $STUB_GML_VERSION      (default 2.0) the declared CityGML version
         cat >"$dir/bin/citygml-tools" <<'CGT_STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -275,12 +283,39 @@ while [[ $# -gt 0 ]]; do
     *) src=$1; shift ;;
   esac
 done
+# A CityGML document with $1 top-level members, of which the LAST $2 carry no
+# gml:id, declaring version $3. The stub_source comment records the file it
+# was derived from, the same way cityjson_doc's "stub_source" key does.
+citygml_doc() {
+  local n=$1 without=$2 version=$3 src=$4 i id
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+  printf '<!-- stub_source:%s -->\n' "$src"
+  printf '<core:CityModel xmlns:core="http://www.opengis.net/citygml/%s"' "$version"
+  printf ' xmlns:bldg="http://www.opengis.net/citygml/building/%s"' "$version"
+  printf ' xmlns:gml="http://www.opengis.net/gml">\n'
+  for ((i = 0; i < n; i++)); do
+    if ((i >= n - without)); then
+      id=""
+    else
+      id=" gml:id=\"tiny$i\""
+    fi
+    printf '<core:cityObjectMember><bldg:Building%s/></core:cityObjectMember>\n' "$id"
+  done
+  printf '</core:CityModel>\n'
+}
 case "$sub" in
   to-cityjson)
     [[ -n "$outdir" && -n "$src" ]] || { echo "stub citygml-tools: need -o and a source" >&2; exit 1; }
     base="$(basename "$src")"; base="${base%.*}"
     mkdir -p "$outdir"
     cityjson_doc "${STUB_CITYJSON_OBJECTS:-1}" "$src" >"$outdir/$base.json"
+    ;;
+  from-cityjson)
+    [[ -n "$outdir" && -n "$src" ]] || { echo "stub citygml-tools: need -o and a source" >&2; exit 1; }
+    base="$(basename "$src")"; base="${base%.*}"
+    mkdir -p "$outdir"
+    citygml_doc "${STUB_GML_OBJECTS:-1}" "${STUB_GML_WITHOUT_IDS:-0}" \
+      "${STUB_GML_VERSION:-2.0}" "$src" >"$outdir/$base.gml"
     ;;
   --version|-V) echo "citygml-tools 0.0.0-stub" ;;
   *) echo "stub citygml-tools: unknown command '$sub'" >&2; exit 1 ;;
@@ -560,46 +595,45 @@ case_unknown_format_rejected() {
 }
 
 # --------------------------------------------------------------------------
-# Case 5: no `--formats` on a CityJSONSeq input builds every artefact that IS
-# derivable from it — which is all of them but `citygml`. CityGML is reported
-# plainly as not derivable rather than synthesised by a reverse conversion: a
-# `from-cityjson` artefact is a round-trip product, not the source data, so
-# measuring it would be dishonest.
+# Case 5: no `--formats` on a CityJSONSeq input builds EVERY artefact,
+# `citygml` included — synthesised from the CityJSON stage by
+# `from-cityjson`. This case used to assert the opposite (that CityGML was
+# reported as not derivable and skipped); see the header's CITYGML IS
+# SYNTHESISED block for why that reversed. The property that matters now is
+# that all EIGHT formats exist for one input, because a dataset producing
+# seven of them contributes a comparison with the baseline missing.
 #
-# The sandbox deliberately has NO citygml-tools stub, which is the other half
-# of the claim: the CityJSON path never reaches for it.
+# The synthesised CityGML is derived from the CityJSON STAGE, not from the
+# input directly — asserted below from the stub's recorded source, not from
+# the script's own echo of a path.
 # --------------------------------------------------------------------------
-case_default_on_cityjsonseq_skips_only_citygml() {
-  local name="no --formats on a CityJSONSeq input builds everything but citygml"
+case_default_on_cityjsonseq_builds_every_format() {
+  local name="no --formats on a CityJSONSeq input builds every artefact, citygml included"
   local dir
-  dir="$(new_sandbox cargo fcb cjseq)"
+  dir="$(new_sandbox cargo fcb cjseq citygml-tools)"
   run_prepare "$dir" "$dir/data/tiny.city.jsonl" "$dir/out"
   if [[ $LAST_RC -ne 0 ]]; then
     fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
     return
   fi
   local artefact
-  for artefact in tiny.city.json tiny.city.jsonl tiny.parquet tiny-hilbert.parquet \
-    tiny.fcb tiny.jsonl.gz; do
+  for artefact in tiny.gml tiny.city.json tiny.city.jsonl tiny.parquet \
+    tiny-hilbert.parquet tiny.fcb tiny.jsonl.gz; do
     if [[ ! -e "$dir/out/$artefact" ]]; then
       fail "$name" "missing $artefact; log: $(cat "$LAST_LOG")"
       return
     fi
   done
-  if [[ -e "$dir/out/tiny.gml" ]]; then
-    fail "$name" "synthesised a CityGML artefact by reverse conversion"
-    return
-  fi
   # The CityJSON was collected from the INPUT itself — never out of a
   # CityParquet package. Asserted from the artefact's recorded source.
   if ! grep -qF "\"stub_source\":\"$dir/data/tiny.city.jsonl\"" "$dir/out/tiny.city.json"; then
     fail "$name" "the CityJSON was not collected from the input; got: $(cat "$dir/out/tiny.city.json")"
     return
   fi
-  # The full sentence, not a bare "citygml": the `-- formats: …` echo prints
-  # that word on every run of the default set.
-  if ! log_mentions "citygml: not derivable from a CityJSON input"; then
-    fail "$name" "did not report citygml as not derivable; log: $(cat "$LAST_LOG")"
+  # ...and the CityGML from the CityJSON STAGE, keeping the chain's one rule
+  # (each artefact derives from the one before it) true in this direction too.
+  if ! grep -qF "stub_source:$dir/out/tiny.city.json" "$dir/out/tiny.gml"; then
+    fail "$name" "the CityGML was not synthesised from the CityJSON stage; got: $(head -2 "$dir/out/tiny.gml")"
     return
   fi
   pass "$name"
@@ -719,29 +753,89 @@ case_citygml_input_builds_the_whole_chain() {
 }
 
 # --------------------------------------------------------------------------
-# Case 7b: asking for `citygml` explicitly from a CityJSON input is reported,
-# not obeyed and not fatal. This is the ONE documented exception to "a
-# requested format that cannot be built is an error here": the only way to
-# obey would be a reverse conversion, and a round-trip artefact is not the
-# source data.
+# Case 7b: asking for `citygml` ALONE from a CityJSON input builds it, and
+# drags in the CityJSON stage it has to be converted back from.
+#
+# That intermediate is the point of the case. `citygml` is the only requested
+# format, so nothing else needs a CityJSON — but `from-cityjson` does, and a
+# NEED_CITYJSON that failed to account for the synthesis path would leave this
+# run trying to convert a file that was never written.
 # --------------------------------------------------------------------------
-case_explicit_citygml_from_cityjson_is_reported_not_fatal() {
-  local name="--formats citygml on a CityJSON input is reported, not fatal"
+case_explicit_citygml_from_cityjson_is_synthesised() {
+  local name="--formats citygml on a CityJSON input synthesises it via a CityJSON stage"
   local dir
-  dir="$(new_sandbox cargo fcb cjseq)"
+  dir="$(new_sandbox cargo fcb cjseq citygml-tools)"
   run_prepare "$dir" --formats citygml "$dir/data/tiny.city.jsonl" "$dir/out"
   if [[ $LAST_RC -ne 0 ]]; then
     fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
     return
   fi
-  if ! log_mentions "citygml: not derivable from a CityJSON input"; then
-    fail "$name" "did not report why; log: $(cat "$LAST_LOG")"
+  if [[ ! -e "$dir/out/tiny.gml" ]]; then
+    fail "$name" "no CityGML artefact; log: $(cat "$LAST_LOG")"
     return
   fi
-  # `-prune`, not `! -name`: the latter still DESCENDS into the provenance
-  # directory and finds the stamp file inside it.
-  if [[ -n "$(find "$dir/out" -mindepth 1 -name '.readbench-chain' -prune -o -print -quit)" ]]; then
-    fail "$name" "built something for a format it could not derive"
+  if ! grep -qF "stub_source:$dir/out/tiny.city.json" "$dir/out/tiny.gml"; then
+    fail "$name" "the CityGML was not synthesised from the CityJSON stage; got: $(head -2 "$dir/out/tiny.gml")"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 7b-i: a synthesised CityGML whose objects lack a `gml:id` is REFUSED,
+# not published.
+#
+# The same defect the preflight refuses in a CityGML INPUT, on the other side
+# of the conversion. citygml-tools mints a fresh random id for an object that
+# has none, so the id the benchmark samples from the CityJSONSeq would be
+# absent from the .gml entirely and `id-lookup` would score a miss beside
+# every other format's hit — not a slower lookup, a different query. Nothing
+# downstream catches it: the coordinator's cross-format self-consistency check
+# covers AttrFilter(object_type) only, never IdLookup.
+#
+# Not expected to fire in practice (an object that reached the CityJSON stage
+# has a key, which is what becomes the gml:id), which is exactly why it is
+# tested: an unexercised check is one that stops working at the next tool
+# upgrade without anyone noticing.
+# --------------------------------------------------------------------------
+case_synthesised_citygml_without_ids_is_refused() {
+  local name="a synthesised CityGML short of gml:ids is refused"
+  local dir
+  dir="$(new_sandbox cargo fcb cjseq citygml-tools)"
+  STUB_GML_OBJECTS=3 STUB_GML_WITHOUT_IDS=1 \
+    run_prepare "$dir" --formats citygml "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -eq 0 ]]; then
+    fail "$name" "accepted a synthesised CityGML with a missing gml:id"
+    return
+  fi
+  if ! log_mentions "only 2 of 3 top-level objects carry a gml:id"; then
+    fail "$name" "did not report the missing ids; log: $(cat "$LAST_LOG")"
+    return
+  fi
+  pass "$name"
+}
+
+# --------------------------------------------------------------------------
+# Case 7b-ii: a synthesised CityGML that is not version 2.0 is REFUSED.
+#
+# citygml-tools' own `from-cityjson` default is CityGML 3.0, and this
+# repository's reader accepts only 2.0 (`sniff_citygml`) — so a dropped `-v
+# 2.0` produces an artefact that converts cleanly, passes every file-exists
+# check, and can never be read. The failure would otherwise surface as an
+# unexplained missing `citygml` row per dataset.
+# --------------------------------------------------------------------------
+case_synthesised_citygml_wrong_version_is_refused() {
+  local name="a synthesised CityGML that is not 2.0 is refused"
+  local dir
+  dir="$(new_sandbox cargo fcb cjseq citygml-tools)"
+  STUB_GML_VERSION=3.0 \
+    run_prepare "$dir" --formats citygml "$dir/data/tiny.city.jsonl" "$dir/out"
+  if [[ $LAST_RC -eq 0 ]]; then
+    fail "$name" "accepted a synthesised CityGML 3.0 artefact"
+    return
+  fi
+  if ! log_mentions "declares CityGML '3.0', not 2.0"; then
+    fail "$name" "did not report the version; log: $(cat "$LAST_LOG")"
     return
   fi
   pass "$name"
@@ -1088,7 +1182,11 @@ case_second_run_skips() {
 case_cityjson_input_builds_a_real_seq_artefact() {
   local name="a CityJSON input cuts a real CityJSONSeq artefact for the seq row"
   local dir
-  dir="$(new_sandbox cargo fcb cjseq)"
+  # citygml-tools is in the sandbox because this runs the DEFAULT format set,
+  # which now includes `citygml` and therefore the from-cityjson hop. The case
+  # is about the seq artefact, not about CityGML; without the stub it would
+  # fail at the tool guard before reaching what it means to assert.
+  dir="$(new_sandbox cargo fcb cjseq citygml-tools)"
   run_prepare "$dir" "$dir/data/tiny.city.json" "$dir/out"
   if [[ $LAST_RC -ne 0 ]]; then
     fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
@@ -1431,10 +1529,12 @@ case_cityparquet_only
 case_flatcitybuf_without_fcb
 case_flatcitybuf_skips_the_cli_build
 case_unknown_format_rejected
-case_default_on_cityjsonseq_skips_only_citygml
+case_default_on_cityjsonseq_builds_every_format
 case_cityjsonseq_is_materialised_from_a_seq_input
 case_citygml_input_builds_the_whole_chain
-case_explicit_citygml_from_cityjson_is_reported_not_fatal
+case_explicit_citygml_from_cityjson_is_synthesised
+case_synthesised_citygml_without_ids_is_refused
+case_synthesised_citygml_wrong_version_is_refused
 case_citygml_input_without_citygml_tools
 case_cityjson_without_cjseq
 case_object_less_citygml_is_rejected

@@ -98,7 +98,7 @@ plot-test:
 # throwaway sandbox (so it needs no real `fcb`/`cjseq`/`citygml-tools` and
 # performs no real conversion); `fetch_benchmark_test.sh` serves a throwaway
 # corpus of `file://` URLs to the real fetcher, and lints its pinned table
-# against `bench/catalogue_benchmark_urls.txt`; `bench_recipe_test.sh`
+# against `bench/corpus_urls.txt`; `bench_recipe_test.sh`
 # extracts the `bench` recipe's own format-selection block out of THIS file
 # and runs it, which is what keeps the recipe and `Format::DEFAULT_SET` from
 # disagreeing about whether the `duckdb-parquet` baseline is opt-in. Needs
@@ -145,36 +145,34 @@ fixtures:
 interop:
     ./scripts/interop.sh
 
-# Fetch the CityParquet benchmark corpus — 30 REAL published city models
-# (CityGML 2.0 `.gml` and CityJSON 2.0 `.city.json`, 923 KB .. 1.9 GB, 6.5 GB
-# on the wire) derived from the city3d STAC catalogue, into DEST (default
+# Fetch the CityParquet benchmark corpus — SIX REAL published city models
+# (CityJSON 2.0 `.city.json`, 2.7 MB .. 293 MB, 423 MB on the wire) from the
+# CityJSON project's own dataset page, into DEST (default
 # bench/data/benchmark/, gitignored). Every entry's byte size is pinned and
-# verified, `.gz`/`.zip` downloads are normalised to plain files on arrival,
-# and an already-present file is skipped — see scripts/fetch_benchmark.sh for
-# the table and bench/catalogue_benchmark_urls.txt for each URL's provenance.
-# Needs curl (and gunzip/unzip); network-dependent; kept OUT of `just
+# verified and an already-present file is skipped — see
+# scripts/fetch_benchmark.sh for the table and bench/corpus_urls.txt for each
+# URL's provenance. Needs curl; network-dependent; kept OUT of `just
 # check`/CI.
+#
+# EVERY ENTRY PRODUCES ALL EIGHT COMPARED FORMATS, which is the property the
+# corpus is selected for: the read benchmark's claim is a comparison BETWEEN
+# formats, so a dataset producing seven of them contributes a comparison with
+# the baseline missing. The `citygml` artefact is SYNTHESISED from the CityJSON
+# by `readbench_prepare.sh` — see bench/READ_BENCHMARK.md's CityGML synthesis
+# section for what that costs. The 30-dataset catalogue corpus this replaced
+# is archived, still fetchable, under
+# bench/archive/2026-08-17-catalogue-corpus/.
 #
 # ONLY selects the entries that can serve one benchmark set: `default` (the
 # DEFAULT, the default format set with the `citygml` row included),
-# `no-citygml` (every format but citygml), or `all` (every pinned entry).
+# `no-citygml` (every format but citygml), or `all` (every pinned entry). For
+# the pinned corpus all three select the same six entries; the flag matters
+# only for a $CORPUS_MANIFEST input, such as the archived corpus, which does
+# carry entries that cannot serve a default-set run.
 #
-# `default` is the default because two entries — Riga (703 objects, no
-# gml:id) and PLATEAU's brid tile (shared geometry this repository's CityGML
-# reader refuses) — cannot serve the default format set, and NEITHER FAILS
-# GRACEFULLY. `readbench_prepare.sh` refuses Riga outright; the readbench
-# coordinator bails when brid's `citygml` child exits non-zero; and the
-# `bench` recipe's folder loop below runs under `set -e`, so either one does
-# not merely lose its own dataset — it kills the loop and silently takes
-# every dataset sorting after it down too. `just fetch-data && just bench
-# bench/data/benchmark` is the documented happy path, so the fetch must not
-# put those two files in the folder unasked. Fetch them with
-# `just fetch-data DEST no-citygml` and measure them with an explicit
-# `FORMATS` list that omits `citygml`.
-#
-# The fetch also REFUSES to add to a DEST that already holds city-model files
-# the table does not describe — most likely the previous corpus, which used
-# this same directory (`--allow-foreign` overrides).
+# The fetch REFUSES to add to a DEST that already holds city-model files the
+# table does not describe — most likely the previous corpus, which used this
+# same directory (`--allow-foreign` overrides).
 fetch-data DEST='bench/data/benchmark' ONLY='default':
     ./scripts/fetch_benchmark.sh --only {{ONLY}} {{DEST}}
 

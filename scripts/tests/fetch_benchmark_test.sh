@@ -13,16 +13,16 @@
 # recorded-invocation theatre.
 #
 # The last case is different in kind: it lints the script's OWN pinned table
-# and cross-checks it against `bench/catalogue_benchmark_urls.txt`. Those two
-# files are a corpus definition kept in two places, which is exactly how the
-# five PLATEAU modules Task 4 blocked stayed "usable" in one of them for a
-# while. The lint makes the drift a test failure.
+# and cross-checks it against `bench/corpus_urls.txt`. Those two files are a
+# corpus definition kept in two places, which is exactly how five PLATEAU
+# modules blocked under the previous corpus stayed "usable" in one of them for
+# a while. The lint makes the drift a test failure.
 set -euo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
 FETCH="$REPO_ROOT/scripts/fetch_benchmark.sh"
-CATALOGUE="$REPO_ROOT/bench/catalogue_benchmark_urls.txt"
+CATALOGUE="$REPO_ROOT/bench/corpus_urls.txt"
 JUSTFILE="$REPO_ROOT/justfile"
 
 PASSED=0
@@ -542,13 +542,13 @@ case_fetch_data_defaults_to_the_default_set() {
 
 # --------------------------------------------------------------------------
 # Case 14: the script's own pinned table is well-formed, and it agrees with
-# `bench/catalogue_benchmark_urls.txt`.
+# `bench/corpus_urls.txt`.
 #
-# The catalogue file is the corpus's provenance record (where each URL came
-# from, why the blocked ones are blocked); the script's table is what actually
-# gets fetched. Two hand-maintained lists of the same URLs drift — so this
-# case requires them to be the SAME SET, in both directions. Adding a URL to
-# one and not the other is then a test failure, not a silent corpus change.
+# The provenance file records where each URL came from and why the excluded
+# ones are excluded; the script's table is what actually gets fetched. Two
+# hand-maintained lists of the same URLs drift — so this case requires them to
+# be the SAME SET, in both directions. Adding a URL to one and not the other is
+# then a test failure, not a silent corpus change.
 # --------------------------------------------------------------------------
 case_pinned_table_is_well_formed() {
   local name="the pinned table is well-formed and matches the catalogue"
@@ -586,29 +586,23 @@ case_pinned_table_is_well_formed() {
         return
         ;;
     esac
-    # The two entries that cannot serve a default-set run must be
-    # `no-citygml`-ONLY, and no other entry may be. This is a VALUE
+    # EVERY pinned entry must serve the DEFAULT set. This is a VALUE
     # assertion, deliberately: the shape check above accepts any of the three
-    # spellings, so flipping riga to `default,no-citygml` used to leave this
-    # suite green — and would put back exactly the aborted folder loop
-    # c20b8b2 exists to prevent (readbench_prepare.sh refuses Riga outright;
-    # the coordinator bails on PLATEAU brid's citygml child; `just bench`
-    # runs under `set -e`, so either takes every dataset sorting after it
-    # down too).
-    case "${fields[0]}" in
-      riga_atgazene_lod2.gml | plateau_chuo_brid.gml)
-        if [[ "${fields[3]}" != "no-citygml" ]]; then
-          fail "$name" "entry '${fields[0]}' is in set '${fields[3]}'; it cannot serve a default-set run"
-          return
-        fi
-        ;;
-      *)
-        if [[ "${fields[3]}" == "no-citygml" ]]; then
-          fail "$name" "entry '${fields[0]}' is no-citygml-only, but only riga_atgazene_lod2.gml and plateau_chuo_brid.gml are known to be"
-          return
-        fi
-        ;;
-    esac
+    # spellings, so a `no-citygml`-only entry would otherwise slip in and
+    # leave this suite green.
+    #
+    # It is also the defining property of this corpus rather than an
+    # incidental one. The read benchmark compares eight formats; an entry that
+    # cannot serve a default-set run contributes seven rows and a hole, which
+    # is precisely the defect the previous corpus was retired for (see
+    # bench/archive/2026-08-17-catalogue-corpus/README.md). It would also
+    # abort the run outright — `just bench` measures the whole directory under
+    # `set -e`, so one unfit file takes every dataset sorting after it down
+    # too. $CORPUS_MANIFEST remains the way to fetch such an entry knowingly.
+    if [[ "${fields[3]}" != "default" && "${fields[3]}" != "default,no-citygml" ]]; then
+      fail "$name" "entry '${fields[0]}' is in set '${fields[3]}'; every PINNED entry must serve the default set"
+      return
+    fi
     url_field="${fields[4]}"
     if [[ "$url_field" != http* ]]; then
       fail "$name" "entry '${fields[0]}' has a non-http URL '$url_field'"

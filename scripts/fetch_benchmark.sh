@@ -1,39 +1,52 @@
 #!/usr/bin/env bash
-# Fetch the CityParquet benchmark corpus (`just fetch-data`) — the
-# catalogue-derived spread of REAL published city models the read benchmark
-# measures: 30 datasets, 6.5 GB on the wire, from 923 KB (a 3DBAG tile) to
-# 1.9 GB (Freiburg's city-wide LoD2), in the two formats the data actually
-# ships in (CityGML 2.0 `.gml`, CityJSON 2.0 `.city.json`) rather than in one
-# pre-converted intermediate.
+# Fetch the CityParquet benchmark corpus (`just fetch-data`) — SIX real
+# published city models, 423 MB on the wire, from 2.7 MB (Rotterdam
+# Delfshaven) to 293 MB (Zürich), every one of them a single-object-table
+# building dataset that yields ALL EIGHT compared formats.
 #
-# Provenance: every URL comes from the city3d STAC catalogue, recorded with
-# its collection and its verification date in `bench/catalogue_benchmark_urls.txt`
-# — read that file for WHY an entry is here and why the blocked ones are not.
-# This script is the other half: WHAT gets fetched, under which local name,
-# and at exactly which byte size. Its test suite
-# (`scripts/tests/fetch_benchmark_test.sh`, `just scripts-test`) requires the
-# two lists to stay the same set, so neither can drift alone.
+# That last property is the whole point of this corpus, and the reason it
+# replaced a 30-dataset, 6.5 GB one that covered far more ground. The read
+# benchmark's claim is a comparison BETWEEN formats, so a dataset that cannot
+# produce every format contributes a row with a hole in it — and the previous
+# corpus had holes in exactly the datasets a reader recognises. See
+# bench/archive/2026-08-17-catalogue-corpus/README.md for what was retired and
+# why. Depth over breadth: six datasets that are fully comparable beat thirty
+# that are partly comparable.
+#
+# Provenance: every entry is from the CityJSON project's own dataset page,
+#   https://www.cityjson.org/datasets/
+# recorded with its verification date in `bench/corpus_urls.txt` — read that
+# file for WHY an entry is here, and why the two datasets that page offers but
+# this corpus omits are omitted. This script is the other half: WHAT gets
+# fetched, under which local name, and at exactly which byte size. Its test
+# suite (`scripts/tests/fetch_benchmark_test.sh`, `just scripts-test`) requires
+# the two lists to stay the same set, so neither can drift alone.
+#
+# EVERY ENTRY IS FETCHED AS CityJSON, and the `citygml` artefact is SYNTHESISED
+# from it by `readbench_prepare.sh` (`citygml-tools from-cityjson -v 2.0`).
+# That is a deliberate reversal of an earlier rule — see the CityGML synthesis
+# section of bench/READ_BENCHMARK.md, which states what it costs. In short: the
+# cityjson.org page publishes a matching `.gml` beside each `.city.json`, but
+# NOT ONE of them is readable here — six are CityGML 1.0, two are 3.0, and this
+# repository's reader accepts only 2.0. Deriving every artefact, CityGML
+# included, from one source document is what makes the eight rows comparable.
 #
 # Downloaded to DEST (default bench/data/benchmark/, an optional positional
 # argument; the whole of bench/data/ is gitignored — see .gitignore).
 #
 # Reproducibility beats freshness. Each entry pins the byte size of the
-# download itself, measured 2026-08-16; the size is verified after every
+# download itself, measured 2026-08-23; the size is verified after every
 # fetch and a mismatch HARD-FAILS rather than silently benchmarking against
 # different bytes. Idempotent: an already-present file is skipped when it
 # still matches what was fetched, so a re-run only collects what is missing,
 # truncated or changed.
 #
-# NORMALISED ON ARRIVAL: a `.gz` is gunzipped and a `.zip`'s pinned member is
-# extracted, so what lands in DEST is always a plain `.gml` / `.city.json`
-# that the recipes downstream can see (`just bench` and `just convert-all`
-# discover inputs by extension — a file left gzipped is a file they skip).
-# NOTE that the on-disk size is therefore often much larger than the pinned
-# wire size: Estonia's 11 MB national canopy archive expands to 323 MB, and
-# Kuopio's 1.5 GB archive to a 982 MB GML.
+# Every entry is `plain`: this corpus needs no gunzip and no unzip, and what
+# lands in DEST is byte-for-byte what the origin served. The normalisation
+# machinery below (`gz`, `zip:MEMBER`) is retained because $CORPUS_MANIFEST
+# still feeds it — the archived corpus uses both forms.
 #
-# Needs `curl`; `gunzip` and `unzip` only if the selection includes an entry
-# that needs them. No `gsutil`: every entry is fetched over plain HTTPS.
+# Needs `curl`. No `gsutil`: every entry is fetched over plain HTTPS.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,107 +56,83 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #   local_name | wire_bytes | form | sets | url
 #
 # local_name  What lands in DEST, and therefore the dataset name in every
-#             benchmark CSV and chart. Pinned rather than derived because 11
-#             of these URLs have no filename in them at all: the CRAIG and
-#             Estonia endpoints carry it in a query parameter (`&files=`,
-#             `&f=`), and the path component is the same `/download` or
-#             `/index.php` for every dataset they publish.
+#             benchmark CSV and chart. Pinned rather than derived because the
+#             published filenames are not self-describing: the 3DBAG tile
+#             ships as `9-284-556.city.json` and Rotterdam's as
+#             `3-20-DELFSHAVEN.city.json`, neither of which names its city in
+#             a chart legend.
 #
-# wire_bytes  The bytes of the DOWNLOAD (so, the compressed size for a `.gz`
-#             or `.zip`), as measured on 2026-08-16 — by `Content-Length` /
-#             `Content-Range` where the origin publishes one, and by counting
-#             a streamed GET where it does not. The six PLATEAU tiles served
-#             with `x-goog-stored-content-encoding: gzip` fall in that second
-#             group: the CDN gunzips them in flight, so the bytes that arrive
-#             are the decompressed GML and no header states their length.
+# wire_bytes  The bytes of the download, as measured on 2026-08-23 by counting
+#             a streamed GET. Every entry here is served uncompressed, so this
+#             is also the on-disk size — unlike the archived corpus, where the
+#             two differed by up to 30x.
 #
-# form        `plain` (write it through), `gz` (gunzip it), or
-#             `zip:MEMBER` (extract exactly that one member — these archives
-#             ship the model beside thousands of texture images, and only the
-#             model is an input; no measured runner opens the images).
+# form        `plain` for every entry (see the header). `gz` and `zip:MEMBER`
+#             remain implemented for $CORPUS_MANIFEST inputs.
 #
-# sets        Which benchmark set the entry can serve:
-#               default      the DEFAULT format set, `citygml` row included
-#               no-citygml   everything EXCEPT the `citygml` row
-#             Two entries are `no-citygml` only, and both would poison a
-#             default-set run rather than merely weaken it — the coordinator
-#             aborts a dataset when any child fails, and
-#             `readbench_prepare.sh` refuses the input outright:
-#               riga_atgazene_lod2.gml    703 of 703 top-level objects carry
-#                 NO gml:id (identity lives in a `gen:intAttribute` named
-#                 OBJECTID). citygml-tools mints a fresh random id for each,
-#                 so `citygml`'s id-lookup would query an id that is not in
-#                 the .gml at all and score a miss beside every other format's
-#                 hit. Every other format reads it fine (the derived CityJSON
-#                 is self-consistent), so it stays in the corpus.
-#               plateau_chuo_brid.gml     this repository's CityGML reader
-#                 hard-errors on it: its solids reference polygons defined in
-#                 a different city object ("cross-building/shared geometry is
-#                 out of scope"). Again a `citygml`-only defect — citygml-tools
-#                 resolves the references, so every derived artefact is fine.
-#             Neither degrades a default-set run, both ABORT one: the
-#             coordinator bails when a child fails, `readbench_prepare.sh`
-#             refuses Riga outright, and `just bench`'s folder loop runs under
-#             `set -e` — so one of these files in the directory does not lose
-#             its own dataset, it kills the loop and takes every dataset
-#             sorting after it down with it. That is why `--only` DEFAULTS to
-#             `default`. Ask for them with `--only no-citygml` (or `all`), and
-#             measure them with an explicit `--formats` list that omits
-#             `citygml`.
+# sets        Which benchmark set the entry can serve. EVERY entry serves BOTH
+#             — that is this corpus's defining property, and the reason
+#             `--only` no longer has anything to exclude. The flag is kept
+#             because $CORPUS_MANIFEST inputs (the archived corpus among them)
+#             still carry entries that cannot serve a default-set run.
 #
-# url         Verbatim from bench/catalogue_benchmark_urls.txt.
+# url         Verbatim from bench/corpus_urls.txt.
 #
 # Ordered by wire size, smallest first, so a truncated fetch still leaves a
-# usable spread of formats, geographies and CityGML modules.
+# usable size ladder.
 #
-# EVERY entry was verified before being pinned: its declared CityGML version
-# is 2.0, every top-level object carries a gml:id (except Riga, above), and
-# its city objects all resolve to ONE CityParquet object table. That last
-# check is not cosmetic — `cityparquet-readbench`'s coordinator refuses a
-# multi-table package outright (`locate_cityparquet_table`), so a two-family
-# dataset cannot be measured at all. Three catalogue entries were dropped for
-# failing it and are recorded, with their reasons, in the EXCLUDED section of
-# bench/catalogue_benchmark_urls.txt.
+# EVERY entry was verified on 2026-08-23 before being pinned, against the three
+# gates that decide whether a dataset can be MEASURED at all:
+#
+#   1. CityJSON 2.0.
+#   2. ONE CityParquet object table. `cityparquet-readbench`'s coordinator
+#      refuses a multi-table package outright (`locate_cityparquet_table`), so
+#      a dataset spanning two CityGML modules cannot be measured — not
+#      measured poorly, not measured at all. Every entry below is pure
+#      Building module (`Building` / `BuildingPart` / `BuildingInstallation`).
+#   3. A `gml:id` on every top-level object of the SYNTHESISED CityGML, so the
+#      `id-lookup` scenario samples an id that is actually present in all
+#      eight artefacts. citygml-tools mints a fresh random id where the source
+#      has none, which would make `citygml` score a miss beside every other
+#      format's hit; `readbench_prepare.sh` re-checks this per run.
+#
+# The object and LoD counts below are from the source CityJSON, counted on the
+# same date. `numeric attr` names the column `just bench` hands to the
+# `attr-stats` scenario; the two entries without one simply omit that row.
+#
+#   dataset               objects   LoD               numeric attr
+#   rotterdam_delfshaven      853   2                 TerrainHeight
+#   ingolstadt                379   3                 measuredHeight (55/379)
+#   vienna_102081           1,322   2                 measuredHeight
+#   3dbag_9-284-556         2,221   0 / 1.2 / 1.3 / 2.2   b3_h_dak_50p
+#   nyc_da13_buildings     23,777   2                 (none)
+#   zurich_building_lod2  198,699   2                 Geomtype
+#
+# NOTE on 3dbag_9-284-556: it is the only multi-LoD entry, and CityGML 2.0
+# cannot hold all four of its LoDs — 1.2 and 1.3 both map to `lod1Solid`, so
+# the synthesised `.gml` carries three LoDs where every other artefact carries
+# four. Its `citygml` row is therefore NOT content-equivalent to its other
+# seven. Kept deliberately (it is the only entry exercising the per-LoD
+# geometry columns, and the collapse is itself a finding about CityGML), and
+# disclosed in bench/READ_BENCHMARK.md — do not quote its `citygml` bytes or
+# parse time against another format's without saying so.
 CORPUS=(
-  "3dbag_amsterdam_10-432-718.city.json|944802|gz|default,no-citygml|https://data.3dbag.nl/v20250903/tiles/10/432/718/10-432-718.city.json.gz"
-  "3dbag_amsterdam_10-432-720.city.json|1705153|gz|default,no-citygml|https://data.3dbag.nl/v20250903/tiles/10/432/720/10-432-720.city.json.gz"
-  "estonia_anija_lod2.gml|2581034|zip:hooned_lod2-Anija_vald.gml|default,no-citygml|https://geoportaal.maaamet.ee/index.php?lang_id=2&plugin_act=otsing&andmetyyp=hooned_lod2&dl=1&f=hooned_lod2-Anija_vald-citygml.zip&page_id=837"
   "rotterdam_delfshaven.city.json|2731804|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json"
-  "plateau_chuo_brid.gml|2800795|plain|no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/brid/53394611_brid_6697_op.gml"
-  "plateau_chuo_fld.gml|5439116|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/fld/pref/kandagawa-ryuiki/53394611_fld_6697_l2_op.gml"
-  "plateau_yokohama_squr.gml|5569485|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/04/96d45a-a30b-4c9f-88c0-c1323b5a0f86/14100_yokohama-shi_city_2024_citygml_2_op/udx/squr/53391368_squr_6697_op.gml"
+  "ingolstadt.city.json|5051369|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Ingolstadt.city.json"
   "vienna_102081.city.json|5635634|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json"
-  "riga_atgazene_lod2.gml|10509018|plain|no-citygml|https://data.gov.lv/dati/dataset/rigas-apkaimju-lod2-modeli/resource/2e00bb17-0c84-4ec4-9626-48002d0a47c8/download/atgazene_lod2.gml"
-  "estonia_canopies_lod1.gml|11718012|zip:katusealused_lod1-eesti.gml|default,no-citygml|https://geoportaal.maaamet.ee/index.php?lang_id=2&plugin_act=otsing&andmetyyp=katusealused_lod1&dl=1&f=katusealused_lod1-eesti-citygml.zip&page_id=837"
-  "craig_valence_lod3_1.gml|16185668|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_ZAE%2F26_Valence_Romans_Agglo&files=02_Valence_LOD3_1.gml"
-  "craig_clermont_secteur5_textured.gml|23101949|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2F2021_aura_3d%2F02_Bati3D%2FCityGML%2FSecteur_05_Clermont&files=Secteur_5_Textured_L93.gml"
-  "craig_voironnais_lod2_solar.gml|27956169|zip:38_Voironnais_LoD2.gml|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d_isere%2F02_CIM%2FCityGML%2FCA_Pays_Voironnais&files=2024_BC2_Voironnais_2020_LoD2_solaire.zip"
-  "plateau_chuo_tran.gml|36597975|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/tran/53394611_tran_6697_op.gml"
-  "craig_vichy_2016_lod3.gml|52921317|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_ZAE%2F03_Vichy_Communaute&files=10_Vichy_2016_LOD3.gml"
-  "luxembourg_diekirch_bastendorf_lod2.gml|57876265|plain|default,no-citygml|https://download.data.public.lu/resources/batiments-3d-lod-2-3-level-of-detail-2-3/20190603-110058/lod2-batiments-diekirch-bastendorf.gml"
-  "craig_riom_lod2_2.gml|59620390|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FRiom_Chatel-Guyon&files=14_Riom_LOD2_2.gml"
-  "plateau_chuo_veg.gml|63744856|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/veg/53394611_veg_6697_op.gml"
-  "craig_riom_lod2_1.gml|78433203|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FRiom_Chatel-Guyon&files=14_Riom_LOD2_1.gml"
+  "3dbag_9-284-556.city.json|7032849|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/9-284-556.city.json"
   "nyc_da13_buildings.city.json|110083137|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json"
-  "plateau_chuo_frn.gml|117380205|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/frn/53394611_frn_6697_op.gml"
-  "craig_clermont_lod3_1.gml|161907437|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_ZAE%2F63_Clermont_Auvergne_Metropole&files=03_Clermont_LOD3_1.gml"
-  "plateau_chuo_bldg.gml|168306746|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/bldg/53394611_bldg_6697_op.gml"
-  "craig_vichy_unesco_lod3.gml|215430331|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FVichy_UNESCO&files=2024_BC1_Vichy_UNESCO_2021_LoD3.gml"
   "zurich_building_lod2.city.json|292500409|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json"
-  "craig_clermont_lod2_textured_1.gml|320756374|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FClermont&files=Clermont_LoD2_texture_1.gml"
-  "plateau_edogawa_htd.gml|532458174|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/htd/13_1/533946_htd_6697_op.gml"
-  "plateau_edogawa_luse.gml|561498161|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/luse/533946_luse_6697_op.gml"
-  "kuopio_lod2_2_textured.gml|1531892325|zip:building.gml|default,no-citygml|https://avoindata.suomi.fi/data/dataset/1cda485e-0c0a-4f77-9f7d-185bae9144f7/resource/b4aa97c2-f41c-4863-82f0-aaa88687a20b/download/kuopion_3d_rakennukset_citygml_lod2_2_2022_textured.zip"
-  "freiburg_lod2.gml|1998672154|plain|default,no-citygml|https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml"
 )
 
 VALID_SETS=(default no-citygml all)
 
-# Some of these origins serve a 403 to a bare `curl/x.y` — Kuopio's
-# avoindata.suomi.fi redirects and refuses, and Montréal's does the same on
-# the legacy corpus — so every request carries a browser User-Agent. Not a
-# trick to get at private data: all of it is published open data, and the
-# origins simply gate on the header.
+# Every request carries a browser User-Agent. The current corpus's single
+# origin (3d.bk.tudelft.nl) does not require it, but several origins reachable
+# through $CORPUS_MANIFEST do — the archived corpus's Kuopio and Montréal hosts
+# both serve a 403 to a bare `curl/x.y`. Not a trick to get at private data:
+# all of it is published open data, and those origins simply gate on the
+# header.
 UA='Mozilla/5.0 (X11; Linux x86_64) cityparquet-bench/1.0'
 
 usage() {
@@ -155,6 +144,8 @@ usage: fetch_benchmark.sh [--only SET] [--allow-foreign] [DEST]
                                   included (THE DEFAULT — see `sets` below)
                      no-citygml   every format except citygml
                      all          every pinned entry
+                   Every entry of the PINNED corpus serves every set, so this
+                   flag only distinguishes $CORPUS_MANIFEST inputs.
   --allow-foreign  proceed even though DEST holds city-model files this
                    table does not describe (they will still be measured by
                    `just bench DEST` — this only says you meant it)
@@ -166,10 +157,13 @@ usage: fetch_benchmark.sh [--only SET] [--allow-foreign] [DEST]
 USAGE
 }
 
-# `default`, not `all`: the two `no-citygml` entries below do not degrade a
-# default-set run, they ABORT it (see the `sets` notes in the table), and this
+# `default`, not `all`. For the PINNED corpus the two are identical — every
+# entry serves both sets — so this default is inert and `--only` has nothing to
+# exclude. It matters for $CORPUS_MANIFEST inputs: the archived corpus carries
+# entries that do not merely degrade a default-set run but ABORT it (this
 # script's output is fed to `just bench DEST`, which measures the whole
-# directory. Fetching them has to be asked for.
+# directory under `set -e`, so one unfit file takes every dataset sorting after
+# it down with it). Fetching those has to be asked for.
 ONLY=default
 ALLOW_FOREIGN=0
 DEST=""
