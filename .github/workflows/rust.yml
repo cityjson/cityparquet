@@ -165,6 +165,13 @@ jobs:
 
       - uses: extractions/setup-just@v4
 
+      # This workspace path-depends on `cityparquet`, which depends on
+      # `city3d-stac-types` by git rev — and THAT repository declares its own
+      # submodules over SSH, which cargo follows and a runner has no key for.
+      # Same rewrite the `check` job needs, for the same reason.
+      - name: Prefer HTTPS for github remotes
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
       - name: Install rustfmt and clippy
         working-directory: benchmark/readbench
         run: rustup component add rustfmt clippy
