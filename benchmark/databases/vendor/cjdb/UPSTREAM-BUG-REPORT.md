@@ -86,7 +86,7 @@ def get_ground_surfaces(polygons: List[Polygon]) -> List[Polygon]:
 
 A working patch against `cjdb==2.2.0` implementing exactly this is
 available at `benchmark/databases/vendor/cjdb/ground-surfaces-tie.patch` in the
-cityparquet-paper repository, along with a minimal regression test
+CityParquet monorepo, along with a minimal regression test
 (`benchmark/databases/tests/test_cjdb_patch.py`).
 
 ---

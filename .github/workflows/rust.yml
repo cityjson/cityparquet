@@ -43,8 +43,11 @@ jobs:
           # and carry ~1.2 GB between them.
           submodules: false
 
+      # --recursive: city3d-stac-tool carries stac-spec and
+      # stac-cityjson-extension of its own, and `just vendor-check` runs its
+      # test suite, which reads them.
       - name: Check out the vendored STAC tool
-        run: git submodule update --init lib/cityparquet-rs/vendor/city3d-stac-tool
+        run: git submodule update --init --recursive lib/cityparquet-rs/vendor/city3d-stac-tool
 
       # rust-toolchain.toml pins the version; rustup honours it on first use.
       - name: Cache cargo

@@ -5,7 +5,7 @@
 
  def get_ground_surfaces(polygons: List[Polygon]) -> List[Polygon]:
 -    ground_surfaces = {}
-+    # PATCHED by the cityparquet-paper benchmarking harness -- see
++    # PATCHED by the CityParquet database-benchmark harness -- see
 +    # benchmarking/vendor/cjdb/README.md for the full rationale and the
 +    # upstream bug report this patch accompanies.
 +    #

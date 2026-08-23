@@ -14,7 +14,7 @@ const { config } = data;
 // Blume's Markdown rewriter applies `deployment.base` to links in content, but
 // a custom .astro page is outside it — so root-absolute URLs would 404 on the
 // GitHub Pages project subpath. Prefix BASE_URL ourselves; the collapse keeps
-// it right whether BASE_URL is "/" (dev) or "/cityparquet-docs" (deployed).
+// it right whether BASE_URL is "/" (dev) or "/cityparquet" (deployed).
 const url = (path: string) =>
   `${import.meta.env.BASE_URL}/${path}`.replace(/\/{2,}/g, "/");
 

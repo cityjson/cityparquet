@@ -29,7 +29,7 @@ refined per folder with `meta.ts`; site-wide settings are in `blume.config.ts`.
 site to its own public repository needs no content changes:
 
 ```bash
-DOCS_BASE_PATH=/cityparquet-docs DOCS_SITE_URL=https://hideba.github.io pnpm build
+DOCS_BASE_PATH=/cityparquet DOCS_SITE_URL=https://cityjson.github.io pnpm build
 ```
 
 Output is written to `dist/` — deploy that folder to any static host.
