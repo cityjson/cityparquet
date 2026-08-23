@@ -1,0 +1,34 @@
+cff-version: 1.2.0
+title: "CityParquet: a columnar encoding for 3D city models"
+message: >-
+  If you use CityParquet — the specification, the reference implementation, or
+  the benchmark results — please cite this repository.
+type: software
+authors:
+  # Add `orcid: "https://orcid.org/…"` here before the first release.
+  - given-names: Hidemichi
+    family-names: Baba
+    affiliation: "3D Geoinformation, Delft University of Technology"
+repository-code: "https://github.com/cityjson/cityparquet"
+abstract: >-
+  CityParquet is a columnar Parquet encoding for 3D city models. It stores a
+  CityJSON / CityGML model as a directory of Parquet files split by CityGML
+  module — one row per city object, WKB geometry in a per-LoD column paired with
+  a struct carrying the semantics WKB cannot hold, and optional sidecar tables
+  for materials, textures and geometry templates — so national-to-global city
+  models can be pruned, filtered and queried directly over cloud object storage.
+  At LoD0 a CityParquet footprint is conformant GeoParquet. This repository holds
+  the normative specification, the Rust reference reader/writer, a DuckDB-based
+  lakehouse prototype, and the benchmarks the design is argued from.
+keywords:
+  - CityJSON
+  - CityGML
+  - Parquet
+  - GeoParquet
+  - 3D city models
+  - cloud-native geospatial
+  - columnar storage
+license:
+  - MIT
+  - Apache-2.0
+version: 0.1.0

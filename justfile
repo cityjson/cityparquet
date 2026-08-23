@@ -37,18 +37,21 @@ default:
 # Full checkout: every submodule, including the two DuckDB extensions' own
 # nested `duckdb`/`extension-ci-tools`/`vcpkg`. This is the ~1.2 GB path, and
 # it is what you need to build the extensions or run `test/run-all.sh`.
+[doc("Check out every submodule, recursively (~1.2 GB)")]
 setup:
     git submodule update --init --recursive
 
 # Spec-and-Rust-only checkout: the same submodules at depth 1. Enough to read
 # and build the specification site and the Rust library; NOT enough to build
 # the DuckDB extensions, whose build wants real vcpkg history.
+[doc("The same at --depth 1: enough for the spec and the Rust library")]
 setup-shallow:
     git submodule update --init --recursive --depth 1
 
 # Point git at the repo's hooks, so .githooks/pre-commit formats the staged
 # Rust and Markdown on every commit. One-off per clone — git checks the hook
 # out but does not activate it.
+[doc("Activate .githooks/pre-commit (one-off per clone)")]
 hooks:
     git config core.hooksPath .githooks
 
@@ -59,6 +62,7 @@ hooks:
 # Everything that gates a change to the Rust library and the benchmark
 # harness. `cargo`-only work can stop at the first line; touching
 # `benchmark/plot/` or `lib/cityparquet-rs/scripts/` needs the other two.
+[doc("The full gate: the Rust workspace, the plotting suite, the shell suites")]
 check:
     cd {{RS}} && just check
     just plot-test
@@ -66,6 +70,7 @@ check:
 
 # The cross-module manual walkthrough, automated. Needs both DuckDB
 # extensions built — see test/TESTING.md for what each step proves.
+[doc("Every automated suite in the tree (test/run-all.sh)")]
 test-all:
     ./test/run-all.sh
 
@@ -73,12 +78,15 @@ test-all:
 # Specification site (documents/)
 # ---------------------------------------------------------------------------
 
+[doc("Install the specification site's dependencies")]
 docs-install:
     cd documents && pnpm install
 
+[doc("Serve the specification site locally")]
 docs-dev: docs-install
     cd documents && pnpm dev
 
+[doc("Build the specification site into documents/dist")]
 docs-build: docs-install
     cd documents && pnpm build
 
@@ -145,6 +153,7 @@ KNOWN_INPUT_FIND := "-name '*.json' -o -name '*.jsonl' -o -name '*.gml' -o -name
 # The fetch REFUSES to add to a DEST that already holds city-model files the
 # table does not describe — most likely the previous corpus, which used this
 # same directory (`--allow-foreign` overrides).
+[doc("Fetch the read benchmark's six-dataset corpus (423 MB, pinned)")]
 fetch-data DEST=(BENCH / "data/benchmark") ONLY='default':
     ./{{RS}}/scripts/fetch_benchmark.sh --only {{ONLY}} {{DEST}}
 
@@ -155,6 +164,7 @@ fetch-data DEST=(BENCH / "data/benchmark") ONLY='default':
 # check`/CI. The exact versions used are written to
 # benchmark/formats/tools/tool_versions.txt for
 # benchmark/formats/READ_BENCHMARK.md's Environment block.
+[doc("Fetch the pinned external converters (citygml-tools, cjseq)")]
 fetch-tools:
     ./{{RS}}/scripts/fetch_tools.sh
 
@@ -177,6 +187,7 @@ fetch-tools:
 # the `citygml` row with a warning, exactly like the corpus's .city.json
 # entries. Needs curl; network-dependent on the first run (~7.6 GB); kept
 # OUT of `just check`/CI.
+[doc("Fetch and slice the configuration-axis corpus (7.6 GB source)")]
 fetch-scaling-data DEST=(BENCH / "data/scaling") SIZES='1000,5000,10000,50000':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -206,6 +217,7 @@ fetch-scaling-data DEST=(BENCH / "data/scaling") SIZES='1000,5000,10000,50000':
 # basename minus its known input extension (see KNOWN_INPUT_EXTENSIONS at the
 # top of this file; core profile, and existing packages of the same name are
 # overwritten).
+[doc("Convert every city-model input under FOLDER into a CityParquet package")]
 convert-all FOLDER OUT='out/cityparquet':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -256,6 +268,7 @@ convert-all FOLDER OUT='out/cityparquet':
 # fetch-tools` for citygml-tools + cjseq; `fcb`, `jq`, `gzip`);
 # network-independent given already-fetched inputs and tools; kept OUT of
 # `just check`/CI.
+[doc("Build the per-format artefacts for ONE input, measuring nothing")]
 readbench-prepare INPUT OUTDIR=(BENCH / "data/readbench") FORMATS='':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -300,6 +313,7 @@ readbench-prepare INPUT OUTDIR=(BENCH / "data/readbench") FORMATS='':
 # benchmark/formats/READ_BENCHMARK.md documents as holding five.
 # `lib/cityparquet-rs/scripts/tests/bench_recipe_test.sh` pins that both ways —
 # a bare run must not append it, naming it must.
+[doc("Cross-format READ benchmark over every input under FOLDER")]
 bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -438,6 +452,7 @@ bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
 #
 # It DELEGATES to `bench` rather than copying its body — a forked recipe is
 # how the two would drift apart.
+[doc("The same run restricted to the ordering axis (source order vs Hilbert)")]
 ordering-bench FOLDER OUT=(BENCH / "ordering_results"):
     just bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet-hilbert"
 
@@ -447,6 +462,7 @@ ordering-bench FOLDER OUT=(BENCH / "ordering_results"):
 # OUT/<name>.csv is removed first so a re-run is always clean.
 # Network-dependent (the DuckDB baseline installs the `cityjson` community
 # extension); kept OUT of `just check`/CI.
+[doc("Encoding-variant WRITE benchmark plus the DuckDB COPY baseline")]
 write-bench FOLDER OUT=(BENCH / "results"):
     #!/usr/bin/env bash
     set -euo pipefail
@@ -486,6 +502,7 @@ write-bench FOLDER OUT=(BENCH / "results"):
 # recipe (best-effort: a missing `uv`/plotting setup doesn't fail the
 # benchmark run, only skips the charts). Network-independent given already-
 # fetched inputs; kept OUT of `just check`/CI.
+[doc("Codec and row-group WRITE-bench matrix, plus charts")]
 compression-bench FOLDER OUT=(BENCH / "compression_results"):
     #!/usr/bin/env bash
     set -euo pipefail
@@ -526,6 +543,7 @@ compression-bench FOLDER OUT=(BENCH / "compression_results"):
 # per dataset, two codec-axis charts (<name>-codec-size.png,
 # <name>-codec-time.png) and one row-group-axis chart (<name>-rowgroup.png),
 # under RESULTS/plots/. Needs `uv` on PATH.
+[doc("Render codec and row-group charts from compression-bench CSVs")]
 compression-plot RESULTS=(BENCH / "compression_results"):
     uv run --project {{PLOT}} python -m readbench_plot.compression {{RESULTS}}
 
@@ -534,6 +552,7 @@ compression-plot RESULTS=(BENCH / "compression_results"):
 # grouped bar chart of median time_s and one of peak_heap_bytes per scenario x
 # format, one PNG pair per dataset CSV, under RESULTS/plots/. Needs `uv` on
 # PATH.
+[doc("Render per-dataset charts from read-benchmark CSVs")]
 plot RESULTS=(BENCH / "read_results"):
     uv run --project {{PLOT}} python -m readbench_plot {{RESULTS}}
 
@@ -555,6 +574,7 @@ plot RESULTS=(BENCH / "read_results"):
 # that outgrows the grid needs a layout decision and revised captions, not a
 # silent stretch — the HTML page has no such limit and still covers everything.
 # See benchmark/plot/benchviz/DESIGN.md for the data contract and honesty rules.
+[doc("Render the cross-dataset summary page and the print figures")]
 plot-pretty OUT='benchmark/summary':
     uv run --project {{PLOT}} python -m benchviz prep --out {{OUT}}
     uv run --project {{PLOT}} python -m benchviz html --out {{OUT}}
@@ -577,6 +597,7 @@ plot-pretty OUT='benchmark/summary':
 # `ratio_vs_baseline`. See benchmark/plot/readbench_plot/sizes.py's own module
 # doc for why answering "how much smaller than raw CityJSONSeq?" with a
 # CityGML size would be a lie in a measurement artefact.
+[doc("Render the file-size / compression-ratio report from the prepared artefacts")]
 sizes PREPARED_DIR=(BENCH / "data/readbench") OUT=(BENCH / "read_results"):
     uv run --project {{PLOT}} python -m readbench_plot.sizes {{PREPARED_DIR}} {{OUT}}
 
@@ -603,6 +624,7 @@ sizes PREPARED_DIR=(BENCH / "data/readbench") OUT=(BENCH / "read_results"):
 # directory, so `--project benchmark/plot` alone leaves it at the repo root,
 # where `testpaths = ["tests"]` no longer resolves and collection wanders into
 # other projects' test trees (different deps) and errors out.
+[doc("benchmark/plot's pytest suite (needs uv)")]
 plot-test:
     uv run --directory {{PLOT}} --extra dev pytest -q
 
@@ -616,6 +638,7 @@ plot-test:
 # which is what keeps the recipe and `Format::DEFAULT_SET` from disagreeing
 # about whether the `duckdb-parquet` baseline is opt-in. Needs `jq`,
 # `zip`/`unzip`.
+[doc("The benchmark shell scripts' own suites (needs jq)")]
 scripts-test:
     ./{{RS}}/scripts/tests/readbench_prepare_test.sh
     ./{{RS}}/scripts/tests/fetch_benchmark_test.sh
@@ -627,5 +650,6 @@ scripts-test:
 
 # The database comparison's own recipes, forwarded. `just db --list` shows
 # them; see benchmark/databases/README.md for what it does and does not claim.
+[doc("Forward a recipe to the database comparison's own justfile")]
 db *ARGS:
     cd benchmark/databases && just {{ARGS}}

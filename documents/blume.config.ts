@@ -1,11 +1,12 @@
 import { defineConfig } from "blume";
 
-// Base path and site URL are read from the environment so the later split to a
-// public `cityparquet-docs` repo (GitHub Pages) needs no content changes — see
-// docs/superpowers/specs/2026-07-17-cityparquet-docs-site-design.md.
+// Base path and site URL are read from the environment rather than hardcoded, so
+// moving the site (to its own repo, or to a custom domain) needs no content
+// changes. `.github/workflows/docs.yml` sets both; a local `pnpm dev` sets
+// neither and serves from the root.
 //
-//   DOCS_BASE_PATH=/cityparquet-docs   # GitHub Pages project-site subpath
-//   DOCS_SITE_URL=https://hideba.github.io
+//   DOCS_BASE_PATH=/cityparquet          # GitHub Pages project-site subpath
+//   DOCS_SITE_URL=https://cityjson.github.io
 const base = process.env.DOCS_BASE_PATH || undefined;
 const site = process.env.DOCS_SITE_URL || undefined;
 
@@ -21,12 +22,11 @@ export default defineConfig({
     root: "docs",
   },
 
-  // Points the header repo link and Edit-on-GitHub actions at the public docs
-  // repo the site is published from. Harmless while it still lives in the paper
-  // repo; edit links resolve once the split lands.
+  // Points the header repo link and Edit-on-GitHub actions at the monorepo the
+  // site is published from.
   github: {
-    owner: "HideBa",
-    repo: "cityparquet-docs",
+    owner: "cityjson",
+    repo: "cityparquet",
     branch: "main",
   },
 

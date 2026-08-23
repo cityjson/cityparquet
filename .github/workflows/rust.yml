@@ -1,0 +1,121 @@
+name: Rust
+
+# The Rust gate for lib/cityparquet-rs, plus the benchmark harness's own two
+# non-Rust suites.
+#
+# The BENCHMARKS THEMSELVES ARE NOT HERE and should not be added: they are
+# multi-hour, need a ~24 GB fetched corpus, and the database family needs
+# rootless podman. What runs here is everything that needs neither a corpus nor
+# a network.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "lib/cityparquet-rs/**"
+      - "benchmark/plot/**"
+      - "justfile"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "lib/cityparquet-rs/**"
+      - "benchmark/plot/**"
+      - "justfile"
+      - ".github/workflows/rust.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: clippy, tests, isolation, fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # vendor/city3d-stac-tool only: `just vendor-check` gates on it, and
+          # it is small. The two DuckDB extensions are not needed by this job
+          # and carry ~1.2 GB between them.
+          submodules: false
+
+      - name: Check out the vendored STAC tool
+        run: git submodule update --init lib/cityparquet-rs/vendor/city3d-stac-tool
+
+      # rust-toolchain.toml pins the version; rustup honours it on first use.
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lib/cityparquet-rs/target
+            lib/cityparquet-rs/vendor/city3d-stac-tool/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('lib/cityparquet-rs/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - uses: extractions/setup-just@v3
+
+      - name: Install rustfmt and clippy
+        working-directory: lib/cityparquet-rs
+        run: rustup component add rustfmt clippy
+
+      # Tests read real CityJSON fixtures rather than inline hand-written
+      # documents, so they have to be fetched before `cargo test`. All seven are
+      # pinned URLs; this is the one network dependency in this job.
+      - name: Fetch fixtures
+        working-directory: lib/cityparquet-rs
+        run: just fixtures
+
+      - name: just check
+        working-directory: lib/cityparquet-rs
+        run: just check
+
+  harness-suites:
+    name: benchmark harness suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: extractions/setup-just@v3
+      - uses: astral-sh/setup-uv@v5
+
+      # Neither suite needs a corpus or a network: the shell tests stub every
+      # external binary and serve file:// URLs to the real fetcher, and the
+      # pytest suite ships its own CSV fixtures.
+      - name: just plot-test
+        run: just plot-test
+
+      - name: just scripts-test
+        run: just scripts-test
+
+  citylake:
+    name: citylake build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lib/citylake/target
+          key: citylake-${{ runner.os }}-${{ hashFiles('lib/citylake/Cargo.toml') }}
+          restore-keys: citylake-${{ runner.os }}-
+
+      # A separate workspace with its own pinned DuckDB (`=1.10501.0`, bundled),
+      # so this is a slow cold build. Build only — citylake is a work in
+      # progress and its suite is not a gate yet.
+      - name: cargo build
+        working-directory: lib/citylake
+        run: cargo build

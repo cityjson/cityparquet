@@ -1,0 +1,113 @@
+# CLAUDE.md
+
+Repo-wide orientation for the **CityParquet** monorepo — the specification, its
+implementations, and the benchmarks the design is argued from. Each sub-area has
+its own `CLAUDE.md` with detailed, authoritative instructions — **defer to those
+when working inside them.**
+
+## What this repo is
+
+A **cloud-native delivery stack for 3D city models.** It takes CityJSON /
+CityJSONSeq / CityGML and makes them storable, discoverable and queryable at
+national-to-global scale over cloud object storage, via a columnar Parquet
+encoding (**CityParquet**) and a DuckDB/DuckLake lakehouse (**CityLake**).
+
+The **normative specification** lives in `documents/docs/03-specification/`,
+with the reasoning in `04-design-decisions/` and the genuinely unsettled parts in
+`05-open-questions/`. It is the authoritative _what_; the implementations under
+`lib/` are catching up to it.
+
+## Layout
+
+| Path                     | What                                                                                                                  | Authoritative instructions          |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `documents/`             | Blume docs site — the **normative CityParquet specification**, design decisions, open questions                       | `documents/blume.config.ts`; skill: `blume` |
+| `lib/cityparquet-rs/`    | **Rust reference implementation** — the reader/writer that _owns_ the encoding; the `cityparquet` CLI                  | its `CLAUDE.md`                     |
+| `lib/citylake/`          | Rust data-lake framework + web API; the lakehouse runtime. **Work in progress.** Its own Cargo workspace               | its `CLAUDE.md`                     |
+| `lib/duckdb-cityjson/`   | DuckDB CityJSON extension — SQL-native CityJSON I/O and an executable prototype of the encoding. **Submodule**         | its `CLAUDE.md`                     |
+| `lib/duckdb-3d/`         | DuckDB 3D extension — 3D solid processing (`SOLID_3D`). Strict TDD. **Submodule**                                      | its `CLAUDE.md`                     |
+| `benchmark/`             | Three benchmark families: `formats/` (cross-format), `databases/` (vs cjdb / 3DCityDB v5), `plot/` (renderers)          | `benchmark/README.md`               |
+| `test/`                  | `TESTING.md`, the cross-module manual walkthrough, and `run-all.sh`                                                    | —                                   |
+| `ai/design-notes/`       | Dated, unmaintained plans and specs — the record of decisions, not a description of the code                            | `ai/design-notes/README.md`         |
+| `example/`               | Small inputs; anything worth measuring is fetch-scripted                                                                | —                                   |
+
+## How the pieces fit together
+
+- **CityParquet** is a **directory of Parquet files split by CityGML module**
+  (`building.parquet`, `transportation.parquet`, …), one row per city object,
+  with **WKB geometry in a per-LoD `geometry_lod*` column** paired with a
+  `geometry_properties_lod*` struct carrying the CityGML CM information WKB
+  cannot hold (semantic surfaces, shell structure), plus optional `materials` /
+  `textures` / `geometry_templates` sidecars. Footer metadata is a `city` object
+  alongside a GeoParquet-conformant `geo` object; `metadata.json` is a STAC Item
+  (city3d extension). At LoD0 a footprint _is_ GeoParquet; solids step beyond
+  GeoParquet's WKB vocabulary and are declared only in `city`.
+- **`lib/duckdb-cityjson`** is a second, SQL-native executable prototype of the
+  same encoding, and CityLake's only CityJSON I/O path. (`cityparquet-rs` does
+  carry its own Rust CityJSON/CityGML reader/writer — that rule is scoped to
+  CityLake.)
+- **`lib/duckdb-3d`** operates on the WKB 3D geometry CityParquet carries.
+- The **City3D STAC extension** (separate `city3d-stac-tool` repo, vendored under
+  `lib/cityparquet-rs/vendor/`) is the discovery layer in front of the stack.
+- Recurring design principle: **separation of geometry from appearance**
+  (material/texture), following OBJ/COLLADA/glTF precedent.
+
+## The one structural surprise
+
+**The benchmark harness deliberately spans two trees.** Its code is a workspace
+crate (`lib/cityparquet-rs/crates/cityparquet-readbench`) plus the shell scripts
+in `lib/cityparquet-rs/scripts/`; its corpora, results and plotting project are
+evidence and live under `benchmark/`. Consequences:
+
+- Every recipe that reaches both halves — `bench`, `convert-all`, `write-bench`,
+  `compression-bench`, the fetchers, the renderers, `plot-test`, `scripts-test`
+  — is in the **root `justfile`** and runs from the repository root.
+- `lib/cityparquet-rs/justfile` keeps only the crate's own tasks, and `just
+check` there stays self-contained: no `uv`, no `jq`, no corpus.
+- The four per-dataset recipes live in ONE file because
+  `crates/cityparquet-readbench/tests/strip_extension.rs` extracts all four and
+  runs them to prove the input-extension convention has not drifted. Do not split
+  them.
+- Scripts reach the evidence through `$BENCH_ROOT` (default
+  `<repo>/benchmark/formats`), never a second hardcoded relative path.
+
+## Build and gates
+
+```sh
+just setup                          # every submodule, recursively (~1.2 GB)
+just setup-shallow                  # the same at --depth 1
+just hooks                          # rustfmt + Prettier on staged files, one-off
+
+cd lib/cityparquet-rs && just check  # the Rust gate
+just plot-test                       # benchmark plotting suite   (needs uv)
+just scripts-test                    # benchmark shell suites     (needs jq)
+just check                           # all three, from the root
+just docs-build                      # the specification site     (needs pnpm)
+```
+
+Benchmarks are **not** a gate and are not in CI — multi-hour, corpus-dependent,
+and the database family needs rootless podman.
+
+## Submodules
+
+`lib/duckdb-cityjson` and `lib/duckdb-3d` are independent git repositories with
+their own `CLAUDE.md`, tests and CI. **Do not edit them from this repository** —
+consult their own instructions and work in their own repos; here we only record
+which commit we pin. `lib/cityparquet-rs` and `lib/citylake` are *not*
+submodules: they live in this tree and are edited here.
+
+`lib/cityparquet-rs/vendor/cjseq` is a **patched vendored copy**, not a
+submodule; `lib/cityparquet-rs/vendor/city3d-stac-tool` is a submodule and is
+gated by `just vendor-check`.
+
+## Conventions
+
+- Each level keeps an `AGENTS.md` byte-identical to its `CLAUDE.md` — edit one,
+  copy it to the other.
+- **British English** in prose.
+- **Breaking changes are welcome**: there are no users yet. No shims, no
+  deprecation paths, no legacy branches — update every call site instead.
+- **Document the present, never the past.** No changelog voice in reference
+  documentation; history belongs in git.
+- Benchmark caveats are part of the artefact. A change that makes a number look
+  better by dropping one is a defect.

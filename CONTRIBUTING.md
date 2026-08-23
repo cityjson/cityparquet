@@ -1,0 +1,98 @@
+# Contributing
+
+Thanks for looking. CityParquet is early — the specification is still changing
+and the implementations are catching up to it — so the most useful contributions
+right now are the ones that find where the format is wrong, not just where the
+code is.
+
+## Setup
+
+```sh
+git clone --recurse-submodules https://github.com/cityjson/cityparquet.git
+cd cityparquet
+just setup        # or `just setup-shallow` for a --depth 1 checkout
+just hooks        # rustfmt + Prettier on staged files, one-off per clone
+```
+
+`just setup` pulls the two DuckDB extensions' own submodules (DuckDB, `vcpkg`,
+`extension-ci-tools`) — roughly 1.2 GB. You do **not** need it to work on the
+specification or on the Rust library; `just setup-shallow`, or no submodules at
+all, is enough for those.
+
+What each area needs installed:
+
+| Area                              | Needs                                          |
+| --------------------------------- | ---------------------------------------------- |
+| `documents/` (the specification)  | Node 24, pnpm 10                                |
+| `lib/cityparquet-rs`              | Rust (pinned in `rust-toolchain.toml`), `just`  |
+| `lib/citylake`                    | Rust                                            |
+| `lib/duckdb-*`                    | a C++ toolchain, `ninja`, `ccache` (recommended) |
+| `benchmark/plot`, `benchmark/databases` | `uv`; the database harness also needs rootless `podman` |
+| the benchmark shell suites        | `jq`, `zip`/`unzip`                             |
+
+## Where a change goes
+
+**A change to the format itself** goes to
+[`documents/docs/03-specification/`](documents/docs/03-specification/), and the
+reasoning goes to `04-design-decisions/` in the same pull request. A
+specification change with no recorded rationale is the one thing that reliably
+becomes unmaintainable: six months later nobody can tell a decision from an
+accident. If the question is genuinely still open, put it in
+`05-open-questions/` instead of deciding it by writing it down.
+
+**A change to the encoding in code** goes to `lib/cityparquet-rs`, which owns
+the encoding. If it makes the implementation disagree with the specification,
+either the specification changes in the same PR or the divergence is recorded
+in the implementation-status table in
+`documents/docs/06-resources/02-software.mdx`. Silent divergence is not an
+option.
+
+**A change to the DuckDB extensions** goes to their own repositories
+(`cityjson/duckdb-cityjson`, `HideBa/duckdb-3d`); they are consumed here as
+submodules, and this repository only records which commit it is pinned to.
+
+## What has to pass
+
+```sh
+cd lib/cityparquet-rs && just check   # clippy -D warnings, tests, schema isolation, fmt, prettier
+just plot-test                        # from the root; the plotting suite
+just scripts-test                     # from the root; the benchmark shell suites
+just check                            # all three at once, from the root
+```
+
+`just check` in `lib/cityparquet-rs` is deliberately self-contained — no `uv`,
+no `jq`, no corpus — so it runs anywhere. The other two need those tools, which
+is why they sit outside it.
+
+The benchmarks themselves are **not** a gate. They are multi-hour and
+corpus-dependent, and they are not in CI.
+
+## House style
+
+- **Strict red-green TDD** in `lib/cityparquet-rs`: the failing test first, then
+  the smallest change that passes it. Tests read real CityJSON fixtures
+  (`just fixtures`), never inline hand-written CityJSON.
+- **Breaking changes are welcome.** There are no users yet. Pick the right
+  design and update every call site; do not carry a shim, a deprecation path or
+  a legacy branch for the old one.
+- **Document the present, not the past.** No "fixed", "was broken", "now uses",
+  no changelog voice in reference documentation. A reader wants how it is.
+  History belongs in git.
+- **British English** in prose.
+- `AGENTS.md` mirrors `CLAUDE.md` at each level — edit one, copy it to the
+  other.
+
+## Measurements
+
+If you change a benchmark, read [`benchmark/README.md`](benchmark/README.md)
+first. Several results there are deliberately **not** citable as rankings — the
+codec comparison runs every codec at its implementation default, so it does not
+support a "smallest codec" claim — and the caveats that say so are part of the
+artefact, not commentary on it. A change that makes a number look better by
+quietly dropping a caveat will be rejected.
+
+## Licence of contributions
+
+Contributions to the software are accepted under MIT OR Apache-2.0;
+contributions to `documents/` under CC BY 4.0. By opening a pull request you
+agree to license your work on those terms.
