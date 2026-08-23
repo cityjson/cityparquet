@@ -29,6 +29,7 @@ What each area needs installed:
 | `lib/duckdb-*`                          | a C++ toolchain, `ninja`, `ccache` (recommended)        |
 | `benchmark/plot`, `benchmark/databases` | `uv`; the database harness also needs rootless `podman` |
 | the benchmark shell suites              | `jq`, `zip`/`unzip`                                     |
+| `scripts/catalog2cityparquet`           | `uv`                                                    |
 
 ## Where a change goes
 
@@ -54,15 +55,16 @@ submodules, and this repository only records which commit it is pinned to.
 ## What has to pass
 
 ```sh
-cd lib/cityparquet-rs && just check   # clippy -D warnings, tests, schema isolation, fmt, prettier
+cd lib/cityparquet-rs && just check   # the LIBRARY: clippy, tests, isolation, fmt, prettier
 just plot-test                        # from the root; the plotting suite
 just scripts-test                     # from the root; the benchmark shell suites
-just check                            # all three at once, from the root
+just check                            # all of the above plus benchmark/readbench, from the root
 ```
 
 `just check` in `lib/cityparquet-rs` is deliberately self-contained — no `uv`,
-no `jq`, no corpus — so it runs anywhere. The other two need those tools, which
-is why they sit outside it.
+no `jq`, no corpus — so it runs anywhere. It gates the **library alone**: the
+read benchmark's harness is a separate Cargo workspace under
+`benchmark/readbench`, and the root `just check` is what covers both.
 
 The benchmarks themselves are **not** a gate. They are multi-hour and
 corpus-dependent, and they are not in CI.
@@ -102,7 +104,8 @@ workspace version. It does **not** touch crates.io: publishing is a separate
 manual dispatch, because a version number on the registry is permanent —
 yanking hides a release, it never frees the number.
 
-`cityparquet-readbench` is `publish = false`: it is evidence, and only means
+`cityparquet-readbench` is `publish = false` and lives outside the library
+workspace entirely, in `benchmark/readbench`: it is evidence, and only means
 anything next to the corpora under `benchmark/`.
 
 **Only `cityparquet-schema` can be published today.** `cityparquet` depends on
