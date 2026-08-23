@@ -30,6 +30,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # `cityparquet` depends on `city3d-stac-types` by git rev. libgit2 does not
+  # honour the HTTPS credentials `actions/checkout` installs, falls through to
+  # ssh-agent, and fails with "no authentication methods succeeded"; shelling
+  # out to the git CLI does honour them. Cargo's own error message recommends
+  # exactly this.
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
 
 jobs:
   check:
@@ -46,8 +52,14 @@ jobs:
       # --recursive: city3d-stac-tool carries stac-spec and
       # stac-cityjson-extension of its own, and `just vendor-check` runs its
       # test suite, which reads them.
+      #
+      # Its .gitmodules declares both over SSH, which a runner has no key for.
+      # Rewriting to HTTPS here keeps the fix local to CI — that file belongs to
+      # an upstream project this repository only vendors.
       - name: Check out the vendored STAC tool
-        run: git submodule update --init --recursive lib/cityparquet-rs/vendor/city3d-stac-tool
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive lib/cityparquet-rs/vendor/city3d-stac-tool
 
       # rust-toolchain.toml pins the version; rustup honours it on first use.
       - name: Cache cargo
@@ -87,7 +99,7 @@ jobs:
           submodules: false
 
       - uses: extractions/setup-just@v4
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
 
       # Neither suite needs a corpus or a network: the shell tests stub every
       # external binary and serve file:// URLs to the real fetcher, and the
