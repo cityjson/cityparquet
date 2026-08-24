@@ -198,7 +198,7 @@ Artefacts you will reference later:
 
 | Component | Path |
 |---|---|
-| `cityparquet` CLI | `lib/lib/cityparquet-rs/target/release/cityparquet` |
+| `cityparquet` CLI | `lib/cityparquet-rs/target/release/cityparquet` |
 | cityjson extension | `lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension` |
 | three_d extension | `lib/duckdb-3d/build/release/extension/three_d/three_d.duckdb_extension` |
 | DuckDB shell w/ three_d preloaded | `lib/duckdb-3d/build/release/duckdb` |
@@ -268,7 +268,7 @@ The aggregate is easier to read than the 43 per-target lines:
 ### 1.2 Convert a single-module dataset (Delft, 2231 Buildings)
 
 ```sh
-$CP convert cityparquet-rs/tests/fixtures/delft.city.jsonl -o $OUT/delft --overwrite
+$CP convert lib/cityparquet-rs/tests/fixtures/delft.city.jsonl -o $OUT/delft --overwrite
 ls $OUT/delft
 ```
 
@@ -407,7 +407,7 @@ The fixture declares no `referenceSystem`. As of `0c9c917` that is **no longer
 fatal** — it is declared:
 
 ```sh
-$CP convert cityparquet-rs/tests/fixtures/lod3_railway.city.json -o $OUT/railway --overwrite
+$CP convert lib/cityparquet-rs/tests/fixtures/lod3_railway.city.json -o $OUT/railway --overwrite
 ls $OUT/railway
 ```
 
@@ -426,7 +426,7 @@ supply the CRS explicitly to georeference them
 is refused because nothing here reprojects):
 
 ```sh
-$CP convert cityparquet-rs/tests/fixtures/lod3_railway.city.json \
+$CP convert lib/cityparquet-rs/tests/fixtures/lod3_railway.city.json \
     -o $OUT/railway_crs --crs EPSG:25832 --overwrite
 ```
 
@@ -508,10 +508,10 @@ flag to opt into them any more.)
 This is the core semantic-losslessness claim. **Pass `--no-lod0`:**
 
 ```sh
-$CP convert cityparquet-rs/tests/fixtures/delft.city.jsonl \
+$CP convert lib/cityparquet-rs/tests/fixtures/delft.city.jsonl \
     -o $OUT/delft_rt --no-lod0 --overwrite
 $CP export $OUT/delft_rt $OUT/delft_rt.city.jsonl
-$CP compare cityparquet-rs/tests/fixtures/delft.city.jsonl $OUT/delft_rt.city.jsonl
+$CP compare lib/cityparquet-rs/tests/fixtures/delft.city.jsonl $OUT/delft_rt.city.jsonl
 echo "exit=$?"
 ```
 
@@ -560,7 +560,7 @@ sidecars, and 121 rows unioned across railway's 9 module tables.
 ### 1.9 Partitioned output
 
 ```sh
-$CP convert cityparquet-rs/tests/fixtures/delft.city.jsonl \
+$CP convert lib/cityparquet-rs/tests/fixtures/delft.city.jsonl \
     -o $OUT/delft_parts --partition features --feature-num 500 --overwrite
 ls $OUT/delft_parts
 duckdb -c "SELECT count(*) FROM read_parquet('$OUT/delft_parts/*/building.parquet');"
@@ -630,7 +630,7 @@ FlatCityBuf range-read test, 2.9) and `test/sql/cityjson_remote.test` +
 ```sh
 ./lib/duckdb-cityjson/build/release/duckdb -c "
 SELECT count(*) AS objects
-FROM read_cityjsonseq('cityparquet-rs/tests/fixtures/delft.city.jsonl');"
+FROM read_cityjsonseq('lib/cityparquet-rs/tests/fixtures/delft.city.jsonl');"
 ```
 
 Expected: `2231` — the same object count cityparquet-rs reports. That
@@ -647,7 +647,7 @@ from the column name, and what lets `COPY TO cityjson` re-emit it.
 ```sh
 ./lib/duckdb-cityjson/build/release/duckdb -c "
 SELECT id, geometry_properties_lod2_2
-FROM read_cityjsonseq('cityparquet-rs/tests/fixtures/delft.city.jsonl', lod => '2.2')
+FROM read_cityjsonseq('lib/cityparquet-rs/tests/fixtures/delft.city.jsonl', lod => '2.2')
 WHERE geometry_lod2_2 IS NOT NULL LIMIT 2;"
 ```
 
@@ -670,7 +670,7 @@ extension is not a dependency of this one.
 
 ```sh
 ./lib/duckdb-cityjson/build/release/duckdb -noheader -list -c "
-SELECT geo IS NOT NULL FROM cityjson_geoparquet_geo('cityparquet-rs/tests/fixtures/delft.city.jsonl');"
+SELECT geo IS NOT NULL FROM cityjson_geoparquet_geo('lib/cityparquet-rs/tests/fixtures/delft.city.jsonl');"
 ```
 
 Expected `true`: a `geo` object is emitted for the GeoParquet-legal columns.
@@ -679,8 +679,8 @@ Used with `COPY`, this is the SQL-native executable prototype of the encoding:
 
 ```sh
 ./lib/duckdb-cityjson/build/release/duckdb -unsigned -c "
-SET VARIABLE geo = (SELECT geo FROM cityjson_geoparquet_geo('cityparquet-rs/tests/fixtures/delft.city.jsonl'));
-COPY (SELECT * FROM read_cityjsonseq('cityparquet-rs/tests/fixtures/delft.city.jsonl'))
+SET VARIABLE geo = (SELECT geo FROM cityjson_geoparquet_geo('lib/cityparquet-rs/tests/fixtures/delft.city.jsonl'));
+COPY (SELECT * FROM read_cityjsonseq('lib/cityparquet-rs/tests/fixtures/delft.city.jsonl'))
   TO '/tmp/cp_test/delft_duckdb.parquet'
   (FORMAT PARQUET, KV_METADATA {geo: getvariable('geo')});
 SELECT count(*) AS n FROM read_parquet('/tmp/cp_test/delft_duckdb.parquet');"
@@ -694,7 +694,7 @@ Three table functions produce the sidecar tables directly, with ids interned
 across the whole file:
 
 ```sh
-F=cityparquet-rs/tests/fixtures/lod3_railway.city.json
+F=lib/cityparquet-rs/tests/fixtures/lod3_railway.city.json
 ./lib/duckdb-cityjson/build/release/duckdb -c "
 SELECT (SELECT count(*) FROM cityjson_materials('$F'))          AS materials,
        (SELECT count(*) FROM cityjson_textures('$F'))           AS textures,
@@ -893,14 +893,13 @@ PROJJSON in the written footer:
 ```sh
 rm -f /tmp/cp_test/crscheck.db && rm -rf /tmp/cp_test/delft_nocrs_arg
 ./build/release/duckdb /tmp/cp_test/crscheck.db -c "
-SET enable_geoparquet_conversion=false;
 CREATE SCHEMA delft2;
 PRAGMA cityparquet_read('/tmp/cp_test/delft', 'delft2');
 SELECT * FROM cityparquet_write('delft2', '/tmp/cp_test/delft_nocrs_arg');"
 ```
 
 ```
-building.parquet | written | 2231 | 3804881
+building.parquet | written | 2231 | 3754220
 metadata.json    | written |    0 |    6754
 ```
 
@@ -923,15 +922,13 @@ crs key present: True | type: dict
 crs.type: CompoundCRS | crs.name: Amersfoort / RD New + NAP height | id: {'authority': 'EPSG', 'code': 7415}
 ```
 
-**`SET enable_geoparquet_conversion=false;` matters here for the same reason
-as 4.3's note** — `cityparquet_write` reads every column of the schema
-(including `geometry_lod0_0`), and without the flag DuckDB decodes that column
-as its native `GEOMETRY` type on the way in via `cityparquet_read`, which
-`cityparquet_write` cannot cast back to the `BLOB` it needs. Left on, the read
-→ write sequence fails with `Unimplemented type for cast (GEOMETRY(...) ->
-BLOB)`. So: `crs =>` is for georeferencing a package that has no CRS of its
-own (the hand-built-schema case above); it is not needed merely to *carry
-forward* a CRS the package already has.
+**No `SET enable_geoparquet_conversion=false;` here.** `cityparquet_write` reads
+every column of the schema, including `geometry_lod0_0`, and carries a
+`GEOMETRY`-typed column through as `GEOMETRY` rather than downgrading it, so the
+read → write sequence needs no flag — see 4.5. So:
+`crs =>` is for georeferencing a package that has no CRS of its own (the
+hand-built-schema case above); it is not needed merely to *carry forward* a CRS
+the package already has.
 
 The rest of the family — `cityparquet_reconcile`, `cityparquet_delete`
 (cascade), `cityparquet_merge`, `cityparquet_orphans` / `cityparquet_vacuum` —
@@ -944,7 +941,7 @@ which is the fastest way to see what a call would do.
 ```sh
 ./lib/duckdb-cityjson/build/release/duckdb -c "
 SELECT version, title, city_objects_count, reference_system
-FROM cityjsonseq_metadata('cityparquet-rs/tests/fixtures/delft.city.jsonl');"
+FROM cityjsonseq_metadata('lib/cityparquet-rs/tests/fixtures/delft.city.jsonl');"
 ```
 
 Expected: `2.0`, `3DBAG`, `2231`, and a `reference_system` struct
@@ -1148,7 +1145,7 @@ SELECT id,
        ROUND(ST_3DSurfaceArea(solid), 6) AS area,
        ROUND(ST_3DVolume(solid), 6)      AS vol
 FROM (SELECT id, ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS solid
-      FROM read_cityjson('duckdb-3d/test/data/unit_cube.city.json', lod => '2.2')
+      FROM read_cityjson('lib/duckdb-3d/test/data/unit_cube.city.json', lod => '2.2')
       WHERE geometry_lod2_2 IS NOT NULL);"
 ```
 
@@ -1164,10 +1161,10 @@ cube | 6 | true | 6.0 | 1.0
 ./lib/duckdb-3d/build/release/duckdb -unsigned -c "
 LOAD '$(pwd)/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
 SELECT geometry_properties_lod2_0
-FROM read_cityjson('duckdb-3d/test/data/hollow_solid.city.json', lod => '2');
+FROM read_cityjson('lib/duckdb-3d/test/data/hollow_solid.city.json', lod => '2');
 SELECT ST_3DNumShells(s) AS shells, ST_3DIsClosed(s) AS closed, ROUND(ST_3DVolume(s),6) AS volume
 FROM (SELECT ST_3DFromWKB(geometry_lod2_0, geometry_properties_lod2_0) AS s
-      FROM read_cityjson('duckdb-3d/test/data/hollow_solid.city.json', lod => '2')
+      FROM read_cityjson('lib/duckdb-3d/test/data/hollow_solid.city.json', lod => '2')
       WHERE geometry_lod2_0 IS NOT NULL);"
 ```
 
@@ -1218,11 +1215,14 @@ Building parents); and 18 real-world solids are non-manifold.
 > `ST_3DFromWKB` — on real data the strict constructor aborts the whole query
 > with `ST_3DVolume: solid is not manifold`.
 >
-> **`SET enable_geoparquet_conversion=false` is only needed if you touch
-> `geometry_lod0_0`.** Projecting `geometry_lod2_2` alone, as above, is fine.
-> `SELECT *`, or anything reading the LoD0 column, makes DuckDB decode it as its
-> native `GEOMETRY` type (it is declared in the `geo` footer, complete with
-> PROJJSON) — set the flag off first if you want the raw WKB.
+> **`SET enable_geoparquet_conversion=false` does nothing for this column.** The
+> LoD0 footprint carries the Parquet `GEOMETRY` logical type, and DuckDB's
+> promotion follows the logical type rather than the `geo` footer — so the column
+> reads as `GEOMETRY` whether the setting is on or off, and `geometry_lod0_0::BLOB`
+> raises either way. Nothing here needs the flag: projecting `geometry_lod2_2`
+> alone is fine, and so is `SELECT *` (2231 rows). To hand the footprint to a
+> `duckdb-3d` constructor, pass it straight in — `ST_Geom3DFromWKB` takes
+> `GEOMETRY` as well as `BLOB`.
 
 ### 4.5 The full duckdb-cityjson ↔ cityparquet-rs round trip
 
@@ -1238,7 +1238,7 @@ cityparquet-rs → CityJSON
 
 ```sh
 rm -rf /tmp/n && mkdir -p /tmp/n
-lib/cityparquet-rs/target/release/cityparquet convert cityparquet-rs/tests/fixtures/delft.city.jsonl -o /tmp/n/rs --no-lod0 --overwrite
+lib/cityparquet-rs/target/release/cityparquet convert lib/cityparquet-rs/tests/fixtures/delft.city.jsonl -o /tmp/n/rs --no-lod0 --overwrite
 ```
 
 ```
@@ -1247,20 +1247,19 @@ lib/cityparquet-rs/target/release/cityparquet convert cityparquet-rs/tests/fixtu
 
 ```sh
 lib/duckdb-cityjson/build/release/duckdb -c "
-SET enable_geoparquet_conversion=false;
 CREATE SCHEMA d;
 PRAGMA cityparquet_read('/tmp/n/rs','d');
 SELECT * FROM cityparquet_write('d','/tmp/n/rt', crs=>'EPSG:7415');"
 ```
 
 ```
-building.parquet | written | 2231 | 3736867
+building.parquet | written | 2231 | 3688569
 metadata.json    | written |    0 |    6749
 ```
 
 ```sh
 lib/cityparquet-rs/target/release/cityparquet export /tmp/n/rt /tmp/n/rt.city.jsonl
-lib/cityparquet-rs/target/release/cityparquet compare cityparquet-rs/tests/fixtures/delft.city.jsonl /tmp/n/rt.city.jsonl
+lib/cityparquet-rs/target/release/cityparquet compare lib/cityparquet-rs/tests/fixtures/delft.city.jsonl /tmp/n/rt.city.jsonl
 echo "exit=$?"
 ```
 
@@ -1270,15 +1269,14 @@ equal (excluded: 20)
 exit=0
 ```
 
-> **`SET enable_geoparquet_conversion=false;` is required on the
-> `cityparquet_read` → `cityparquet_write` leg**, for the same reason as 4.3's
-> note: `cityparquet_write` touches every column of the schema, including
-> `geometry_lod0_0`, which DuckDB otherwise silently decodes to its native
-> `GEOMETRY` type on read — a type `cityparquet_write` cannot cast back to the
-> `BLOB` it needs. Omit the flag and the write fails with `Unimplemented type
-> for cast (GEOMETRY(...) -> BLOB)`. `--no-lod0` on the initial convert is
-> required too, for the reason 1.6 already documents — LoD0 synthesis would
-> otherwise legitimately add a footprint and fail `compare` with exit 2.
+> **The `cityparquet_read` → `cityparquet_write` leg needs no
+> `SET enable_geoparquet_conversion=false;`.** `cityparquet_write` touches every
+> column of the schema, including `geometry_lod0_0`, and keeps a `GEOMETRY`-typed
+> column `GEOMETRY`-typed through the `COPY`. The flag would change nothing in any
+> case: promotion follows the Parquet logical type, not the `geo` footer.
+> `--no-lod0` on the initial convert **is** required, for the reason
+> 1.6 already documents — LoD0 synthesis would otherwise legitimately add a
+> footprint and fail `compare` with exit 2.
 >
 > `["data","cityparquet-objects"]` / `["data","cityparquet-sidecar"]` asset
 > roles (fixed earlier) get rs as far as discovering the package's tables;
