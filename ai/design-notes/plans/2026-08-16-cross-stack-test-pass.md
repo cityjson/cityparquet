@@ -25,7 +25,6 @@
 - [ ] §1.2–1.5: convert Delft (report `2231 2 0 0 0 0 0 0 0`), verify Parquet schema + footer (`ARROW:schema`/`city`/`geo`; geo primary geometry_lod0_0; city primary geometry_lod2_2), STAC metadata.json (roles `['data','cityparquet-objects']`, lods `['0.0','1.2','1.3','2.2']`), railway multi-module convert with tri-state CRS (warning + `121 13 0 0 6 6 85 34 3`, 9 module tables with expected row counts, crs null/absent/object states per §1.5).
 - [ ] §1.6 round-trip: `--no-lod0` convert → export → compare → `equal (excluded: 19)`, exit 0. Also confirm the default (with LoD0) gives exit 2 with the documented provenance diff.
 - [ ] §1.7: `just interop` → `interop ok`.
-- [ ] §1.8 arrow-native: schema triplet (`integer[][][][][]` + vertices struct list + unchanged properties), footer has no `geo` key, `city.columns[0].encoding = CityParquetArrowNative-v1`, round-trip equal.
 - [ ] §1.9 partitioned output: `partitions=3 duplicate_ids=0`, 1001/1000/230, glob count 2231.
 - [ ] §1.10: `just catalog-test` → **261 passed, 11 skipped**.
 - [ ] Leave artifacts in `OUT=/data2/hideba/cp-testpass-20260816/cp_test` (delft, delft_arrow, railway, railway_crs, delft_parts, delft_rt…) for the integration executor.
@@ -36,8 +35,6 @@
 - [ ] §2.1: `./build/release/test/unittest "test/sql/*"` → all pass; guide said 1186 assertions / 42 cases / 1 skip (`FCB_REMOTE_TEST_URL`); counts may now be higher.
 - [ ] §2.2 read_cityjsonseq Delft count = 2231 (fixture path: use the MAIN checkout's `tests/fixtures/delft.city.jsonl` read-only, or the worktree copy).
 - [ ] §2.3 suffixed per-LoD WKB mode: `geometry_properties_lod2_2` STRUCT shape incl. `shells [[6]]`.
-- [ ] §2.4 arrow-native DESCRIBE triplet matches §1.8's.
-- [ ] §2.5 `cityjson_geoparquet_geo`: non-NULL under WKB, NULL under arrow-native; COPY TO parquet with kv geo → count 2231.
 - [ ] §2.6 sidecar readers on lod3_railway: **85 | 34 | 3**; `appearance := 'sidecar'` scan: 121 rows / 24 with material.
 - [ ] §2.7 package mutation family: init/validate(0 rows)/insert_cityjsonseq(routes to bridge+building+city_furniture + 3 sidecars)/cityparquet_write with crs (7 files written incl. building 2231) and without crs (`crs: null` in footer)/cityparquet_read of the rs-written delft package → 2231.
 - [ ] §2.8 metadata: version 2.0, title 3DBAG, 2231, EPSG:7415 struct.
@@ -49,7 +46,6 @@
 - [ ] Confirm pid 3807230's process tree is idle and `git -C duckdb-3d status --porcelain` is empty before starting; report if not and proceed only if clean.
 - [ ] `nice -n 10 make -j32 release` (or `just build`) then §3.1: `make test` → 469 assertions / 28 cases / 5 skips; `make test_cpp` → 528 assertions / 187 cases. Rebuild before trusting any failure (guide's stale-extension warning).
 - [ ] §3.2 hollow solid: `THREE_D_TEST_FIXTURES=1 ./build/release/test/unittest "test/sql/st_3d_hollow_solid.test"` → 17 assertions, volume 56 semantics.
-- [ ] §3.3 namespace audit: `ST_3DTransform` present, arrow-native constructors incl. `ST_Geom3D*` variants, `ST_CRS`/`ST_SetCRS`.
 - [ ] §3.4 typed constructors + fixture gate: `SOLID_3D | 56.0`; st_aswkb count 1 without env, 12 with.
 
 ## Task 4 — Cross-component integration, Part 4 [Opus executor D, after 1–3]
@@ -57,7 +53,6 @@
 - [ ] §4.1 unit cube via cityjson→three_d: `cube | 6 | true | 6.0 | 1.0`.
 - [ ] §4.2 hollow solid shells contract: `[[6,6]]`, `2 | true | 56.0`.
 - [ ] §4.3 rs package → duckdb-3d WKB chain on `$OUT/delft`: **parsed 1116 | valid 1098 | vol 1915861.2**.
-- [ ] §4.4 arrow-native parity on `$OUT/delft_arrow`: identical three numbers; plus duckdb-cityjson→three_d arrow-native unit cube (`6 | 1.0`) and hollow (`2 | true | 56.0`).
 - [ ] §4.5 duckdb-cityjson-written package → rs export: EXPECTED FAIL with `sidecar column 'id' has an unexpected array type` (open decision #2 — geometry_templates.id BIGINT vs VARCHAR). Reproduce §2.7's `pkg_out` first if executor B's artifact is absent. Confirm reverse direction (duckdb reads rs package) works.
 - [ ] Use fresh binaries: rebuilt extensions from Tasks 2–3, CLI from Task 1's worktree. Load cityjson extension by absolute path into the three_d shell.
 

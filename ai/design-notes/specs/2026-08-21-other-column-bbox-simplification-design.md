@@ -215,5 +215,4 @@ Strict red-green TDD, real fixtures only (`delft.city.jsonl`, `lod3_railway.city
 ## Out of scope
 
 - Whether LoD0 synthesis should default on (D4).
-- Arrow-native geometry world coordinates (`Memo.md`, separate item).
 - Any change to `materials`/`textures`/`geometry_templates` sidecars.
