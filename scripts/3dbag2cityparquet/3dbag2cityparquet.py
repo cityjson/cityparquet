@@ -333,6 +333,9 @@ def stage_merge(plan: dict, work: Path) -> Path:
     out = work / "3dbag.city.jsonl"
     tmp = out.with_suffix(".part")
     seq = work / "seq"
+    if out.exists():
+        log(f"merge: {out.name} already built ({out.stat().st_size / 1e9:.1f} GB); skipping")
+        return out
     log(f"merge: concatenating {len(plan['order'])} tiles into {out.name}")
     with open(tmp, "wb") as dst:
         dst.write(json.dumps(plan["header"], separators=(",", ":")).encode())
