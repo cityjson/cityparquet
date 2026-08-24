@@ -1,7 +1,16 @@
 // The example queries.
 //
-// Every one of these was run against the real dataset before being listed, and
-// the figures quoted in the blurbs are measured rather than estimated.
+// The figures quoted in the blurbs are measured, not estimated. Which queries
+// have actually been executed, as of writing, is narrower than that:
+//
+//   run end to end   `schema`, `count`, `bbox-search` (natively, against the
+//                    real bucket) and `cityjsonseq` (in the browser)
+//   not yet run      the rest. Their columns and types are taken from the
+//                    file's own schema and the extension's FUNCTIONS.md, and
+//                    the tests below pin the shapes that are easy to get wrong,
+//                    but that is not the same as having run them.
+//
+// Run one before you change its blurb, and correct this list when you do.
 //
 // Two facts about the 3DBAG package shape everything here:
 //

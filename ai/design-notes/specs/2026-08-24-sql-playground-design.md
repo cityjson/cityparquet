@@ -126,12 +126,15 @@ Three further constraints govern the local builds:
   as `ReferenceError: _setThrew is not defined` rather than the real message —
   documented in `lib/duckdb-cityjson/docs/TRAPS.md`. In a SQL playground that
   makes every SQL error unreadable, which is disqualifying. `wasm_eh` is a
-  target in `extension-ci-tools/makefiles/duckdb_extension.Makefile`; only
-  `wasm_mvp` is currently wired into `just wasm`.
-- **Both extensions need a `wasm_eh` recipe.** `lib/duckdb-cityjson` has
-  `wasm-setup` and `wasm` (mvp only); `lib/duckdb-3d` has no WASM path at all.
-  Both gain one, committed **in their own repositories**, per the submodule
-  rule as amended in `ed5d02c`.
+  target in `extension-ci-tools/makefiles/duckdb_extension.Makefile`.
+- **Both extensions now have a `wasm_eh` recipe**, committed in their own
+  repositories per the submodule rule as amended in `ed5d02c`. `just wasm
+  <flavour>` in `lib/duckdb-cityjson` (default `wasm_mvp`, which its smoke
+  harness asserts against) and `just wasm` in `lib/duckdb-3d` (default
+  `wasm_eh`, since a browser is that repo's only consumer). `duckdb-3d` also
+  needed vcpkg cloned **blobless rather than shallow**: it resolves `proj`
+  through the versions database to an older port tree, which a shallow clone
+  has no history to find.
 - **`ST_3DTransform` needs PROJ's EPSG database at runtime**
   (`proj_create_crs_to_crs` in `src/kernel/crs_transform.cpp`), which requires
   `proj.db` inside the Emscripten filesystem. The other 39 `ST_3D*` functions do
@@ -248,6 +251,15 @@ export type Preset = {
 Seeded from the existing tutorials (`documents/docs/07-tutorials/`) and then
 replaced by the maintainer's own queries. `id` is stable because documentation
 deep-links to it.
+
+**Not every seeded preset has been executed.** `schema`, `count` and
+`bbox-search` were run natively against the real bucket, and `cityjsonseq` in
+the browser; the rest are built from the file's schema and the extensions'
+`FUNCTIONS.md`. That gap is why the registry tests pin the shapes that are easy
+to get wrong — a measurement function may not take a `geometry_*` column
+directly, and a solid constructor must be paired with its properties column —
+but tests of shape are not a substitute for running the query, and the file
+records which is which.
 
 Share links carry `#preset=<id>` while a preset is unmodified and
 `#sql=<base64url>` once edited, so a tutorial can link "run this yourself" and
