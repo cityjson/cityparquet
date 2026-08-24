@@ -198,3 +198,26 @@ No other lines in `src/lib.rs` are changed; `main.rs`/`wasm.rs`/tests/data
 are carried unmodified for reference and are not built by
 `cityparquet-rs` (only the `cjseq` library target is depended on, via
 `[patch.crates-io]` in the workspace `Cargo.toml`).
+
+## `Cargo.toml`: `serde_json`'s `float_roundtrip` feature
+
+Unrelated to the texture defects above, and the one change outside
+`src/lib.rs`.
+
+`serde_json`'s default float parser is fast but **not correctly rounded**: it
+can land one ULP from the nearest double. `cjseq cat` parses a CityJSON
+document and re-serialises it, so an attribute the source wrote as
+`28.184951782226562` came back out as the double below it — and any consumer
+downstream inherits the drift, having no way to know it happened.
+
+```diff
+ [dependencies.serde_json]
+ version = "1.0"
++features = ["float_roundtrip"]
+```
+
+The same feature is enabled on the workspace's own `serde_json`, for the same
+reason: `cityparquet-rs` parses these numbers too. Found by converting 3DBAG
+through `cjseq cat` and diffing the result against a direct conversion of the
+same tiles — 0.66% of rows carried an attribute off by one ULP, and the two
+routes agree exactly once the feature is on.

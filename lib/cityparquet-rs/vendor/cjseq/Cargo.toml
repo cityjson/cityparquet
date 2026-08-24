@@ -62,6 +62,7 @@ version = "0.6"
 
 [dependencies.serde_json]
 version = "1.0"
+features = ["float_roundtrip"]
 
 [dependencies.wasm-bindgen]
 version = "0.2"
