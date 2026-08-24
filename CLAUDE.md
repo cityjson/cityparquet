@@ -104,10 +104,20 @@ and the database family needs rootless podman.
 ## Submodules
 
 `lib/duckdb-cityjson` and `lib/duckdb-3d` are independent git repositories with
-their own `CLAUDE.md`, tests and CI. **Do not edit them from this repository** —
-consult their own instructions and work in their own repos; here we only record
-which commit we pin. `lib/cityparquet-rs` and `lib/citylake` are _not_
-submodules: they live in this tree and are edited here.
+their own `CLAUDE.md`, tests and CI. They **can** be edited from here — consult
+their own instructions as you do, and commit in their own repos, since this one
+only records which commit it pins.
+
+What their independence means is a **design** boundary, not an editing one. They
+are libraries in their own right: they must not encode knowledge of _how_
+`cityparquet-rs` implements its reader and writer — its internal types, its
+module layout, its private invariants. What they may depend on is what the
+specification states, because that is the contract all three implement. The
+whole stack is meant to be used together; the rule keeps them coupled through
+the spec rather than through each other's internals.
+
+`lib/cityparquet-rs` and `lib/citylake` are _not_ submodules: they live in this
+tree and are edited here.
 
 `lib/cityparquet-rs/vendor/cjseq` is a **patched vendored copy**, not a
 submodule; `lib/cityparquet-rs/vendor/city3d-stac-tool` is a submodule and is
