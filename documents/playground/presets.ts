@@ -254,10 +254,12 @@ WHERE object_type = 'BuildingPart'
       "The cityjson extension reads the text format directly — no conversion step, no download.",
     extensions: ["cityjson"],
     sql: `-- CityParquet is not the only thing this stack reads. Delft, as published
--- CityJSONSeq, parsed in the browser.
-SELECT type, id, count(*) OVER () AS objects_in_file
+-- CityJSONSeq, parsed in the browser. The reader gives every city object the
+-- same column grammar CityParquet uses, so 'object_type' is the type column.
+SELECT object_type, count(*) AS objects
 FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
-LIMIT 20;`,
+GROUP BY object_type
+ORDER BY objects DESC;`,
   },
   {
     id: "cityjson-metadata",

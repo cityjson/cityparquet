@@ -21,13 +21,7 @@ interface EditorProps {
  * CodeMirror 6, wired to the site's theme tokens rather than a packaged theme,
  * so the editor follows light/dark with everything else on the page.
  */
-export default function Editor({
-  value,
-  onChange,
-  onRun,
-  disabled,
-  handleRef,
-}: EditorProps) {
+export default function Editor({ value, onChange, onRun, disabled, handleRef }: EditorProps) {
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
   // Kept in refs so the CodeMirror extensions never close over a stale render.

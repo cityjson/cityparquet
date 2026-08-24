@@ -50,13 +50,7 @@ The bucket needs:
     "AllowedOrigins": ["*"],
     "AllowedMethods": ["GET", "HEAD"],
     "AllowedHeaders": ["range", "if-match"],
-    "ExposeHeaders": [
-      "Content-Length",
-      "Content-Range",
-      "Accept-Ranges",
-      "ETag",
-      "Last-Modified"
-    ],
+    "ExposeHeaders": ["Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"],
     "MaxAgeSeconds": 3600
   }
 ]

@@ -64,13 +64,26 @@ The **`eh` bundle only**. The `coi` bundle needs `SharedArrayBuffer`, which need
 COOP/COEP response headers, which GitHub Pages cannot send. There is therefore
 no threading.
 
-`mainModule` and `mainWorker` must be **absolute URLs**. DuckDB's worker
-re-resolves `mainModule` relative to its own location, so a relative path is
-resolved a second time under the worker's directory — during this design a
-relative `./duckdb-dist/duckdb-eh.wasm` produced a request for
-`/duckdb-dist/duckdb-dist/duckdb-eh.wasm` and the instantiation stalled with no
-error. Vite's `?url` imports emit absolute paths, so the application form avoids
-this, but anything hand-rolled must not.
+`mainModule` and `mainWorker` must be **fully qualified URLs**, and this bit
+twice before it was understood.
+
+DuckDB's worker resolves `mainModule` against its own location rather than the
+page's. A relative `./duckdb-dist/duckdb-eh.wasm` therefore produced a request
+for `/duckdb-dist/duckdb-dist/duckdb-eh.wasm` and stalled with no error at all.
+
+A **root-absolute** path fails too, which is the trap, because that is exactly
+what Vite's `?url` import returns (`/_astro/duckdb-eh.<hash>.wasm`). It is
+correct on the page and useless in the worker: the worker is created from a
+`blob:` URL — required, so the byte counter can patch `XMLHttpRequest` before
+DuckDB's script runs — and inside a blob worker `self.location` is the blob URL,
+which gives a root-absolute path nothing sensible to resolve against. The
+symptom is the same silence: the worker script is fetched, the WebAssembly
+module never is, and the promise never settles.
+
+Both URLs are therefore resolved with `new URL(url, location.href).href` on the
+main thread, where the base is the real page. Instantiation is additionally
+raced against the worker's `error` event and a deadline, so this class of
+failure reports itself instead of hanging.
 
 The WASM binaries are bundled from `node_modules` through Vite rather than
 fetched from a CDN, so the site carries no third-party runtime dependency and
@@ -276,6 +289,12 @@ until something has actually run it.
 | The data bucket hides its range headers | `accept-ranges`, `content-range`, `etag` all `null` cross-origin |
 | The 16.4 GB file's footer is 4.71 MB | decoded from the last 8 bytes |
 | Node's duckdb-wasm HTTP runtime cannot fetch URLs | a canonical DuckDB-hosted URL also `404`s there; browser runtime is a separate implementation |
+| A locally built `wasm_eh` cityjson loads in a browser | 178 ms, version `94ab4cb`, 15 functions, against 4 in the published build |
+| `cityjson_geoparquet_geo` works there | returned PROJJSON CRS metadata for a remote CityJSONSeq; absent from the published build |
+| The assembled page boots and runs queries | headless Chromium: engine + both local extensions loaded, then `2 rows · 3.36 s · 6.6 MB read` |
+| The byte counter works in the built application | the 6.6 MB above came from the XHR shim, not an estimate |
+| 3DBAG attribute/geometry split | `Building` 10,771,547 rows carry every `b3_*` and no geometry; `BuildingPart` 10,783,975 rows carry geometry and no attributes |
+| The full package counts | 21,555,522 rows, in 4.7 s natively over the network |
 
 ## 11. Phasing
 

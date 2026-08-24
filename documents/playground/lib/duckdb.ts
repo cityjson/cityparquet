@@ -31,14 +31,23 @@ export type Progress = (message: string) => void;
  * exception arrives as `ReferenceError: _setThrew is not defined` instead of
  * the DuckDB message — which in a SQL console would make every error useless.
  *
- * Both URLs come from Vite's `?url` imports and so are absolute. That matters:
- * DuckDB's worker resolves `mainModule` relative to its own location, so a
- * relative path is resolved a second time under the worker's directory and the
- * instance stalls with no error at all.
+ * Both URLs are made **fully qualified** here, and that is load-bearing.
+ *
+ * Vite's `?url` gives a root-absolute path (`/_astro/duckdb-eh.<hash>.wasm`),
+ * which is fine on the page but not in the worker: the worker is created from a
+ * `blob:` URL so that the byte counter can patch XHR first, and inside a blob
+ * worker `self.location` is the blob URL itself. A root-absolute path has
+ * nothing sensible to resolve against there, so the fetch never happens and the
+ * instance stalls with no error — the worker script loads and then silence.
+ * Resolving against `location.href` on the main thread, where the base is the
+ * real page, removes the ambiguity entirely.
  */
-const BUNDLES: duckdb.DuckDBBundles = {
-  eh: { mainModule: ehModuleUrl, mainWorker: ehWorkerUrl },
-};
+function bundles(): duckdb.DuckDBBundles {
+  const absolute = (url: string) => new URL(url, location.href).href;
+  return {
+    eh: { mainModule: absolute(ehModuleUrl), mainWorker: absolute(ehWorkerUrl) },
+  };
+}
 
 /** Load one extension, from whichever source `config.ts` selected. */
 async function loadExtension(
@@ -72,12 +81,34 @@ async function loadExtension(
 /** Boot DuckDB, open an in-memory database, and load the extensions. */
 export async function createSession(onProgress: Progress = () => {}): Promise<Session> {
   onProgress("Fetching the DuckDB engine…");
-  const bundle = await duckdb.selectBundle(BUNDLES);
+  const bundle = await duckdb.selectBundle(bundles());
 
   onProgress("Starting the database worker…");
   const worker = createCountingWorker(bundle.mainWorker!);
   const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
-  await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+
+  // Instantiation is where a bad asset URL shows up, and its failure mode is
+  // silence rather than an exception: the worker never fetches the module and
+  // the promise never settles. Race it against the worker's own error event and
+  // a deadline so the page reports something a reader can act on.
+  await Promise.race([
+    db.instantiate(bundle.mainModule, bundle.pthreadWorker),
+    new Promise<never>((_resolve, reject) => {
+      worker.addEventListener("error", (event) =>
+        reject(new Error(`The database worker failed to start: ${event.message || event.type}`)),
+      );
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "The database engine did not start within 60s. The WebAssembly module " +
+                "may not have been reachable.",
+            ),
+          ),
+        60_000,
+      );
+    }),
+  ]);
 
   await db.open({
     path: ":memory:",

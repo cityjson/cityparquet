@@ -16,8 +16,15 @@ needs, straight off the bucket.
 
 That is the whole argument for storing a city model as CityParquet: because it is
 **columnar**, a reader touches a tiny fraction of the bytes, so a single laptop can
-sweep a million buildings across a thousand remote files in seconds. This walkthrough
-shows six things end to end — reading across all the files at once, bounding-box
+sweep a million buildings across a thousand remote files in seconds.
+
+:::tip[Run it without installing anything]
+The [SQL playground](/playground) runs these queries in your browser, against the
+same data — DuckDB, `cityjson` and `three_d` compiled to WebAssembly. It shows the
+bytes each query actually fetches, which is the number this tutorial is about.
+:::
+
+This walkthrough shows six things end to end — reading across all the files at once, bounding-box
 search, GeoParquet interoperability, 3D solid measurement, semantic roof analysis,
 and conversion back to CityJSONSeq.
 
@@ -125,7 +132,7 @@ GROUP BY tile ORDER BY n DESC;
 
 **Wildcards vs. Hive partitioning.** This bucket is laid out as one directory per
 tile (`<tile>/building.parquet`), so you address it with a glob and recover the
-partition key from `filename`. DuckDB also understands *Hive partitioning*, where the
+partition key from `filename`. DuckDB also understands _Hive partitioning_, where the
 key is written into the path as `key=value` — a bucket laid out as
 `tile=10-640-324/building.parquet` could be read with
 `read_parquet('…/*/building.parquet', hive_partitioning := true)`, exposing `tile` as
@@ -382,7 +389,7 @@ scan of one columnar file.
 
 ## Convert to CityJSONSeq (and other formats)
 
-Because the [`cityjson`](/tutorials/duckdb-cityjson) extension also *writes* city
+Because the [`cityjson`](/tutorials/duckdb-cityjson) extension also _writes_ city
 models, `COPY … TO` turns CityParquet back into CityJSON, CityJSONSeq, or FlatCityBuf
 — DuckDB as a format converter. It consumes the wide layout directly: a plain
 `SELECT *` becomes one **multi-LoD** CityObject per feature, and the STRUCT
@@ -437,7 +444,7 @@ because CityParquet is columnar and DuckDB exploits it at three levels:
   downloaded whole; the STAC `metadata.json` per tile lets a catalogue narrow the
   file set before DuckDB is even involved.
 
-The same three properties are what make CityParquet a *delivery* format for 3D city
+The same three properties are what make CityParquet a _delivery_ format for 3D city
 models, not just a storage one. To reproduce these numbers on your own data, convert
 a CityJSON source with the [`cityparquet-rs`](/resources/software) reference writer or
 the [`cityjson` one-liner](/tutorials/duckdb-cityjson), and point the queries at your

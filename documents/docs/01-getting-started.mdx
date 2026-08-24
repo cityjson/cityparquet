@@ -12,6 +12,12 @@ over a whole tile without downloading it**. This page is the **copy-paste happy
 path**, no theory. For explained, task-oriented walkthroughs, see
 [Tutorials](/tutorials).
 
+:::tip[Nothing to install]
+The [SQL playground](/playground) runs the whole stack — DuckDB, `cityjson` and
+`three_d` — in your browser, over 16.4 GB of 3DBAG on object storage. Use it to
+try the queries below before installing anything locally.
+:::
+
 <Steps>
   <Step title="Install DuckDB and the extensions">
     Grab a [DuckDB](https://duckdb.org/) binary from duckdb.org (or your package
@@ -34,6 +40,7 @@ path**, no theory. For explained, task-oriented walkthroughs, see
 
     A plain DuckDB build already reads Parquet, so no extra extension is needed to
     open a converted CityParquet package.
+
   </Step>
 
   <Step title="Open a CityParquet file">
@@ -51,6 +58,7 @@ path**, no theory. For explained, task-oriented walkthroughs, see
     ```sql
     SELECT * FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl');
     ```
+
   </Step>
 
   <Step title="Run your first query">
@@ -68,6 +76,7 @@ path**, no theory. For explained, task-oriented walkthroughs, see
     FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl')
     WHERE object_type = 'Building';
     ```
+
   </Step>
 
   <Step title="Measure 3D geometry — read only what you need">
@@ -98,6 +107,7 @@ path**, no theory. For explained, task-oriented walkthroughs, see
     it**. Point `read_parquet` at the package's object table and select the
     LoD-suffixed pair the same way — `geometry_lod2_2` /
     `geometry_properties_lod2_2` for the LoD 2.2 solids above.
+
   </Step>
 </Steps>
 
