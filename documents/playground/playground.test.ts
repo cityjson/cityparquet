@@ -100,6 +100,35 @@ describe("the preset registry", () => {
     }
   });
 
+  it("builds a solid before measuring it, rather than passing raw WKB", () => {
+    // ST_3DVolume and friends take SOLID_3D, not BLOB: a geometry column has to
+    // go through ST_3DFromWKB / ST_3DTryFromWKB first, paired with its
+    // geometry_properties_lod* struct so shell grouping survives. Passing the
+    // column straight in binds against nothing and fails only at runtime.
+    const measures = /ST_3D(?:Volume|SurfaceArea|Area|FootprintArea|Perimeter|NumShells|NumFaces|IsClosed|IsManifold|ValidationReport)\s*\(\s*(geometry_\w+)/i;
+    for (const preset of PRESETS) {
+      const hit = preset.sql.match(measures);
+      expect(
+        hit,
+        `${preset.id} passes ${hit?.[1]} straight to a measurement function; wrap it in ST_3DTryFromWKB`,
+      ).toBeNull();
+    }
+  });
+
+  it("pairs every solid constructor with its properties column", () => {
+    // The second argument is what carries shell structure; without it every
+    // PolyhedralSurface imports as one shell and cavities stop subtracting.
+    for (const preset of PRESETS) {
+      for (const [, wkb, props] of preset.sql.matchAll(
+        /ST_3D(?:Try)?FromWKB\s*\(\s*(geometry_\w+)\s*,\s*(\w+)/gi,
+      )) {
+        expect(props, `${preset.id}: ${wkb} should be paired with its properties column`).toBe(
+          wkb.replace("geometry_", "geometry_properties_"),
+        );
+      }
+    }
+  });
+
   it("never selects everything from the 16.4 GB file without a limit", () => {
     for (const preset of PRESETS) {
       if (!preset.sql.includes(DATA_BASE_URL)) continue;

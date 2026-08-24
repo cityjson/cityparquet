@@ -175,22 +175,33 @@ LIMIT 50;`,
     group: "3D geometry",
     title: "Measure solids in the browser",
     blurb:
-      "Computes volume and surface area from the LoD 2.2 WKB solids themselves, with the three_d extension.",
+      "Measures volume and surface area from the LoD 2.2 solids themselves — and shows why the paired properties column exists.",
     extensions: ["three_d"],
-    sql: `-- geometry_lod2_2 is a WKB PolyhedralSurface. three_d measures it directly,
--- so this is computed from the geometry rather than read from an attribute.
--- The LIMIT matters: this one does read geometry.
+    sql: `-- A solid is built from two columns, not one: the WKB, and the paired
+-- geometry_properties_lod2_2 STRUCT that carries the shell grouping WKB cannot.
+-- Without it every PolyhedralSurface imports as a single shell, and interior
+-- cavities stop subtracting from the volume.
+--
+-- ST_3DTryFromWKB rather than ST_3DFromWKB, and the validity guard, because
+-- every real reconstruction contains some broken solids and ST_3DVolume raises
+-- on a non-manifold one rather than inventing a plausible number.
+WITH parts AS (
+    SELECT id,
+           ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS solid
+    FROM read_parquet('${BUILDINGS}')
+    WHERE object_type = 'BuildingPart'
+      AND geometry_lod2_2 IS NOT NULL
+      AND bbox.xmin BETWEEN 84000 AND 84300
+      AND bbox.ymin BETWEEN 446000 AND 446300
+)
 SELECT
     id,
-    round(ST_3DVolume(geometry_lod2_2), 1)      AS volume_m3,
-    round(ST_3DSurfaceArea(geometry_lod2_2), 1) AS surface_m2,
-    ST_3DNumFaces(geometry_lod2_2)              AS faces,
-    ST_3DIsClosed(geometry_lod2_2)              AS closed
-FROM read_parquet('${BUILDINGS}')
-WHERE object_type = 'BuildingPart'
-  AND geometry_lod2_2 IS NOT NULL
-  AND bbox.xmin BETWEEN 84000 AND 84500
-  AND bbox.ymin BETWEEN 446000 AND 446500
+    round(ST_3DVolume(solid), 1)        AS volume_m3,
+    round(ST_3DSurfaceArea(solid), 1)   AS surface_m2,
+    round(ST_3DFootprintArea(solid), 1) AS footprint_m2,
+    ST_3DNumShells(solid)               AS shells
+FROM parts
+WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid
 LIMIT 25;`,
   },
   {
@@ -198,12 +209,15 @@ LIMIT 25;`,
     group: "3D geometry",
     title: "Check the published volume",
     blurb:
-      "Compares three_d's computed volume against 3DBAG's own b3_volume_lod22 — two routes to one number.",
+      "Recomputes volume from the geometry and compares it with 3DBAG's published b3_volume_lod22 — two independent routes to one number.",
     extensions: ["three_d"],
-    sql: `-- The attribute and the geometry should agree. Where they do not, one of
--- them is wrong -- which is exactly the kind of question a playground is for.
+    sql: `-- The published attribute and the stored geometry are independent: one was
+-- computed by 3DBAG's reconstruction, the other is measured here from the WKB.
+-- They should agree, and where they do not, one of them is wrong — which is the
+-- kind of question having both in one file makes askable at all.
 WITH parts AS (
-    SELECT parents[1] AS parent_id, geometry_lod2_2
+    SELECT parents[1] AS parent_id,
+           ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS solid
     FROM read_parquet('${BUILDINGS}')
     WHERE object_type = 'BuildingPart'
       AND geometry_lod2_2 IS NOT NULL
@@ -214,14 +228,19 @@ buildings AS (
     SELECT id, b3_volume_lod22
     FROM read_parquet('${BUILDINGS}')
     WHERE object_type = 'Building'
+      AND bbox.xmin BETWEEN 84000 AND 84300
+      AND bbox.ymin BETWEEN 446000 AND 446300
 )
 SELECT
     b.id,
-    round(ST_3DVolume(p.geometry_lod2_2), 1) AS computed_m3,
-    round(b.b3_volume_lod22, 1)              AS published_m3,
-    round(ST_3DVolume(p.geometry_lod2_2) - b.b3_volume_lod22, 2) AS difference
+    round(ST_3DVolume(p.solid), 1) AS computed_m3,
+    round(b.b3_volume_lod22, 1)    AS published_m3,
+    round(ST_3DVolume(p.solid) - b.b3_volume_lod22, 2) AS difference_m3
 FROM parts p
 JOIN buildings b ON b.id = p.parent_id
+WHERE p.solid IS NOT NULL
+  AND ST_3DValidationReport(p.solid).is_valid
+  AND b.b3_volume_lod22 > 0
 LIMIT 25;`,
   },
   {

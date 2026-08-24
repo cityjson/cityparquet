@@ -64,6 +64,10 @@ function toCell(value: unknown): Cell {
 function classify(message: string): QueryFailure["kind"] {
   const text = message.toLowerCase();
   if (text.includes("timeout")) return "timeout";
+  // Extension failures are checked first: their messages carry the repository
+  // URL, so a plain "does it mention http" test misfiles them as network faults
+  // and offers the reader a CORS explanation for a missing extension.
+  if (text.includes("extension")) return "extension";
   if (
     text.includes("http") ||
     text.includes("failed to load") ||
@@ -72,7 +76,6 @@ function classify(message: string): QueryFailure["kind"] {
   ) {
     return "network";
   }
-  if (text.includes("extension")) return "extension";
   return "sql";
 }
 

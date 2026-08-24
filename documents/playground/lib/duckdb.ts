@@ -54,8 +54,16 @@ async function loadExtension(
   connection: duckdb.AsyncDuckDBConnection,
   name: ExtensionName,
 ): Promise<LoadedExtension> {
+  // `INSTALL … FROM <source>` rather than `SET custom_extension_repository`.
+  // That setting redirects *every* install, including the core extensions DuckDB
+  // autoloads on demand — so the first `read_parquet` would send DuckDB looking
+  // for `parquet.duckdb_extension.wasm` in a local repository that holds only
+  // these two, and fail. Naming the source per install leaves core autoloading
+  // pointed at its own default.
   const install =
-    EXTENSION_SOURCE.kind === "community" ? `INSTALL ${name} FROM community` : `INSTALL ${name}`;
+    EXTENSION_SOURCE.kind === "community"
+      ? `INSTALL ${name} FROM community`
+      : `INSTALL ${name} FROM '${new URL(EXTENSION_SOURCE.url, location.href).href}'`;
 
   // One retry. Loading two community extensions back to back, the second has
   // been observed to fail on its first attempt while succeeding immediately
@@ -119,11 +127,6 @@ export async function createSession(onProgress: Progress = () => {}): Promise<Se
   });
 
   const connection = await db.connect();
-
-  if (EXTENSION_SOURCE.kind === "repository") {
-    const url = new URL(EXTENSION_SOURCE.url, location.href).href;
-    await connection.query(`SET custom_extension_repository='${url}'`);
-  }
 
   // Serialised deliberately, not with Promise.all: see the retry note above.
   const extensions: LoadedExtension[] = [];
