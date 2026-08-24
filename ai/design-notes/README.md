@@ -20,6 +20,7 @@ instead — that is the maintained, normative half.
 | `specs/2026-08-21-other-column-bbox-simplification-design.md` | Collapsing per-member overflow columns into one `other`; `bbox` as subtree ∪ declared extent |
 | `plans/2026-08-21-other-column-bbox-simplification.md` | The implementation plan for the above |
 | `plans/2026-08-23-cityparquet-monorepo-migration.md` | The plan that produced this repository's layout |
+| `specs/2026-08-24-sql-playground-design.md` | The DuckDB-WASM SQL playground at `/playground`: runtime, extension sourcing, and the CORS the data bucket must serve |
 
 Note that these notes were written while the code lived in several separate
 repositories, so they refer to paths (and, in one case, a local working
