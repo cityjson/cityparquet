@@ -56,13 +56,20 @@ every source surface keeps the mapping exact but forces degenerate faces into th
 dropping them yields cleaner geometry but breaks the index alignment. The format
 currently requires only that `face_semantics` match the faces actually emitted.
 
-### Per-LoD bbox covering columns <Badge variant="warning">open</Badge>
+### Pruning a solid column <Badge variant="warning">open</Badge>
 
-Whether to define `bbox_lod*` columns null-aligned with each `geometry_lod*`, so that
-GeoParquet's `covering` field could be declared. Deferred because the in-progress
-GeoParquet 2.0 draft proposes dropping `covering` in favour of Parquet-native
-geospatial statistics, which carry `zmin`/`zmax` natively — waiting on that avoids
-building on a field that may be removed. See the [metadata page](/specification/metadata).
+GeoParquet 2.0 removed `covering`, and Parquet-native geospatial statistics replaced
+it: a `GEOMETRY`-annotated column carries a per-chunk bounding box, `zmin`/`zmax`
+included, so `bbox_lod*` covering columns are no longer worth defining. That settles
+the question for footprint columns.
+
+It leaves it open for solid columns, which cannot be annotated — their
+`PolyhedralSurface Z` bytes are outside every consuming engine's geometry model — and
+so get no per-chunk spatial statistics of their own. They fall back to the row-level
+[`bbox`](/specification/geometry-semantics) column, which is subtree-unioned rather
+than per-LoD and therefore coarser than a true covering. Whether that is worth
+narrowing, and at what cost in row width, is unsettled. See the
+[metadata page](/specification/metadata).
 
 ## Resolved
 

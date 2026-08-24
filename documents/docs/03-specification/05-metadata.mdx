@@ -17,8 +17,16 @@ Two keys live in the footer:
 - **`city`** — CityParquet's own metadata object: version, provenance, CRS, the
   geometry-column registry, the attribute list, and extensions. A CityParquet reader
   uses this; it is **authoritative**.
-- **`geo`** — a GeoParquet 1.1 object, so GeoParquet-aware tools recognise the geometry
+- **`geo`** — a GeoParquet object, so GeoParquet-aware tools recognise the geometry
   columns they *can* read. Conditional: omitted when no column qualifies.
+
+Every column `geo` declares **MUST** also carry the Parquet **`GEOMETRY` logical
+type** annotating its `BYTE_ARRAY`, which is what GeoParquet 2.0 requires of a
+geometry column and what makes a Parquet writer accumulate `GeospatialStatistics`
+for it. Columns `geo` withholds carry no annotation. This is the [declaration
+rule](#the-geo-object--geoparquet-compatibility) applied at a second level, not a
+second rule: **annotated if and only if declared**, so the two can never disagree
+about which columns a GeoParquet reader is invited into.
 
 **Why two keys, not one.** The `city` object registers **every** geometry column,
 including `Solid`-family ones. GeoParquet's `geo` object **cannot** — declaring a
@@ -84,12 +92,19 @@ geometry columns, so it is where a `Solid` column's type and winding are recorde
 
 ### The `geo` object — GeoParquet compatibility
 
-CityParquet also embeds a **GeoParquet 1.1-conformant `geo` object** so GeoParquet-aware
-tools recognise the geometry columns they can read (see
+CityParquet also embeds a **`geo` object** so GeoParquet-aware tools recognise the
+geometry columns they can read (see
 [files, CRS & metadata](/design-decisions/files-crs-metadata)). It is a *pure*
 GeoParquet object — no CityParquet extension fields (3D winding lives in
 `city.columns[].orientation_3d`). It carries `version`, `primary_column`, and a
 `columns` map, restricted to the GeoParquet-legal columns.
+
+`geo.version` reports **`1.1.0`**, and the declared columns carry the `GEOMETRY`
+logical type as well. That pairing is deliberate: the version string is a single
+value and cannot claim both specifications, so a file states the older one in
+metadata while satisfying the newer one structurally. A GeoParquet 1.1 reader finds
+exactly the object it expects; a 2.0 reader finds the native annotation it requires
+and need not consult `geo` at all.
 
 | Field | Req. | CityParquet value |
 |---|:--:|---|
@@ -107,8 +122,9 @@ at the same column when that column is legal, but is not required to.
 :::
 
 :::note[The declaration rule, and why it is strict]
-A geometry column **MUST** be declared in `geo.columns` **if and only if** every WKB
-type code it carries falls inside GeoParquet's `[1001,1007]` subset. A column carrying
+A geometry column **MUST** be declared in `geo.columns`, and **MUST** carry the
+Parquet `GEOMETRY` logical type, **if and only if** every WKB type code it carries
+falls inside GeoParquet's `[1001,1007]` subset. A column carrying
 `PolyhedralSurfaceZ` (1015 — any solid-family geometry) **MUST NOT** be declared, and
 neither may a `GeometryCollectionZ` whose members are polyhedral surfaces. (Such columns
 are still fully described in `city.columns`.)
@@ -122,6 +138,16 @@ footprint column goes down with it. Left undeclared, the same column is an opaqu
 `BLOB` every reader ignores, and the file opens. Tools that understand ISO WKB beyond
 GeoParquet's subset (GDAL/OGR, PostGIS with SFCGAL) read the solid column either way.
 
+The annotation obeys the same rule for the same reason, one layer down. A reader
+that meets the `GEOMETRY` logical type does not treat it as a hint it may ignore:
+DuckDB, for one, promotes any annotated column and eagerly converts it with
+`ST_GeomFromWKB`, and its geometry model has no `PolyhedralSurface`. Annotating a
+solid column therefore does not enrich it — it makes it unreadable, and not in a
+way a cast can rescue, because the failure happens in the Parquet reader before any
+function sees a value. Even `SELECT count(*)` over such a column fails. Left
+unannotated, the same column is an opaque `BLOB` that reads fine and that
+`city.columns` still fully describes.
+
 Because GeoParquet requires at least one entry in `columns` and a non-empty
 `primary_column`, a table whose geometry is *entirely* solid has no legal `geo` object
 at all. Such a table **MUST NOT** write a `geo` key — it is a valid CityParquet table
@@ -132,7 +158,7 @@ solid-only 3DBAG tile with no footprints.
 :::note[Why no `covering`]
 GeoParquet's Bounding Box Columns rule is strict: *"A row MUST contain a bounding box value if and only if the row contains a geometry value… the repetition of a bounding box column MUST match the geometry column's repetition."* CityParquet's [`bbox`](/specification/geometry-semantics) is deliberately **neither** per-column nor null-aligned: it is one column per row, unioned across every stored LoD *and* across the object's descendants, so it is populated precisely where GeoParquet forbids it. It is a hierarchy-aware pruning aid, not a per-geometry covering, and declaring it as one would be a false claim, so `covering` is **not** written.
 
-A conformant per-LoD covering would need separate `bbox_lod*` columns null-aligned with each `geometry_lod*`. This draft does not define them: they cost ~48 bytes per row per LoD, and the in-progress GeoParquet 2.0 draft (still `2.0-dev`; the current release is 1.1.0) proposes dropping `covering` in favour of Parquet-native geospatial statistics — which carry `zmin`/`zmax` natively and would be the better forward path for a 3D format. [Revisited in Open questions](/open-questions).
+A conformant per-LoD covering would need separate `bbox_lod*` columns null-aligned with each `geometry_lod*`, at ~48 bytes per row per LoD. They are not defined, and no longer need to be: GeoParquet 2.0 drops `covering` in favour of Parquet-native geospatial statistics, and every column carrying the `GEOMETRY` logical type gets a `GeospatialStatistics` bounding box — with `zmin`/`zmax` — written by the Parquet writer itself, per column chunk, at no cost in row width. A solid column, being unannotated, gets none; its pruning aid remains the row-level `bbox` column. [Revisited in Open questions](/open-questions).
 :::
 
 ### CRS rules
