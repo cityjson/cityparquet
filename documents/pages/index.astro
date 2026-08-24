@@ -123,6 +123,58 @@ FROM (SELECT ST_3DTryFromWKB(geometry_lod2_2,
       FROM read_parquet(
         'gs://cityparquet/3dbag_tiled/10-640-324/building.parquet'))
 WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
+
+// A deliberately small SQL tokeniser -- enough for the one query above, on a
+// panel with a hand-built palette. Shiki would emit inline styles and its own
+// line wrappers, which fight the character-by-character reveal below.
+//
+// Order matters: strings are matched before words, so `building` inside the
+// object URL is never recoloured as an identifier.
+const SQL_KEYWORDS = new Set([
+  "LOAD",
+  "SELECT",
+  "FROM",
+  "AS",
+  "WHERE",
+  "IS",
+  "NOT",
+  "NULL",
+  "AND",
+]);
+
+type SqlToken = { text: string; cls?: string };
+
+const tokeniseSql = (sql: string): SqlToken[] => {
+  const tokens: SqlToken[] = [];
+  const push = (text: string, cls?: string) => {
+    if (text) tokens.push({ text, cls });
+  };
+  const re = /('[^']*')|([A-Za-z_][A-Za-z0-9_]*)|(\d+(?:\.\d+)?)|([(),.;])/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+
+  while ((m = re.exec(sql)) !== null) {
+    push(sql.slice(last, m.index)); // whitespace and anything unclaimed
+    if (m[1]) {
+      push(m[1], "cp-sql-str");
+    } else if (m[2]) {
+      const word = m[2];
+      if (SQL_KEYWORDS.has(word.toUpperCase())) push(word, "cp-sql-kw");
+      // A word sitting directly on a "(" is a call, not a column.
+      else if (sql[m.index + word.length] === "(") push(word, "cp-sql-fn");
+      else push(word);
+    } else if (m[3]) {
+      push(m[3], "cp-sql-num");
+    } else {
+      push(m[4], "cp-sql-punct");
+    }
+    last = m.index + m[0].length;
+  }
+  push(sql.slice(last));
+  return tokens;
+};
+
+const queryTokens = tokeniseSql(query);
 ---
 
 <PageLayout
@@ -390,10 +442,12 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
             </span>
             Total built volume of a tile, without downloading it
           </figcaption>
-          {/* The untyped tail stays in the DOM as hidden text, so the panel
-              reserves its full height from the first paint and the section
-              below it never shifts as the replay runs. */}
-          <pre class="cp-terminal-body"><code><span data-sql-typed>{query}</span><span class="cp-terminal-cursor" data-sql-cursor aria-hidden="true"></span><span class="cp-terminal-rest" data-sql-rest></span></code></pre>
+          {/* Rendered highlighted and complete: with JS off, or before the
+              replay starts, the reader sees the whole query rather than an
+              empty panel. The untyped tail stays in the DOM as hidden text, so
+              the panel reserves its full height from the first paint and the
+              section below it never shifts as the replay runs. */}
+          <pre class="cp-terminal-body"><code><span data-sql-typed>{queryTokens.map((t) => (<span class={t.cls} data-sql-tok>{t.text}</span>))}</span><span class="cp-terminal-cursor" data-sql-cursor aria-hidden="true"></span><span class="cp-terminal-rest" data-sql-rest></span></code></pre>
           <div class="cp-terminal-result" data-sql-result>
             <div>
               <span class="cp-terminal-key">total_volume_m3</span>
@@ -1111,6 +1165,29 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
     color: #e6e6ea;
   }
 
+  /* Syntax highlight. The panel is a fixed dark surface in both themes, so
+     these are fixed too; only the keyword hue is derived, so the block stays
+     tied to the site accent. Plain identifiers keep the body colour. */
+  .cp-sql-kw {
+    color: color-mix(in srgb, var(--cp-accent) 55%, #ffffff);
+  }
+
+  .cp-sql-fn {
+    color: #6bb1e8; /* the blue the logo mark already uses */
+  }
+
+  .cp-sql-str {
+    color: #8fbf74;
+  }
+
+  .cp-sql-num {
+    color: #e0a458;
+  }
+
+  .cp-sql-punct {
+    color: #8a8a90;
+  }
+
   /* Holds the not-yet-typed remainder: present for layout, invisible to the
      eye. Without it the panel would grow line by line as the replay runs. */
   .cp-terminal-rest {
@@ -1406,8 +1483,20 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
     let n = 0;
     let phase: Phase = "typing";
 
+    // Captured before the first paint, while every token still holds its full
+    // text. Revealing means trimming each token in place -- rewriting `typed`
+    // wholesale would throw the highlight away on the first keystroke.
+    const toks = [...typed.querySelectorAll<HTMLElement>("[data-sql-tok]")];
+    const full = toks.map((el) => el.textContent ?? "");
+
     const paint = () => {
-      typed.textContent = sql.slice(0, n);
+      let left = n;
+      toks.forEach((el, i) => {
+        const text = full[i];
+        const shown = text.slice(0, Math.max(0, Math.min(text.length, left)));
+        if (el.textContent !== shown) el.textContent = shown;
+        left -= text.length;
+      });
       rest.textContent = sql.slice(n);
       terminal.dataset.cpPhase = phase;
       label.textContent =
