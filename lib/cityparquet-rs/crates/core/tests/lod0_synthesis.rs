@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use arrow_array::{Array, ListArray, StringArray};
+use arrow_array::{Array, StringArray};
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::lod0::{Lod0Options, faces_from_geometry, footprint_to_geometry, synthesize_lod0};
@@ -181,73 +181,6 @@ fn synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset() {
     assert!(
         builder.schema().field_with_name("geometry_lod0_0").is_err(),
         "no synthesised LoD0 column without opt-in"
-    );
-}
-
-/// Regression (Task 6 review): `synthesize_footprint` was made
-/// encoding-aware alongside the main `accumulate_geometry` path so LoD0
-/// synthesis doesn't panic under `GeometryEncoding::ArrowNative` — the
-/// reference CLI enables `generate_lod0` BY DEFAULT (`--no-lod0` opts out),
-/// so `cityparquet convert --geometry-encoding arrow-native` without that
-/// flag exercises exactly this combination. Mirrors
-/// `synthesis_adds_a_primary_geometry_footprint_to_a_solid_only_dataset`
-/// above, but for the arrow-native encoding: convert must succeed (not
-/// panic), and at least one row's synthesised `geometry_lod0_0` cell must be
-/// non-empty with a non-empty `geometry_vertices_lod0_0` sibling — proving
-/// the synthesised footprint is real data, not just a schema-shaped null.
-#[test]
-fn synthesis_populates_geometry_lod0_0_under_arrow_native_encoding() {
-    let pkg = tempfile::tempdir().unwrap();
-    let (_crs_dir, railway_path) = railway_fixture_with_crs();
-    let mut opts = ConvertOptions::new(railway_path, pkg.path().to_path_buf());
-    opts.generate_lod0 = true;
-    opts.geometry_encoding = cityparquet_schema::GeometryEncoding::ArrowNative;
-    convert(&opts).unwrap();
-
-    let tables = manifest_tables(pkg.path());
-    let file = std::fs::File::open(pkg.path().join("building.parquet")).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    assert!(
-        builder
-            .schema()
-            .field_with_name("geometry_vertices_lod0_0")
-            .is_ok(),
-        "arrow-native synthesis must reserve the geometry_vertices_lod0_0 sibling too"
-    );
-
-    let mut checked_a_non_empty_row = false;
-    for table in &tables {
-        let file = std::fs::File::open(pkg.path().join(table)).unwrap();
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-        for batch in builder.build().unwrap() {
-            let batch = batch.unwrap();
-            // A module with no analysis geometry of its own carries no
-            // geometry_lod0_0 column at all (see the sibling WKB test above)
-            // — skip it rather than assume every table shares one schema.
-            let (Some(geom), Some(vert)) = (
-                batch.column_by_name("geometry_lod0_0"),
-                batch.column_by_name("geometry_vertices_lod0_0"),
-            ) else {
-                continue;
-            };
-            let geom: &ListArray = geom.as_any().downcast_ref().unwrap();
-            let vert: &ListArray = vert.as_any().downcast_ref().unwrap();
-            for row in 0..batch.num_rows() {
-                if geom.is_valid(row) && geom.value_length(row) > 0 {
-                    assert!(
-                        vert.is_valid(row) && vert.value_length(row) > 0,
-                        "row {row} has a non-empty synthesised geometry_lod0_0 but a \
-                         null/empty geometry_vertices_lod0_0 sibling"
-                    );
-                    checked_a_non_empty_row = true;
-                }
-            }
-        }
-    }
-    assert!(
-        checked_a_non_empty_row,
-        "expected at least one row with a real, non-empty synthesised \
-         geometry_lod0_0 / geometry_vertices_lod0_0 pair"
     );
 }
 

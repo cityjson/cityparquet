@@ -109,13 +109,6 @@ pub struct ScanResult {
     pub module_geo: BTreeMap<ModuleKey, BTreeMap<Lod, BTreeSet<String>>>,
     source_format: SchemaSourceFormat,
     source_version: String,
-    /// The [`GeometryEncoding`] this scan was performed for — the encoding
-    /// the eventual write will use. Carried on [`ScanResult`] (rather than
-    /// re-derived) so later mutation, e.g. [`Self::add_synthesized_lod0_column`],
-    /// can keep reserving/diverting attribute names against the SAME encoding
-    /// [`scan`] itself used, never a hardcoded assumption that could diverge
-    /// from what the caller actually asked for.
-    encoding: GeometryEncoding,
 }
 
 /// The WKB type name `city.columns[].geometry_types` records for a source
@@ -140,63 +133,11 @@ fn city_geometry_type(thetype: &GeometryType) -> Option<&'static str> {
 }
 
 /// Whether `type_name` (one of [`city_geometry_type`]'s outputs) falls inside
-/// GeoParquet's `[1001,1007]` legal subset (§metadata "The declaration rule")
-/// UNDER `encoding`. The Solid-family names are the only ones the WKB
-/// encoding ever produces that fall outside it — but under the arrow-native
-/// encoding NOTHING is GeoParquet-legal, regardless of CM type name: a
-/// `MultiSurface` column maps to `"MultiPolygon Z"` either way, yet an
-/// arrow-native `"MultiPolygon Z"` column is a `List`/`Struct` Arrow layout,
-/// not a WKB `BLOB` — a GeoParquet reader could not parse it even though the
-/// type name alone would suggest it can (confirmed by the design doc's
-/// round-2 review).
-fn is_geoparquet_legal_type(type_name: &str, encoding: GeometryEncoding) -> bool {
-    encoding == GeometryEncoding::Wkb
-        && !matches!(type_name, "PolyhedralSurface Z" | "GeometryCollection Z")
-}
-
-/// Validate one source geometry against the encoding the eventual write will
-/// actually use, returning its bbox (`None` for a `GeometryInstance` or a
-/// fully-degenerate geometry, which contribute no coordinates).
-///
-/// This is the scan's ONLY geometry validation, and it runs in the first,
-/// read-only pass — before [`crate::partition::convert_partitioned`] purges a
-/// previous run's partitions. Validating everything through the WKB path
-/// regardless of `encoding` was therefore a data-loss bug: a `MultiPoint`/
-/// `MultiLineString` source is perfectly valid WKB but outside the
-/// arrow-native encoding's phase-1 type scope, so under
-/// [`GeometryEncoding::ArrowNative`] it passed this scan, complete prior
-/// partitions were deleted, and only THEN did the encode pass reject it.
-///
-/// The validation-and-bbox walk itself is [`geometry_bbox`], NOT a full WKB
-/// encode whose bytes this pass would immediately discard (review P4): the
-/// walker applies the identical `boundaries` shape checks, the identical
-/// structural ring/surface drops, and the identical [`VertexPool`]
-/// index-range and 2^53 vertex guards as
-/// [`crate::wkb_write::geometry_to_wkb`], and its bbox is bitwise-equal to
-/// the encoder's (guarded by `wkb_write`'s unit tests and the
-/// `wkb_real_data` fixture sweep) — so this scan still raises exactly the
-/// errors, and contributes exactly the bboxes, a full encode would have.
-///
-/// The arrow-native reasoning is unchanged. Under
-/// [`GeometryEncoding::ArrowNative`] the phase-1 type gate is checked HERE
-/// first — the same rejection `arrow_geom_write::geometry_to_compacted`
-/// applies at encode time, from the SAME helper so the two can never diverge
-/// — and the coordinate walk then yields the right bbox for that encoding
-/// too: `geometry_to_compacted` reuses `wkb_write`'s own ring/shell
-/// normalisation and dereferences the same [`VertexPool`], so both encoders
-/// cover the identical coordinate set for a given geometry — the
-/// arrow-native payload only indexes it differently. Every non-type failure
-/// mode (malformed `boundaries`, out-of-range vertex index) is likewise
-/// shared verbatim between the two encoders, so one walk catches it for both.
-fn validate_geometry(
-    geom: &cjseq::Geometry,
-    pool: &VertexPool,
-    encoding: GeometryEncoding,
-) -> Result<Option<[f64; 6]>> {
-    if encoding == GeometryEncoding::ArrowNative {
-        crate::arrow_geom_write::ensure_arrow_native_type_supported(&geom.thetype)?;
-    }
-    geometry_bbox(geom, pool)
+/// GeoParquet's `[1001,1007]` legal subset (§metadata "The declaration rule").
+/// The Solid-family names are the only ones this encoder produces that fall
+/// outside it.
+fn is_geoparquet_legal_type(type_name: &str) -> bool {
+    !matches!(type_name, "PolyhedralSurface Z" | "GeometryCollection Z")
 }
 
 fn to_schema_source_format(format: SourceFormat) -> SchemaSourceFormat {
@@ -224,14 +165,6 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 /// Scan every feature and object in `source` once, inferring the attribute
 /// and LoD schema and accumulating the dataset-level bbox, CRS, and transform.
 ///
-/// `encoding` is the [`GeometryEncoding`] the eventual write will use for
-/// this dataset's geometry columns — it decides which realised WKB type sets
-/// are GeoParquet-legal ([`is_geoparquet_legal_type`]: nothing is legal under
-/// [`GeometryEncoding::ArrowNative`], regardless of CM type name) and which
-/// column names get reserved (`geometry_vertices_lod*` only under
-/// [`GeometryEncoding::ArrowNative`], see
-/// [`cityparquet_schema::model::reserved_and_geometry_column_names`]).
-///
 /// [`ScanResult::module_lods`] is resolved with an EMPTY [`ExtensionRegistry`]
 /// — matching `crate::package::extension_registry`'s present-day stub (no
 /// Extension/ADE schema parsing yet, tracked separately: spec
@@ -240,7 +173,7 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 /// (see `extension_module_real_data.rs`'s
 /// `unresolvable_extension_type_is_a_clean_schema_error`), just one pass
 /// earlier — fail fast rather than fail during encode.
-pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
+pub fn scan(source: &Source) -> Result<ScanResult> {
     let header = source.header();
     let mut inferer = AttributeInferer::default();
     let mut lod_strings: Vec<String> = Vec::new();
@@ -282,7 +215,7 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
                 continue;
             };
             for geom in geoms {
-                let bbox = validate_geometry(geom, &pool, encoding)?;
+                let bbox = geometry_bbox(geom, &pool)?;
                 match &geom.lod {
                     Some(lod) => {
                         let parsed = Lod::parse(lod).map_err(|_| {
@@ -355,12 +288,11 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
         (Vec::new(), None)
     };
 
-    // The GeoParquet-legal columns: a LoD with any illegal (Solid-family, or
-    // — under the arrow-native encoding — ANY) type present is excluded
-    // entirely (§13.3, G1), ascending by LoD.
+    // The GeoParquet-legal columns: a LoD with any illegal (Solid-family)
+    // type present is excluded entirely (§13.3, G1), ascending by LoD.
     let geoparquet_columns: Vec<(Lod, Vec<String>)> = lod_geo
         .into_iter()
-        .filter(|(_, types)| types.iter().all(|t| is_geoparquet_legal_type(t, encoding)))
+        .filter(|(_, types)| types.iter().all(|t| is_geoparquet_legal_type(t)))
         .map(|(lod, types)| (lod, types.into_iter().collect()))
         .collect();
 
@@ -513,11 +445,7 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
     // the same self-collision rule `other_attributes` used to get when IT
     // was the divert target, inherited unchanged. Every OTHER reserved-name
     // collision still diverts into `other` as usual.
-    // Reserved/diverted against the REAL encoding this scan is being
-    // performed for (`geometry_vertices_lod*` is reserved only under
-    // `GeometryEncoding::ArrowNative` — see
-    // `reserved_and_geometry_column_names`'s doc comment).
-    let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&lods, encoding);
+    let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&lods);
     let mut attributes = Vec::new();
     let mut diverted_attribute_names = BTreeSet::new();
     for (name, ty) in inferer.finish() {
@@ -567,21 +495,10 @@ pub fn scan(source: &Source, encoding: GeometryEncoding) -> Result<ScanResult> {
         module_geo,
         source_format: to_schema_source_format(source.format()),
         source_version: header.version.clone(),
-        encoding,
     })
 }
 
 impl ScanResult {
-    /// The [`GeometryEncoding`] this scan was performed for (see
-    /// [`Self::encoding`]'s field doc comment) — `crate::encode`'s
-    /// `RowWriter` reads this to pick which builder (and which row-writing
-    /// path, WKB or arrow-native) each geometry slot uses, so the row-writer
-    /// can never desync from the schema `encode`/`encode_buffered` declare
-    /// for the very same [`ScanResult`] (this plan's Task 6).
-    pub(crate) fn encoding(&self) -> GeometryEncoding {
-        self.encoding
-    }
-
     /// The GeoParquet-legal geometry columns as `(column name, geometry_types)`
     /// pairs, ascending by LoD (§13.3, G1) — the writer declares exactly these
     /// in `geo.columns`, and the highest-LoD one is the `primary_column`.
@@ -594,12 +511,7 @@ impl ScanResult {
 
     /// Reserve a synthesised LoD0 footprint column (spec "LoD0 synthesis"):
     /// add LoD0 to `lods`/`schema` so the `geometry_lod0_0` column exists,
-    /// and — ONLY under [`GeometryEncoding::Wkb`] — declare it GeoParquet-legal
-    /// (`MultiPolygon Z`); under [`GeometryEncoding::ArrowNative`] the
-    /// synthesised column is exactly as GeoParquet-illegal as every other
-    /// arrow-native column (see [`is_geoparquet_legal_type`]'s doc comment —
-    /// nothing is legal under that encoding regardless of CM type name), so
-    /// it is deliberately NOT added to `geoparquet_columns` in that case. No-op
+    /// and declare it GeoParquet-legal (`MultiPolygon Z`). No-op
     /// when the dataset has no analysis geometry (nothing to synthesise from) or
     /// already carries some `0.*` LoD. Because `geometry_lod0_0`/`material_lod0_0`/…
     /// become reserved once LoD0 is present (§5.2, G12), any attribute that
@@ -642,14 +554,8 @@ impl ScanResult {
             }
         }
 
-        // Divert attributes that collide with the now-reserved suffixed
-        // names, against the SAME encoding `scan` used for `self` (see
-        // `Self::encoding`'s doc comment) — never a hardcoded assumption that
-        // could diverge from what the caller actually asked for.
-        let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(
-            &self.lods,
-            self.encoding,
-        );
+        // Divert attributes that collide with the now-reserved suffixed names.
+        let reserved = cityparquet_schema::model::reserved_and_geometry_column_names(&self.lods);
         let mut kept = Vec::with_capacity(self.schema.attributes.len());
         for (name, ty) in std::mem::take(&mut self.schema.attributes) {
             if reserved.contains(&name) {
@@ -660,16 +566,12 @@ impl ScanResult {
         }
         self.schema.attributes = kept;
 
-        // Declare the LoD0 footprint column as GeoParquet-legal, ascending —
-        // but ONLY when `self.encoding` actually makes it so (see this
-        // method's doc comment): an arrow-native scan must never mark ANY
-        // column GeoParquet-legal, synthesised or not, regardless of CM type
-        // name.
-        if is_geoparquet_legal_type("MultiPolygon Z", self.encoding) {
-            self.geoparquet_columns
-                .push((lod0, vec!["MultiPolygon Z".to_string()]));
-            self.geoparquet_columns.sort_by_key(|(lod, _)| *lod);
-        }
+        // The synthesised footprint is a `MultiPolygon Z`, which is inside
+        // GeoParquet's legal subset, so it is declared like any other legal
+        // column — ascending by LoD.
+        self.geoparquet_columns
+            .push((lod0, vec!["MultiPolygon Z".to_string()]));
+        self.geoparquet_columns.sort_by_key(|(lod, _)| *lod);
     }
 
     /// Build the DATASET-WIDE portion of `city` — the fields genuinely
@@ -737,21 +639,9 @@ impl ScanResult {
 /// over an unknown CRS would silently mis-georeference a projected city
 /// model. GeoParquet defines `null` to mean exactly "unknown", so the mirror
 /// is legal in all three states.
-///
-/// `encoding` is the REAL physical [`GeometryEncoding`] this file's geometry
-/// columns were rendered under — it feeds [`CityColumnEntry::new`] directly
-/// (this plan's Task 2) so `city.columns[].encoding` agrees with the Arrow
-/// schema (never hardcoded `"WKB"` regardless of caller), and it also feeds
-/// the GeoParquet-legality check below (this plan's Task 3) — the SAME
-/// parameter, not a second one, so the two never diverge on what encoding
-/// this file was actually written under. Under
-/// [`GeometryEncoding::ArrowNative`] every type is illegal regardless of CM
-/// type name (see [`is_geoparquet_legal_type`]), so `geo_columns` stays
-/// empty and no `geo` object is emitted for that file at all.
 pub fn city_and_geo_for_file(
     per_lod: &std::collections::BTreeMap<Lod, BTreeSet<String>>,
     crs: &CrsState,
-    encoding: GeometryEncoding,
 ) -> (Vec<CityColumnEntry>, Option<String>, Option<GeoMetadata>) {
     if per_lod.is_empty() {
         return (Vec::new(), None, None);
@@ -767,10 +657,10 @@ pub fn city_and_geo_for_file(
         columns.push(CityColumnEntry::new(
             name.clone(),
             geometry_types.clone(),
-            encoding,
+            GeometryEncoding::Wkb,
         ));
 
-        let legal = types.iter().all(|t| is_geoparquet_legal_type(t, encoding));
+        let legal = types.iter().all(|t| is_geoparquet_legal_type(t));
         if legal {
             legal_lods.push(*lod);
             geo_columns.insert(
@@ -820,33 +710,17 @@ pub fn city_and_geo_for_file(
 mod tests {
     use super::*;
 
-    /// A WKB `MultiSurface` (CM type `"MultiPolygon Z"`) is GeoParquet-legal
-    /// under the WKB encoding, but the SAME CM type name must never be
-    /// declared legal under the arrow-native encoding — its physical column
-    /// isn't WKB at all, so a GeoParquet reader could not parse it even
-    /// though the type name alone would suggest it can (confirmed by the
-    /// design doc's round-2 review).
+    /// GeoParquet's `geometry_types` vocabulary is the `[1001,1007]` subset:
+    /// a `MultiSurface` (CM type `"MultiPolygon Z"`) is inside it, while the
+    /// Solid family — which CityParquet encodes as `PolyhedralSurface Z` and
+    /// `GeometryCollection Z` — is not, so a column carrying either is
+    /// declared in `city.columns` but never in `geo.columns`.
     #[test]
-    fn arrow_native_multisurface_is_never_geoparquet_legal() {
-        // A WKB MultiSurface (-> "MultiPolygon Z") IS legal.
-        assert!(is_geoparquet_legal_type(
-            "MultiPolygon Z",
-            GeometryEncoding::Wkb
-        ));
-        // The SAME CM type, under the arrow-native encoding, MUST NOT be
-        // declared GeoParquet-legal — its physical column isn't WKB at all.
-        assert!(!is_geoparquet_legal_type(
-            "MultiPolygon Z",
-            GeometryEncoding::ArrowNative
-        ));
-        // Solid-family stays illegal either way (unchanged behaviour).
-        assert!(!is_geoparquet_legal_type(
-            "PolyhedralSurface Z",
-            GeometryEncoding::Wkb
-        ));
-        assert!(!is_geoparquet_legal_type(
-            "PolyhedralSurface Z",
-            GeometryEncoding::ArrowNative
-        ));
+    fn only_the_geoparquet_subset_is_declared_legal() {
+        assert!(is_geoparquet_legal_type("MultiPolygon Z"));
+        assert!(is_geoparquet_legal_type("MultiPoint Z"));
+        assert!(is_geoparquet_legal_type("MultiLineString Z"));
+        assert!(!is_geoparquet_legal_type("PolyhedralSurface Z"));
+        assert!(!is_geoparquet_legal_type("GeometryCollection Z"));
     }
 }

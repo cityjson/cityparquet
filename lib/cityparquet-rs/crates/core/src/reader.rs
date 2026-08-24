@@ -49,15 +49,12 @@ fn detect_geometry_encoding(
     lods: &[Lod],
     has_bare_geometry: bool,
 ) -> Result<GeometryEncoding> {
-    let (sample_name, vertices_name) = match lods.first() {
-        Some(lod) => (
-            geometry_column_name("geometry", lod),
-            geometry_column_name("geometry_vertices", lod),
-        ),
-        None if has_bare_geometry => ("geometry".to_string(), "geometry_vertices".to_string()),
+    let sample_name = match lods.first() {
+        Some(lod) => geometry_column_name("geometry", lod),
+        None if has_bare_geometry => "geometry".to_string(),
         None => return Ok(GeometryEncoding::Wkb),
     };
-    crate::geometry_encoding::resolve_geometry_encoding(meta, actual, &sample_name, &vertices_name)
+    crate::geometry_encoding::resolve_geometry_encoding(meta, actual, &sample_name)
 }
 
 /// The file's own fields, carrying `canonical`'s field metadata wherever a name
@@ -280,29 +277,19 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         };
         // Encoding-aware (this plan's Task 8 — `to_arrow_schema`'s own doc
         // comment: "Task 6+ gives them their own encoding-aware entry
-        // point rather than silently defaulting this one"): the file's own
-        // `city.columns[].encoding` declaration decides which
-        // `GeometryEncoding` to render (verified against the physical
-        // columns — see `crate::geometry_encoding`), since a file written
-        // under `GeometryEncoding::ArrowNative` also carries
-        // `geometry_vertices_lod*` sibling columns that a hardcoded `Wkb`
-        // rendering would omit: the encoding decides which canonical fields
-        // exist at all, and `project_metadata_onto` can only carry metadata
-        // onto the file's own fields for names present in that canonical set —
-        // a wrong encoding here does not error, it silently drops the
-        // geoarrow/LoD tags from whichever columns the wrong canonical schema
-        // failed to name (e.g. `geometry_vertices_lod*` under a mis-detected
-        // `Wkb`). `geoarrow = true`:
+        // The file's own `city.columns[].encoding` declaration is verified
+        // against the physical columns (see `crate::geometry_encoding`)
+        // before anything renders. `geoarrow = true`:
         // this rendered schema is the CANONICAL, self-describing view, not a
         // reflection of the physical file's on-disk self-description — a
         // plain-BLOB WKB file (written with `--geoarrow` off) still reports
         // its geometry columns here as `geoarrow.wkb`-tagged (harmless: the
         // underlying Arrow data type is `Binary` either way, so callers
-        // reading values see no difference), and the tag is a no-op under
-        // `ArrowNative` (`CityParquetSchema::geometry_field` only applies it
-        // in the `Wkb` arm).
-        let encoding = detect_geometry_encoding(&meta, actual, &schema.lods, has_bare_geometry)?;
-        let canonical = schema.to_arrow_schema_tagged(true, encoding)?;
+        // reading values see no difference).
+        // Validates the footer token and the physical column shape; the
+        // resolved encoding itself is not needed, only that it resolves.
+        detect_geometry_encoding(&meta, actual, &schema.lods, has_bare_geometry)?;
+        let canonical = schema.to_arrow_schema_tagged(true)?;
         Ok(Arc::new(project_metadata_onto(actual, &canonical)))
     }
 

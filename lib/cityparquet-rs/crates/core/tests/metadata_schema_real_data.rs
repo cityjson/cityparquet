@@ -60,35 +60,6 @@ fn delft_city_footer() -> Value {
     serde_json::from_str(&city_raw).expect("city value is JSON")
 }
 
-/// Same as [`delft_city_footer`] but converted under
-/// `GeometryEncoding::ArrowNative` (this plan's Task 2/6/8) -- the real
-/// `city.columns[].encoding` value this produces is
-/// `"CityParquetArrowNative-v1"`, exercising the branch
-/// `city.schema.json`'s `encoding`/`geometry_types` fields must accept
-/// alongside the default `"WKB"` path `delft_city_footer` already covers.
-fn delft_arrow_native_city_footer() -> Value {
-    let dir = tempfile::tempdir().unwrap();
-    let out = dir.path().join("pkg");
-    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.clone());
-    opts.geometry_encoding = cityparquet_schema::types::GeometryEncoding::ArrowNative;
-    convert(&opts).expect("convert delft under arrow-native encoding");
-
-    let file = std::fs::File::open(out.join("building.parquet")).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    let kvs = builder
-        .metadata()
-        .file_metadata()
-        .key_value_metadata()
-        .expect("footer key-value metadata present")
-        .clone();
-    let city_raw = kvs
-        .iter()
-        .find(|kv| kv.key == "city")
-        .and_then(|kv| kv.value.clone())
-        .expect("city key present in footer");
-    serde_json::from_str(&city_raw).expect("city value is JSON")
-}
-
 /// A real footer -- version, source_format, crs, primary_column, per-LoD
 /// `columns` (each with `orientation_3d`), and `attributes` -- must validate
 /// clean against the published schema.
@@ -179,37 +150,5 @@ fn columns_without_primary_column_is_rejected() {
     assert!(
         !validator.is_valid(&instance),
         "columns present with no primary_column must be invalid"
-    );
-}
-
-/// A real arrow-native footer -- `columns[].encoding ==
-/// "CityParquetArrowNative-v1"` -- must validate clean against the same
-/// published schema the WKB path already does (`real_delft_footer_validates_against_city_schema`
-/// above), never a second/relaxed schema. Proves `city.schema.json`'s
-/// `encoding`/`geometry_types` fields keep pace with what the writer (this
-/// plan's Task 2/6/8) is now actually producing for the opt-in
-/// arrow-native encoding, not just the long-standing WKB default.
-#[test]
-fn arrow_native_footer_validates_against_city_schema_json() {
-    let validator = city_schema();
-    let instance = delft_arrow_native_city_footer();
-
-    let errors: Vec<String> = validator
-        .iter_errors(&instance)
-        .map(|e| format!("{e} at {}", e.instance_path))
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "real arrow-native `city` footer violates city.schema.json:\n{}\n\ninstance:\n{}",
-        errors.join("\n"),
-        serde_json::to_string_pretty(&instance).unwrap()
-    );
-
-    // Sanity: this is genuinely the arrow-native branch, not a degenerate
-    // case that happens to reuse the WKB default and pass the assertion
-    // above for the wrong reason.
-    assert_eq!(
-        instance["columns"][0]["encoding"], "CityParquetArrowNative-v1",
-        "must actually exercise the arrow-native encoding value"
     );
 }

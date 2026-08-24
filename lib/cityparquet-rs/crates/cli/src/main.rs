@@ -103,13 +103,6 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         geoarrow: bool,
 
-        /// Physical geometry column encoding: "wkb" (default, normative) or
-        /// "arrow-native" (experimental nested Arrow List/Struct columns plus
-        /// a geometry_vertices_lod* sibling column, instead of a WKB BLOB —
-        /// see `GeometryEncoding` in cityparquet-schema for what each writes).
-        #[arg(long, value_enum, default_value = "wkb")]
-        geometry_encoding: GeometryEncodingArg,
-
         /// Do NOT synthesise an LoD0 footprint into the primary `geometry`
         /// column for objects lacking a source LoD0. By default a footprint is
         /// derived from the lowest higher LoD (§9 "LoD0 synthesis") so the
@@ -250,25 +243,6 @@ impl OrderingArg {
         match self {
             OrderingArg::Source => RowOrder::Source,
             OrderingArg::Hilbert => RowOrder::Hilbert,
-        }
-    }
-}
-
-/// CLI mirror of [`cityparquet_schema::types::GeometryEncoding`]
-/// (`--geometry-encoding`).
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum GeometryEncodingArg {
-    Wkb,
-    ArrowNative, // clap renders this "arrow-native"
-}
-
-impl GeometryEncodingArg {
-    fn encoding(self) -> cityparquet_schema::types::GeometryEncoding {
-        match self {
-            GeometryEncodingArg::Wkb => cityparquet_schema::types::GeometryEncoding::Wkb,
-            GeometryEncodingArg::ArrowNative => {
-                cityparquet_schema::types::GeometryEncoding::ArrowNative
-            }
         }
     }
 }
@@ -425,7 +399,6 @@ fn main() -> std::process::ExitCode {
             compression,
             ordering,
             geoarrow,
-            geometry_encoding,
             no_lod0,
             crs,
             tolerate_invalid_appearance,
@@ -459,7 +432,6 @@ fn main() -> std::process::ExitCode {
                 compression,
             };
             let ordering = ordering.row_order();
-            let geometry_encoding = geometry_encoding.encoding();
 
             let mut opts = ConvertOptions {
                 input: inputs.first().cloned().unwrap_or_default(),
@@ -469,7 +441,6 @@ fn main() -> std::process::ExitCode {
                 recipe,
                 ordering,
                 geoarrow,
-                geometry_encoding,
                 generate_lod0: !no_lod0,
                 lod0: cityparquet::lod0::Lod0Options::default(),
                 crs_override: None,

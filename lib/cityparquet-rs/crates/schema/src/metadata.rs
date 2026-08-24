@@ -198,10 +198,10 @@ pub enum Orientation3d {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CityColumnEntry {
     pub name: String,
-    /// `"WKB"` for a normative [`GeometryEncoding::Wkb`] column, or
-    /// `"CityParquetArrowNative-v1"` for the experimental
-    /// [`GeometryEncoding::ArrowNative`] nested-Arrow encoding — see
-    /// [`CityColumnEntry::new`].
+    /// `"WKB"` — the only encoding CityParquet defines (see
+    /// [`GeometryEncoding`] and [`CityColumnEntry::new`]). Stored as a
+    /// `String` rather than the enum because a reader must be able to hold,
+    /// and report, a token it does not understand.
     pub encoding: String,
     pub geometry_types: Vec<String>,
     /// Tri-state, mirroring the file-level `city.crs` ([`CrsState`]).
@@ -224,9 +224,8 @@ pub struct CityColumnEntry {
 impl CityColumnEntry {
     /// A column entry with every optional field absent — the writer
     /// currently only ever produces right-handed winding. `encoding` records
-    /// the REAL physical encoding the column was rendered under (spec
-    /// "the footer describes the file it lives in"): `Wkb` ->
-    /// `"WKB"`, `ArrowNative` -> `"CityParquetArrowNative-v1"`.
+    /// the physical encoding the column was rendered under (spec "the footer
+    /// describes the file it lives in"): `Wkb` -> `"WKB"`.
     pub fn new(
         name: impl Into<String>,
         geometry_types: Vec<String>,
@@ -524,26 +523,17 @@ mod tests {
         assert_eq!(value["orientation_3d"], "right-handed");
     }
 
-    /// RED (this plan's Task 2, step 4b): `CityColumnEntry::new` must record
-    /// the REAL encoding a column was rendered under, not silently hardcode
-    /// `"WKB"` regardless of caller — the footer must agree with the
-    /// physical Arrow schema Task 1 threads `GeometryEncoding` through
-    /// (`CityParquetSchema::to_arrow_schema_tagged`).
+    /// `CityColumnEntry::new` records the encoding the column was rendered
+    /// under, taken from [`GeometryEncoding::footer_token`], so the footer can
+    /// never disagree with the physical Arrow schema.
     #[test]
-    fn city_column_entry_records_the_real_encoding_not_always_wkb() {
+    fn city_column_entry_records_the_encoding_it_was_rendered_under() {
         let entry = CityColumnEntry::new(
-            "geometry_lod2_2".to_string(),
-            vec!["Solid".to_string()],
-            GeometryEncoding::ArrowNative,
-        );
-        assert_eq!(entry.encoding, "CityParquetArrowNative-v1");
-
-        let wkb_entry = CityColumnEntry::new(
             "geometry_lod2_2".to_string(),
             vec!["MultiPolygon Z".to_string()],
             GeometryEncoding::Wkb,
         );
-        assert_eq!(wkb_entry.encoding, "WKB");
+        assert_eq!(entry.encoding, GeometryEncoding::WKB_TOKEN);
     }
 
     /// `source_format` is open-ended: an unrecognised string round-trips as

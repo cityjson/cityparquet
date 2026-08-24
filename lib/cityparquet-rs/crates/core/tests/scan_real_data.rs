@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use cityparquet::scan::{city_and_geo_for_file, scan};
 use cityparquet::source::Source;
-use cityparquet_schema::GeometryEncoding;
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -80,8 +79,7 @@ fn lodless_non_instance_geometry_is_rejected() {
     .unwrap();
 
     let src = Source::open(&path).unwrap();
-    let err = scan(&src, GeometryEncoding::Wkb)
-        .expect_err("lod-less non-instance geometry must be rejected");
+    let err = scan(&src).expect_err("lod-less non-instance geometry must be rejected");
     assert!(
         matches!(err, cityparquet::CityParquetError::Lod(_)),
         "must be a Lod error, got {err:?}"
@@ -136,8 +134,7 @@ fn uniformly_lodless_dataset_is_rejected() {
     .unwrap();
 
     let src = Source::open(&path).unwrap();
-    let err = scan(&src, GeometryEncoding::Wkb)
-        .expect_err("a uniformly lod-less dataset must be rejected");
+    let err = scan(&src).expect_err("a uniformly lod-less dataset must be rejected");
     assert!(
         matches!(err, cityparquet::CityParquetError::Lod(_)),
         "must be a Lod error, got {err:?}"
@@ -154,14 +151,13 @@ fn uniformly_lodless_dataset_is_rejected() {
 fn geometry_instances_are_not_rejected_as_lodless() {
     let (_dir, path) = railway_source_with_crs();
     let src = Source::open(&path).unwrap();
-    scan(&src, GeometryEncoding::Wkb)
-        .expect("GeometryInstance geometries are lod-less by design, not an error");
+    scan(&src).expect("GeometryInstance geometries are lod-less by design, not an error");
 }
 
 #[test]
 fn delft_scan_matches_known_content() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
+    let s = scan(&src).unwrap();
     assert_eq!(s.object_count, 2231);
     let lod_strings: Vec<String> = s.lods.iter().map(ToString::to_string).collect();
     // "0" canonicalises to "0.0" — the LoD string always carries its minor
@@ -195,15 +191,14 @@ fn delft_scan_matches_known_content() {
 #[test]
 fn delft_city_and_geo_for_file_has_independent_primaries() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
+    let s = scan(&src).unwrap();
     assert_eq!(
         s.module_geo.len(),
         1,
         "delft is Building-only: exactly one module's worth of geometry"
     );
     let per_lod = s.module_geo.values().next().unwrap();
-    let (columns, primary_column, geo) =
-        city_and_geo_for_file(per_lod, &s.crs, GeometryEncoding::Wkb);
+    let (columns, primary_column, geo) = city_and_geo_for_file(per_lod, &s.crs);
     assert!(!columns.is_empty());
     assert_eq!(
         primary_column.as_deref(),
@@ -253,7 +248,7 @@ fn extensions_declarations_reach_metadata() {
     std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
 
     let src = Source::open(&path).unwrap();
-    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
+    let s = scan(&src).unwrap();
     let meta = s.base_city_metadata().unwrap();
     let extensions = meta
         .extensions
@@ -266,10 +261,7 @@ fn extensions_declarations_reach_metadata() {
     // The delft header carries no extensions key at all; that absence must be
     // preserved as None, not fabricated.
     let delft = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let delft_meta = scan(&delft, GeometryEncoding::Wkb)
-        .unwrap()
-        .base_city_metadata()
-        .unwrap();
+    let delft_meta = scan(&delft).unwrap().base_city_metadata().unwrap();
     assert!(delft_meta.extensions.is_none());
 }
 
@@ -292,7 +284,7 @@ fn source_metadata_and_appearance_defaults_reach_scan_metadata() {
     std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
 
     let src = Source::open(&path).unwrap();
-    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
+    let s = scan(&src).unwrap();
     let meta = s.base_city_metadata().unwrap();
 
     let appearance_defaults = meta
@@ -318,10 +310,7 @@ fn source_metadata_and_appearance_defaults_reach_scan_metadata() {
     // delft's header carries no appearance key at all: that absence must be
     // preserved as None, not fabricated.
     let delft = Source::open(&fixture("delft.city.jsonl")).unwrap();
-    let delft_meta = scan(&delft, GeometryEncoding::Wkb)
-        .unwrap()
-        .base_city_metadata()
-        .unwrap();
+    let delft_meta = scan(&delft).unwrap().base_city_metadata().unwrap();
     assert!(delft_meta.appearance_defaults.is_none());
 }
 
@@ -329,67 +318,10 @@ fn source_metadata_and_appearance_defaults_reach_scan_metadata() {
 fn railway_scan_is_representable() {
     let (_dir, path) = railway_source_with_crs();
     let src = Source::open(&path).unwrap();
-    let s = scan(&src, GeometryEncoding::Wkb).unwrap();
+    let s = scan(&src).unwrap();
     assert_eq!(s.object_count, 121);
     assert!(!s.lods.is_empty());
     assert!(s.schema.to_arrow_schema().is_ok());
-}
-
-/// Regression: `add_synthesized_lod0_column` must gate its GeoParquet-legal
-/// declaration on the SCAN's OWN encoding (`ScanResult::encoding`), never
-/// mark the synthesised LoD0 footprint legal unconditionally. railway
-/// carries only LoD3 natively (no `0.*` LoD), so `add_synthesized_lod0_column`
-/// actually synthesises a column here rather than no-op'ing — exercising the
-/// exact code path the review flagged. Contrasts WKB vs arrow-native on the
-/// SAME fixture/synthesised column so the before/after difference is
-/// explicit, not a single-sided assertion.
-#[test]
-fn synthesized_lod0_is_geoparquet_legal_only_under_wkb() {
-    let (_dir, path) = railway_source_with_crs();
-
-    // WKB: the synthesised LoD0 footprint IS declared GeoParquet-legal —
-    // unchanged, pre-existing behaviour.
-    let src = Source::open(&path).unwrap();
-    let mut wkb_scan = scan(&src, GeometryEncoding::Wkb).unwrap();
-    assert!(
-        !wkb_scan.lods.iter().any(|l| l.major() == 0),
-        "railway must carry no native LoD0 for this test to exercise synthesis, got {:?}",
-        wkb_scan.lods
-    );
-    wkb_scan.add_synthesized_lod0_column();
-    let wkb_legal_names: Vec<String> = wkb_scan
-        .geoparquet_geo_columns()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    assert!(
-        wkb_legal_names.contains(&"geometry_lod0_0".to_string()),
-        "under Wkb, the synthesised LoD0 footprint must be GeoParquet-legal: {wkb_legal_names:?}"
-    );
-
-    // ArrowNative: the SAME synthesis, on the SAME fixture, must NOT mark
-    // the column legal — its physical column isn't WKB at all, so a
-    // GeoParquet reader could not parse it even though the CM type name
-    // (`MultiPolygon Z`) alone would suggest it can. This is the exact
-    // invariant this task exists to establish, now also covering the LoD0
-    // synthesis path (not just natively-scanned columns).
-    let src = Source::open(&path).unwrap();
-    let mut arrow_scan = scan(&src, GeometryEncoding::ArrowNative).unwrap();
-    arrow_scan.add_synthesized_lod0_column();
-    let arrow_legal_names: Vec<String> = arrow_scan
-        .geoparquet_geo_columns()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    assert!(
-        !arrow_legal_names.contains(&"geometry_lod0_0".to_string()),
-        "under ArrowNative, the synthesised LoD0 footprint must NEVER be \
-         GeoParquet-legal, regardless of CM type name: {arrow_legal_names:?}"
-    );
-    assert!(
-        arrow_legal_names.is_empty(),
-        "under ArrowNative, nothing is GeoParquet-legal at all: {arrow_legal_names:?}"
-    );
 }
 
 /// Spec §metadata "CRS rules", as amended: a CRS-less coordinate-bearing input
@@ -403,8 +335,7 @@ fn synthesized_lod0_is_geoparquet_legal_only_under_wkb() {
 #[test]
 fn railway_without_a_crs_scans_to_an_explicit_null_crs_and_a_diagnostic() {
     let src = Source::open(&fixture("lod3_railway.city.json")).unwrap();
-    let s = scan(&src, GeometryEncoding::Wkb)
-        .expect("a CRS-less coordinate-bearing input is declared, not fatal");
+    let s = scan(&src).expect("a CRS-less coordinate-bearing input is declared, not fatal");
     assert_eq!(
         s.crs,
         cityparquet_schema::CrsState::Unknown,
@@ -449,8 +380,7 @@ fn an_unresolvable_reference_system_scans_to_an_explicit_null_crs() {
     std::fs::write(&path, out).unwrap();
 
     let src = Source::open(&path).unwrap();
-    let s = scan(&src, GeometryEncoding::Wkb)
-        .expect("an unresolvable CRS is declared, not fatal (spec CRS rules)");
+    let s = scan(&src).expect("an unresolvable CRS is declared, not fatal (spec CRS rules)");
     assert_eq!(s.crs, cityparquet_schema::CrsState::Unknown);
     let diagnostic = s.crs_diagnostic.as_deref().expect("a diagnostic");
     assert!(

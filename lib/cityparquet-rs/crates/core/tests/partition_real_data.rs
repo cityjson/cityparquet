@@ -661,78 +661,10 @@ fn delft_subset_with_optional_multilinestring(
     (dir, path)
 }
 
-/// Whole-branch review finding 2 (data loss): the canonical scan
-/// `convert_partitioned` runs BEFORE purging a previous run's partitions used
-/// to validate every geometry through the WKB encoder regardless of the
-/// conversion's chosen `GeometryEncoding`. A `MultiLineString` source is
-/// perfectly valid WKB but explicitly outside the arrow-native encoding's
-/// phase-1 type scope, so under `--geometry-encoding arrow-native` it passed
-/// that scan, the previous run's complete partitions were deleted, and only
-/// THEN did the encode pass reject the geometry — destroying valid output on
-/// the strength of a scan that validated the wrong encoding.
-///
-/// The conversion must still fail (the type genuinely is unsupported); what
-/// must not happen is the deletion.
+/// A source carrying `MultiLineString` geometry partitions cleanly: the type
+/// is fully supported, and the mutated fixture is otherwise valid CityJSON.
 #[test]
-fn arrow_native_unsupported_type_fails_before_overwrite_deletes_existing_partitions() {
-    let out = tempfile::tempdir().unwrap();
-
-    // A complete, valid prior run under the same encoding.
-    let (_clean_dir, clean) = delft_subset_with_optional_multilinestring(40, None);
-    let clean_src = Source::open(&clean).unwrap();
-    let mut opts = ConvertOptions::new(clean.clone(), out.path().to_path_buf());
-    opts.geometry_encoding = cityparquet_schema::GeometryEncoding::ArrowNative;
-    let prior = convert_partitioned(
-        std::slice::from_ref(&clean_src),
-        &PartitionSpec::Count(2),
-        &opts,
-    )
-    .unwrap();
-    let prior_labels: Vec<String> = prior.partitions.iter().map(|(l, _)| l.clone()).collect();
-    assert!(!prior_labels.is_empty());
-    for label in &prior_labels {
-        assert!(
-            out.path().join(label).join("building.parquet").exists(),
-            "prior run must have written {label}/building.parquet"
-        );
-    }
-
-    // The same data, one geometry rewritten to a type arrow-native phase 1
-    // does not support.
-    let (_bad_dir, bad) = delft_subset_with_optional_multilinestring(40, Some("MultiLineString"));
-    let bad_src = Source::open(&bad).unwrap();
-    let mut bad_opts = ConvertOptions::new(bad.clone(), out.path().to_path_buf());
-    bad_opts.geometry_encoding = cityparquet_schema::GeometryEncoding::ArrowNative;
-    bad_opts.overwrite = true;
-    let err = convert_partitioned(
-        std::slice::from_ref(&bad_src),
-        &PartitionSpec::Count(2),
-        &bad_opts,
-    )
-    .expect_err("MultiLineString is outside the arrow-native phase-1 type scope");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("MultiLineString"),
-        "the error should name the unsupported geometry type, got: {msg}"
-    );
-
-    for label in &prior_labels {
-        assert!(
-            out.path().join(label).join("building.parquet").exists(),
-            "{label}/building.parquet was destroyed by an overwrite whose canonical scan never \
-             validated the geometry against the encoding it was actually converting to"
-        );
-    }
-}
-
-/// The control for the test above: the very same rewritten source converts
-/// cleanly under the DEFAULT WKB encoding, where `MultiLineString` is fully
-/// supported. This pins that the rejection is encoding-specific — the WKB
-/// path's scan-time validation is untouched — and that the mutated fixture is
-/// otherwise valid CityJSON, so the arrow-native failure above is about the
-/// type scope and nothing else.
-#[test]
-fn the_same_multilinestring_source_partitions_cleanly_under_wkb() {
+fn a_multilinestring_source_partitions_cleanly() {
     let out = tempfile::tempdir().unwrap();
     let (_bad_dir, bad) = delft_subset_with_optional_multilinestring(40, Some("MultiLineString"));
     let src = Source::open(&bad).unwrap();

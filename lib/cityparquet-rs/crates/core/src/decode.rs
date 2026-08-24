@@ -20,7 +20,7 @@ use chrono::{SecondsFormat, TimeZone, Utc};
 use serde_json::{Map, Value};
 
 use cityparquet_schema::model::{address_data_type, template_data_type};
-use cityparquet_schema::{CityMetadata, CityParquetError, GeometryEncoding, Lod, Result};
+use cityparquet_schema::{CityMetadata, CityParquetError, Lod, Result};
 
 use crate::wkb_read::{self, DecodedGeometry};
 
@@ -179,26 +179,21 @@ fn downcast<'a, T: 'static>(array: &'a dyn Array, name: &str) -> Result<&'a T> {
 }
 
 /// One physical geometry column set for one LoD (or the legacy `None`-LoD
-/// case): its own [`GeometryEncoding`] — resolved once here from the file's
-/// FOOTER declaration and checked against the physical column
-/// ([`crate::geometry_encoding`]), never inferred per row — plus its
-/// `geometry_properties_lod*` sibling and, named by the same convention but
-/// only ever populated when `encoding == GeometryEncoding::ArrowNative`, its
-/// `geometry_vertices_lod*` vertex-pool sibling.
+/// case) and its `geometry_properties_lod*` sibling. The column's encoding is
+/// resolved from the file's FOOTER declaration and checked against the
+/// physical column ([`crate::geometry_encoding`]) once here, never inferred
+/// per row.
 struct GeometryColumnSpec {
     lod: Option<Lod>,
     geometry_name: String,
     properties_name: String,
-    vertices_name: String,
-    encoding: GeometryEncoding,
 }
 
 /// One [`GeometryColumnSpec`] per geometry column present in `schema`,
 /// ascending by LoD. Mirrors `CityParquetReaderBuilder::cityparquet_arrow_schema`'s
 /// LoD derivation: only `geometry_lod*` names parse as a LoD suffix —
-/// `geometry_properties_lod*`/`geometry_vertices_lod*` also start with
-/// `geometry_` but are excluded because `"properties_lod1"`/`"vertices_lod1"`
-/// do not parse as one. A geometry-less table carries no geometry column at
+/// `geometry_properties_lod*` also starts with `geometry_` but is excluded
+/// because `"properties_lod1"` does not parse as one. A geometry-less table carries no geometry column at
 /// all (the current writer prunes them; spec "Levels of detail"), so it
 /// yields no entries here. A LEGACY/FOREIGN file may still carry the single
 /// unsuffixed `geometry`/`geometry_properties` pair, read defensively as a
@@ -206,7 +201,7 @@ struct GeometryColumnSpec {
 /// but both are checked unconditionally so a file carrying both would still
 /// decode every geometry column.
 fn geometry_columns(schema: &Schema, meta: &CityMetadata) -> Result<Vec<GeometryColumnSpec>> {
-    let mut cols: Vec<(Option<Lod>, String, String, String)> = schema
+    let mut cols: Vec<(Option<Lod>, String, String)> = schema
         .fields()
         .iter()
         .filter_map(|f| {
@@ -217,7 +212,6 @@ fn geometry_columns(schema: &Schema, meta: &CityMetadata) -> Result<Vec<Geometry
                 Some(lod),
                 name.clone(),
                 format!("geometry_properties_{suffix}"),
-                format!("geometry_vertices_{suffix}"),
             ))
         })
         .collect();
@@ -227,45 +221,30 @@ fn geometry_columns(schema: &Schema, meta: &CityMetadata) -> Result<Vec<Geometry
             None,
             "geometry".to_string(),
             "geometry_properties".to_string(),
-            "geometry_vertices".to_string(),
         ));
     }
     cols.into_iter()
-        .map(|(lod, geometry_name, properties_name, vertices_name)| {
-            let encoding = crate::geometry_encoding::resolve_geometry_encoding(
-                meta,
-                schema,
-                &geometry_name,
-                &vertices_name,
-            )?;
+        .map(|(lod, geometry_name, properties_name)| {
+            crate::geometry_encoding::resolve_geometry_encoding(meta, schema, &geometry_name)?;
             Ok(GeometryColumnSpec {
                 lod,
                 geometry_name,
                 properties_name,
-                vertices_name,
-                encoding,
             })
         })
         .collect()
 }
 
-/// One geometry column's decoded array handle: either the WKB `BinaryArray`,
-/// or the arrow-native `geometry_lod*`/`geometry_vertices_lod*` `ListArray`
-/// pair — resolved once per column (via [`GeometryColumnSpec::encoding`]),
-/// never re-inferred per row.
+/// One geometry column's decoded array handle: the WKB `BinaryArray`,
+/// resolved once per column rather than re-inferred per row.
 enum GeometryColumnArrays<'a> {
     Wkb(&'a BinaryArray),
-    ArrowNative {
-        geometry: &'a ListArray,
-        vertices: &'a ListArray,
-    },
 }
 
 impl GeometryColumnArrays<'_> {
     fn is_null(&self, row: usize) -> bool {
         match self {
             Self::Wkb(geom) => geom.is_null(row),
-            Self::ArrowNative { geometry, .. } => geometry.is_null(row),
         }
     }
 }
@@ -548,23 +527,10 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
                 get_column(batch, &col.properties_name)?.as_ref(),
                 &col.properties_name,
             )?;
-            let arrays = match col.encoding {
-                GeometryEncoding::Wkb => GeometryColumnArrays::Wkb(downcast::<BinaryArray>(
-                    get_column(batch, &col.geometry_name)?.as_ref(),
-                    &col.geometry_name,
-                )?),
-                GeometryEncoding::ArrowNative => {
-                    let geometry = downcast::<ListArray>(
-                        get_column(batch, &col.geometry_name)?.as_ref(),
-                        &col.geometry_name,
-                    )?;
-                    let vertices = downcast::<ListArray>(
-                        get_column(batch, &col.vertices_name)?.as_ref(),
-                        &col.vertices_name,
-                    )?;
-                    GeometryColumnArrays::ArrowNative { geometry, vertices }
-                }
-            };
+            let arrays = GeometryColumnArrays::Wkb(downcast::<BinaryArray>(
+                get_column(batch, &col.geometry_name)?.as_ref(),
+                &col.geometry_name,
+            )?);
             Ok((col.lod, arrays, props))
         })
         .collect::<Result<_>>()?;
@@ -649,26 +615,6 @@ pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<Deco
             let decoded = match arrays {
                 GeometryColumnArrays::Wkb(geom_arr) => {
                     wkb_read::wkb_to_geometry(geom_arr.value(row))?
-                }
-                GeometryColumnArrays::ArrowNative { geometry, vertices } => {
-                    // `decode_row` dispatches on `geometry_properties.type`
-                    // to know how to interpret/strip the physical shape's
-                    // padding dimensions (design doc "Critical invariant" —
-                    // never inferred from nesting depth), so that field must
-                    // be present whenever the geometry cell itself is
-                    // non-null (checked above) — its absence means a
-                    // corrupt/hand-rolled file, an error rather than a panic.
-                    let type_name = props
-                        .as_ref()
-                        .and_then(|p| p.get("type"))
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            err(format!(
-                                "object '{id}': arrow-native geometry has no \
-                                 geometry_properties.type to dispatch decode on"
-                            ))
-                        })?;
-                    crate::arrow_geom_read::decode_row(geometry, vertices, row, type_name)?
                 }
             };
             // Every geometry column, including LoD0, is suffixed (spec

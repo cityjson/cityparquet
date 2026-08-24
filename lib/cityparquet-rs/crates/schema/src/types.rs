@@ -4,53 +4,43 @@ use crate::error::{CityParquetError, Result};
 
 /// Which physical Arrow encoding a `geometry_lod*` column uses.
 ///
-/// `Wkb` is the only encoding CityParquet supports normatively: one WKB `BLOB`
-/// per `geometry_lod*` column, which is what makes an LoD0 footprint column
-/// readable as GeoParquet. `ArrowNative` is the experimental alternative —
-/// nested indexed `List`/`Struct` columns plus a `geometry_vertices_lod*`
-/// sibling holding the shared vertex pool, so a reader can project a single
-/// ring without decoding a whole solid. It is opt-in (`--geometry-encoding
-/// arrow-native`), written and read by this workspace but declared by nothing
-/// in the specification, and no benchmark row in `benchmark/formats/` uses it.
+/// `Wkb` is the only encoding CityParquet defines: one WKB `BLOB` per
+/// `geometry_lod*` column, which is what makes an LoD0 footprint column
+/// readable as GeoParquet. GeoParquet 2.0 likewise permits `"WKB"` alone.
+///
+/// The enum has a single variant on purpose. `city.columns[].encoding` is a
+/// declared, versioned vocabulary, and a reader must reject a token it does
+/// not understand rather than guess the encoding from the column's physical
+/// Arrow shape — so the token still has to be parsed and checked even when
+/// only one of them is legal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GeometryEncoding {
     #[default]
     Wkb,
-    ArrowNative,
 }
 
 impl GeometryEncoding {
     /// `city.columns[].encoding` for [`GeometryEncoding::Wkb`].
     pub const WKB_TOKEN: &'static str = "WKB";
-    /// `city.columns[].encoding` for [`GeometryEncoding::ArrowNative`]. The
-    /// `-v1` suffix is load-bearing: a later revision of the nested shape is
-    /// a DIFFERENT encoding and must get its own token, so a reader that only
-    /// understands v1 refuses it outright rather than misreading it (see
-    /// [`Self::from_footer_token`]).
-    pub const ARROW_NATIVE_V1_TOKEN: &'static str = "CityParquetArrowNative-v1";
     /// Every `city.columns[].encoding` token this build understands — the
     /// vocabulary an error message quotes when it meets one it does not.
-    pub const KNOWN_FOOTER_TOKENS: [&'static str; 2] =
-        [Self::WKB_TOKEN, Self::ARROW_NATIVE_V1_TOKEN];
+    pub const KNOWN_FOOTER_TOKENS: [&'static str; 1] = [Self::WKB_TOKEN];
 
     /// The `city.columns[].encoding` token declaring this encoding in a
     /// Parquet footer (spec `05-metadata.mdx`).
     pub const fn footer_token(self) -> &'static str {
         match self {
             GeometryEncoding::Wkb => Self::WKB_TOKEN,
-            GeometryEncoding::ArrowNative => Self::ARROW_NATIVE_V1_TOKEN,
         }
     }
 
     /// The inverse of [`Self::footer_token`]: `None` for any token this build
     /// does not understand. A reader MUST treat that `None` as an error, never
     /// as licence to guess the encoding from the column's physical Arrow
-    /// shape — a future list-based encoding would otherwise be silently
-    /// misread as [`GeometryEncoding::ArrowNative`] v1.
+    /// shape.
     pub fn from_footer_token(token: &str) -> Option<Self> {
         match token {
             Self::WKB_TOKEN => Some(GeometryEncoding::Wkb),
-            Self::ARROW_NATIVE_V1_TOKEN => Some(GeometryEncoding::ArrowNative),
             _ => None,
         }
     }

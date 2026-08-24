@@ -4,9 +4,8 @@
 //! [`WriterRecipe`] never hardcodes column names beyond the six fixed `bbox`
 //! leaf paths — every other per-column decision (geometry columns, JSON-typed
 //! columns) is derived from the field names, extension metadata and declared
-//! types of the Arrow schema [`CityParquetSchema`] renders for the
-//! [`cityparquet_schema::GeometryEncoding`] the file will actually be written
-//! under, so it can never drift from the schema it is given.
+//! types of the Arrow schema [`CityParquetSchema`] renders, so it can never
+//! drift from the schema it is given.
 
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
 use arrow_schema::{Field, Schema};
@@ -15,8 +14,7 @@ use parquet::basic::{BrotliLevel, Compression, Encoding, GzipLevel, ZstdLevel};
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use parquet::schema::types::ColumnPath;
 
-use cityparquet_schema::model::{arrow_native_geometry_data_type, arrow_native_vertices_data_type};
-use cityparquet_schema::{CityParquetError, CityParquetSchema, GeometryEncoding, Result};
+use cityparquet_schema::{CityParquetError, CityParquetSchema, Result};
 
 /// A compression codec, overriding whichever codec [`RecipePreset`] would
 /// otherwise pick — the benchmark's compression-codec axis, orthogonal to
@@ -203,22 +201,6 @@ fn is_geometry_column(field: &Field) -> bool {
         == Some(GEOARROW_WKB_EXTENSION)
 }
 
-/// One half of the arrow-native geometry payload: a `geometry_lod*` column or
-/// its `geometry_vertices_lod*` vertex-pool sibling, detected by its exact
-/// declared `DataType` rather than by name — the same principle as
-/// [`is_geometry_column`]'s `geoarrow.wkb` tag (an attribute
-/// merely called `geometry_extra` must keep attribute defaults), and one no
-/// attribute column can ever satisfy: `AttributeType::to_arrow` renders
-/// nothing remotely like these five-deep `List` / `List<Struct<x,y,z>>`
-/// shapes. Under the arrow-native encoding the geometry payload has NO
-/// scalar leaf of its own, so without this the tuning below would key itself
-/// to a WKB column path that does not exist and every real leaf would
-/// silently take parquet's global defaults instead.
-fn is_arrow_native_payload_column(field: &Field) -> bool {
-    field.data_type() == &arrow_native_geometry_data_type()
-        || field.data_type() == &arrow_native_vertices_data_type()
-}
-
 /// A column tagged with the canonical `arrow.json` Arrow extension type.
 fn is_json_column(field: &Field) -> bool {
     field
@@ -264,27 +246,10 @@ impl WriterRecipe {
     /// rows are actually written; `crate::package::TableWriters::finish`
     /// appends it via `append_key_value_metadata`, mirroring how
     /// `sidecar_files` used to be appended post-encode.
-    ///
-    /// `encoding` is the [`GeometryEncoding`] the geometry columns will
-    /// actually be written under, threaded in rather than assumed: the
-    /// per-column rules below are keyed to real physical column paths, and
-    /// the WKB and arrow-native renderings have entirely different ones (a
-    /// single `Binary` leaf versus a nested `List` tree plus a
-    /// `geometry_vertices_lod*` sibling). Rendering a hardcoded WKB schema
-    /// here would key the geometry tuning to a leaf that does not exist under
-    /// arrow-native and let every real geometry/vertex-pool leaf fall through
-    /// to parquet's global defaults instead — silently making recipe
-    /// semantics encoding-dependent, which would bias any WKB-vs-arrow-native
-    /// benchmark built on these presets.
-    pub fn writer_properties(
-        &self,
-        schema: &CityParquetSchema,
-        encoding: GeometryEncoding,
-    ) -> Result<WriterProperties> {
+    pub fn writer_properties(&self, schema: &CityParquetSchema) -> Result<WriterProperties> {
         // TAGGED (`geoarrow = true`): the WKB geometry-column detection below
         // keys off the `geoarrow.wkb` extension metadata that flag adds.
-        // Encoding-aware: see this method's doc comment.
-        let arrow_schema = schema.to_arrow_schema_tagged(true, encoding)?;
+        let arrow_schema = schema.to_arrow_schema_tagged(true)?;
 
         // `compression` OVERRIDES the preset's default codec when set;
         // `None` keeps the exact pre-existing behaviour: `Snappy` compresses
@@ -386,22 +351,6 @@ impl WriterRecipe {
                     .set_column_statistics_enabled(path, EnabledStatistics::None);
                 continue;
             }
-            // The arrow-native geometry/vertex-pool pair gets the SAME
-            // treatment the WKB geometry column above gets — dictionary off,
-            // no statistics — applied to every physical leaf the nested
-            // column resolves to, since neither has a leaf at its own top
-            // level. Keeping the two encodings' geometry payload rules
-            // identical is the point: a benchmark comparing them must differ
-            // in the encoding alone, never in how the recipe happened to tune
-            // one of them.
-            if is_arrow_native_payload_column(field) {
-                for path in leaf_column_paths(field)? {
-                    builder = builder
-                        .set_column_dictionary_enabled(path.clone(), false)
-                        .set_column_statistics_enabled(path, EnabledStatistics::None);
-                }
-                continue;
-            }
             if is_json_column(field) && !self.statistics_for_json {
                 builder = builder
                     .set_column_statistics_enabled(ColumnPath::from(name), EnabledStatistics::None);
@@ -427,7 +376,7 @@ impl WriterRecipe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cityparquet_schema::{AttributeType, GeometryEncoding, Lod};
+    use cityparquet_schema::{AttributeType, Lod};
     use parquet::basic::Compression;
 
     fn sample_schema() -> CityParquetSchema {
@@ -441,9 +390,7 @@ mod tests {
     #[test]
     fn recipe_renders_the_binding_per_column_rules() {
         let schema = sample_schema();
-        let props = WriterRecipe::default()
-            .writer_properties(&schema, GeometryEncoding::Wkb)
-            .unwrap();
+        let props = WriterRecipe::default().writer_properties(&schema).unwrap();
 
         // id / feature_id: DELTA_BYTE_ARRAY, dictionary off.
         assert!(!props.dictionary_enabled(&ColumnPath::from("id")));
@@ -554,9 +501,7 @@ mod tests {
             ],
             crs: None,
         };
-        let props = WriterRecipe::default()
-            .writer_properties(&schema, GeometryEncoding::Wkb)
-            .unwrap();
+        let props = WriterRecipe::default().writer_properties(&schema).unwrap();
 
         // Attribute defaults: dictionary on, statistics not disabled.
         assert!(props.dictionary_enabled(&ColumnPath::from("geometry_extra")));
@@ -580,9 +525,7 @@ mod tests {
             statistics_for_json: true,
             ..WriterRecipe::default()
         };
-        let props = recipe
-            .writer_properties(&schema, GeometryEncoding::Wkb)
-            .unwrap();
+        let props = recipe.writer_properties(&schema).unwrap();
         assert_ne!(
             props.statistics_enabled(&ColumnPath::from("other")),
             EnabledStatistics::None
@@ -617,7 +560,7 @@ mod tests {
         let schema = sample_schema();
         let props = RecipePreset::ParquetDefaults
             .recipe()
-            .writer_properties(&schema, GeometryEncoding::Wkb)
+            .writer_properties(&schema)
             .unwrap();
 
         let bbox_xmin = ColumnPath::new(vec!["bbox".to_string(), "xmin".to_string()]);
@@ -630,7 +573,7 @@ mod tests {
         let schema = sample_schema();
         let props = RecipePreset::NoDictionary
             .recipe()
-            .writer_properties(&schema, GeometryEncoding::Wkb)
+            .writer_properties(&schema)
             .unwrap();
 
         assert!(!props.dictionary_enabled(&ColumnPath::from("object_type")));
@@ -642,7 +585,7 @@ mod tests {
         let schema = sample_schema();
         let props = RecipePreset::NoByteStreamSplit
             .recipe()
-            .writer_properties(&schema, GeometryEncoding::Wkb)
+            .writer_properties(&schema)
             .unwrap();
 
         assert_eq!(
@@ -667,7 +610,7 @@ mod tests {
         let schema = sample_schema();
         let props = RecipePreset::NoDelta
             .recipe()
-            .writer_properties(&schema, GeometryEncoding::Wkb)
+            .writer_properties(&schema)
             .unwrap();
 
         let bbox_xmin = ColumnPath::new(vec!["bbox".to_string(), "xmin".to_string()]);
@@ -683,7 +626,7 @@ mod tests {
         let schema = sample_schema();
         let props = RecipePreset::Snappy
             .recipe()
-            .writer_properties(&schema, GeometryEncoding::Wkb)
+            .writer_properties(&schema)
             .unwrap();
 
         assert_eq!(
@@ -720,9 +663,7 @@ mod tests {
         let schema = sample_schema();
 
         // cityparquet preset defaults to ZSTD at zstd_level.
-        let props = WriterRecipe::default()
-            .writer_properties(&schema, GeometryEncoding::Wkb)
-            .unwrap();
+        let props = WriterRecipe::default().writer_properties(&schema).unwrap();
         assert_eq!(
             props.compression(&ColumnPath::from("yoc")),
             Compression::ZSTD(ZstdLevel::try_new(3).unwrap())
@@ -731,7 +672,7 @@ mod tests {
         // snappy preset defaults to SNAPPY.
         let props = RecipePreset::Snappy
             .recipe()
-            .writer_properties(&schema, GeometryEncoding::Wkb)
+            .writer_properties(&schema)
             .unwrap();
         assert_eq!(
             props.compression(&ColumnPath::from("yoc")),
@@ -760,9 +701,7 @@ mod tests {
                 compression: Some(codec),
                 ..WriterRecipe::default()
             };
-            let props = recipe
-                .writer_properties(&schema, GeometryEncoding::Wkb)
-                .unwrap();
+            let props = recipe.writer_properties(&schema).unwrap();
             assert_eq!(
                 props.compression(&ColumnPath::from("yoc")),
                 want,
@@ -776,9 +715,7 @@ mod tests {
                 compression: Some(codec),
                 ..WriterRecipe::default()
             };
-            let props = recipe
-                .writer_properties(&schema, GeometryEncoding::Wkb)
-                .unwrap();
+            let props = recipe.writer_properties(&schema).unwrap();
             assert_eq!(
                 props.compression(&ColumnPath::from("yoc")),
                 want,
@@ -787,72 +724,15 @@ mod tests {
         }
     }
 
-    /// Whole-branch review finding 3: under the arrow-native encoding the
-    /// recipe used to derive its per-column rules from a hardcoded WKB
-    /// rendering, so the geometry-specific settings targeted a scalar WKB leaf
-    /// that does not exist, while the REAL nested geometry/vertex-pool leaves
-    /// silently fell through to parquet's global defaults. Not a correctness
-    /// bug, but it made recipe semantics encoding-dependent — precisely the
-    /// kind of hidden asymmetry that would bias a WKB-vs-arrow-native
-    /// benchmark. Every leaf of both arrow-native columns must now carry the
-    /// same explicit treatment the WKB geometry column gets.
+    /// The geometry column's single `Binary` leaf carries both geometry
+    /// rules explicitly — dictionary off, statistics off — rather than
+    /// falling through to parquet's global defaults.
     #[test]
-    fn arrow_native_geometry_and_vertex_pool_leaves_get_explicit_settings() {
+    fn the_geometry_column_leaf_gets_explicit_settings() {
         let schema = sample_schema();
-        let props = WriterRecipe::default()
-            .writer_properties(&schema, GeometryEncoding::ArrowNative)
-            .unwrap();
-        // Leaf paths are resolved through the same `leaf_column_paths` the
-        // recipe itself uses, so this test can never hardcode a stale
-        // `list`/`item` intermediate name.
-        let arrow = schema
-            .to_arrow_schema_tagged(true, GeometryEncoding::ArrowNative)
-            .unwrap();
-        for name in ["geometry_lod2_2", "geometry_vertices_lod2_2"] {
-            let field = arrow
-                .field_with_name(name)
-                .unwrap_or_else(|e| panic!("arrow-native schema must carry {name}: {e}"));
-            let leaves = leaf_column_paths(field).unwrap();
-            assert!(
-                !leaves.is_empty(),
-                "{name} must resolve to at least one physical leaf"
-            );
-            for path in leaves {
-                assert!(
-                    !props.dictionary_enabled(&path),
-                    "{name} leaf {path:?} must have dictionary encoding explicitly off, \
-                     not parquet's default"
-                );
-                assert_eq!(
-                    props.statistics_enabled(&path),
-                    EnabledStatistics::None,
-                    "{name} leaf {path:?} must have statistics explicitly off, not parquet's \
-                     default"
-                );
-            }
-        }
-    }
-
-    /// The other half of the same finding: the WKB rendering must be
-    /// completely unaffected — its single `geometry_lod2_2` leaf keeps the
-    /// exact treatment it always had, and no `geometry_vertices_lod2_2`
-    /// column exists to tune at all.
-    #[test]
-    fn the_wkb_rendering_keeps_its_geometry_column_treatment_unchanged() {
-        let schema = sample_schema();
-        let props = WriterRecipe::default()
-            .writer_properties(&schema, GeometryEncoding::Wkb)
-            .unwrap();
+        let props = WriterRecipe::default().writer_properties(&schema).unwrap();
         let path = ColumnPath::from("geometry_lod2_2");
         assert!(!props.dictionary_enabled(&path));
         assert_eq!(props.statistics_enabled(&path), EnabledStatistics::None);
-        assert!(
-            schema
-                .to_arrow_schema_tagged(true, GeometryEncoding::Wkb)
-                .unwrap()
-                .field_with_name("geometry_vertices_lod2_2")
-                .is_err(),
-            "the WKB rendering has no vertex-pool column at all"
-        );
     }
 }

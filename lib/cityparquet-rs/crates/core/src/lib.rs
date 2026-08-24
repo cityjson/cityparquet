@@ -3,8 +3,6 @@
 mod address;
 pub mod appearance;
 mod arrow_compat;
-mod arrow_geom_read;
-mod arrow_geom_write;
 pub mod citygml;
 pub mod compare;
 #[cfg(feature = "object-store")]

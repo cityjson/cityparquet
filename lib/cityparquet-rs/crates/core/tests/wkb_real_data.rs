@@ -201,11 +201,7 @@ fn railway_walker_bbox_matches_the_encoder_bbox() {
 fn scan_dataset_bbox_is_bitwise_the_wkb_encoder_union() {
     let path = fixture("delft.city.jsonl");
 
-    let scanned = cityparquet::scan::scan(
-        &Source::open(&path).unwrap(),
-        cityparquet_schema::GeometryEncoding::Wkb,
-    )
-    .unwrap();
+    let scanned = cityparquet::scan::scan(&Source::open(&path).unwrap()).unwrap();
     let got = scanned
         .dataset_bbox
         .expect("delft has lod-bearing geometry, so a dataset bbox");
