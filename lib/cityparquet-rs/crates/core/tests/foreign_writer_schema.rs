@@ -524,12 +524,16 @@ fn tail_projection_carries_canonical_metadata_onto_a_geometry_bearing_foreign_fi
     // `geoarrow.wkb` / `cityparquet:role` / `cityparquet:lod` can only have
     // arrived via `project_metadata_onto`.
     let geom = rendered.field_with_name("geometry_lod1_0").unwrap();
-    assert_eq!(
-        geom.metadata()
-            .get(arrow_schema::extension::EXTENSION_TYPE_NAME_KEY)
-            .map(String::as_str),
-        Some("geoarrow.wkb"),
-        "the tail must tag the geometry column geoarrow.wkb, same as the early-return path"
+    // NOT geoarrow.wkb: this fixture carries no `geo` object, so it declares no
+    // column GeoParquet-legal and the canonical render has nothing to claim on
+    // its behalf. The annotation mirrors the declaration; inventing one for a
+    // file that makes none would invite a GeoParquet reader into a column
+    // nothing vouched for.
+    assert!(
+        !geom
+            .metadata()
+            .contains_key(arrow_schema::extension::EXTENSION_TYPE_NAME_KEY),
+        "a file with no `geo` object must not be rendered as though it had one"
     );
     assert_eq!(
         geom.metadata().get("cityparquet:role").map(String::as_str),

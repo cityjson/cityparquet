@@ -1549,8 +1549,11 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
     // The CRS is PROJJSON (resolved from delft's OGC URL to EPSG:7415).
     assert_eq!(columns["geometry_lod0_0"]["crs"]["id"]["code"], 7415);
 
-    // (b) EVERY geometry column carries the annotation, including the Solid
-    // LoDs that (a) just proved are absent from `geo`.
+    // (b) The annotation follows the SAME rule as the `geo` declaration: a
+    // column is annotated exactly when it is declared. A Solid column is
+    // neither. Annotating one would not enrich it — DuckDB promotes any
+    // annotated column and runs ST_GeomFromWKB over it, and its GEOMETRY type
+    // has no PolyhedralSurface, so the column would stop being readable at all.
     let geometry_fields: Vec<_> = builder
         .schema()
         .fields()
@@ -1563,19 +1566,25 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
         "delft has a legal LoD0 and several Solid LoDs"
     );
     for field in &geometry_fields {
+        let declared = columns.contains_key(field.name().as_str());
+        let annotated = field.metadata().contains_key("ARROW:extension:name");
         assert_eq!(
-            field
-                .metadata()
-                .get("ARROW:extension:name")
-                .map(String::as_str),
-            Some("geoarrow.wkb"),
-            "{} must advertise the extension that renders the GEOMETRY logical type",
+            annotated,
+            declared,
+            "{}: annotated={annotated} but declared in geo={declared} — the two \
+             must agree, or a GeoParquet reader is invited into a column `geo` \
+             deliberately withheld from it",
             field.name()
         );
     }
+    assert!(
+        columns.contains_key("geometry_lod0_0"),
+        "delft's LoD0 footprint is the legal column this pivots on"
+    );
 
-    // (c) That annotation must actually reach Parquet as the GEOMETRY logical
-    // type, and bring GeospatialStatistics with it — the reason it is written.
+    // (c) The declared column's annotation must actually reach Parquet as the
+    // GEOMETRY logical type, and bring GeospatialStatistics with it — the
+    // reason it is written at all. The undeclared ones must carry neither.
     let rg = builder.metadata().row_group(0);
     let mut checked = 0;
     for col in rg.columns() {
@@ -1584,21 +1593,33 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
             continue;
         }
         checked += 1;
-        assert!(
-            matches!(
-                col.column_descr().logical_type_ref(),
-                Some(parquet::basic::LogicalType::Geometry { .. })
-            ),
-            "{name} must carry the GEOMETRY logical type, got {:?}",
-            col.column_descr().logical_type_ref()
+        let is_geometry = matches!(
+            col.column_descr().logical_type_ref(),
+            Some(parquet::basic::LogicalType::Geometry { .. })
         );
-        let stats = col
-            .geo_statistics()
-            .unwrap_or_else(|| panic!("{name} must carry GeospatialStatistics"));
-        assert!(
-            stats.bounding_box().is_some(),
-            "{name}'s statistics must carry a bounding box — the prunable part"
-        );
+        if columns.contains_key(name.as_str()) {
+            assert!(
+                is_geometry,
+                "{name} is declared in geo, so it must carry the GEOMETRY logical type"
+            );
+            let stats = col
+                .geo_statistics()
+                .unwrap_or_else(|| panic!("{name} must carry GeospatialStatistics"));
+            assert!(
+                stats.bounding_box().is_some(),
+                "{name}'s statistics must carry a bounding box — the prunable part"
+            );
+        } else {
+            assert!(
+                !is_geometry,
+                "{name} is a Solid column withheld from geo; annotating it would \
+                 make DuckDB fail to read it"
+            );
+            assert!(
+                col.geo_statistics().is_none(),
+                "{name} carries no annotation, so it can carry no geospatial statistics"
+            );
+        }
     }
     assert_eq!(checked, geometry_fields.len());
 }

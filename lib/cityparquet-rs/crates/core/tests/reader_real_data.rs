@@ -164,13 +164,23 @@ fn cityparquet_arrow_schema_matches_the_writers_rendered_schema() {
         );
     }
 
-    // Extension/role metadata present on geometry and JSON columns.
-    let geom = read_schema.field_with_name("geometry_lod2_2").unwrap();
+    // Extension/role metadata present on geometry and JSON columns. The
+    // extension tag is asserted on LoD0 — delft's GeoParquet-legal footprint,
+    // and so the only geometry column that carries one. Its Solid LoDs are
+    // withheld from `geo` and correspondingly unannotated, but must still
+    // carry the role metadata decode classifies them by.
+    let footprint = read_schema.field_with_name("geometry_lod0_0").unwrap();
     assert_eq!(
-        geom.metadata()
+        footprint
+            .metadata()
             .get(EXTENSION_TYPE_NAME_KEY)
             .map(String::as_str),
         Some("geoarrow.wkb")
+    );
+    let geom = read_schema.field_with_name("geometry_lod2_2").unwrap();
+    assert!(
+        !geom.metadata().contains_key(EXTENSION_TYPE_NAME_KEY),
+        "a Solid column is not GeoParquet-legal, so it carries no annotation"
     );
     assert_eq!(
         geom.metadata().get(ROLE_KEY).map(String::as_str),
@@ -269,10 +279,12 @@ fn record_batch_reader_yields_all_rows_with_schema_metadata_preserved() {
     let parquet_reader = builder.build().unwrap();
     let reader = CityParquetRecordBatchReader::new(parquet_reader, rendered_schema.clone());
 
+    // LoD0 is delft's GeoParquet-legal column, so it is the one that carries
+    // the extension tag through the batch-level metadata re-attachment.
     assert_eq!(
         reader
             .schema()
-            .field_with_name("geometry_lod2_2")
+            .field_with_name("geometry_lod0_0")
             .unwrap()
             .metadata()
             .get(EXTENSION_TYPE_NAME_KEY)
@@ -286,7 +298,7 @@ fn record_batch_reader_yields_all_rows_with_schema_metadata_preserved() {
         assert_eq!(
             batch
                 .schema()
-                .field_with_name("geometry_lod2_2")
+                .field_with_name("geometry_lod0_0")
                 .unwrap()
                 .metadata()
                 .get(EXTENSION_TYPE_NAME_KEY)

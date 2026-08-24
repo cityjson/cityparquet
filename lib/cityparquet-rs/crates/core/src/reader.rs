@@ -51,6 +51,22 @@ pub enum GeoConformance {
     CityParquetOnly,
 }
 
+/// The LoDs a file's own `geo` object declares, intersected with the LoDs the
+/// table actually has. A file with no `geo` — the normal state of a solid-only
+/// table — declares none, so none of its geometry columns is annotated.
+fn geoparquet_lods_from_geo(geo: Option<&GeoMetadata>, lods: &[Lod]) -> Vec<Lod> {
+    let Some(geo) = geo else {
+        return Vec::new();
+    };
+    lods.iter()
+        .filter(|lod| {
+            geo.columns
+                .contains_key(&geometry_column_name("geometry", lod))
+        })
+        .copied()
+        .collect()
+}
+
 /// Whether `name` is a geometry column under the spec's column grammar.
 fn is_geometry_column_name(name: &str) -> bool {
     name == "geometry" || name.starts_with("geometry_lod")
@@ -216,6 +232,10 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
 
     fn cityparquet_arrow_schema(&self) -> Result<Arc<Schema>> {
         let meta = self.cityparquet_metadata()?;
+        // Which columns this FILE declares GeoParquet-legal. Read from its own
+        // `geo` object rather than re-derived from the geometry types, so the
+        // canonical render mirrors what the file actually claims.
+        let (_, geo) = self.cityparquet_footer()?;
         // The arrow schema `parquet` itself reconstructs for this file (from
         // an embedded `ARROW:schema` if present, else converted from the raw
         // Parquet physical schema) — used only to read back each attribute
@@ -317,6 +337,7 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             // collision-prone path.
             let reserved_only = CityParquetSchema {
                 lods: Vec::new(),
+                geoparquet_lods: Vec::new(),
                 attributes: Vec::new(),
                 crs: None,
             }
@@ -345,6 +366,7 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         }
 
         let schema = CityParquetSchema {
+            geoparquet_lods: geoparquet_lods_from_geo(geo.as_ref(), &lods),
             lods,
             attributes,
             crs: None,

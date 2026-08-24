@@ -37,6 +37,15 @@ pub struct CityParquetSchema {
     pub attributes: Vec<(String, AttributeType)>,
     /// Dataset CRS as PROJJSON.
     pub crs: Option<serde_json::Value>,
+    /// The LoDs whose geometry columns are GeoParquet-legal — the same set
+    /// declared in the `geo` footer object, and the only columns that carry
+    /// the `GEOMETRY` logical type (see [`CityParquetSchema::geometry_field`]).
+    ///
+    /// One rule, applied twice, rather than two rules that could drift: a
+    /// column is annotated exactly when it is declared. The writer fills this
+    /// from the scan's realised WKB type sets; a reader fills it from the
+    /// file's own `geo.columns`.
+    pub geoparquet_lods: Vec<Lod>,
 }
 
 pub fn bbox_data_type() -> DataType {
@@ -264,24 +273,35 @@ impl CityParquetSchema {
         Ok(())
     }
 
-    /// One `geometry_lod*` column: WKB bytes annotated as the Parquet
-    /// `GEOMETRY` logical type.
+    /// One `geometry_lod*` column: WKB bytes, annotated as the Parquet
+    /// `GEOMETRY` logical type **only when the column is GeoParquet-legal**.
     ///
-    /// The `geoarrow.wkb` extension type this attaches is what
-    /// `parquet::arrow` reads to emit `LogicalType::Geometry` on the column,
-    /// which in turn is what makes the writer accumulate
-    /// `GeospatialStatistics`. It is not optional: GeoParquet 2.0 requires
-    /// geometry columns to carry the annotation, so a column without it is
-    /// simply not conformant.
+    /// The `geoarrow.wkb` extension type is what `parquet::arrow` reads to
+    /// emit `LogicalType::Geometry`, which in turn makes the writer accumulate
+    /// `GeospatialStatistics`. Annotating a column is therefore a claim that
+    /// its bytes are a geometry the ecosystem can decode — and for the
+    /// Solid family it is not one. CityParquet writes a `Solid` as
+    /// `PolyhedralSurface Z`, which has no place in GeoParquet's type
+    /// vocabulary and none in DuckDB's `GEOMETRY` either: DuckDB promotes any
+    /// annotated column and eagerly runs `ST_GeomFromWKB` over it, so
+    /// annotating a solid column does not make it richer, it makes it
+    /// unreadable — `SELECT count(*)` over it fails before any function sees a
+    /// value.
+    ///
+    /// So the annotation follows [`Self::geoparquet_lods`], the same set the
+    /// `geo` footer declares. Solid columns stay plain `BYTE_ARRAY`, exactly
+    /// as they are absent from `geo`.
     ///
     /// `edges` is left unset — always planar. CityJSON geometry joins its
     /// vertices with straight lines in CRS space, so `GEOGRAPHY`, which
     /// declares geodesic edges, would misdescribe it even in a geographic CRS.
     fn geometry_field(&self, name: &str, lod: Option<&Lod>) -> Field {
         let mut field = Field::new(name, DataType::Binary, true);
-        let crs = self.crs.as_ref().and_then(crs_authority_code);
-        let wkb = WkbType::new(Some(WkbMetadata::new(crs.as_deref(), None)));
-        field = field.with_extension_type(wkb);
+        if lod.is_some_and(|l| self.geoparquet_lods.contains(l)) {
+            let crs = self.crs.as_ref().and_then(crs_authority_code);
+            let wkb = WkbType::new(Some(WkbMetadata::new(crs.as_deref(), None)));
+            field = field.with_extension_type(wkb);
+        }
         field = reserved(field);
         if let Some(lod) = lod {
             field = with_meta(field, &[(LOD_KEY, &lod.to_string())]);
@@ -417,6 +437,7 @@ mod tests {
     fn sample() -> CityParquetSchema {
         CityParquetSchema {
             lods: vec![Lod::parse("1").unwrap(), Lod::parse("2.2").unwrap()],
+            geoparquet_lods: vec![Lod::parse("1").unwrap(), Lod::parse("2.2").unwrap()],
             attributes: vec![
                 ("yoc".to_string(), AttributeType::Int64),
                 ("ex_height".to_string(), AttributeType::Float64),
@@ -462,6 +483,7 @@ mod tests {
     fn lod0_is_suffixed_like_any_other_lod() {
         let schema = CityParquetSchema {
             lods: vec![Lod::parse("0").unwrap(), Lod::parse("2.2").unwrap()],
+            geoparquet_lods: vec![Lod::parse("0").unwrap(), Lod::parse("2.2").unwrap()],
             attributes: vec![],
             crs: None,
         };
@@ -509,6 +531,7 @@ mod tests {
 
         let schema = CityParquetSchema {
             lods: vec![lod],
+            geoparquet_lods: vec![lod],
             attributes: vec![(
                 "geometry_vertices_lod2_2".to_string(),
                 AttributeType::String,
@@ -544,6 +567,7 @@ mod tests {
                 Lod::parse("0.3").unwrap(),
                 Lod::parse("2.2").unwrap(),
             ],
+            geoparquet_lods: vec![],
             attributes: vec![],
             crs: None,
         };
@@ -626,19 +650,40 @@ mod tests {
     }
 
     #[test]
-    fn geometry_field_is_geoarrow_wkb() {
-        let schema = sample().to_arrow_schema().unwrap();
-        let field = schema.field_with_name("geometry_lod2_2").unwrap();
+    fn only_a_geoparquet_legal_column_is_annotated() {
+        let mut schema = sample();
+        let legal = Lod::parse("2.2").unwrap();
+        let illegal = Lod::parse("1.2").unwrap();
+        schema.lods = vec![illegal, legal];
+        // Only 2.2 is declared legal — 1.2 stands in for a Solid column, whose
+        // PolyhedralSurface Z bytes GeoParquet cannot name and DuckDB cannot
+        // decode.
+        schema.geoparquet_lods = vec![legal];
+        let arrow = schema.to_arrow_schema().unwrap();
+
+        let annotated = arrow.field_with_name("geometry_lod2_2").unwrap();
         assert_eq!(
-            field
+            annotated
                 .metadata()
                 .get("ARROW:extension:name")
                 .map(String::as_str),
-            Some("geoarrow.wkb")
+            Some("geoarrow.wkb"),
+            "a GeoParquet-legal column carries the annotation"
         );
-        // CRS travels in the extension metadata.
-        let ext_meta = field.metadata().get("ARROW:extension:metadata").unwrap();
-        assert!(ext_meta.contains("28992"));
+        // The CRS travels in the extension metadata, as the authority:code form.
+        let ext_meta = annotated
+            .metadata()
+            .get("ARROW:extension:metadata")
+            .unwrap();
+        assert!(ext_meta.contains("28992"), "got {ext_meta}");
+
+        let plain = arrow.field_with_name("geometry_lod1_2").unwrap();
+        assert_eq!(plain.data_type(), &DataType::Binary);
+        assert!(
+            !plain.metadata().contains_key("ARROW:extension:name"),
+            "a Solid column must stay plain BYTE_ARRAY: annotating it would make \
+             DuckDB promote it and fail on the first read"
+        );
     }
 
     /// The `geoarrow.wkb` extension type and CityParquet's own field metadata
@@ -797,6 +842,7 @@ mod tests {
     fn no_lods_yields_plain_geometry_column() {
         let schema = CityParquetSchema {
             lods: vec![],
+            geoparquet_lods: vec![],
             attributes: vec![],
             crs: None,
         }
@@ -811,6 +857,7 @@ mod tests {
         for bad_name in ["id", "material", "address", "template"] {
             let schema = CityParquetSchema {
                 lods: vec![],
+                geoparquet_lods: vec![],
                 attributes: vec![(bad_name.to_string(), AttributeType::String)],
                 crs: None,
             };
@@ -826,6 +873,7 @@ mod tests {
     fn duplicate_lods_are_an_error() {
         let schema = CityParquetSchema {
             lods: vec![Lod::parse("2").unwrap(), Lod::parse("2").unwrap()],
+            geoparquet_lods: vec![Lod::parse("2").unwrap(), Lod::parse("2").unwrap()],
             attributes: vec![],
             crs: None,
         };
@@ -837,6 +885,7 @@ mod tests {
     fn attribute_colliding_with_geometry_column_is_an_error() {
         let schema = CityParquetSchema {
             lods: vec![Lod::parse("2.2").unwrap()],
+            geoparquet_lods: vec![Lod::parse("2.2").unwrap()],
             attributes: vec![("geometry_lod2_2".to_string(), AttributeType::String)],
             crs: None,
         };

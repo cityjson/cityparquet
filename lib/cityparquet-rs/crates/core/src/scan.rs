@@ -463,6 +463,10 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
 
     let schema = CityParquetSchema {
         lods: lods.clone(),
+        // Exactly the LoDs `geo` will declare, so the GEOMETRY annotation and
+        // the `geo` declaration can never disagree about which columns a
+        // GeoParquet reader may touch.
+        geoparquet_lods: geoparquet_columns.iter().map(|(lod, _)| *lod).collect(),
         attributes,
         // The `geoarrow.wkb` field extension can only carry a CRS it can
         // name, so both no-CRS states collapse to `None` here — the

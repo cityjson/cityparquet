@@ -393,6 +393,7 @@ mod tests {
     fn sample_schema() -> CityParquetSchema {
         CityParquetSchema {
             lods: vec![Lod::parse("2.2").unwrap()],
+            geoparquet_lods: vec![Lod::parse("2.2").unwrap()],
             attributes: vec![("yoc".to_string(), AttributeType::Int64)],
             crs: None,
         }
@@ -507,6 +508,7 @@ mod tests {
         // metadata, never by name alone.
         let schema = CityParquetSchema {
             lods: vec![Lod::parse("2.2").unwrap()],
+            geoparquet_lods: vec![Lod::parse("2.2").unwrap()],
             attributes: vec![
                 ("yoc".to_string(), AttributeType::Int64),
                 ("geometry_extra".to_string(), AttributeType::String),

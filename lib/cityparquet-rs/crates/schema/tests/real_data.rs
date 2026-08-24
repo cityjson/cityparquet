@@ -103,6 +103,7 @@ fn delft_jsonl_types_lods_and_attributes_are_representable() {
     lods.dedup();
     let schema = CityParquetSchema {
         lods: lods.clone(),
+        geoparquet_lods: lods.clone(),
         attributes,
         crs: None,
     }
