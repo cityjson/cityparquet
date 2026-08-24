@@ -111,62 +111,6 @@ The WKB is the *analysis geometry*. It does not encode semantic surfaces,
 material/texture mappings, or template references; those live in separate columns or
 sidecar files.
 
-### Arrow-native geometry encoding (experimental, `arrow-native-type` branch)
-
-:::warning[Not part of the normative encoding yet]
-This section documents an **experimental, opt-in alternative** to the WKB encoding
-above, developed on the `arrow-native-type` branch. It is not decided — see
-[the geometry-encoding design decision](/design-decisions/geometry-encoding) for
-status. A file using it declares so explicitly, per column, via
-[`city.columns[].encoding`](/specification/metadata); absent that declaration, WKB is
-assumed as normal.
-:::
-
-When a column's `city.columns[].encoding` is `"CityParquetArrowNative-v1"` rather than
-`"WKB"`, `MultiSurface`, `CompositeSurface`, `Solid`, `MultiSolid` and `CompositeSolid`
-share one unified physical shape for `geometry_lod<M>_<m>`:
-
-```text
-List<                 -- one entry per solid (padded to length 1 for surface types)
-  List<                 -- solid: one entry per shell (padded to length 1 for
-                          -- surface types)
-    List<                 -- shell: one entry per face
-      List<                 -- face: one entry per ring (ring 0 = exterior,
-                              -- remaining rings = interior holes)
-        List<                 -- ring: one entry per vertex
-          Int32                 -- vertex-pool index
-        >
-      >
-    >
-  >
->
-```
-
-Padding the outer two levels to length 1 for the surface types (`MultiSurface`,
-`CompositeSurface`) means every CM type under this encoding has the *same* nesting
-depth — a reader dispatches which CM type a row actually holds via
-`geometry_properties_lod*.type`, **never** by inspecting the nesting shape, since a
-padded `MultiSurface` and a real single-shell `Solid` have an identical shape
-signature.
-
-Vertex coordinates are not stored inline in the geometry column. A sibling
-`geometry_vertices_lod<M>_<m>` column — `List<Struct<x, y, z: Float64>>` — carries each
-row's own vertex pool, and the `Int32` indices above point into it. The pool is
-**distinct-source-index compacted, not coordinate-value deduplicated**: two different
-source vertex indices that happen to share identical coordinates remain two separate
-pool entries.
-
-Rings under this encoding do **not** repeat the closing vertex — a ring is implicitly
-closed, unlike [the WKB encoding's ring-closure rule](#wkb-encoding), where the
-closing vertex is stored explicitly.
-
-Face traversal order matches the WKB encoding exactly, so `geometry_properties_lod*`
-(`face_semantics`, `shells`) is reused completely unmodified between the two
-encodings.
-
-`Point`, `MultiPoint`, `MultiLineString` and `GeometryInstance` are **not** supported
-under this encoding yet.
-
 ## Geometry properties and semantics
 
 The `geometry_properties_lod*` column carries the CityGML CM geometry information that

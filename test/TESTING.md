@@ -55,7 +55,6 @@ cd cityparquet          # wherever you cloned github.com/cityjson/cityparquet
 > | **`--profile` is gone** | cityparquet-rs `25d471b` | Sidecars are written whenever the source has that content; `--profile compatibility` is now an unknown-flag error |
 > | **Every LoD is a suffixed column, LoD0 included** | cityparquet-rs `197e351` (2026-07-23) | There is no un-suffixed `geometry` column any more — it is `geometry_lod0_0`. Same in duckdb-cityjson's `lod =>` mode |
 > | **`geometry_properties` is a STRUCT**, not JSON text | duckdb-cityjson `d334b26` (2026-07-25) | `ST_3DFromWKB` consumes it directly via the new `(BLOB, ANY)` overload; no `to_json(...)` |
-> | **Arrow-native geometry encoding** (experimental) | all three, merged 2026-07-27/28 | New `--geometry-encoding arrow-native` / `geometry_encoding := 'arrow-native'` / `ST_3DFromArrowNative` paths — Parts 1.8, 2.4, 4.4 |
 > | **CityParquet package mutation in SQL** | duckdb-cityjson, 2026-07-25→27 | `cityparquet_init/validate/reconcile/delete/merge/read/write`, `insert_cityjson[seq]` — Part 2.7 |
 > | **Appearance sidecar readers** | duckdb-cityjson, 2026-07-26 | `cityjson_materials/textures/geometry_templates` — Part 2.6 |
 > | **flatcitybuf is a vcpkg registry dependency, bumped to `cpp-v0.9.0`** + a wasm target | duckdb-cityjson, 2026-08-14 | New build prerequisites — Part 0 |
@@ -339,7 +338,7 @@ duckdb -c "SELECT json_extract_string(decode(value),'\$.primary_column') AS prim
 
 Expected: `geometry_lod0_0 | [geometry_lod0_0]`. The `city` object's own
 `primary_column` is `geometry_lod2_2`, and each of its `columns` entries carries
-`"encoding": "WKB"` — the field that flips to `CityParquetArrowNative-v1` in 1.8.
+`"encoding": "WKB"` — the only encoding CityParquet defines.
 
 ### 1.4 Verify the STAC `metadata.json`
 
@@ -548,62 +547,6 @@ sidecars, and 121 rows unioned across railway's 9 module tables.
 > `union_by_name = true`, since per-module schema pruning means two modules need
 > not share a column list.
 
-### 1.8 Arrow-native geometry encoding (experimental)
-
-`--geometry-encoding arrow-native` replaces the WKB BLOB with nested Arrow
-`List`/`Struct` columns plus a per-row vertex pool.
-
-```sh
-$CP convert cityparquet-rs/tests/fixtures/delft.city.jsonl \
-    -o $OUT/delft_arrow --geometry-encoding arrow-native --overwrite
-duckdb -c "DESCRIBE SELECT * FROM read_parquet('$OUT/delft_arrow/building.parquet');"
-```
-
-Three things change, and nothing else does:
-
-```
-geometry_lod2_2             integer[][][][][]                       -- solid→shell→face→ring→pool index
-geometry_vertices_lod2_2    struct(x double, y double, z double)[]  -- that row's pool (new sibling column)
-geometry_properties_lod2_2  struct(...)                             -- UNCHANGED
-```
-
-`geometry_properties_lod*` stays the only thing that says whether a row is a
-`Solid` or a `MultiSurface` — the physical nesting is uniform across both, so
-**never infer the CityJSON type from the shape**.
-
-The footer reflects the encoding — and drops `geo` entirely, because legality is
-a property of the encoding, not of the CM type:
-
-```sh
-duckdb -c "SELECT key::VARCHAR FROM parquet_kv_metadata('$OUT/delft_arrow/building.parquet');"
-# ARROW:schema, city   -- no `geo` key at all
-```
-
-```sh
-duckdb -noheader -list -c "SELECT decode(value) FROM parquet_kv_metadata('$OUT/delft_arrow/building.parquet')
-                           WHERE key::VARCHAR='city';" \
-| python3 -c "import sys,json; d=json.load(sys.stdin); print(d['columns'][0])"
-```
-
-```
-{'name': 'geometry_lod0_0', 'encoding': 'CityParquetArrowNative-v1',
- 'geometry_types': ['MultiPolygon Z'], 'orientation_3d': 'right-handed'}
-```
-
-Round-trip is lossless on this path too:
-
-```sh
-$CP convert cityparquet-rs/tests/fixtures/delft.city.jsonl \
-    -o $OUT/delft_arrow_rt --geometry-encoding arrow-native --no-lod0 --overwrite
-$CP export $OUT/delft_arrow_rt $OUT/delft_arrow_rt.city.jsonl
-$CP compare cityparquet-rs/tests/fixtures/delft.city.jsonl $OUT/delft_arrow_rt.city.jsonl
-```
-
-Expected: `equal (excluded: 20)`, exit 0 — the same verdict as the WKB path.
-
-Observed size on Delft, for orientation only (one dataset, default zstd, not a
-benchmark): `building.parquet` 2.3 MB WKB vs **1.7 MB** arrow-native.
-
 ### 1.9 Partitioned output
 
 ```sh
@@ -713,34 +656,14 @@ Expected — a **STRUCT**, not JSON text (`d334b26`, breaking):
 `[[6]]` rather than `[6]`. `surfaces` stays a JSON string because the `json`
 extension is not a dependency of this one.
 
-### 2.4 Arrow-native geometry encoding
-
-```sh
-./lib/duckdb-cityjson/build/release/duckdb -c "
-DESCRIBE SELECT * FROM read_cityjsonseq('cityparquet-rs/tests/fixtures/delft.city.jsonl',
-                                        lod => '2.2', geometry_encoding := 'arrow-native');"
-```
-
-Expected — the same three-column shape cityparquet-rs writes in 1.8:
-
-```
-geometry_lod2_2             integer[][][][][]
-geometry_vertices_lod2_2    struct(x double, y double, z double)[]
-geometry_properties_lod2_2  struct("type" varchar, surfaces varchar, face_semantics integer[], shells integer[][])
-```
-
 ### 2.5 GeoParquet `geo` footer generation
 
 ```sh
 ./lib/duckdb-cityjson/build/release/duckdb -noheader -list -c "
 SELECT geo IS NOT NULL FROM cityjson_geoparquet_geo('cityparquet-rs/tests/fixtures/delft.city.jsonl');"
-./lib/duckdb-cityjson/build/release/duckdb -noheader -list -c "
-SELECT geo IS NULL FROM cityjson_geoparquet_geo('cityparquet-rs/tests/fixtures/delft.city.jsonl',
-                                                geometry_encoding := 'arrow-native');"
 ```
 
-Expected `true` for both: a `geo` object under WKB, **no** declared column under
-arrow-native — matching cityparquet-rs's own footer decision in 1.8.
+Expected `true`: a `geo` object is emitted for the GeoParquet-legal columns.
 
 Used with `COPY`, this is the SQL-native executable prototype of the encoding:
 
@@ -1076,8 +999,8 @@ Neither runs under `make test`.
   > `run_fcb_selective_tests.sh`'s stale-library guard hardcoded the Linux
   > `libduckdb.so`, so on macOS it silently never fired — precisely when a stale
   > library is hardest to diagnose. `FCB_PREFIX` may be either the vcpkg prefix
-  > the build actually used or a `just vendor-fcb` `.vendor/prefix`. Their subject matter (the arrow-native encoder, the selective
-  FCB decode) is covered indirectly by 2.4 and 2.9.
+  > the build actually used or a `just vendor-fcb` `.vendor/prefix`. Its subject matter (the selective
+  FCB decode) is covered indirectly by 2.9.
 
 ---
 
@@ -1157,10 +1080,7 @@ WHERE function_name LIKE 'st\_3d%'     ESCAPE '\'
 ORDER BY 1;"
 ```
 
-You should see the arrow-native constructors added since the last pass —
-`ST_3DFromArrowNative`, `ST_3DTryFromArrowNative`, `ST_Geom3DFromArrowNative`,
-`ST_Geom3DTryFromArrowNative` — alongside `ST_3DTransform` and the CRS
-accessors `ST_CRS` / `ST_SetCRS`. Note the class-generic constructors live
+You should see `ST_3DTransform` and the CRS accessors `ST_CRS` / `ST_SetCRS`. Note the class-generic constructors live
 under `ST_Geom3D*`, not `ST_3D*`, so a bare `st_3d%` filter misses them.
 
 ### 3.4 Typed constructors and the fixture gate
@@ -1293,78 +1213,6 @@ Building parents); and 18 real-world solids are non-manifold.
 > `SELECT *`, or anything reading the LoD0 column, makes DuckDB decode it as its
 > native `GEOMETRY` type (it is declared in the `geo` footer, complete with
 > PROJJSON) — set the flag off first if you want the raw WKB.
-
-### 4.4 The same chain, arrow-native — the parity check
-
-```sh
-./lib/duckdb-3d/build/release/duckdb -unsigned -c "
-WITH solids AS (
-  SELECT id, ST_3DTryFromArrowNative(geometry_lod2_2, geometry_vertices_lod2_2,
-                                     geometry_properties_lod2_2) AS s
-  FROM read_parquet('/tmp/cp_test/delft_arrow/building.parquet')
-  WHERE geometry_lod2_2 IS NOT NULL
-), v AS (
-  SELECT id, s, ST_3DValidationReport(s) AS r FROM solids WHERE s IS NOT NULL
-)
-SELECT count(*) AS parsed,
-       SUM(CASE WHEN r.is_valid THEN 1 ELSE 0 END) AS valid,
-       ROUND(SUM(CASE WHEN r.is_valid THEN ST_3DVolume(s) END), 1) AS vol_valid_m3
-FROM v;"
-```
-
-Expected — **byte-for-byte the same three numbers as 4.3**:
-
-```
-parsed = 1116 | valid = 1098 | vol_valid_m3 = 1915861.2
-```
-
-That equality across two different physical encodings, written by one
-implementation and measured by another, is the strongest statement this stack
-currently makes about the arrow-native experiment.
-
-The direct duckdb-cityjson → duckdb-3d arrow-native pairing works for
-single-shell geometry:
-
-```sh
-./lib/duckdb-3d/build/release/duckdb -unsigned -c "
-LOAD '$(pwd)/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
-SELECT id, ST_3DNumFaces(s) AS faces, ROUND(ST_3DVolume(s),6) AS vol
-FROM (SELECT id, ST_3DFromArrowNative(geometry_lod2_2, geometry_vertices_lod2_2,
-                                      geometry_properties_lod2_2) AS s
-      FROM read_cityjson('duckdb-3d/test/data/unit_cube.city.json', lod => '2.2',
-                         geometry_encoding := 'arrow-native')
-      WHERE geometry_lod2_2 IS NOT NULL);"
-# cube | 6 | 1.0
-```
-
-…and, since the encoder fix below, on a **hollow** solid too:
-
-```sh
-./lib/duckdb-3d/build/release/duckdb -unsigned -c "
-LOAD '$(pwd)/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
-SELECT ST_3DNumShells(s) AS shells, ST_3DIsClosed(s) AS closed, ROUND(ST_3DVolume(s),6) AS volume
-FROM (SELECT ST_3DFromArrowNative(geometry_lod2_0, geometry_vertices_lod2_0, geometry_properties_lod2_0) AS s
-      FROM read_cityjson('duckdb-3d/test/data/hollow_solid.city.json', lod => '2',
-                         geometry_encoding := 'arrow-native')
-      WHERE geometry_lod2_0 IS NOT NULL);"
-```
-
-```
-2 | true | 56.0
-```
-
-Identical to the WKB path in 4.2 — the cavity subtracts, so the two encodings
-agree on a multi-shell solid as well as on the whole Delft package.
-
-> **FIXED 2026-08-16 (was BROKEN).** duckdb-cityjson's `ArrowNativeEncoder`
-> treated a Solid's shell dimension as real structure while *also* emitting the
-> `shells` metadata, so duckdb-3d counted the cavity's faces twice and raised
-> *"expected exactly one padded shell per solid"*. The reference implementation
-> flattens every shell into one padded shell (`push_padded_solid`,
-> `arrow_geom_write.rs`) and keeps the partition only in
-> `geometry_properties.shells`; the encoder now does the same, for a `Solid` and
-> for each member of a `MultiSolid`/`CompositeSolid`. Pinned by
-> `test/sql/arrow_native_geometry.test` and `test/cpp/test_arrow_native_encoder.cpp`.
 
 ### 4.5 The full duckdb-cityjson ↔ cityparquet-rs round trip
 
@@ -1640,13 +1488,12 @@ was the conformant side throughout.
 
 | # | Issue | Fix |
 |---|---|---|
-| 1 | **Arrow-native multi-shell solids did not cross from duckdb-cityjson to duckdb-3d** — `ST_3DFromArrowNative` raised *"expected exactly one padded shell per solid when geometry_properties.shells is present"*. The encoder emitted genuine shell nesting *and* the `shells` metadata, double-counting a cavity. | `ArrowNativeEncoder::PaddedSolid` now flattens every shell into one padded shell for a `Solid` and for each `MultiSolid`/`CompositeSolid` member, matching cityparquet-rs's `push_padded_solid` and the WKB path. Tests: `test/sql/arrow_native_geometry.test` (new `hollow_solid.city.json` fixture), rewritten `TestSolidFlattensShellsIntoOnePaddedShell` in `test/cpp/test_arrow_native_encoder.cpp`. Verified in 4.4 |
 | 2 | **A duckdb-cityjson-written package could not be read by cityparquet-rs** — `geometry_templates.id` was `BIGINT` from duckdb-cityjson and `VARCHAR` from cityparquet-rs. | **Settled in cityparquet-rs's favour of the spec, against its own prior schema**: the spec's `04-appearance-templates.mdx` mandates `id BIGINT`, and cityparquet-rs's `geometry_templates_schema` now matches it. The full six-hop round trip is lossless. Verified in 4.5 |
 | 3 | **`make release` failed** — `src/libduckdb.dylib` did not link flatcitybuf | The deferred link fixup that already existed for `unittest` now also covers DuckDB's `duckdb` SHARED target (`cityjson_fcb_link_upstream_targets`, `CMakeLists.txt`). Verified in 0.4 |
-| 4 | **Both `test/cpp/*.sh` harnesses could not run** | Fixed by #3, plus `run_encoder_tests.sh` gained the missing `-I"$FCB_PREFIX/include"` and `run_fcb_selective_tests.sh`'s stale-library guard is no longer hardcoded to the Linux `libduckdb.so`. Verified in 2.10 |
+| 4 | **The `test/cpp` harness could not run** | Fixed by #3, plus `run_fcb_selective_tests.sh`'s stale-library guard is no longer hardcoded to the Linux `libduckdb.so`. Verified in 2.10 |
 | 5 | **`just interop` was broken** — `lib/cityparquet-rs/scripts/interop.sh` still passed the removed `--profile compatibility` | Flag dropped; stale by-family comments corrected to by-module; the cross-module union now uses `union_by_name = true`. Verified in 1.7 |
 | 7 | **`Railway.city.jsonl` fails conversion** — `material index 2 in theme 'visual' out of range (local defs len 2)` | **No longer an open decision.** cityparquet-rs gained `--tolerate-invalid-appearance`, which drops the dangling reference and counts it in the report's tenth field rather than aborting the whole conversion. Strict remains the default — a bare `convert` still refuses the file with the message above. Verified: `convert benchmark/formats/data/Railway.city.jsonl -o … --tolerate-invalid-appearance` reports `121 13 0 0 6 6 84 34 3 1` (84 materials written, one dropped) and exits 0 |
-| 10 | `cityparquet-rs/CLAUDE.md` + `AGENTS.md` documented `convert INPUT OUTPUT_DIR` positionally | Both now show `--output`, list the flags added since (`--geometry-encoding`, `--partition`, `--crs`, `--no-lod0`), and the catalogue suite count is 265, not 219 |
+| 10 | `cityparquet-rs/CLAUDE.md` + `AGENTS.md` documented `convert INPUT OUTPUT_DIR` positionally | Both now show `--output`, list the flags added since (`--partition`, `--crs`, `--no-lod0`), and the catalogue suite count is 265, not 219 |
 
 ### Open — needing a decision, not a patch
 
