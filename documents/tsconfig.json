@@ -4,6 +4,6 @@
     "types": ["node"],
     "strictNullChecks": true
   },
-  "include": ["blume.config.ts", "**/*.ts", "docs/**/*.mdx"],
+  "include": ["blume.config.ts", "**/*.ts", "**/*.tsx", "docs/**/*.mdx"],
   "exclude": ["node_modules", "dist", ".blume"]
 }

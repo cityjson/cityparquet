@@ -8,3 +8,8 @@ dist/
 .DS_Store
 .vp/
 .blume-verify/
+
+# Locally built DuckDB-Wasm extensions, for testing against unpublished
+# extension code. Built with `just wasm wasm_eh` in the two extension repos and
+# copied here; see playground/README.md. Never committed.
+public/ext/

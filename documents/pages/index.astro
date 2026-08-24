@@ -29,6 +29,7 @@ const sections = [
   { label: "Introduction", href: url("intro") },
   { label: "Specification", href: url("specification") },
   { label: "Tutorials", href: url("tutorials") },
+  { label: "Playground", href: url("playground") },
   { label: "Benchmark", href: url("benchmark") },
 ];
 
@@ -239,6 +240,9 @@ const queryTokens = tokeniseSql(query);
         <div class="cp-hero-actions">
           <a class="cp-button" href={url("getting-started")}>
             Run your first query
+          </a>
+          <a class="cp-button cp-button-quiet" href={url("playground")}>
+            Try it in your browser
           </a>
           <code class="cp-chip">read_parquet('city/building.parquet')</code>
         </div>
@@ -473,12 +477,16 @@ const queryTokens = tokeniseSql(query);
         <div class="cp-cta-copy">
           <h2>Five minutes to the first query</h2>
           <p>
-            Install DuckDB, load two extensions, point a query at a package. The
+            Install DuckDB, load two extensions, point a query at a package —
+            or skip all three and query 3DBAG in the browser playground. The
             draft spec and its open questions are in the docs.
           </p>
         </div>
         <div class="cp-cta-actions">
           <a class="cp-button" href={url("getting-started")}>Get started</a>
+          <a class="cp-button cp-button-quiet" href={url("playground")}>
+            Playground
+          </a>
           <a class="cp-button cp-button-quiet" href={url("open-questions")}>
             Open questions
           </a>
