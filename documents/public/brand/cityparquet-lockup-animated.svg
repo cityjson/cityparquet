@@ -29,8 +29,8 @@ svg { overflow: visible; }
 #Group_5 {
   transform-origin: 0 0;
   animation:
-    kf_Group_5_transform_0 2s linear infinite,
-    kf_Group_5_opacity_0 2s linear infinite;
+    kf_Group_5_transform_0 2s linear 1 forwards,
+    kf_Group_5_opacity_0 2s linear 1 forwards;
 }
 @keyframes kf_Group_6_transform_0 {
   0% {
@@ -60,8 +60,8 @@ svg { overflow: visible; }
 #Group_6 {
   transform-origin: 0 0;
   animation:
-    kf_Group_6_transform_0 2s linear infinite,
-    kf_Group_6_opacity_0 2s linear infinite;
+    kf_Group_6_transform_0 2s linear 1 forwards,
+    kf_Group_6_opacity_0 2s linear 1 forwards;
 }
 @keyframes kf_Group_7_transform_0 {
   0% {
@@ -91,8 +91,8 @@ svg { overflow: visible; }
 #Group_7 {
   transform-origin: 0 0;
   animation:
-    kf_Group_7_transform_0 2s linear infinite,
-    kf_Group_7_opacity_0 2s linear infinite;
+    kf_Group_7_transform_0 2s linear 1 forwards,
+    kf_Group_7_opacity_0 2s linear 1 forwards;
 }
 @keyframes kf_CityParquet_opacity_0 {
   0% {
@@ -108,7 +108,7 @@ svg { overflow: visible; }
   }
 }
 #CityParquet {
-  animation: kf_CityParquet_opacity_0 2s linear infinite;
+  animation: kf_CityParquet_opacity_0 2s linear 1 forwards;
 }
 </style>
 <g id="Frame_12">
