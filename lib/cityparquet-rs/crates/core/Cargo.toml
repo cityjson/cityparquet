@@ -28,6 +28,8 @@ async-trait = { workspace = true, optional = true }
 
 [dev-dependencies]
 wkb = { workspace = true }
+# Builds a GEOGRAPHY-annotated fixture; the writer never emits one.
+parquet-geospatial = { workspace = true }
 geo-traits = { workspace = true }
 tempfile = { workspace = true }
 jsonschema = { workspace = true }

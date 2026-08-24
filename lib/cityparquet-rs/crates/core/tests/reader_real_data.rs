@@ -680,3 +680,166 @@ fn hilbert_ordering_prunes_more_row_groups_than_source_ordering_on_a_real_neighb
          hilbert_groups_touched < source_groups_touched"
     );
 }
+
+/// The reader resolves conformance from the file itself, never from a claim
+/// about its writer, and accepts all three shapes it can legitimately meet.
+///
+/// The GeoParquet 1.1 and CityParquet-only cases are built with a bare
+/// `ArrowWriter` rather than by disabling something in this crate's writer:
+/// they stand in for a foreign writer, and a fixture produced by the code
+/// under test could only ever confirm that code agrees with itself.
+mod conformance {
+    use super::*;
+    use arrow_array::{ArrayRef, BinaryArray, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+    use cityparquet::reader::GeoConformance;
+    use parquet::arrow::ArrowWriter;
+    use parquet::file::properties::WriterProperties;
+    use std::sync::Arc;
+
+    /// One row of `MultiPolygon Z` WKB — a single closed triangle.
+    fn wkb_multipolygon_z() -> Vec<u8> {
+        let coords = [
+            [0.0f64, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 2.0],
+            [0.0, 0.0, 0.0],
+        ];
+        let mut poly = vec![1u8];
+        poly.extend(1003u32.to_le_bytes());
+        poly.extend(1u32.to_le_bytes());
+        poly.extend(4u32.to_le_bytes());
+        poly.extend(
+            coords
+                .iter()
+                .flat_map(|p| p.iter().flat_map(|c| c.to_le_bytes())),
+        );
+        let mut b = vec![1u8];
+        b.extend(1006u32.to_le_bytes());
+        b.extend(1u32.to_le_bytes());
+        b.extend(poly);
+        b
+    }
+
+    /// A minimal one-column file whose `geometry_lod0_0` is a plain
+    /// `BYTE_ARRAY` — no logical type — carrying `city`, and `geo` only when
+    /// `with_geo`.
+    fn foreign_file(dir: &std::path::Path, with_geo: bool) -> std::path::PathBuf {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "geometry_lod0_0",
+            DataType::Binary,
+            true,
+        )]));
+        let col: ArrayRef = Arc::new(BinaryArray::from(vec![Some(
+            wkb_multipolygon_z().as_slice(),
+        )]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![col]).unwrap();
+
+        let city = r#"{"version":"0.1.0-draft","columns":[{"name":"geometry_lod0_0","encoding":"WKB","geometry_types":["MultiPolygon Z"],"orientation_3d":"right-handed"}]}"#;
+        let mut kvs = vec![parquet::file::metadata::KeyValue::new(
+            "city".to_string(),
+            city.to_string(),
+        )];
+        if with_geo {
+            kvs.push(parquet::file::metadata::KeyValue::new(
+                "geo".to_string(),
+                r#"{"version":"1.1.0","primary_column":"geometry_lod0_0","columns":{"geometry_lod0_0":{"encoding":"WKB","geometry_types":["MultiPolygon Z"]}}}"#
+                    .to_string(),
+            ));
+        }
+        let props = WriterProperties::builder()
+            .set_key_value_metadata(Some(kvs))
+            .build();
+
+        let path = dir.join(if with_geo {
+            "gp1.parquet"
+        } else {
+            "cponly.parquet"
+        });
+        let f = std::fs::File::create(&path).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, Some(props)).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        path
+    }
+
+    fn conformance_of(path: &std::path::Path) -> cityparquet::Result<GeoConformance> {
+        let f = std::fs::File::open(path).unwrap();
+        ParquetRecordBatchReaderBuilder::try_new(f)
+            .unwrap()
+            .geometry_conformance()
+    }
+
+    /// This crate's own writer annotates, so its output is GeoParquet 2.0.
+    #[test]
+    fn our_own_output_is_geoparquet_2() {
+        let out = tempfile::tempdir().unwrap();
+        let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+        opts.overwrite = true;
+        convert(&opts).unwrap();
+        assert_eq!(
+            conformance_of(&out.path().join("building.parquet")).unwrap(),
+            GeoConformance::GeoParquet2
+        );
+    }
+
+    /// An unannotated column described by `geo` is the 1.1 fail-safe.
+    #[test]
+    fn an_unannotated_column_with_geo_reads_as_geoparquet_1() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = foreign_file(dir.path(), true);
+        assert_eq!(conformance_of(&path).unwrap(), GeoConformance::GeoParquet1);
+    }
+
+    /// Neither annotation nor `geo` — the normal state of a solid-only table.
+    #[test]
+    fn an_unannotated_column_without_geo_reads_as_cityparquet_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = foreign_file(dir.path(), false);
+        assert_eq!(
+            conformance_of(&path).unwrap(),
+            GeoConformance::CityParquetOnly
+        );
+    }
+}
+
+/// CityParquet never writes `GEOGRAPHY`, so meeting one means the file came
+/// from somewhere with a different edge model. It must be refused rather than
+/// read as planar: geodesic edges change every area, volume and bbox this
+/// crate computes, and nothing downstream would notice the difference.
+#[test]
+fn a_geography_annotated_column_is_refused() {
+    use arrow_array::{ArrayRef, BinaryArray, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use parquet_geospatial::{WkbEdges, WkbMetadata, WkbType};
+    use std::sync::Arc;
+
+    let mut field = Field::new("geometry_lod0_0", DataType::Binary, true);
+    field
+        .try_with_extension_type(WkbType::new(Some(WkbMetadata::new(
+            Some("OGC:CRS84"),
+            Some(WkbEdges::Spherical),
+        ))))
+        .unwrap();
+    let schema = Arc::new(Schema::new(vec![field]));
+    let col: ArrayRef = Arc::new(BinaryArray::from(vec![None::<&[u8]>]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![col]).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("geography.parquet");
+    let f = std::fs::File::create(&path).unwrap();
+    let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+    w.write(&batch).unwrap();
+    w.close().unwrap();
+
+    let f = std::fs::File::open(&path).unwrap();
+    let err = ParquetRecordBatchReaderBuilder::try_new(f)
+        .unwrap()
+        .geometry_conformance()
+        .expect_err("a GEOGRAPHY-annotated geometry column must be refused");
+    assert!(
+        err.to_string().contains("GEOGRAPHY"),
+        "the error must name what it refused, got: {err}"
+    );
+}

@@ -18,6 +18,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
 use arrow_schema::{Schema, SchemaRef};
 use parquet::arrow::arrow_reader::{ArrowReaderBuilder, ParquetRecordBatchReader};
+use parquet::basic::LogicalType;
 use parquet::file::metadata::RowGroupMetaData;
 use parquet::file::statistics::Statistics;
 use parquet::schema::types::ColumnPath;
@@ -26,6 +27,34 @@ use cityparquet_schema::{
     AttributeType, CityMetadata, CityParquetError, CityParquetSchema, GeoMetadata,
     GeometryEncoding, Lod, Result, geometry_column_name,
 };
+
+/// Which geospatial specification a file on disk actually satisfies, resolved
+/// from the file itself rather than from any claim about who wrote it.
+///
+/// The reader accepts all three. A CityParquet file is expected to be
+/// [`Self::GeoParquet2`] — geometry columns annotated with the Parquet
+/// `GEOMETRY` logical type — but [`Self::GeoParquet1`] is read as a
+/// deliberate fail-safe rather than rejected: a plain `BYTE_ARRAY` column
+/// described only by the `geo` footer object holds exactly the same WKB bytes,
+/// and refusing it would strand every file written before the annotation
+/// existed for no gain in correctness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeoConformance {
+    /// Geometry columns carry the `GEOMETRY` logical type. GeoParquet 2.0.
+    GeoParquet2,
+    /// No logical-type annotation, but a `geo` footer object describes the
+    /// geometry columns. GeoParquet 1.1 — readable, not conformant to 2.0.
+    GeoParquet1,
+    /// Neither: geometry is described only by `city`. This is the normal state
+    /// of a solid-only table, whose `PolyhedralSurface Z` columns GeoParquet's
+    /// type vocabulary cannot name, so they are deliberately absent from `geo`.
+    CityParquetOnly,
+}
+
+/// Whether `name` is a geometry column under the spec's column grammar.
+fn is_geometry_column_name(name: &str) -> bool {
+    name == "geometry" || name.starts_with("geometry_lod")
+}
 
 /// The six fixed `bbox` struct leaves, matching [`crate::recipe::WriterRecipe`]
 /// and [`cityparquet_schema::model::bbox_data_type`].
@@ -118,6 +147,14 @@ pub trait CityParquetReaderBuilder: Sized {
     /// by name).
     fn cityparquet_arrow_schema(&self) -> Result<Arc<Schema>>;
 
+    /// Which geospatial specification this file satisfies — see
+    /// [`GeoConformance`]. Errors on a `GEOGRAPHY`-annotated geometry column:
+    /// `GEOGRAPHY` declares that edges are geodesics on an ellipsoid, whereas
+    /// every CityParquet measurement, validation and round trip assumes the
+    /// planar edges CityJSON actually has. Reading one as the other would not
+    /// fail loudly; it would quietly return wrong geometry.
+    fn geometry_conformance(&self) -> Result<GeoConformance>;
+
     /// Restrict this builder to row groups whose `bbox.{x,y,z}{min,max}`
     /// column statistics 3D-intersect `bbox`. A row group missing any of the
     /// six leaf statistics is kept rather than pruned: this never silently
@@ -138,6 +175,43 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
             kvs.iter()
                 .map(|kv| (kv.key.as_str(), kv.value.as_deref().unwrap_or(""))),
         )
+    }
+
+    fn geometry_conformance(&self) -> Result<GeoConformance> {
+        let descr = self.metadata().file_metadata().schema_descr();
+        let mut annotated = false;
+        for i in 0..descr.num_columns() {
+            let col = descr.column(i);
+            // A geometry column is a root-level leaf; `parts()[0]` is that root
+            // name, so a nested child named `geometry_lod*` cannot masquerade
+            // as one.
+            let Some(root) = col.path().parts().first() else {
+                continue;
+            };
+            if !is_geometry_column_name(root) {
+                continue;
+            }
+            match col.logical_type_ref() {
+                Some(LogicalType::Geometry { .. }) => annotated = true,
+                Some(LogicalType::Geography { .. }) => {
+                    return Err(CityParquetError::Metadata(format!(
+                        "geometry column '{root}' is annotated GEOGRAPHY, which declares \
+                         geodesic edges; CityParquet geometry is planar-edged and reading it \
+                         as geodesic would silently return wrong geometry"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if annotated {
+            return Ok(GeoConformance::GeoParquet2);
+        }
+        let (_, geo) = self.cityparquet_footer()?;
+        Ok(if geo.is_some() {
+            GeoConformance::GeoParquet1
+        } else {
+            GeoConformance::CityParquetOnly
+        })
     }
 
     fn cityparquet_arrow_schema(&self) -> Result<Arc<Schema>> {

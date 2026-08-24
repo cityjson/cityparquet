@@ -446,6 +446,7 @@ dependencies = [
  "jsonschema",
  "object_store",
  "parquet",
+ "parquet-geospatial",
  "quick-xml 0.37.5",
  "serde",
  "serde_json",
