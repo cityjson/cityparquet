@@ -167,25 +167,23 @@ pub fn geometry_properties_data_type() -> DataType {
     ]))
 }
 
-/// `"EPSG:7415"` from a PROJJSON object's `id`, for the `crs` parameter of the
-/// Parquet `GEOMETRY` logical type.
+/// The PROJJSON text for the `crs` parameter of the Parquet `GEOMETRY` logical
+/// type.
 ///
-/// The logical type's `crs` is a short identifier by convention
-/// (`<authority>:<code>`), not a place to inline a CRS definition: the full
-/// PROJJSON is already carried once per column in the `geo` footer object, and
-/// repeating a two-kilobyte definition in the schema of every geometry column
-/// bloats the footer for no reader's benefit. `None` — an absent `crs`, read as
-/// OGC:CRS84 — is only ever right for a dataset with no CRS-bearing coordinate
-/// at all, which is why this returns `None` only when the caller has no CRS.
-fn crs_authority_code(projjson: &serde_json::Value) -> Option<String> {
-    let id = projjson.get("id")?;
-    let authority = id.get("authority")?.as_str()?;
-    let code = id.get("code")?;
-    let code = code
-        .as_u64()
-        .map(|c| c.to_string())
-        .or_else(|| code.as_str().map(str::to_string))?;
-    Some(format!("{authority}:{code}"))
+/// Parquet permits four spellings and GeoParquet 2.0 narrows them to two:
+/// inline PROJJSON, or `<authority>:<code>` — the latter recommended for
+/// writers that cannot readily produce PROJJSON. CityParquet can: `geo` already
+/// requires inline PROJJSON, so the definition is in hand either way.
+///
+/// Inline is also the only spelling that survives a round trip unchanged. An
+/// authority code is resolved to PROJJSON by CRS-aware machinery and left
+/// verbatim by everything else, so a package's bytes would depend on which
+/// components the writing session happened to load. PROJJSON is a fixed point.
+///
+/// `None` — an absent `crs`, read as OGC:CRS84 — is only ever right for a
+/// dataset with no CRS-bearing coordinate at all.
+fn crs_annotation(projjson: &serde_json::Value) -> String {
+    projjson.to_string()
 }
 
 fn string_list(name: &str) -> Field {
@@ -298,7 +296,7 @@ impl CityParquetSchema {
     fn geometry_field(&self, name: &str, lod: Option<&Lod>) -> Field {
         let mut field = Field::new(name, DataType::Binary, true);
         if lod.is_some_and(|l| self.geoparquet_lods.contains(l)) {
-            let crs = self.crs.as_ref().and_then(crs_authority_code);
+            let crs = self.crs.as_ref().map(crs_annotation);
             let wkb = WkbType::new(Some(WkbMetadata::new(crs.as_deref(), None)));
             field = field.with_extension_type(wkb);
         }

@@ -1253,7 +1253,7 @@ SELECT * FROM cityparquet_write('d','/tmp/n/rt', crs=>'EPSG:7415');"
 ```
 
 ```
-building.parquet | written | 2231 | 3688569
+building.parquet | written | 2231 | 3690624
 metadata.json    | written |    0 |    6749
 ```
 
