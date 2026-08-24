@@ -310,9 +310,19 @@ The schema should show the current column set, in this order:
 Two things to check specifically:
 
 - **`geometry_lod0_0` is the only GeoParquet-legal column**, and DuckDB reports
-  it as `GEOMETRY('{…PROJJSON…}')` — a CompoundCRS "Amersfoort / RD New + NAP
-  height", EPSG:7415. Every higher LoD is a plain `blob` (a `PolyhedralSurface
-  Z` is not legal GeoParquet).
+  it as `GEOMETRY`; every higher LoD is a plain `BLOB`. That is now the Parquet
+  `GEOMETRY` logical type doing the work, not the `geo` footer: the writer
+  annotates a column exactly when it declares it, so the two can never disagree
+  about which columns a GeoParquet reader may touch. The annotation carries the
+  CRS as `EPSG:7415` — the short authority:code form the Parquet convention
+  wants — while the full PROJJSON stays in `geo`, which is why the type no
+  longer prints an inline CompoundCRS.
+
+  A `PolyhedralSurface Z` is deliberately left unannotated. It is not merely
+  illegal GeoParquet: DuckDB promotes any annotated column and converts it
+  eagerly, and its geometry model has no PolyhedralSurface, so annotating a
+  solid column would make even `SELECT count(*)` over it fail — before any
+  `ST_3D*` function sees a value, and past what `ST_AsWKB` could rescue.
 - **`geometry_properties_lod*` is a STRUCT**:
   `STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])`.
 
