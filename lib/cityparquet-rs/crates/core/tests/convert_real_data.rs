@@ -130,13 +130,7 @@ fn assert_every_texture_ring_valid(v: &Value, limit: usize) {
 #[test]
 fn delft_full_convert_round_trips_through_parquet() {
     let out = tempfile::tempdir().unwrap();
-    // `geoarrow: true` here (rather than the library default of `false`,
-    // added in the geoarrow-opt-in change) preserves this test's original
-    // intent of checking a full GeoParquet-tagged round trip, including the
-    // `geo` key below; the untagged default is covered separately by
-    // `default_convert_writes_plain_blob_geometry_no_geoarrow_no_geo_key`.
-    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
-    opts.geoarrow = true;
+    let opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
     let report = convert(&opts).unwrap();
     assert_eq!(report.object_count, 2231);
 
@@ -1501,12 +1495,13 @@ fn by_type_convert_of_railway_writes_nine_module_tables() {
     );
 }
 
-/// G1: a default convert (no `--geoarrow`) still writes the GeoParquet `geo`
-/// key — declaring ONLY the GeoParquet-legal columns — while the geometry
-/// fields stay plain BLOB (no `geoarrow.wkb` field extension) so DuckDB reads
-/// them with zero setup. delft's LoD0 `geometry` is a `MultiPolygon Z`
-/// footprint (legal); its `lod1.2/1.3/2.2` are `Solid`s (PolyhedralSurfaceZ,
-/// illegal) and must NOT appear in `geo.columns`.
+/// G1: a convert writes the GeoParquet `geo` key declaring ONLY the
+/// GeoParquet-legal columns, while EVERY geometry column — legal or not —
+/// carries the `GEOMETRY` logical type. That split is the conformance model:
+/// Parquet-level annotation is universal, GeoParquet-level declaration is
+/// conditional. delft's LoD0 `geometry` is a `MultiPolygon Z` footprint
+/// (legal); its `lod1.2/1.3/2.2` are `Solid`s (PolyhedralSurfaceZ, illegal)
+/// and must NOT appear in `geo.columns` — but they are still annotated.
 #[test]
 fn default_convert_writes_geo_key_for_legal_columns_only() {
     let out = tempfile::tempdir().unwrap();
@@ -1554,17 +1549,58 @@ fn default_convert_writes_geo_key_for_legal_columns_only() {
     // The CRS is PROJJSON (resolved from delft's OGC URL to EPSG:7415).
     assert_eq!(columns["geometry_lod0_0"]["crs"]["id"]["code"], 7415);
 
-    // (b) Geometry field is plain Binary with no geoarrow extension (default).
-    let field = builder
+    // (b) EVERY geometry column carries the annotation, including the Solid
+    // LoDs that (a) just proved are absent from `geo`.
+    let geometry_fields: Vec<_> = builder
         .schema()
         .fields()
         .iter()
-        .find(|f| f.name().starts_with("geometry_lod"))
-        .expect("a geometry_<lod> column exists");
+        .filter(|f| f.name().starts_with("geometry_lod"))
+        .cloned()
+        .collect();
     assert!(
-        !field.metadata().contains_key("ARROW:extension:name"),
-        "default output geometry column must not advertise geoarrow.wkb"
+        geometry_fields.len() >= 2,
+        "delft has a legal LoD0 and several Solid LoDs"
     );
+    for field in &geometry_fields {
+        assert_eq!(
+            field
+                .metadata()
+                .get("ARROW:extension:name")
+                .map(String::as_str),
+            Some("geoarrow.wkb"),
+            "{} must advertise the extension that renders the GEOMETRY logical type",
+            field.name()
+        );
+    }
+
+    // (c) That annotation must actually reach Parquet as the GEOMETRY logical
+    // type, and bring GeospatialStatistics with it — the reason it is written.
+    let rg = builder.metadata().row_group(0);
+    let mut checked = 0;
+    for col in rg.columns() {
+        let name = col.column_descr().name().to_string();
+        if !name.starts_with("geometry_lod") {
+            continue;
+        }
+        checked += 1;
+        assert!(
+            matches!(
+                col.column_descr().logical_type_ref(),
+                Some(parquet::basic::LogicalType::Geometry { .. })
+            ),
+            "{name} must carry the GEOMETRY logical type, got {:?}",
+            col.column_descr().logical_type_ref()
+        );
+        let stats = col
+            .geo_statistics()
+            .unwrap_or_else(|| panic!("{name} must carry GeospatialStatistics"));
+        assert!(
+            stats.bounding_box().is_some(),
+            "{name}'s statistics must carry a bounding box — the prunable part"
+        );
+    }
+    assert_eq!(checked, geometry_fields.len());
 }
 
 /// spec-alignment M3, checklist item 3: a table whose geometry is entirely
@@ -1640,50 +1676,6 @@ fn solid_only_table_has_city_but_no_geo_key() {
     assert!(
         !kvs.iter().any(|kv| kv.key == "geo"),
         "a solid-only table must carry no geo key at all"
-    );
-}
-
-/// `ConvertOptions::geoarrow = true` restores the GeoParquet/GeoArrow
-/// self-description: the `geoarrow.wkb` field extension plus the file-level
-/// `geo` key, for GeoPandas/QGIS/GDAL interop.
-#[test]
-fn geoarrow_opt_in_restores_tag_and_geo_key() {
-    let out = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
-    opts.geoarrow = true;
-    opts.overwrite = true;
-    convert(&opts).unwrap();
-
-    // delft is a single 1st-level family, so by-type conversion writes
-    // exactly one main table: building.parquet.
-    let file = std::fs::File::open(out.path().join("building.parquet")).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-
-    let kvs = builder
-        .metadata()
-        .file_metadata()
-        .key_value_metadata()
-        .unwrap();
-    assert!(
-        kvs.iter().any(|kv| kv.key == "geo"),
-        "--geoarrow must write the `geo` key"
-    );
-
-    // The LoD0 footprint is the suffixed `geometry_lod0_0` column (delft's
-    // GeoParquet primary_column — see `default_convert_writes_geo_key_for_legal_columns_only`);
-    // under --geoarrow it advertises the geoarrow.wkb extension.
-    let field = builder
-        .schema()
-        .field_with_name("geometry_lod0_0")
-        .unwrap()
-        .clone();
-    assert_eq!(
-        field
-            .metadata()
-            .get("ARROW:extension:name")
-            .map(String::as_str),
-        Some("geoarrow.wkb"),
-        "--geoarrow must advertise geoarrow.wkb"
     );
 }
 

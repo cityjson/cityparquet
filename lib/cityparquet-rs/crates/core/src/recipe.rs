@@ -83,7 +83,8 @@ const ARROW_JSON_EXTENSION: &str = "arrow.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecipePreset {
     /// The tuned default: delta ids, dictionary `object_type`, BYTE_STREAM_SPLIT
-    /// bbox, no stats/dictionary on WKB+JSON, zstd 3.
+    /// bbox, no dictionary on WKB, no statistics on JSON, zstd 3. Geometry
+    /// columns keep chunk statistics: that is what carries their bounding box.
     CityParquet,
     /// parquet-rs defaults + the recipe's global compression and row-group
     /// size ONLY — no per-column tuning at all. The "untuned writer"
@@ -249,7 +250,7 @@ impl WriterRecipe {
     pub fn writer_properties(&self, schema: &CityParquetSchema) -> Result<WriterProperties> {
         // TAGGED (`geoarrow = true`): the WKB geometry-column detection below
         // keys off the `geoarrow.wkb` extension metadata that flag adds.
-        let arrow_schema = schema.to_arrow_schema_tagged(true)?;
+        let arrow_schema = schema.to_arrow_schema()?;
 
         // `compression` OVERRIDES the preset's default codec when set;
         // `None` keeps the exact pre-existing behaviour: `Snappy` compresses
@@ -345,10 +346,20 @@ impl WriterRecipe {
         for field in arrow_schema.fields() {
             let name = field.name().as_str();
             if is_geometry_column(field) {
+                // Dictionary off: WKB blobs are effectively unique per row, so
+                // a dictionary is pure overhead.
+                //
+                // Statistics stay at `Chunk` even though the min/max of a WKB
+                // blob is meaningless. parquet-rs flushes `GeospatialStatistics`
+                // *inside* its `statistics_enabled != None` branch, so
+                // disabling statistics here would also discard the bounding box
+                // — the one statistic that makes a geometry column prunable,
+                // and the reason the column carries the `GEOMETRY` logical type
+                // at all. The useless byte min/max is the price of the bbox.
                 let path = ColumnPath::from(name);
                 builder = builder
                     .set_column_dictionary_enabled(path.clone(), false)
-                    .set_column_statistics_enabled(path, EnabledStatistics::None);
+                    .set_column_statistics_enabled(path, EnabledStatistics::Chunk);
                 continue;
             }
             if is_json_column(field) && !self.statistics_for_json {
@@ -431,11 +442,12 @@ mod tests {
             Some(Encoding::BYTE_STREAM_SPLIT)
         );
 
-        // geometry columns: dictionary off, no statistics.
+        // geometry columns: dictionary off, chunk statistics ON — the bbox
+        // in GeospatialStatistics rides on the statistics_enabled flag.
         assert!(!props.dictionary_enabled(&ColumnPath::from("geometry_lod2_2")));
         assert_eq!(
             props.statistics_enabled(&ColumnPath::from("geometry_lod2_2")),
-            EnabledStatistics::None
+            EnabledStatistics::Chunk
         );
 
         // arrow.json-tagged columns: no statistics by default.
@@ -510,11 +522,11 @@ mod tests {
             EnabledStatistics::None
         );
 
-        // The real geometry column still gets the WKB treatment.
+        // The real geometry column still gets the geometry treatment.
         assert!(!props.dictionary_enabled(&ColumnPath::from("geometry_lod2_2")));
         assert_eq!(
             props.statistics_enabled(&ColumnPath::from("geometry_lod2_2")),
-            EnabledStatistics::None
+            EnabledStatistics::Chunk
         );
     }
 
@@ -724,15 +736,17 @@ mod tests {
         }
     }
 
-    /// The geometry column's single `Binary` leaf carries both geometry
-    /// rules explicitly — dictionary off, statistics off — rather than
-    /// falling through to parquet's global defaults.
+    /// The geometry column's single `Binary` leaf carries both geometry rules
+    /// explicitly rather than falling through to parquet's global defaults:
+    /// dictionary off, and statistics at `Chunk` so parquet-rs still flushes
+    /// the `GeospatialStatistics` bounding box (it does so only inside its
+    /// `statistics_enabled != None` branch).
     #[test]
     fn the_geometry_column_leaf_gets_explicit_settings() {
         let schema = sample_schema();
         let props = WriterRecipe::default().writer_properties(&schema).unwrap();
         let path = ColumnPath::from("geometry_lod2_2");
         assert!(!props.dictionary_enabled(&path));
-        assert_eq!(props.statistics_enabled(&path), EnabledStatistics::None);
+        assert_eq!(props.statistics_enabled(&path), EnabledStatistics::Chunk);
     }
 }

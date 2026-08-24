@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
 use arrow_schema::{DataType, Field, Fields, Schema};
-use geoarrow_schema::{Crs, Metadata as GeoMetadata, WkbType};
+use parquet_geospatial::{WkbMetadata, WkbType};
 
 use crate::attributes::AttributeType;
 use crate::error::{CityParquetError, Result};
@@ -158,6 +158,27 @@ pub fn geometry_properties_data_type() -> DataType {
     ]))
 }
 
+/// `"EPSG:7415"` from a PROJJSON object's `id`, for the `crs` parameter of the
+/// Parquet `GEOMETRY` logical type.
+///
+/// The logical type's `crs` is a short identifier by convention
+/// (`<authority>:<code>`), not a place to inline a CRS definition: the full
+/// PROJJSON is already carried once per column in the `geo` footer object, and
+/// repeating a two-kilobyte definition in the schema of every geometry column
+/// bloats the footer for no reader's benefit. `None` — an absent `crs`, read as
+/// OGC:CRS84 — is only ever right for a dataset with no CRS-bearing coordinate
+/// at all, which is why this returns `None` only when the caller has no CRS.
+fn crs_authority_code(projjson: &serde_json::Value) -> Option<String> {
+    let id = projjson.get("id")?;
+    let authority = id.get("authority")?.as_str()?;
+    let code = id.get("code")?;
+    let code = code
+        .as_u64()
+        .map(|c| c.to_string())
+        .or_else(|| code.as_str().map(str::to_string))?;
+    Some(format!("{authority}:{code}"))
+}
+
 fn string_list(name: &str) -> Field {
     Field::new(
         name,
@@ -243,16 +264,24 @@ impl CityParquetSchema {
         Ok(())
     }
 
-    fn geometry_field(&self, name: &str, lod: Option<&Lod>, geoarrow: bool) -> Field {
+    /// One `geometry_lod*` column: WKB bytes annotated as the Parquet
+    /// `GEOMETRY` logical type.
+    ///
+    /// The `geoarrow.wkb` extension type this attaches is what
+    /// `parquet::arrow` reads to emit `LogicalType::Geometry` on the column,
+    /// which in turn is what makes the writer accumulate
+    /// `GeospatialStatistics`. It is not optional: GeoParquet 2.0 requires
+    /// geometry columns to carry the annotation, so a column without it is
+    /// simply not conformant.
+    ///
+    /// `edges` is left unset — always planar. CityJSON geometry joins its
+    /// vertices with straight lines in CRS space, so `GEOGRAPHY`, which
+    /// declares geodesic edges, would misdescribe it even in a geographic CRS.
+    fn geometry_field(&self, name: &str, lod: Option<&Lod>) -> Field {
         let mut field = Field::new(name, DataType::Binary, true);
-        if geoarrow {
-            let crs = match &self.crs {
-                Some(projjson) => Crs::from_projjson(projjson.clone()),
-                None => Crs::default(),
-            };
-            let wkb = WkbType::new(Arc::new(GeoMetadata::new(crs, None)));
-            field = field.with_extension_type(wkb);
-        }
+        let crs = self.crs.as_ref().and_then(crs_authority_code);
+        let wkb = WkbType::new(Some(WkbMetadata::new(crs.as_deref(), None)));
+        field = field.with_extension_type(wkb);
         field = reserved(field);
         if let Some(lod) = lod {
             field = with_meta(field, &[(LOD_KEY, &lod.to_string())]);
@@ -260,11 +289,11 @@ impl CityParquetSchema {
         field
     }
 
-    /// Render the Arrow schema, columns in spec order. Geometry columns carry
-    /// the `geoarrow.wkb` extension type (and CRS) iff `geoarrow` — the write
-    /// path passes the caller's `--geoarrow` choice; every other caller wants
-    /// the self-describing (tagged) form.
-    pub fn to_arrow_schema_tagged(&self, geoarrow: bool) -> Result<Schema> {
+    /// Render the Arrow schema, columns in spec order. Every `geometry_lod*`
+    /// column carries the `geoarrow.wkb` extension type and its CRS, which is
+    /// what makes the Parquet writer emit the `GEOMETRY` logical type and
+    /// accumulate `GeospatialStatistics` (see [`Self::geometry_field`]).
+    pub fn to_arrow_schema(&self) -> Result<Schema> {
         self.validate()?;
 
         let mut fields: Vec<Field> = vec![
@@ -290,7 +319,7 @@ impl CityParquetSchema {
         ];
 
         if self.lods.is_empty() {
-            fields.push(self.geometry_field("geometry", None, geoarrow));
+            fields.push(self.geometry_field("geometry", None));
             fields.push(with_meta(
                 Field::new("geometry_properties", geometry_properties_data_type(), true),
                 &[(ROLE_KEY, ROLE_RESERVED)],
@@ -317,11 +346,7 @@ impl CityParquetSchema {
             // Every LoD — including LoD0 — is suffixed; there is no
             // un-suffixed "footprint" column (spec "Levels of detail").
             for lod in &self.lods {
-                fields.push(self.geometry_field(
-                    &geometry_column_name("geometry", lod),
-                    Some(lod),
-                    geoarrow,
-                ));
+                fields.push(self.geometry_field(&geometry_column_name("geometry", lod), Some(lod)));
                 fields.push(with_meta(
                     Field::new(
                         geometry_column_name("geometry_properties", lod),
@@ -363,13 +388,6 @@ impl CityParquetSchema {
         }
 
         Ok(Schema::new(fields))
-    }
-
-    /// Tagged rendering — the self-describing GeoParquet/GeoArrow form every
-    /// non-write caller (reader schema rebuild, `column_lists`, recipe
-    /// geometry-column detection) expects.
-    pub fn to_arrow_schema(&self) -> Result<Schema> {
-        self.to_arrow_schema_tagged(true)
     }
 
     /// (reserved incl. geometry columns, attribute columns), derived from the
@@ -498,7 +516,7 @@ mod tests {
             crs: None,
         };
         let rendered = schema
-            .to_arrow_schema_tagged(false)
+            .to_arrow_schema()
             .expect("an attribute naming no reserved column must render normally");
         let attr_field = rendered
             .field_with_name("geometry_vertices_lod2_2")
@@ -623,36 +641,23 @@ mod tests {
         assert!(ext_meta.contains("28992"));
     }
 
+    /// The `geoarrow.wkb` extension type and CityParquet's own field metadata
+    /// have to coexist: `with_extension_type` writes into the same metadata map
+    /// `cityparquet:role` and `cityparquet:lod` live in, and decode classifies
+    /// columns by those two keys. Losing them to the annotation would leave the
+    /// geometry column unrecognisable to the reader.
     #[test]
-    fn geometry_field_tag_is_toggleable() {
-        let schema = sample();
+    fn the_annotation_and_the_cityparquet_metadata_coexist() {
+        let schema = sample().to_arrow_schema().unwrap();
+        let field = schema.field_with_name("geometry_lod2_2").unwrap();
 
-        // Tagged (default zero-arg and explicit true): geoarrow.wkb present.
-        for tagged in [
-            schema.to_arrow_schema().unwrap(),
-            schema.to_arrow_schema_tagged(true).unwrap(),
-        ] {
-            let field = tagged.field_with_name("geometry_lod2_2").unwrap();
-            assert_eq!(
-                field
-                    .metadata()
-                    .get("ARROW:extension:name")
-                    .map(String::as_str),
-                Some("geoarrow.wkb"),
-                "tagged schema must advertise geoarrow.wkb"
-            );
-        }
-
-        // Untagged: NO geoarrow extension, but the binary type and the
-        // cityparquet role/lod metadata that decode relies on must survive.
-        // Explicit `Wkb` — asserts `DataType::Binary`, which only the WKB
-        // encoding produces.
-        let untagged = schema.to_arrow_schema_tagged(false).unwrap();
-        let field = untagged.field_with_name("geometry_lod2_2").unwrap();
         assert_eq!(field.data_type(), &arrow_schema::DataType::Binary);
-        assert!(
-            !field.metadata().contains_key("ARROW:extension:name"),
-            "untagged geometry field must not advertise any Arrow extension type"
+        assert_eq!(
+            field
+                .metadata()
+                .get("ARROW:extension:name")
+                .map(String::as_str),
+            Some("geoarrow.wkb"),
         );
         assert_eq!(
             field.metadata().get("cityparquet:role").map(String::as_str),

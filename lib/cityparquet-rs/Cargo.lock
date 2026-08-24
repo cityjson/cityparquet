@@ -476,7 +476,7 @@ dependencies = [
  "arrow-schema",
  "chrono",
  "flate2",
- "geoarrow-schema",
+ "parquet-geospatial",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -963,19 +963,6 @@ dependencies = [
  "rayon",
  "rstar",
  "serde",
-]
-
-[[package]]
-name = "geoarrow-schema"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d4a7edb2a1d87024a93805332a9c8184a0354836271d42c0d18cf628a5e3cd0"
-dependencies = [
- "arrow-schema",
- "geo-traits",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1829,6 +1816,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "object_store",
+ "parquet-geospatial",
  "paste",
  "seq-macro",
  "simdutf8",
@@ -1837,6 +1825,19 @@ dependencies = [
  "tokio",
  "twox-hash",
  "zstd",
+]
+
+[[package]]
+name = "parquet-geospatial"
+version = "58.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a1f75d661f313574a7c1b08891dde8bb1fd6295362a2a7dd7dc6bbd94d644a6"
+dependencies = [
+ "arrow-schema",
+ "geo-traits",
+ "serde",
+ "serde_json",
+ "wkb",
 ]
 
 [[package]]

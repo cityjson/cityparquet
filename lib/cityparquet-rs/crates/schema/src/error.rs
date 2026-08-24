@@ -7,8 +7,6 @@ pub enum CityParquetError {
     #[error(transparent)]
     Arrow(#[from] ArrowError),
     #[error(transparent)]
-    GeoArrow(#[from] geoarrow_schema::error::GeoArrowError),
-    #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error("metadata error: {0}")]
     Metadata(String),

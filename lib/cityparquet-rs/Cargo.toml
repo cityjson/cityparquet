@@ -24,8 +24,8 @@ arrow-schema = "58"
 arrow-array = "58"
 arrow-buffer = "58"
 arrow-select = "58"
-parquet = { version = "58", features = ["zstd"] }
-geoarrow-schema = "0.8"
+parquet = { version = "58", features = ["zstd", "geospatial"] }
+parquet-geospatial = "58"
 serde = { version = "1", features = ["derive"] }
 # `float_roundtrip` makes serde_json's float PARSER correctly rounded. Without
 # it the default fast path can land 1 ULP off, so an attribute written as

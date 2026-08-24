@@ -289,7 +289,7 @@ impl<T> CityParquetReaderBuilder for ArrowReaderBuilder<T> {
         // Validates the footer token and the physical column shape; the
         // resolved encoding itself is not needed, only that it resolves.
         detect_geometry_encoding(&meta, actual, &schema.lods, has_bare_geometry)?;
-        let canonical = schema.to_arrow_schema_tagged(true)?;
+        let canonical = schema.to_arrow_schema()?;
         Ok(Arc::new(project_metadata_onto(actual, &canonical)))
     }
 

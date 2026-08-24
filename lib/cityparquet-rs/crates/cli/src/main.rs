@@ -95,14 +95,6 @@ enum Commands {
         #[arg(long, value_enum, default_value = "source")]
         ordering: OrderingArg,
 
-        /// Emit GeoParquet/GeoArrow self-description (the geoarrow.wkb field
-        /// extension + the file-level `geo` key). Off by default: default
-        /// output is plain-BLOB geometry that DuckDB `SELECT *` and the
-        /// three_d extension read directly. Pass this for GeoPandas/QGIS/
-        /// GDAL interop.
-        #[arg(long, default_value_t = false)]
-        geoarrow: bool,
-
         /// Do NOT synthesise an LoD0 footprint into the primary `geometry`
         /// column for objects lacking a source LoD0. By default a footprint is
         /// derived from the lowest higher LoD (§9 "LoD0 synthesis") so the
@@ -398,7 +390,6 @@ fn main() -> std::process::ExitCode {
             recipe,
             compression,
             ordering,
-            geoarrow,
             no_lod0,
             crs,
             tolerate_invalid_appearance,
@@ -440,7 +431,6 @@ fn main() -> std::process::ExitCode {
                 batch_size,
                 recipe,
                 ordering,
-                geoarrow,
                 generate_lod0: !no_lod0,
                 lod0: cityparquet::lod0::Lod0Options::default(),
                 crs_override: None,

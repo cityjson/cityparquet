@@ -1855,18 +1855,15 @@ impl Iterator for BatchIter<'_> {
 }
 
 /// Encode `source` into `RecordBatch`es matching
-/// `scan.schema.to_arrow_schema_tagged(geoarrow)` exactly,
+/// `scan.schema.to_arrow_schema()` exactly,
 /// `batch_size` rows per batch (the schema was already computed by `scan`;
-/// this pass never re-infers it). `geoarrow` must be the SAME flag the
-/// caller feeds the writer's schema/`writer_properties`, or Arrow rejects
-/// the batches at write time (mismatched field metadata).
+/// this pass never re-infers it).
 pub fn encode<'a>(
     source: &'a Source,
     scan: &ScanResult,
     batch_size: usize,
-    geoarrow: bool,
 ) -> Result<BatchIter<'a>> {
-    let schema = Arc::new(scan.schema.to_arrow_schema_tagged(geoarrow)?);
+    let schema = Arc::new(scan.schema.to_arrow_schema()?);
     let features = source.features()?;
     let transform = source.header().transform.clone();
     let writer = RowWriter::new(scan);
@@ -1907,9 +1904,8 @@ pub fn encode_buffered<'a>(
     header: &CityJSON,
     scan: &ScanResult,
     batch_size: usize,
-    geoarrow: bool,
 ) -> Result<BatchIter<'a>> {
-    let schema = Arc::new(scan.schema.to_arrow_schema_tagged(geoarrow)?);
+    let schema = Arc::new(scan.schema.to_arrow_schema()?);
     let transform = header.transform.clone();
     let writer = RowWriter::new(scan);
     Ok(BatchIter {

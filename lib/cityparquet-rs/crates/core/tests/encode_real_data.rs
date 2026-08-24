@@ -96,14 +96,14 @@ fn railway_source_with_crs() -> (tempfile::TempDir, Source) {
 fn delft_encodes_all_objects_in_batches() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let s = scan(&src).unwrap();
-    let batches: Vec<_> = encode(&src, &s, 512, false)
+    let batches: Vec<_> = encode(&src, &s, 512)
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 2231);
     assert!(batches.len() >= 2231 / 512);
-    let schema = s.schema.to_arrow_schema_tagged(false).unwrap();
+    let schema = s.schema.to_arrow_schema().unwrap();
     assert_eq!(batches[0].schema().fields(), schema.fields());
     // Spot checks on real content:
     let b = &batches[0];
@@ -127,7 +127,7 @@ fn delft_encodes_all_objects_in_batches() {
 fn delft_lod0_lands_in_a_suffixed_column_with_no_lod_in_properties() {
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let s = scan(&src).unwrap();
-    let batches: Vec<_> = encode(&src, &s, 4096, false)
+    let batches: Vec<_> = encode(&src, &s, 4096)
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
@@ -163,7 +163,7 @@ fn delft_lod0_lands_in_a_suffixed_column_with_no_lod_in_properties() {
 fn railway_encodes_with_semantics_and_templates() {
     let (_crs_dir, src) = railway_source_with_crs();
     let s = scan(&src).unwrap();
-    let batches: Vec<_> = encode(&src, &s, 1024, false)
+    let batches: Vec<_> = encode(&src, &s, 1024)
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
@@ -182,7 +182,7 @@ fn railway_encodes_with_semantics_and_templates() {
 fn railway_keeps_index_repeat_sliver_surfaces_intact() {
     let (_crs_dir, src) = railway_source_with_crs();
     let s = scan(&src).unwrap();
-    let batches: Vec<_> = encode(&src, &s, 1024, false)
+    let batches: Vec<_> = encode(&src, &s, 1024)
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
@@ -261,7 +261,7 @@ fn delft_records_per_shell_face_partition_for_solids() {
     // without re-deriving it from the CityJSON boundaries.
     let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
     let s = scan(&src).unwrap();
-    let batches: Vec<_> = encode(&src, &s, 512, false)
+    let batches: Vec<_> = encode(&src, &s, 512)
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
@@ -404,7 +404,7 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
 
     let src = Source::open(&path).unwrap();
     let s = scan(&src).unwrap();
-    let batches: Vec<_> = encode(&src, &s, 64, false)
+    let batches: Vec<_> = encode(&src, &s, 64)
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
@@ -517,7 +517,7 @@ fn batch_iter_fuses_after_first_error() {
 
     let s = scan(&Source::open(&clean).unwrap()).unwrap();
     let src = Source::open(&path).unwrap();
-    let mut it = encode(&src, &s, 64, false).unwrap();
+    let mut it = encode(&src, &s, 64).unwrap();
     // Error-tolerant consumption: keep pulling after the Err, like a caller
     // using filter_map(Result::ok) would.
     let mut errs = 0;

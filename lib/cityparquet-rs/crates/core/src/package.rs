@@ -97,12 +97,6 @@ pub struct ConvertOptions {
     pub batch_size: usize,
     pub recipe: WriterRecipe,
     pub ordering: RowOrder,
-    /// Write GeoParquet/GeoArrow self-description (the `geoarrow.wkb` field
-    /// extension + the file-level `geo` key). OFF by default so DuckDB reads
-    /// geometry columns as plain BLOB (works with `SELECT *` and the
-    /// `three_d` extension's `ST_3DFromWKB(BLOB)` with zero setup); ON for
-    /// GeoPandas/QGIS/GDAL interop.
-    pub geoarrow: bool,
     /// Synthesise an LoD0 footprint into the `geometry_lod0_0` column when an
     /// object has no source LoD0 (§9 "LoD0 synthesis"). A synthesised footprint
     /// is marked in `geometry_properties` and exported with the canonical
@@ -158,7 +152,6 @@ impl ConvertOptions {
             batch_size: 4096,
             recipe: WriterRecipe::default(),
             ordering: RowOrder::default(),
-            geoarrow: false,
             // Off here (source-faithful library default); the CLI turns it on.
             generate_lod0: false,
             lod0: Lod0Options::default(),
@@ -1059,16 +1052,10 @@ fn write_package(
     // partitions strictly AFTER encode (see `TableWriters`'s doc comment), so
     // this composes with either ordering unchanged.
     let mut batches = match opts.ordering {
-        RowOrder::Source => encode(source, scan_result, opts.batch_size, opts.geoarrow)?,
+        RowOrder::Source => encode(source, scan_result, opts.batch_size)?,
         RowOrder::Hilbert => {
             let features = hilbert_ordered_features(source, scan_result)?;
-            encode_buffered(
-                features,
-                source.header(),
-                scan_result,
-                opts.batch_size,
-                opts.geoarrow,
-            )?
+            encode_buffered(features, source.header(), scan_result, opts.batch_size)?
         }
     };
     // Set BEFORE either the main encode loop below or `build_template_rows`
@@ -1386,15 +1373,14 @@ pub(crate) fn convert_source_impl(
 
     // The exact schema the writer is told to expect must be the exact schema
     // the encoded batches conform to (field metadata included) — both come
-    // from this one `to_arrow_schema_tagged` call, never hand-duplicated —
-    // and it must use the SAME `opts.geoarrow` flag `encode`/`encode_buffered`
-    // feed their batch schema, or Arrow rejects the batches at write time.
+    // from this one `to_arrow_schema` call, never hand-duplicated — or Arrow
+    // rejects the batches at write time.
     //
     // (called below) actually write: they read it back off `scan_result`
     // itself (`ScanResult::encoding`, set from this SAME `opts.geometry_encoding`
     // by the `scan` call above), so `RowWriter` can never pick a different
     // encoding than the schema declared here.
-    let arrow_schema = Arc::new(scan_result.schema.to_arrow_schema_tagged(opts.geoarrow)?);
+    let arrow_schema = Arc::new(scan_result.schema.to_arrow_schema()?);
     // `city`/`geo` footer key-value metadata is NOT built here any more
     // (spec-alignment M3, per-module footer emission): each by-module
     // table's `columns`/`primary_column`/`geo` can only be known once that
