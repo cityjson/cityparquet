@@ -8,6 +8,9 @@
 // section-link strip below it, since the site header carries the rest.
 import PageLayout from "blume/components/layout/PageLayout.astro";
 import data from "blume:data";
+// Inlined rather than <img>-linked so the figure reads the page's own accent
+// and theme tokens; its internal CSS is scoped to `.cp-hero` so nothing leaks.
+import howItWorks from "../public/img/how-it-works.svg?raw";
 
 const { config } = data;
 
@@ -158,9 +161,10 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
     <header class="cp-hero">
       <div class="cp-shell cp-hero-inner">
         <p class="cp-eyebrow">Format specification · v0.1.0-draft</p>
-        {/* The animated lockup loops forever and carries no reduced-motion
-            guard of its own — an <img> can't be reached by page CSS — so the
-            <picture> hands reduced-motion readers the static lockup instead. */}
+        {/* The animated lockup plays once and holds, but carries no
+            reduced-motion guard of its own — an <img> can't be reached by page
+            CSS — so the <picture> hands reduced-motion readers the static
+            lockup instead. */}
         <picture>
           <source
             media="(prefers-reduced-motion: reduce)"
@@ -234,10 +238,33 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
       </div>
     </section>
 
-    <section class="cp-section cp-ruled cp-section-surface">
+    <section class="cp-section cp-ruled">
       <div class="cp-shell">
         <div class="cp-heading">
           <span class="cp-number">02</span>
+          <h2>How it works</h2>
+          <span class="cp-heading-note">Read path</span>
+        </div>
+        <p class="cp-lede">
+          A package is a directory of Parquet files sitting on object storage.
+          A query prunes it twice before a byte moves — column projection drops
+          the LoDs and attributes it does not need, row-group statistics drop
+          the rows outside the window — and fetches what is left over plain
+          HTTP range requests. What comes back is still a semantic 3D model,
+          not a flattened table.
+        </p>
+        <figure class="cp-figure">
+          <div class="cp-figure-scroll">
+            <Fragment set:html={howItWorks} />
+          </div>
+        </figure>
+      </div>
+    </section>
+
+    <section class="cp-section cp-ruled cp-section-surface">
+      <div class="cp-shell">
+        <div class="cp-heading">
+          <span class="cp-number">03</span>
           <h2>Where it sits in the family</h2>
           <span class="cp-heading-note">Encodings</span>
         </div>
@@ -284,7 +311,7 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
     <section class="cp-section cp-ruled cp-section-accent">
       <div class="cp-shell">
         <div class="cp-heading">
-          <span class="cp-number">03</span>
+          <span class="cp-number">04</span>
           <h2>Measured behaviour</h2>
           <span class="cp-heading-note">Benchmark</span>
         </div>
@@ -331,7 +358,7 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
     <section class="cp-section cp-ruled">
       <div class="cp-shell">
         <div class="cp-heading">
-          <span class="cp-number">04</span>
+          <span class="cp-number">05</span>
           <h2>Tooling</h2>
           <span class="cp-heading-note">Ecosystem</span>
         </div>
@@ -435,7 +462,7 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
     --cp-accent: var(--blume-accent);
     --cp-accent-wash: color-mix(in srgb, var(--blume-accent) 7%, var(--cp-surface));
     /* Mixed into the page ground rather than the card surface, so the white
-       cards inside section 03 keep their lift in dark mode too. */
+       cards inside section 04 keep their lift in dark mode too. */
     --cp-accent-wash-section: color-mix(
       in srgb,
       var(--blume-accent) 5%,
@@ -736,7 +763,7 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
     color: var(--cp-ink-2);
   }
 
-  /* Section 02 lifts to the card surface; 03 takes an accent wash so the
+  /* Section 03 lifts to the card surface; 04 takes an accent wash so the
      benchmark block reads as its own chapter. */
   .cp-section-surface {
     background: var(--cp-surface);
@@ -752,6 +779,37 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
 
   .cp-section-accent .cp-heading-note {
     color: var(--cp-accent);
+  }
+
+  /* --- how-it-works figure -------------------------------------------- */
+
+  .cp-figure {
+    margin: 0;
+    background: var(--cp-surface);
+    border: 1px solid var(--cp-line);
+    border-radius: var(--cp-radius);
+    padding: clamp(1rem, 3vw, 1.75rem);
+  }
+
+  /* The figure needs ~900px to stay legible, so it scrolls rather than
+     shrinking its 10px labels into illegibility on a phone. */
+  .cp-figure-scroll {
+    overflow-x: auto;
+  }
+
+  /* The file ships a fallback palette for standalone viewing; this outranks it
+     (0,1,1 beats `.cp-readpath`) so the figure tracks the accent and the theme
+     toggle, not just the OS colour scheme. */
+  .cp-figure svg {
+    display: block;
+    width: 100%;
+    min-width: 880px;
+    height: auto;
+    color: var(--cp-ink);
+    --hero-accent: var(--cp-accent);
+    --hero-roof: var(--cp-accent);
+    --hero-wall: color-mix(in srgb, var(--cp-accent) 26%, var(--cp-surface));
+    --hero-ground: color-mix(in srgb, var(--cp-ink) 8%, var(--cp-surface));
   }
 
   .cp-lede {

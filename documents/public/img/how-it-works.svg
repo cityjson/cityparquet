@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="cp-readpath" viewBox="0 0 1200 492" role="img" aria-label="CityParquet: a semantic 3D city model stored in object storage, read with column and row-group pruning, returned as a semantic 3D model.">
+<style>
+  /* Fallbacks for standalone viewing. A host that inlines this overrides them
+     with its own tokens — `.cp-figure svg` outranks `.cp-readpath`. */
+  .cp-readpath { color:#15181d;
+             --hero-accent:#7253ed; --hero-roof:#7253ed;
+             --hero-wall:#d8cffa; --hero-ground:#e7e9ee; }
+  @media (prefers-color-scheme: dark) {
+    .cp-readpath { color:#e7eaf0;
+               --hero-accent:#a48ff5; --hero-roof:#a48ff5;
+               --hero-wall:#3a3060; --hero-ground:#262c34; }
+  }
+  .cp-readpath text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+                  fill: currentColor; }
+  .cp-readpath .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+  .cp-readpath .h    { font-size:14px; font-weight:600; letter-spacing:.01em; }
+  .cp-readpath .sub  { font-size:11px; opacity:.55; }
+  .cp-readpath .cap  { font-size:11px; opacity:.62; }
+  .cp-readpath .tiny { font-size:10px; opacity:.5; }
+  .cp-readpath .acc  { fill: var(--hero-accent); }
+  .cp-readpath .accs { stroke: var(--hero-accent); fill:none; }
+  .cp-readpath .frame{ fill:none; stroke:currentColor; stroke-opacity:.26; stroke-width:1.25; }
+  .cp-readpath .edge { stroke:currentColor; stroke-opacity:.38; stroke-width:1; stroke-linejoin:round; }
+</style>
+<text class="h" x="40" y="38">Where the model lies</text>
+<text class="sub" x="40" y="56">object storage &#183; tens of gigabytes</text>
+<text class="h" x="400" y="38">What the query touches</text>
+<text class="sub" x="400" y="56">column projection + row-group statistics</text>
+<text class="h" x="909" y="38">What comes back</text>
+<text class="sub" x="909" y="56">still a semantic 3D model &#183; megabytes</text>
+<rect class="frame" x="40" y="76" width="290" height="212" rx="12" stroke-dasharray="5 4"/>
+<g transform="translate(58,86)" fill="none" stroke="var(--hero-accent)" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"><ellipse cx="13" cy="4.4" rx="10.5" ry="3.4"/><path d="M2.5 4.4 L5.4 19.5 A 7.8 3 0 0 0 20.6 19.5 L23.5 4.4"/></g>
+<text class="mono acc" x="94" y="100" font-size="11.5" font-weight="600">s3://city-models/3dbag/</text>
+<text class="tiny" x="94" y="114">a bucket &#183; not a host</text>
+<path d="M56 126 H314" stroke="currentColor" stroke-opacity=".16" stroke-width="1"/>
+<rect x="52" y="137" width="212" height="30" rx="5" fill="var(--hero-accent)" fill-opacity=".10" stroke="var(--hero-accent)" stroke-opacity=".45" stroke-width="1"/>
+<path d="M62 139 h13 l7 7 v19 a3 3 0 0 1 -3 3 h-17 a3 3 0 0 1 -3 -3 v-23 a3 3 0 0 1 3 -3 z" fill="none" stroke="var(--hero-accent)" stroke-opacity="1" stroke-width="1.2"/>
+<path d="M75 139 v7 h7" fill="none" stroke="var(--hero-accent)" stroke-opacity="1" stroke-width="1.2"/>
+<text class="mono acc" x="94" y="156" font-size="12" font-weight="600">building.parquet</text>
+<path d="M62 173 h13 l7 7 v19 a3 3 0 0 1 -3 3 h-17 a3 3 0 0 1 -3 -3 v-23 a3 3 0 0 1 3 -3 z" fill="none" stroke="currentColor" stroke-opacity=".45" stroke-width="1.2"/>
+<path d="M75 173 v7 h7" fill="none" stroke="currentColor" stroke-opacity=".45" stroke-width="1.2"/>
+<text class="mono" x="94" y="190" font-size="12" opacity=".55">transportation.parquet</text>
+<path d="M62 207 h13 l7 7 v19 a3 3 0 0 1 -3 3 h-17 a3 3 0 0 1 -3 -3 v-23 a3 3 0 0 1 3 -3 z" fill="none" stroke="currentColor" stroke-opacity=".45" stroke-width="1.2"/>
+<path d="M75 207 v7 h7" fill="none" stroke="currentColor" stroke-opacity=".45" stroke-width="1.2"/>
+<text class="mono" x="94" y="224" font-size="12" opacity=".55">vegetation.parquet</text>
+<path d="M62 241 h13 l7 7 v19 a3 3 0 0 1 -3 3 h-17 a3 3 0 0 1 -3 -3 v-23 a3 3 0 0 1 3 -3 z" fill="none" stroke="currentColor" stroke-opacity=".45" stroke-width="1.2"/>
+<path d="M75 241 v7 h7" fill="none" stroke="currentColor" stroke-opacity=".45" stroke-width="1.2"/>
+<text class="mono" x="94" y="258" font-size="12" opacity=".55">metadata.json</text>
+<text class="cap" x="40" y="312">one directory, split by CityGML module</text>
+<text class="cap" x="40" y="329">one row per city object &#183; nothing running in front of it</text>
+<path d="M266 137 L400 252 L400 389 L266 167 Z" fill="var(--hero-accent)" fill-opacity=".06"/>
+<path d="M266 137 L400 252" class="accs" stroke-opacity=".30" stroke-width="1"/>
+<path d="M266 167 L400 389" class="accs" stroke-opacity=".30" stroke-width="1"/>
+<rect x="400.0" y="252" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect x="400.0" y="287" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".92"/>
+<rect x="400.0" y="322" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect x="400.0" y="357" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<text class="mono acc" x="424.0" y="242" font-size="10" font-weight="600" transform="rotate(-90 424.0 242)">id</text>
+<rect x="451.3" y="252" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<rect x="451.3" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
+<rect x="451.3" y="322" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<rect x="451.3" y="357" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<text class="mono" x="475.3" y="242" font-size="10" opacity=".45" transform="rotate(-90 475.3 242)">object_type</text>
+<rect x="502.7" y="252" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<rect x="502.7" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
+<rect x="502.7" y="322" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<rect x="502.7" y="357" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<text class="mono" x="526.7" y="242" font-size="10" opacity=".45" transform="rotate(-90 526.7 242)">height</text>
+<rect x="554.0" y="252" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<rect x="554.0" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
+<rect x="554.0" y="322" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<rect x="554.0" y="357" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<text class="mono" x="578.0" y="242" font-size="10" opacity=".45" transform="rotate(-90 578.0 242)">geometry_lod0_0</text>
+<rect x="605.3" y="252" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<rect x="605.3" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
+<rect x="605.3" y="322" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<rect x="605.3" y="357" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
+<text class="mono" x="629.3" y="242" font-size="10" opacity=".45" transform="rotate(-90 629.3 242)">geometry_lod1_0</text>
+<rect x="656.7" y="252" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect x="656.7" y="287" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".92"/>
+<rect x="656.7" y="322" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect x="656.7" y="357" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<text class="mono acc" x="680.7" y="242" font-size="10" font-weight="600" transform="rotate(-90 680.7 242)">geometry_lod2_2</text>
+<rect x="708.0" y="252" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect x="708.0" y="287" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".92"/>
+<rect x="708.0" y="322" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect x="708.0" y="357" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<text class="mono acc" x="732.0" y="242" font-size="10" font-weight="600" transform="rotate(-90 732.0 242)">geometry_properties_lod2_2</text>
+<path d="M391 252 h6 M391 284 h6" stroke="currentColor" stroke-opacity=".28" stroke-width="1.1" fill="none"/>
+<path d="M394 252 v32" stroke="currentColor" stroke-opacity=".28" stroke-width="1.1" fill="none"/>
+<path d="M391 287 h6 M391 319 h6" stroke="var(--hero-accent)" stroke-opacity=".8" stroke-width="1.1" fill="none"/>
+<path d="M394 287 v32" stroke="var(--hero-accent)" stroke-opacity=".8" stroke-width="1.1" fill="none"/>
+<path d="M391 322 h6 M391 354 h6" stroke="currentColor" stroke-opacity=".28" stroke-width="1.1" fill="none"/>
+<path d="M394 322 v32" stroke="currentColor" stroke-opacity=".28" stroke-width="1.1" fill="none"/>
+<path d="M391 357 h6 M391 389 h6" stroke="currentColor" stroke-opacity=".28" stroke-width="1.1" fill="none"/>
+<path d="M394 357 v32" stroke="currentColor" stroke-opacity=".28" stroke-width="1.1" fill="none"/>
+<path d="M400 400 h13 l7 7 v19 a3 3 0 0 1 -3 3 h-17 a3 3 0 0 1 -3 -3 v-23 a3 3 0 0 1 3 -3 z" fill="none" stroke="var(--hero-accent)" stroke-width="1.2"/>
+<path d="M413 400 v7 h7" fill="none" stroke="var(--hero-accent)" stroke-width="1.2"/>
+<text class="mono acc" x="432" y="419" font-size="12.5" font-weight="600">building.parquet</text>
+<rect x="402" y="434" width="11" height="11" rx="2" fill="var(--hero-accent)" fill-opacity=".92"/>
+<text class="cap" x="421" y="443">column projection &#8212; only these columns are fetched</text>
+<rect x="402" y="455" width="11" height="3.2" rx="1" fill="currentColor" fill-opacity=".14"/>
+<rect x="402" y="458.9" width="11" height="3.2" rx="1" fill="var(--hero-accent)" fill-opacity=".92"/>
+<rect x="402" y="462.8" width="11" height="3.2" rx="1" fill="currentColor" fill-opacity=".14"/>
+<text class="cap" x="421" y="464">row-group statistics &#8212; only this band is fetched</text>
+<path d="M754 303.0 H878" stroke="var(--hero-accent)" stroke-width="7" stroke-opacity=".85" stroke-linecap="butt" fill="none" stroke-dasharray="20 9 9 13 24 8 14"/>
+<path d="M878 296.0 l12 7 l-12 7 z" fill="var(--hero-accent)" fill-opacity=".9"/>
+<text class="mono acc" x="816" y="287" font-size="10.5" text-anchor="middle" opacity=".85">GET Range: bytes=&#8230;</text>
+<g transform="translate(774,321)"><rect x="0" y="0.0" width="25" height="6.2" rx="1.6" fill="none" stroke="currentColor" stroke-opacity=".40" stroke-width="1.15"/><circle cx="4.6" cy="3.1" r="1.15" fill="currentColor" fill-opacity=".40"/><rect x="0" y="8.4" width="25" height="6.2" rx="1.6" fill="none" stroke="currentColor" stroke-opacity=".40" stroke-width="1.15"/><circle cx="4.6" cy="11.5" r="1.15" fill="currentColor" fill-opacity=".40"/><rect x="0" y="16.8" width="25" height="6.2" rx="1.6" fill="none" stroke="currentColor" stroke-opacity=".40" stroke-width="1.15"/><circle cx="4.6" cy="19.9" r="1.15" fill="currentColor" fill-opacity=".40"/><path d="M-4 26 L29 -4" stroke="currentColor" stroke-opacity=".62" stroke-width="1.7" stroke-linecap="round"/></g>
+<text class="tiny" x="808" y="335">no server</text>
+<polygon points="1031.2,295.2 1135.8,355.6 1028.8,417.4 924.2,357.0" fill="var(--hero-ground)" fill-opacity="1" class="edge"/>
+<polygon points="1068.1,332.2 1031.2,353.5 1031.2,305.2 1068.1,283.9" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
+<polygon points="1031.2,353.5 994.3,332.2 994.3,283.9 1012.8,263.3 1031.2,305.2" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
+<polygon points="1068.1,283.9 1031.2,305.2 1012.8,263.3 1049.7,242.0" fill="var(--hero-roof)" fill-opacity="1" class="edge"/>
+<polygon points="1031.2,262.6 994.3,283.9 1012.8,263.3 1049.7,242.0" fill="var(--hero-roof)" fill-opacity="1" class="edge"/>
+<polygon points="1014.0,360.6 984.5,377.6 984.5,340.7 1014.0,323.6" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
+<polygon points="984.5,377.6 955.0,360.6 955.0,323.6 969.7,306.6 984.5,340.7" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
+<polygon points="1014.0,323.6 984.5,340.7 969.7,306.6 999.3,289.6" fill="var(--hero-roof)" fill-opacity="1" class="edge"/>
+<polygon points="984.5,306.6 955.0,323.6 969.7,306.6 999.3,289.6" fill="var(--hero-roof)" fill-opacity="1" class="edge"/>
+<polygon points="1100.1,362.0 1065.7,381.9 1065.7,302.4 1100.1,282.5" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
+<polygon points="1065.7,381.9 1036.1,364.8 1036.1,285.3 1065.7,302.4" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
+<polygon points="1070.6,265.4 1100.1,282.5 1065.7,302.4 1036.1,285.3" fill="var(--hero-roof)" fill-opacity="1" class="edge"/>
+<rect x="909" y="434" width="11" height="11" rx="2" fill="var(--hero-roof)" fill-opacity="1" stroke="currentColor" stroke-opacity=".35" stroke-width="1"/>
+<text class="tiny" x="925" y="443">roof</text>
+<rect x="975" y="434" width="11" height="11" rx="2" fill="var(--hero-wall)" fill-opacity="1" stroke="currentColor" stroke-opacity=".35" stroke-width="1"/>
+<text class="tiny" x="991" y="443">wall</text>
+<rect x="1041" y="434" width="11" height="11" rx="2" fill="var(--hero-ground)" fill-opacity="1" stroke="currentColor" stroke-opacity=".35" stroke-width="1"/>
+<text class="tiny" x="1057" y="443">ground</text>
+<text class="cap" x="909" y="465">semantic surfaces survive the read</text>
+</svg>
