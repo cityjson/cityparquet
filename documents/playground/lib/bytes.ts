@@ -7,18 +7,31 @@
 // nor the page's resource timings can see it.
 //
 // So the worker is started from a shim that patches `XMLHttpRequest` and then
-// loads DuckDB's own worker script. The shim answers a ping with its running
-// totals. This was verified to survive DuckDB's bootstrap: the instance comes up
-// and reports `wasm_eh` exactly as it does unpatched.
+// loads DuckDB's own worker script. This was verified to survive DuckDB's
+// bootstrap: the instance comes up and reports `wasm_eh` exactly as it does
+// unpatched.
 //
-// If any of that stops working, `supported` goes false and the UI hides the
-// readout rather than showing a figure that might be wrong.
+// The shim answers on a `MessageChannel` of its own, never on the worker's
+// default channel, and that separation is load-bearing. DuckDB owns both ends
+// of the default channel and reads every message there as one of its own
+// envelopes: the main-thread handler does `response.type.toString()` on
+// anything it cannot associate with a pending request, so a reply carrying no
+// `type` throws an uncaught `TypeError` out of DuckDB's `onMessage`, and a ping
+// carrying no `type` makes the worker side manufacture a spurious error
+// response. One handshake is unavoidable — the port has to be delivered somehow
+// — and the shim stops that event before DuckDB's handler sees it, which it can
+// because its listener is registered ahead of `importScripts`. Everything after
+// the handshake stays on the port.
+//
+// If any of that stops working, `readByteStats` resolves to `null` and the UI
+// hides the readout rather than showing a figure that might be wrong.
 
 export interface ByteStats {
   readonly bytes: number;
   readonly requests: number;
 }
 
+const PORT = "__cityparquet_stats_port";
 const PING = "__cityparquet_stats_ping";
 const REPLY = "__cityparquet_stats";
 
@@ -54,24 +67,47 @@ const SHIM = `
     return send.apply(this, arguments);
   };
   self.addEventListener('message', function (e) {
-    if (e.data && e.data.${PING}) {
-      self.postMessage({ ${REPLY}: { bytes: bytes, requests: requests } });
-    }
+    if (!e.data || !e.data.${PORT}) return;
+    // The handshake is the only stats message ever to touch DuckDB's channel.
+    // This listener runs before DuckDB's, which is installed only once
+    // importScripts has evaluated, so stopping the event here keeps DuckDB from
+    // reading a message it would treat as a malformed request.
+    e.stopImmediatePropagation();
+    var port = e.ports[0];
+    if (!port) return;
+    port.onmessage = function (m) {
+      if (m.data && m.data.${PING}) {
+        port.postMessage({ ${REPLY}: { bytes: bytes, requests: requests } });
+      }
+    };
   });
 })();
 `;
+
+/** The stats port for each counting worker, kept out of the `Session` shape. */
+const ports = new WeakMap<Worker, MessagePort>();
 
 /**
  * Build a worker running DuckDB's worker script behind the counting shim.
  *
  * `workerUrl` must be absolute: the shim loads it with `importScripts`, which
  * resolves relative to the blob's own location rather than the page's.
+ *
+ * The port is handed over immediately, before `AsyncDuckDB` is constructed
+ * around the worker, so the handshake never races DuckDB's own traffic.
  */
 export function createCountingWorker(workerUrl: string): Worker {
   const absolute = new URL(workerUrl, location.href).href;
   const source = `${SHIM}\nimportScripts(${JSON.stringify(absolute)});`;
   const blob = new Blob([source], { type: "text/javascript" });
   const worker = new Worker(URL.createObjectURL(blob));
+
+  const channel = new MessageChannel();
+  worker.postMessage({ [PORT]: true }, [channel.port2]);
+  // `addEventListener` on a port does not imply `start()`, unlike `onmessage`.
+  channel.port1.start();
+  ports.set(worker, channel.port1);
+
   return worker;
 }
 
@@ -80,12 +116,15 @@ export function createCountingWorker(workerUrl: string): Worker {
  * answer, which is the signal to hide the readout rather than guess.
  */
 export function readByteStats(worker: Worker, timeoutMs = 2_000): Promise<ByteStats | null> {
+  const port = ports.get(worker);
+  if (!port) return Promise.resolve(null);
+
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value: ByteStats | null) => {
       if (settled) return;
       settled = true;
-      worker.removeEventListener("message", onMessage);
+      port.removeEventListener("message", onMessage);
       clearTimeout(timer);
       resolve(value);
     };
@@ -94,8 +133,8 @@ export function readByteStats(worker: Worker, timeoutMs = 2_000): Promise<ByteSt
       if (stats) finish(stats as ByteStats);
     };
     const timer = setTimeout(() => finish(null), timeoutMs);
-    worker.addEventListener("message", onMessage);
-    worker.postMessage({ [PING]: true });
+    port.addEventListener("message", onMessage);
+    port.postMessage({ [PING]: true });
   });
 }
 
