@@ -46,7 +46,7 @@ change what the published numbers mean.
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `formats/scaling_{read,write,compression,ordering}_results/` | **yes** — the configuration-axis evidence, four cardinalities of one 3DBAG slice                                                                                                                                                                               |
 | `formats/archive/2026-08-17-catalogue-corpus/`               | **yes** — the retired 30-dataset corpus and its results, kept so the earlier claims stay checkable                                                                                                                                                             |
-| `formats/READ_BENCHMARK.md`, `formats/README.md`             | **yes** — the methodology, including all 18 fairness caveats                                                                                                                                                                                                   |
+| `formats/READ_BENCHMARK.md`, `formats/README.md`             | **yes** — the methodology, including all 22 fairness caveats                                                                                                                                                                                                   |
 | `databases/results/`                                         | **no, currently** — the CSVs were removed with the read benchmark's, for the same reason and a second one: on Linux the harness recorded `peak_rss_bytes` in KiB, not bytes, so five result files were 1024× wrong. `just db bench <dataset>` repopulates them |
 | `formats/read_results/`, `formats/ordering_results/`         | **no, currently** — the CSVs were removed when the read corpus was replaced (six fully-comparable cityjson.org datasets in place of thirty partly-comparable ones). `just bench` repopulates them                                                              |
 | `formats/data/` (~24 GB), `formats/tools/`                   | **no** — fetched from pinned URLs with pinned byte sizes by `just fetch-data` / `just fetch-scaling-data` / `just fetch-tools`                                                                                                                                 |
@@ -64,7 +64,7 @@ re-run puts one back. Treat every such number there as provisional.
 
 ## Caveats that are load-bearing
 
-Read the family's own methodology before citing anything from it. Three caveats
+Read the family's own methodology before citing anything from it. Four caveats
 are quoted here because they are the ones most likely to be dropped in
 translation:
 
@@ -89,7 +89,17 @@ translation:
    (`3dbag_9-284-556`) additionally loses an LoD in the round trip, so its
    `citygml` row is not content-equivalent to its other seven.
 
-`formats/READ_BENCHMARK.md` carries eighteen such caveats. They are numbered and
+4. **`id-lookup` is four rows per format, and only `id-miss` compares across
+   them.** Each format is probed at 10%, 50% and 90% of the CityJSONSeq
+   stream's order plus one verified-absent id, because a single target made
+   the number a function of where that id sat rather than of the format. The
+   three hit rows are not comparable across formats — `citygml` and
+   `flatcitybuf` do not preserve the seq order, so their positions are
+   nominal and their times non-monotonic. `id-miss` is position-free and is
+   what separates a format with an id index from one without.
+   (`formats/READ_BENCHMARK.md`, Caveats 9 and 20.)
+
+`formats/READ_BENCHMARK.md` carries twenty-two such caveats. They are numbered and
 cross-referenced from the tables they qualify; the summary page quotes them
 verbatim rather than paraphrasing, so a page and its methodology cannot drift.
 

@@ -5,6 +5,16 @@ city models sampled from the city3d STAC catalogue, 6.5 GB on the wire, run on
 **2026-08-17**. It was retired on **2026-08-23** and replaced by the six-dataset
 cityjson.org corpus now pinned in `benchmark/scripts/fetch_benchmark.sh`.
 
+These CSVs also predate the **2026-08-25** query redesign, so their
+`bbox-query` and `id-lookup` rows answer questions the current harness no
+longer asks. Their bbox windows were sized as a fraction of the dataset's
+x/y _extent_ anchored at its lower-left corner — a construction that returned
+zero rows for `bbox-1pct` on every dataset and every format — where windows
+are now searched to a target fraction of ROWS. Their `id-lookup` is one
+table-order-first target per format, where it is now three positioned probes
+plus a verified miss. Neither column is comparable with a current run; see
+`benchmark/formats/READ_BENCHMARK.md`, Caveats 9 and 21.
+
 Nothing in here is read by any recipe. `just plot` / `just plot-pretty` chart
 `benchmark/formats/read_results/` and `benchmark/formats/ordering_results/`, which this directory has
 been emptied out of; the CSVs below are kept so a number already quoted
