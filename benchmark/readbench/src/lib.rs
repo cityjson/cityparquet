@@ -4,9 +4,11 @@
 //! drives a whole (format x scenario) matrix, and a `--child` worker it
 //! spawns once per measurement. This library holds the parts that the
 //! binary, the coordinator, and the integration tests must all spell
-//! identically: [`format`], the set of formats measured, and [`naming`],
-//! the input-extension convention every artefact path is derived through.
+//! identically: [`format`], the set of formats measured, [`naming`], the
+//! input-extension convention every artefact path is derived through, and
+//! [`params`], the query parameters every measurement is driven with.
 
 pub mod format;
 pub mod naming;
+pub mod params;
 pub mod scaling;
