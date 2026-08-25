@@ -931,3 +931,73 @@ fn id_lookup_is_skipped_and_disclosed_when_there_is_no_seq_artefact() {
         "the skip must be disclosed and name what is missing; got stderr:\n{stderr}"
     );
 }
+
+/// The run writes its resolved parameters beside the CSV. That file is the
+/// ONE description of which windows, ids and attributes a run measured —
+/// `benchmark/scripts/readbench_duckdb.sh` reads it rather than re-deriving
+/// the same choices in bash, so the two cannot drift.
+#[test]
+fn the_run_writes_a_resolved_params_sidecar_beside_the_csv() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+
+    let out_csv = prepared.path().join("out.csv");
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "count",
+        "--formats",
+        "cityparquet",
+    ]);
+
+    let sidecar = prepared.path().join("out.csv.params.json");
+    assert!(
+        sidecar.exists(),
+        "expected a sidecar at {}",
+        sidecar.display()
+    );
+
+    let text = std::fs::read_to_string(&sidecar).expect("reading the sidecar");
+    let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+    assert_eq!(
+        parsed["windows"].as_array().expect("windows").len(),
+        3,
+        "three windows in the sidecar"
+    );
+    assert_eq!(
+        parsed["id_probes"].as_array().expect("id_probes").len(),
+        4,
+        "four id probes in the sidecar"
+    );
+    assert!(
+        !parsed["object_type"]
+            .as_str()
+            .expect("object_type")
+            .is_empty(),
+        "the sidecar carries the attr-filter predicate"
+    );
+    assert!(
+        parsed["cp_object_total"].as_u64().expect("cp_object_total") > 0,
+        "the sidecar carries the shared denominator"
+    );
+
+    // Every window in the sidecar must be populated — the whole point.
+    for window in parsed["windows"].as_array().unwrap() {
+        assert!(
+            window["achieved"].as_f64().expect("achieved") > 0.0,
+            "sidecar window {} selects no rows",
+            window["tag"]
+        );
+    }
+}

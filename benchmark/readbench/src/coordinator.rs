@@ -116,6 +116,15 @@ pub enum Transport {
 const CSV_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,\
 peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests";
 
+/// The resolved-parameters sidecar for a results CSV: the CSV's own path with
+/// `.params.json` appended, so the two travel together and a run cannot leave
+/// a stale sidecar behind for a different CSV.
+pub fn params_sidecar_path(out: &Path) -> PathBuf {
+    let mut name = out.as_os_str().to_os_string();
+    name.push(".params.json");
+    PathBuf::from(name)
+}
+
 /// Runs `opts`'s whole (format x scenario) matrix, writing `opts.out` fresh.
 pub fn run(opts: &RunOptions) -> Result<()> {
     if opts.repeat == 0 {
@@ -285,6 +294,18 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
+
+    // The resolved parameters, beside the CSV this run owns. It is the ONE
+    // description of which windows, ids and attributes this run measured —
+    // `benchmark/scripts/readbench_duckdb.sh` reads it rather than
+    // re-deriving the same choices in bash, so the two cannot drift.
+    let sidecar = params_sidecar_path(&opts.out);
+    fs::write(
+        &sidecar,
+        serde_json::to_string_pretty(&resolved)
+            .context("serialising the resolved query parameters")?,
+    )
+    .with_context(|| format!("writing {}", sidecar.display()))?;
     let mut csv = OpenOptions::new()
         .create(true)
         .write(true)
