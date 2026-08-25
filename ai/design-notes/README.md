@@ -20,6 +20,7 @@ instead — that is the maintained, normative half.
 | `specs/2026-08-21-other-column-bbox-simplification-design.md` | Collapsing per-member overflow columns into one `other`; `bbox` as subtree ∪ declared extent |
 | `plans/2026-08-21-other-column-bbox-simplification.md` | The implementation plan for the above |
 | `plans/2026-08-23-cityparquet-monorepo-migration.md` | The plan that produced this repository's layout |
+| `specs/2026-08-24-geoparquet-2-conformance-design.md` | Removing the arrow-native encoding and adopting GeoParquet 2.0: the `GEOMETRY` logical type, `GeospatialStatistics`, and why a solid column is left unannotated |
 | `specs/2026-08-24-sql-playground-design.md` | The DuckDB-WASM SQL playground at `/playground`: runtime, extension sourcing, and the CORS the data bucket must serve |
 
 Note that these notes were written while the code lived in several separate
