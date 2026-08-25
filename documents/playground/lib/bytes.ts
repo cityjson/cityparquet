@@ -43,11 +43,22 @@ const REPLY = "__cityparquet_stats";
 const SHIM = `
 (function () {
   var bytes = 0, requests = 0;
+  var open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method) {
+    this.__cityparquetMethod = String(method || '').toUpperCase();
+    return open.apply(this, arguments);
+  };
   var send = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.send = function () {
     var xhr = this;
     xhr.addEventListener('load', function () {
       requests++;
+      // A HEAD transfers no body, and its Content-Length describes the file
+      // rather than anything that crossed the network. DuckDB sends several per
+      // query — to size the file and to test for range support — so counting
+      // them through the fallback below reported the whole 16.4 GB for a query
+      // that had read a few megabytes of it.
+      if (xhr.__cityparquetMethod === 'HEAD') return;
       var n = 0;
       try {
         var r = xhr.response;
@@ -55,7 +66,8 @@ const SHIM = `
         else if (typeof r === 'string') n = r.length;
       } catch (e) { /* response can throw for some responseTypes */ }
       // Content-Length is CORS-safelisted, so it is readable cross-origin even
-      // when Content-Range and friends are not.
+      // when Content-Range and friends are not. On a 206 it is the length of
+      // the part, which is exactly what was transferred.
       if (!n) {
         try {
           var cl = xhr.getResponseHeader('Content-Length');
