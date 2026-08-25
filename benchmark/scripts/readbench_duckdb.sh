@@ -65,30 +65,34 @@
 # 5, 6-decimal `time_s`/`time_mad_s`):
 #   count        SELECT count(*)                                    (selectivity empty)
 #   full-read    SELECT sum(hash(COLUMNS(*)))  (forces full decode, M5 pattern; selectivity empty)
-#   bbox-query   one row per 1%/5%/25% lower-left window (tagged in notes),
+#   bbox-query   one row per window in the sidecar (tagged in notes),
 #                testing bbox.{xmax,xmin,ymax,ymin} overlap only (the window's
 #                z span is always the dataset's FULL z range, so a z test
-#                would never exclude a row — see `bbox_window` below)
-#   attr-filter  the most-frequent `object_type`, WHERE-equality count
-#   attr-stats   only if --numeric-column is given (else skipped, noted on stderr)
-#   project      SELECT count(object_type) (a projected non-null count)
+#                would never exclude a row)
+#   attr-filter  the sidecar's `object_type`, WHERE-equality count
+#   attr-stats   only if the sidecar names a numeric column (else skipped,
+#                noted on stderr)
+#   project      SELECT count(<that same numeric column>)
 #
-# Window construction and the AttrFilter tie-break MATCH
-# `benchmark/readbench/src/coordinator.rs` exactly, so `duckdb-
-# parquet` rows are directly comparable to that coordinator's `cityparquet`/
-# `cityparquet-hilbert` rows in the same CSV:
-#   - `bbox_window(bbox, frac)`: lower-left corner anchored, `frac` of the
-#     x/y extent, full original z range — identical to `coordinator.rs`'s own
-#     `bbox_window` (and `crates/cli/src/bench.rs`'s window
-#     before it).
-#   - `AttrFilter`'s predicate value: the most-frequent `object_type`,
-#     ties broken by the SMALLEST string value (`ORDER BY c DESC, object_type
-#     LIMIT 1` picks the lexicographically-first name among equal counts) —
-#     the SQL equivalent of `coordinator.rs`'s
-#     `counts.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))`,
-#     which (worked through: for a tie, `b.0.cmp(&a.0)` is `Greater` exactly
-#     when `a.0 < b.0`, so the smaller string is what `max_by` keeps) selects
-#     the SAME value this script's `ORDER BY ... object_type LIMIT 1` does.
+# EVERY query parameter is READ from the coordinator's resolved-parameters
+# sidecar (`--params <OUT_CSV>.params.json`), never derived here. That is what
+# makes `duckdb-parquet` rows directly comparable to the coordinator's own
+# `cityparquet`/`cityparquet-hilbert` rows in the same CSV — structurally,
+# rather than by two implementations of the same rules agreeing.
+#
+# This script therefore MUST run AFTER `cityparquet-readbench run` for the
+# same dataset, which is already true: the coordinator TRUNCATES the CSV this
+# script appends to. A missing or unreadable sidecar is fatal; there is no
+# fall back to deriving the choices here, because a silent fallback is exactly
+# the drift the sidecar removes.
+#
+# What used to live here instead: a bash `bbox_window` reproducing the
+# coordinator's lower-left construction, and a `GROUP BY object_type ORDER BY
+# c DESC, object_type LIMIT 1` reproducing its tie-break — both with a comment
+# arguing they matched. The `project` scenario counted `object_type` while the
+# coordinator counted the numeric column, so the parity claim was already
+# false in one place.
+#
 #   - The object-level denominator for `attr-filter`/`attr-stats`/`project`
 #     selectivity is `count(*)` over THIS table — which, because this
 #     script always queries a `cityparquet` package's own main table (one
@@ -133,13 +137,16 @@ CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,p
 
 usage() {
   cat >&2 <<EOF
-usage: $0 PARQUET_PKG OUT_CSV [--numeric-column COL] [--repeat N]
+usage: $0 PARQUET_PKG OUT_CSV --params PARAMS_JSON [--repeat N]
   PARQUET_PKG        a CityParquet package directory whose metadata.json
                       STAC Item declares exactly one cityparquet-objects
                       asset (a single-family by-type package, e.g. delft)
   OUT_CSV            the read-benchmark result CSV to append duckdb-parquet rows to
-  --numeric-column   a real numeric (Int64/Float64/Double) attribute column;
-                      enables the attr-stats scenario (skipped without it)
+  --params FILE      REQUIRED. The coordinator's resolved-parameters sidecar,
+                     `<OUT_CSV>.params.json`, written by
+                     `cityparquet-readbench run`. Every window, the
+                     attr-filter predicate and the numeric column are READ
+                     from it, never re-derived here.
   --repeat N         warm repeats per timed measurement (default: 5)
 EOF
 }
@@ -153,14 +160,14 @@ PARQUET_PKG=$1
 OUT_CSV=$2
 shift 2
 
-NUMERIC_COLUMN=""
+PARAMS=""
 REPEAT=5
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --numeric-column)
-      [[ $# -ge 2 ]] || { echo "error: --numeric-column requires a value" >&2; exit 1; }
-      NUMERIC_COLUMN=$2
+    --params)
+      [[ $# -ge 2 ]] || { echo "error: --params requires a value" >&2; exit 1; }
+      PARAMS=$2
       shift 2
       ;;
     --repeat)
@@ -180,6 +187,26 @@ if ! [[ "$REPEAT" =~ ^[0-9]+$ ]] || [[ "$REPEAT" -lt 1 ]]; then
   echo "error: --repeat must be a positive integer, got '$REPEAT'" >&2
   exit 1
 fi
+
+# --params is REQUIRED, and an unreadable one is fatal. There is deliberately
+# NO fall back to deriving the windows and the attribute choices here: a
+# silent fallback is exactly the drift the sidecar exists to remove, and it
+# would put `duckdb-parquet` rows next to coordinator rows that answered a
+# different question under the same tag.
+if [[ -z "$PARAMS" ]]; then
+  echo "error: --params is required (the coordinator's <OUT_CSV>.params.json); run" >&2
+  echo "       \`cityparquet-readbench run\` for this dataset first" >&2
+  exit 1
+fi
+if [[ ! -r "$PARAMS" ]]; then
+  echo "error: cannot read the resolved-parameters file '$PARAMS'; run" >&2
+  echo "       \`cityparquet-readbench run\` for this dataset first" >&2
+  exit 1
+fi
+command -v jq >/dev/null 2>&1 || {
+  echo "error: jq is required to read the resolved-parameters file" >&2
+  exit 1
+}
 
 # By-type is the only, mandatory table layout: a package's `metadata.json`
 # STAC Item must declare exactly one object table for this script's
@@ -348,7 +375,7 @@ read -r CAL_MEDIAN CAL_MAD <<< "$(median_and_mad "${CAL_TIMES[@]}")"
 echo "# calibration: duckdb process startup (no extension LOAD needed for plain Parquet) = ${CAL_MEDIAN}s per invocation (median of 5, MAD ${CAL_MAD}s); included, undeducted, in every time_s sample below" >&2
 
 TOTAL=$(run_sql "SELECT count(*) FROM read_parquet('$TABLE');")
-echo "cityparquet-readbench duckdb-parquet baseline: dataset=$DATASET table=$TABLE total_objects=$TOTAL repeat=$REPEAT numeric_column=${NUMERIC_COLUMN:-<none>}" >&2
+echo "cityparquet-readbench duckdb-parquet baseline: dataset=$DATASET table=$TABLE total_objects=$TOTAL repeat=$REPEAT params=$PARAMS" >&2
 
 # --- count ---
 SQL="SELECT count(*) FROM read_parquet('$TABLE');"
@@ -362,30 +389,27 @@ read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
 RSS=$(capture_rss "$SQL")
 append_row "$DATASET" "duckdb-parquet" "full-read" "" "$TOTAL" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" ""
 
-# --- bbox-query: 1%/5%/25% lower-left windows of the dataset's own x/y extent ---
-BBOX_ROW=$(run_sql "SELECT min(bbox.xmin), min(bbox.ymin), max(bbox.xmax), max(bbox.ymax) FROM read_parquet('$TABLE');")
-IFS=',' read -r DXMIN DYMIN DXMAX DYMAX <<< "$BBOX_ROW"
-
-for entry in "0.01:bbox-1pct" "0.05:bbox-5pct" "0.25:bbox-25pct"; do
-  FRAC="${entry%%:*}"
-  TAG="${entry##*:}"
-  WXMAX=$(python3 -c "print($DXMIN + ($DXMAX - $DXMIN) * $FRAC)")
-  WYMAX=$(python3 -c "print($DYMIN + ($DYMAX - $DYMIN) * $FRAC)")
-  # z is always the FULL dataset range (see this script's header), so no
-  # z clause is needed: it can never exclude a row.
-  SQL="SELECT count(*) FROM read_parquet('$TABLE') WHERE bbox.xmax >= $DXMIN AND bbox.xmin <= $WXMAX AND bbox.ymax >= $DYMIN AND bbox.ymin <= $WYMAX;"
+# --- bbox-query: the coordinator's own searched windows, read from the
+# sidecar. Each targets a fraction of ROWS (1%/5%/25%); a window whose target
+# was not reachable on this data carries `approx` in its tag, exactly as the
+# coordinator's own rows do. z is always the FULL dataset range (see this
+# script's header), so no z clause is needed: it can never exclude a row.
+while IFS=$'\t' read -r TAG APPROX WXMIN WYMIN _WZMIN WXMAX WYMAX _WZMAX; do
+  [[ -n "$TAG" ]] || continue
+  NOTES="$TAG"
+  [[ "$APPROX" == "true" ]] && NOTES="$TAG;approx"
+  SQL="SELECT count(*) FROM read_parquet('$TABLE') WHERE bbox.xmax >= $WXMIN AND bbox.xmin <= $WXMAX AND bbox.ymax >= $WYMIN AND bbox.ymin <= $WYMAX;"
   MATCHES=$(run_sql "$SQL")
   read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
   RSS=$(capture_rss "$SQL")
   SEL=$(safe_div "$MATCHES" "$TOTAL")
-  append_row "$DATASET" "duckdb-parquet" "bbox-query" "$SEL" "$MATCHES" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" "$TAG"
-done
+  append_row "$DATASET" "duckdb-parquet" "bbox-query" "$SEL" "$MATCHES" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" "$NOTES"
+done < <(jq -r '.windows[] | [.tag, .approx, .window[0], .window[1], .window[2], .window[3], .window[4], .window[5]] | @tsv' "$PARAMS")
 
-# --- attr-filter: object_type = <most-frequent value>, ties broken by the
-# smallest string (matches coordinator.rs's max_by tie-break exactly; see
-# this script's header) ---
-ATTR_ROW=$(run_sql "SELECT object_type, count(*) c FROM read_parquet('$TABLE') GROUP BY object_type ORDER BY c DESC, object_type LIMIT 1;")
-IFS=',' read -r OBJECT_TYPE OT_COUNT <<< "$ATTR_ROW"
+# --- attr-filter: the coordinator's own most-frequent object_type, read from
+# the sidecar rather than re-derived with a GROUP BY here (the tie-break used
+# to be duplicated in both places and claimed to match) ---
+OBJECT_TYPE="$(jq -r '.object_type' "$PARAMS")"
 
 SQL="SELECT count(*) FROM read_parquet('$TABLE') WHERE object_type = '$OBJECT_TYPE';"
 MATCHES=$(run_sql "$SQL")
@@ -394,7 +418,8 @@ RSS=$(capture_rss "$SQL")
 SEL=$(safe_div "$MATCHES" "$TOTAL")
 append_row "$DATASET" "duckdb-parquet" "attr-filter" "$SEL" "$MATCHES" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" "attr=object_type=$OBJECT_TYPE"
 
-# --- attr-stats: only if a numeric column was given ---
+# --- attr-stats: only if the dataset has a numeric attribute at all ---
+NUMERIC_COLUMN="$(jq -r '.numeric_attr // empty' "$PARAMS")"
 if [[ -n "$NUMERIC_COLUMN" ]]; then
   SQL="SELECT min($NUMERIC_COLUMN), max($NUMERIC_COLUMN), sum($NUMERIC_COLUMN), count($NUMERIC_COLUMN) FROM read_parquet('$TABLE');"
   STATS_ROW=$(run_sql "$SQL")
@@ -405,15 +430,22 @@ if [[ -n "$NUMERIC_COLUMN" ]]; then
   append_row "$DATASET" "duckdb-parquet" "attr-stats" "$SEL" "$CNT_V" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" \
     "attr=$NUMERIC_COLUMN min=$MIN_V max=$MAX_V sum=$SUM_V"
 else
-  echo "# skip: attr-stats scenario requires --numeric-column (none given)" >&2
+  echo "# skip: attr-stats — the dataset has no numeric attribute column (never fabricated)" >&2
 fi
 
-# --- project: single-column projected non-null count ---
-SQL="SELECT count(object_type) FROM read_parquet('$TABLE');"
-CNT=$(run_sql "$SQL")
-read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
-RSS=$(capture_rss "$SQL")
-SEL=$(safe_div "$CNT" "$TOTAL")
-append_row "$DATASET" "duckdb-parquet" "project" "$SEL" "$CNT" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" ""
+# --- project: single-column projected non-null count, on the SAME column the
+# coordinator projects. This counted `object_type` while the coordinator
+# counted the numeric column, so the two `project` rows were different
+# queries sharing a scenario name. ---
+if [[ -n "$NUMERIC_COLUMN" ]]; then
+  SQL="SELECT count($NUMERIC_COLUMN) FROM read_parquet('$TABLE');"
+  CNT=$(run_sql "$SQL")
+  read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
+  RSS=$(capture_rss "$SQL")
+  SEL=$(safe_div "$CNT" "$TOTAL")
+  append_row "$DATASET" "duckdb-parquet" "project" "$SEL" "$CNT" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" "attr=$NUMERIC_COLUMN"
+else
+  echo "# skip: project — the dataset has no numeric attribute column (never fabricated)" >&2
+fi
 
 echo "readbench_duckdb: appended duckdb-parquet rows for dataset=$DATASET to $OUT_CSV" >&2

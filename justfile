@@ -314,9 +314,10 @@ readbench-prepare INPUT OUTDIR=(BENCH / "data/readbench") FORMATS='':
 # existing `just bench FOLDER OUT` call's second argument.
 #
 # THE `duckdb-parquet` BASELINE IS OPT-IN. It is appended to the same CSV
-# (`benchmark/scripts/readbench_duckdb.sh`, auto-detecting a numeric
-# attribute column via a `DESCRIBE` query where possible — omitted, skipping
-# attr-stats, if none is found) ONLY when `duckdb-parquet` is named in FORMATS.
+# (`benchmark/scripts/readbench_duckdb.sh`, driven entirely by the
+# coordinator's resolved-parameters sidecar — the windows, the attr-filter
+# predicate and the numeric column all come from it, and it must therefore
+# run after the coordinator) ONLY when `duckdb-parquet` is named in FORMATS.
 # It is an SQL-ENGINE baseline over a file already in the set, not a format, so
 # a run labelled "format comparison" must not carry it unasked:
 # `Format::DEFAULT_SET` excludes it, and this recipe now agrees rather than
@@ -396,36 +397,14 @@ bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
 
         if [[ "$want_duckdb" -eq 1 ]]; then
             pkg="{{BENCH}}/data/readbench/${name}.parquet"
-            # By-type is the only, mandatory table layout: resolve the
-            # package's single main table from its own metadata.json STAC
-            # Item (the `cityparquet-objects` asset role) rather than
-            # assuming the pre-by-type "cityobjects.parquet" name.
-            # `package_tables.py --single` succeeds only for a single-family
-            # dataset; an empty `main_table` here just skips the optional
-            # attr-stats column detection, and `readbench_duckdb.sh` below
-            # still hard-fails clearly for a multi-family/multi-table package.
-            main_table="$(./{{BENCH_SCRIPTS}}/package_tables.py "$pkg" --single 2>/dev/null || true)"
-            numeric_col=""
-            if [[ -n "$main_table" ]]; then
-                numeric_col="$(duckdb -csv -noheader -c "
-                    SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('${pkg}/${main_table}'))
-                    WHERE column_type IN ('BIGINT', 'DOUBLE')
-                      AND column_name NOT IN ('id', 'feature_id', 'object_type', 'parents',
-                        'children', 'children_roles', 'bbox', 'material', 'texture',
-                        'template', 'other')
-                      AND column_name NOT LIKE 'geometry_lod%'
-                      AND column_name NOT LIKE 'geometry_properties_lod%'
-                    ORDER BY column_name LIMIT 1;
-                " 2>/dev/null || true)"
-            fi
-
-            if [[ -n "$numeric_col" ]]; then
-                echo "-- numeric attribute column for attr-stats: ${numeric_col}"
-                ./{{BENCH_SCRIPTS}}/readbench_duckdb.sh "$pkg" "$out" --numeric-column "$numeric_col" --repeat 7
-            else
-                echo "-- no numeric attribute column detected; skipping attr-stats for duckdb-parquet"
-                ./{{BENCH_SCRIPTS}}/readbench_duckdb.sh "$pkg" "$out" --repeat 7
-            fi
+            # Every query parameter comes from the coordinator's own
+            # resolved-parameters sidecar, written beside "$out" by the
+            # `cityparquet-readbench run` above. The numeric-column
+            # detection that used to live here (a DESCRIBE plus a
+            # reserved-name exclusion list, reproducing the coordinator's
+            # own choice in SQL) is gone with it: two implementations of one
+            # rule is exactly what the sidecar removes.
+            ./{{BENCH_SCRIPTS}}/readbench_duckdb.sh "$pkg" "$out" --params "${out}.params.json" --repeat 7
         else
             echo "-- duckdb-parquet not requested; the SQL-engine baseline is not appended"
         fi
@@ -654,6 +633,7 @@ scripts-test:
     ./{{BENCH_SCRIPTS}}/tests/readbench_prepare_test.sh
     ./{{BENCH_SCRIPTS}}/tests/fetch_benchmark_test.sh
     ./{{BENCH_SCRIPTS}}/tests/bench_recipe_test.sh
+    ./{{BENCH_SCRIPTS}}/tests/readbench_duckdb_test.sh
 
 # ---------------------------------------------------------------------------
 # Database benchmark (benchmark/databases) — its own uv project and justfile
