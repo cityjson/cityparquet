@@ -265,6 +265,12 @@ export default function Playground() {
           )}
           . Queries run against public data over HTTPS range requests.
         </p>
+        <p>
+          DuckDB runs here as WebAssembly, which fetches those ranges one at a time on a single
+          thread; native DuckDB fetches them in parallel. A query over the 16.4 GB package takes
+          tens of seconds in a tab where the same query takes a few seconds natively. It reads the
+          same bytes either way — the difference is the browser, not the encoding.
+        </p>
       </footer>
     </div>
   );
