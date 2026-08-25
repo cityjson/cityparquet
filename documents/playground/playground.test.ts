@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DATA_BASE_URL, EXTENSIONS } from "./config";
+import { DATA_BASE_URL, EXTENSIONS, ROWS_PER_PAGE, ROW_DISPLAY_CAP } from "./config";
 import { PRESETS, DEFAULT_PRESET_ID, findPreset } from "./presets";
 import { buildHash, decodeSql, encodeSql, parseHash } from "./lib/share";
 import { formatBytes } from "./lib/bytes";
@@ -146,6 +146,15 @@ describe("the preset registry", () => {
   it("returns nothing for an unknown or absent id", () => {
     expect(findPreset("no-such-preset")).toBeUndefined();
     expect(findPreset(null)).toBeUndefined();
+  });
+});
+
+describe("the results grid", () => {
+  it("pages within the cap rather than past it", () => {
+    // A page larger than the cap would render one page and hide the control,
+    // which is the bug this pairing exists to prevent.
+    expect(ROWS_PER_PAGE).toBeGreaterThan(0);
+    expect(ROWS_PER_PAGE).toBeLessThanOrEqual(ROW_DISPLAY_CAP);
   });
 });
 

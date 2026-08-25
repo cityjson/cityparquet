@@ -49,7 +49,15 @@ export const EXTENSION_SOURCE: ExtensionSource = repository
 export const ALLOW_UNSIGNED = EXTENSION_SOURCE.kind === "repository";
 
 /** Rows held in the results grid. A query may match far more; the UI says so. */
-export const ROW_DISPLAY_CAP = 500;
+export const ROW_DISPLAY_CAP = 5_000;
+
+/**
+ * Rows shown at once. The cap above is what a result may hold; this is what the
+ * page renders, so a five-thousand-row answer does not turn into a five-
+ * thousand-row page. The grid scrolls within a fixed height and pages through
+ * the rest.
+ */
+export const ROWS_PER_PAGE = 500;
 
 /**
  * Per-query deadline. A host that answers range requests but hides

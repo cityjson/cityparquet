@@ -42,6 +42,9 @@ const { config } = data;
     --cp-mono: var(--blume-font-mono, ui-monospace, SFMono-Regular, monospace);
     --cp-border: var(--blume-color-border, color-mix(in srgb, currentColor 14%, transparent));
     --cp-surface: var(--blume-color-surface, color-mix(in srgb, currentColor 3%, transparent));
+    /* The page's own ground. Needed wherever something has to be opaque over
+       scrolling content — `--cp-surface` is a 3% tint, not a background. */
+    --cp-page: var(--blume-background, Canvas);
     --cp-hover: color-mix(in srgb, currentColor 6%, transparent);
     --cp-dim: color-mix(in srgb, currentColor 55%, transparent);
     --cp-accent: var(--blume-color-primary, #7253ed);
@@ -259,7 +262,11 @@ const { config } = data;
 
   /* Results */
   .cp-table-scroll {
-    overflow-x: auto;
+    /* Both axes, and a ceiling on the vertical one: a result is a panel on the
+       page rather than something that stretches it. The sticky header below
+       only does anything because of this. */
+    overflow: auto;
+    max-height: min(60vh, 34rem);
     border: 1px solid var(--cp-border);
     border-radius: 4px;
   }
@@ -286,8 +293,13 @@ const { config } = data;
   .cp-table thead th {
     position: sticky;
     top: 0;
-    background: var(--cp-surface);
-    backdrop-filter: blur(4px);
+    z-index: 1;
+    /* Opaque, or the rows scroll through the header. The separator is a shadow
+       rather than a border because under `border-collapse: collapse` a sticky
+       cell's own border scrolls away with the rows it was collapsed against. */
+    background-color: var(--cp-page);
+    background-image: linear-gradient(var(--cp-surface), var(--cp-surface));
+    box-shadow: inset 0 -1px 0 var(--cp-border);
     font-weight: 600;
   }
 
@@ -304,6 +316,40 @@ const { config } = data;
   .cp-null {
     color: var(--cp-dim);
     font-style: italic;
+  }
+
+  .cp-pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-top: 0.6rem;
+  }
+
+  .cp-page-button {
+    padding: 0.25rem 0.7rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+
+  .cp-page-button:hover:not(:disabled) {
+    background: var(--cp-hover);
+  }
+
+  .cp-page-button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .cp-page-count {
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--cp-dim);
   }
 
   .cp-truncated,
