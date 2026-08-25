@@ -2,7 +2,9 @@ import { useEffect, useRef } from "react";
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { sql, PostgreSQL } from "@codemirror/lang-sql";
+import { tags } from "@lezer/highlight";
 
 export interface EditorHandle {
   /** Insert text at the cursor and keep focus, as a click-to-insert should. */
@@ -16,6 +18,31 @@ interface EditorProps {
   disabled: boolean;
   handleRef?: { current: EditorHandle | null };
 }
+
+/**
+ * The colours, against the tags `@codemirror/lang-sql` actually emits — it has
+ * seventeen, and the ones left out inherit the surrounding text rather than
+ * being given a colour that means nothing. `lang-sql` supplies the parse tree;
+ * CodeMirror renders it monochrome until a highlight style like this one names
+ * what each tag should look like.
+ *
+ * The values are the site's own, so a SELECT here reads as a SELECT does in the
+ * specification: `--cp-syntax-*` resolves to GitHub Light or GitHub Dark, which
+ * is the pair Shiki renders the documentation's code blocks with.
+ */
+const highlight = HighlightStyle.define([
+  { tag: [tags.keyword, tags.operator, tags.typeName], color: "var(--cp-syntax-keyword)" },
+  // Quoted identifiers are `special(string)`: "my column" is not a string, but
+  // it is quoted, and colouring it as one is what every SQL editor does.
+  { tag: [tags.string, tags.special(tags.string)], color: "var(--cp-syntax-string)" },
+  { tag: [tags.number, tags.bool, tags.null], color: "var(--cp-syntax-number)" },
+  { tag: [tags.standard(tags.name), tags.special(tags.name)], color: "var(--cp-syntax-builtin)" },
+  {
+    tag: [tags.lineComment, tags.blockComment],
+    color: "var(--cp-syntax-comment)",
+    fontStyle: "italic",
+  },
+]);
 
 /**
  * CodeMirror 6, wired to the site's theme tokens rather than a packaged theme,
@@ -52,6 +79,7 @@ export default function Editor({ value, onChange, onRun, disabled, handleRef }: 
         ]),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         sql({ dialect: PostgreSQL, upperCaseKeywords: false }),
+        syntaxHighlighting(highlight),
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());

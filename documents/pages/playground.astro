@@ -49,12 +49,30 @@ const { config } = data;
     --cp-dim: color-mix(in srgb, currentColor 55%, transparent);
     --cp-accent: var(--blume-color-primary, #7253ed);
 
+    /* The editor's syntax colours. These are the GitHub Light values the site's
+       own Shiki blocks use, named rather than repeated per token, so a SELECT
+       in the console reads the same as a SELECT in the specification. */
+    --cp-syntax-keyword: #d73a49;
+    --cp-syntax-string: #032f62;
+    --cp-syntax-number: #005cc5;
+    --cp-syntax-builtin: #6f42c1;
+    --cp-syntax-comment: #6a737d;
+
     display: flex;
     flex-direction: column;
     gap: 1rem;
     max-width: 90rem;
     margin: 0 auto;
     padding: 1.5rem 1.25rem 3rem;
+  }
+
+  :root[data-theme="dark"] .cp-playground {
+    /* GitHub Dark, the other half of the pair. The comment grey is shared:
+       it is the one token the two themes agree on. */
+    --cp-syntax-keyword: #f97583;
+    --cp-syntax-string: #9ecbff;
+    --cp-syntax-number: #79b8ff;
+    --cp-syntax-builtin: #b392f0;
   }
 
   .cp-header {
