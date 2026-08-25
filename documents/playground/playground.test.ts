@@ -15,6 +15,8 @@ import { serialiser } from "./lib/serialise";
 import { PRESETS, DEFAULT_PRESET_ID, findPreset } from "./presets";
 import { buildHash, decodeSql, encodeSql, parseHash } from "./lib/share";
 import { formatBytes } from "./lib/bytes";
+import { formatDeadline } from "./lib/query";
+import { QUERY_TIMEOUT_MS } from "./config";
 
 describe("share links", () => {
   it("round-trips SQL, including the characters a URL would otherwise eat", () => {
@@ -167,6 +169,16 @@ describe("the results grid", () => {
     // which is the bug this pairing exists to prevent.
     expect(ROWS_PER_PAGE).toBeGreaterThan(0);
     expect(ROWS_PER_PAGE).toBeLessThanOrEqual(ROW_DISPLAY_CAP);
+  });
+});
+
+describe("the query deadline", () => {
+  it("reads in minutes once it is minutes long", () => {
+    // The message is built from the constant, so raising the deadline without
+    // this would have the page announce a "Timeout after 600s".
+    expect(formatDeadline(QUERY_TIMEOUT_MS)).toBe("10 min");
+    expect(formatDeadline(60_000)).toBe("60s");
+    expect(formatDeadline(600_000)).toBe("10 min");
   });
 });
 

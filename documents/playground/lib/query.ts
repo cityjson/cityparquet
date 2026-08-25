@@ -53,6 +53,13 @@ function toCell(value: unknown): Cell {
   }
 }
 
+/** The deadline as the message should read it: minutes once it is minutes long. */
+export function formatDeadline(ms: number): string {
+  const seconds = Math.round(ms / 1_000);
+  if (seconds < 120) return `${seconds}s`;
+  return `${Math.round(seconds / 60)} min`;
+}
+
 /**
  * Classify a failure so the interface can say something useful.
  *
@@ -116,7 +123,7 @@ export async function runQuery(session: Session, sql: string): Promise<QueryResu
           () =>
             reject(
               new Error(
-                `Timeout after ${Math.round(QUERY_TIMEOUT_MS / 1000)}s. ` +
+                `Timeout after ${formatDeadline(QUERY_TIMEOUT_MS)}. ` +
                   "If the query reads a remote file, the host may not be exposing " +
                   "the CORS range headers a reader needs (Accept-Ranges, Content-Range, ETag).",
               ),

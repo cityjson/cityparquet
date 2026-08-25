@@ -64,5 +64,11 @@ export const ROWS_PER_PAGE = 500;
  * `Accept-Ranges` from the browser produces no error at all — the read simply
  * never completes — so a query with no deadline can hang forever. This turns
  * that into a message the reader can act on.
+ *
+ * Long, deliberately. The point is to catch a read that will never finish, not
+ * to cut short one that is merely large: a scan of the 16.4 GB package over a
+ * slow connection is a legitimate several minutes, and a deadline that fires
+ * first reports a fault where there is none. The status bar counts the seconds
+ * up meanwhile, so a query in flight is visibly working rather than hung.
  */
-export const QUERY_TIMEOUT_MS = 60_000;
+export const QUERY_TIMEOUT_MS = 600_000;
