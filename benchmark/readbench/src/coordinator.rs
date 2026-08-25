@@ -14,27 +14,27 @@
 //! run-level finding can still reach the rows it concerns (see
 //! "Self-consistency" below).
 //!
-//! **Where `QueryParams` come from.** ALL of them are derived once per
-//! dataset from the `cityparquet`-format package (`<x>.parquet`), which is
-//! therefore REQUIRED to be present regardless of which `--formats` were
-//! requested:
-//! - the dataset bbox, scanned from the `bbox` struct column, sized into
-//!   three windows (1%/5%/25% of the x/y extent, anchored at the lower-left
-//!   corner, full z) — the same construction
-//!   `crates/cli/src/bench.rs` uses for its own single window;
-//! - the attribute predicate for [`Scenario::AttrFilter`]: `object_type` Eq
-//!   the MOST-FREQUENT value actually present (always a safe string-typed
-//!   column under the Commit A `--attr-eq` fix, and present on every row —
-//!   see `formats::cityjsonseq`/`formats::flatcitybuf`'s own module docs on
-//!   why this scenario is CityObject-level and therefore directly
-//!   comparable across every format);
-//! - the numeric attribute column for [`Scenario::AttrStats`]/
-//!   [`Scenario::Project`]: the alphabetically-first `Int64`/`Float64`
-//!   column in the package's own `attribute_columns` metadata list, or —
-//!   never fabricated — a logged skip if none exists (true for
-//!   `lod3_railway.city.json`, which has no numeric attributes at all);
-//! - the target id for [`Scenario::IdLookup`]: the first non-null `id`
-//!   value in the table.
+//! **Where `QueryParams` come from.** Every one of them is derived by
+//! [`cityparquet_readbench::params::resolve`], which this module calls once
+//! per dataset and whose result it also writes beside the CSV as
+//! `<out>.params.json` — the single description of what a run measured, read
+//! by `benchmark/scripts/readbench_duckdb.sh` rather than re-derived there.
+//!
+//! That derivation REQUIRES the `cityparquet` package (`<x>.parquet`)
+//! regardless of which `--formats` were requested: it is the source of the
+//! row bboxes, the attribute choices and the shared denominator. The
+//! `cityjsonseq` stream (`<x>.city.jsonl`) is the canonical order the id
+//! deciles are cut from, and the `citygml` artefact is checked so an id
+//! probe it does not contain is substituted rather than timed as a silent
+//! miss; each is used when present, and a run whose prepared directory has
+//! no seq artefact simply gets no id probes and a logged skip — the same
+//! "never fabricated" treatment a dataset with no numeric attribute gets.
+//!
+//! Two scenarios emit MORE THAN ONE ROW per format as a result:
+//! [`Scenario::BBoxQuery`] one per searched window (`bbox-1pct`,
+//! `bbox-5pct`, `bbox-25pct`, each `;approx` when the target row fraction
+//! was not reachable), and [`Scenario::IdLookup`] one per probe
+//! (`id-10pct`, `id-50pct`, `id-90pct`, `id-miss`).
 //!
 //! **Self-consistency (disclosed, never a hard failure).** After the
 //! `AttrFilter` scenario has run for every resolved format, this module
@@ -51,26 +51,18 @@
 //! [`ChildLine::notes`]).
 
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use arrow_array::types::Int32Type;
-use arrow_array::{
-    Array, ArrayAccessor, DictionaryArray, Float64Array, RecordBatch, StringArray, StructArray,
-};
-use arrow_schema::{DataType, Schema};
-use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet_readbench::format::{Artefact, Format};
 use cityparquet_readbench::naming::strip_known_extension;
-use cityparquet_schema::CityMetadata;
-use parquet::arrow::ProjectionMask;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use crate::formats::{IoStats, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
+use cityparquet_readbench::params;
 
 /// The `run` subcommand's own options — the parsed form of `main.rs`'s
 /// `RunArgs` clap struct, kept independent of clap so this module has no
@@ -114,15 +106,6 @@ pub enum Transport {
     Local,
     Http,
 }
-
-/// `(fraction of the dataset bbox's x/y extent, notes tag)` for
-/// [`Scenario::BBoxQuery`]'s three selectivity targets — one CSV row per
-/// entry.
-const BBOX_FRACTIONS: [(f64, &str); 3] = [
-    (0.01, "bbox-1pct"),
-    (0.05, "bbox-5pct"),
-    (0.25, "bbox-25pct"),
-];
 
 /// The exact CSV header this coordinator writes. `bytes_read`/`http_requests`
 /// are empty for a local-transport row (no HTTP concept, and this keeps
@@ -247,33 +230,54 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         _ => Scenario::ALL.to_vec(),
     };
 
-    // --- Derive every QueryParams once, from real data in the cityparquet
-    // package — no hardcoded ids/attrs/windows anywhere in this function.
-    let meta = open_metadata(&cp_table)?;
-    let schema = open_arrow_schema(&cp_table)?;
-    let dataset_bbox = scan_dataset_bbox(&cp_table)?;
-    let windows: Vec<([f64; 6], &'static str)> = BBOX_FRACTIONS
-        .iter()
-        .map(|(frac, tag)| (bbox_window(dataset_bbox, *frac), *tag))
-        .collect();
-    let (object_type_value, object_type_count) = most_frequent_object_type(&cp_table)?;
-    let numeric_attr = pick_numeric_attribute(&meta, &schema);
-    let sample_id = sample_object_id(&cp_table)?;
-
-    // The dataset-global CityObject total — the SAME denominator for every
-    // format's object-level scenarios (`AttrFilter`/`AttrStats`/`Project`/
-    // `IdLookup`), because those scenarios are deliberately CityObject-level
-    // on every format (see this module's own doc comment). `cityparquet`'s
-    // own `Count` is exactly that total (one row per CityObject), and the
-    // cityparquet package is already required/located above regardless of
-    // `--formats`.
-    let cp_object_total = total_count_for(Format::CityParquet, &Source::Local(cp_table.clone()))
-        .context("deriving the dataset-global CityObject total from the cityparquet package")?;
+    // --- Every QueryParams for this dataset, derived once from the prepared
+    // artefacts (see `cityparquet_readbench::params`) — no hardcoded ids,
+    // attributes or windows anywhere in this function.
+    //
+    // TWO artefacts are required regardless of `--formats`: the CityParquet
+    // package (the row bboxes, the attribute choices, the denominator) and
+    // the CityJSONSeq stream (the canonical order the id deciles are cut
+    // from). The CityGML artefact is checked when present, so an id probe it
+    // does not contain is substituted rather than timed as a silent miss.
+    let seq_path = match Format::CityJsonSeq.artefact(base) {
+        Artefact::Prepared(name) => {
+            let path = opts.prepared_dir.join(name);
+            path.exists().then_some(path)
+        }
+        Artefact::NotCoordinated => None,
+    };
+    let gml_path = match Format::CityGml.artefact(base) {
+        Artefact::Prepared(name) => {
+            let path = opts.prepared_dir.join(name);
+            path.exists().then_some(path)
+        }
+        Artefact::NotCoordinated => None,
+    };
+    let resolved = params::resolve(
+        &dataset,
+        &cp_table,
+        seq_path.as_deref(),
+        gml_path.as_deref(),
+    )?;
 
     eprintln!(
-        "cityparquet-readbench: derived params for '{dataset}': bbox={dataset_bbox:?}, \
-         object_type most-frequent='{object_type_value}' (n={object_type_count}), numeric \
-         attribute={numeric_attr:?}, sample id='{sample_id}', CityObject total={cp_object_total}"
+        "cityparquet-readbench: derived params for '{dataset}': windows={:?}, object_type \
+         most-frequent='{}' (n={}), numeric attribute={:?}, id probes={:?}, CityObject \
+         total={}",
+        resolved
+            .windows
+            .iter()
+            .map(|w| (w.tag.as_str(), w.achieved, w.approx))
+            .collect::<Vec<_>>(),
+        resolved.object_type,
+        resolved.object_type_count,
+        resolved.numeric_attr,
+        resolved
+            .id_probes
+            .iter()
+            .map(|p| (p.tag.as_str(), p.id.as_str()))
+            .collect::<Vec<_>>(),
+        resolved.cp_object_total
     );
 
     if let Some(parent) = opts.out.parent()
@@ -322,10 +326,19 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                     )?;
                 }
                 Scenario::BBoxQuery => {
-                    for (window, tag) in &windows {
+                    for window in &resolved.windows {
                         let params = QueryParams {
-                            bbox: Some(*window),
+                            bbox: Some(window.window),
                             ..Default::default()
+                        };
+                        // `approx` means the target row fraction was not
+                        // reachable on this data (1% of 379 rows is 3.79).
+                        // The CSV says so rather than presenting a missed
+                        // target as a met one.
+                        let notes = if window.approx {
+                            format!("{};approx", window.tag)
+                        } else {
+                            window.tag.clone()
                         };
                         run_measurement(
                             &mut rows,
@@ -336,7 +349,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             &params,
                             opts.repeat,
                             Some(total),
-                            tag,
+                            &notes,
                         )?;
                     }
                 }
@@ -344,11 +357,11 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                     let params = QueryParams {
                         attr_column: Some("object_type".to_string()),
                         attr_pred: Some(AttrPred::Eq(serde_json::Value::String(
-                            object_type_value.clone(),
+                            resolved.object_type.clone(),
                         ))),
                         ..Default::default()
                     };
-                    let notes = format!("object_type={object_type_value}");
+                    let notes = format!("object_type={}", resolved.object_type);
                     let count = run_measurement(
                         &mut rows,
                         &dataset,
@@ -357,12 +370,12 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         *scenario,
                         &params,
                         opts.repeat,
-                        Some(cp_object_total),
+                        Some(resolved.cp_object_total),
                         &notes,
                     )?;
                     attr_filter_counts.insert(format, count);
                 }
-                Scenario::AttrStats | Scenario::Project => match &numeric_attr {
+                Scenario::AttrStats | Scenario::Project => match &resolved.numeric_attr {
                     Some(column) => {
                         let params = QueryParams {
                             attr_column: Some(column.clone()),
@@ -377,7 +390,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                             *scenario,
                             &params,
                             opts.repeat,
-                            Some(cp_object_total),
+                            Some(resolved.cp_object_total),
                             &notes,
                         )?;
                     }
@@ -387,23 +400,37 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                          (never fabricated)"
                     ),
                 },
+                // Four rows: three positioned hits plus a verified miss. One
+                // target would make the published time a function of where
+                // that id happened to sit in the stream, which is a property
+                // of the sample rather than of the format.
+                Scenario::IdLookup if resolved.id_probes.is_empty() => eprintln!(
+                    "cityparquet-readbench: skipping scenario '{scenario}' for format \
+                     '{format}': dataset '{dataset}' has no prepared cityjsonseq artefact to \
+                     cut the id deciles from (never fabricated)"
+                ),
                 Scenario::IdLookup => {
-                    let params = QueryParams {
-                        target_id: Some(sample_id.clone()),
-                        ..Default::default()
-                    };
-                    let notes = format!("id={sample_id}");
-                    run_measurement(
-                        &mut rows,
-                        &dataset,
-                        format,
-                        source,
-                        *scenario,
-                        &params,
-                        opts.repeat,
-                        Some(cp_object_total),
-                        &notes,
-                    )?;
+                    for probe in &resolved.id_probes {
+                        let params = QueryParams {
+                            target_id: Some(probe.id.clone()),
+                            ..Default::default()
+                        };
+                        let mut notes = probe.tag.clone();
+                        if probe.substituted {
+                            notes.push_str(";id-substituted");
+                        }
+                        run_measurement(
+                            &mut rows,
+                            &dataset,
+                            format,
+                            source,
+                            *scenario,
+                            &params,
+                            opts.repeat,
+                            Some(resolved.cp_object_total),
+                            &notes,
+                        )?;
+                    }
                 }
             }
         }
@@ -599,230 +626,6 @@ fn locate_cityparquet_table(prepared_dir: &Path, base: &str) -> Result<PathBuf> 
             )
         }
     }
-}
-
-fn open_metadata(table: &Path) -> Result<CityMetadata> {
-    let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .with_context(|| format!("reading Parquet metadata from {}", table.display()))?;
-    Ok(builder.cityparquet_metadata()?)
-}
-
-fn open_arrow_schema(table: &Path) -> Result<Schema> {
-    let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .with_context(|| format!("reading Parquet schema from {}", table.display()))?;
-    Ok((*builder.cityparquet_arrow_schema()?).clone())
-}
-
-/// Unions every non-null `bbox` row in `batch` into `acc` (creating it on
-/// the first row seen). Adapted from `crates/cli/src/bench.rs`'s
-/// own `union_batch_bbox`.
-fn union_batch_bbox(batch: &RecordBatch, acc: &mut Option<[f64; 6]>) {
-    let Some(bbox_col) = batch.column_by_name("bbox") else {
-        return;
-    };
-    let Some(bbox_col) = bbox_col.as_any().downcast_ref::<StructArray>() else {
-        return;
-    };
-    let leaf = |name: &str| -> Option<&Float64Array> {
-        bbox_col
-            .column_by_name(name)?
-            .as_any()
-            .downcast_ref::<Float64Array>()
-    };
-    let (Some(xmin), Some(ymin), Some(zmin), Some(xmax), Some(ymax), Some(zmax)) = (
-        leaf("xmin"),
-        leaf("ymin"),
-        leaf("zmin"),
-        leaf("xmax"),
-        leaf("ymax"),
-        leaf("zmax"),
-    ) else {
-        return;
-    };
-
-    for row in 0..batch.num_rows() {
-        if bbox_col.is_null(row) {
-            continue;
-        }
-        let row_box = [
-            xmin.value(row),
-            ymin.value(row),
-            zmin.value(row),
-            xmax.value(row),
-            ymax.value(row),
-            zmax.value(row),
-        ];
-        *acc = Some(match *acc {
-            None => row_box,
-            Some(current) => [
-                current[0].min(row_box[0]),
-                current[1].min(row_box[1]),
-                current[2].min(row_box[2]),
-                current[3].max(row_box[3]),
-                current[4].max(row_box[4]),
-                current[5].max(row_box[5]),
-            ],
-        });
-    }
-}
-
-/// Scans the whole `bbox` column of `table` (a single-column projection) and
-/// unions it into the dataset's own extent.
-fn scan_dataset_bbox(table: &Path) -> Result<[f64; 6]> {
-    let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .with_context(|| format!("reading {}", table.display()))?;
-    let projection = ProjectionMask::columns(builder.parquet_schema(), ["bbox"]);
-    let reader = builder
-        .with_projection(projection)
-        .build()
-        .with_context(|| format!("scanning bbox column of {}", table.display()))?;
-
-    let mut acc: Option<[f64; 6]> = None;
-    for batch in reader {
-        let batch = batch.with_context(|| format!("reading a batch of {}", table.display()))?;
-        union_batch_bbox(&batch, &mut acc);
-    }
-    acc.ok_or_else(|| {
-        anyhow::anyhow!(
-            "no row in {} has a bbox — cannot derive a query window",
-            table.display()
-        )
-    })
-}
-
-/// A query window covering `frac` of `bbox`'s x/y extent, anchored at its
-/// lower-left corner (z is always the full range) — the same construction
-/// `crates/cli/src/bench.rs::run_variant` uses for its own
-/// single window.
-fn bbox_window(bbox: [f64; 6], frac: f64) -> [f64; 6] {
-    let span_x = bbox[3] - bbox[0];
-    let span_y = bbox[4] - bbox[1];
-    [
-        bbox[0],
-        bbox[1],
-        bbox[2],
-        bbox[0] + span_x * frac,
-        bbox[1] + span_y * frac,
-        bbox[5],
-    ]
-}
-
-/// `array`'s Utf8 values as `Option<String>` per row (`None` for a null
-/// cell) — handles both a plain `Utf8` array and a `Dictionary<Int32,
-/// Utf8>` array. The reserved `object_type` column is ALWAYS
-/// `Dictionary<Int32, Utf8>` per `cityparquet_schema::model`'s own schema
-/// (never plain `Utf8`), but this accepts either shape rather than assuming
-/// one, mirroring `cityparquet::query::evaluate_attr_predicate`'s own
-/// `Utf8`/`Dictionary` dispatch.
-fn utf8_values(array: &dyn Array) -> Result<Vec<Option<String>>> {
-    match array.data_type() {
-        DataType::Utf8 => {
-            let values = array
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| anyhow::anyhow!("expected a Utf8 array"))?;
-            Ok((0..values.len())
-                .map(|i| (!values.is_null(i)).then(|| values.value(i).to_string()))
-                .collect())
-        }
-        DataType::Dictionary(key_type, value_type)
-            if key_type.as_ref() == &DataType::Int32 && value_type.as_ref() == &DataType::Utf8 =>
-        {
-            let dict = array
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int32Type>>()
-                .ok_or_else(|| anyhow::anyhow!("expected a Dictionary<Int32, Utf8> array"))?;
-            let values = dict
-                .downcast_dict::<StringArray>()
-                .ok_or_else(|| anyhow::anyhow!("dictionary values are not Utf8"))?;
-            Ok((0..dict.len())
-                .map(|i| (!dict.is_null(i)).then(|| values.value(i).to_string()))
-                .collect())
-        }
-        other => bail!("expected a Utf8 or Dictionary<Int32, Utf8> array, got {other:?}"),
-    }
-}
-
-/// The most-frequent `object_type` value in `table` (and its count) — a
-/// single-column projected scan, tallied in memory (the reserved
-/// `object_type` column is always present, so this never needs the
-/// attribute-column machinery). Ties are broken deterministically by the
-/// `object_type` string itself (rather than `HashMap` iteration order, which
-/// is SipHash-randomised per process) so the derived `AttrFilter` predicate —
-/// and therefore the whole run — is reproducible run-to-run.
-fn most_frequent_object_type(table: &Path) -> Result<(String, u64)> {
-    let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .with_context(|| format!("reading {}", table.display()))?;
-    let projection = ProjectionMask::columns(builder.parquet_schema(), ["object_type"]);
-    let reader = builder
-        .with_projection(projection)
-        .build()
-        .with_context(|| format!("scanning object_type column of {}", table.display()))?;
-
-    let mut counts: HashMap<String, u64> = HashMap::new();
-    for batch in reader {
-        let batch = batch.with_context(|| format!("reading a batch of {}", table.display()))?;
-        for value in utf8_values(batch.column(0).as_ref())?.into_iter().flatten() {
-            *counts.entry(value).or_insert(0) += 1;
-        }
-    }
-    counts
-        .into_iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
-        .ok_or_else(|| anyhow::anyhow!("{} has no object_type values", table.display()))
-}
-
-/// The alphabetically-first `Int64`/`Float64` attribute column in `meta`'s
-/// own `attribute_columns` list (never a geometry/reserved column), or
-/// `None` if the dataset has no numeric attribute at all — deterministic
-/// across runs, never fabricated when no such column exists (e.g.
-/// `lod3_railway.city.json`, whose attributes are all strings).
-fn pick_numeric_attribute(meta: &CityMetadata, schema: &Schema) -> Option<String> {
-    let mut candidates: Vec<String> = meta
-        .attributes
-        .iter()
-        .filter(|name| {
-            schema
-                .field_with_name(name)
-                .map(|f| matches!(f.data_type(), DataType::Int64 | DataType::Float64))
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect();
-    candidates.sort();
-    candidates.into_iter().next()
-}
-
-/// The first non-null `id` value in `table` (a single-column projected
-/// scan) — a real, present object id, never hardcoded.
-fn sample_object_id(table: &Path) -> Result<String> {
-    let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .with_context(|| format!("reading {}", table.display()))?;
-    let projection = ProjectionMask::columns(builder.parquet_schema(), ["id"]);
-    let reader = builder
-        .with_projection(projection)
-        .build()
-        .with_context(|| format!("scanning id column of {}", table.display()))?;
-
-    for batch in reader {
-        let batch = batch.with_context(|| format!("reading a batch of {}", table.display()))?;
-        let column = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| anyhow::anyhow!("'id' column is not Utf8"))?;
-        for i in 0..column.len() {
-            if !column.is_null(i) {
-                return Ok(column.value(i).to_string());
-            }
-        }
-    }
-    bail!("{} has no non-null id values", table.display())
 }
 
 /// One parsed `--child` protocol stdout line. `io` is `Some` only for the 6-

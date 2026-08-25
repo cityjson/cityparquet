@@ -7,12 +7,38 @@
 //! [`window_for_target`] is a pure function over an in-memory slice, and the
 //! integration tests reach the rest directly.
 
+use std::collections::HashMap;
+use std::fs::File;
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use arrow_array::{Array, Float64Array, RecordBatch, StructArray};
+use anyhow::{Context, Result, bail};
+use arrow_array::types::Int32Type;
+use arrow_array::{
+    Array, ArrayAccessor, DictionaryArray, Float64Array, RecordBatch, StringArray, StructArray,
+};
+use arrow_schema::{DataType, Schema};
+use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet_schema::CityMetadata;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+/// Opens `table` just far enough to read its embedded CityParquet key-value
+/// metadata — the `attribute_columns` list `pick_numeric_attribute` chooses
+/// from.
+fn open_metadata(table: &Path) -> Result<CityMetadata> {
+    let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("reading Parquet metadata from {}", table.display()))?;
+    Ok(builder.cityparquet_metadata()?)
+}
+
+/// `table`'s Arrow schema — the types `pick_numeric_attribute` filters on.
+fn open_arrow_schema(table: &Path) -> Result<Schema> {
+    let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("reading Parquet schema from {}", table.display()))?;
+    Ok((*builder.cityparquet_arrow_schema()?).clone())
+}
 
 /// Every row's bbox, plus their union.
 ///
@@ -419,6 +445,188 @@ pub fn id_probes(
     });
 
     probes
+}
+
+/// `array`'s Utf8 values as `Option<String>` per row (`None` for a null
+/// cell) — handles both a plain `Utf8` array and a `Dictionary<Int32,
+/// Utf8>` array. The reserved `object_type` column is ALWAYS
+/// `Dictionary<Int32, Utf8>` per `cityparquet_schema::model`'s own schema
+/// (never plain `Utf8`), but this accepts either shape rather than assuming
+/// one, mirroring `cityparquet::query::evaluate_attr_predicate`'s own
+/// `Utf8`/`Dictionary` dispatch.
+fn utf8_values(array: &dyn Array) -> Result<Vec<Option<String>>> {
+    match array.data_type() {
+        DataType::Utf8 => {
+            let values = array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| anyhow::anyhow!("expected a Utf8 array"))?;
+            Ok((0..values.len())
+                .map(|i| (!values.is_null(i)).then(|| values.value(i).to_string()))
+                .collect())
+        }
+        DataType::Dictionary(key_type, value_type)
+            if key_type.as_ref() == &DataType::Int32 && value_type.as_ref() == &DataType::Utf8 =>
+        {
+            let dict = array
+                .as_any()
+                .downcast_ref::<DictionaryArray<Int32Type>>()
+                .ok_or_else(|| anyhow::anyhow!("expected a Dictionary<Int32, Utf8> array"))?;
+            let values = dict
+                .downcast_dict::<StringArray>()
+                .ok_or_else(|| anyhow::anyhow!("dictionary values are not Utf8"))?;
+            Ok((0..dict.len())
+                .map(|i| (!dict.is_null(i)).then(|| values.value(i).to_string()))
+                .collect())
+        }
+        other => bail!("expected a Utf8 or Dictionary<Int32, Utf8> array, got {other:?}"),
+    }
+}
+
+/// The most-frequent `object_type` value in `table` (and its count) — a
+/// single-column projected scan, tallied in memory (the reserved
+/// `object_type` column is always present, so this never needs the
+/// attribute-column machinery). Ties are broken deterministically by the
+/// `object_type` string itself (rather than `HashMap` iteration order, which
+/// is SipHash-randomised per process) so the derived `AttrFilter` predicate —
+/// and therefore the whole run — is reproducible run-to-run.
+fn most_frequent_object_type(table: &Path) -> Result<(String, u64)> {
+    let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("reading {}", table.display()))?;
+    let projection = ProjectionMask::columns(builder.parquet_schema(), ["object_type"]);
+    let reader = builder
+        .with_projection(projection)
+        .build()
+        .with_context(|| format!("scanning object_type column of {}", table.display()))?;
+
+    let mut counts: HashMap<String, u64> = HashMap::new();
+    for batch in reader {
+        let batch = batch.with_context(|| format!("reading a batch of {}", table.display()))?;
+        for value in utf8_values(batch.column(0).as_ref())?.into_iter().flatten() {
+            *counts.entry(value).or_insert(0) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+        .ok_or_else(|| anyhow::anyhow!("{} has no object_type values", table.display()))
+}
+
+/// The alphabetically-first `Int64`/`Float64` attribute column in `meta`'s
+/// own `attribute_columns` list (never a geometry/reserved column), or
+/// `None` if the dataset has no numeric attribute at all — deterministic
+/// across runs, never fabricated when no such column exists (e.g.
+/// `lod3_railway.city.json`, whose attributes are all strings).
+fn pick_numeric_attribute(meta: &CityMetadata, schema: &Schema) -> Option<String> {
+    let mut candidates: Vec<String> = meta
+        .attributes
+        .iter()
+        .filter(|name| {
+            schema
+                .field_with_name(name)
+                .map(|f| matches!(f.data_type(), DataType::Int64 | DataType::Float64))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+/// Every query parameter one dataset's whole (format x scenario) matrix is
+/// driven with, derived once from the prepared artefacts.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ResolvedParams {
+    /// The dataset name as it appears in the results CSV's `dataset` column.
+    pub dataset: String,
+    pub windows: Vec<BboxWindow>,
+    /// EMPTY when the CityJSONSeq artefact was not present to cut the
+    /// deciles from — the caller then skips `id-lookup` and says so.
+    pub id_probes: Vec<IdProbe>,
+    /// The most-frequent `object_type` value — the `attr-filter` predicate.
+    pub object_type: String,
+    pub object_type_count: u64,
+    /// The alphabetically-first Int64/Float64 attribute column, or `None`
+    /// when the dataset has no numeric attribute at all. Never fabricated:
+    /// `attr-stats` and `project` are skipped when this is `None`.
+    pub numeric_attr: Option<String>,
+    /// The dataset-global CityObject total — the SHARED selectivity
+    /// denominator for every CityObject-level scenario.
+    pub cp_object_total: u64,
+}
+
+/// Derives every query parameter for `dataset`.
+///
+/// The CityParquet package's main table (`cp_table`) is the only hard
+/// requirement: it is the source of the row bboxes, the attribute choices
+/// and the shared denominator.
+///
+/// `seq_path` is the CityJSONSeq artefact — the canonical order the id
+/// deciles are cut from. `None` (the artefact is not present in this run's
+/// prepared directory) yields NO id probes at all, and the caller skips
+/// `id-lookup` with a logged message, exactly as it already does for a
+/// dataset with no numeric attribute. Deriving the deciles from some other
+/// order instead would quietly redefine what a probe's position means, and a
+/// number nobody can interpret is worse than a number nobody has. A
+/// `seq_path` that IS given but cannot be read is a hard failure.
+///
+/// `gml_path` is checked when present so an id probe absent from the
+/// synthesised CityGML is substituted rather than silently timed as a miss.
+pub fn resolve(
+    dataset: &str,
+    cp_table: &Path,
+    seq_path: Option<&Path>,
+    gml_path: Option<&Path>,
+) -> Result<ResolvedParams> {
+    let rows = scan_row_bboxes(cp_table)?;
+    let windows = BBOX_TARGETS
+        .iter()
+        .map(|(target, tag)| window_for_target(&rows.boxes, rows.dataset, *target, tag))
+        .collect();
+
+    let id_probes = match seq_path {
+        None => Vec::new(),
+        Some(seq_path) => {
+            let seq_ids = seq_feature_ids(seq_path)?;
+            let mut verifiable: std::collections::HashSet<String> =
+                seq_ids.iter().cloned().collect();
+            if let Some(gml) = gml_path {
+                let gml_ids = citygml_ids(gml)?;
+                verifiable.retain(|id| gml_ids.contains(id));
+                if verifiable.is_empty() {
+                    anyhow::bail!(
+                        "no feature id in {} also appears in {} — the two artefacts \
+                         describe different data",
+                        seq_path.display(),
+                        gml.display()
+                    );
+                }
+            }
+            id_probes(&seq_ids, &verifiable)
+        }
+    };
+
+    let meta = open_metadata(cp_table)?;
+    let schema = open_arrow_schema(cp_table)?;
+    let (object_type, object_type_count) = most_frequent_object_type(cp_table)?;
+    let numeric_attr = pick_numeric_attribute(&meta, &schema);
+
+    let file =
+        std::fs::File::open(cp_table).with_context(|| format!("opening {}", cp_table.display()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("reading {}", cp_table.display()))?;
+    let cp_object_total = builder.metadata().file_metadata().num_rows() as u64;
+
+    Ok(ResolvedParams {
+        dataset: dataset.to_string(),
+        windows,
+        id_probes,
+        object_type,
+        object_type_count,
+        numeric_attr,
+        cp_object_total,
+    })
 }
 
 #[cfg(test)]

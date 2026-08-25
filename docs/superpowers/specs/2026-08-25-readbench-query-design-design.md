@@ -107,11 +107,20 @@ timed as a hit and silently recorded as a miss. A probe that fails
 verification is replaced by the nearest feature that passes, and the
 substitution is noted.
 
-Derivation therefore requires the **CityJSONSeq artefact as well as the
-CityParquet package**, extending the coordinator's existing contract that the
-CityParquet package is required regardless of `--formats`. Both are named
-requirements, and a missing one is a hard failure at derivation time rather
-than a fabricated parameter.
+Derivation reads the **CityJSONSeq artefact** as well as the CityParquet
+package. Only the CityParquet package is a hard requirement, as it already
+was. A prepared directory with no seq artefact yields **no id probes at all**,
+and `id-lookup` is skipped with a logged message — the same "never fabricated"
+treatment a dataset with no numeric attribute already gets.
+
+Making the seq artefact a second hard requirement was the first draft of this
+section, and it is wrong: the coordinator deliberately degrades when an
+artefact is absent (it skips that format and says so), and a cityparquet-only
+run — over HTTP, say — legitimately needs the seq stream for nothing but the
+deciles. Falling back to some other order instead would be worse than
+skipping, because it would quietly redefine what a probe's position means
+while the sidecar still called it `id-10pct`. A seq artefact that IS present
+but unreadable remains a hard failure.
 
 Each runner uses the best mechanism its format affords:
 

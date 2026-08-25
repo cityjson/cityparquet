@@ -88,3 +88,71 @@ fn citygml_ids_collects_every_city_object_key() {
     let ids = citygml_ids(&fixture("b1_lod2_cs_w_sem.gml")).expect("reading citygml ids");
     assert!(!ids.is_empty(), "the CityGML fixture has city objects");
 }
+
+use cityparquet_readbench::params::resolve;
+use std::path::Path;
+
+#[test]
+fn resolve_produces_three_populated_windows_and_four_id_probes() {
+    let (_dir, table) = delft_table();
+    let resolved = resolve(
+        "delft.city.jsonl",
+        &table,
+        Some(&fixture("delft.city.jsonl")),
+        None,
+    )
+    .expect("resolving params");
+
+    assert_eq!(resolved.windows.len(), 3, "three bbox windows");
+    for window in &resolved.windows {
+        assert!(
+            window.achieved > 0.0,
+            "{} selected no rows — the defect this replaces",
+            window.tag
+        );
+    }
+
+    assert_eq!(resolved.id_probes.len(), 4, "three deciles plus a miss");
+    assert!(
+        !resolved.object_type.is_empty(),
+        "an object_type was chosen"
+    );
+    assert!(resolved.cp_object_total > 0, "a non-zero denominator");
+}
+
+#[test]
+fn resolve_fails_loudly_when_the_seq_artefact_is_missing() {
+    let (_dir, table) = delft_table();
+    let err = resolve(
+        "delft.city.jsonl",
+        &table,
+        Some(Path::new("/nonexistent/delft.city.jsonl")),
+        None,
+    )
+    .expect_err("a seq artefact that is named but unreadable must be a hard failure");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("delft.city.jsonl"),
+        "the error must name the missing artefact, got: {message}"
+    );
+}
+
+/// No seq artefact in the prepared directory means no canonical order to cut
+/// deciles from. Deriving them from some other order would quietly redefine
+/// what a probe's position means, so the scenario is skipped instead — the
+/// same treatment a dataset with no numeric attribute gets.
+#[test]
+fn resolve_yields_no_id_probes_when_there_is_no_seq_artefact() {
+    let (_dir, table) = delft_table();
+    let resolved =
+        resolve("delft.city.jsonl", &table, None, None).expect("resolving without a seq artefact");
+
+    assert!(
+        resolved.id_probes.is_empty(),
+        "no seq artefact means no id probes, got {:?}",
+        resolved.id_probes
+    );
+    // Everything the cityparquet package alone can answer still resolves.
+    assert_eq!(resolved.windows.len(), 3, "windows need only the package");
+    assert!(resolved.cp_object_total > 0);
+}
