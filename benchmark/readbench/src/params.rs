@@ -253,9 +253,259 @@ pub fn window_for_target(
     }
 }
 
+/// Every feature's own top-level `id`, in the CityJSONSeq stream's order —
+/// the canonical order the id deciles are cut from, because
+/// `readbench_prepare.sh` builds the gzipped, FlatCityBuf and CityParquet
+/// artefacts from this one file.
+///
+/// The first line of a `.city.jsonl` is the CityJSON metadata object, not a
+/// feature; it is skipped.
+pub fn seq_feature_ids(seq_path: &Path) -> Result<Vec<String>> {
+    use std::io::BufRead as _;
+
+    let file =
+        std::fs::File::open(seq_path).with_context(|| format!("opening {}", seq_path.display()))?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut ids = Vec::new();
+    for (index, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| format!("reading {}", seq_path.display()))?;
+        if line.trim().is_empty() || index == 0 {
+            continue;
+        }
+        let feature: cityparquet::cjseq::CityJSONFeature = serde_json::from_str(&line)
+            .with_context(|| {
+                format!(
+                    "parsing feature on line {} of {}",
+                    index + 1,
+                    seq_path.display()
+                )
+            })?;
+        ids.push(feature.id);
+    }
+
+    if ids.is_empty() {
+        anyhow::bail!(
+            "{} holds no features — cannot derive id probes",
+            seq_path.display()
+        );
+    }
+    Ok(ids)
+}
+
+/// Every CityObject key in a CityGML artefact.
+///
+/// The CityGML is synthesised from the source CityJSON by `citygml-tools`
+/// rather than cut from the seq stream, so its member set is not guaranteed
+/// to match: `benchmark/README.md` records that `3dbag_9-284-556` loses an
+/// LoD in that round trip. An id probe absent here would be timed as a hit
+/// and recorded as a miss, which is why every probe is checked against this
+/// set.
+pub fn citygml_ids(gml_path: &Path) -> Result<std::collections::HashSet<String>> {
+    let source = cityparquet::source::Source::open(gml_path)
+        .map_err(|e| anyhow::anyhow!(e))
+        .with_context(|| format!("opening {}", gml_path.display()))?;
+    let transform = source.header().transform.clone();
+    let mut reader =
+        cityparquet::citygml::FeatureReader::open_without_appearance(gml_path, &transform)
+            .map_err(|e| anyhow::anyhow!(e))
+            .with_context(|| format!("streaming {}", gml_path.display()))?;
+
+    let mut ids = std::collections::HashSet::new();
+    for feature in reader.by_ref() {
+        let feature = feature
+            .map_err(|e| anyhow::anyhow!(e))
+            .with_context(|| format!("reading a member of {}", gml_path.display()))?;
+        ids.extend(feature.city_objects.keys().cloned());
+    }
+    Ok(ids)
+}
+
+/// `(position in the canonical order, notes tag)` for the three id-lookup
+/// hit probes. A single target would make the published time a function of
+/// where that one id happened to sit in the stream.
+pub const ID_DECILES: [(f64, &str); 3] =
+    [(0.10, "id-10pct"), (0.50, "id-50pct"), (0.90, "id-90pct")];
+
+/// The tag of the fourth probe: an id verified absent from the dataset.
+/// Position-free, and the number that actually separates a format with an id
+/// index from one without.
+pub const ID_MISS_TAG: &str = "id-miss";
+
+/// One resolved id-lookup target.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct IdProbe {
+    /// The `notes` tag this probe's CSV row carries.
+    pub tag: String,
+    pub id: String,
+    /// Whether this id is expected to be found. False only for
+    /// [`ID_MISS_TAG`].
+    pub present: bool,
+    /// The nominal decile id was not verifiable in every artefact and the
+    /// nearest one that was has been used instead.
+    pub substituted: bool,
+}
+
+/// An id guaranteed absent from `taken`, derived from `seed` so it is
+/// reproducible across runs rather than random.
+pub fn miss_id(seed: &str, taken: &std::collections::HashSet<String>) -> String {
+    let base = format!("{seed}-readbench-absent");
+    if !taken.contains(&base) {
+        return base;
+    }
+    for suffix in 2u32.. {
+        let candidate = format!("{base}-{suffix}");
+        if !taken.contains(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("u32 exhausted while avoiding an id collision")
+}
+
+/// The four id probes for a dataset: three positioned hits plus a verified
+/// miss.
+///
+/// `seq_ids` is the canonical order — the CityJSONSeq stream every other
+/// artefact is cut from. `verifiable` is the set of ids confirmed to exist in
+/// EVERY artefact that will be asked for them; a nominal decile id outside it
+/// is replaced by the nearest index that is inside, with `substituted` set,
+/// because timing a lookup for an id one artefact does not contain would
+/// record a hit as a miss.
+pub fn id_probes(
+    seq_ids: &[String],
+    verifiable: &std::collections::HashSet<String>,
+) -> Vec<IdProbe> {
+    assert!(!seq_ids.is_empty(), "id_probes needs at least one feature");
+
+    let nearest_verifiable = |from: usize| -> Option<(usize, String)> {
+        for offset in 0..seq_ids.len() {
+            for index in [
+                from.saturating_sub(offset),
+                (from + offset).min(seq_ids.len() - 1),
+            ] {
+                if verifiable.contains(&seq_ids[index]) {
+                    return Some((index, seq_ids[index].clone()));
+                }
+            }
+        }
+        None
+    };
+
+    let mut probes: Vec<IdProbe> = Vec::with_capacity(ID_DECILES.len() + 1);
+    for (position, tag) in ID_DECILES {
+        let nominal = ((position * seq_ids.len() as f64) as usize).min(seq_ids.len() - 1);
+        let Some((index, id)) = nearest_verifiable(nominal) else {
+            continue;
+        };
+        probes.push(IdProbe {
+            tag: tag.to_string(),
+            id,
+            present: true,
+            substituted: index != nominal,
+        });
+    }
+
+    let taken: std::collections::HashSet<String> = seq_ids.iter().cloned().collect();
+    let seed = probes
+        .iter()
+        .find(|p| p.tag == "id-50pct")
+        .map(|p| p.id.clone())
+        .unwrap_or_else(|| seq_ids[0].clone());
+    probes.push(IdProbe {
+        tag: ID_MISS_TAG.to_string(),
+        id: miss_id(&seed, &taken),
+        present: false,
+        substituted: false,
+    });
+
+    probes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::collections::HashSet;
+
+    fn ids(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("obj-{i}")).collect()
+    }
+
+    #[test]
+    fn deciles_land_at_their_nominal_positions() {
+        let all = ids(100);
+        let present: HashSet<String> = all.iter().cloned().collect();
+        let probes = id_probes(&all, &present);
+
+        let hit = |tag: &str| {
+            probes
+                .iter()
+                .find(|p| p.tag == tag)
+                .unwrap_or_else(|| panic!("no probe tagged {tag}"))
+                .id
+                .clone()
+        };
+        assert_eq!(hit("id-10pct"), "obj-10");
+        assert_eq!(hit("id-50pct"), "obj-50");
+        assert_eq!(hit("id-90pct"), "obj-90");
+    }
+
+    #[test]
+    fn every_decile_probe_is_present_and_the_miss_probe_is_not() {
+        let all = ids(100);
+        let present: HashSet<String> = all.iter().cloned().collect();
+        let probes = id_probes(&all, &present);
+
+        assert_eq!(probes.len(), 4, "three deciles plus one miss");
+        for probe in &probes {
+            if probe.tag == "id-miss" {
+                assert!(!probe.present, "the miss probe must be absent");
+                assert!(
+                    !present.contains(&probe.id),
+                    "the miss id must not be in the dataset"
+                );
+            } else {
+                assert!(probe.present, "{} must be a real id", probe.tag);
+            }
+        }
+    }
+
+    /// A decile id missing from the CityGML artefact would be timed as a hit
+    /// and recorded as a miss. It must be replaced by the nearest verifiable
+    /// feature, and the substitution disclosed.
+    #[test]
+    fn substitutes_the_nearest_verifiable_id_and_says_so() {
+        let all = ids(100);
+        let mut verifiable: HashSet<String> = all.iter().cloned().collect();
+        verifiable.remove("obj-50");
+        let probes = id_probes(&all, &verifiable);
+
+        let mid = probes
+            .iter()
+            .find(|p| p.tag == "id-50pct")
+            .expect("id-50pct");
+        assert_ne!(mid.id, "obj-50", "the unverifiable id must be replaced");
+        assert!(mid.present, "the replacement must itself be verifiable");
+        assert!(mid.substituted, "the substitution must be disclosed");
+        assert!(
+            verifiable.contains(&mid.id),
+            "the replacement must be in the verifiable set"
+        );
+    }
+
+    #[test]
+    fn miss_id_avoids_a_collision_with_an_existing_id() {
+        let mut taken = HashSet::new();
+        taken.insert("obj-1".to_string());
+        taken.insert("obj-1-readbench-absent".to_string());
+        taken.insert("obj-1-readbench-absent-2".to_string());
+
+        let miss = miss_id("obj-1", &taken);
+        assert!(
+            !taken.contains(&miss),
+            "miss_id returned a taken id: {miss}"
+        );
+    }
 
     /// A `rows x cols` grid of unit boxes on a 100 x 100 field.
     fn grid(rows: usize, cols: usize) -> Vec<[f64; 6]> {

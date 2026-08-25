@@ -56,3 +56,35 @@ fn scan_row_bboxes_returns_one_box_per_row_and_their_union() {
         }
     }
 }
+
+use cityparquet_readbench::params::{citygml_ids, seq_feature_ids};
+
+#[test]
+fn seq_feature_ids_reads_the_stream_in_order_and_skips_the_metadata_line() {
+    let ids = seq_feature_ids(&fixture("delft.city.jsonl")).expect("reading seq ids");
+    assert!(!ids.is_empty(), "delft has features");
+    assert!(
+        !ids.iter().any(|id| id.is_empty()),
+        "no feature id may be empty"
+    );
+    // The first line is the CityJSON metadata object, not a feature, so the
+    // count is the feature count rather than the line count.
+    let lines = std::fs::read_to_string(fixture("delft.city.jsonl"))
+        .expect("reading the fixture")
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    assert_eq!(
+        ids.len(),
+        lines - 1,
+        "one id per feature line, the metadata line excluded"
+    );
+}
+
+/// `b1_lod2_cs_w_sem.gml` is one of the two CityGML 2.0 files `just
+/// fixtures` fetches — a single semantically-decomposed building.
+#[test]
+fn citygml_ids_collects_every_city_object_key() {
+    let ids = citygml_ids(&fixture("b1_lod2_cs_w_sem.gml")).expect("reading citygml ids");
+    assert!(!ids.is_empty(), "the CityGML fixture has city objects");
+}
