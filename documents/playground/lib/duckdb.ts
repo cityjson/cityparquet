@@ -157,6 +157,19 @@ export async function createSession(onProgress: Progress = () => {}): Promise<Se
     // ones are, so this stays off in production.
     allowUnsignedExtensions: ALLOW_UNSIGNED,
     query: { castBigIntToDouble: true },
+    // The whole argument of this page depends on this line.
+    //
+    // DuckDB-Wasm defaults `forceFullHttpReads` to true, which suppresses range
+    // requests: it sends a HEAD, reads `Accept-Ranges: bytes` and a
+    // Content-Length of 16.4 GB, and then issues a plain GET with no Range
+    // header at all — downloading the entire file to answer a query that needs
+    // the footer and one column. That is a 16.4 GB read where 4.9 MB will do,
+    // and it never finishes in a browser.
+    //
+    // `allowFullHTTPReads` is deliberately left at its default: falling back to
+    // a whole-file read is right for a host that genuinely cannot serve ranges.
+    // What is wrong is doing it when the host can.
+    filesystem: { forceFullHTTPReads: false },
   });
 
   const connection = await db.connect();
