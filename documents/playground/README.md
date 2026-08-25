@@ -12,9 +12,30 @@ which it would not survive.
 ```
 config.ts     the data host, the extension source, the caps and the deadline
 presets.ts    the example queries
-lib/          duckdb (boot + extensions), query (run + Arrow), bytes, share
+lib/          duckdb (boot + extensions), query (run + Arrow), completion,
+              bytes, share
 components/   Editor, PresetList, ResultsTable, SchemaPanel, StatusBar
 ```
+
+## One statement at a time
+
+Everything goes through `Session.query`, and nothing calls `connection.query`
+directly. There is one connection into one WebAssembly instance, and two
+statements in flight on it do not queue — they interleave and corrupt the
+engine's heap. It surfaces as `RuntimeError: memory access out of bounds` or
+`null function` from _both_ statements, which reads like a broken query rather
+than a broken instance.
+
+This became load-bearing when completion arrived: the page now asks questions of
+its own while the reader is running theirs.
+
+The queue has one consequence worth knowing. `QUERY_TIMEOUT_MS` gives up on
+_waiting_ for a statement, not on the statement, so a read that never completes
+— the CORS case above — leaves the queue held behind it, and the schema panel
+and completion go quiet for the rest of the session. The reader still gets the
+message that says what went wrong; the tab does not recover on its own.
+`cancelSent()` is not the fix: the worker is inside the statement and will not
+read the cancellation until it ends.
 
 ## Running it
 
@@ -112,6 +133,28 @@ reason, and should not be widened to a range.
 
 Production deploys use the published community builds. Once the registry catches
 up, the override is only needed for testing functions that have not shipped yet.
+
+## Completion
+
+Typing offers three things: SQL keywords, from `@codemirror/lang-sql`; the
+columns of the files the statement reads; and every function the engine knows,
+the `cityjson` and `three_d` ones included. After a dot, a `STRUCT` column
+offers its fields instead — `bbox.` gives `xmin`, `address[1].` gives `street`.
+
+The columns cannot be declared up front the way `lang-sql`'s own schema
+completion expects, because there are no table names: a source is
+`read_parquet('https://…/building.parquet')`, and it changes as the reader
+types. `lib/completion.ts` therefore reads the `FROM` and `JOIN` clauses out of
+the document and asks DuckDB to `DESCRIBE` each one, caching the answer against
+the exact expression that produced it — failures included, or a half-typed URL
+would be a request per keystroke.
+
+That `DESCRIBE` reads the Parquet footer, which for the national file is 4.7 MB.
+It is fetched once per distinct source per session, and nearly every preset
+reads the same file, so a session pays for it about twice. It is warmed on the
+same 700 ms debounce the schema panel uses, and the completion source waits
+1.5 s for it before offering what it already has — a popup that hangs is worse
+than one missing its columns for a keystroke.
 
 ## Adding a preset
 

@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { CompletionContext } from "@codemirror/autocomplete";
+import { PostgreSQL, sql } from "@codemirror/lang-sql";
+import { EditorState } from "@codemirror/state";
 
 import { DATA_BASE_URL, EXTENSIONS, ROWS_PER_PAGE, ROW_DISPLAY_CAP } from "./config";
+import {
+  SchemaCache,
+  cityParquetCompletion,
+  elementType,
+  structFields,
+  tableExpressions,
+} from "./lib/completion";
+import { serialiser } from "./lib/serialise";
 import { PRESETS, DEFAULT_PRESET_ID, findPreset } from "./presets";
 import { buildHash, decodeSql, encodeSql, parseHash } from "./lib/share";
 import { formatBytes } from "./lib/bytes";
@@ -105,7 +116,8 @@ describe("the preset registry", () => {
     // go through ST_3DFromWKB / ST_3DTryFromWKB first, paired with its
     // geometry_properties_lod* struct so shell grouping survives. Passing the
     // column straight in binds against nothing and fails only at runtime.
-    const measures = /ST_3D(?:Volume|SurfaceArea|Area|FootprintArea|Perimeter|NumShells|NumFaces|IsClosed|IsManifold|ValidationReport)\s*\(\s*(geometry_\w+)/i;
+    const measures =
+      /ST_3D(?:Volume|SurfaceArea|Area|FootprintArea|Perimeter|NumShells|NumFaces|IsClosed|IsManifold|ValidationReport)\s*\(\s*(geometry_\w+)/i;
     for (const preset of PRESETS) {
       const hit = preset.sql.match(measures);
       expect(
@@ -165,5 +177,240 @@ describe("byte formatting", () => {
     expect(formatBytes(1_000)).toBe("1.0 kB");
     expect(formatBytes(4_709_461)).toBe("4.7 MB");
     expect(formatBytes(16_400_304_209)).toBe("16.4 GB");
+  });
+});
+
+describe("reading sources out of a statement", () => {
+  it("finds the table functions a statement reads from", () => {
+    expect(tableExpressions("SELECT * FROM read_parquet('a.parquet')")).toEqual([
+      "read_parquet('a.parquet')",
+    ]);
+  });
+
+  it("finds one per source across CTEs and joins, without repeating any", () => {
+    const found = tableExpressions(PRESETS.find((p) => p.id === "volume-check")!.sql);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatch(/^read_parquet\('https:\/\/.*building\.parquet'\)$/);
+  });
+
+  it("ignores calls that are not sources", () => {
+    // A projection is not a FROM clause, and a CTE name is not describable on
+    // its own — offering either to DESCRIBE would just fail.
+    expect(
+      tableExpressions("SELECT strftime(d, '%Y') FROM parts JOIN buildings b ON b.id = p.id"),
+    ).toEqual([]);
+  });
+
+  it("normalises whitespace so one source is not cached twice", () => {
+    expect(tableExpressions("FROM read_parquet(\n  'a.parquet'\n)")).toEqual([
+      "read_parquet( 'a.parquet' )",
+    ]);
+  });
+
+  it("covers every preset that reads a file", () => {
+    for (const preset of PRESETS) {
+      if (!/\bfrom\s+\w+\s*\(/i.test(preset.sql)) continue;
+      expect(tableExpressions(preset.sql).length, `${preset.id}`).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("STRUCT types", () => {
+  it("reads the bbox every CityParquet object carries", () => {
+    const type =
+      "STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE, xmax DOUBLE, ymax DOUBLE, zmax DOUBLE)";
+    expect(structFields(type).map((f) => f.name)).toEqual([
+      "xmin",
+      "ymin",
+      "zmin",
+      "xmax",
+      "ymax",
+      "zmax",
+    ]);
+  });
+
+  it("reads quoted names and nested lists", () => {
+    // The real geometry_properties_lod* type: `type` is a keyword so DuckDB
+    // quotes it, and `shells` is a list of lists.
+    const type =
+      'STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])';
+    expect(structFields(type)).toEqual([
+      { name: "type", type: "VARCHAR" },
+      { name: "surfaces", type: "VARCHAR" },
+      { name: "face_semantics", type: "INTEGER[]" },
+      { name: "shells", type: "INTEGER[][]" },
+    ]);
+  });
+
+  it("does not split a comma inside a nested struct", () => {
+    expect(structFields("STRUCT(a STRUCT(x INTEGER, y INTEGER), b VARCHAR)")).toEqual([
+      { name: "a", type: "STRUCT(x INTEGER, y INTEGER)" },
+      { name: "b", type: "VARCHAR" },
+    ]);
+  });
+
+  it("is not fooled by anything that is not a struct", () => {
+    for (const type of ["VARCHAR", "BLOB", "INTEGER[]", "MAP(VARCHAR, VARCHAR)", "STRUCTURED"]) {
+      expect(structFields(type), type).toEqual([]);
+    }
+  });
+
+  it("unwraps one level of list, which is what an index does", () => {
+    // The 3DBAG address column is a list of structs: address[1].street.
+    const type = "STRUCT(street VARCHAR, house_number VARCHAR)[]";
+    expect(structFields(type)).toEqual([]);
+    expect(structFields(elementType(type)).map((f) => f.name)).toEqual(["street", "house_number"]);
+  });
+});
+
+describe("the schema cache", () => {
+  const columnsOf = (name: string) => [{ column_name: name, column_type: "VARCHAR" }];
+
+  it("describes each source once, however often it is asked", async () => {
+    const seen: string[] = [];
+    const cache = new SchemaCache(async (sql) => {
+      seen.push(sql);
+      return columnsOf("id");
+    });
+    const sql = "SELECT * FROM read_parquet('a.parquet')";
+    await Promise.all([cache.columns(sql), cache.columns(sql), cache.columns(sql)]);
+    expect(seen).toEqual(["DESCRIBE SELECT * FROM read_parquet('a.parquet')"]);
+  });
+
+  it("remembers a failure too, so a half-typed URL is not retried per keystroke", async () => {
+    let calls = 0;
+    const cache = new SchemaCache(async () => {
+      calls++;
+      throw new Error("IO Error: 404");
+    });
+    const sql = "SELECT * FROM read_parquet('https://example.invalid/hal')";
+    expect(await cache.columns(sql)).toEqual([]);
+    expect(await cache.columns(sql)).toEqual([]);
+    expect(calls).toBe(1);
+  });
+
+  it("unions the sources a statement reads, first occurrence winning", async () => {
+    const cache = new SchemaCache(async (sql) =>
+      sql.includes("a.parquet") ? columnsOf("id") : [...columnsOf("id"), ...columnsOf("extra")],
+    );
+    const columns = await cache.columns(
+      "SELECT * FROM read_parquet('a.parquet') JOIN read_parquet('b.parquet') ON true",
+    );
+    expect(columns.map((c) => c.name)).toEqual(["id", "extra"]);
+  });
+
+  it("survives a database that cannot answer at all", async () => {
+    const cache = new SchemaCache(async () => {
+      throw new Error("Connection closed");
+    });
+    expect(await cache.functions()).toEqual([]);
+  });
+});
+
+describe("what the editor offers", () => {
+  const cache = new SchemaCache(async (statement) => {
+    if (statement.startsWith("DESCRIBE")) {
+      return [
+        { column_name: "id", column_type: "VARCHAR" },
+        { column_name: "b3_dak_type", column_type: "VARCHAR" },
+        { column_name: "bbox", column_type: "STRUCT(xmin DOUBLE, ymin DOUBLE, zmin DOUBLE)" },
+        { column_name: "address", column_type: "STRUCT(street VARCHAR)[]" },
+      ];
+    }
+    return [{ name: "st_3dvolume", kind: "scalar", returns: "DOUBLE", description: null }];
+  });
+  const complete = cityParquetCompletion(cache);
+
+  /** `|` marks the cursor — the position is the whole point of these cases. */
+  const at = (marked: string, explicit = false) => {
+    const pos = marked.indexOf("|");
+    const doc = marked.replace("|", "");
+    return complete(
+      new CompletionContext(
+        EditorState.create({ doc, extensions: [sql({ dialect: PostgreSQL })] }),
+        pos,
+        explicit,
+      ),
+    );
+  };
+
+  const labels = async (marked: string, explicit = false) =>
+    (await at(marked, explicit))?.options.map((option) => option.label);
+
+  it("offers the columns of the file the statement reads", async () => {
+    expect(await labels("SELECT b3| FROM read_parquet('a.parquet')")).toContain("b3_dak_type");
+  });
+
+  it("offers the functions the loaded extensions added", async () => {
+    expect(await labels("SELECT st_3| FROM read_parquet('a.parquet')")).toContain("st_3dvolume");
+  });
+
+  it("says nothing inside a comment", async () => {
+    // Every preset opens with one, so this is the common case, not an edge.
+    expect(await at("-- b3| is the reconstruction prefix\nSELECT 1", true)).toBeNull();
+  });
+
+  it("says nothing inside a string, where the URLs live", async () => {
+    expect(await at("SELECT * FROM read_parquet('https://host/buil|", true)).toBeNull();
+  });
+
+  it("offers the fields of a struct after its dot", async () => {
+    const result = await at("SELECT bbox.x| FROM read_parquet('a.parquet')");
+    expect(result?.options.map((option) => option.label)).toEqual(["xmin", "ymin", "zmin"]);
+    // Replacing only what was typed after the dot, not the column name.
+    expect(result?.from).toBe(12);
+  });
+
+  it("offers a list of structs only once the text has indexed into it", async () => {
+    expect(await at("SELECT address.| FROM read_parquet('a.parquet')")).toBeNull();
+    expect(await labels("SELECT address[1].| FROM read_parquet('a.parquet')")).toEqual(["street"]);
+  });
+
+  it("says nothing after an alias dot rather than guessing", async () => {
+    // `p` is not a column, so its fields are unknowable here — and a list of
+    // every column would be wrong in a way the reader would have to undo.
+    expect(await at("SELECT p.x| FROM read_parquet('a.parquet') p")).toBeNull();
+  });
+
+  it("stays quiet on a bare keystroke unless asked", async () => {
+    // Nine hundred functions is not a helpful response to pressing space.
+    expect(await at("SELECT id, | FROM read_parquet('a.parquet')")).toBeNull();
+    expect(await at("SELECT id, | FROM read_parquet('a.parquet')", true)).not.toBeNull();
+  });
+});
+
+describe("running one statement at a time", () => {
+  it("does not start a task until the previous one has settled", async () => {
+    const serialise = serialiser();
+    const order: string[] = [];
+    let releaseFirst: () => void = () => {};
+
+    const first = serialise(async () => {
+      order.push("first started");
+      await new Promise<void>((resolve) => (releaseFirst = resolve));
+      order.push("first finished");
+    });
+    const second = serialise(async () => {
+      order.push("second started");
+    });
+
+    // A microtask turn is enough for the second to start if it were going to.
+    await Promise.resolve();
+    expect(order).toEqual(["first started"]);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["first started", "first finished", "second started"]);
+  });
+
+  it("rejects for the failed caller alone, and keeps the queue moving", async () => {
+    const serialise = serialiser();
+    const failed = serialise(async () => {
+      throw new Error("memory access out of bounds");
+    });
+    const after = serialise(async () => "ran anyway");
+
+    await expect(failed).rejects.toThrow("memory access out of bounds");
+    expect(await after).toBe("ran anyway");
   });
 });

@@ -81,13 +81,36 @@ function classify(message: string): QueryFailure["kind"] {
 
 /** Run one statement, with a deadline, and collect what the UI needs. */
 export async function runQuery(session: Session, sql: string): Promise<QueryResult> {
-  const started = performance.now();
-  const before = await readByteStats(session.worker);
+  // The statement and the two byte readings are one exclusive block: the
+  // counter is a running total, so a schema lookup landing between the readings
+  // would be billed to the reader, and one landing *on* them would time them
+  // out and take the readout away altogether.
+  const measured = session.exclusive(async () => {
+    const before = await readByteStats(session.worker);
+    // Timed from here, so a queue this waited behind is not reported as the
+    // statement's own time.
+    const started = performance.now();
+    const table = await session.connection.query(sql);
+    const elapsedMs = performance.now() - started;
+    const after = await readByteStats(session.worker);
+    return {
+      table,
+      elapsedMs,
+      /** Null when the counter is unavailable — never a guess. */
+      bytesRead: before && after ? Math.max(0, after.bytes - before.bytes) : null,
+    };
+  });
 
+  const waitStarted = performance.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const table = await Promise.race([
-      session.connection.query(sql),
+    // The deadline races the *wait*, not the statement, which keeps its place
+    // in the queue and runs to completion either way — so nothing starts on top
+    // of a query this gave up on, and nothing else runs until it finishes.
+    // DuckDB-Wasm's `cancelSent()` cannot help: the worker is inside the
+    // statement, so it will not read the cancellation until the statement ends.
+    const { table, elapsedMs, bytesRead } = await Promise.race([
+      measured,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
           () =>
@@ -102,10 +125,6 @@ export async function runQuery(session: Session, sql: string): Promise<QueryResu
         );
       }),
     ]);
-
-    const elapsedMs = performance.now() - started;
-    const after = await readByteStats(session.worker);
-    const bytesRead = before && after ? Math.max(0, after.bytes - before.bytes) : null;
 
     const columns = table.schema.fields.map((field) => field.name);
     const all = table.toArray();
@@ -128,11 +147,24 @@ export async function runQuery(session: Session, sql: string): Promise<QueryResu
     throw new QueryError({
       kind: classify(message),
       message,
-      elapsedMs: performance.now() - started,
+      elapsedMs: performance.now() - waitStarted,
     });
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+/**
+ * Run a statement and get plain rows back, with no deadline and no byte
+ * accounting.
+ *
+ * This is for the queries the interface asks on the reader's behalf — schema
+ * lookups, the function list behind completion — not for the reader's own,
+ * which go through `runQuery` so that they are measured and bounded.
+ */
+export async function rowsOf(session: Session, sql: string): Promise<Record<string, unknown>[]> {
+  const table = await session.query(sql);
+  return table.toArray().map((row) => row.toJSON() as Record<string, unknown>);
 }
 
 /** Column names and types for whatever the query selects, without reading data. */
@@ -142,12 +174,9 @@ export async function describeQuery(
 ): Promise<{ name: string; type: string }[]> {
   const trimmed = sql.trim().replace(/;\s*$/, "");
   if (!trimmed) return [];
-  const table = await session.connection.query(`DESCRIBE ${trimmed}`);
-  return table.toArray().map((row) => {
-    const record = row.toJSON() as Record<string, unknown>;
-    return {
-      name: String(record.column_name ?? ""),
-      type: String(record.column_type ?? ""),
-    };
-  });
+  const rows = await rowsOf(session, `DESCRIBE ${trimmed}`);
+  return rows.map((row) => ({
+    name: String(row.column_name ?? ""),
+    type: String(row.column_type ?? ""),
+  }));
 }

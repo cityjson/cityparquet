@@ -229,6 +229,74 @@ const { config } = data;
     height: 100%;
   }
 
+  /* Completion popup. CodeMirror ships its own colours, which are a light
+     theme regardless of the page, so every surface here is named from the
+     site's tokens instead. */
+  .cm-tooltip.cp-completion {
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    background: var(--cp-page);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+    overflow: hidden;
+  }
+
+  .cm-tooltip.cp-completion > ul {
+    max-height: 16rem;
+    font-family: var(--cp-mono);
+    font-size: 0.78rem;
+  }
+
+  .cm-tooltip.cp-completion > ul > li {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.2rem 0.5rem;
+    color: inherit;
+  }
+
+  .cm-tooltip.cp-completion > ul > li[aria-selected] {
+    background: color-mix(in srgb, var(--cp-accent) 16%, transparent);
+    color: inherit;
+  }
+
+  .cm-tooltip.cp-completion .cm-completionLabel {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* The characters the typed prefix matched. */
+  .cm-tooltip.cp-completion .cm-completionMatchedText {
+    text-decoration: none;
+    font-weight: 700;
+    color: var(--cp-accent);
+  }
+
+  /* The type of a column, or the return type of a function. */
+  .cm-tooltip.cp-completion .cm-completionDetail {
+    flex: 0 0 auto;
+    font-style: normal;
+    font-size: 0.9em;
+    color: var(--cp-dim);
+  }
+
+  .cm-tooltip.cp-completion .cm-completionIcon {
+    opacity: 0.6;
+    padding-right: 0.35rem;
+  }
+
+  /* The function description, in the panel beside the list. */
+  .cm-tooltip.cm-completionInfo {
+    max-width: 24rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    background: var(--cp-page);
+    font-family: inherit;
+    font-size: 0.78rem;
+    line-height: 1.5;
+  }
+
   /* Status bar */
   .cp-status {
     display: flex;

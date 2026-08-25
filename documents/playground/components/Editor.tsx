@@ -1,8 +1,13 @@
 import { useEffect, useRef } from "react";
 import { EditorState } from "@codemirror/state";
-import { EditorView, keymap, lineNumbers, highlightActiveLine } from "@codemirror/view";
+import { EditorView, keymap, lineNumbers, highlightActiveLine, tooltips } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import {
+  autocompletion,
+  type CompletionContext,
+  type CompletionSource,
+} from "@codemirror/autocomplete";
 import { sql, PostgreSQL } from "@codemirror/lang-sql";
 import { tags } from "@lezer/highlight";
 
@@ -17,6 +22,8 @@ interface EditorProps {
   onRun: () => void;
   disabled: boolean;
   handleRef?: { current: EditorHandle | null };
+  /** Columns, struct fields and functions. Keywords come from `sql()` itself. */
+  completionSource?: CompletionSource;
 }
 
 /**
@@ -48,14 +55,26 @@ const highlight = HighlightStyle.define([
  * CodeMirror 6, wired to the site's theme tokens rather than a packaged theme,
  * so the editor follows light/dark with everything else on the page.
  */
-export default function Editor({ value, onChange, onRun, disabled, handleRef }: EditorProps) {
+export default function Editor({
+  value,
+  onChange,
+  onRun,
+  disabled,
+  handleRef,
+  completionSource,
+}: EditorProps) {
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
   // Kept in refs so the CodeMirror extensions never close over a stale render.
   const onChangeRef = useRef(onChange);
   const onRunRef = useRef(onRun);
+  const completionRef = useRef(completionSource);
   onChangeRef.current = onChange;
   onRunRef.current = onRun;
+  // The editor is built once, but the completion source only exists after the
+  // database is up. Reading it through a ref lets it arrive late without
+  // reconfiguring the editor.
+  completionRef.current = completionSource;
 
   useEffect(() => {
     if (!host.current) return;
@@ -78,7 +97,23 @@ export default function Editor({ value, onChange, onRun, disabled, handleRef }: 
           },
         ]),
         keymap.of([...defaultKeymap, ...historyKeymap]),
-        sql({ dialect: PostgreSQL, upperCaseKeywords: false }),
+        // Upper-case, because that is how every preset — and the specification
+        // — writes a keyword, and a completion should match the house style.
+        sql({ dialect: PostgreSQL, upperCaseKeywords: true }),
+        // Registered as language data rather than as an `override`, so the
+        // keyword source `sql()` installs above keeps working alongside it.
+        PostgreSQL.language.data.of({
+          autocomplete: (context: CompletionContext) =>
+            completionRef.current ? completionRef.current(context) : null,
+        }),
+        // The class is the hook the page's own styles hang on, so the popup
+        // follows light/dark with everything else rather than shipping
+        // CodeMirror's defaults.
+        autocompletion({ tooltipClass: () => "cp-completion" }),
+        // The editor shell scrolls and is capped at 28rem, so a tooltip laid
+        // out inside it is clipped at the bottom of the box — exactly where a
+        // completion popup wants to appear. Fixed positioning escapes it.
+        tooltips({ position: "fixed" }),
         syntaxHighlighting(highlight),
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {

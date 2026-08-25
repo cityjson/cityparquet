@@ -6,6 +6,7 @@ import ehModuleUrl from "@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url";
 
 import { ALLOW_UNSIGNED, EXTENSIONS, EXTENSION_SOURCE, type ExtensionName } from "../config";
 import { createCountingWorker } from "./bytes";
+import { serialiser } from "./serialise";
 
 export interface LoadedExtension {
   readonly name: ExtensionName;
@@ -13,11 +14,43 @@ export interface LoadedExtension {
   readonly error: string | null;
 }
 
+/**
+ * Whatever Arrow table this DuckDB build returns — taken from its own signature
+ * rather than imported, since the Arrow it hands back is its vendored copy.
+ */
+export type QueryTable = Awaited<ReturnType<duckdb.AsyncDuckDBConnection["query"]>>;
+
 export interface Session {
   readonly db: duckdb.AsyncDuckDB;
   readonly connection: duckdb.AsyncDuckDBConnection;
   readonly worker: Worker;
   readonly extensions: readonly LoadedExtension[];
+  /**
+   * Have the engine to yourself for the duration of `task`. **Nothing may touch
+   * the connection or the worker outside one of these.**
+   *
+   * There is a single connection into a single WebAssembly instance, and two
+   * queries in flight on it at once do not queue — they interleave inside the
+   * engine and corrupt its heap. The failure is not a rejected promise but
+   * `RuntimeError: memory access out of bounds` or `null function`, from both
+   * queries, after which that DuckDB instance is unreliable.
+   *
+   * It is a block rather than a single statement because the byte counter needs
+   * one: it reads a running total from the worker on either side of a
+   * statement, so anything slipping in between would be counted as the
+   * reader's. The worker is also single-threaded, so it cannot answer the
+   * counter at all while it is executing — asking during someone else's
+   * statement does not return a wrong number, it returns none, and the readout
+   * silently disappears.
+   *
+   * Tasks queue, and a task that never finishes holds the queue. See
+   * `runQuery`, where the per-query deadline gives up on the wait but not on
+   * the statement.
+   */
+  exclusive<T>(task: () => Promise<T>): Promise<T>;
+
+  /** One statement, exclusively — the common case of `exclusive`. */
+  query(sql: string): Promise<QueryTable>;
 }
 
 export type Progress = (message: string) => void;
@@ -135,7 +168,15 @@ export async function createSession(onProgress: Progress = () => {}): Promise<Se
     extensions.push(await loadExtension(connection, name));
   }
 
-  return { db, connection, worker, extensions };
+  const exclusive = serialiser();
+  return {
+    db,
+    connection,
+    worker,
+    extensions,
+    exclusive,
+    query: (statement) => exclusive(() => connection.query(statement)),
+  };
 }
 
 /** Pull a readable message out of whatever DuckDB or the browser threw. */

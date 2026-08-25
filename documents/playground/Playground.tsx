@@ -1,11 +1,12 @@
 // DuckDB-Wasm touches Worker and window, so this must never be server-rendered.
 export const client = "only";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { EXTENSION_SOURCE } from "./config";
+import { SchemaCache, cityParquetCompletion } from "./lib/completion";
 import { createSession, describe, type Session } from "./lib/duckdb";
-import { QueryError, describeQuery, runQuery, type QueryResult } from "./lib/query";
+import { QueryError, describeQuery, runQuery, rowsOf, type QueryResult } from "./lib/query";
 import { buildHash, parseHash } from "./lib/share";
 import { DEFAULT_PRESET_ID, PRESETS, findPreset, type Preset } from "./presets";
 
@@ -50,6 +51,19 @@ export default function Playground() {
 
   // Imperative handle, so the schema panel can insert at the cursor.
   const editorRef = useRef<EditorHandle | null>(null);
+
+  // What the editor completes against. Bound to the session, because both
+  // halves — the columns of the files the statement reads, and the functions
+  // the loaded extensions added — are answers only this database can give.
+  const readySession = boot.status === "ready" ? boot.session : null;
+  const schemaCache = useMemo(
+    () => (readySession ? new SchemaCache((statement) => rowsOf(readySession, statement)) : null),
+    [readySession],
+  );
+  const completionSource = useMemo(
+    () => (schemaCache ? cityParquetCompletion(schemaCache) : undefined),
+    [schemaCache],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -133,6 +147,15 @@ export default function Playground() {
     };
   }, [sql, boot]);
 
+  // Fetch the schema the editor completes against before anyone asks for it.
+  // Sharing the schema panel's debounce is deliberate: both wait for typing to
+  // settle, and neither should fire on a half-written URL.
+  useEffect(() => {
+    if (!schemaCache) return;
+    const timer = setTimeout(() => schemaCache.warm(sql), 700);
+    return () => clearTimeout(timer);
+  }, [sql, schemaCache]);
+
   const selectPreset = useCallback((preset: Preset) => {
     setQueryState({ sql: preset.sql, presetId: preset.id });
     setError(null);
@@ -204,6 +227,7 @@ export default function Playground() {
                 onRun={run}
                 disabled={running}
                 handleRef={editorRef}
+                completionSource={completionSource}
               />
             </div>
 
