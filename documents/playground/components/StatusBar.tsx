@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 import { formatBytes } from "../lib/bytes";
 import type { LoadedExtension } from "../lib/duckdb";
 import type { QueryResult } from "../lib/query";
@@ -15,14 +17,28 @@ interface StatusBarProps {
  * query took 900 ms, but not that it read 3 MB of a 16.4 GB file to do it. When
  * the counter is unavailable the field is omitted entirely rather than shown as
  * zero — a wrong number here would undercut the very claim it exists to support.
+ *
+ * While a query is in flight the time counts up. A read of the national package
+ * can run for tens of seconds against a slow host, and a bare "Running…" for
+ * that long is indistinguishable from a page that has stopped working; a moving
+ * number says which of the two this is, and how close it is to the deadline.
  */
 export default function StatusBar({ result, extensions, running }: StatusBarProps) {
   const loaded = extensions.filter((extension) => extension.error === null);
+  const elapsed = useElapsed(running);
 
   return (
     <div className="cp-status" role="status">
       <div className="cp-status-metrics">
-        {running && <span className="cp-status-item cp-running">Running…</span>}
+        {running && (
+          <span className="cp-status-item cp-running">
+            Running…{" "}
+            {/* Hidden from assistive technology: this sits in a live region, and
+                a number changing ten times a second would be announced as often.
+                "Running…" beside it carries the same news, once. */}
+            <strong aria-hidden="true">{formatTicking(elapsed)}</strong>
+          </span>
+        )}
 
         {!running && result && (
           <>
@@ -67,6 +83,37 @@ export default function StatusBar({ result, extensions, running }: StatusBarProp
       </div>
     </div>
   );
+}
+
+/**
+ * Milliseconds since the run began, while one is in flight, and 0 otherwise.
+ *
+ * Ten ticks a second: fast enough to read as running rather than as frozen,
+ * slow enough that the last digit is legible rather than a blur.
+ */
+function useElapsed(running: boolean): number {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!running) return;
+    const started = performance.now();
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed(performance.now() - started), 100);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  return elapsed;
+}
+
+/**
+ * The running clock, always in seconds to one decimal.
+ *
+ * `formatDuration` switches units at a second, which is right for a figure that
+ * has settled and wrong for one that has not: a counter that reads in
+ * milliseconds and then flips to seconds looks like it has restarted.
+ */
+function formatTicking(ms: number): string {
+  return `${(ms / 1_000).toFixed(1)} s`;
 }
 
 function formatDuration(ms: number): string {
