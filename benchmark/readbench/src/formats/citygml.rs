@@ -206,12 +206,11 @@ fn ensure_every_member_was_mapped(
 /// Streams every feature of `doc` through `visit`, then verifies that the
 /// reader mapped every `cityObjectMember` — returning the member count.
 ///
-/// The stream is always drained to EOF, even by a scenario that could answer
-/// earlier (see [`Scenario::IdLookup`]): the skipped-member tally only becomes
-/// authoritative at EOF, and an early exit would let a document whose FIRST
-/// member is mapped publish a number while its later, unmapped members went
-/// unnoticed. Draining is also what an unindexed format has to do to know it
-/// is finished, so the cost is honest rather than added.
+/// This drains to EOF, which is what an unindexed format has to do to know it
+/// is finished, so the cost is honest rather than added — and it is what
+/// makes the skipped-member tally authoritative. Every scenario but
+/// [`Scenario::IdLookup`] goes through here; that one can answer as soon as
+/// it hits, and takes [`stream_members_until`] instead.
 ///
 /// Opened via `open_without_appearance`: the reader's default `open` re-reads
 /// the entire document up front to index its CityModel-level appearance, and
@@ -246,7 +245,45 @@ where
 ///
 /// Every scenario re-streams the document from the start — there is nothing
 /// else a format with no index can do, and pretending otherwise is exactly
-/// what this row exists to disprove.
+/// what this row exists to disprove. [`Scenario::IdLookup`] may stop at its
+/// hit (see [`stream_members_until`]); it still starts from the beginning.
+
+/// Streams members until `visit` returns `true` (a hit), then stops.
+///
+/// Deliberately does NOT run [`ensure_every_member_was_mapped`]: the
+/// skipped-member tally is only authoritative at EOF, and draining the
+/// document after the answer is known would measure work a reader with an
+/// index would never do — this scenario exists to compare mechanisms, so
+/// every format is allowed the best its own encoding affords.
+///
+/// The guard is not lost, it moves: the coordinator spawns an UNTIMED
+/// [`Scenario::Count`] child per format per dataset before any scenario runs
+/// (`coordinator::total_count_for`), that pass goes through
+/// [`stream_members`], and its failure aborts the whole run with `?`. So a
+/// document with unmapped members can never reach a published `id-lookup`
+/// row — it fails at `count` first. An `id-lookup` MISS still drains by
+/// necessity and still consults the guard.
+fn stream_members_until<F>(doc: &Document, mut visit: F) -> Result<bool>
+where
+    F: FnMut(CityJSONFeature) -> Result<bool>,
+{
+    let mut reader = FeatureReader::open_without_appearance(&doc.path, &doc.transform)
+        .map_err(|e| anyhow!(e))
+        .with_context(|| format!("streaming {}", doc.origin))?;
+    for feature in reader.by_ref() {
+        let feature = feature.map_err(|e| anyhow!(e))?;
+        if visit(feature)? {
+            return Ok(true);
+        }
+    }
+    ensure_every_member_was_mapped(
+        reader.emitted_members(),
+        reader.skipped_members(),
+        &doc.origin,
+    )?;
+    Ok(false)
+}
+
 fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Result<u64> {
     match scenario {
         Scenario::Count => stream_members(doc, |_| Ok(())),
@@ -314,17 +351,13 @@ fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Res
             })?;
             Ok(count)
         }
-        // Deliberately no early exit: see [`stream_members`]. With no index the
-        // whole document must be parsed to know an id is absent anyway, and
-        // stopping at a lucky early hit would both flatter the timing and let
-        // the skipped-member guard miss what came after.
+        // Stops at the hit — the best a document with no index can do, and
+        // what every other unindexed runner here already does. See
+        // [`stream_members_until`] for where the skipped-member guard goes.
         Scenario::IdLookup => {
             let id = require(&params.target_id, "target-id", scenario)?;
-            let mut found = false;
-            stream_members(doc, |feature| {
-                found |= feature.city_objects.contains_key(id);
-                Ok(())
-            })?;
+            let found =
+                stream_members_until(doc, |feature| Ok(feature.city_objects.contains_key(id)))?;
             Ok(found as u64)
         }
         Scenario::Project => {
@@ -434,6 +467,59 @@ impl FormatRunner for CityGmlRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A committed real fragment under `crates/core/tests/data/` — the same
+    /// one `tests/citygml_runner.rs` uses for its grain assertions. Four
+    /// `cityObjectMember`s: a `bldg:Building` (first), a `brid:Bridge`, a
+    /// `veg:SolitaryVegetationObject` and a `grp:CityObjectGroup`.
+    fn railway_fragment() -> PathBuf {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../lib/cityparquet-rs/crates/core/tests/data")
+            .join("railway_lod3_fragment.gml");
+        assert!(p.exists(), "missing committed fixture {}", p.display());
+        p
+    }
+
+    /// The `IdLookup` traversal, with the member count the scenario itself
+    /// discards — the observable this test needs. Four members means a
+    /// timing comparison would be noise; the visit count is exact.
+    fn count_members_until_id(doc: &Document, id: &str) -> Result<(bool, u64)> {
+        let mut visited = 0u64;
+        let found = stream_members_until(doc, |feature| {
+            visited += 1;
+            Ok(feature.city_objects.contains_key(id))
+        })?;
+        Ok((found, visited))
+    }
+
+    /// A hit in the FIRST member stops there; an absent id walks all four.
+    /// Without the early exit both visit four.
+    #[test]
+    fn id_lookup_stops_at_the_hit_instead_of_draining_the_document() {
+        let doc = open_citygml(&railway_fragment(), "railway_lod3_fragment.gml")
+            .expect("opening the fragment");
+
+        // Whatever the first member's own CityObject is called.
+        let mut first_key = None;
+        stream_members_until(&doc, |feature| {
+            first_key = feature.city_objects.keys().next().cloned();
+            Ok(true)
+        })
+        .expect("streaming the first member");
+        let first_key = first_key.expect("the first member has a CityObject");
+
+        let (found, on_hit) = count_members_until_id(&doc, &first_key).expect("hit lookup");
+        assert!(found, "the first member's own id must be found");
+        assert_eq!(
+            on_hit, 1,
+            "a first-member hit must visit exactly one member"
+        );
+
+        let (found, on_miss) =
+            count_members_until_id(&doc, "definitely-not-in-this-document").expect("miss lookup");
+        assert!(!found, "an absent id must not be found");
+        assert_eq!(on_miss, 4, "a miss must walk every member");
+    }
 
     fn tally(entries: &[(&str, usize)]) -> BTreeMap<String, usize> {
         entries

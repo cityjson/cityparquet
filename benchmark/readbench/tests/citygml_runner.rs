@@ -392,26 +392,26 @@ fn an_unmapped_member_type_fails_loudly_instead_of_counting_zero() {
     }
 }
 
-/// **The `id-lookup` hit path** — the one place the guard can be bypassed, and
-/// the reason `id-lookup` deliberately gave up its early exit.
+/// **The `id-lookup` hit path** — where the skipped-member guard is bypassed,
+/// and why that is safe.
 ///
-/// The skipped-member tally is only authoritative at EOF, so a scenario that
-/// stopped at a lucky early hit would answer from a document it never finished
-/// reading: a tile whose FIRST member is mapped could publish `1` while its
-/// later, unmapped members went unnoticed. `run_scenario` therefore drains the
-/// stream and only then consults the guard.
+/// `id-lookup` stops at the hit: it is the best a document with no index can
+/// do, and every other unindexed runner here already does it, so leaving
+/// CityGML draining made its published time a different measurement wearing
+/// the same scenario name. The skipped-member tally is only authoritative at
+/// EOF, so stopping early genuinely does skip the guard on the hit path.
 ///
-/// The `plateau_trk_fragment.gml` test above cannot pin that, because it holds
-/// no id to hit — every scenario there drains by necessity. This fixture puts a
-/// findable id in front of the unmapped members, so an early exit would produce
-/// a clean `1` and skip the guard entirely. Re-run the mutation (restore
-/// `return Ok(1)` on a hit) and this test — and only this test — goes red.
+/// What keeps that from publishing a number for a document the reader cannot
+/// fully read is the coordinator, not the runner: it spawns an UNTIMED
+/// `count` child per format per dataset before any scenario runs, `count`
+/// drains and consults the guard, and its failure aborts the whole run with
+/// `?`. This test pins all three halves of that argument on the purpose-built
+/// `railway_then_unmapped_trk.gml` — a findable id in front of three
+/// unmapped `tran:Track` members.
 #[test]
-fn id_lookup_still_reaches_the_guard_when_the_id_is_found() {
+fn id_lookup_stops_at_the_hit_while_count_still_refuses_the_document() {
     // The premise: this id really is present, and really is in the FIRST
-    // member — so a hit genuinely happens before the unmapped members are
-    // reached. Proven against the unmixed source fixture, which the guard
-    // accepts, so a `1` here would mean "found and stopped", not "not found".
+    // member — so a hit genuinely happens before the unmapped members.
     const FOUND_ID: &str = "GMLID_BUI46739_1739_10911";
     assert_eq!(
         run_child(
@@ -426,33 +426,46 @@ fn id_lookup_still_reaches_the_guard_when_the_id_is_found() {
     );
 
     let composed = data_fixture("railway_then_unmapped_trk.gml");
-    let stderr = run_child_expect_failure(
-        "citygml",
-        "id-lookup",
-        &composed,
-        &["--target-id", FOUND_ID],
+
+    // 1. The hit now stops early, so it never reaches the guard.
+    assert_eq!(
+        run_child(
+            "citygml",
+            "id-lookup",
+            &composed,
+            &["--target-id", FOUND_ID]
+        ),
+        1,
+        "a hit in the first member must stop there rather than draining"
     );
+
+    // 2. But `count` — which the coordinator runs UNTIMED for every format
+    //    before any scenario, and whose failure aborts the run — still
+    //    refuses the document. No coordinator run can publish an id-lookup
+    //    row for it.
+    let stderr = run_child_expect_failure("citygml", "count", &composed, &[]);
     assert!(
         stderr.contains("does not map") && stderr.contains("tran:Track"),
-        "finding the id must NOT let id-lookup skip the skipped-member guard; \
-         got stderr:\n{stderr}"
+        "count must still refuse a document with unmapped members; got stderr:\n{stderr}"
     );
     assert!(
         stderr.contains("3 of 7"),
         "the refusal must account for the whole document — 4 mapped members \
-         plus 3 unmapped ones — proving the stream was drained past the hit; \
-         got stderr:\n{stderr}"
+         plus 3 unmapped ones; got stderr:\n{stderr}"
     );
 
-    // And the same document with an id that is NOT present must fail
-    // identically, so the guard is not accidentally coupled to the hit.
+    // 3. And an id-lookup MISS drains by necessity, so it still consults the
+    //    guard — the early exit is coupled to the hit and nothing else.
     let miss = run_child_expect_failure(
         "citygml",
         "id-lookup",
         &composed,
         &["--target-id", "no-such-id"],
     );
-    assert!(miss.contains("3 of 7"), "got stderr:\n{miss}");
+    assert!(
+        miss.contains("3 of 7"),
+        "a miss walks every member and must still reach the guard; got stderr:\n{miss}"
+    );
 }
 
 /// The documents the guard must still accept, spelled out so the guard cannot

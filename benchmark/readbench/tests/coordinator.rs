@@ -839,3 +839,95 @@ fn the_cityjsonseq_child_refuses_a_citygml_document() {
         "expected the runner's own refusal; stderr:\n{stderr}"
     );
 }
+
+/// `id-lookup` emits FOUR rows per format, not one: three positioned probes
+/// plus a verified miss. A single target made the published time a function
+/// of where that id happened to sit in the stream — a property of the sample,
+/// not of the format.
+#[test]
+fn id_lookup_emits_three_positioned_probes_and_a_verified_miss() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    prepare_seq_artefact(prepared.path(), &input, "delft");
+
+    let out_csv = prepared.path().join("out.csv");
+    run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "id-lookup",
+        "--formats",
+        "cityparquet",
+    ]);
+
+    let csv_text = std::fs::read_to_string(&out_csv).expect("coordinator must write the CSV");
+    let rows: Vec<Row> = csv_text.lines().skip(1).map(Row::parse).collect();
+    assert_eq!(
+        rows.len(),
+        4,
+        "three deciles plus a miss, got {} rows",
+        rows.len()
+    );
+
+    for expected in ["id-10pct", "id-50pct", "id-90pct", "id-miss"] {
+        let row = rows
+            .iter()
+            .find(|r| r.field("notes").starts_with(expected))
+            .unwrap_or_else(|| panic!("no row tagged {expected}"));
+        let found = row.field("result_count");
+        if expected == "id-miss" {
+            assert_eq!(found, "0", "the miss probe must find nothing");
+        } else {
+            assert_eq!(found, "1", "{expected} must find its object");
+        }
+    }
+}
+
+/// With no prepared seq artefact there is no canonical order to cut deciles
+/// from, so `id-lookup` is SKIPPED and said so on stderr — never fabricated
+/// from some other order, and never silently emitted as zero rows.
+#[test]
+fn id_lookup_is_skipped_and_disclosed_when_there_is_no_seq_artefact() {
+    let prepared = tempfile::tempdir().unwrap();
+    let input = fixture("delft.city.jsonl");
+    let package_dir = prepared.path().join("delft.parquet");
+    convert(&ConvertOptions::new(input.clone(), package_dir)).unwrap();
+    // Deliberately NO prepare_seq_artefact here.
+
+    let out_csv = prepared.path().join("out.csv");
+    let output = run_coordinator(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--scenarios",
+        "id-lookup",
+        "--formats",
+        "cityparquet",
+    ]);
+
+    let csv_text = std::fs::read_to_string(&out_csv).expect("coordinator must write the CSV");
+    assert_eq!(
+        csv_text.lines().skip(1).count(),
+        0,
+        "no seq artefact means no id-lookup rows at all"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("skipping scenario 'id-lookup'") && stderr.contains("cityjsonseq"),
+        "the skip must be disclosed and name what is missing; got stderr:\n{stderr}"
+    );
+}
