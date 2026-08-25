@@ -42,12 +42,15 @@ calls the same code with its own `--html`/`--figures` destinations.
   below was written for scatter marks, where shape is the identity channel and
   grey keeps the panel quiet. A filled bar has no shape, and four greys in one
   group are not tellable apart at panel scale — so the bar and line views give
-  each format a hue: `#7a4fa3` CityGML, `#00786b` CityJSON, `#1c63a8`
-  FlatCityBuf, grey for the CityJSONSeq baseline, accent for CityParquet. The
-  hues differ in lightness as well, so a greyscale print still separates them,
-  and hue is never the sole channel: the row order is fixed in every group and
-  the views print their values. The marker views are unchanged in shape and
-  pick up the same hues, so one format looks the same everywhere on the page.
+  each format a hue, from `FORMAT_FILL`: `#cf5b58` CityParquet, `#8f6fae`
+  CityGML, `#3d8b7e` CityJSON, `#4a7cb0` FlatCityBuf, `#8a8a84` for the
+  CityJSONSeq baseline. They are the marker hues desaturated and lifted a step:
+  a colour pitched for a mark a few points across reads as poster paint poured
+  into a bar, and a sheet carrying a couple of hundred of them is loud before it
+  is legible. Text and markers keep the saturated accent. The fills still differ
+  in lightness, so a greyscale print separates them, and hue is never the sole
+  channel: the row order is fixed in every group and the views print their
+  values.
 - **Color/markers**: accent `#e41a1c` (light) / `#fc8d62` (dark) for
   `cityparquet` (filled circle); same accent, open circle for
   `cityparquet-hilbert`; gray `#666`/`#999` for the rest with distinct shapes:
@@ -340,14 +343,23 @@ Then the four corpus-wide views, unchanged:
    through non-dominated points; citation-floor band per honesty rule 1.
    HTML: scenario selector (all 9 keys) + RSS/heap toggle. Static: two figures
    (`full-read`, `bbox-5pct`), RSS only.
-2. **Read speedup heatmap grid**, one panel per dataset; rows = scenario_keys (with †),
-   cols = formats; cell = speedup `1/time_ratio`, diverging palette in log2
-   space centered 1× (green = faster, red = slower — also encoded by value
-   label so color is not the sole channel); in-cell labels "12×"/"0.3×"/"≈".
-   Companion `<details>` data table per dataset (accessibility + precision).
+2. **Read speedup heatmap grid**, one panel per dataset; rows = scenario_keys
+   (with †), cols = formats; cell = speedup `1/time_ratio`, diverging palette in
+   log2 space centred on 1× (green = faster, purple = slower — also encoded by
+   the value label so colour is not the sole channel); in-cell labels
+   "12×"/"0.3×"/"≈". HTML: this view, plus a companion `<details>` data table
+   per dataset (accessibility + precision). Static: datasets two-up with BOTH
+   metrics in each cell — read time left, peak memory right, the arrangement the
+   bar sheet uses, so a format sits in the same place on both figures; the right
+   grid is `1/rss_ratio` on the same palette, green = leaner. The citation floor
+   is a property of the timings, so the ≈ mark and the muted cell stay on the
+   read-time grid. Its key is a strip across the foot rather than a grid-shaped
+   panel: the cells are twice as wide there, and a slot for the key is a slot
+   the data wants.
 3. **On-disk size grid**, one panel per dataset; horizontal bars of
-   `frac_of_baseline` sorted ascending, cityparquet accented, value labels
-   ("0.38×"). The bars grow OUT OF the 1× baseline on a shared LOG x scale,
+   `frac_of_baseline` sorted ascending, value labels ("0.38×"), and the format
+   hues of the colour rule above — the bars sort by value here, so the row
+   order carries no identity and hue is doing all of it. The bars grow OUT OF the 1× baseline on a shared LOG x scale,
    left for smaller and right for larger: the axis spans CityParquet at ~0.3×
    and CityGML at up to ~25× of the same bytes, and a linear 0-to-max scale
    collapses the CityParquet series into a sliver. duckdb-parquet is absent —
@@ -372,14 +384,27 @@ memory — and asks it at a size where 21 panels are unreadable. Two figures ser
 that, and neither has an HTML counterpart: the page already carries every number
 they select from.
 
-5. **`formats`** — one row per dataset, scenarios down the panel, the four
-   non-baseline formats per scenario, read time and peak memory side by side.
-   Bars grow out of the 1× rule on a LOG axis for the reason the size grid does,
-   only more so: within a single scenario the formats span up to five orders of
-   magnitude, so a zero-anchored linear bar renders everything but the fastest as
-   a sliver. The baseline's own absolute time is printed beside each scenario, so
-   a ratio can be read back into seconds and the citation floor is legible in
-   context.
+5. **`formats`** — datasets two-up, both metrics inside each cell: queries down
+   the panel, the four non-baseline formats per query, read time left and peak
+   memory right. Bars grow out of the 1× rule on a LOG axis for the reason the
+   size grid does, only more so: within a single query the formats span up to
+   five orders of magnitude, so a zero-anchored linear bar renders everything
+   but the fastest as a sliver. **Every bar prints its ratio**, which is what put
+   the datasets two-up: one dataset per row left 2.2 pt of row pitch and a
+   legible number needs twice that. The bars are thinner than their row, so a
+   group of four reads as four readings rather than one block of colour. A rule
+   separates one query from the next, and the baseline's own time still sits
+   beside each query, because CityJSONSeq is the reference and is not drawn. The
+   seconds and bytes behind the ratios are in the HTML page's per-dataset
+   tables.
+
+   Labels go at the bar's free end, fall back to the other side of the 1× rule
+   when the tip has no room — a bar that long has left the far half of the panel
+   empty — and only for a bar spanning nearly the whole panel do they sit ON it,
+   in the page colour. The narrow panels also cap the tick budget at three, and
+   those ticks step OUT from 1× rather than up from the low end, so the anchor
+   is a member of the series instead of a fourth label crowding its neighbour.
+
 6. **`configuration`** — the row-ordering axis: the Hilbert package against the
    same package written in source order, same two metrics, same anchoring. Its
    panels are the dataset where the most scenarios clear the citation floor and

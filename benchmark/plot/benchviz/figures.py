@@ -60,6 +60,13 @@ FS_PANEL_SUB = 5.0
 FS_TICK = 6.5
 FS_LABEL = 7.0
 FS_MARK = 5.4
+# Bar-end ratios. Four per scenario group on the per-dataset sheet, so they
+# have to stay out of the bars' way: the tick grey and a size under the marks.
+FS_VALUE = 3.9
+# Bar thickness on the per-dataset sheet, in row units. A bar that fills its
+# row crowds the number printed beside it and turns a group of four into one
+# block of colour; a little air between them reads as four readings.
+BAR_H = 0.52
 FS_FOOTER = 5.0
 
 TUFTE_RC = {
@@ -210,13 +217,21 @@ SIZE_FORMATS = [
 # subject, and away from each other in lightness as well as hue, so the figure
 # survives a greyscale print. The row order is fixed in every group, and the
 # panels print their values, so hue is never the sole channel.
-FORMAT_GREY = {
-    "citygml": "#7a4fa3",
-    "cityjson": "#00786b",
-    "cityjsonseq": "#6b6b66",
-    "flatcitybuf": "#1c63a8",
-    "cityjsonseq-gz": "#b9b9ae",
-    "duckdb-parquet": "#b9b9ae",
+# Bar FILLS. The identity hues below are pitched for a scatter mark a few
+# points across; poured into a bar they read as poster paint, and a sheet with
+# 224 of them is loud before it is legible. These are the same hues desaturated
+# and lifted a step -- still one hue per format, still ordered in lightness,
+# but quiet enough that the numbers printed beside them stay the loudest thing
+# in the panel. Text and markers keep ACCENT and FORMAT_STYLE's greys.
+FORMAT_FILL = {
+    "cityparquet": "#cf5b58",
+    "cityparquet-hilbert": "#cf5b58",
+    "citygml": "#8f6fae",
+    "cityjson": "#3d8b7e",
+    "cityjsonseq": "#8a8a84",
+    "flatcitybuf": "#4a7cb0",
+    "cityjsonseq-gz": "#c3c3ba",
+    "duckdb-parquet": "#c3c3ba",
 }
 FORMAT_LABEL = {
     "cityparquet": "CityParquet",
@@ -449,17 +464,42 @@ def _ratio_tick(value: float) -> str:
     return f"$10^{{{round(exp)}}}$×"
 
 
-def _log_ticks(lo: float, hi: float, max_ticks: int = 4) -> list[float]:
+def _log_ticks(
+    lo: float, hi: float, max_ticks: int = 4, anchor_one: bool = False
+) -> list[float]:
     lo_e = math.ceil(math.log10(lo))
     hi_e = math.floor(math.log10(hi))
     exps = list(range(lo_e, hi_e + 1))
     if not exps:
         return [1.0]
+    if anchor_one and lo_e <= 0 <= hi_e:
+        # Stepping OUT from 1x rather than up from the low end. The other
+        # branch appends 1x to whatever series it picked, which on a narrow
+        # panel can land it a single decade from its neighbour -- two labels
+        # in the width of one.
+        for step in range(1, len(exps) + 1):
+            picked = [e for e in exps if e % step == 0]
+            if len(picked) <= max_ticks:
+                return [10.0**e for e in picked]
     step = max(1, math.ceil(len(exps) / max_ticks))
     picked = exps[::step]
     if 0 not in picked and lo <= 1.0 <= hi:
         picked = sorted({*picked, 0})
     return [10.0**e for e in picked]
+
+
+def _format_fill(fmt: str) -> tuple[str, float]:
+    """The hue and alpha a format's fill takes, on every view that fills one.
+
+    The bar sheets gave each format a hue because four greys in one group are
+    not tellable apart; the size grid kept a single grey, so one format looked
+    like two different things on two figures. Both read FORMAT_FILL now. A run
+    that also measured the source-order package draws that one at half
+    strength: it is the SAME format in another configuration, and the ordering
+    question has its own figure.
+    """
+    alpha = 0.5 if fmt == "cityparquet" else 1.0
+    return FORMAT_FILL[fmt], alpha
 
 
 def _marker_kwargs(fmt: str, size: float = 4.0) -> dict[str, Any]:
@@ -1033,9 +1073,80 @@ def _speedup_label(value: float | None, below_floor: bool) -> str:
     return f"{prefix}{body}×"
 
 
+HEAT_METRICS = [
+    {"key": "time_ratio", "caption": "read time", "floor": True},
+    {"key": "rss_ratio", "caption": "peak memory", "floor": False},
+]
+
+
+def _heat_grid(
+    ax: Axes,
+    ds_id: str,
+    fmts: Sequence[str],
+    index: dict,
+    metric: dict[str, Any],
+    cmap: Any,
+    norm: Any,
+    label_rows: bool,
+) -> None:
+    """One dataset's grid for one metric: scenarios down, formats across."""
+    ax.set_xlim(0, len(fmts))
+    ax.set_ylim(len(SCENARIO_ORDER), 0)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    for c, fmt in enumerate(fmts):
+        ax.text(
+            c + 0.5, -0.12, FORMAT_STYLE[fmt]["code"], fontsize=FS_FOOTER,
+            family="sans-serif",
+            color=ACCENT if fmt.startswith("cityparquet") else INK_2,
+            ha="center", va="bottom",
+        )
+    ax.text(
+        len(fmts) / 2, len(SCENARIO_ORDER) + 0.30, metric["caption"],
+        fontsize=FS_FOOTER, family="serif", color=INK_2,
+        ha="center", va="top",
+    )
+
+    for r, scenario in enumerate(SCENARIO_ORDER):
+        if label_rows:
+            mark = "\u2020" if scenario in GRAIN_DAGGER else ""
+            ax.text(
+                -0.16, r + 0.5, f"{scenario}{mark}", fontsize=FS_FOOTER,
+                family="serif", color=INK_2, ha="right", va="center",
+            )
+        for c, fmt in enumerate(fmts):
+            rec = index.get((ds_id, scenario, fmt))
+            ratio = rec.get(metric["key"]) if rec else None
+            value = 1.0 / ratio if ratio else None
+            below = metric["floor"] and bool(rec and rec.get("below_floor"))
+            if value is None:
+                face, text_color, alpha = "#f1f1e8", INK_3, 1.0
+            else:
+                face = cmap(norm(math.log2(value)))
+                alpha = 0.42 if below else 1.0
+                strength = abs(math.log2(value))
+                text_color = (
+                    "#ffffff" if (strength > 4.6 and not below) else "#1a1a1a"
+                )
+            ax.add_patch(
+                Rectangle(
+                    (c, r), 1, 1, facecolor=face, alpha=alpha,
+                    edgecolor=BG, linewidth=0.6,
+                )
+            )
+            ax.text(
+                c + 0.5, r + 0.5, _speedup_label(value, below), fontsize=4.6,
+                family="sans-serif", color=text_color, ha="center", va="center",
+            )
+
+
 def heatmap(
     data: dict[str, Any], headline: tuple[str, str], out_dir: Path
 ) -> list[Path]:
+    """Every scenario-by-format cell, per dataset, for both metrics."""
     datasets = data["datasets"]
     index = _index_read(data["read"])
     fmts = _present(data, HEATMAP_FORMATS)
@@ -1043,16 +1154,23 @@ def heatmap(
     vmax = 8.0  # log2 units: colour saturates at 1/256x and 256x
     norm = mcolors.Normalize(-vmax, vmax)
 
-    rows_n, cols_n, figsize = _sheet(
-        len(datasets) + 1, 9.1 / 4, cols_small=3, rows_small=4
-    )
-    fig, axes = plt.subplots(rows_n, cols_n, figsize=figsize)
+    # Datasets two-up, both metrics inside each cell, laid out like the bar
+    # sheet so one format sits in the same place on both figures. The gaps are
+    # not uniform -- a scenario-label gutter opens each cell, and its two grids
+    # sit close together because they belong to one dataset -- so the cells are
+    # placed by hand rather than by `subplots_adjust`.
+    cols_n = 2 if len(datasets) > 1 else 1
+    rows_n = math.ceil(len(datasets) / cols_n)
+    fig = plt.figure(figsize=(7.1, min(MAX_SHEET_HEIGHT, 1.75 * rows_n + 3.8)))
     head_bottom = _headline(fig, *headline)
     footer = [
-        "Every cell is a ratio against the cityjsonseq baseline row for the same "
-        "dataset and scenario; the baseline column (SEQ) is 1× by construction. "
-        "Colour saturates beyond 1/256× and 256× — read the printed value, "
-        "never the colour alone.",
+        "Every cell is a ratio against the cityjsonseq baseline row for the "
+        "same dataset and scenario; the baseline column (SEQ) is 1× by "
+        "construction. Colour saturates beyond 1/256× and 256× — read the "
+        "printed value, never the colour alone.",
+        "Green beats the baseline on both grids: faster on the left, leaner on "
+        "the right. The 10 ms citation floor is a property of the timings, so "
+        "the ≈ mark and the muted cell appear on the read-time grid only.",
         *_wrap(
             _grain_note(data, fmts)
             + " attr-filter, attr-stats, id-lookup and project are"
@@ -1060,196 +1178,116 @@ def heatmap(
             150,
         ),
         *_wrap(_reader_note(fmts), 150),
-        "id-lookup samples a table-order-first identifier, which favours scanning "
-        "formats. An empty cell is a scenario the run did not measure for that "
-        "dataset, never a zero.",
+        "id-lookup samples a table-order-first identifier, which favours "
+        "scanning formats. An empty cell is a scenario the run did not measure "
+        "for that dataset, never a zero.",
         *_wrap(_missing_note(data), 150),
         *_wrap(_omitted_note(HEATMAP_FORMATS, fmts), 150),
     ]
-    fig.subplots_adjust(
-        left=0.115,
-        right=0.99,
-        top=min(0.895, head_bottom - 0.075),
-        bottom=_footer_reserve(fig, footer, 0.088),
-        wspace=0.20,
-        hspace=0.46,
-    )
-    flat = axes.ravel()
-    n = len(datasets)
+    key_h = 0.145
+    bottom = _footer_reserve(fig, footer, 0.088) + key_h
+    top = min(0.895, head_bottom - 0.075)
 
-    for i, (ax, ds) in enumerate(zip(flat, datasets, strict=False)):
-        col = i % cols_n
-        ax.set_xlim(0, len(fmts))
-        ax.set_ylim(len(SCENARIO_ORDER), 0)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        _panel_heading(
-            ax, ds["id"], ds["subtitle"], title_y=1.30, subtitle_y=1.145
+    left, right, gutter, inner = 0.012, 0.992, 0.085, 0.022
+    w = (right - left - cols_n * (gutter + inner)) / (len(HEAT_METRICS) * cols_n)
+    cell = gutter + inner + len(HEAT_METRICS) * w
+    h = (top - bottom) / (rows_n + (rows_n - 1) * 0.44)
+    gap = 0.44 * h
+    panel_in = h * fig.get_figheight()
+    title_y, subtitle_y = 1.0 + 0.30 / panel_in, 1.0 + 0.13 / panel_in
+
+    for i, ds in enumerate(datasets):
+        row, col = divmod(i, cols_n)
+        x0 = left + col * cell + gutter
+        y0 = top - (row + 1) * h - row * gap
+        for m, metric in enumerate(HEAT_METRICS):
+            ax = fig.add_axes([x0 + m * (w + inner), y0, w, h])
+            if m == 0:
+                _panel_heading(
+                    ax, ds["id"], ds["subtitle"], title_y, subtitle_y
+                )
+            _heat_grid(
+                ax, ds["id"], fmts, index, metric, cmap, norm, label_rows=m == 0
+            )
+
+    _heat_key(fig, fmts, cmap, norm, vmax, bottom, key_h)
+    _footer(fig, footer)
+    return _save(fig, "heatmap", out_dir)
+
+
+def _heat_key(
+    fig: Figure,
+    fmts: Sequence[str],
+    cmap: Any,
+    norm: Any,
+    vmax: float,
+    bottom: float,
+    key_h: float,
+) -> None:
+    """Colour ramp, column codes and symbol glossary, in one strip.
+
+    A key PANEL cost a whole grid-shaped slot on a sheet whose cells are now
+    twice as wide; laid out across the foot of the sheet it costs a band the
+    height of three lines and leaves the grid to the data.
+    """
+    # the top of the reserved band belongs to the bottom row's caption
+    ax = fig.add_axes([0.012, bottom - key_h, 0.976, key_h - 0.035])
+    _blank(ax)
+    ax.text(
+        0.0, 1.0, "How to read", transform=ax.transAxes, fontsize=FS_PANEL,
+        family="serif", color=INK, va="top",
+    )
+    for j, text in enumerate(
+        (
+            "left grid = CityJSONSeq time ÷ this format's time",
+            "right grid = CityJSONSeq peak RSS ÷ this format's peak RSS",
+        )
+    ):
+        ax.text(
+            0.0, 0.66 - j * 0.17, text, transform=ax.transAxes,
+            fontsize=FS_PANEL_SUB, family="serif", color=INK_3, va="top",
         )
 
-        for c, fmt in enumerate(fmts):
-            ax.text(
-                c + 0.5,
-                -0.12,
-                FORMAT_STYLE[fmt]["code"],
-                fontsize=FS_FOOTER,
-                family="sans-serif",
-                color=ACCENT if fmt.startswith("cityparquet") else INK_2,
-                ha="center",
-                va="bottom",
-            )
-        for r, scenario in enumerate(SCENARIO_ORDER):
-            if col == 0:
-                mark = "†" if scenario in GRAIN_DAGGER else ""
-                ax.text(
-                    -0.16,
-                    r + 0.5,
-                    f"{scenario}{mark}",
-                    fontsize=FS_FOOTER,
-                    family="serif",
-                    color=INK_2,
-                    ha="right",
-                    va="center",
-                )
-            for c, fmt in enumerate(fmts):
-                rec = index.get((ds["id"], scenario, fmt))
-                ratio = rec["time_ratio"] if rec else None
-                speedup = 1.0 / ratio if ratio else None
-                below = bool(rec and rec.get("below_floor"))
-                if speedup is None:
-                    face = "#f1f1e8"
-                    text_color = INK_3
-                    alpha = 1.0
-                else:
-                    face = cmap(norm(math.log2(speedup)))
-                    alpha = 0.42 if below else 1.0
-                    strength = abs(math.log2(speedup))
-                    text_color = (
-                        "#ffffff" if (strength > 4.6 and not below) else "#1a1a1a"
-                    )
-                ax.add_patch(
-                    Rectangle(
-                        (c, r),
-                        1,
-                        1,
-                        facecolor=face,
-                        alpha=alpha,
-                        edgecolor=BG,
-                        linewidth=0.6,
-                    )
-                )
-                ax.text(
-                    c + 0.5,
-                    r + 0.5,
-                    _speedup_label(speedup, below),
-                    fontsize=4.6,
-                    family="sans-serif",
-                    color=text_color,
-                    ha="center",
-                    va="center",
-                )
-
-    # key cell: colour ramp + code expansion + symbol glossary
-    key_ax = flat[n]
-    _blank(key_ax)
-    key_ax.text(
-        0.0,
-        1.30,
-        "How to read",
-        transform=key_ax.transAxes,
-        fontsize=FS_PANEL,
-        family="serif",
-        color=INK,
-        va="bottom",
-    )
-    key_ax.text(
-        0.0,
-        1.145,
-        "cell = CityJSONSeq time ÷ this format's time",
-        transform=key_ax.transAxes,
-        fontsize=FS_PANEL_SUB,
-        family="serif",
-        color=INK_3,
-        va="bottom",
-    )
-    ramp_y, ramp_h = 0.80, 0.075
+    ramp_x, ramp_w, ramp_y, ramp_h = 0.30, 0.22, 0.50, 0.16
     steps = 96
     for s in range(steps):
         v = -vmax + 2 * vmax * (s + 0.5) / steps
-        key_ax.add_patch(
+        ax.add_patch(
             Rectangle(
-                (s / steps, ramp_y),
-                1.0 / steps + 0.002,
-                ramp_h,
-                facecolor=cmap(norm(v)),
-                edgecolor="none",
+                (ramp_x + ramp_w * s / steps, ramp_y),
+                ramp_w / steps + 0.001, ramp_h,
+                facecolor=cmap(norm(v)), edgecolor="none",
             )
         )
-    for frac, text in [
-        (0.0, "1/256×"),
-        (0.25, "1/16×"),
-        (0.5, "1×"),
-        (0.75, "16×"),
-        (1.0, "256×"),
-    ]:
-        key_ax.text(
-            frac,
-            ramp_y - 0.03,
-            text,
-            fontsize=4.6,
-            family="sans-serif",
-            color=INK_2,
+    ax.text(
+        ramp_x, ramp_y + ramp_h + 0.06, "worse than CityJSONSeq", fontsize=4.6,
+        family="serif", color=INK_2, va="bottom", ha="left",
+    )
+    ax.text(
+        ramp_x + ramp_w, ramp_y + ramp_h + 0.06, "better", fontsize=4.6,
+        family="serif", color=INK_2, va="bottom", ha="right",
+    )
+    for frac, text in ((0.0, "1/256×"), (0.5, "1×"), (1.0, "256×")):
+        ax.text(
+            ramp_x + ramp_w * frac, ramp_y - 0.06, text, fontsize=4.6,
+            family="sans-serif", color=INK_2, va="top",
             ha="center" if 0 < frac < 1 else ("left" if frac == 0 else "right"),
-            va="top",
         )
-    key_ax.text(
-        0.0,
-        ramp_y + ramp_h + 0.025,
-        "slower than CityJSONSeq",
-        fontsize=4.6,
-        family="serif",
-        color=INK_2,
-        va="bottom",
-        ha="left",
-    )
-    key_ax.text(
-        1.0,
-        ramp_y + ramp_h + 0.025,
-        "faster",
-        fontsize=4.6,
-        family="serif",
-        color=INK_2,
-        va="bottom",
-        ha="right",
-    )
 
-    lines = [("columns, left to right:", INK_2)]
-    lines += [
-        (f"   {FORMAT_STYLE[f]['code']} = {FORMAT_STYLE[f]['label']}", INK_2)
-        for f in fmts
+    codes = ["columns, left to right:"] + [
+        f"   {FORMAT_STYLE[f]['code']} = {FORMAT_STYLE[f]['label']}" for f in fmts
     ]
-    lines += [
-        ("≈  within the 10 ms citation floor (muted)", INK_2),
-        ("–  scenario not run for this dataset", INK_2),
-        ("†  grain-incomparable scenario", INK_2),
+    marks = [
+        "\u2248  within the 10 ms citation floor (read-time grid only)",
+        "\u2013  scenario not run for this dataset",
+        "\u2020  grain-incomparable scenario",
     ]
-    for j, (text, color) in enumerate(lines):
-        key_ax.text(
-            0.0,
-            0.66 - j * 0.062,
-            text,
-            fontsize=4.7,
-            family="serif",
-            color=color,
-            va="center",
-        )
-    for ax in flat[n + 1 :]:
-        ax.set_visible(False)
-
-    _footer(fig, footer)
-    return _save(fig, "heatmap", out_dir)
+    for x, lines in ((0.55, codes), (0.72, marks)):
+        for j, text in enumerate(lines):
+            ax.text(
+                x, 1.0 - j * 0.155, text, transform=ax.transAxes, fontsize=4.7,
+                family="serif", color=INK_2, va="top",
+            )
 
 
 # --------------------------------------------------------------------------
@@ -1298,7 +1336,9 @@ def sizes(
     fig.subplots_adjust(
         left=0.075,
         right=0.99,
-        top=min(0.845, head_bottom - 0.055),
+        # the reserve has to clear the panel TITLE, which `_panel_heading`
+        # floats a fifth of a panel above the axes, not just the axes
+        top=min(0.845, head_bottom - 0.095),
         bottom=bottom,
         wspace=0.36,
         hspace=0.80,
@@ -1324,12 +1364,9 @@ def sizes(
 
         ys = list(range(len(entries)))[::-1]
         for y, (fmt, frac) in zip(ys, entries, strict=True):
-            if fmt == "cityparquet":
-                color, alpha = ACCENT, 1.0
-            elif fmt == "cityparquet-hilbert":
-                color, alpha = ACCENT, 0.5
-            else:
-                color, alpha = "#b9b9ae", 1.0
+            # The bars here sort by value, so the row order carries no
+            # identity and the hue is doing all of it.
+            color, alpha = _format_fill(fmt)
             left, width = (frac, 1.0 - frac) if frac < 1.0 else (1.0, frac - 1.0)
             ax.barh(
                 [y],
@@ -1399,12 +1436,7 @@ def sizes(
     ]
     for j, (fmt, text) in enumerate(key_rows):
         y = 0.88 - j * 0.15
-        if fmt == "cityparquet":
-            color, alpha = ACCENT, 1.0
-        elif fmt == "cityparquet-hilbert":
-            color, alpha = ACCENT, 0.5
-        else:
-            color, alpha = "#b9b9ae", 1.0
+        color, alpha = _format_fill(fmt)
         key_ax.add_patch(
             Rectangle((0.0, y - 0.035), 0.10, 0.07, facecolor=color, alpha=alpha)
         )
@@ -1886,9 +1918,10 @@ def _heatmap_headline(data: dict[str, Any]) -> tuple[str, str]:
     else:
         title = "Read speed-up over the CityJSONSeq baseline, by scenario and format"
     subtitle = (
-        f"Speed-up (1 ÷ time ratio) for {scenarios} scenarios × {formats} formats × "
-        f"{_corpus_phrase(data)}. Green beats the baseline, purple loses to it; the "
-        "printed value is the datum and colour is only a second reading."
+        f"{scenarios} scenarios × {formats} formats × {_corpus_phrase(data)}, "
+        "twice over: read-time speed-up left, peak-memory leanness right, per "
+        "dataset. Green beats the baseline, purple loses to it; the printed "
+        "value is the datum and colour is only a second reading."
     )
     note = _density_note(data)
     return title + ".", subtitle + (f" {note}" if note else "")
@@ -2007,7 +2040,10 @@ def _axis_label(ax: Axes, text: str) -> None:
     ax.set_xlabel(text, fontsize=FS_LABEL, family="serif", color=INK_2)
 
 
-def _ratio_bar(ax: Axes, y: float, value: float, lo: float, hi: float, **kw) -> None:
+def _ratio_bar(
+    ax: Axes, y: float, value: float, lo: float, hi: float,
+    height: float = 0.78, **kw,
+) -> None:
     """One bar from the 1x rule to `value` on a log axis, clamped to the panel.
 
     The anchor is 1x rather than zero because the quantity is a ratio: on this
@@ -2018,10 +2054,66 @@ def _ratio_bar(ax: Axes, y: float, value: float, lo: float, hi: float, **kw) -> 
     """
     x = min(max(value, lo), hi)
     left, width = (1.0, x - 1.0) if x >= 1.0 else (x, 1.0 - x)
-    ax.barh([y], [max(width, 1e-9)], left=[left], height=0.78, **kw)
+    ax.barh([y], [max(width, 1e-9)], left=[left], height=height, **kw)
 
 
-def _format_panel_axis(ax: Axes, lo: float, hi: float, rows: int) -> None:
+def _secs(value: float) -> str:
+    """A duration at reading precision, not at the clock's."""
+    if value >= 1.0:
+        return f"{value:,.1f} s"
+    if value >= 0.001:
+        return f"{value * 1000:,.0f} ms"
+    return f"{value * 1e6:,.0f} \u00b5s"
+
+
+def _bar_value_label(
+    ax: Axes,
+    y: float,
+    value: float,
+    lo: float,
+    hi: float,
+    text: str,
+    in_per_decade: float,
+    fontsize: float = FS_VALUE,
+    color: str = INK_3,
+) -> None:
+    """Print a bar's ratio, clear of the bar.
+
+    DESIGN.md's colour rule is explicit that hue is never the sole identity
+    channel because "the row order is fixed in every group and the views print
+    their values".
+
+    Placement is at the bar's free end; the first fallback is the OTHER side of
+    the 1x rule, because a bar long enough to leave its label no room at the tip
+    has left the far half of the panel empty, and grey type on the page reads
+    where grey type on a filled bar does not. Only a bar that spans nearly the
+    whole panel exhausts both, and that one takes its label ON itself, in the
+    page colour, which carries against all four bar hues.
+    """
+    x = min(max(value, lo), hi)
+    width = len(text) * fontsize * 0.52 / 72 / in_per_decade  # in decades
+    lo_e, hi_e = math.log10(lo), math.log10(hi)
+    if x >= 1.0:
+        pos, ha = x * 1.14, "left"
+        if math.log10(pos) + width > hi_e:          # no room past the tip
+            pos, ha = 1 / 1.14, "right"
+            if math.log10(pos) - width < lo_e:      # nor before the rule
+                pos, ha, color = x / 1.14, "right", BG
+    else:
+        pos, ha = x / 1.14, "right"
+        if math.log10(pos) - width < lo_e:
+            pos, ha = 1.14, "left"
+            if math.log10(pos) + width > hi_e:
+                pos, ha, color = x * 1.14, "left", BG
+    ax.text(
+        pos, y, text, fontsize=fontsize, family="sans-serif",
+        color=color, va="center", ha=ha,
+    )
+
+
+def _format_panel_axis(
+    ax: Axes, lo: float, hi: float, rows: int, max_ticks: int = 5
+) -> None:
     ax.set_xscale("log")
     ax.set_xlim(lo, hi)
     ax.set_ylim(-0.8, rows - 0.2)
@@ -2030,7 +2122,7 @@ def _format_panel_axis(ax: Axes, lo: float, hi: float, rows: int) -> None:
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     ax.set_yticks([])
-    ticks = _log_ticks(lo, hi, 5)
+    ticks = _log_ticks(lo, hi, max_ticks, anchor_one=True)
     ax.set_xticks(ticks)
     ax.set_xticklabels([_ratio_tick(t) for t in ticks])
     # A narrow log span leaves matplotlib drawing MINOR ticks, which it labels
@@ -2065,14 +2157,14 @@ def formats(
     tlo, thi = min(min(times) / 2, 0.5), max(max(times) * 2, 2.0)
     mlo, mhi = min(min(mems) / 2, 0.5), max(max(mems) * 2, 2.0)
 
-    # One dataset per ROW, two axes wide. A two-up grid fits the sheet, but the
-    # scenario labels and the baseline's own seconds both live left of the time
-    # axis, and only a first-column panel has a figure margin to put them in;
-    # the inner column overprinted its neighbour. One row per dataset reserves
-    # that gutter once, for every panel.
-    rows_n = len(picked)
-    fig = plt.figure(figsize=(7.1, min(MAX_SHEET_HEIGHT, 1.92 * rows_n + 1.9)))
-    axes = fig.subplots(rows_n, 2, squeeze=False)
+    # Datasets two-up, both metrics inside each cell. One dataset per ROW was
+    # the layout until the bars started printing their own numbers: four rows
+    # of panels down a page leave 2.2 pt of row pitch and a legible number
+    # needs twice that. Two-up halves the rows and doubles the pitch, at the
+    # cost of a panel narrow enough that the tick budget below is 3, not 5.
+    cols_n = 2 if len(picked) > 1 else 1
+    rows_n = math.ceil(len(picked) / cols_n)
+    fig = plt.figure(figsize=(7.1, min(MAX_SHEET_HEIGHT, 3.0 * rows_n + 2.7)))
     head_bottom = _headline(fig, *headline)
     drawn, total = len(picked), len(data["datasets"])
     footer = [
@@ -2080,28 +2172,50 @@ def formats(
         "dataset and the same scenario -- on a logarithmic axis, so a bar's "
         "length is orders of magnitude and its direction is better or worse. "
         "Right is faster, and leaner, than the baseline.",
+        "Every bar prints its ratio, in the tick grey. A rule separates one "
+        "query from the next; within a group the format order is the key "
+        "strip's, top to bottom. The seconds and bytes behind each ratio are "
+        "in the HTML summary page's per-dataset tables.",
         "A faded read-time bar is a difference smaller than the "
         f"{data['meta']['citation_floor_s'] * 1000:.0f} ms citation floor: "
-        "position without signal. The grey figure beside each scenario is the "
-        "baseline's own absolute time, so a ratio can be read back into seconds. "
-        "CityJSONSeq is the reference and is not drawn.",
+        "position without signal, and its ratio is printed with a \u2248. The "
+        "grey figure beside each query is the baseline's own time, so the "
+        "reference has its seconds too. CityJSONSeq is not drawn.",
         f"{drawn} of {total} measured datasets are drawn, spread across the "
-        "corpus by CityObject count; the HTML summary page carries every dataset "
-        "and every scenario, including the 1 % and 25 % windows omitted here.",
+        "corpus by CityObject count; the HTML summary page carries every "
+        "dataset and every scenario, including the 1 % and 25 % windows "
+        "omitted here.",
     ]
-    bottom = _footer_reserve(fig, footer, 0.10) + 0.055  # + the key strip
-    fig.subplots_adjust(
-        left=0.175, right=0.985, top=min(0.88, head_bottom - 0.055),
-        bottom=bottom, wspace=0.16, hspace=0.90,
-    )
+    # + the key strip, which on this grid clears the bottom row's axis label
+    bottom = _footer_reserve(fig, footer, 0.10) + 0.075
+    top = min(0.88, head_bottom - 0.055)
 
+    # Placed by hand rather than by `subplots_adjust`: the gaps here are not
+    # uniform. Each dataset cell opens with a gutter wide enough for the query
+    # labels and the baseline's seconds, then sets its two metric panels side
+    # by side with only a hairline between them, because they belong together.
+    left, right, gutter, inner = 0.012, 0.992, 0.145, 0.028
+    w = (right - left - cols_n * (gutter + inner)) / (2 * cols_n)
+    cell = gutter + inner + 2 * w
+    h = (top - bottom) / (rows_n + (rows_n - 1) * 0.34)
+    gap = 0.34 * h
+    panel_in = h * fig.get_figheight()
+    pw_in = w * fig.get_figwidth()
+    title_y, subtitle_y = 1.0 + 0.30 / panel_in, 1.0 + 0.13 / panel_in
+    x_label, x_secs = -0.42 / pw_in, -0.045 / pw_in
+
+    step = len(fmts) + 1.4
+    rows_total = len(PANEL_SCENARIOS) * step
     for i, ds in enumerate(picked):
-        ax_t, ax_m = axes[i][0], axes[i][1]
-        _panel_heading(ax_t, ds["id"], ds["subtitle"])
-        step = len(fmts) + 1.4
-        rows_total = len(PANEL_SCENARIOS) * step
+        row, col = divmod(i, cols_n)
+        x0 = left + col * cell + gutter
+        y0 = top - (row + 1) * h - row * gap
+        ax_t = fig.add_axes([x0, y0, w, h])
+        ax_m = fig.add_axes([x0 + w + inner, y0, w, h])
+        _panel_heading(ax_t, ds["id"], ds["subtitle"], title_y, subtitle_y)
         for si, scenario in enumerate(PANEL_SCENARIOS):
             base = si * step
+            mid = base + (len(fmts) - 1) / 2
             present = [
                 (fmt, index.get((ds["id"], scenario, fmt))) for fmt in fmts
             ]
@@ -2109,14 +2223,21 @@ def formats(
             if scenario in GRAIN_DAGGER:
                 label += "\u2020"
             ax_t.text(
-                -0.235, base + (len(fmts) - 1) / 2, label,
+                x_label, mid, label,
                 transform=ax_t.get_yaxis_transform(), fontsize=FS_LABEL,
                 family="serif", color=INK, ha="right", va="center",
             )
+            # the rule that says where one query ends and the next begins
+            if si:
+                for ax in (ax_t, ax_m):
+                    ax.axhline(
+                        base - (step - (len(fmts) - 1)) / 2,
+                        color=AXIS, linewidth=0.4, zorder=0,
+                    )
             got = [r for _, r in present if r]
             if not got:
                 ax_t.text(
-                    0.02, base + (len(fmts) - 1) / 2, "not measured in this run",
+                    0.02, mid, "not measured in this run",
                     transform=ax_t.get_yaxis_transform(), fontsize=FS_MARK,
                     family="serif", color=INK_3, ha="left", va="center",
                     style="italic",
@@ -2125,8 +2246,7 @@ def formats(
             base_s = got[0].get("base_time_s")
             if base_s:
                 ax_t.text(
-                    -0.022, base + (len(fmts) - 1) / 2,
-                    f"{base_s * 1000:,.0f} ms" if base_s < 1 else f"{base_s:,.1f} s",
+                    x_secs, mid, _secs(base_s),
                     transform=ax_t.get_yaxis_transform(), fontsize=FS_MARK,
                     family="serif", color=INK_3, ha="right", va="center",
                 )
@@ -2134,28 +2254,37 @@ def formats(
                 y = base + fi
                 if not rec:
                     continue
-                color = ACCENT if fmt.startswith("cityparquet") else FORMAT_GREY[fmt]
+                color, fill_alpha = _format_fill(fmt)
                 if rec.get("time_ratio"):
+                    speed = 1.0 / rec["time_ratio"]
+                    floored = bool(rec.get("below_floor"))
                     _ratio_bar(
-                        ax_t, y, 1.0 / rec["time_ratio"], tlo, thi,
-                        color=color, alpha=0.34 if rec.get("below_floor") else 1.0,
+                        ax_t, y, speed, tlo, thi, height=BAR_H, color=color,
+                        alpha=fill_alpha * (0.34 if floored else 1.0),
                         linewidth=0,
                     )
-                if rec.get("rss_ratio"):
-                    _ratio_bar(
-                        ax_m, y, 1.0 / rec["rss_ratio"], mlo, mhi,
-                        color=color, linewidth=0,
+                    _bar_value_label(
+                        ax_t, y, speed, tlo, thi,
+                        _speedup_label(speed, floored),
+                        pw_in / (math.log10(thi) - math.log10(tlo)),
                     )
-        _format_panel_axis(ax_t, tlo, thi, rows_total)
-        _format_panel_axis(ax_m, mlo, mhi, rows_total)
+                if rec.get("rss_ratio"):
+                    lean = 1.0 / rec["rss_ratio"]
+                    _ratio_bar(
+                        ax_m, y, lean, mlo, mhi, height=BAR_H, color=color,
+                        alpha=fill_alpha, linewidth=0,
+                    )
+                    _bar_value_label(
+                        ax_m, y, lean, mlo, mhi,
+                        _speedup_label(lean, False),
+                        pw_in / (math.log10(mhi) - math.log10(mlo)),
+                    )
+        _format_panel_axis(ax_t, tlo, thi, rows_total, max_ticks=3)
+        _format_panel_axis(ax_m, mlo, mhi, rows_total, max_ticks=3)
         _axis_label(ax_t, "read time (x faster)")
         _axis_label(ax_m, "peak memory (x leaner)")
 
-    for ax in list(axes.ravel())[len(picked) * 2 :]:
-        ax.set_visible(False)
-
-
-    _format_key(fig, fmts, bottom)
+    _format_key(fig, fmts, bottom - 0.016)
     _footer(fig, footer)
     return _save(fig, "formats", out_dir)
 
@@ -2170,7 +2299,7 @@ def _format_key(fig: Figure, fmts: Sequence[str], bottom: float) -> None:
     x = 0.012
     y = bottom - 0.044
     for fmt in fmts:
-        color = ACCENT if fmt.startswith("cityparquet") else FORMAT_GREY[fmt]
+        color, _ = _format_fill(fmt)
         fig.add_artist(
             Rectangle(
                 (x, y), 0.016, 0.006, transform=fig.transFigure,
@@ -2346,11 +2475,7 @@ def _formats_headline(data: dict[str, Any]) -> tuple[str, str]:
     ]
     window_ours = speedups("bbox-5pct", primary)
     window_fcb = speedups("bbox-5pct", "flatcitybuf")
-    lost = sum(
-        1
-        for a, b in zip(window_ours, window_fcb, strict=False)
-        if b > a
-    )
+    lost = sum(1 for a, b in zip(window_ours, window_fcb, strict=False) if b > a)
 
     if selective:
         lead = (
@@ -2374,7 +2499,8 @@ def _formats_headline(data: dict[str, Any]) -> tuple[str, str]:
         f"{len(picked)} datasets, {len(PANEL_SCENARIOS)} query types and "
         f"{len([f for f in FORMAT_AXIS if f != 'cityjsonseq'])} formats, each "
         "against the CityJSONSeq artefact for the same dataset and scenario. "
-        "Read time left, peak memory right; both logarithmic, both anchored at 1×."
+        "Read time left, peak memory right; both logarithmic, both anchored at "
+        "1×, and every bar prints its ratio."
     )
     return lead + ".", subtitle
 
