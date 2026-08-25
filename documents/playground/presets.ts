@@ -3,8 +3,9 @@
 // The figures quoted in the blurbs are measured, not estimated. Which queries
 // have actually been executed, as of writing, is narrower than that:
 //
-//   run end to end   `schema`, `count`, `bbox-search` (natively, against the
-//                    real bucket) and `cityjsonseq` (in the browser)
+//   run end to end   `delft` (in the browser and natively), `schema`, `count`,
+//                    `bbox-search` (natively, against the real bucket) and
+//                    `cityjsonseq` (in the browser)
 //   not yet run      the rest. Their columns and types are taken from the
 //                    file's own schema and the extension's FUNCTIONS.md, and
 //                    the tests below pin the shapes that are easy to get wrong,
@@ -38,8 +39,32 @@ export interface Preset {
 
 const BUILDINGS = data("3dbag/building.parquet");
 
+/**
+ * One city, 2.4 MB, 2,231 rows over 77 columns — the same encoding as the
+ * national package and small enough that the first query a reader runs answers
+ * immediately, whatever their connection. The default preset uses it; the rest
+ * of the page is the 16.4 GB file, which is the point being made.
+ */
+const DELFT = data("delft/building.parquet");
+
 export const PRESETS: readonly Preset[] = [
   // ── Start here ────────────────────────────────────────────────────────────
+  {
+    id: "delft",
+    group: "Start here",
+    title: "Start small: one city",
+    blurb:
+      "2,231 objects in Delft, from a 2.4 MB file. Everything below runs the same way against the 16.4 GB national package.",
+    extensions: [],
+    sql: `-- Delft alone, in the same encoding as the national package: 2.4 MB
+-- rather than 16.4 GB, so this answers at once on any connection.
+-- The presets below are the same shapes against all of the Netherlands.
+SELECT
+    count(*)                                       AS rows_total,
+    count(*) FILTER (object_type = 'Building')     AS buildings,
+    count(*) FILTER (object_type = 'BuildingPart') AS building_parts
+FROM read_parquet('${DELFT}');`,
+  },
   {
     id: "schema",
     group: "Start here",
@@ -300,7 +325,7 @@ FROM cityjsonseq_metadata('https://cityjson.open3d.city/cityjsonseq/delft.city.j
   },
 ];
 
-export const DEFAULT_PRESET_ID = "count";
+export const DEFAULT_PRESET_ID = "delft";
 
 export function findPreset(id: string | null): Preset | undefined {
   if (!id) return undefined;
