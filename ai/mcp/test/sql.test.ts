@@ -44,8 +44,23 @@ describe("splitStatements", () => {
 });
 
 describe("elideCell", () => {
-  it("always elides a blob, reporting its length", () => {
-    expect(elideCell("abcd", "BLOB", 1024)).toBe("<BLOB 4 bytes>");
+  it("always elides a blob, reporting its true length when given one", () => {
+    expect(elideCell("abcd", "BLOB", 1024, 4)).toBe("<BLOB 4 bytes>");
+  });
+
+  it("reports the byte length passed in, not the length of the rendered string", () => {
+    // getRowsJson() would render a 6-byte blob (0x01, 0x02, 0xFF, 'a', 'b',
+    // 'c') as this 15-character escaped string — each non-printable byte
+    // becomes a 4-character `\xNN` sequence. Deriving the count from the
+    // string, as the previous implementation did, would report 15 bytes for
+    // a 6-byte blob. The true count must come from the caller, not the value.
+    const rendered = "\\x01\\x02\\xFFabc";
+    expect(rendered).toHaveLength(15);
+    expect(elideCell(rendered, "BLOB", 1024, 6)).toBe("<BLOB 6 bytes>");
+  });
+
+  it("reports no number when the true length is not available, rather than a guess", () => {
+    expect(elideCell("\\x01\\x02\\xFFabc", "BLOB", 1024)).toBe("<BLOB>");
   });
 
   it("truncates an oversized string", () => {

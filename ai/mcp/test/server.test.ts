@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { DuckDBInstance } from "@duckdb/node-api";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createServer } from "../src/server.js";
 import type { Corpus } from "../src/corpus.js";
 import type { Engine } from "../src/duckdb.js";
+import { serialiser } from "../src/serialise.js";
 
 const CORPUS: Corpus = {
   generatedFrom: "test",
@@ -40,10 +45,29 @@ interface ZodLikeSchema {
 
 interface RegisteredTool {
   readonly inputSchema?: ZodLikeSchema;
+  readonly handler?: (args: unknown, extra: unknown) => Promise<unknown>;
 }
 
 function registeredTools(server: unknown): Record<string, RegisteredTool> {
   return (server as { _registeredTools: Record<string, RegisteredTool> })._registeredTools;
+}
+
+/**
+ * Invokes a registered tool's handler directly, in-process — no transport,
+ * no client. This is what `server.test.ts` was missing entirely before: every
+ * other test here checks registration and schemas but stops short of calling
+ * a tool, so an argument-wiring regression (`corpus` and `chapter` swapped in
+ * a handler, say) would pass every test in this file while being wrong.
+ */
+async function invokeTool(server: unknown, name: string, args: unknown): Promise<unknown> {
+  const handler = registeredTools(server)[name]?.handler;
+  if (!handler) throw new Error(`tool "${name}" has no handler`);
+  return handler(args, {});
+}
+
+interface CallToolTextResult {
+  readonly content: readonly { readonly type: string; readonly text: string }[];
+  readonly isError?: boolean;
 }
 
 function registeredResources(server: unknown): Record<string, unknown> {
@@ -130,5 +154,75 @@ describe("createServer", () => {
       expect(schema.safeParse({ sql: "select 1", timeout_ms: 999 }).success).toBe(false);
       expect(schema.safeParse({ sql: "select 1", timeout_ms: 600_001 }).success).toBe(false);
     });
+  });
+});
+
+describe("every tool, actually invoked", () => {
+  let engine: Engine;
+  let file: string;
+
+  beforeAll(async () => {
+    // A bare DuckDB connection, no network: `cityparquet_describe` and
+    // `cityparquet_query` need nothing but core SQL for this round trip.
+    const instance = await DuckDBInstance.create(":memory:");
+    const connection = await instance.connect();
+    engine = {
+      connection,
+      extensions: [],
+      exclusive: serialiser(),
+      async close() {
+        connection.closeSync();
+      },
+    };
+
+    const dir = mkdtempSync(join(tmpdir(), "cityparquet-mcp-server-fixture-"));
+    file = join(dir, "building.parquet");
+    await engine.connection.run(`COPY (SELECT 1 AS id) TO '${file}' (FORMAT PARQUET)`);
+  });
+  afterAll(async () => { await engine?.close(); });
+
+  function textOf(result: unknown): string {
+    return (result as CallToolTextResult).content[0]!.text;
+  }
+
+  it("cityparquet_docs_outline lists every corpus", async () => {
+    const result = await invokeTool(createServer({ corpus: CORPUS, engine: ENGINE }), "cityparquet_docs_outline", {});
+    const parsed = JSON.parse(textOf(result)) as { corpora: { id: string }[] };
+    expect(parsed.corpora.map((c) => c.id)).toEqual(["spec", "duckdb-cityjson", "duckdb-3d"]);
+  });
+
+  it("cityparquet_docs_search finds the fixture chapter by its body text", async () => {
+    const result = await invokeTool(createServer({ corpus: CORPUS, engine: ENGINE }), "cityparquet_docs_search", {
+      query: "authoritative",
+    });
+    const parsed = JSON.parse(textOf(result)) as { chapter: string }[];
+    expect(parsed.map((h) => h.chapter)).toEqual(["metadata"]);
+  });
+
+  it("cityparquet_docs_read reads the named chapter, not some other one", async () => {
+    // The regression this guards: `corpus` and `chapter` swapped inside the
+    // handler would still type-check (both are strings) and still return
+    // *some* text — only checking the actual content catches it.
+    const result = await invokeTool(createServer({ corpus: CORPUS, engine: ENGINE }), "cityparquet_docs_read", {
+      corpus: "spec",
+      chapter: "metadata",
+    });
+    expect(textOf(result)).toBe("The footer is authoritative.");
+  });
+
+  it("cityparquet_describe reads the real fixture file's footer", async () => {
+    const result = await invokeTool(createServer({ corpus: CORPUS, engine }), "cityparquet_describe", { url: file });
+    const parsed = JSON.parse(textOf(result)) as { kind: string; tables: { row_count: number | null }[] };
+    expect(parsed.kind).toBe("file");
+    expect(parsed.tables[0]!.row_count).toBe(1);
+  });
+
+  it("cityparquet_query runs the given SQL and returns the given row", async () => {
+    const result = await invokeTool(createServer({ corpus: CORPUS, engine }), "cityparquet_query", {
+      sql: "SELECT 41 + 1 AS answer",
+    });
+    const parsed = JSON.parse(textOf(result)) as { rows: number[][]; row_count: number }[];
+    expect(parsed[0]!.rows).toEqual([[42]]);
+    expect(parsed[0]!.row_count).toBe(1);
   });
 });

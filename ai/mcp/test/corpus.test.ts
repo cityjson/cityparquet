@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { outline, readChapter, search } from "../src/corpus.js";
+import { loadCorpus, outline, readChapter, search } from "../src/corpus.js";
 import type { Corpus } from "../src/corpus.js";
+
+describe("loadCorpus", () => {
+  it("reads the committed corpus.json", () => {
+    expect(loadCorpus().corpora.spec.chapters.length).toBeGreaterThan(0);
+  });
+});
 
 const CORPUS: Corpus = {
   generatedFrom: "test",

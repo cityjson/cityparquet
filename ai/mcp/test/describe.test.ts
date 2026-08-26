@@ -1,5 +1,11 @@
-import { afterEach, describe as suite, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe as suite, expect, it, vi } from "vitest";
+import { DuckDBInstance } from "@duckdb/node-api";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { Engine } from "../src/duckdb.js";
+import { serialiser } from "../src/serialise.js";
 import { MODULE_TABLES, SIDECAR_TABLES, describe, geometryColumnsOf, lodsOf } from "../src/tools/describe.js";
 
 suite("the package file inventory", () => {
@@ -47,6 +53,10 @@ function fakeEngine(
   return {
     extensions: [],
     async close() {},
+    // A pass-through. These fixtures never have two calls in flight at
+    // once, so there is nothing here for `exclusive` to serialise against —
+    // it exists only so `describe()`'s call to it type-checks and runs.
+    exclusive: <T>(task: () => Promise<T>) => task(),
     connection: {
       async runAndReadAll(sql: string) {
         const url = /'([^']+)'/.exec(sql)?.[1] ?? "";
@@ -174,5 +184,63 @@ suite("describe, CRS rendering from the footer", () => {
     const engine = fakeEngine({ "https://example.test/pkg/building.parquet": ["id"] }, []);
     const result = await describe(engine, "https://example.test/pkg/building.parquet");
     expect(result.crs).toBeNull();
+  });
+});
+
+// A real DuckDB engine and a real Parquet file, no network. The fakeEngine
+// suites above pin describe()'s branching logic, and their canned responses
+// were themselves updated once already to encode a fix after a defect this
+// mock shape could not have caught — see the task report. Only a real engine
+// proves the SQL describe() actually issues (parquet_schema,
+// parquet_file_metadata, parquet_kv_metadata, decode()) still parses and
+// still means what this module assumes it means.
+//
+// `describe()` given a local directory path throws inside `fetch()` on a
+// non-URL base, so this exercises the single-file `.parquet` path rather
+// than the package path — see the CLAUDE.md note on that gap.
+suite("describe, against a real engine and a real fixture file", () => {
+  let engine: Engine;
+  let file: string;
+
+  beforeAll(async () => {
+    // A bare DuckDB connection, not `createEngine`: `describe()` needs
+    // nothing but core Parquet functions (`parquet_schema`,
+    // `parquet_file_metadata`, `parquet_kv_metadata`, `decode`), and no
+    // extension load — so no network — is required to exercise it for real.
+    const instance = await DuckDBInstance.create(":memory:");
+    const connection = await instance.connect();
+    engine = {
+      connection,
+      extensions: [],
+      exclusive: serialiser(),
+      async close() {
+        connection.closeSync();
+      },
+    };
+
+    const dir = mkdtempSync(join(tmpdir(), "cityparquet-mcp-fixture-"));
+    file = join(dir, "building.parquet");
+    const city = JSON.stringify({
+      crs: { name: "Amersfoort / RD New + NAP height", id: { authority: "EPSG", code: 7415 } },
+    }).replace(/'/g, "''");
+    await engine.connection.run(
+      `COPY (SELECT 1 AS id, encode('geom')::BLOB AS geometry_lod2_2) TO '${file}' ` +
+        `(FORMAT PARQUET, KV_METADATA {city: '${city}'})`,
+    );
+  });
+  afterAll(async () => { await engine?.close(); });
+
+  it("reads the table's row count, geometry columns and LoDs from the real footer", async () => {
+    const result = await describe(engine, file);
+    expect(result.kind).toBe("file");
+    expect(result.tables).toHaveLength(1);
+    expect(result.tables[0]!.row_count).toBe(1);
+    expect(result.tables[0]!.geometry_columns).toEqual(["geometry_lod2_2"]);
+    expect(result.tables[0]!.lods).toEqual(["2.2"]);
+  });
+
+  it("decodes the CRS from the real KV metadata", async () => {
+    const result = await describe(engine, file);
+    expect(result.crs).toBe("Amersfoort / RD New + NAP height (EPSG:7415)");
   });
 });
