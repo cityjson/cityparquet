@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "corpus": "pnpm build && node dist/build-corpus.js",
+    "corpus:check": "pnpm build && node dist/check-corpus-fresh.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
