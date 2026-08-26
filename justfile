@@ -477,7 +477,16 @@ write-bench FOLDER OUT=(BENCH / "results"):
 
         cargo run --release {{CARGO}} -p cityparquet-cli --bin cityparquet -- bench \
             --input "$f" --out "$out"
-        ./{{BENCH_SCRIPTS}}/bench_duckdb.sh "$f" "$out"
+        # Exit 3 means the community `cityjson` extension is unavailable for
+        # this DuckDB build (see bench_duckdb.sh) — the duckdb-copy baseline
+        # is skipped and said so on stderr, while the encoding-variant rows
+        # this recipe exists for are unaffected. Any other non-zero code is
+        # a real failure and still stops the run.
+        ./{{BENCH_SCRIPTS}}/bench_duckdb.sh "$f" "$out" || {
+            rc=$?
+            if [[ "$rc" -ne 3 ]]; then exit "$rc"; fi
+            echo ">> duckdb-copy baseline SKIPPED for ${name} (extension unavailable)"
+        }
 
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
