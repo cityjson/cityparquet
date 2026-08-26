@@ -663,6 +663,207 @@ const { config } = data;
     color: var(--cp-accent);
   }
 
+  /* Scan figure */
+  .cp-scan {
+    margin: 0;
+    padding: 0.85rem 1rem 0.9rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 6px;
+    background: var(--cp-surface);
+    display: grid;
+    gap: 0.7rem;
+  }
+
+  .cp-scan-waiting {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-scan-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-scan-file {
+    font-family: var(--cp-mono);
+    color: inherit;
+    font-weight: 600;
+  }
+
+  .cp-scan-more {
+    padding: 0.05rem 0.4rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 999px;
+    font-size: 0.68rem;
+  }
+
+  .cp-scan-readout {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-height: 1.2rem;
+    font-size: 0.78rem;
+  }
+
+  .cp-scan-readout code {
+    font-family: var(--cp-mono);
+    font-size: 0.78rem;
+  }
+
+  .cp-scan-type,
+  .cp-scan-hint {
+    color: var(--cp-dim);
+  }
+
+  .cp-scan-tag-on {
+    color: var(--cp-accent);
+  }
+
+  .cp-scan-tag-off {
+    color: var(--cp-dim);
+  }
+
+  /* The grid. One column per column of the file, one row per drawn band, so
+     the figure is the file's own shape rather than a stylised stand-in. */
+  .cp-scan-grid {
+    display: grid;
+    gap: 2px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .cp-scan-row {
+    display: grid;
+    grid-template-columns: repeat(var(--cp-scan-cols), minmax(0, 1fr));
+    gap: 1px;
+  }
+
+  .cp-scan-header {
+    margin-bottom: 2px;
+  }
+
+  .cp-scan-hd,
+  .cp-scan-cell {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 1px;
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    transition:
+      background-color 220ms ease,
+      opacity 220ms ease;
+  }
+
+  .cp-scan-hd {
+    height: 11px;
+    cursor: pointer;
+  }
+
+  .cp-scan-cell {
+    height: 6px;
+  }
+
+  /* A chunk this statement can read. Tinted while it is only a plan, solid
+     once the query has run and the bytes below are a measurement. */
+  .cp-scan-on {
+    background: color-mix(in srgb, var(--cp-accent) 28%, transparent);
+  }
+
+  .cp-scan-read .cp-scan-on {
+    background: var(--cp-accent);
+  }
+
+  .cp-scan-read .cp-scan-cell.cp-scan-on {
+    background: color-mix(in srgb, var(--cp-accent) 78%, transparent);
+  }
+
+  /* Only the header cell is outlined. Ruling forty body cells to mark one
+     column would be louder than the stripe it is pointing at, and the readout
+     above has already named it. */
+  .cp-scan-hd.cp-scan-hover {
+    outline: 1px solid var(--cp-accent);
+    outline-offset: 0;
+  }
+
+  /* Work in progress, not progress: an indeterminate sweep, the same promise a
+     spinner makes. Nothing about its position is measured. */
+  .cp-scan-running .cp-scan-grid::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      color-mix(in srgb, var(--cp-accent) 22%, transparent) 45%,
+      color-mix(in srgb, var(--cp-accent) 22%, transparent) 55%,
+      transparent 100%
+    );
+    animation: cp-scan-sweep 1.4s linear infinite;
+    pointer-events: none;
+  }
+
+  @keyframes cp-scan-sweep {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(100%);
+    }
+  }
+
+  .cp-scan-metrics {
+    display: flex;
+    gap: 1.6rem;
+    flex-wrap: wrap;
+  }
+
+  .cp-scan-metric {
+    display: grid;
+    gap: 0.1rem;
+  }
+
+  .cp-scan-metric-label {
+    font-size: 0.7rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-scan-metric-value {
+    font-size: 1.05rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cp-scan-metric-note {
+    font-size: 0.68rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-scan-note {
+    margin: 0;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: var(--cp-dim);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cp-scan-hd,
+    .cp-scan-cell {
+      transition: none;
+    }
+
+    .cp-scan-running .cp-scan-grid::after {
+      animation: none;
+    }
+  }
+
   .cp-badge {
     display: inline-flex;
     align-items: center;

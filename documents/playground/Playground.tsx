@@ -25,6 +25,7 @@ import {
   rowsOf,
   type QueryResult,
 } from "./lib/query";
+import { parquetTargets, projectedColumns, readStructure, type FileStructure } from "./lib/scan";
 import { SavedQueries, deriveName, type SavedQuery } from "./lib/saved";
 import { buildHash, parseHash } from "./lib/share";
 import { DEFAULT_PRESET_ID, PRESETS, findPreset, type Preset } from "./presets";
@@ -34,6 +35,7 @@ import EditorToolbar from "./components/EditorToolbar";
 import ImportedFiles from "./components/ImportedFiles";
 import PresetList from "./components/PresetList";
 import ResultsTable from "./components/ResultsTable";
+import ScanViz from "./components/ScanViz";
 import SavedList from "./components/SavedList";
 import SchemaPanel from "./components/SchemaPanel";
 import StatusBar from "./components/StatusBar";
@@ -74,6 +76,9 @@ export default function Playground() {
   const [imported, setImported] = useState<ImportedFile[]>([]);
   const [exporting, setExporting] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [structure, setStructure] = useState<FileStructure | null>(null);
+  const [structureLoading, setStructureLoading] = useState(false);
+  const [otherFiles, setOtherFiles] = useState(0);
 
   // Created once, and only in the browser: constructing it touches
   // `localStorage`, which is what throws when a browser refuses storage.
@@ -82,6 +87,11 @@ export default function Playground() {
   useEffect(() => setSaved(store.list()), [store]);
 
   const fileInput = useRef<HTMLInputElement | null>(null);
+
+  // One footer read per file, kept for the session. The shape of a file does
+  // not change under us, and re-reading it on every keystroke would spend a
+  // round trip to learn what is already known.
+  const structures = useRef(new Map<string, FileStructure>());
 
   // The editor's current text, readable from callbacks without re-binding them.
   const sqlRef = useRef(sql);
@@ -186,6 +196,57 @@ export default function Playground() {
     };
   }, [sql, boot]);
 
+  // The shape of the file the statement reads, for the scan figure. Footer
+  // only, and cached per URL, so it shares the schema panel's debounce rather
+  // than firing at a half-typed URL.
+  useEffect(() => {
+    if (boot.status !== "ready") return;
+
+    const targets = parquetTargets(sql);
+    setOtherFiles(Math.max(0, targets.length - 1));
+    if (targets.length === 0) {
+      setStructure(null);
+      setStructureLoading(false);
+      return;
+    }
+
+    // The first file a query names. A join reads two, and drawing one of them
+    // is more use than drawing neither — the figure says how many it is not
+    // showing.
+    const target = targets[0];
+    const known = structures.current.get(target.url);
+    if (known) {
+      setStructure(known);
+      setStructureLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setStructureLoading(true);
+    const timer = setTimeout(() => {
+      readStructure(boot.session, target)
+        .then((next) => {
+          if (cancelled) return;
+          structures.current.set(target.url, next);
+          setStructure(next);
+        })
+        .catch(() => {
+          // A file that cannot be described is one the figure cannot draw.
+          // The query itself will report the failure; this stays quiet.
+          if (!cancelled) setStructure(null);
+        })
+        .finally(() => {
+          if (!cancelled) setStructureLoading(false);
+        });
+    }, 700);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      setStructureLoading(false);
+    };
+  }, [sql, boot]);
+
   // Fetch the schema the editor completes against before anyone asks for it.
   // Sharing the schema panel's debounce is deliberate: both wait for typing to
   // settle, and neither should fire on a half-written URL.
@@ -210,6 +271,13 @@ export default function Playground() {
         current.presetId && next === findPreset(current.presetId)?.sql ? current.presetId : null,
     }));
   }, []);
+
+  // Which of the file's columns this statement names. Recomputed as it is
+  // typed, so the figure answers before the query is run.
+  const projected = useMemo(
+    () => (structure ? projectedColumns(sql, structure.columns) : []),
+    [sql, structure],
+  );
 
   const insertColumn = useCallback((name: string) => {
     editorRef.current?.insertAtCursor(name);
@@ -443,6 +511,16 @@ export default function Playground() {
             </div>
 
             <StatusBar result={result} extensions={boot.session.extensions} running={running} />
+
+            <ScanViz
+              structure={structure}
+              projected={projected}
+              running={running}
+              sql={sql}
+              result={result}
+              loading={structureLoading}
+              otherFiles={otherFiles}
+            />
 
             {notice && <p className="cp-notice">{notice}</p>}
 

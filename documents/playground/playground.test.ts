@@ -25,6 +25,13 @@ import { SAVED_KEY, SAVED_LIMIT, SAVED_VERSION, SavedQueries, deriveName } from 
 import { PRESETS, DEFAULT_PRESET_ID, findPreset } from "./presets";
 import { buildHash, decodeSql, encodeSql, parseHash } from "./lib/share";
 import { formatBytes } from "./lib/bytes";
+import {
+  labelFor,
+  parquetTargets,
+  projectedColumns,
+  rowBands,
+  selectsAllColumns,
+} from "./lib/scan";
 import { formatDeadline } from "./lib/query";
 import { QUERY_TIMEOUT_MS } from "./config";
 
@@ -631,5 +638,100 @@ describe("explaining an export that did not work", () => {
 
   it("has nothing to add about a plain SQL mistake in a plain format", () => {
     expect(explainExportFailure(csv, "Parser Error: syntax error at or near")).toBeNull();
+  });
+});
+
+describe("finding the file a query reads", () => {
+  it("takes the URL out of read_parquet", () => {
+    const targets = parquetTargets(
+      "SELECT id FROM read_parquet('https://cityparquet.open3d.city/data/delft/building.parquet')",
+    );
+    expect(targets).toHaveLength(1);
+    expect(targets[0].label).toBe("delft/building.parquet");
+  });
+
+  it("takes it out of a bare FROM as well", () => {
+    expect(parquetTargets("SELECT 1 FROM 'https://host/a/b.parquet'")[0].url).toBe(
+      "https://host/a/b.parquet",
+    );
+  });
+
+  it("reports each file once, in the order they appear", () => {
+    const sql = `SELECT * FROM read_parquet('https://h/x/a.parquet') a
+                 JOIN read_parquet('https://h/x/b.parquet') b USING (id)
+                 WHERE a.id IN (SELECT id FROM read_parquet('https://h/x/a.parquet'))`;
+    expect(parquetTargets(sql).map((t) => t.label)).toEqual(["x/a.parquet", "x/b.parquet"]);
+  });
+
+  it("labels a file by its last two path segments", () => {
+    expect(labelFor("https://h/data/3dbag/building.parquet")).toBe("3dbag/building.parquet");
+    expect(labelFor("https://h/building.parquet?v=2")).toBe("h/building.parquet");
+  });
+
+  it("finds nothing in a query that reads no Parquet", () => {
+    expect(parquetTargets("SELECT 42")).toEqual([]);
+    expect(parquetTargets("SELECT * FROM read_json('https://h/a.city.jsonl')")).toEqual([]);
+  });
+});
+
+describe("reading the projection out of a statement", () => {
+  const columns = [
+    { name: "id", type: "VARCHAR" },
+    { name: "object_type", type: "VARCHAR" },
+    { name: "b3_h_dak_50p", type: "DOUBLE" },
+    { name: "geometry_lod22", type: "BLOB" },
+  ];
+
+  it("counts a column named anywhere, not only the ones returned", () => {
+    // A WHERE column is read as surely as a selected one, and a projection
+    // drawn smaller than the truth would flatter the query.
+    const projected = projectedColumns("SELECT id FROM t WHERE b3_h_dak_50p > 10", columns).map(
+      (c) => c.name,
+    );
+    expect(projected).toEqual(["id", "b3_h_dak_50p"]);
+  });
+
+  it("treats a star as every column", () => {
+    expect(projectedColumns("SELECT * FROM t", columns)).toHaveLength(4);
+    expect(projectedColumns("SELECT t.* FROM t", columns)).toHaveLength(4);
+    expect(projectedColumns("SELECT * EXCLUDE (id) FROM t", columns)).toHaveLength(4);
+  });
+
+  it("does not treat count(*) as a projection", () => {
+    // Parquet answers it from the footer's row counts, touching no column
+    // chunk at all — painting the file as read would invert the lesson.
+    expect(selectsAllColumns("SELECT count(*) FROM t")).toBe(false);
+    expect(projectedColumns("SELECT count(*) FROM t", columns)).toEqual([]);
+  });
+
+  it("ignores names that only appear in comments or strings", () => {
+    expect(projectedColumns("-- geometry_lod22 is expensive\nSELECT id FROM t", columns)).toEqual([
+      { name: "id", type: "VARCHAR" },
+    ]);
+    expect(projectedColumns("SELECT id FROM t WHERE x = 'object_type'", columns)).toEqual([
+      { name: "id", type: "VARCHAR" },
+    ]);
+  });
+});
+
+describe("folding row groups into drawn bands", () => {
+  it("draws one band per row group when they fit", () => {
+    expect(rowBands(3, 48)).toEqual([
+      { from: 0, to: 1 },
+      { from: 1, to: 2 },
+      { from: 2, to: 3 },
+    ]);
+  });
+
+  it("covers every row group when they do not", () => {
+    const bands = rowBands(88, 48);
+    expect(bands).toHaveLength(48);
+    expect(bands[0].from).toBe(0);
+    expect(bands[bands.length - 1].to).toBe(88);
+    bands.slice(1).forEach((band, i) => expect(band.from).toBe(bands[i].to));
+  });
+
+  it("has nothing to draw for a file with no row groups", () => {
+    expect(rowBands(0, 48)).toEqual([]);
   });
 });

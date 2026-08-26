@@ -7,6 +7,13 @@ import { describe, type Session } from "./duckdb";
 export type Cell = string | number | boolean | null;
 
 export interface QueryResult {
+  /**
+   * The statement this result came from. Carried so a reader of the result can
+   * tell whether it still describes what is on screen: the scan figure draws
+   * one file's bytes, and showing a previous query's total against a file it
+   * never touched would be worse than showing none.
+   */
+  readonly sql: string;
   readonly columns: readonly string[];
   readonly rows: readonly (readonly Cell[])[];
   /** Rows returned, which may exceed the number kept in `rows`. */
@@ -142,6 +149,7 @@ export async function runQuery(session: Session, sql: string): Promise<QueryResu
     });
 
     return {
+      sql,
       columns,
       rows,
       rowCount: all.length,
