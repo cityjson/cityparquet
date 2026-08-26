@@ -1,0 +1,53 @@
+---
+title: Design decisions
+description: The decisions behind CityParquet, each with the alternatives considered and the trade-off accepted.
+sidebar:
+  label: Overview
+---
+
+This section records **why** CityParquet is designed the way it is. The
+[Specification](/specification) records _what_ the format is; where the two
+overlap, the specification is authoritative on the _what_ and this section
+explains the _reasoning_. Prior art weighed throughout: PostGIS, GeoParquet,
+Apache Iceberg, and 3DCityDB.
+
+## How to read a decision
+
+Each decision follows the same shape:
+
+- **Decision** — the one-line resolution.
+- **Alternatives considered** — the options weighed, so the choice is positioned.
+- **Why this** — the reasoning that selected it.
+- **Trade-off** — the cost knowingly accepted.
+- **Status** — <Badge variant="success">decided</Badge> or <Badge variant="warning">open</Badge>.
+
+Open items link to [Open questions](/open-questions).
+
+<CardGroup cols={2}>
+  <Card title="A · Table & schema strategy" href="/design-decisions/schema-strategy" icon="table">
+    One object per row; typed attribute columns; addresses.
+  </Card>
+  <Card title="B · Geometry encoding" href="/design-decisions/geometry-encoding" icon="box">
+    WKB geometry, parallel property columns, one column per LoD, encode-time transform.
+  </Card>
+  <Card title="C · Spatial access" href="/design-decisions/spatial-access" icon="map-pin">
+    The bbox column and Hilbert ordering.
+  </Card>
+  <Card
+    title="D · Appearance & shared resources"
+    href="/design-decisions/appearance-shared-resources"
+    icon="palette"
+  >
+    Geometry/appearance separation and shared-resource sidecars.
+  </Card>
+  <Card
+    title="E · Files, CRS & metadata"
+    href="/design-decisions/files-crs-metadata"
+    icon="package"
+  >
+    The file package, one CRS per file, dataset metadata.
+  </Card>
+  <Card title="F · Extensions" href="/design-decisions/extensions" icon="puzzle">
+    How ADEs and CityJSON Extensions are encoded.
+  </Card>
+</CardGroup>

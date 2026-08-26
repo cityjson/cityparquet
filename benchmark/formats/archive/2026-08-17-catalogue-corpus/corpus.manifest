@@ -1,0 +1,38 @@
+# The retired 30-dataset city3d-STAC catalogue corpus, in CORPUS_MANIFEST format.
+# Re-fetch it with:
+#   CORPUS_MANIFEST=benchmark/formats/archive/2026-08-17-catalogue-corpus/corpus.manifest just fetch-data benchmark/formats/data/legacy all
+# Format: local_name|wire_bytes|form|sets|url   (see ../../../benchmark/scripts/fetch_benchmark.sh)
+# Byte sizes were measured 2026-08-16 and are NOT re-verified; an origin that has
+# re-published since will now hard-fail the size check. That is the intended
+# behaviour — it says the bytes moved, not that the fetcher broke.
+
+3dbag_amsterdam_10-432-718.city.json|944802|gz|default,no-citygml|https://data.3dbag.nl/v20250903/tiles/10/432/718/10-432-718.city.json.gz
+3dbag_amsterdam_10-432-720.city.json|1705153|gz|default,no-citygml|https://data.3dbag.nl/v20250903/tiles/10/432/720/10-432-720.city.json.gz
+estonia_anija_lod2.gml|2581034|zip:hooned_lod2-Anija_vald.gml|default,no-citygml|https://geoportaal.maaamet.ee/index.php?lang_id=2&plugin_act=otsing&andmetyyp=hooned_lod2&dl=1&f=hooned_lod2-Anija_vald-citygml.zip&page_id=837
+rotterdam_delfshaven.city.json|2731804|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/3-20-DELFSHAVEN.city.json
+plateau_chuo_brid.gml|2800795|plain|no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/brid/53394611_brid_6697_op.gml
+plateau_chuo_fld.gml|5439116|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/fld/pref/kandagawa-ryuiki/53394611_fld_6697_l2_op.gml
+plateau_yokohama_squr.gml|5569485|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/04/96d45a-a30b-4c9f-88c0-c1323b5a0f86/14100_yokohama-shi_city_2024_citygml_2_op/udx/squr/53391368_squr_6697_op.gml
+vienna_102081.city.json|5635634|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Vienna_102081.city.json
+riga_atgazene_lod2.gml|10509018|plain|no-citygml|https://data.gov.lv/dati/dataset/rigas-apkaimju-lod2-modeli/resource/2e00bb17-0c84-4ec4-9626-48002d0a47c8/download/atgazene_lod2.gml
+estonia_canopies_lod1.gml|11718012|zip:katusealused_lod1-eesti.gml|default,no-citygml|https://geoportaal.maaamet.ee/index.php?lang_id=2&plugin_act=otsing&andmetyyp=katusealused_lod1&dl=1&f=katusealused_lod1-eesti-citygml.zip&page_id=837
+craig_valence_lod3_1.gml|16185668|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_ZAE%2F26_Valence_Romans_Agglo&files=02_Valence_LOD3_1.gml
+craig_clermont_secteur5_textured.gml|23101949|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2F2021_aura_3d%2F02_Bati3D%2FCityGML%2FSecteur_05_Clermont&files=Secteur_5_Textured_L93.gml
+craig_voironnais_lod2_solar.gml|27956169|zip:38_Voironnais_LoD2.gml|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d_isere%2F02_CIM%2FCityGML%2FCA_Pays_Voironnais&files=2024_BC2_Voironnais_2020_LoD2_solaire.zip
+plateau_chuo_tran.gml|36597975|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/tran/53394611_tran_6697_op.gml
+craig_vichy_2016_lod3.gml|52921317|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_ZAE%2F03_Vichy_Communaute&files=10_Vichy_2016_LOD3.gml
+luxembourg_diekirch_bastendorf_lod2.gml|57876265|plain|default,no-citygml|https://download.data.public.lu/resources/batiments-3d-lod-2-3-level-of-detail-2-3/20190603-110058/lod2-batiments-diekirch-bastendorf.gml
+craig_riom_lod2_2.gml|59620390|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FRiom_Chatel-Guyon&files=14_Riom_LOD2_2.gml
+plateau_chuo_veg.gml|63744856|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/veg/53394611_veg_6697_op.gml
+craig_riom_lod2_1.gml|78433203|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FRiom_Chatel-Guyon&files=14_Riom_LOD2_1.gml
+nyc_da13_buildings.city.json|110083137|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/DA13_3D_Buildings_Merged.city.json
+plateau_chuo_frn.gml|117380205|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/frn/53394611_frn_6697_op.gml
+craig_clermont_lod3_1.gml|161907437|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_ZAE%2F63_Clermont_Auvergne_Metropole&files=03_Clermont_LOD3_1.gml
+plateau_chuo_bldg.gml|168306746|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/0c/b282cf-c242-4dd7-af9b-4ec3d4373018/13102_chuo-ku_pref_2023_citygml_2_op/udx/bldg/53394611_bldg_6697_op.gml
+craig_vichy_unesco_lod3.gml|215430331|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FVichy_UNESCO&files=2024_BC1_Vichy_UNESCO_2021_LoD3.gml
+zurich_building_lod2.city.json|292500409|plain|default,no-citygml|https://3d.bk.tudelft.nl/opendata/cityjson/3dcities/v2.0/Zurich_Building_LoD2_V10.city.json
+craig_clermont_lod2_textured_1.gml|320756374|plain|default,no-citygml|https://drive.opendata.craig.fr/s/opendata/download?path=%2F3d%2Fbati3d%2F02_CIM%2FCityGML%2F2024_Building%2FClermont&files=Clermont_LoD2_texture_1.gml
+plateau_edogawa_htd.gml|532458174|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/htd/13_1/533946_htd_6697_op.gml
+plateau_edogawa_luse.gml|561498161|plain|default,no-citygml|https://assets.cms.plateau.reearth.io/assets/92/28e36f-472f-42dc-8d9c-67348e3a7261/13123_edogawa-ku_pref_2023_citygml_2_op/udx/luse/533946_luse_6697_op.gml
+kuopio_lod2_2_textured.gml|1531892325|zip:building.gml|default,no-citygml|https://avoindata.suomi.fi/data/dataset/1cda485e-0c0a-4f77-9f7d-185bae9144f7/resource/b4aa97c2-f41c-4863-82f0-aaa88687a20b/download/kuopion_3d_rakennukset_citygml_lod2_2_2022_textured.zip
+freiburg_lod2.gml|1998672154|plain|default,no-citygml|https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml

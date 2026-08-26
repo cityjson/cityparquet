@@ -1,0 +1,169 @@
+---
+title: Appearance & templates
+description: Materials, textures, and geometry templates — the optional sidecar files.
+sidebar:
+  label: Appearance & templates
+---
+
+Appearance — material and texture — is separated from geometry and carried in per-LoD
+JSON columns, with the shared definitions deduplicated into sidecar files. Reusable
+geometry templates use the same geometry strategy as the object table. All three
+sidecars are optional: a source with no appearance produces none of them.
+
+## material / texture columns
+
+Appearance is [separated from geometry](/design-decisions/appearance-shared-resources),
+following the OBJ / COLLADA / glTF principle. The object table has stable nullable
+`material_lod*` and `texture_lod*` `JSON` columns; the shared definitions live in
+sidecar files.
+
+Appearance is per-surface data attached to a geometry, and every geometry has exactly
+one LoD — so appearance is **inherently per-LoD**, and CityParquet gives it **one
+column per LoD**, named by the [suffix grammar](/specification/geometry-semantics) and
+paired to the geometry it decorates: `material_lod2_2` / `texture_lod2_2` describe the
+surfaces of the same row's `geometry_lod2_2` cell, exactly as
+`geometry_properties_lod2_2` carries that geometry's semantics. So a query for one
+LoD's appearance reads only that column, and the LoD-to-appearance pairing is carried
+by the column name rather than by a JSON key a consumer must match.
+
+These columns carry no `lod` value — the column name already fixes the LoD. They are
+`JSON` rather than a `STRUCT` because their outer dimension is a **theme**, a
+dynamic string key whose set is not known in advance (a geometry may carry any number
+of named appearance themes); a fixed struct cannot express an open key set.
+
+Each cell holds a per-theme map:
+
+```jsonc
+// material_lod2_2 — one material id per WKB face
+{ "<theme>": { "values": [ <matId|null>, … ] } }   // per-face material ids
+{ "<theme>": { "value":  <matId> } }               // single material for the whole geometry
+
+// texture_lod2_2 — per WKB face, then per ring of that face
+{ "<theme>": { "values": [ [ [ <texId>, [u,v], [u,v], … ], … ], … ] } }
+```
+
+A `material_lod<suffix>` / `texture_lod<suffix>` cell is non-null only where the same
+row's `geometry_lod<suffix>` is non-null.
+
+- **Material** is per **face**: its `values` array aligns to the geometry's WKB faces
+  exactly as `face_semantics` does — one `matId` (or `null`) per face — so its length
+  equals the WKB face count (see [geometry & semantics](/specification/geometry-semantics)).
+- **Texture** is per **ring**, because texture coordinates attach to ring vertices:
+  `values` is one entry per WKB face, each of which is a list over that face's rings
+  (exterior ring first, then interior rings, matching the `PolygonZ` ring order), and
+  each ring is `[ <texId>, [u,v], … ]` with **one `[u,v]` per vertex of that ring**. A
+  ring with no texture is a single `[ null ]`. Flattening a face to one `[texId, uv…]`
+  would lose the appearance of any interior ring, so the ring level is retained even
+  when a face has only its exterior ring.
+
+Two normalisations apply relative to a CityJSON source:
+
+- **Material and texture references are sidecar `id` values** — dataset-global and
+  stable — not the feature-local indices CityJSONSeq uses. A reference resolves by
+  matching the sidecar's `id` column; it **MUST NOT** be interpreted as a row
+  position, which is not a stable key and may change when a package is rewritten.
+- **Texture UV indices are replaced inline** by the actual `[u, v]` coordinate pair
+  (`[texId, [u,v], [u,v], …]`), so the object table is self-contained and no stored UV
+  pool is needed. On export, UV pairs are re-interned into a feature-local pool and
+  indices re-derived.
+
+## materials.parquet
+
+| Column | Type | Req. | Description |
+|---|---|:--:|---|
+| `id` | `BIGINT` | ✔ | Material identifier, unique across rows; the value `material_lod*` references |
+| `name` | `VARCHAR` |  | Material name |
+| `ambientIntensity` | `DOUBLE` |  | Ambient intensity |
+| `diffuseColor` | `LIST<DOUBLE>` |  | Diffuse colour — 3 values in `[0,1]` |
+| `specularColor` | `LIST<DOUBLE>` |  | Specular colour — 3 values in `[0,1]` |
+| `emissiveColor` | `LIST<DOUBLE>` |  | Emissive colour — 3 values in `[0,1]` |
+| `transparency` | `DOUBLE` |  | Transparency |
+| `shininess` | `DOUBLE` |  | Shininess |
+| `isSmooth` | `BOOLEAN` |  | Smooth-shading flag |
+| `other` | `JSON` |  | Unmapped material members |
+
+All columns except `id` are nullable. A colour column **MUST** hold exactly three
+values, each in `[0,1]`, when non-null.
+
+## textures.parquet
+
+There is no stored UV pool — UV coordinates are inlined in the object table's
+`texture_lod*` maps, as described above.
+
+| Column | Type | Req. | Description |
+|---|---|:--:|---|
+| `id` | `BIGINT` | ✔ | Texture identifier, unique across rows; the value `texture_lod*` references |
+| `image_uri` | `VARCHAR` |  | External image URI |
+| `image_data` | `BLOB` |  | Optional embedded image bytes |
+| `image_type` | `VARCHAR` |  | Image format token, verbatim from the source (`"JPG"`, `"PNG"`); **not** a MIME type |
+| `wrapMode` | `VARCHAR` |  | One of `none`, `wrap`, `mirror`, `clamp`, `border`; **SHOULD** be dictionary-encoded |
+| `textureType` | `VARCHAR` |  | One of `unknown`, `specific`, `typical`; **SHOULD** be dictionary-encoded |
+| `borderColor` | `LIST<DOUBLE>` |  | Border colour — 4 values in `[0,1]` (RGBA) |
+| `other` | `JSON` |  | Unmapped texture members |
+
+All columns except `id` are nullable, but a row **MUST** carry at least one of
+`image_uri` / `image_data` — a texture with no image is meaningless. When both are
+present, `image_data` is the authoritative bytes and `image_uri` is where they came
+from. `wrapMode` and `textureType` are enumerations: a value outside the listed set is
+invalid. `borderColor` **MUST** hold exactly four values, each in `[0,1]`, when
+non-null.
+
+:::note[Why typed columns rather than JSON]
+`diffuseColor`, `borderColor` and the two enumerations were `JSON` in an earlier draft.
+They have fixed, well-known shapes, so a typed column costs nothing and buys predicate
+pushdown, engine-side validation, and better compression. `LIST<DOUBLE>` is used rather
+than a fixed-size list because fixed-size lists are unevenly supported across Parquet
+readers; the cardinality is stated as a constraint instead.
+:::
+
+:::note[No `name` column on textures]
+Unlike a material, a texture has **no name member** — its properties are the image,
+`wrapMode`, `textureType` and `borderColor` — so this table has no `name` column. A
+texture's *theme* is a property of the geometry's appearance mapping, not of the
+definition.
+:::
+
+## geometry_templates.parquet
+
+Reusable geometry templates are stored in `geometry_templates.parquet`, using the same
+geometry strategy as the object table — including the
+[per-LoD column grammar](/specification/geometry-semantics), so a template's LoD is
+carried by its column name here exactly as it is in an object table.
+
+| Column | Type | Req. | Description |
+|---|---|:--:|---|
+| `id` | `BIGINT` | ✔ | Template identifier, unique across rows; the value the object table's `template.id` references |
+| `name` | `VARCHAR` |  | The template's identifier in the source document, when it had one. `id` is an integer so that templates remap like the other sidecars on merge, which leaves nowhere else for a meaningful source name to survive. |
+| `geometry_lod*` | `BLOB` |  | Template WKB in **local** template coordinates (raw doubles — template vertices are not subject to any dataset-level transform); one column per LoD |
+| `geometry_properties_lod*` | `STRUCT<type, surfaces, face_semantics, shells>` |  | Template geometry properties, the [same struct](/specification/geometry-semantics) as an object row's |
+| `material_lod*` | `JSON` |  | Template material mapping, per LoD |
+| `texture_lod*` | `JSON` |  | Template texture mapping, per LoD |
+
+A template is a single geometry at a single LoD, so each row populates exactly the
+column set matching its own LoD and leaves the others null. The table is sparse by
+construction; this is the cost of keeping one LoD-naming rule across the whole format
+rather than making the sidecar the sole place where an LoD rides in a value. There is
+no `other` column: a geometry template is a plain geometry (WKB + properties +
+appearance) with no members left over to preserve.
+
+**Templates are in local coordinates, and are exempt from the file CRS.** Template
+`geometry_lod*` holds raw doubles in the template's own local frame — an instance's
+`transformationMatrix` and reference `point` place it into the world. So the
+[file-CRS invariant](/specification/geometry-semantics) that binds object geometry and
+`bbox` to one CRS does **not** apply to `geometry_templates.parquet`: it carries no
+`city.crs` key. (The instance `point` in the object table *is* in the file CRS, like
+any other object-table geometry.)
+
+An object that instantiates a template stores instance data in the object-table
+`template` column. The column is nullable, but a non-null instance **MUST** carry both
+`id` and `point` — an instance with neither a template to resolve nor a place to sit is
+meaningless:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `BIGINT` | Referenced template id (required when the struct is non-null) |
+| `point` | `BLOB` | WKB `PointZ` for the instance's reference point, in the file CRS (required when the struct is non-null) |
+| `transformationMatrix` | `LIST<DOUBLE>` | The instance's transformation matrix — a flat, **row-major** 4×4, so exactly **16** values when non-null (the CityJSON `transformationMatrix` layout, unchanged); absent ⇒ identity |
+
+🟡 An object that instantiates **several** templates cannot currently be represented,
+since `template` is a single struct — see the [open questions](/open-questions).

@@ -1,0 +1,204 @@
+---
+title: Example with the DuckDB CityJSON extension
+description: Read and write CityJSON / CityJSONSeq with DuckDB.
+sidebar:
+  badge: WIP
+  label: DuckDB CityJSON
+---
+
+The [`cityjson`](https://github.com/cityjson/duckdb-cityjson) extension reads,
+queries, and writes [CityJSON](https://www.cityjson.org/) and
+[CityJSONSeq](https://www.cityjson.org/cityjsonseq/) directly in SQL, mapping each
+CityObject to a row. It is also the **executable prototype of the CityParquet
+encoding**: its default wide layout emits one WKB geometry column per LoD, so a
+plain `COPY ... TO (FORMAT PARQUET)` yields the encoding the specification
+formalises.
+
+:::warning[Experimental]
+This extension is under active development and should be considered experimental.
+Its API, output schema, and on-disk formats may change without notice, and bugs —
+including ones affecting data correctness — are expected. Verify results against a
+trusted source before use.
+:::
+
+Install and load it once from the community registry:
+
+```sql
+INSTALL cityjson FROM community;
+LOAD cityjson;
+```
+
+:::note[Run it at cloud scale]
+For `COPY`-based conversion of a CityParquet package that lives on a public bucket —
+CityParquet back to CityJSONSeq at scale — see
+[Working with 3DBAG at cloud scale](/tutorials/cloud-scale-3dbag).
+:::
+
+## Read CityJSON
+
+`read_cityjson(path [, lod => 'X.Y'])` reads a `.city.json` file; each CityObject
+becomes a row.
+
+```sql
+SELECT * FROM read_cityjson('buildings.city.json');
+
+-- Filter by object type
+SELECT id, object_type, measuredHeight
+FROM read_cityjson('buildings.city.json')
+WHERE object_type = 'Building';
+```
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `path` | VARCHAR | File path or URL to a `.city.json` file |
+| `lod` | VARCHAR | Optional. LoD to extract (e.g. `'2.2'`) |
+| `sample_lines` | BIGINT | Optional. Features sampled for schema inference (default: 100) |
+
+### Default wide-layout schema
+
+With no `lod` parameter the reader emits the CityParquet wide layout. Alongside the
+predefined columns (`id`, `feature_id`, `object_type`, `children`, `children_roles`,
+`parents`, `other`) and the dynamic attribute columns inferred from the data, it
+produces:
+
+- a `bbox` STRUCT — the object's 3D extent in world coordinates, computed from its
+  highest-LoD geometry: `STRUCT(xmin, ymin, zmin, xmax, ymax, zmax DOUBLE)`;
+- one set of geometry columns **per LoD** found in the data, named after the
+  normalised LoD (`2.2` → `_lod2_2`; a whole-number LoD like `2.0` → `_lod2`).
+  Note that the extension trims the minor component here, whereas the
+  [specification's suffix grammar](/specification/geometry-semantics) always keeps
+  it (`geometry_lod2_0`, never `geometry_lod2`):
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `geometry_lodX_Y` | BLOB | WKB-encoded geometry for that LoD (NULL if absent) |
+| `geometry_properties_lodX_Y` | JSON | Geometry metadata in CityParquet's [geometry-and-semantics](/specification/geometry-semantics) form |
+| `material_lodX_Y` | JSON | Per-surface material map for that LoD (see [appearance](/specification/appearance-templates)); NULL if none |
+| `texture_lodX_Y` | JSON | Per-surface texture map for that LoD; NULL if none |
+
+The WKB cannot carry semantics or a solid's shell structure, so those live in
+`geometry_properties` as a flattened, WKB-face-aligned JSON object — `type` always,
+plus `shells` (per-shell face counts), `surfaces` (the CityJSON surfaces array
+verbatim), and `face_semantics` (one entry per WKB face, in WKB face order). This is
+the same metadata the [`three_d`](/tutorials/duckdb-3d) extension reads from `shells`
+to compute the volume of a solid with inner shells. See the
+[geometry-encoding rationale](/design-decisions/geometry-encoding).
+
+### Per-LoD mode
+
+Passing `lod => '...'` switches to a narrow schema — `id`, `feature_id`,
+`object_type`, a single `geometry` BLOB, `geometry_properties` (carrying `lod` here,
+since the column name has no suffix), `bbox`, and the inferred attributes. This is
+the shape the `three_d` extension and DuckDB `spatial` consume:
+
+```sql
+LOAD spatial;
+SELECT id, ST_GeomFromWKB(geometry) AS geom
+FROM read_cityjsonseq('buildings.city.jsonl', lod => '2.2')
+WHERE geometry IS NOT NULL;
+```
+
+## Read CityJSONSeq / remote
+
+`read_cityjsonseq(path [, lod => 'X.Y'])` reads a `.city.jsonl` file, where line 1
+is the CityJSON metadata header and each subsequent line is one `CityJSONFeature`
+with its own local vertex pool. It streams — the file is read incrementally without
+loading the whole thing into memory — which makes it the preferred path for large
+datasets:
+
+```sql
+SELECT * FROM read_cityjsonseq('delft.city.jsonl');
+
+-- Filter by feature and object type
+SELECT feature_id, id, object_type
+FROM read_cityjsonseq('railway.city.jsonl')
+WHERE object_type = 'Railway';
+```
+
+Remote files over HTTP(S), S3, and GCS work the same way — the `httpfs` extension is
+auto-loaded when a remote URL is detected:
+
+```sql
+SELECT * FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl');
+```
+
+Equality filters on the scalar columns `id`, `feature_id`, and `object_type` are
+**pushed down** into the scan, so non-matching CityObjects are skipped before they
+are materialised; other predicates are applied by DuckDB after the scan.
+
+## Inspect metadata
+
+`cityjson_metadata(path)` (and `cityjsonseq_metadata(path)` for the header line of a
+sequence file) returns a single dataset-level row — version, identifier, transform
+scale/translate, geographical extent, reference system, contact, and CityObject
+count:
+
+```sql
+SELECT version, city_objects_count, reference_system
+FROM cityjson_metadata('buildings.city.json');
+
+-- Access nested struct fields
+SELECT reference_system.authority AS crs_authority,
+       reference_system.code      AS crs_code,
+       transform_scale.x          AS scale_x
+FROM cityjson_metadata('buildings.city.json');
+```
+
+## Write CityParquet
+
+Because the wide layout already carries one WKB column per LoD, writing a
+CityParquet-encoded Parquet file is just a `COPY ... TO (FORMAT PARQUET)`. The one
+subtlety is the GeoParquet footer metadata that lets GeoParquet-aware tools
+(GeoPandas, DuckDB `spatial`, GDAL/OGR) recognise the geometry columns. DuckDB core
+writes the object-table Parquet; `cityjson_geoparquet_geo(path)` supplies the `geo`
+metadata JSON it cannot infer from a plain `BLOB` column.
+
+That function declares **only GeoParquet-legal geometry columns** (see [metadata](/specification/metadata)): a
+`geometry_lod*` column qualifies only when every geometry at that LoD is a
+`MultiPoint` / `MultiLineString` / `MultiSurface` / `CompositeSurface`. A LoD
+containing any `Solid`-family geometry (`PolyhedralSurface Z`) is **excluded** —
+declaring it would make the whole file unreadable to strict GeoParquet readers. The
+CRS is resolved from the CityJSON `referenceSystem` to PROJJSON.
+
+`KV_METADATA` cannot contain a subquery, so pass the value via a variable:
+
+```sql
+SET VARIABLE geo = (SELECT geo FROM cityjson_geoparquet_geo('delft.city.jsonl'));
+
+COPY (SELECT * FROM read_cityjsonseq('delft.city.jsonl'))
+TO 'delft.parquet'
+(FORMAT PARQUET, KV_METADATA {geo: getvariable('geo')});
+```
+
+The resulting `delft.parquet` opens as a GeoParquet file: its LoD0 footprint column
+is read by GeoPandas / DuckDB `spatial` with the correct CRS, while the `Solid`
+columns remain opaque blobs those readers ignore. This is precisely the layout the
+CityParquet encoding formalises — each LoD becomes its own WKB column. For the full
+package (typed sidecars, `metadata.json`, round-trip guarantees) use the
+[`cityparquet-rs`](/resources/software) reference writer instead.
+
+## Round-trip / convert between formats
+
+`COPY ... TO` also writes CityJSON, CityJSONSeq, and (with the optional FlatCityBuf
+build flag) FlatCityBuf, so the extension doubles as a format converter. Writing
+requires `id`, `feature_id`, and `object_type` in the input query; all other columns
+are written back as CityJSON attributes.
+
+```sql
+-- Read, filter, and write back a subset
+COPY (
+    SELECT * FROM read_cityjsonseq('delft.city.jsonl')
+    WHERE object_type IN ('Building', 'BuildingPart')
+)
+TO 'delft_buildings.city.jsonl' (FORMAT cityjsonseq);
+
+-- CityJSON → CityJSONSeq
+COPY (SELECT * FROM read_cityjson('input.city.json'))
+TO 'output.city.jsonl' (FORMAT cityjsonseq);
+```
+
+Vertices are quantised to integers against the output `transform` before writing, so
+`transform_scale` (default `0.001`, i.e. 1 mm) sets the output precision; carry the
+source transform through `metadata_query` to keep round-trips lossless. CityJSONSeq
+is preferred for large datasets — it supports streaming and lower memory use — while
+CityJSON writes a single document with one global vertex pool.

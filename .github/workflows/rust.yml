@@ -1,0 +1,215 @@
+name: Rust
+
+# The gate for both Rust workspaces — the library (lib/cityparquet-rs) and the
+# read-benchmark harness (benchmark/readbench) — plus the harness's own two
+# non-Rust suites.
+#
+# The BENCHMARKS THEMSELVES ARE NOT HERE and should not be added: they are
+# multi-hour, need a ~24 GB fetched corpus, and the database family needs
+# rootless podman. What runs here is everything that needs neither a corpus nor
+# a network.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "lib/cityparquet-rs/**"
+      - "benchmark/**"
+      - "scripts/**"
+      - "justfile"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "lib/cityparquet-rs/**"
+      - "benchmark/**"
+      - "scripts/**"
+      - "justfile"
+      - ".github/workflows/rust.yml"
+  workflow_dispatch:
+  # release.yml re-runs this gate against the tagged commit. Calling the real
+  # workflow rather than copying its steps: this job has accumulated a runner
+  # -specific dance — freeing disk, the git-CLI fetch for the city3d-stac-types
+  # git dependency, the SSH-to-HTTPS submodule rewrite — and a copy of it in
+  # the release pipeline would drift out of step with this one.
+  workflow_call:
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # `cityparquet` depends on `city3d-stac-types` by git rev. libgit2 does not
+  # honour the HTTPS credentials `actions/checkout` installs, falls through to
+  # ssh-agent, and fails with "no authentication methods succeeded"; shelling
+  # out to the git CLI does honour them. Cargo's own error message recommends
+  # exactly this.
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+  # This workspace links ~20 test binaries against arrow + parquet + reqwest +
+  # geo. With full debug info that is enough to make `ld` die on a hosted runner
+  # with SIGBUS mid-link (a 14 GB disk and 16 GB of RAM, most of both already
+  # spoken for). Nothing here reads a backtrace, so drop the debug info: the
+  # tests assert on values, not on line numbers.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  check:
+    name: clippy, tests, isolation, fmt
+    runs-on: ubuntu-latest
+    steps:
+      # A hosted runner ships ~30 GB of preinstalled toolchains this job never
+      # touches, on a disk small enough that linking the test binaries runs out.
+      #
+      # NOT /usr/local/lib/node_modules: `just check` ends with a Prettier run
+      # over the Markdown, and `npx` is a symlink into that directory. Removing
+      # it turns the last line of the gate into `npx: not found` after
+      # everything else has already passed.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          # vendor/city3d-stac-tool only: `just vendor-check` gates on it, and
+          # it is small. The two DuckDB extensions are not needed by this job
+          # and carry ~1.2 GB between them.
+          submodules: false
+
+      # --recursive: city3d-stac-tool carries stac-spec and
+      # stac-cityjson-extension of its own, and `just vendor-check` runs its
+      # test suite, which reads them.
+      #
+      # Its .gitmodules declares both over SSH, which a runner has no key for.
+      # Rewriting to HTTPS here keeps the fix local to CI — that file belongs to
+      # an upstream project this repository only vendors.
+      - name: Check out the vendored STAC tool
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive lib/cityparquet-rs/vendor/city3d-stac-tool
+
+      # rust-toolchain.toml pins the version; rustup honours it on first use.
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lib/cityparquet-rs/target
+            lib/cityparquet-rs/vendor/city3d-stac-tool/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('lib/cityparquet-rs/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - uses: extractions/setup-just@v4
+
+      # `just check`'s last step runs Prettier through npx. Installing Node
+      # explicitly rather than relying on whatever the runner image preinstalls.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install rustfmt and clippy
+        working-directory: lib/cityparquet-rs
+        run: rustup component add rustfmt clippy
+
+      # Tests read real CityJSON fixtures rather than inline hand-written
+      # documents, so they have to be fetched before `cargo test`. All seven are
+      # pinned URLs; this is the one network dependency in this job.
+      - name: Fetch fixtures
+        working-directory: lib/cityparquet-rs
+        run: just fixtures
+
+      - name: just check
+        working-directory: lib/cityparquet-rs
+        run: just check
+
+  harness-suites:
+    name: benchmark harness suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      # Neither suite needs a corpus or a network: the shell tests stub every
+      # external binary and serve file:// URLs to the real fetcher, and the
+      # pytest suite ships its own CSV fixtures.
+      - name: just plot-test
+        run: just plot-test
+
+      - name: just scripts-test
+        run: just scripts-test
+
+  readbench:
+    name: readbench workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            benchmark/readbench/target
+          key: readbench-${{ runner.os }}-${{ hashFiles('benchmark/readbench/Cargo.lock') }}
+          restore-keys: readbench-${{ runner.os }}-
+
+      - uses: extractions/setup-just@v4
+
+      # This workspace path-depends on `cityparquet`, which depends on
+      # `city3d-stac-types` by git rev — and THAT repository declares its own
+      # submodules over SSH, which cargo follows and a runner has no key for.
+      # Same rewrite the `check` job needs, for the same reason.
+      - name: Prefer HTTPS for github remotes
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Install rustfmt and clippy
+        working-directory: benchmark/readbench
+        run: rustup component add rustfmt clippy
+
+      # Its tests read the library's real CityJSON fixtures, so they have to be
+      # fetched first — the harness measures real data, not synthetic input.
+      - name: Fetch fixtures
+        working-directory: lib/cityparquet-rs
+        run: just fixtures
+
+      - name: clippy, tests, fmt
+        working-directory: benchmark/readbench
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+          cargo fmt --check
+
+  citylake:
+    name: citylake build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lib/citylake/target
+          key: citylake-${{ runner.os }}-${{ hashFiles('lib/citylake/Cargo.toml') }}
+          restore-keys: citylake-${{ runner.os }}-
+
+      # A separate workspace with its own pinned DuckDB (`=1.10501.0`, bundled),
+      # so this is a slow cold build. Build only — citylake is a work in
+      # progress and its suite is not a gate yet.
+      - name: cargo build
+        working-directory: lib/citylake
+        run: cargo build

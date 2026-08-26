@@ -1,0 +1,216 @@
+---
+title: CityParquet
+description: A cloud-optimised geospatial data format for 3D city models — a columnar encoding of the CityGML data model, queryable directly over cloud object storage.
+sidebar:
+  label: Introduction
+  order: 0
+---
+
+{/* Raw JSX bypasses Blume's Markdown rewriter, which is what applies
+    deployment.base — so a root-absolute src 404s on the GitHub Pages project
+    subpath. Prefix BASE_URL ourselves; the collapse keeps it right whether
+    BASE_URL is "/" (dev) or "/cityparquet" (deployed). */}
+export const asset = (path) =>
+  `${import.meta.env.BASE_URL}/${path}`.replace(/\/{2,}/g, "/");
+
+{/* Stacked lockup (mark over wordmark). Sized taller than the horizontal
+    lockup would be: a quarter of its height is the wordmark, so at hero scale
+    the type still reads. */}
+<img
+  src={asset('brand/cityparquet-lockup-stacked.svg')}
+  alt="CityParquet"
+  style={{height:'8rem',width:'auto',display:'block',margin:'0.5rem 0 2rem'}}
+/>
+
+**CityParquet** is a **cloud-optimised geospatial data format for 3D city models** —
+a columnar encoding of the [CityGML](https://www.ogc.org/standards/citygml/) data
+model, stored as [Apache Parquet](https://parquet.apache.org/) so that a national-
+to global-scale city model becomes **storable, discoverable, and queryable directly
+over cloud object storage**, without a database.
+
+It joins an existing family of encodings of the same data model — CityGML (XML),
+CityJSON (JSON), 3DCityDB (relational), FlatCityBuf (binary) — as the **columnar,
+analytics-first** member. If you have ever had to download a multi-gigabyte
+city-model tile just to compute a few building volumes, [that is the problem
+CityParquet exists to solve](#why-a-new-format).
+
+:::note[Draft specification]
+CityParquet is **v0.1.0-draft** — the specification is still changing. Open design
+questions are tracked on the [Open questions](/open-questions) page.
+:::
+
+## Start here
+
+<CardGroup cols={2}>
+  <Card title="Getting started" href="/getting-started" icon="rocket">
+    Run your first analytical query over a 3D city model in five minutes.
+  </Card>
+  <Card title="Specification" href="/specification" icon="file-text">
+    The normative data model, columns, geometry encoding, and mapping rules.
+  </Card>
+  <Card title="Design decisions" href="/design-decisions" icon="git-branch">
+    The reasoning behind the format — alternatives considered and trade-offs.
+  </Card>
+  <Card title="Tutorials" href="/tutorials" icon="graduation-cap">
+    Hands-on walkthroughs with DuckDB and its 3D / CityJSON extensions.
+  </Card>
+  <Card title="Benchmark" href="/benchmark" icon="gauge">
+    How CityParquet performs on read, size, and compression — and how it was measured.
+  </Card>
+  <Card title="Resources" href="/resources" icon="database">
+    Datasets and software for reading and writing CityParquet.
+  </Card>
+</CardGroup>
+
+## Why a new format?
+
+### One data model, many encodings
+
+A 3D city model describes the buildings, roads, vegetation, and other objects of a
+city together with their **semantics** — a wall is a `WallSurface`, a roof is a
+`RoofSurface` — not just their raw geometry. The common conceptual model for this
+is the OGC **CityGML conceptual model**: it defines *what* a 3D city model
+contains, independently of how the bytes are written down.
+
+That one conceptual model has several **encodings**, each writing the same
+information a different way — none "better" than another, each suited to a
+different job:
+
+- **CityGML** — the GML/XML encoding of the data model.
+- **CityJSON** — a JSON encoding of the data model, with a line-delimited
+  streaming variant, CityJSONSeq.
+- **3DCityDB** — a relational-database schema for the data model.
+- **FlatCityBuf** — a FlatBuffers (binary) encoding, cloud-optimised and
+  **row-based**.
+
+<div style={{display:'flex',flexWrap:'wrap',gap:'0.6rem',alignItems:'center',margin:'1.75rem 0'}}>
+  <img src={asset('img/formats/citygml.png')} alt="CityGML" style={{height:'4rem',background:'#fff',borderRadius:'6px',padding:'8px'}} />
+  <img src={asset('img/formats/cityjson.png')} alt="CityJSON" style={{height:'4rem',background:'#fff',borderRadius:'6px',padding:'8px'}} />
+  <img src={asset('img/formats/3dcitydb.png')} alt="3DCityDB" style={{height:'4rem',background:'#fff',borderRadius:'6px',padding:'8px'}} />
+  <img src={asset('img/formats/flatcitybuf.png')} alt="FlatCityBuf" style={{height:'4rem',background:'#fff',borderRadius:'6px',padding:'8px'}} />
+  {/* <span style={{fontWeight:700,fontSize:'0.9rem',color:'#0d9488',border:'2px dashed #0d9488',borderRadius:'6px',padding:'0.3rem',whiteSpace:'nowrap'}}>+ CityParquet</span> */}
+</div>
+
+**CityParquet** adds one more member to this family: a **columnar** encoding of the
+CityGML data model, cloud-optimised for analytical queries. It replaces none of the
+others and takes no position on which encoding is "best" — each serves a different
+purpose. CityParquet is the one built for **analytics at scale over object
+storage**.
+
+### The problem
+
+CityGML and CityJSON are **text files**. They are excellent for exchange and are
+widely supported, but they were never designed for cloud-scale analytics:
+
+- To run an analytical query, a user typically has to **download the whole file**
+  to a local machine first — often gigabytes for a single region.
+- Even then, every query must **parse the entire text document** into an in-memory
+  data structure before it can compute anything, which is slow and memory-hungry.
+
+The traditional alternative is a **relational database** such as 3DCityDB. That
+works, but it requires **running a database server** and **loading the data in**
+first, and such databases often run into **scalability and cost** limits as a
+collection grows to national or global size.
+
+### The aim
+
+CityParquet and its ecosystem set out to achieve:
+
+- **Infinite scalability, fast delivery, and low cost** for 3D city-model data —
+  static files on commodity object storage, with no server to run.
+- **Interoperability** with existing 3D city-model data and tools, so that
+  analysing a 3D city model is easy rather than a project in itself.
+- **Ultra-fast analytical queries**, thanks to the columnar encoding.
+
+## What makes CityParquet different?
+
+Three properties, all inherited from the columnar Parquet foundation:
+
+- **Columnar encoding — read only what you need.** A query never downloads the
+  whole file. It reads only the columns it touches (**projection pushdown**) and
+  skips the row groups it cannot match (**row-group pruning**). To compute the
+  volume of every building, for instance, a reader fetches only the geometry column
+  and never touches the attributes, textures, or the other levels of detail.
+- **Spatial indexing without a database server.** Rows are ordered along a
+  space-filling (Hilbert) curve and each row carries a bounding box, so
+  spatially-near objects sit together and a window query prunes the row groups it
+  cannot overlap — the behaviour of a spatial index, achieved with plain files and
+  no server. See the [spatial-access design](/design-decisions/spatial-access).
+- **Discovery-ready metadata.** A package's metadata is a **STAC Item** using a
+  3D-city-model STAC extension, so a catalogue can describe extent, CRS, levels of
+  detail, and object types **without downloading the data** itself.
+
+For measured read, size, and compression results, see the [Benchmark](/benchmark).
+
+## When to use CityParquet rather than CityJSON or CityGML?
+
+Reach for **CityParquet** when the job is **analysis at scale** — filtering,
+aggregating, or measuring over a large collection, especially one held in cloud
+object storage. Because it is columnar and prunes aggressively, a query reads only
+the bytes it needs instead of the whole file.
+
+Reach for **CityJSON** or **CityGML** when the job is **exchange, editing, or
+full-fidelity interchange** — handing a dataset to another tool or person, or
+round-tripping it through an editor. They are text, human-readable, and universally
+supported for that purpose.
+
+The roles are complementary, not competing: CityParquet round-trips back to
+CityJSON, so a common pattern is to **deliver and query in CityParquet** and
+**exchange in CityJSON**. CityParquet is not a rendering, streaming, or tiling
+format.
+
+## How is it different from 3DCityDB?
+
+3DCityDB makes a city model queryable by loading it into a **relational database**
+with a **normalised** schema — one object spread across feature, property,
+geometry, and appearance tables tied together by foreign keys. That is the right
+choice *for a database*: the store stays compact and the engine joins cheaply over
+local indexes.
+
+CityParquet targets a different runtime — **columnar files read serverlessly,
+directly from object storage, with no database**. There, normalisation becomes a
+cost: reassembling an object forces **joins on read**, and joins are expensive over
+HTTP range requests, since each join side is a separate scan and fetch. CityParquet
+instead [keeps one city object per row](/design-decisions/schema-strategy), so a
+query is a **single columnar scan** with predicate, projection, and row-group
+pruning — no join step at all. 3DCityDB's normalised tables map directly onto
+**nullable columns and sidecar files**; see the
+[CityGML / 3DCityDB mapping notes](/specification/mapping-cityjson) for the full
+correspondence.
+
+## How is it related to GeoParquet?
+
+CityParquet is **designed to be a superset of GeoParquet, as far as the geometry
+allows**. It [adopts GeoParquet's conventions](/design-decisions/files-crs-metadata)
+— WKB geometry, a per-row bounding-box column, one CRS per file as PROJJSON, and
+the `geo` metadata key — and adds the 3D, multi-LoD, and semantic columns a city
+model needs.
+
+GeoParquet 1.1 admits only a subset of WKB (the Simple Feature types). Wherever a
+CityParquet geometry stays within that shared vocabulary the column *is* conformant
+GeoParquet — in particular, **at LoD0 CityParquet is GeoParquet**: the LoD0
+footprint is a `MultiPolygonZ` that a GeoParquet-aware tool reads by default. The
+one place the superset relation stops is the 3D `Solid`, which has no Simple Feature
+representation and is carried as a CityParquet-only `PolyhedralSurfaceZ` column. The
+full rules live in the [geometry](/specification/geometry-semantics) and
+[metadata](/specification/metadata) specification.
+
+## How is it related to FlatCityBuf?
+
+[FlatCityBuf](https://github.com/cityjson/flatcitybuf) and CityParquet are both
+**cloud-optimised** encodings of the CityGML data model, and both support partial
+reads over the network — but they optimise for different access patterns:
+
+- **FlatCityBuf is row-based.** Each feature is stored contiguously, with a spatial
+  index for fast **feature-at-a-time** retrieval — ideal for "fetch the objects in
+  this area and hand them back whole", such as streaming features to a viewer.
+- **CityParquet is columnar.** Values of the same column are stored together, so an
+  **analytical** query that touches a few columns across many objects — volumes,
+  attribute filters, aggregations — reads far less data. This is the
+  column-pruning / projection-pushdown win described above.
+
+There is also an ecosystem difference: **Parquet is a widely adopted standard**
+with mature readers across the data world — DuckDB, Arrow, pandas, Spark, and the
+GeoParquet tools — so CityParquet inherits all of that tooling, whereas FlatCityBuf
+is a purpose-built format for 3D city models. The two are complementary:
+row-based delivery and columnar analytics over the very same model.

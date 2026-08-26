@@ -1,0 +1,103 @@
+---
+title: Specification & file format
+description: The normative CityParquet data model — columns, geometry encoding, metadata, and mapping rules.
+sidebar:
+  label: Overview
+---
+
+:::note[Draft specification]
+CityParquet is at version **0.1.0-draft**. Some normative column shapes are still
+affected by unresolved design questions (see [Open questions](/open-questions)), so
+parts of this specification MAY change.
+:::
+
+CityParquet is a columnar encoding of the **CityGML conceptual model** in Apache
+Parquet. It stores 3D city model data in a cloud-native layout that can be queried
+efficiently from object storage — filtering by feature type, attribute, level of
+detail (LoD), bounding box, and 3D geometry — while preserving the semantics needed
+to reconstruct or exchange the source model.
+
+Every table is a standard Parquet file, readable by any Parquet reader. Where the
+geometry allows, CityParquet also conforms to **GeoParquet**, so a city model's
+footprints open in ordinary GIS tooling; the [metadata](/specification/metadata) page
+defines exactly where that reach ends.
+
+CityParquet is **not** a rendering or streaming format, and does not itself define a
+tiling scheme.
+
+This specification is the *what*. The *why* behind each choice — the alternatives
+considered and the trade-offs accepted — lives in the companion
+[design decisions](/design-decisions), linked inline throughout. Open items are
+collected in the [open questions](/open-questions), and each unresolved point in the
+body links there with a 🟡 marker.
+
+## Requirement levels
+
+The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are to
+be interpreted as described in RFC 2119 / RFC 8174 when, and only when, they appear in
+capitals.
+
+Sections are marked *(normative)* or *(informative)*; unmarked sections default to
+normative.
+
+## Type notation
+
+Column types are written in DuckDB/Arrow logical-type notation: `VARCHAR`, `BIGINT`,
+`DOUBLE`, `BOOLEAN`, `BLOB`, `JSON`, `LIST<T>`, `STRUCT<…>`. Their physical Parquet
+encoding is:
+
+| Logical type | Physical Parquet encoding |
+|---|---|
+| `VARCHAR` | `BYTE_ARRAY` (UTF8) |
+| `BIGINT` | `INT64` |
+| `DOUBLE` | `DOUBLE` |
+| `BOOLEAN` | `BOOLEAN` |
+| `DATE` | `INT32` with the `DATE` logical type |
+| `TIME` | `INT64` with the `TIME` logical type (microseconds, UTC-normalised) |
+| `TIMESTAMP` | `INT64` with the `TIMESTAMP` logical type (microseconds, UTC-normalised) |
+| `BLOB` | `BYTE_ARRAY` (no logical type) |
+| `JSON` | `BYTE_ARRAY` (UTF8), tagged with the Arrow field-metadata extension `ARROW:extension:name = arrow.json`. A reader without Arrow extension support sees a UTF8 string. |
+| `LIST<T>` | Parquet `LIST` of nullable items |
+| `STRUCT<…>` | Parquet group (see the individual column for field types and nullability) |
+
+A column **MAY** additionally be dictionary-encoded. That is a writer's choice and
+changes nothing about the logical type; where it is particularly worthwhile —
+`object_type`, the appearance enumerations — this specification says so, but never
+requires it.
+
+## The pages
+
+<CardGroup cols={2}>
+  <Card title="The dataset package" href="/specification/dataset-package" icon="package">
+    Files, roles, versioning, and the by-module object-table layout.
+  </Card>
+  <Card title="Object table schema" href="/specification/object-table-schema" icon="table">
+    Reserved columns, typed attribute columns, and addresses.
+  </Card>
+  <Card
+    title="Geometry, LoD & spatial metadata"
+    href="/specification/geometry-semantics"
+    icon="box"
+  >
+    WKB encoding, surface semantics, the per-LoD columns, and `bbox`.
+  </Card>
+  <Card title="Appearance & templates" href="/specification/appearance-templates" icon="palette">
+    Materials, textures, and geometry templates.
+  </Card>
+  <Card title="Metadata" href="/specification/metadata" icon="tags">
+    Parquet key-value metadata, the STAC Item, and GeoParquet `geo` / CRS.
+  </Card>
+  <Card title="Extensions" href="/specification/extensions" icon="puzzle">
+    CityGML ADEs, CityJSON Extensions, and the escape hatch.
+  </Card>
+  <Card
+    title="Mapping from CityGML / CityJSON"
+    href="/specification/mapping-cityjson"
+    icon="arrow-right-left"
+  >
+    The converter reference.
+  </Card>
+  <Card title="Worked example" href="/specification/worked-example" icon="file-code">
+    A record, end to end.
+  </Card>
+</CardGroup>

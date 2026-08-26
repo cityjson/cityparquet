@@ -1,0 +1,16 @@
+{
+  "attr_column": "object_type",
+  "attr_eq": "BuildingPart",
+  "bbox_full": {
+    "maxx": 85675.230625,
+    "maxy": 446983.477,
+    "maxz": 95.04200262451172,
+    "minx": 84501.553625,
+    "miny": 445805.024,
+    "minz": -3.7469973754882844
+  },
+  "numeric_column": "b3_h_dak_50p",
+  "parent_id": "NL.IMBAG.Pand.0503100000000010",
+  "target_id": "NL.IMBAG.Pand.0503100000000010",
+  "total_city_objects": 2231
+}

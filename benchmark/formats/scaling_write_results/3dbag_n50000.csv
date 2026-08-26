@@ -1,0 +1,12 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
+3dbag_n50000.city.jsonl,cityparquet,50001,6.310519,38795945,38789648,0,0.303132,0.301057,1,1,true
+3dbag_n50000.city.jsonl,parquet-defaults,50001,7.092992,38701952,38695655,0,0.302266,0.302422,1,1,true
+3dbag_n50000.city.jsonl,no-dictionary,50001,6.155307,38277839,38271542,0,0.306866,0.303901,1,1,true
+3dbag_n50000.city.jsonl,no-bss,50001,6.718495,38209556,38203259,0,0.348482,0.345231,1,1,true
+3dbag_n50000.city.jsonl,no-delta,50001,6.515764,39015088,39008791,0,0.305704,0.305186,1,1,true
+3dbag_n50000.city.jsonl,snappy,50001,7.172033,60502323,60496026,0,0.250283,0.247947,1,1,true
+3dbag_n50000.city.jsonl,cityparquet+hilbert,50001,7.914098,38803849,38797552,0,0.512135,0.309586,1,1,true
+3dbag_n50000.city.jsonl,cityparquet+rg512,50001,6.380875,42581919,42575622,0,0.770849,0.025792,98,2,true
+3dbag_n50000.city.jsonl,cityparquet+hilbert+rg512,50001,7.402400,42593700,42587403,0,0.424889,0.016868,98,2,true
+3dbag_n50000.city.jsonl,duckdb-copy,50001,380.298896,70342664,70342664,0,0.954377,,,,
+3dbag_n50000.city.jsonl,duckdb-copy-zstd,50001,374.345477,42362490,42362490,0,1.089180,,,,

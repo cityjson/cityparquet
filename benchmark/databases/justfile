@@ -1,0 +1,61 @@
+compose := "podman-compose -f docker/compose.yml"
+
+# Start both benchmark databases and wait for REAL readiness.
+#
+# I6 (final whole-branch review): `podman-compose up -d --wait` does not
+# actually wait here -- observed returning in ~8s with exit -1 on both
+# services while PostgreSQL still refused connections (podman-compose's
+# `--wait` support is inconsistent with the healthcheck: block shape this
+# compose file uses; README previously claimed it worked). Replaced with
+# an explicit readiness poll: `pg_isready` against both ports, then a wait
+# for `citydb`'s v5 schema to actually exist -- the 3dcitydb-pg image
+# builds that schema asynchronously on first start, AFTER postgres already
+# accepts connections, so `pg_isready` alone is not sufficient for that
+# container specifically (see docs/3dcitydb-v5-schema.md). `just up`
+# returning means "ready to import into", not merely "containers exist".
+up:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{compose}} up -d
+    echo "waiting for cjdb (55432) ..."
+    until pg_isready -h localhost -p 55432 -U bench -d bench -q; do sleep 1; done
+    echo "waiting for citydb (55433) ..."
+    until pg_isready -h localhost -p 55433 -U bench -d bench -q; do sleep 1; done
+    echo "waiting for citydb's v5 schema (feature, property, geometry_data, objectclass) ..."
+    until [ "$(PGPASSWORD=bench psql -h localhost -p 55433 -U bench -d bench -tAc \
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema='citydb' AND table_name IN ('feature','property','geometry_data','objectclass')")" = "4" ]; do
+        sleep 1
+    done
+    echo "both databases ready"
+
+down:
+    {{compose}} down -v
+
+# Build the pinned citydb-tool image.
+build-citydb:
+    podman build -t citybench/citydb-tool -f docker/citydb.Dockerfile docker/
+
+# Build the patched cjdb CjdbSystem drives (see vendor/cjdb/README.md).
+# Must be run once before any cjdb ingest (`just smoke`/`just bench`).
+patch-cjdb:
+    ./scripts/patch_cjdb.sh
+
+test:
+    uv run pytest -m "not integration" -v
+
+test-all:
+    uv run pytest -v
+
+# Capture both databases' real schemas into committed reference docs.
+capture-schema DATASET:
+    ./scripts/capture_schema.sh {{DATASET}}
+
+derive-params DATASET:
+    uv run python -m citybench.cli derive-params --dataset {{DATASET}}
+
+bench DATASET REPEAT='7':
+    uv run python -m citybench.cli bench --dataset {{DATASET}} --repeat {{REPEAT}}
+
+# Full pipeline on the small fixture. Must pass before any long run.
+smoke:
+    uv run python -m citybench.cli smoke

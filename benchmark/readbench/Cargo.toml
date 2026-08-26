@@ -1,0 +1,100 @@
+# The read benchmark's harness — its own Cargo workspace.
+#
+# It lives here, with the corpora and results it produces, rather than in
+# lib/cityparquet-rs: it is benchmark code, and `benchmark/` is where the
+# benchmark lives. Being outside that workspace is what makes
+# `cd lib/cityparquet-rs && just check` a gate on the LIBRARY alone — no `uv`,
+# no `jq`, no corpus. The root `just check` runs this one too.
+#
+# Independent workspaces are the established pattern in this tree (the
+# migration note's D6): lib/citylake is another.
+[workspace]
+resolver = "3"
+members = ["."]
+
+# THE cjseq PATCH MUST BE REPEATED HERE. `[patch.crates-io]` is honoured only in
+# the workspace root actually being built, and `cityparquet` (below) depends on
+# `cjseq`. Without this line, a build rooted here would silently resolve the
+# unpatched 0.4.1 from crates.io and reintroduce the texture UV-vertex
+# mis-basing that corrupts `.city.json` export — in the benchmark, of all
+# places. See ../../lib/cityparquet-rs/vendor/cjseq/PATCHES.md.
+[patch.crates-io]
+cjseq = { path = "../../lib/cityparquet-rs/vendor/cjseq" }
+
+[package]
+name = "cityparquet-readbench"
+description = "Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParquet, etc.)"
+# Evidence, not a library: the harness only means anything next to the corpora
+# and result CSVs under benchmark/, which are not part of any crate. Keeping it
+# out of the registry is also what lets `cargo publish --workspace` in the
+# library mean "the three crates people actually consume" — and living outside
+# that workspace entirely, as it now does, says the same thing structurally.
+publish = false
+# Two [[bin]]s live here (the coordinator and `scaling-corpus`); a bare
+# `cargo run -p cityparquet-readbench` — the `bench` recipe's own
+# invocation — must keep meaning the coordinator.
+default-run = "cityparquet-readbench"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cityjson/cityparquet"
+
+[[bin]]
+name = "cityparquet-readbench"
+path = "src/main.rs"
+doc = false
+
+[[bin]]
+name = "scaling-corpus"
+path = "src/bin/scaling_corpus.rs"
+doc = false
+
+# Versions are written out rather than inherited: a one-package workspace has
+# nothing to share them with, and they must stay in step with
+# ../../lib/cityparquet-rs/Cargo.toml's [workspace.dependencies] by hand — the
+# two trees build the same `cityparquet` and a divergence would be a duplicate
+# arrow/parquet in the graph, not a compile error.
+[dependencies]
+cityparquet = { path = "../../lib/cityparquet-rs/crates/core", features = ["object-store"] }
+cityparquet-schema = { path = "../../lib/cityparquet-rs/crates/schema" }
+# EXACT pins, both of them, and they must stay exact.
+#
+# `fcb_core` is a MEASURED format's reader: the FlatCityBuf numbers in
+# benchmark/formats/read_results/ were produced by 0.7.6, so a caret range would
+# let a later release silently change what the published figures mean. 0.7.8
+# also moved `ser` to positional arguments (breaking readbench_prepare.sh) and
+# changed which crate its public `CityObject` comes from, which is a compile
+# error here rather than a subtle one — but only because the types differ.
+#
+# `cjseq2` supplies `fcb_core` 0.7.6's own `CityJSONFeature`/`CityObject` types.
+# It is a DIFFERENT crate from the `cjseq` 0.4 that `cityparquet` and this
+# crate's `cityjsonseq` runner use, and the two must not be conflated.
+#
+# The library workspace expressed these as ranges and was protected only by its
+# committed Cargo.lock. Splitting this crate into its own workspace resolved
+# them afresh and broke the build — so the intent is written into the manifest
+# now, where it holds regardless of lockfile state.
+fcb_core = "=0.7.6"
+cjseq2 = "=0.1.0"
+peak_alloc = "0.3.0"
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+flate2 = "1"
+arrow-array = "58"
+arrow-schema = "58"
+parquet = { version = "58", features = ["zstd"] }
+libc = "0.2"
+anyhow = "1"
+tokio = { version = "1.53.1", features = ["rt", "macros", "rt-multi-thread"] }
+object_store = { version = "0.13", features = ["http"] }
+bytes = "1.12.1"
+async-trait = "0.1.91"
+http-range-client = { version = "0.9", default-features = false, features = ["reqwest-async"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tempfile = "3"
+url = "2"
+
+[dev-dependencies]
+axum = "0.8.9"
+tower-http = { version = "0.6", features = ["fs"] }

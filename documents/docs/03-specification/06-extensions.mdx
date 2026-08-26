@@ -1,0 +1,96 @@
+---
+title: Extensions
+description: "CityGML ADEs and CityJSON Extensions: typed where possible, escape-hatched otherwise."
+sidebar:
+  label: Extensions
+---
+
+The CityGML CM is extensible: a CityGML **Application Domain Extension (ADE)**, or the
+equivalent **CityJSON Extension**, may add new feature types, new semantic surface
+types, and new attributes. CityParquet encodes each mechanism into its columnar model
+without losing the source data, preferring typed columns where the extension is regular
+and an escape hatch where it is not (see the
+[extensions decision](/design-decisions/extensions)).
+
+## Extended feature types
+
+An extension — a CityGML ADE, or the equivalent CityJSON Extension — is a **module** in
+its own right, so its feature types are grouped by the same
+[by-module rule](/specification/dataset-package) as core types.
+
+**The `ModuleKey`.** Every class routes to a file via a single key computed from the
+**original source type**, before any CityJSON `+` is stripped: a core CityGML 3.0
+module (`Building`, `Transportation`, …), or an **owned extension module** — the module
+name the ADE/Extension itself declares for that class. This is one uniform mechanism,
+not a special case bolted onto the by-module rule:
+
+- A class belonging to a **core module** gets the module's file, exactly as any core
+  type does.
+- An extension class that declares its **own module** gets a file named after that
+  module, in **snake_case** — an `Energy` ADE defining `SolarPanel` and `Thermostat`
+  both in an `Energy` module share `energy.parquet`, distinguished by `object_type`.
+- An extension class that **specialises an existing module's class** (declares no
+  module of its own, but subclasses a core or extension type) routes to *that* class's
+  module file — an ADE class specialising `Building` lands in `building.parquet`,
+  exactly as `BuildingPart` does. This holds recursively.
+- **Whether a class carries CityJSON's `+` marker is irrelevant to routing.** An ADE
+  class with **no** `+` and a resolvable declared module is a perfectly valid extension
+  class, and routes by that module like any other — the `+` is a detail of CityJSON's
+  own encoding of extension types, not a precondition for being one.
+- A class with **no resolvable `ModuleKey`** at all — not a recognised core CityGML
+  class, and not declared as belonging to any extension module, `+`-marked or not — is
+  a **hard error**. Routing is total: every class the writer encounters must resolve to
+  some file, or the input is rejected.
+
+**No `+` in file names.** CityJSON writes an Extension's object types with a leading `+`
+(`+Thermostat`). That marker belongs to CityJSON's encoding, not to the CM, and a `+`
+has no business in a file name — so CityParquet strips it before computing the
+snake_case file name, while the `ModuleKey` computation above still runs against the
+original, un-stripped source type so a module-less extension's identity isn't lost
+before it's resolved.
+
+🟡 Carrying full ADE namespace / object-class metadata beyond the `ModuleKey` +
+`city.extensions` mapping (below) remains an [open question](/open-questions).
+
+## Extended semantic surfaces
+
+An extended semantic surface type keeps its source name **inside** the
+[`geometry_properties_lod*` JSON value](/specification/geometry-semantics), including
+CityJSON's `+` prefix where the source used one. Semantic surfaces are never promoted
+to column names, so there is nothing a Parquet column name would have to reject, and no
+renaming is needed.
+
+## Extended attributes
+
+An extended attribute becomes a typed attribute column like any other, so it gets the
+same predicate and projection pushdown as a core attribute. CityJSON writes these with
+a leading `+` (`+height`). Parquet itself imposes no restriction on a leading `+` in a
+column name, but such a name is hostile to SQL and to many query engines (it cannot be
+referenced unquoted, and reads as an operator). So for portability the `+` **MUST** be
+replaced with `ex_`: `+height` → `ex_height`.
+
+This accepts a low, bounded risk of collision with a genuine `ex_`-prefixed attribute.
+The extended attribute columns are listed in the `attributes`
+[metadata key](/specification/metadata) like any other attribute; distinguishing
+extension attributes from core ones beyond the `ex_` prefix (and carrying ADE
+namespaces) is an [open question](/open-questions).
+
+## The extension declaration
+
+`city.extensions` ([metadata key](/specification/metadata)) carries two things per
+extension, so export can restore exactly what import stripped:
+
+- The **real Extension/ADE declaration**, as JSON, verbatim from the source (a CityJSON
+  Extension's schema document, or the ADE identity CityGML declares) — not
+  CityParquet's own summary of it.
+- A **`source-name ↔ class ↔ module` mapping**: for each extension class, its source
+  spelling (with `+` where CityJSON used one), the `object_type` it was stored under,
+  and the `ModuleKey` it was routed by. Export consults this mapping to restore the
+  CityJSON `+` on the classes that originally carried it — the `+` is not re-derived
+  from `object_type` alone, since a module-routed ADE class may have carried no `+` in
+  the first place (see above).
+
+:::note[Open item]
+Representing CityGML ADE namespaces and object-class metadata beyond the `ModuleKey` +
+this mapping is unresolved — see [Open questions](/open-questions).
+:::

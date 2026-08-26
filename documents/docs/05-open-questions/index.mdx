@@ -1,0 +1,87 @@
+---
+title: Open questions
+description: Undecided design questions before CityParquet becomes a stable specification.
+sidebar:
+  badge: WIP
+  icon: circle-help
+---
+
+:::warning[Unsettled]
+These are genuinely **undecided** design questions. Two of them still affect normative
+column shapes. Implementation gaps against _decided_ requirements are tracked
+separately (internal).
+:::
+
+The wording below deliberately preserves the alternatives rather than leaning towards
+a resolution.
+
+## Questions that affect normative column shapes
+
+### Duplicate geometry at the same (object, LoD) <Badge variant="warning">open</Badge>
+
+A source model does not guarantee one geometry per object per LoD, but the
+[column-per-LoD layout](/specification/geometry-semantics) gives each `(object, LoD)`
+pair a single slot. The open question is whether to **prohibit duplicates as invalid
+input**, or to **define a collection representation** — for example promoting the slot
+to a list, or merging the duplicates into a `MultiSolid`. Until this is decided the
+reference implementation silently drops the extra geometries, so no choice can be
+enforced yet.
+
+### Multiple implicit-geometry instances per object <Badge variant="warning">open</Badge>
+
+The `template` column [defined in the object table schema](/specification/object-table-schema)
+is a single struct, so an object that instantiates several templates cannot currently
+be represented. The choice is between **one instance per object** (rejecting the rest)
+and a **list-valued `template` column** that can hold several. A third option surfaced
+during the 2026-07-21 review and was set aside as scope creep: **per-LoD
+`template_lod*` columns**, which would resolve the case where the instances differ by
+LoD but not the case where they do not. The reference implementation keeps only the
+first instance today.
+
+## Other open questions
+
+### CityGML ADE namespace / object-class metadata <Badge variant="warning">open</Badge>
+
+How to represent **CityGML ADE** namespace and object-class metadata beyond the
+[`ex_` attribute-prefix convention](/specification/extensions) is unresolved. The `ex_`
+prefix captures extended *attributes*, and extended feature types get their own tables,
+but a richer scheme may be needed to carry ADE namespaces and object-class information
+faithfully.
+
+### Strict 1:1 face_semantics ↔ source surfaces <Badge variant="warning">open</Badge>
+
+Whether to guarantee a **strict 1:1** correspondence between `face_semantics` and the
+source's surfaces by requiring that degenerate faces are never dropped. Preserving
+every source surface keeps the mapping exact but forces degenerate faces into the WKB;
+dropping them yields cleaner geometry but breaks the index alignment. The format
+currently requires only that `face_semantics` match the faces actually emitted.
+
+### Pruning a solid column <Badge variant="warning">open</Badge>
+
+GeoParquet 2.0 removed `covering`, and Parquet-native geospatial statistics replaced
+it: a `GEOMETRY`-annotated column carries a per-chunk bounding box, `zmin`/`zmax`
+included, so `bbox_lod*` covering columns are no longer worth defining. That settles
+the question for footprint columns.
+
+It leaves it open for solid columns, which cannot be annotated — their
+`PolyhedralSurface Z` bytes are outside every consuming engine's geometry model — and
+so get no per-chunk spatial statistics of their own. They fall back to the row-level
+[`bbox`](/specification/geometry-semantics) column, which is subtree-unioned rather
+than per-LoD and therefore coarser than a true covering. Whether that is worth
+narrowing, and at what cost in row width, is unsettled. See the
+[metadata page](/specification/metadata).
+
+## Resolved
+
+Questions settled in the 2026-07-21 review, kept here briefly so the trail is legible:
+
+| Question | Resolution |
+|---|---|
+| Appearance column shape | Per-LoD `material_lod*` / `texture_lod*` columns, parallel to `geometry_lod*`. |
+| Level-of-detail layout | **Column-per-LoD** is normative; row-per-LoD and file-per-LoD rejected. Every geometry column is LoD-suffixed, with the minor always present. |
+| Address struct schema | A reserved `address LIST<STRUCT<…>>` column, lean postal fields + WKB `MultiPointZ` `location`. |
+| Standardise both profiles, or only one? | **Neither** — profiles are removed. A package has object tables plus optional sidecars, written when the source has the data. |
+| Zero-analysis-geometry fallback column | No fallback: a table with no analysis geometry simply has no geometry column, and declares no `default_geometry`. |
+| Sidecar id types (string, integer, or both) | **`BIGINT` throughout.** `geometry_templates.id` joins `materials.id` and `textures.id` as an integer, so all three sidecars remap identically when packages are merged — an integer id offsets deterministically, a string one can only be disambiguated by prefixing, which mangles it. A template's own source identifier is kept in the new `name` column. |
+| `face_semantics` as a native typed list | **Yes** — `geometry_properties_lod*` is now a `STRUCT` and `face_semantics` is a native `LIST<INT>` field, `UNNEST`-able without JSON parsing. No separate column needed. |
+| Dataset-level LoD0-synthesis flag | **Dropped the footer-flag sentence.** [LoD0 synthesis](/specification/geometry-semantics#lod0-synthesis-writer-feature) leaves no dataset-level trace; a consumer detects it per row, from the presence of a `geometry_lod0_0` the source did not provide, rather than from a `city.other` key. |

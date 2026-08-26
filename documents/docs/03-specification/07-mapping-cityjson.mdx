@@ -1,0 +1,68 @@
+---
+title: Mapping from CityGML / CityJSON
+description: The reference mapping from CityGML and CityJSON / CityJSONSeq into CityParquet.
+sidebar:
+  badge: WIP
+  label: Mapping reference
+---
+
+This page is the converter reference: how a source model's fields land in the
+CityParquet object table, sidecars, and metadata. It is *informative* — the normative
+rules live in the [specification](/specification) body — but every row here points at
+the section that governs it.
+
+## CityGML
+
+CityGML features map to CityParquet object rows directly, since CityParquet encodes the
+CityGML conceptual model:
+
+| CityGML | CityParquet |
+|---|---|
+| feature id | `id` |
+| feature class | `object_type` — the CityGML class name verbatim |
+| feature hierarchy | `parents` / `children` / `feature_id` |
+| feature attributes | inferred typed [attribute columns](/specification/object-table-schema) |
+| geometry, per LoD | [WKB `geometry_lod*`](/specification/geometry-semantics) |
+| boundary surfaces and their attributes | `geometry_properties_lod*` (`surfaces` + `face_semantics`) |
+| appearance (surface data) | [`material_lod*` / `texture_lod*`](/specification/appearance-templates) + sidecars |
+| implicit geometry | `template` struct + `geometry_templates.parquet` |
+| address | the [`address` column](/specification/object-table-schema) |
+| `CityObjectGroup` + its members | the group is a row (in `generics.parquet`); membership is carried by `children` / `children_roles` / `parents` — no dedicated file |
+| ADE feature types / attributes | [extension rules](/specification/extensions) |
+
+3DCityDB's normalised relational schema is **not** reproduced: its property,
+appearance, surface-data and implicit-geometry tables become nullable object-table
+columns plus sidecar files (rationale: the
+[schema-strategy decisions](/design-decisions/schema-strategy)). The one place
+CityParquet borrows 3DCityDB's shape deliberately is the
+[`address` struct](/specification/object-table-schema), whose fields follow its
+`ADDRESS` table.
+
+## CityJSON / CityJSONSeq
+
+| CityJSON field                            | CityParquet mapping                                         |
+| ----------------------------------------- | ----------------------------------------------------------- |
+| `CityObjects.{id}`                        | `id`                                                        |
+| `CityObjects.{id}.type`                   | `object_type` — mapped to the CityGML class name (`TransportSquare`→`Square`, `GenericCityObject`→`GenericOccupiedSpace`, `BuildingStorey`→`Storey`, `TunnelHollowSpace`→`HollowSpace`; others unchanged; any `+` stripped) |
+| `attributes`                              | inferred typed [attribute columns](/specification/object-table-schema) |
+| `children` / `parents` / `children_roles` | same-named columns                                          |
+| `address`                                 | the [`address` column](/specification/object-table-schema); `address[].location` becomes a WKB `MultiPointZ` |
+| `geometry[].boundaries`                   | encoded into [WKB `geometry_lod*`](/specification/geometry-semantics) |
+| `geometry[].lod`                          | the column's LoD suffix (`lod2_2`); exact source spelling not separately retained |
+| `geometry[].semantics`                    | `geometry_properties_lod*` — `surfaces` verbatim, `values` flattened to `face_semantics` |
+| `geometry[]` shell nesting                | `geometry_properties_lod*.shells`                           |
+| `geometry[].material`                     | [`material_lod*`](/specification/appearance-templates) for the geometry's LoD |
+| `geometry[].texture`                      | `texture_lod*` for the geometry's LoD                       |
+| `geometry[].template`                     | `template.id`                                               |
+| `geometry[].transformationMatrix`         | `template.transformationMatrix`                             |
+| geometry instance reference point         | `template.point` as WKB `PointZ`                            |
+| `CityObjects.{id}.geographicalExtent`     | `bbox` (unioned with the extent computed from the object's subtree geometry; reconstructed from `bbox` on export) |
+| `appearance.materials`                    | `materials.parquet`                                         |
+| `appearance.textures`                     | `textures.parquet`                                          |
+| `appearance.vertices-texture`             | inlined into `texture_lod*` UV pairs                        |
+| `geometry-templates.templates`            | `geometry_templates.parquet`, one row per template          |
+| `geometry-templates.vertices-templates`   | encoded into the template WKB geometry                      |
+| `metadata`                                | `city.other` and/or the [STAC Item](/specification/metadata)'s `city3d:*` fields |
+| `transform`                               | applied to the geometry at encode; not a structural key — MAY be carried informationally in `city.other` |
+| `extensions`                              | the [`city.extensions` metadata key](/specification/metadata) + [extension-derived columns](/specification/extensions) |
+| other object members                      | the object-table `other` column, restored into `attributes` on export (JSON; null when the object has none) |

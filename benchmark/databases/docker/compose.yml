@@ -1,0 +1,82 @@
+# Two independent PostgreSQL+PostGIS instances, identically configured and
+# identically resourced, so that any measured difference is attributable to
+# the schema and query rather than to the server.
+name: citybench
+
+x-pg-common: &pg-common
+  image: docker.io/postgis/postgis:16-3.4
+  restart: "no"
+  environment:
+    POSTGRES_USER: bench
+    POSTGRES_PASSWORD: bench
+    POSTGRES_DB: bench
+  command:
+    - postgres
+    - -c
+    - config_file=/etc/postgresql/postgresql.conf
+  volumes:
+    - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U bench -d bench"]
+    interval: 3s
+    timeout: 5s
+    retries: 30
+  shm_size: 2gb
+  deploy:
+    resources:
+      limits:
+        cpus: "16"
+        memory: 32G
+
+services:
+  cjdb-db:
+    <<: *pg-common
+    container_name: citybench-cjdb
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - cjdb-data:/var/lib/postgresql/data
+
+  # The OFFICIAL 3DCityDB v5 image, not plain postgis: it creates the v5
+  # schema on first start, which removes the need for any schema-creation
+  # subcommand (citydb-tool's CLI does not document one — see below).
+  #
+  # Pinned to the PG16 + PostGIS 3.4 build (tag scheme <pg>-<postgis>-<citydb>)
+  # to match cjdb's postgis/postgis:16-3.4 engine exactly. The untagged
+  # `5-alpine` variant resolves to PostgreSQL 18 / PostGIS 3.6, which would
+  # make any measured difference partly PostgreSQL-16-vs-18 rather than
+  # purely cjdb-vs-3DCityDB — see docs/3dcitydb-v5-schema.md.
+  citydb-db:
+    image: docker.io/3dcitydb/3dcitydb-pg:16-3.4-5.1.2-alpine
+    container_name: citybench-citydb
+    restart: "no"
+    environment:
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: bench
+      POSTGRES_DB: bench
+      SRID: "${CITYDB_SRID:-7415}"
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+    ports:
+      - "55433:5432"
+    volumes:
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - citydb-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench -d bench"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    shm_size: 2gb
+    deploy:
+      resources:
+        limits:
+          cpus: "16"
+          memory: 32G
+
+volumes:
+  cjdb-data:
+  citydb-data:

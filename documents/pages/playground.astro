@@ -1,0 +1,1138 @@
+---
+// The SQL playground at /playground.
+//
+// Chrome comes from PageLayout, the same header the landing page uses, so the
+// logo, search, GitHub link and theme toggle are shared. The playground itself
+// is a React island: DuckDB-Wasm needs Worker and window, so it is mounted with
+// `client:only` and never server-rendered.
+import PageLayout from "blume/components/layout/PageLayout.astro";
+import data from "blume:data";
+import Playground from "../playground/Playground.tsx";
+
+const { config } = data;
+---
+
+<PageLayout
+  site={{ title: config.title, description: config.description }}
+  logo={config.logo}
+  favicon={config.favicon}
+  appleIcon={config.appleIcon}
+  banner={config.banner}
+  analytics={config.analytics}
+  navigation={data.navigation}
+  fontCssVars={data.fontCssVars}
+  themeMode={config.theme.mode}
+  searchEnabled={config.search.enabled}
+  siteUrl={config.site}
+  ogEnabled={config.og.enabled}
+  page={{
+    title: "SQL playground — query CityParquet in your browser",
+    description:
+      "Run SQL against 16.4 GB of 3DBAG on object storage, with DuckDB-Wasm and the cityjson and three_d extensions. Nothing is installed and nothing is uploaded.",
+    route: "/playground",
+  }}
+>
+  <Playground client:only="react" />
+</PageLayout>
+
+<style is:global>
+  /* Local tokens, resolved from the site's own theme variables so the
+     playground follows light/dark and the accent without redefining them. */
+  .cp-playground {
+    --cp-mono: var(--blume-font-mono, ui-monospace, SFMono-Regular, monospace);
+    --cp-border: var(--blume-color-border, color-mix(in srgb, currentColor 14%, transparent));
+    --cp-surface: var(--blume-color-surface, color-mix(in srgb, currentColor 3%, transparent));
+    /* The page's own ground. Needed wherever something has to be opaque over
+       scrolling content — `--cp-surface` is a 3% tint, not a background. */
+    --cp-page: var(--blume-background, Canvas);
+    --cp-hover: color-mix(in srgb, currentColor 6%, transparent);
+    --cp-dim: color-mix(in srgb, currentColor 55%, transparent);
+    --cp-accent: var(--blume-color-primary, #7253ed);
+
+    /* The editor's syntax colours. These are the GitHub Light values the site's
+       own Shiki blocks use, named rather than repeated per token, so a SELECT
+       in the console reads the same as a SELECT in the specification. */
+    --cp-syntax-keyword: #d73a49;
+    --cp-syntax-string: #032f62;
+    --cp-syntax-number: #005cc5;
+    --cp-syntax-builtin: #6f42c1;
+    --cp-syntax-comment: #6a737d;
+
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    max-width: 90rem;
+    margin: 0 auto;
+    padding: 1.5rem 1.25rem 3rem;
+  }
+
+  :root[data-theme="dark"] .cp-playground {
+    /* GitHub Dark, the other half of the pair. The comment grey is shared:
+       it is the one token the two themes agree on. */
+    --cp-syntax-keyword: #f97583;
+    --cp-syntax-string: #9ecbff;
+    --cp-syntax-number: #79b8ff;
+    --cp-syntax-builtin: #b392f0;
+  }
+
+  .cp-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+  }
+
+  .cp-header h1 {
+    margin: 0 0 0.35rem;
+    font-size: 1.5rem;
+    line-height: 1.2;
+  }
+
+  .cp-subtitle {
+    margin: 0;
+    max-width: 60ch;
+    color: var(--cp-dim);
+    font-size: 0.9rem;
+    line-height: 1.55;
+  }
+
+  .cp-subtitle code {
+    font-family: var(--cp-mono);
+    font-size: 0.85em;
+  }
+
+  .cp-run {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 1.1rem;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: var(--cp-accent);
+    color: #fff;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .cp-run:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .cp-run kbd {
+    font-family: var(--cp-mono);
+    font-size: 0.75em;
+    opacity: 0.8;
+  }
+
+  /* Three columns on a wide screen; stacked below. */
+  .cp-layout {
+    display: grid;
+    grid-template-columns: 16rem minmax(0, 1fr) 15rem;
+    gap: 1rem;
+    align-items: start;
+  }
+
+  @media (max-width: 1100px) {
+    .cp-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .cp-schema {
+      order: 3;
+    }
+    .cp-sidebar-body {
+      max-height: 24rem;
+    }
+  }
+
+  /* Presets */
+  .cp-presets {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    max-height: 44rem;
+    overflow-y: auto;
+  }
+
+  .cp-preset-group-title {
+    margin: 0 0 0.4rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--cp-dim);
+  }
+
+  .cp-presets ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .cp-preset {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .cp-preset:hover {
+    background: var(--cp-hover);
+  }
+
+  .cp-preset-active {
+    border-color: var(--cp-accent);
+    background: color-mix(in srgb, var(--cp-accent) 10%, transparent);
+  }
+
+  .cp-preset-title {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+
+  .cp-preset-blurb {
+    display: block;
+    margin-top: 0.15rem;
+    font-size: 0.75rem;
+    line-height: 1.45;
+    color: var(--cp-dim);
+  }
+
+  /* Sidebar tabs */
+  .cp-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    min-width: 0;
+  }
+
+  .cp-tabs {
+    display: flex;
+    gap: 0.25rem;
+    border-bottom: 1px solid var(--cp-border);
+  }
+
+  .cp-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.55rem;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--cp-dim);
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+    /* Sits on the container's own border rather than above it. */
+    margin-bottom: -1px;
+  }
+
+  .cp-tab:hover {
+    color: inherit;
+  }
+
+  .cp-tab-active {
+    color: inherit;
+    font-weight: 600;
+    border-bottom-color: var(--cp-accent);
+  }
+
+  .cp-tab-count {
+    padding: 0.05rem 0.35rem;
+    border-radius: 999px;
+    background: var(--cp-hover);
+    font-family: var(--cp-mono);
+    font-size: 0.68rem;
+    font-weight: 400;
+  }
+
+  .cp-sidebar-body {
+    max-height: 41rem;
+    overflow-y: auto;
+  }
+
+  /* Saved queries */
+  .cp-saved-list,
+  .cp-imported-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .cp-saved {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.15rem 0.2rem 0.15rem 0.4rem;
+    border: 1px solid transparent;
+    border-radius: 4px;
+  }
+
+  .cp-saved:hover {
+    background: var(--cp-hover);
+  }
+
+  .cp-saved-active {
+    border-color: var(--cp-accent);
+    background: color-mix(in srgb, var(--cp-accent) 10%, transparent);
+  }
+
+  .cp-saved-open {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    padding: 0.35rem 0.15rem;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .cp-saved-name {
+    font-size: 0.82rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cp-saved-date {
+    font-size: 0.7rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-saved-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0.35rem 0.4rem;
+    border: 1px solid var(--cp-accent);
+    border-radius: 3px;
+    background: var(--cp-page);
+    color: inherit;
+    font: inherit;
+    font-size: 0.82rem;
+  }
+
+  /* Revealed on hover or focus: three glyphs per row, always visible, would
+     make the list read as a toolbar rather than a list of queries. */
+  .cp-saved-actions {
+    display: flex;
+    gap: 0.1rem;
+    flex: none;
+    opacity: 0;
+  }
+
+  .cp-saved:hover .cp-saved-actions,
+  .cp-saved-actions:focus-within {
+    opacity: 1;
+  }
+
+  .cp-saved-action {
+    padding: 0.15rem 0.3rem;
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: var(--cp-dim);
+    font: inherit;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .cp-saved-action:hover {
+    background: var(--cp-hover);
+    color: inherit;
+  }
+
+  /* Imported files */
+  .cp-imported {
+    padding: 0.5rem 0.55rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+  }
+
+  .cp-imported-head {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .cp-imported-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-family: var(--cp-mono);
+    font-size: 0.75rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cp-imported-meta {
+    margin: 0.2rem 0 0;
+    font-size: 0.7rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-imported-error {
+    margin: 0.35rem 0 0;
+    font-size: 0.7rem;
+    line-height: 1.45;
+    color: #d94f4f;
+  }
+
+  .cp-imported-use {
+    margin-top: 0.4rem;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 3px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+
+  .cp-imported-use:hover {
+    background: var(--cp-hover);
+  }
+
+  /* Editor toolbar */
+  .cp-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+  }
+
+  .cp-toolbar-gap {
+    flex: 1 1 auto;
+  }
+
+  .cp-tool-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.3rem 0.6rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 0.78rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .cp-tool-button:hover:not(:disabled) {
+    background: var(--cp-hover);
+  }
+
+  .cp-tool-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .cp-export {
+    position: relative;
+  }
+
+  .cp-export-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 0.3rem);
+    z-index: 5;
+    min-width: 15rem;
+    padding: 0.3rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    /* Opaque: it floats over the editor. */
+    background: var(--cp-page);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+  }
+
+  .cp-export-note {
+    margin: 0.2rem 0.35rem 0.4rem;
+    font-size: 0.7rem;
+    line-height: 1.45;
+    color: var(--cp-dim);
+  }
+
+  .cp-export-item {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.3rem 0.35rem;
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 0.78rem;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .cp-export-item:hover {
+    background: var(--cp-hover);
+  }
+
+  .cp-export-ext {
+    font-family: var(--cp-mono);
+    font-size: 0.7rem;
+    color: var(--cp-dim);
+  }
+
+  /* Query plan */
+  .cp-plan {
+    margin: 0;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .cp-plan figcaption {
+    padding: 0.4rem 0.7rem;
+    border-bottom: 1px solid var(--cp-border);
+    background: var(--cp-surface);
+    font-size: 0.75rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-plan figcaption code {
+    font-family: var(--cp-mono);
+  }
+
+  .cp-plan pre {
+    margin: 0;
+    padding: 0.75rem;
+    max-height: min(60vh, 34rem);
+    overflow: auto;
+    font-family: var(--cp-mono);
+    font-size: 0.72rem;
+    line-height: 1.5;
+  }
+
+  .cp-notice {
+    margin: 0;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--cp-border);
+    border-left: 2px solid var(--cp-accent);
+    border-radius: 4px;
+    background: var(--cp-surface);
+    font-size: 0.78rem;
+    line-height: 1.5;
+  }
+
+  /* Editor */
+  .cp-main {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    min-width: 0;
+  }
+
+  .cp-editor-shell {
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    background: var(--cp-surface);
+    min-height: 14rem;
+    max-height: 28rem;
+    overflow: auto;
+  }
+
+  .cp-editor {
+    height: 100%;
+  }
+
+  /* Completion popup. CodeMirror ships its own colours, which are a light
+     theme regardless of the page, so every surface here is named from the
+     site's tokens instead. */
+  .cm-tooltip.cp-completion {
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    background: var(--cp-page);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+    overflow: hidden;
+  }
+
+  .cm-tooltip.cp-completion > ul {
+    max-height: 16rem;
+    font-family: var(--cp-mono);
+    font-size: 0.78rem;
+  }
+
+  .cm-tooltip.cp-completion > ul > li {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.2rem 0.5rem;
+    color: inherit;
+  }
+
+  .cm-tooltip.cp-completion > ul > li[aria-selected] {
+    background: color-mix(in srgb, var(--cp-accent) 16%, transparent);
+    color: inherit;
+  }
+
+  .cm-tooltip.cp-completion .cm-completionLabel {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* The characters the typed prefix matched. */
+  .cm-tooltip.cp-completion .cm-completionMatchedText {
+    text-decoration: none;
+    font-weight: 700;
+    color: var(--cp-accent);
+  }
+
+  /* The type of a column, or the return type of a function. */
+  .cm-tooltip.cp-completion .cm-completionDetail {
+    flex: 0 0 auto;
+    font-style: normal;
+    font-size: 0.9em;
+    color: var(--cp-dim);
+  }
+
+  .cm-tooltip.cp-completion .cm-completionIcon {
+    opacity: 0.6;
+    padding-right: 0.35rem;
+  }
+
+  /* The function description, in the panel beside the list. */
+  .cm-tooltip.cm-completionInfo {
+    max-width: 24rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    background: var(--cp-page);
+    font-family: inherit;
+    font-size: 0.78rem;
+    line-height: 1.5;
+  }
+
+  /* Status bar */
+  .cp-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+    color: var(--cp-dim);
+    min-height: 1.6rem;
+  }
+
+  .cp-status-metrics,
+  .cp-status-extensions {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    flex-wrap: wrap;
+  }
+
+  .cp-status-item strong {
+    color: inherit;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cp-running {
+    color: var(--cp-accent);
+  }
+
+  /* Scan figure */
+  .cp-scan {
+    margin: 0;
+    padding: 0.85rem 1rem 0.9rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 6px;
+    background: var(--cp-surface);
+    display: grid;
+    gap: 0.7rem;
+  }
+
+  .cp-scan-waiting {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-scan-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-scan-file {
+    font-family: var(--cp-mono);
+    color: inherit;
+    font-weight: 600;
+  }
+
+  .cp-scan-more {
+    padding: 0.05rem 0.4rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 999px;
+    font-size: 0.68rem;
+  }
+
+  .cp-scan-readout {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-height: 1.2rem;
+    font-size: 0.78rem;
+  }
+
+  .cp-scan-readout code {
+    font-family: var(--cp-mono);
+    font-size: 0.78rem;
+  }
+
+  .cp-scan-type,
+  .cp-scan-hint {
+    color: var(--cp-dim);
+  }
+
+  .cp-scan-tag-on {
+    color: var(--cp-accent);
+  }
+
+  .cp-scan-tag-off {
+    color: var(--cp-dim);
+  }
+
+  /* The grid. One column per column of the file, one row per drawn band, so
+     the figure is the file's own shape rather than a stylised stand-in. */
+  .cp-scan-grid {
+    display: grid;
+    gap: 2px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .cp-scan-row {
+    display: grid;
+    grid-template-columns: repeat(var(--cp-scan-cols), minmax(0, 1fr));
+    gap: 1px;
+  }
+
+  .cp-scan-header {
+    margin-bottom: 2px;
+  }
+
+  .cp-scan-hd,
+  .cp-scan-cell {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 1px;
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    transition:
+      background-color 220ms ease,
+      opacity 220ms ease;
+  }
+
+  .cp-scan-hd {
+    height: 11px;
+    cursor: pointer;
+  }
+
+  .cp-scan-cell {
+    height: 6px;
+  }
+
+  /* A chunk this statement can read. Tinted while it is only a plan, solid
+     once the query has run and the bytes below are a measurement. */
+  .cp-scan-on {
+    background: color-mix(in srgb, var(--cp-accent) 28%, transparent);
+  }
+
+  .cp-scan-read .cp-scan-on {
+    background: var(--cp-accent);
+  }
+
+  .cp-scan-read .cp-scan-cell.cp-scan-on {
+    background: color-mix(in srgb, var(--cp-accent) 78%, transparent);
+  }
+
+  /* Only the header cell is outlined. Ruling forty body cells to mark one
+     column would be louder than the stripe it is pointing at, and the readout
+     above has already named it. */
+  .cp-scan-hd.cp-scan-hover {
+    outline: 1px solid var(--cp-accent);
+    outline-offset: 0;
+  }
+
+  /* Work in progress, not progress: an indeterminate sweep, the same promise a
+     spinner makes. Nothing about its position is measured. */
+  .cp-scan-running .cp-scan-grid::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      color-mix(in srgb, var(--cp-accent) 22%, transparent) 45%,
+      color-mix(in srgb, var(--cp-accent) 22%, transparent) 55%,
+      transparent 100%
+    );
+    animation: cp-scan-sweep 1.4s linear infinite;
+    pointer-events: none;
+  }
+
+  @keyframes cp-scan-sweep {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(100%);
+    }
+  }
+
+  .cp-scan-metrics {
+    display: flex;
+    gap: 1.6rem;
+    flex-wrap: wrap;
+  }
+
+  .cp-scan-metric {
+    display: grid;
+    gap: 0.1rem;
+  }
+
+  .cp-scan-metric-label {
+    font-size: 0.7rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-scan-metric-value {
+    font-size: 1.05rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cp-scan-metric-note {
+    font-size: 0.68rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-scan-note {
+    margin: 0;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: var(--cp-dim);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cp-scan-hd,
+    .cp-scan-cell {
+      transition: none;
+    }
+
+    .cp-scan-running .cp-scan-grid::after {
+      animation: none;
+    }
+  }
+
+  .cp-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.1rem 0.45rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 999px;
+    font-family: var(--cp-mono);
+    font-size: 0.7rem;
+  }
+
+  .cp-badge-version {
+    opacity: 0.65;
+  }
+
+  .cp-badge-failed {
+    border-style: dashed;
+    opacity: 0.7;
+  }
+
+  /* Results */
+  .cp-table-scroll {
+    /* Both axes, and a ceiling on the vertical one: a result is a panel on the
+       page rather than something that stretches it. The sticky header below
+       only does anything because of this. */
+    overflow: auto;
+    max-height: min(60vh, 34rem);
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+  }
+
+  .cp-table {
+    border-collapse: collapse;
+    width: max-content;
+    min-width: 100%;
+    font-size: 0.8rem;
+    font-family: var(--cp-mono);
+  }
+
+  .cp-table th,
+  .cp-table td {
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid var(--cp-border);
+    text-align: left;
+    white-space: nowrap;
+    max-width: 32rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cp-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    /* Opaque, or the rows scroll through the header. The separator is a shadow
+       rather than a border because under `border-collapse: collapse` a sticky
+       cell's own border scrolls away with the rows it was collapsed against. */
+    background-color: var(--cp-page);
+    background-image: linear-gradient(var(--cp-surface), var(--cp-surface));
+    box-shadow: inset 0 -1px 0 var(--cp-border);
+    font-weight: 600;
+  }
+
+  .cp-table tbody tr:hover {
+    background: var(--cp-hover);
+  }
+
+  .cp-rownum {
+    color: var(--cp-dim);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cp-null {
+    color: var(--cp-dim);
+    font-style: italic;
+  }
+
+  .cp-pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-top: 0.6rem;
+  }
+
+  .cp-page-button {
+    padding: 0.25rem 0.7rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+
+  .cp-page-button:hover:not(:disabled) {
+    background: var(--cp-hover);
+  }
+
+  .cp-page-button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .cp-page-count {
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--cp-dim);
+  }
+
+  .cp-truncated,
+  .cp-empty {
+    margin: 0.6rem 0 0;
+    font-size: 0.8rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-empty {
+    padding: 1.5rem 0;
+  }
+
+  /* Schema panel */
+  .cp-schema {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: 44rem;
+    overflow-y: auto;
+  }
+
+  .cp-schema-title {
+    margin: 0;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--cp-dim);
+  }
+
+  .cp-dim-text {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--cp-dim);
+  }
+
+  .cp-schema-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .cp-schema-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.25rem 0.35rem;
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: inherit;
+    font-family: var(--cp-mono);
+    font-size: 0.72rem;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .cp-schema-item:hover {
+    background: var(--cp-hover);
+  }
+
+  .cp-schema-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cp-schema-type {
+    color: var(--cp-dim);
+    white-space: nowrap;
+  }
+
+  /* Boot and errors */
+  .cp-boot {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 2.5rem 0;
+    font-size: 0.9rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-spinner {
+    width: 0.9rem;
+    height: 0.9rem;
+    border: 2px solid var(--cp-border);
+    border-top-color: var(--cp-accent);
+    border-radius: 50%;
+    animation: cp-spin 0.8s linear infinite;
+  }
+
+  @keyframes cp-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cp-spinner {
+      animation-duration: 2.4s;
+    }
+  }
+
+  .cp-error {
+    border: 1px solid color-mix(in srgb, #d94f4f 45%, var(--cp-border));
+    border-radius: 4px;
+    padding: 0.85rem 1rem;
+    background: color-mix(in srgb, #d94f4f 6%, transparent);
+  }
+
+  .cp-error h2 {
+    margin: 0 0 0.45rem;
+    font-size: 0.9rem;
+  }
+
+  .cp-error pre {
+    margin: 0;
+    padding: 0.5rem 0.6rem;
+    overflow-x: auto;
+    border-radius: 3px;
+    background: var(--cp-surface);
+    font-family: var(--cp-mono);
+    font-size: 0.76rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .cp-error p {
+    margin: 0.6rem 0 0;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    color: var(--cp-dim);
+  }
+
+  .cp-footer {
+    font-size: 0.75rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-footer p {
+    margin: 0;
+    max-width: 68ch;
+  }
+
+  .cp-footer p + p {
+    margin-top: 0.35rem;
+  }
+
+  .cp-sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+</style>

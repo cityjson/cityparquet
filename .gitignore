@@ -1,0 +1,55 @@
+# ===========================================================================
+# CityParquet monorepo.
+#
+# Each subtree keeps its own .gitignore for what is local to it (Cargo
+# artefacts in lib/*, node_modules in documents/, the database harness's
+# data/ and .venv/). What lives here is what spans them — above all the
+# benchmark tree, whose code and evidence sit in different directories.
+# ===========================================================================
+
+# --- benchmark corpora and derived artefacts -------------------------------
+#
+# ~24 GB of city models, all fetched from pinned URLs with pinned byte sizes
+# by `just fetch-data` / `just fetch-scaling-data`. The pins live in
+# benchmark/scripts/fetch_benchmark.sh and benchmark/formats/
+# corpus_urls.txt, both committed — the bytes themselves never were.
+/benchmark/formats/data/
+
+# External converters fetched by `just fetch-tools` (citygml-tools). The PINS
+# live in benchmark/scripts/fetch_tools.sh, which IS committed; the
+# unpacked ~28 MB of JARs is not.
+/benchmark/formats/tools/
+
+# Generated charts (`just plot`, `just compression-plot`, `just bench`) — the
+# inputs are the CSVs beside them, not these PNGs.
+/benchmark/**/plots/
+
+# `just plot-pretty` output (bench_data.json, bench-summary.html, figures/):
+# all three are derived from the results CSVs and regenerate in seconds.
+/benchmark/summary/
+
+# benchmark/plot's own uv-managed venv + Python bytecode cache — its source
+# (pyproject.toml, *.py, uv.lock) IS committed.
+/benchmark/plot/.venv/
+
+# --- shared -----------------------------------------------------------------
+**/__pycache__/
+**/.pytest_cache/
+node_modules/
+dist/
+.DS_Store
+
+# --- local agent tooling ----------------------------------------------------
+.claude/
+.codex/
+.opencode/
+.superpowers/
+.claudian/
+apm_modules/
+ai/skills/
+
+# scripts/catalog2cityparquet's own uv-managed venv — its source
+# (pyproject.toml, *.py, uv.lock) IS committed.
+/scripts/catalog2cityparquet/.venv/
+# benchmark/readbench is its own Cargo workspace.
+/benchmark/readbench/target/

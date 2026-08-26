@@ -1,0 +1,18 @@
+name: citypaquet-paper
+version: 1.0.0
+description: APM project for citypaquet-paper
+author: HideBa
+dependencies:
+  apm:
+  - HideBa/apm/library-dev
+  - BuilderIO/skills/skills/efficient-fable
+  - haydenbleasel/blume
+  - skills-directory/skill-codex/plugins/skill-codex
+  - HideBa/apm/research
+  - caylent/tufte-data-viz
+  mcp: []
+includes: auto
+scripts: {}
+targets:
+- claude
+- codex

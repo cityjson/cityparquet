@@ -1,0 +1,106 @@
+name: Docs
+
+# Builds, verifies, and deploys the CityParquet specification site under
+# documents/ to GitHub Pages (https://cityjson.github.io/cityparquet/).
+# Deploys run on pushes to main; pull requests build and verify only.
+
+on:
+  push:
+    branches: [main]
+    paths: ["documents/**", ".github/workflows/docs.yml"]
+  pull_request:
+    paths: ["documents/**", ".github/workflows/docs.yml"]
+  workflow_dispatch:
+
+# Allow one concurrent Pages deployment; don't cancel an in-progress one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: documents
+
+env:
+  # Read by blume.config.ts, which hardcodes neither. This publishes a *project*
+  # Pages site, so the base path is the repo name. Change both here (not in the
+  # config) if the site moves to a custom domain.
+  DOCS_BASE_PATH: /cityparquet
+  DOCS_SITE_URL: https://cityjson.github.io
+
+jobs:
+  build:
+    name: Lint, format, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # blume lastModified reads git history
+          # The site needs none of the submodules, and the two DuckDB
+          # extensions carry ~1.2 GB of their own between them.
+          submodules: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: documents/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-dist
+          path: documents/dist
+          if-no-files-found: error
+
+  # Deploys the built site to GitHub Pages. Runs only on pushes to main (and
+  # manual dispatch); skipped on pull requests, which build/verify only.
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # required for actions/checkout (a permissions block replaces the defaults)
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: documents/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: documents/dist
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,108 @@
+---
+title: Benchmark
+description: How CityParquet performs on read, size, and compression — and how it was measured.
+sidebar:
+  badge: WIP
+  icon: gauge
+---
+
+This page describes how CityParquet is measured and what the measurements
+**indicate**. Everything here comes from the benchmark tree of the
+[`cityjson/cityparquet`](https://github.com/cityjson/cityparquet) monorepo and its
+committed reports; the raw per-dataset CSVs are not republished. Treat every
+figure as indicative of an experimental implementation, not as an authoritative
+result — and read the [caveats](#caveats) before quoting any number.
+
+## Where the numbers come from
+
+The repository's `benchmark/` tree holds three families, each answering a
+different question. Its
+[`README`](https://github.com/cityjson/cityparquet/blob/main/benchmark/README.md)
+is the index; the per-family methodology documents beside it are the authority,
+and they carry caveats this page only summarises.
+
+| Family                | Question                                                                  |
+| --------------------- | ------------------------------------------------------------------------- |
+| `benchmark/formats/`  | CityParquet against the other file formats — read, write, size, codec, row order |
+| `benchmark/databases/`| CityParquet against 3D city model **databases** — cjdb and 3DCityDB v5    |
+| `benchmark/plot/`     | The renderers; measures nothing                                           |
+
+## Methodology
+
+Write-side measurements are produced by the `bench` subcommand of the
+[`cityparquet-rs`](/resources/software) CLI, which appends one CSV row per variant:
+
+```bash
+cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
+```
+
+Read-side measurements come from a separate coordinator
+(`cityparquet-readbench`), which runs the same scenario matrix across every
+compared format. Both are driven from the repository root:
+
+```bash
+just fetch-tools                              # pinned citygml-tools + cjseq
+just fetch-data                               # the read corpus
+just bench benchmark/formats/data/benchmark   # cross-format read comparison
+just compression-bench FOLDER                 # codec and row-group axes
+```
+
+**Corpus.** Two pinned corpora, so runs are reproducible. The **read** corpus is
+six real published CityJSON 2.0 city models from cityjson.org (423 MB on the
+wire, 853 to 198,699 objects), chosen because every one of them yields *all*
+compared formats — a dataset producing seven of eight contributes a comparison
+with a hole in it. The **configuration** corpus is one 3DBAG slice cut at four
+cardinalities, so the codec, row-group and ordering axes vary size with the data
+held constant. Every entry pins its byte size and is verified after fetching.
+
+**Variant matrix.** `--variants` takes a comma-separated list in the grammar
+`<preset>[+hilbert][+rg<N>][+<codec>]` — a writer preset optionally combined with
+Hilbert spatial ordering, a row-group-size override, and a codec override. There is
+no layout axis: the by-module object-table split is the only layout CityParquet
+defines. Omitting it runs the default set. Each variant is timed `--repeat` times
+(default 5) and the **median** is reported; `--window-frac` (default 0.05) sizes the
+spatial window query.
+
+**Baseline and round-trip.** The harness compares against a DuckDB `COPY` Parquet
+baseline, and unless `--skip-roundtrip` is passed it also runs the
+`convert → export → compare` round-trip check, so a size/speed number is only
+reported for a variant that reproduced its input semantically.
+
+## Read performance
+
+The columnar layout buys two kinds of read savings.
+
+**Projection pushdown, per LoD.** A model carries one geometry column per LoD. A
+query that projects `geometry_lod2_2` never reads the `geometry_lod1_2` bytes — the
+reader touches only the columns and LoDs a query names. This is the columnar win
+argued in the [spatial-access design decision](/design-decisions/spatial-access) and the object-table design.
+
+**Spatial row-group pruning.** The `bbox` column feeds Parquet's per-row-group
+min/max statistics, and a smaller row-group size means each group covers a tighter
+spatial extent, so a bounding-box window prunes more groups without downloading
+them. Hilbert ordering reinforces this by clustering spatially-near rows into the
+same group. At NYC scale, shrinking the row-group size to 512 rows was measured to
+prune roughly **34 %** of row groups and give an approximately **2×** faster window
+query. The trade-off is real and disclosed in the reports: smaller row groups cost
+compression ratio and full-scan time, so pruning gains are bought with overhead —
+which variant wins depends on the query.
+
+## File size and compression
+
+The default writer recipe uses **zstd at level 3**; the `--recipe` presets
+(`cityparquet`, `parquet-defaults`, `no-dictionary`, `no-bss`, `no-delta`, `snappy`)
+vary the encoding and codec so the size/scan trade-offs can be compared, and
+`--zstd-level` tunes the level directly. Because Parquet's dictionary and run-length
+encodings make sparse NULLs nearly free, the wide per-module object tables stay
+compact even where objects share few attributes — part of why the schema is laid
+out the way the [schema strategy](/design-decisions/schema-strategy) describes. Hard size figures are
+deferred to the committed benchmark reports rather than reproduced here.
+
+## Caveats
+
+:::warning[Read these before quoting any number]
+The compression comparison uses codec **defaults at mismatched levels**
+(zstd@3 vs gzip@6 vs brotli@1). Because the levels differ, a "smallest codec"
+claim is **not supportable** from these results. The reference implementation is
+experimental; treat all figures as indicative, not authoritative.
+:::

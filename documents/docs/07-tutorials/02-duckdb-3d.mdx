@@ -1,0 +1,255 @@
+---
+title: Example with the DuckDB 3D extension
+description: Validate, measure, and process 3D solids over CityParquet geometry.
+sidebar:
+  badge: WIP
+  label: DuckDB 3D
+---
+
+DuckDB's built-in geometry surface is 2D / simple-features centric — it treats a
+building solid as an opaque blob. The [`three_d`](https://github.com/HideBa/duckdb-3d)
+extension (`duckdb-3d`) adds the solid-aware `SOLID_3D` type and a curated
+PostGIS-style `ST_*` / `ST_3D*` function family, so the polyhedral solids a
+CityParquet model carries become first-class, queryable values: measure enclosed
+volume, check whether a solid is closed and manifold, compute footprint area and
+height, and run 3D distance queries, all inside SQL.
+
+:::warning[Experimental]
+`duckdb-3d` is under active development and should be considered experimental. Its
+API, output schema, and payloads may change without notice, and bugs — including
+ones affecting data correctness — are expected. Do not rely on it for production
+workloads yet, and verify results against a trusted source.
+:::
+
+:::note[Run it at cloud scale]
+This tutorial measures a local tile. To run the same `SOLID_3D` pipeline over a
+public bucket of 1000 CityParquet tiles — and cross-check every volume against
+3DBAG's own — see [Working with 3DBAG at cloud scale](/tutorials/cloud-scale-3dbag).
+:::
+
+## Install the extension
+
+`three_d` targets DuckDB `v1.5.x` and is built from source with the standard
+DuckDB extension toolchain. Clone with submodules (DuckDB is a submodule) and
+build; installing [ccache](https://ccache.dev) and [ninja](https://ninja-build.org)
+makes incremental builds much faster:
+
+```sh
+git clone --recurse-submodules https://github.com/HideBa/duckdb-3d.git
+cd duckdb-3d
+GEN=ninja make          # first build compiles DuckDB too; later builds are incremental
+```
+
+Inside a checkout of the [`cityjson/cityparquet`](https://github.com/cityjson/cityparquet)
+monorepo it is already present as a submodule: run `just setup`, then
+`cd lib/duckdb-3d` and build the same way.
+
+That produces `build/release/duckdb` — a DuckDB shell with `three_d` preloaded. To
+read real CityJSON you also want the `cityjson` community extension available
+(one-time):
+
+```sh
+./build/release/duckdb -unsigned -c "INSTALL cityjson FROM community;"
+```
+
+Every session then loads both. Note the internal extension name is `three_d`, even
+though the repository is called `duckdb-3d`:
+
+```sql
+LOAD cityjson;
+LOAD three_d;
+```
+
+## How the two extensions compose
+
+`three_d` never parses CityJSON itself. The division of labour is:
+
+- **`cityjson`** reads CityJSON / CityJSONSeq and, in per-LoD mode (`lod => '...'`),
+  emits a `geometry` BLOB (WKB) column plus a sidecar `geometry_properties`
+  (JSON) column.
+- **`three_d`** consumes that pair through `ST_3DFromWKB(geometry, geometry_properties)`
+  and gives you a `SOLID_3D` you can validate, measure, and transform.
+
+```text
+CityJSON ──cityjson──▶ (geometry BLOB, geometry_properties JSON) ──three_d──▶ SOLID_3D / GEOM_3D
+```
+
+The same pair is exactly what a CityParquet package stores per LoD, so the pipeline
+is identical whether the WKB comes from a live CityJSONSeq read or a converted
+Parquet column — only the names differ, since a package's columns are always
+LoD-suffixed (`geometry_lod2_2`, `geometry_properties_lod2_2`).
+
+## Work with SOLID_3D
+
+Before touching the network, confirm the pipeline on the bundled unit-cube fixture.
+Two rules apply to **every** CityJSON read for `three_d`: always pass `lod => '...'`
+(without it, `cityjson` emits a `STRUCT` geometry column that `ST_3DFromWKB` cannot
+consume), and always filter `WHERE geometry IS NOT NULL` (objects lacking the
+requested LoD have a NULL geometry):
+
+```sql
+SELECT id,
+       ST_3DNumFaces(solid)              AS faces,
+       ST_3DIsClosed(solid)             AS closed,
+       ROUND(ST_3DSurfaceArea(solid), 3) AS area,
+       ROUND(ST_3DVolume(solid), 3)      AS volume
+FROM (
+  SELECT id, ST_3DFromWKB(geometry, geometry_properties) AS solid
+  FROM read_cityjson('test/data/unit_cube.city.json', lod => '2.2')
+  WHERE geometry IS NOT NULL
+);
+```
+
+```text
+┌──────┬───────┬────────┬───────┬────────┐
+│  id  │ faces │ closed │ area  │ volume │
+├──────┼───────┼────────┼───────┼────────┤
+│ cube │   6   │ true   │  6.0  │  1.0   │
+└──────┴───────┴────────┴───────┴────────┘
+```
+
+## Stream real buildings
+
+The 3DBAG Delft tile is published as CityJSONSeq. Read it straight from the URL, in
+LoD 2.2:
+
+```sql
+CREATE TABLE feats AS
+SELECT id, parents, children, geometry, geometry_properties,
+       b3_volume_lod22, b3_opp_grond, b3_h_maaiveld     -- 3DBAG ground-truth attributes
+FROM read_cityjsonseq(
+    'https://storage.googleapis.com/cityjson/delft.city.jsonl',
+    lod => '2.2');
+```
+
+**A structural gotcha.** In 3DBAG the geometry lives on `BuildingPart` features,
+while the descriptive attributes (`b3_volume_lod22`, height percentiles, areas) live
+on the parent `Building`. When `cityjson` flattens the sequence, the geometry row
+and the attribute row are *different* rows, linked by `parents` / `children`. Join a
+part to its parent to line geometry up with ground truth, and use `ST_3DTryFromWKB`
+(not `ST_3DFromWKB`) while exploring — it returns `NULL` on an unsupported geometry
+instead of aborting the whole query:
+
+```sql
+CREATE TABLE parts AS
+SELECT p.id,
+       ST_3DTryFromWKB(p.geometry, p.geometry_properties) AS solid,
+       b.b3_volume_lod22,
+       b.b3_opp_grond,
+       len(b.children) AS n_parts
+FROM feats p
+JOIN feats b ON b.id = p.parents[1]
+WHERE p.geometry IS NOT NULL;
+```
+
+## Validate before you measure
+
+`ST_3DVolume` and `ST_3DSurfaceArea` **raise** on a non-manifold or open solid — and
+real reconstructions always contain a few. Guard measurements with the validation
+report, which is a struct you can also inspect field by field:
+
+```sql
+-- How healthy is the tile?
+SELECT count(*)                                                     AS parts,
+       count(*) FILTER (WHERE ST_3DValidationReport(solid).is_valid) AS valid,
+       count(*) FILTER (WHERE ST_3DIsClosed(solid))                 AS closed
+FROM parts;
+```
+
+```sql
+-- Inspect any building that fails
+SELECT id, ST_3DValidationReport(solid) AS report
+FROM parts
+WHERE NOT ST_3DValidationReport(solid).is_valid
+LIMIT 3;
+-- report = {is_valid, is_closed, is_manifold, is_oriented, solid_count, shell_count,
+--           face_count, open_edge_count, non_manifold_edge_count, degenerate_face_count,
+--           orientation_error_count, code, message}
+```
+
+`three_d` **validates, it never silently repairs** — it reports closedness,
+manifoldness, orientation, and degeneracy and leaves the geometry untouched.
+
+## Measure real buildings
+
+With measurement guarded to valid solids, the metrics that matter for buildings are
+short expressions:
+
+```sql
+SELECT id,
+       ROUND(ST_3DVolume(solid), 1)              AS volume_m3,
+       ROUND(ST_3DFootprintArea(solid), 1)       AS footprint_m2,
+       ROUND(ST_3DZMax(solid) - ST_3DZMin(solid), 2) AS height_m,   -- roof − ground
+       ST_3DIsClosed(solid)                      AS closed
+FROM parts
+WHERE ST_3DValidationReport(solid).is_valid
+LIMIT 5;
+```
+
+| Metric | Expression | Notes |
+| --- | --- | --- |
+| Enclosed volume | `ST_3DVolume(solid)` | Requires a valid (closed + manifold + oriented) solid. |
+| Footprint area | `ST_3DFootprintArea(solid)` | 2D XY projection; the building's ground area. |
+| Building height | `ST_3DZMax(solid) - ST_3DZMin(solid)` | From the cached bounding box. |
+| 3D surface area | `ST_3DArea(solid)` / `ST_3DSurfaceArea(solid)` | Total area of all faces. |
+
+Summing over only the valid solids gives the tile's total built volume:
+
+```sql
+SELECT ROUND(SUM(ST_3DVolume(solid)), 0) AS total_volume_m3
+FROM parts
+WHERE ST_3DValidationReport(solid).is_valid;
+```
+
+3DBAG ships each building's own computed volume (`b3_volume_lod22`) and
+ground-surface area (`b3_opp_grond`), so you can cross-check the kernel against
+independent ground truth — for single-part, valid buildings the volumes agree within
+about 0.02 % for the vast majority:
+
+```sql
+SELECT ROUND(median(
+         abs(ST_3DVolume(solid) - b3_volume_lod22) / b3_volume_lod22
+       ) * 100, 3) AS median_volume_error_pct
+FROM parts
+WHERE n_parts = 1
+  AND ST_3DValidationReport(solid).is_valid
+  AND b3_volume_lod22 > 0;
+-- ≈ 0.02 %
+```
+
+## Distance queries
+
+Distance and relationship functions operate on the general geometry type `GEOM_3D`,
+which you build from WKB with `ST_Geom3DFromWKB`. Minimum 3D distance between two
+named buildings:
+
+```sql
+SELECT ROUND(ST_3DDistance(
+    ST_Geom3DFromWKB((SELECT geometry FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000012869-0')),
+    ST_Geom3DFromWKB((SELECT geometry FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000016459-0'))
+), 1) AS gap_m;                                     -- ≈ 1033.7
+```
+
+Find every building within 5 m of a reference building (`ST_3DDWithin`
+short-circuits on distance):
+
+```sql
+WITH ref AS (
+  SELECT ST_Geom3DFromWKB(geometry) AS g
+  FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000012869-0'
+)
+SELECT p.id
+FROM feats p, ref
+WHERE p.geometry IS NOT NULL
+  AND ST_3DDWithin(ST_Geom3DFromWKB(p.geometry), ref.g, 5.0);
+```
+
+Related `GEOM_3D` functions: `ST_3DMaxDistance`, `ST_3DDFullyWithin`,
+`ST_3DIntersects`, `ST_3DClosestPoint`, `ST_3DShortestLine`. Note the split — solid
+metrics (`ST_3DVolume`, `ST_3DIsClosed`, `ST_3DBounds`) take the `SOLID_3D` payload,
+distance and serialization accessors take `GEOM_3D`, and many accessors (`ST_NDims`,
+`ST_3DZMin`, `ST_3DZMax`, `ST_3DTranslate`, …) accept both.
+
+A full, ground-truth-validated walkthrough against the 3DBAG Delft dataset — including
+inspection, serialization (`ST_3DAsText`, `ST_3DAsGeoJSON`), transforms, and construction
+(`ST_3DExtrude`, `ST_MakeSolid`) — is in the extension's `docs/EXAMPLE.md`.

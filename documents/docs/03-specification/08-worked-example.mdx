@@ -1,0 +1,91 @@
+---
+title: Worked example
+description: A CityGML CM record encoded as CityParquet, end to end, with the CityJSON form alongside.
+sidebar:
+  badge: WIP
+  label: Worked example
+---
+
+This constructed example walks a single small feature from the **CityGML conceptual
+model** into CityParquet end to end, then shows the same feature as CityJSON so the
+mapping from that serialisation is visible too. It is **illustrative** — coordinates
+and ids are abbreviated, though every step follows the encoding rules of the
+specification body. For **real records** read from an actual file, see the embedded
+examples on the [Geometry, LoD & spatial metadata](/specification/geometry-semantics)
+and [Object table schema](/specification/object-table-schema) pages.
+
+The feature: a `Building` with one `BuildingPart`; the part has an LoD 2.2 `Solid`
+whose two boundary surfaces are a `RoofSurface` and a `WallSurface`; the building
+carries one core attribute (`yearOfConstruction`) and one ADE attribute (`height`); the
+roof surface has a material.
+
+## As CityGML CM → CityParquet
+
+In the CM the two features map to two object rows; the boundary surfaces become the
+solid's per-face semantics; the attribute values become typed columns; the material
+becomes a per-face reference into the material sidecar.
+
+**Object table `building.parquet` (two rows):**
+
+| id | feature_id | object_type | parents | children | bbox | geometry_lod2_2 | geometry_properties_lod2_2 | material_lod2_2 | ex_height | yearOfConstruction |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `b-42` | `b-42` | `Building` | — | `[b-42-0]` | *(union of children)* | *null* | *null* | *null* | `12.5` | `1998` |
+| `b-42-0` | `b-42` | `BuildingPart` | `[b-42]` | — | `{xmin…zmax}` | *WKB PolyhedralSurfaceZ (2 faces)* | `{type:"Solid", surfaces:[…], face_semantics:[0,1], shells:[[2]]}` | `{"":{"values":[3,3]}}` | *null* | *null* |
+
+**Notes.**
+
+- The root `Building` has `feature_id == id` (`b-42`), and its child `BuildingPart`
+  inherits it, so both rows of the family share `feature_id = b-42`.
+- The `Building`'s attributes sit on its own row; a CM feature's own thematic
+  attributes stay with the feature. `yearOfConstruction` was inferred `BIGINT`; the ADE
+  attribute `height` became the `ex_height` column.
+- The `Solid`'s two boundary surfaces were flattened into a 2-face
+  `PolyhedralSurfaceZ`; the roof/wall semantics live in the
+  `geometry_properties_lod2_2` struct, face-aligned (`face_semantics: [0, 1]`), with
+  `shells: [[2]]` recording the single solid's single shell the WKB flattened away.
+- The LoD `2.2` is carried by the column suffix alone — `geometry_properties_lod2_2`
+  has no `lod` field.
+- Material is **per face**: the two faces both reference material `3`, so
+  `material_lod2_2` is `{"":{"values":[3,3]}}`. The `3` is the **`id`** of a row in
+  [`materials.parquet`](/specification/appearance-templates), not a row position.
+- The `Building` carries no geometry of its own, so its
+  [`bbox`](/specification/geometry-semantics) is the union of its part's.
+
+**`materials.parquet` — the referenced row:**
+
+| id | name | diffuseColor | … |
+|---|---|---|---|
+| `3` | `roofmat` | `[0.9, 0.1, 0.1]` | … |
+
+## The same feature as CityJSON
+
+CityJSON is one serialisation of that CM feature, and the
+[CityJSON mapping](/specification/mapping-cityjson) governs its fields. The source
+below encodes exactly the feature above; comparing it with the table shows what the
+encoding changes.
+
+```jsonc
+{ "type": "CityJSONFeature", "id": "b-42",
+  "CityObjects": {
+    "b-42":   { "type": "Building", "children": ["b-42-0"],
+                "attributes": { "yearOfConstruction": 1998, "+height": 12.5 } },
+    "b-42-0": { "type": "BuildingPart", "parents": ["b-42"],
+                "geometry": [ { "type": "Solid", "lod": "2.2",
+                  "boundaries": [ [ [[0,1,2,3]], [[4,5,6,7]] ] ],
+                  "semantics": { "surfaces": [ {"type":"RoofSurface"}, {"type":"WallSurface"} ],
+                                 "values": [ [0, 1] ] },
+                  "material": { "": { "values": [ [3, 3] ] } } } ] } },
+  "vertices": [ /* … */ ] }
+```
+
+What the encoding changes, relative to this serialisation:
+
+- `+height` → the `ex_height` column (a leading `+` cannot be a portable column name).
+- The nested `boundaries` are resolved against `vertices` (and the feature's
+  `transform`, not shown) into world-coordinate WKB; the source quantisation is not
+  retained.
+- The per-shell `semantics.values` (`[[0, 1]]`) is flattened to the per-face
+  `face_semantics` (`[0, 1]`), and the shell partition it carried moves to
+  `shells: [[2]]`.
+- The per-shell `material.values` (`[[3, 3]]`) is flattened to the per-face
+  `[3, 3]`, and the feature-local material index becomes the sidecar `id`.

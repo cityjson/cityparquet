@@ -1,0 +1,16 @@
+{
+  "attr_column": "object_type",
+  "attr_eq": "BuildingInstallation",
+  "bbox_full": {
+    "maxx": 12.64,
+    "maxy": 7.68,
+    "maxz": 9.103,
+    "minx": 0.56,
+    "miny": 0.64,
+    "minz": 7.579
+  },
+  "numeric_column": null,
+  "parent_id": "GMLID_BUI130363_1235_6047",
+  "target_id": "GMLID_0314272_32937_848",
+  "total_city_objects": 121
+}

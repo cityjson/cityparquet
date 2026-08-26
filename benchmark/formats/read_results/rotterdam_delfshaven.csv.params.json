@@ -1,0 +1,77 @@
+{
+  "dataset": "rotterdam_delfshaven.city.json",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.010550996483001172,
+      "window": [
+        90752.18890464539,
+        435738.5930000001,
+        0.0,
+        90824.70909535466,
+        435783.686,
+        41.158
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.05041031652989449,
+      "window": [
+        90730.32171831762,
+        435724.9960000001,
+        0.0,
+        90846.57628168243,
+        435797.283,
+        41.158
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.24970691676436108,
+      "window": [
+        90656.07589026661,
+        435678.8300000001,
+        0.0,
+        90920.82210973343,
+        435843.449,
+        41.158
+      ],
+      "approx": false
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "{326A13BC-4656-4FC5-8D71-3975EFF80333}",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "{042D054D-3F51-441F-98B2-B269EEF55A2A}",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "{071B67C1-1C91-4DA4-8AB8-9445F6599E57}",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "{042D054D-3F51-441F-98B2-B269EEF55A2A}-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "object_type": "Building",
+  "object_type_count": 853,
+  "numeric_attr": "TerrainHeight",
+  "cp_object_total": 853
+}

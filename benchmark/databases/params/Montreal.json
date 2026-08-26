@@ -1,0 +1,16 @@
+{
+  "attr_column": "object_type",
+  "attr_eq": "Building",
+  "bbox_full": {
+    "maxx": 301073.701,
+    "maxy": 5042282.343,
+    "maxz": 129.09199999999998,
+    "minx": 300060.181,
+    "miny": 5040722.785,
+    "minz": 8.444
+  },
+  "numeric_column": null,
+  "parent_id": null,
+  "target_id": "B-20131218142410-23B22495FF7A",
+  "total_city_objects": 294
+}

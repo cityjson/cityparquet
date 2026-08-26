@@ -1,0 +1,25 @@
+---
+title: C · Spatial access
+description: A bbox struct column with optional Hilbert ordering for pruning.
+sidebar:
+  label: C · Spatial access
+---
+
+How CityParquet makes spatial window queries prune cheaply over object storage: a typed 3D `bbox` struct column that feeds Parquet's per-row-group statistics, with optional Hilbert-curve ordering to tighten them. The prior art weighed here is 3DCityDB's `envelope` column and GeoParquet's `bbox` struct.
+
+## bbox STRUCT column + optional Hilbert ordering
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** Every row carries a 3D `bbox` STRUCT `[xmin, ymin, zmin, xmax, ymax, zmax]` in the geometry CRS. Rows may optionally be written in Hilbert-curve order on the bbox centroid. A parent without its own geometry gets the **union** of its descendants' bboxes; bbox is null only when nothing in the subtree has geometry. See the [specification](/specification/geometry-semantics) → *Spatial metadata*.
+
+**Alternatives considered.**
+
+- **3DCityDB** carries an `envelope` column on the feature table for spatial indexing;
+- **GeoParquet** carries a `bbox` struct column (2D `[xmin,ymin,xmax,ymax]` or 3D) matching the geometry CRS — the model we follow, extended to 3D.
+
+**Why this.** A typed `bbox` column feeds Parquet's per-row-group **min/max statistics**, which is how a spatial window query prunes row groups over object storage *without downloading the file*. Hilbert ordering clusters spatially-near rows into the same row group, tightening those per-group bboxes so pruning is more selective. Null bboxes were shown **not** to corrupt min/max statistics, so pruning stays sound.
+
+**Trade-off.** One `bbox` per row must cover everything the row stores — every LoD, and every descendant — so it is a **union**, and therefore looser than a per-geometry box would be. A loose box costs false-positive reads; a tight one drawn from a single LoD would wrongly prune rows whose other LoDs extend beyond it, which is the error that actually loses data. Hilbert ordering costs a sort at write time.
+
+**Status.** Decided. Null-bbox soundness — that null bboxes do not corrupt the row-group min/max statistics — is confirmed; the pruning selectivity and window-query gains from Hilbert ordering are to be measured and reported in the paper.

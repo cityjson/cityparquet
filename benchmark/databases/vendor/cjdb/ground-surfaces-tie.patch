@@ -1,0 +1,44 @@
+--- a/cjdb/modules/geometric.py
++++ b/cjdb/modules/geometric.py
+@@ -187,7 +187,17 @@
+
+
+ def get_ground_surfaces(polygons: List[Polygon]) -> List[Polygon]:
+-    ground_surfaces = {}
++    # PATCHED by the CityParquet database-benchmark harness -- see
++    # benchmarking/vendor/cjdb/README.md for the full rationale and the
++    # upstream bug report this patch accompanies.
++    #
++    # Upstream accumulated candidate faces into a dict keyed by their own
++    # mean Z height (`ground_surfaces[z] = force_2d(polygon)`), so any two
++    # non-vertical faces sharing a mean Z silently overwrote one another --
++    # an entirely ordinary shape for a flat-roofed or flat-ground-planed
++    # building, not a contrived edge case. Replaced with a list of
++    # `(z, polygon)` pairs so every qualifying face is retained.
++    ground_surfaces = []
+     for polygon in polygons:
+         if not is_valid(polygon):
+             logger.debug(
+@@ -201,11 +211,19 @@
+             continue
+         else:
+             z = mean([point[2] for point in polygon.exterior.coords])
+-            ground_surfaces[z] = force_2d(polygon)
++            ground_surfaces.append((z, force_2d(polygon)))
+     if len(ground_surfaces) == 0:
+         return []
+-    z_mean = mean(ground_surfaces.keys())
+-    return [v for k, v in ground_surfaces.items() if k < z_mean]
++    # Deliberately the mean of DISTINCT z values only, matching upstream's
++    # `mean(ground_surfaces.keys())` exactly (a dict's keys are unique by
++    # construction) -- NOT the mean over every retained (z, polygon) pair,
++    # which would silently reweight the split threshold by how many faces
++    # happen to share each z. That would be a second, separate semantic
++    # change bundled into what is meant to be a face-dropping fix only; see
++    # the benchmarking harness's Task 12 fix report for the case for and
++    # against a count-weighted mean, deliberately not acted on here.
++    z_mean = mean({z for z, _ in ground_surfaces})
++    return [polygon for z, polygon in ground_surfaces if z < z_mean]
+
+
+ def merge_into_a_multipolygon(

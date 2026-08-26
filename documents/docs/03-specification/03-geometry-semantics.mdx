@@ -1,0 +1,339 @@
+---
+title: Geometry, LoD & spatial metadata
+description: WKB geometry encoding, surface semantics, the per-LoD column layout, CRS, and the bbox column.
+sidebar:
+  label: Geometry, LoD & spatial
+---
+
+CityParquet stores geometry as ISO WKB blobs, carries the CityGML CM information WKB
+cannot express — chiefly per-surface semantics — in a parallel JSON column, gives
+every level of detail its own column pair, and puts a 3D bounding box on every row for
+spatial pruning. This page defines all four.
+
+## WKB encoding
+
+The geometry column stores **ISO WKB** as `BLOB`, in the file CRS. This is the same WKB
+serialisation GeoParquet uses, but not the same *vocabulary*: GeoParquet admits only the
+OGC **Simple Feature** types, whereas CityParquet also stores the solid-family geometry
+(`PolyhedralSurfaceZ`) a 3D city model needs, which lies outside Simple Features — so the
+two are only partially interchangeable (see the note on GeoParquet-legal types below).
+Specifically:
+
+- **ISO WKB** with 1000-series Z type codes (`PointZ` = 1001, `LineStringZ` = 1002,
+  `PolygonZ` = 1003, `MultiPointZ` = 1004, `MultiLineStringZ` = 1005,
+  `MultiPolygonZ` = 1006, `GeometryCollectionZ` = 1007, `PolyhedralSurfaceZ` = 1015) —
+  **not** EWKB. No SRID is embedded in the geometry; the CRS is
+  [carried once per file](/design-decisions/files-crs-metadata).
+- **little-endian** byte order (WKB byte-order marker `0x01`).
+- Coordinates are **world-coordinate doubles** — the real coordinate values in the
+  file CRS. Unlike CityJSON, CityParquet does not store quantised integer vertices
+  against a dataset-level scale and translation: a consumer needs nothing but the file
+  to read a coordinate, and no client has to understand a quantisation scheme to feed
+  the WKB to GIS tooling. Quantisation is treated as a *decoding* concern — a consumer
+  wanting compact integer output picks parameters suited to its own precision and
+  extent (see the [encoding decision](/design-decisions/geometry-encoding)).
+
+A **Solid** is encoded as a single `PolyhedralSurfaceZ` whose faces are **all** the
+solid's surfaces, flattened across shells in document order (outer shell first, then
+inner shells). **The exterior/interior *shell* distinction is not represented in the
+WKB** — it is preserved in `geometry_properties_lod*` (see below). Within a single
+surface, interior rings (holes) *are* preserved: ring 0 is the exterior ring,
+subsequent rings are interior rings of the same `PolygonZ`.
+
+**Ring closure and geometric validity.** Every WKB polygon ring **MUST** be explicitly
+closed: its last point repeats its first, and it carries at least four points including
+that closing vertex. This is a structural requirement of the encoding, not a validity
+judgement. CityParquet does **not** constrain geometric validity: real-world city
+models contain zero-area rings, non-planar faces, and other geometry a validator would
+reject, and the format represents them as the source provides them. A reader
+**MUST NOT** reject structurally well-formed geometry on the grounds that it is
+geometrically invalid; validity assessment is the business of consuming tools, not of
+the format. A writer **MAY** normalise geometry that cannot form a structurally
+well-formed WKB ring at all — fewer than three distinct positions in sequence — and a
+writer that does so **SHOULD** report what it removed rather than removing it silently.
+
+**Surface winding.** Because the geometry is 3D, ring order is defined by the
+**right-hand rule**, not the 2D clockwise/counter-clockwise convention. The default is
+**right-handed**: each surface's exterior ring is wound so that the right-hand rule
+yields the surface's **outward-facing** normal, and interior rings are wound
+oppositely — matching the CityGML convention. Absent any declaration to the contrary,
+a reader **MUST** assume this default. A writer **MAY** declare the winding per column
+in the [`city.columns[].orientation_3d` field](/specification/metadata)
+(`"right-handed"` or `"left-handed"`). Because `city.columns` registers **every**
+geometry column — solids included — this field has a home even for the columns absent
+from `geo`.
+
+Empty or absent geometry, and [implicit geometries](/specification/appearance-templates)
+(whose geometry lives in a template), produce a **null** geometry cell.
+
+**Example (real record).** The `geometry_lod2_2` blob of the `BuildingPart` from the
+[object-table schema](/specification/object-table-schema) (via DuckDB on the 3DBAG
+subset):
+
+| Column | Value |
+|---|---|
+| `geometry_lod2_2` | 2 425-byte `BLOB`. WKB header `01 F7030000 10000000 …` decodes as: `01` little-endian; `F7030000` = type **1015** (`PolyhedralSurfaceZ`); `10000000` = **16** faces; first face `01 EB030000 …` = type **1003** (`PolygonZ`). |
+
+## Geometry-type mapping
+
+| CityGML CM geometry | CityJSON name | CityParquet WKB encoding |
+|---|---|---|
+| `MultiPoint` | `MultiPoint` | `MultiPointZ` |
+| `MultiCurve` | `MultiLineString` | `MultiLineStringZ` |
+| `MultiSurface` | `MultiSurface` | `MultiPolygonZ` |
+| `CompositeSurface` | `CompositeSurface` | `MultiPolygonZ` |
+| `Solid` | `Solid` | `PolyhedralSurfaceZ` |
+| `MultiSolid` | `MultiSolid` | `GeometryCollectionZ` (one `PolyhedralSurfaceZ` per solid) |
+| `CompositeSolid` | `CompositeSolid` | `GeometryCollectionZ` (one `PolyhedralSurfaceZ` per solid) |
+| `ImplicitGeometry` | `GeometryInstance` | `template` struct + referenced geometry template; geometry cell is null |
+
+`MultiSurface` and `CompositeSurface` both encode to `MultiPolygonZ`; the distinction
+between them is recorded in `geometry_properties_lod*.type`, as is the distinction
+between `MultiSolid` and `CompositeSolid`.
+
+:::note[Not every geometry type is GeoParquet-legal]
+GeoParquet admits the OGC Simple Feature types — the 2D codes `1`–`7` and their `Z`
+variants `1001`–`1007`. Because CityParquet geometry is always 3D, the relevant subset
+is `1001`–`1007`: `MultiPointZ`, `MultiLineStringZ` and `MultiPolygonZ` are inside it;
+`PolyhedralSurfaceZ` (1015) is not, and neither is a `GeometryCollectionZ` whose
+members are polyhedral surfaces.
+A column carrying solid-family geometry is therefore a CityParquet-only extension and
+**MUST NOT** be declared in `geo.columns` — see
+[the declaration rule](/specification/metadata), which explains why declaring one
+breaks the whole file rather than just that column.
+
+This is a deliberate trade. A city model's solids are its substance, and flattening
+them to `MultiPolygonZ` purely to satisfy GeoParquet's vocabulary would erase the
+volumetric identity the format exists to carry.
+:::
+
+The WKB is the *analysis geometry*. It does not encode semantic surfaces,
+material/texture mappings, or template references; those live in separate columns or
+sidecar files.
+
+## Geometry properties and semantics
+
+The `geometry_properties_lod*` column carries the CityGML CM geometry information that
+WKB has no slot for — chiefly the **semantic surfaces** (`RoofSurface`, `WallSurface`,
+`GroundSurface`, …) and their attributes. It is a **`STRUCT`**, so the parts whose
+shape is fixed are typed columns a query engine can read without parsing JSON:
+
+```text
+STRUCT<
+  type            VARCHAR,          -- non-null
+  surfaces        JSON,             -- nullable
+  face_semantics  LIST<INT>,        -- nullable; items nullable
+  shells          LIST<LIST<INT>>   -- nullable; where non-null, both nesting
+                                     -- levels (inner LIST<INT> and each INT)
+                                     -- are themselves non-null
+>
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `VARCHAR` | The CM geometry type (`Solid`, `MultiSurface`, …), disambiguating the encodings that share a WKB type. Non-null; **SHOULD** be dictionary-encoded. |
+| `surfaces` | `JSON` | The semantic surface definitions — each an object with a `type` plus any surface attributes (slope, azimuth, extension attributes, …). Kept as `JSON` because surfaces do **not** share a fixed shape (each may carry different attributes). A writer **MUST** preserve the array's **order and member content**, and **MUST NOT** deduplicate entries or drop unreferenced ones: a semantic surface's `parent` / `children` members are *indices into this array*, so any reordering or removal dangles them. Null when the geometry carries no semantics. |
+| `face_semantics` | `LIST<INT>` | One entry per WKB face, in WKB face order; each entry is the index of that face's surface in `surfaces`, or `null` for a face with no semantics. Null when the geometry carries no semantics. |
+| `shells` | `LIST<LIST<INT>>` | Per-solid, then per-shell, face counts, so the shell nesting the WKB flattens can be reconstructed — **one inner list per solid** (a `Solid` has exactly one; `MultiSolid` / `CompositeSolid` one per member, in WKB order), each inner list the face count of each shell, outer shell first: `[[12]]`, `[[12, 4]]`, `[[12], [8, 4]]`. Null for the non-solid types. |
+
+There is no `lod` field: the level of detail is carried by the **column name**
+(`geometry_properties_lod2_2`), so storing it again would be redundant.
+
+The key property: **`face_semantics[i]` is the semantic surface of WKB face `i`**. So
+"the roof faces of this solid" is a positional filter over `face_semantics` (now a
+native `LIST<INT>` a columnar engine can `UNNEST`), and each face's attributes are one
+dereference into `surfaces` — a flat lookup, not a nested-tree traversal. This is the
+primary affordance CityParquet adds for surface-level analysis. Consumers that need
+per-surface semantics **MUST** read `face_semantics` + `surfaces` rather than
+re-deriving surface identity from raw WKB.
+
+**Invariants.** `len(face_semantics)` **MUST** equal the WKB face count, and every
+non-null entry **MUST** index an existing `surfaces` element. Where `shells` is
+non-null it **MUST** have one inner list per solid and its total **MUST** equal that
+same face count. `surfaces` and `face_semantics` are null together when the geometry
+carries no semantics; `shells` is non-null for solid-family geometry regardless.
+
+- **`shells`, where present, is non-null all the way down.** The column itself is
+  nullable (absent for non-solid types), but a *populated* `shells` value has no null
+  entries at either nesting level: each inner list (one per solid) is itself non-null,
+  and every `INT` face count inside an inner list is non-null. There is no
+  partially-known shell structure — a solid's shell partition is either fully recorded
+  or the whole `shells` cell is null.
+- **`face_semantics` items are independently nullable — this is not the same case as
+  `surfaces`/`face_semantics` being null together.** A geometry can carry a non-empty,
+  non-null `surfaces` array (real semantic surface definitions exist) while every entry
+  of a non-null `face_semantics` is itself `null` — no WKB face happens to reference any
+  of them. This is legitimate, not an error: a writer that encounters it **MUST** keep
+  `surfaces` verbatim (the [MUST-preserve rule](#geometry-properties-and-semantics)
+  above) rather than dropping the now-apparently-unreferenced entries, and emits
+  `face_semantics` as a same-length, all-null list — never collapses it to a null
+  `face_semantics` cell, which is reserved for "this geometry carries no semantics at
+  all" (`surfaces` also null).
+
+### Why flat, and how it relates to CityJSON
+
+Two facts explain the shape, and neither is arbitrary:
+
+**`shells` exists because of WKB, not because of semantics.** A WKB
+`PolyhedralSurface` is a flat list of faces; it has no concept of a shell. So the
+shell partition has to be recorded somewhere or a `Solid` cannot be reconstructed at
+all — this is true even for a solid carrying no semantics whatsoever.
+
+**Given `shells`, a nested `face_semantics` would store that partition twice.**
+CityJSON nests its `semantics.values` by shell, mirroring its nested `boundaries`.
+CityParquet's boundaries are flattened into the WKB, so keeping a nesting that mirrors
+a structure the format no longer has would encode the shell partition a second time —
+in a form that can disagree with `shells`, and that loses the counts entirely under
+CityJSON's shorthand where a single `null` stands for a whole shell.
+
+The practical size of the difference is smaller than it looks. For `MultiSurface` and
+`CompositeSurface`, CityJSON's `values` is *already* flat, one entry per surface — so
+`face_semantics` **is** CityJSON's `values` unchanged, and `shells` is absent. The two
+forms diverge only for `Solid`, `MultiSolid` and `CompositeSolid`, which is exactly
+where the WKB flattened the shells:
+
+```jsonc
+// Solid, one shell, 12 faces
+// CityJSON:    "semantics": { "surfaces": [...], "values": [[0,1,1,1,1,1,1,1,1,1,1,3]] }
+// CityParquet: face_semantics = [0,1,1,1,1,1,1,1,1,1,1,3], shells = [[12]]
+
+// MultiSurface, 3 faces — identical in both
+// CityJSON:    "values": [0,1,1]
+// CityParquet: face_semantics = [0,1,1]   (shells = null)
+```
+
+CityJSON's `null` shorthand — a single `null` standing for a whole shell or solid with
+no semantics — is expanded to one `null` per face, so `face_semantics` always has
+exactly one entry per face. Reconstruction therefore yields the expanded per-face form
+rather than the source's shorthand; the two are semantically equal but not byte-equal,
+and [round-trip losslessness](/specification/dataset-package) is defined up to this
+canonicalisation.
+
+Extended semantic surfaces keep their CityJSON `+` prefix **inside** the surface
+object — they are not promoted to column names, so the `ex_` rule does not apply here.
+
+**Example.** The `geometry_properties_lod2_2` struct of a `Solid` whose 12 faces carry
+ground, wall and roof semantics, with reconstruction attributes on the roof surface
+(only `surfaces` is JSON; the rest are typed struct fields):
+
+```jsonc
+{
+  "type": "Solid",
+  "surfaces": [
+    { "type": "GroundSurface" },
+    { "type": "WallSurface", "on_footprint_edge": true },
+    { "type": "WallSurface", "on_footprint_edge": false },
+    { "type": "RoofSurface", "b3_azimut": 297.93, "b3_h_dak_50p": 96.35 }
+  ],
+  "face_semantics": [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3],
+  "shells": [[12]]
+}
+```
+
+The 12-entry `face_semantics` maps one-to-one onto the 12 WKB faces; extended surface
+attributes (`on_footprint_edge`, the `b3_*` reconstruction values) stay inline in
+`surfaces`, since WKB has no slot for them. There is no `lod` field — the column name
+`geometry_properties_lod2_2` already carries it.
+
+## Levels of detail
+
+Level of detail is represented by the **column layout**: one geometry column per LoD,
+each with a matching properties column, so a query for one LoD reads only that column
+([projection pushdown](/design-decisions/geometry-encoding)).
+
+**Suffix grammar.** A geometry column is named `geometry_lod<major>_<minor>`, with a
+matching `geometry_properties_lod<major>_<minor>`, `material_lod<major>_<minor>` and
+`texture_lod<major>_<minor>`. The LoD string's dot becomes an underscore: LoD `2.2` →
+`geometry_lod2_2`.
+
+- **A suffix always carries a minor.** LoD `1` yields `geometry_lod1_0`, never
+  `geometry_lod1`. Column names are therefore uniform, and a reader can parse an LoD
+  out of a column name without special cases.
+- **Every geometry column is suffixed.** There is no un-suffixed `geometry`,
+  `geometry_properties`, `material` or `texture` column.
+- **The LoD lives only in the column name.** The suffix is the single source of truth
+  for a geometry's LoD; it is not stored again in a value. A consumer recovers the LoD
+  by parsing the suffix (`lod2_2` → `2.2`). The exact source spelling is not separately
+  retained, so a source `"1"` and a source `"1.0"` both map to `geometry_lod1_0` and
+  export to the same canonical `"1.0"` — a canonicalisation of the LoD *string*, not its
+  value.
+
+**The primary geometry column is declared, not named by convention.** GeoParquet does
+not require a primary geometry column to be called `geometry`; it names one in
+`geo.primary_column`. CityParquet does the same in the
+[`city.primary_column` metadata key](/specification/metadata). A writer will commonly
+choose the finest analysis geometry — often the highest LoD, which may be a `Solid`;
+`city.primary_column` may name such a column, whereas `geo.primary_column` (GeoParquet's
+own) must be a legal one, so the two can differ. A consumer **MUST** read the
+declaration rather than assume a column name.
+
+**Every geometry column carries an LoD.** The invariant is on the file: every
+non-null `geometry_lod*` cell **MUST** sit in a column with a valid LoD suffix, and
+that suffix is the sole carrier of its LoD — the paired `geometry_properties_lod*`
+stores no `lod` value of its own. There is no default or
+sentinel LoD — a geometry whose detail level is unknown has no representable column,
+so it cannot appear. (A source geometry with no LoD is therefore not encodable without
+an LoD being supplied for it; how a tool obtains one is out of scope.)
+
+**Geometry columns are optional.** A table whose objects have no analysis geometry —
+only implicit geometries, or none at all — simply carries no geometry column, and
+declares no `city.primary_column`.
+
+### LoD0 synthesis (writer feature)
+
+A writer **MAY** synthesise an LoD0 footprint for an object whose source provides no
+LoD0 geometry, by flattening its highest available LoD (typically a `Solid` or
+`MultiSurface`) to a 2D footprint at a representative elevation. This is an opt-in
+**enrichment**, not a decoding of anything the source carried: the exported model gains
+a footprint the source model lacked.
+
+- The synthesised footprint follows the ordinary [suffix grammar](#levels-of-detail)
+  like any other LoD — it lands in `geometry_lod0_0`, never a bare `geometry` column —
+  and gets its own `geometry_properties_lod0_0` (`type: "MultiSurface"`).
+- It is **kept on export** back to CityJSON/CityGML (see
+  [round-trip losslessness](/specification/dataset-package#round-trip-losslessness)):
+  because the source lacked this footprint, the round trip for that object is an
+  enrichment, not an exact reproduction of the source.
+- **Synthesis provenance is distinct from degenerate-geometry diagnostics.** Some
+  inputs project to a degenerate (zero-area) footprint; a writer that drops these rather
+  than writing them logs the fact as a diagnostic — this affects write-time reporting,
+  not the encoding or round-trip contract.
+
+## CRS
+
+The CRS is defined once per file, as **PROJJSON**, in the
+[`city.crs` metadata key](/specification/metadata) (and mirrored into `geo` for
+GeoParquet tools). All geometry columns and the `bbox` column in a file **MUST** share
+that one CRS; there is no per-row or per-column CRS escape hatch (see
+[the CRS decision](/design-decisions/files-crs-metadata)). The key itself follows
+GeoParquet's convention — a PROJJSON object when known, an explicit `null` when the CRS
+is unknown, absent (read as OGC:CRS84) only in files with no CRS-bearing coordinates —
+per the [CRS rules](/specification/metadata).
+
+## Spatial metadata
+
+Every object row **SHOULD** carry a `bbox` in the same CRS as the geometry — a
+[3D struct](/design-decisions/spatial-access) `[xmin, ymin, zmin, xmax, ymax, zmax]`.
+
+- `bbox` is the **union** over the object's whole subtree — its own geometry and
+  every descendant's, not merely the nearest geometry-bearing generation. A
+  `Building` carrying only an LoD0 footprint over solid `BuildingPart`s therefore
+  still spans its parts' full z-range.
+- Where the source declares a per-object extent of its own, that extent is
+  **unioned into** `bbox`. It may only widen the box: a source extent is not
+  guaranteed to contain the geometry it describes, and a box narrower than the
+  geometry would prune the row out of queries that intersect it.
+- `bbox` is null **only** when nothing in the object's subtree has geometry. Null
+  bboxes do not affect Parquet min/max statistics, so row-group pruning stays sound.
+- When a row stores multiple LoDs, `bbox` is the **union over all** of the row's
+  stored geometry, not the highest LoD alone. `bbox` is a pruning aid, and pruning is
+  only sound if the box is a **superset** of everything the row stores: a superset can
+  cause a false-positive read, but a box drawn from the highest LoD alone could exclude
+  a lower-LoD geometry that extends beyond it, and that geometry would then be wrongly
+  pruned away. A producer **MAY** union geometry it did not ultimately store (the
+  object still occupies that extent).
+
+Rows **MAY** be written in **[Hilbert-curve order](/design-decisions/spatial-access)**
+on the `bbox` centroid to improve spatial locality for object-storage range reads and
+row-group pruning. Row-group sizing interacts with pruning selectivity; see the
+[dataset metadata](/specification/metadata).

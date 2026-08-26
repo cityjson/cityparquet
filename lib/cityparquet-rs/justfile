@@ -1,0 +1,97 @@
+# ===========================================================================
+# cityparquet-rs — the crate's own tasks.
+#
+# The BENCHMARK recipes are NOT here. They live in the monorepo's root
+# `justfile`, because the harness spans two trees: its code is a workspace
+# crate (`benchmark/readbench`) and the scripts under `scripts/`,
+# while its corpora, results and plotting project are evidence and live under
+# `../../benchmark/`. Run `just bench`, `just fetch-data`, `just plot-pretty`,
+# `just convert-all`, `just plot-test` and `just scripts-test` from the
+# repository root.
+#
+# `just check` here stays the Rust workspace's gate and is self-contained: it
+# needs no `uv`, no `jq` and no corpus.
+# ===========================================================================
+
+default:
+    @just --list
+
+test:
+    cargo test --workspace
+
+lint:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# Prettier is pinned exactly — a floating minor changes Markdown output and
+# would churn files nobody edited. Keep in step with .githooks/pre-commit.
+PRETTIER := "prettier@3.9.6"
+
+fmt:
+    cargo fmt --all
+    npx --yes {{PRETTIER}} --log-level warn --write "**/*.md"
+
+check: lint test isolation vendor-check
+    cargo fmt --all --check
+    npx --yes {{PRETTIER}} --log-level warn --check "**/*.md"
+
+# Lint + test the vendored submodules under vendor/ (currently just
+# city3d-stac-tool). They are deliberately kept OUT of this Cargo workspace
+# (see `exclude` in Cargo.toml) because each is an independent upstream project
+# with its own lockfile and toolchain — which also means `cargo --workspace`
+# never reaches them, so the local patches carried there (e.g. the
+# `update-collection --items-dir` flag the catalogue driver depends on) and
+# their tests would otherwise go unverified by `just check`. Mirrors the tool's
+# own verification baseline (fmt + clippy + test), and fails loudly rather than
+# skipping when the submodule has not been checked out.
+vendor-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="vendor/city3d-stac-tool"
+    if [[ ! -f "${dir}/Cargo.toml" ]]; then
+        echo "vendor-check: ${dir} is not checked out; run 'git submodule update --init' from the repo root" >&2
+        exit 1
+    fi
+    cargo fmt --manifest-path "${dir}/Cargo.toml" --all --check
+    cargo clippy --manifest-path "${dir}/Cargo.toml" --all-targets --all-features -- -D warnings
+    cargo test --manifest-path "${dir}/Cargo.toml" --all-features
+
+isolation:
+    cargo tree -p cityparquet-schema --prefix none | grep -E '^(arrow-array|arrow |parquet) ' && exit 1 || echo "isolation ok"
+
+fixtures:
+    mkdir -p tests/fixtures
+    curl -sSfo tests/fixtures/delft.city.jsonl https://storage.googleapis.com/cityjson/delft.city.jsonl
+    curl -sSfo tests/fixtures/lod3_railway.city.json https://storage.googleapis.com/cityjson/lod3_railway.city.json
+    # CityGML 2.0 reader fixtures (jklimke/libcitygml, pinned to a commit SHA):
+    # b1_lod2_s = one Building / lod2 gml:Solid (gml:pos coords, no CRS/attrs/semantics);
+    # b1_lod2_cs_w_sem = lod2 Solid + boundedBy Wall/Roof/Ground via xlink (semantics).
+    curl -sSfo tests/fixtures/b1_lod2_s.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_s.gml
+    curl -sSfo tests/fixtures/b1_lod2_cs_w_sem.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/b1_lod2_cs_w_sem.gml
+    # Real CityGML 1.0 fixture (jklimke/libcitygml, same pinned commit as the
+    # 2.0 fixtures above): a Berlin open-data sample whose root <CityModel>
+    # binds the default namespace to .../citygml/1.0. Used by
+    # `citygml_version_error` to prove a non-2.0 document fails with a clear
+    # version message instead of a bogus "invalid CityJSON" JSON parse error.
+    curl -sSfo tests/fixtures/berlin_citygml1.gml https://raw.githubusercontent.com/jklimke/libcitygml/141ed719c0ccdf8691e1dc98aa4f915438292b6b/data/berlin_open_data_sample_data.citygml
+    # First 400 kB of Freiburg's real LoD2 CityGML 2.0 export: a file that
+    # declares its CRS ONLY inside city objects (srsName appears 60,108 times
+    # in the full file, never before the first cityObjectMember at byte 2534).
+    # A RANGE REQUEST (`-r`), not the whole 1.86 GiB — `parse_header` stops at
+    # the first srsName, so the truncated tail is never read, and the host
+    # answers 206. Used by `citygml_srsname_fallback`; this exact shape could
+    # not be found in any smaller published CityGML 2.0 file.
+    #
+    # `--fail-early` alongside `-sSf`: a server that ignored the range and
+    # started streaming 1.86 GiB would otherwise be paid for in full, on every
+    # clone and every CI run, to produce a fixture that is 400 kB either way.
+    curl -sSf --fail-early -r 0-399999 -o tests/fixtures/freiburg_no_preamble_srs.gml https://geoportal.freiburg.de/stadtmodell/20240426_Freiburg_LoD2.gml
+    # Zero-object CityJSONSeq fixture (synthetic, no network fetch needed):
+    # a single CityJSON header line, empty CityObjects/vertices, no feature
+    # lines — the minimal input that scans to zero city-object rows. Used by
+    # `zero_object_input_is_rejected` (crates/core/tests/bytype_layout.rs)
+    # to prove a zero-object conversion is rejected rather than silently
+    # producing an empty package.
+    printf '%s\n' '{"type":"CityJSON","version":"2.0","transform":{"scale":[0.001,0.001,0.001],"translate":[0.0,0.0,0.0]},"CityObjects":{},"vertices":[]}' > tests/fixtures/empty.city.jsonl
+
+interop:
+    ./scripts/interop.sh

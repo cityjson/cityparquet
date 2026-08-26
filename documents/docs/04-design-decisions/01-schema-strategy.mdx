@@ -1,0 +1,60 @@
+---
+title: A · Table & schema strategy
+description: One object per row in per-module wide tables, with typed attribute columns.
+sidebar:
+  label: A · Schema strategy
+---
+
+How CityParquet lays out city objects into tables and columns: one object per row, split into per-module wide tables, with attributes stored as typed columns rather than an entity–attribute–value store, and addresses kept inline as a struct. The prior art weighed here is chiefly 3DCityDB's relational model.
+
+## One city object per row, in per-module wide tables
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** Each CityObject is one row in a wide table, and the dataset is **split into one table per CityGML module** (`building.parquet`, `transportation.parquet`, …; every type in a module shares the module's file — see [the file package](/design-decisions/files-crs-metadata)). Every table has reserved structural columns (`id`, `object_type`, `parents`, `children`, `bbox`, `geometry_lod*`, …) plus typed attribute columns. See the [specification](/specification/object-table-schema) → *Reserved columns*.
+
+**Alternatives considered.**
+
+- (a) a **single wide table** holding every object type, one object per row;
+- (b) **multi-table decomposition** (object + property + geometry tables), the **3DCityDB v5** relational shape;
+- (c) **per-module wide tables** — one file per CityGML 3.0 module, one object per row — chosen (file mechanics in the file package decision).
+
+**Why this.** The target workload is analytical queries read *directly from cloud object storage*. Multi-table normalisation (b) forces **joins on read**, and joins are expensive over HTTP range requests — each join side is a separate scan and fetch. A single all-types table (a) keeps the single scan but mixes heterogeneous object types into one very **sparse** schema (a Building and a Road share few attributes): storage stays cheap — Parquet's run-length/dictionary encoding makes the NULLs nearly free — but predicate/projection pushdown gains little, because a scan still spans every type. Splitting by **module** (c) keeps the single-scan property *per module* and makes each file's column statistics tight, so a query over buildings scans only `building.parquet`. The module is the partition **native to the CityGML CM** CityParquet encodes, and it keeps closely-related peers together — the four Transportation types all specialise `AbstractTransportationSpace` and share most attributes, so folding them into `transportation.parquet` costs little sparsity while sparing the reader four fragmented files. This also suits **hive partitioning**: a reader prunes whole files from their footer statistics — skipping most files without reading their data — and touches only the ones a query needs. 3DCityDB normalises because in a relational database the tables sit on one disk, where a join is cheap and normalisation is good practice; CityParquet targets columnar files read over object storage, where a join means separate scans and range requests, so it keeps an object's data together in one row.
+
+**Trade-off.** Splitting by module means a reader must know which module holds which type, and a cross-module query touches several files rather than one. A query for one leaf type (say roads) scans its whole module file (also railways, waterways, squares), recovering most of the lost selectivity through the `object_type` predicate and row-group statistics. We accept this to buy fast, well-pruned per-module queries with a single uniform rule. To be *measured*, not asserted, in the paper.
+
+**Status.** Decided; the per-module split is the layout the specification defines.
+
+## Typed attribute columns, not EAV or a JSON blob
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** Each attribute is stored as its own typed Parquet column (`BIGINT`/`DOUBLE`/`VARCHAR`/`BOOLEAN`/`DATE`…) — not an entity–attribute–value store, and not a single JSON blob. See the [specification](/specification/object-table-schema) → *Attribute types and promotion*.
+
+**Alternatives considered.**
+
+- (a) one JSON blob column holding all attributes;
+- (b) a **3DCityDB-style EAV** property table with `val_int`/`val_double`/`val_string`/… columns, one property per row;
+- (c) one typed column per attribute — chosen.
+
+**Why this.** The main reason is **predicate and projection pushdown**, and the simplicity of querying over the network: per-attribute typed columns let an engine prune row groups on an attribute predicate and read only the columns a query projects. They also compress far better than the alternatives. An EAV property table is flexible to store — any attribute fits without a schema change — but it pushes that complexity onto every read: reassembling an object means self-joins or pivots, queries grow awkward, and performance suffers. A single JSON blob is opaque to the engine, so it offers no pushdown at all. This is why we do not follow 3DCityDB's `val_int`/`val_double`/… EAV multiplexing.
+
+**Trade-off.** We must handle schema/type inference and rely on consistent attribute names. When the same attribute name has inconsistent types across objects we promote (int→double) or fall back to `VARCHAR`/`JSON` — a small, bounded loss of fidelity, though the inconsistency is a property of the source data that any encoding must confront. We must also track which columns are dynamic attributes; these are recorded in the `attributes` metadata key (every other column is a reserved structural column).
+
+**Status.** Decided and implemented. Union types are a possible future refinement.
+
+## Addresses stored as a struct attribute, not a separate table
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** An address is a reserved `address` column on the object table — a `LIST<STRUCT<…>>`, since an object may have several — not a separate address table. The struct holds a **lean subset of 3DCityDB v5's `ADDRESS` table**: the structured postal fields (`street`, `house_number`, `po_box`, `zip_code`, `city`, `state`, `country`), a `free_text` unstructured fallback, and a `location` holding WKB `MultiPointZ`. 3DCityDB's bookkeeping columns (the id, the cross-system identifier pair, the original-payload `content`/`content_mime_type`) and a JSON escape hatch are deliberately **not** carried. See the [specification](/specification/object-table-schema) → *Addresses*.
+
+**Alternatives considered.** 3DCityDB v5 keeps a dedicated address table with a foreign key to the property table. For the struct itself: invent a field set, adopt 3DCityDB's in full, or adopt a lean subset of it.
+
+**Why this.** A separate address table reintroduces a join-on-read for what is simply a property of the city object; keeping it inline preserves the single-scan property of the one-object-per-row layout above. Basing the fields on 3DCityDB's postal columns means the two models line up where it matters, because 3DCityDB is where most CityGML addresses in practice already live. The bookkeeping and escape-hatch columns were dropped to keep the struct small and queryable — an address is postal data plus a point, and `free_text` absorbs anything unstructured.
+
+`location` is a **WKB `MultiPointZ`**, not a boundary. CityJSON's `address[].location` is a `MultiPoint` whose `boundaries` index the source vertex list, which CityParquet resolves and discards — a preserved index would dangle. A coordinate does not, so storing geometry here is what makes addresses round-trip at all.
+
+**Trade-off.** The lean field set cannot capture a source address member outside the postal fields, and there is no per-address escape hatch, so such members are dropped (a documented round-trip loss). Accepted: the structured fields plus `free_text` cover the practical cases, and the alternative — carrying every 3DCityDB column plus a JSON blob — bloats the struct for data city models rarely populate.
+
+**Status.** Decided, including the struct schema.

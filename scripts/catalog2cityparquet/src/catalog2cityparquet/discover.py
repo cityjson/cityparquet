@@ -1,0 +1,327 @@
+"""Walk the published catalogue: collections, then the items inside them.
+
+Item enumeration has two independent sources — the collection's
+`items.parquet` (fast: DuckDB range-reads it over HTTPS, no download) and the
+object-store listing (slow but complete). Both are consulted and their counts
+compared, because a published index can be badly out of date: at the time of
+writing, `japan-plateau-3d` publishes an `items.parquet` describing 306 of its
+60,471 items. Preferring the fast path unconditionally would convert one item
+in two hundred and report success.
+"""
+
+from __future__ import annotations
+
+import contextlib
+from dataclasses import dataclass
+from pathlib import PurePosixPath
+from urllib.parse import quote, urlsplit
+
+from .ledger import COLLECTION_ID_PATTERN
+
+#: Schemes for which DuckDB needs the httpfs extension. A local path does not,
+#: and asking for it there would contact extensions.duckdb.org for nothing.
+_REMOTE_SCHEMES = ("http://", "https://", "s3://", "gs://", "gcs://", "r2://", "az://")
+
+
+def _get_json(client, url: str):
+    """Fetch `url` and decode it, refusing to read an error page as content.
+
+    The status check is not a formality. The GCS JSON API reports a failure as
+    a **JSON body** — `{"error": {...}}` — so `.json()` succeeds and the
+    payload merely lacks the key the caller wanted: a 503 during a listing
+    yields no `items` and no `nextPageToken`, and the collection comes back
+    cleanly empty. That is recorded as `empty_collection`, a fabricated
+    conformance fact about a collection nobody ever managed to list; and where
+    a stale `items.parquet` also exists, the index is preferred instead. Every
+    reader in this module — all four of them — goes through here. That is a
+    convention, not a guarantee the code enforces: `items_from_collection_links`
+    was added without it and reproduced the defect verbatim, so a new reader
+    must be routed here deliberately.
+    """
+    response = client.get(url)
+    response.raise_for_status()
+    return response.json()
+
+
+@dataclass(frozen=True)
+class Item:
+    collection: str
+    item_id: str
+    href: str
+    media_type: str | None
+    source_item_url: str | None
+
+
+def collection_id_from_href(href: str) -> str:
+    """The collection id a `child` href points at, as a single path component.
+
+    An absolute href is legal in STAC 1.1, so the id is taken from the href's
+    *path* rather than from the string as published. Normalising through
+    `PurePosixPath` also means a traversal collapses to one component — the id
+    later names a ledger file, and the catalogue is not ours to trust.
+    """
+    return PurePosixPath(urlsplit(href or "").path).parent.name
+
+
+def collection_ids(base_url: str, client) -> tuple[list[str], str | None]:
+    """Every child collection id, plus a note naming any href that was unusable.
+
+    An odd entry is skipped rather than raised: one hostile or malformed link
+    must not cost the other 52 collections. Strictness stays where it matters,
+    in `Ledger.record`, which still refuses to write a file for a bad id.
+    """
+    catalog = _get_json(client, f"{base_url}/catalog.json")
+    ids: list[str] = []
+    rejected: list[str] = []
+    for link in catalog.get("links", []):
+        if link.get("rel") != "child":
+            continue
+        cid = collection_id_from_href(link.get("href", ""))
+        if COLLECTION_ID_PATTERN.fullmatch(cid):
+            ids.append(cid)
+        else:
+            rejected.append(link.get("href", ""))
+    note = None
+    if rejected:
+        note = "skipped child link(s) with an unusable collection id: " + ", ".join(
+            repr(h) for h in rejected
+        )
+    return ids, note
+
+
+def fetch_collection(base_url: str, cid: str, client) -> dict:
+    return _get_json(client, f"{base_url}/{cid}/collection.json")
+
+
+def list_item_objects(bucket_api: str, cid: str, client) -> list[str]:
+    """Every object name under `<cid>/items/`, following every page.
+
+    Pagination is mandatory, not an optimisation: the API caps a page at 1000
+    objects and the largest collection has 60,471 items.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    token: str | None = None
+    while True:
+        url = f"{bucket_api}?prefix={quote(cid + '/items/', safe='')}&maxResults=1000"
+        if token:
+            url += f"&pageToken={quote(token, safe='')}"
+        payload = _get_json(client, url)
+        names.extend(obj["name"] for obj in payload.get("items", []))
+        token = payload.get("nextPageToken")
+        if not token:
+            return names
+        if token in seen:
+            # A server repeating a token would otherwise spin here for ever,
+            # which reads exactly like slow progress: no error, no record.
+            raise RuntimeError(
+                f"the listing API repeated pageToken {token!r} for {cid!r}; refusing to loop"
+            )
+        seen.add(token)
+
+
+def items_from_parquet(url: str) -> list[Item] | None:
+    """Read a collection's stac-geoparquet index remotely, or `None`.
+
+    `None` means "no usable index" for every reason alike — the file is absent
+    (20 of the 53 collections publish none), unreadable, or shaped differently
+    from what is read here. The caller falls back to the object listing, so a
+    missing index is never fatal.
+
+    `assets` is a struct whose keys differ per collection, so it is read
+    generically as JSON rather than by a fixed schema.
+
+    The import sits INSIDE the guard: an absent or broken `duckdb` is one more
+    reason there is no usable index here, and letting its `ImportError` escape
+    would reach the orchestrator's broad handler and stamp all 53 collections
+    `convert_failed` — the "one absent binary publishes half the catalogue as
+    unconvertible" mode.
+    """
+    con = None
+    try:
+        import duckdb
+
+        con = duckdb.connect()
+        # httpfs is what lets DuckDB range-read a remote index, and INSTALL
+        # fetches it from extensions.duckdb.org on a clean machine — so it is
+        # asked for only when the url is actually remote. Both statements are
+        # allowed to fail: a read that truly needs them raises below and yields
+        # `None`.
+        if isinstance(url, str) and url.startswith(_REMOTE_SCHEMES):
+            for statement in ("INSTALL httpfs", "LOAD httpfs"):
+                with contextlib.suppress(Exception):
+                    con.execute(statement)
+        rows = con.execute(
+            """
+            SELECT id,
+                   json_extract_string(to_json(assets), '$.data.href') AS href,
+                   json_extract_string(to_json(assets), '$.data.type') AS media_type,
+                   collection
+            FROM read_parquet(?)
+            """,
+            [url],
+        ).fetchall()
+    except Exception:
+        return None
+    finally:
+        if con is not None:
+            con.close()
+    return [
+        Item(collection=r[3] or "", item_id=r[0], href=r[1], media_type=r[2], source_item_url=None)
+        for r in rows
+        if r[1]
+    ]
+
+
+def items_from_listing(
+    base_url: str,
+    bucket_api: str,
+    cid: str,
+    client,
+    names: list[str] | None = None,
+    dropped: list[str] | None = None,
+) -> list[Item]:
+    """Fetch every listed item document and read its single `data` asset.
+
+    `names` lets a caller that has already paginated the listing hand it over
+    rather than pay for 61 more requests on the largest collection.
+
+    `dropped` collects the name of every listed item document that yielded no
+    `Item` — one the origin would not serve, or one carrying no `data` asset.
+    It is an out-parameter for the same reason [`__main__.ItemStats`] is: the
+    names must survive however the loop ends. Without it those documents reach
+    NO ledger record at all, and the histogram's denominator shrinks with no
+    trace of what it lost.
+    """
+    items: list[Item] = []
+    for name in list_item_objects(bucket_api, cid, client) if names is None else names:
+        if not name.endswith(".json"):
+            continue
+        url = f"{base_url}/{name}"
+        try:
+            doc = _get_json(client, url)
+        except Exception:
+            if dropped is not None:
+                dropped.append(name)
+            continue
+        asset = (doc.get("assets") or {}).get("data") or {}
+        href = asset.get("href")
+        if not href:
+            if dropped is not None:
+                dropped.append(name)
+            continue
+        items.append(
+            Item(
+                collection=cid,
+                item_id=doc.get("id") or name.rsplit("/", 1)[-1].removesuffix(".json"),
+                href=href,
+                media_type=asset.get("type"),
+                source_item_url=url,
+            )
+        )
+    return items
+
+
+def items_from_collection_links(
+    base_url: str,
+    cid: str,
+    collection: dict,
+    client,
+    dropped: list[str] | None = None,
+) -> list[Item]:
+    """Last resort: the `rel=item` links the collection document carries.
+
+    Reads through :func:`_get_json` and reports through `dropped` exactly as
+    :func:`items_from_listing` does, and for the same reasons. This is the one
+    branch reached when the object listing is legitimately empty, so a document
+    lost here is lost where nothing else can notice: without the status check a
+    503 is read as a document with no `data` asset, and without the
+    out-parameter the link reaches no ledger record at all — leaving the
+    collection to be published as `empty_collection`.
+    """
+    items: list[Item] = []
+    for link in collection.get("links", []):
+        if link.get("rel") != "item":
+            continue
+        name = f"{cid}/{link.get('href', '').removeprefix('./')}"
+        url = f"{base_url}/{name}"
+        try:
+            doc = _get_json(client, url)
+        except Exception:
+            if dropped is not None:
+                dropped.append(name)
+            continue
+        asset = (doc.get("assets") or {}).get("data") or {}
+        if not asset.get("href"):
+            if dropped is not None:
+                dropped.append(name)
+            continue
+        items.append(Item(cid, doc.get("id", ""), asset["href"], asset.get("type"), url))
+    return items
+
+
+def enumerate_items(
+    base_url: str,
+    bucket_api: str,
+    cid: str,
+    collection: dict,
+    client,
+    dropped: list[str] | None = None,
+) -> tuple[list[Item], str | None]:
+    """Return this collection's items, plus a note when the two sources disagreed.
+
+    Policy: use `items.parquet` only when its row count agrees with the object
+    listing. On any disagreement the listing wins and the discrepancy is
+    reported, so a stale index can never silently truncate a run. The note is
+    returned rather than logged; the caller decides what to do with it.
+
+    The agreement test is a plain equality of the two counts, with no "unless
+    the listing is empty" escape: an empty listing beside an index of N items
+    is a disagreement like any other, and the index used in its place is used
+    knowingly. Preferring it in silence is how a 306-row index for a
+    60,471-item collection came to be trusted.
+
+    A collection that publishes nothing is not an error — 20 of the 53 hold
+    only a `collection.json` — so an empty list comes back instead.
+
+    `dropped` is handed to whichever reader is used — :func:`items_from_listing`
+    or :func:`items_from_collection_links`; see their docstrings.
+    """
+    fast = items_from_parquet(f"{base_url}/{cid}/items.parquet")
+    listed_names = list_item_objects(bucket_api, cid, client)
+    # Only item documents count: the `items/` prefix may hold other files, and
+    # counting them would fake a discrepancy.
+    listed_count = sum(1 for n in listed_names if n.endswith(".json"))
+
+    if fast is not None and len(fast) == listed_count:
+        if fast:
+            return fast, None
+        # Both sources agree the collection holds nothing. The collection
+        # document's own `rel=item` links are the last-resort source, consulted
+        # here for the same reason they are consulted when neither source
+        # exists at all — a zero-row index is not evidence that they are wrong.
+        return items_from_collection_links(base_url, cid, collection, client, dropped), None
+
+    def discrepancy(using: str) -> str | None:
+        if fast is None:
+            return None
+        return (
+            f"stale item index: items.parquet lists {len(fast)} item(s) "
+            f"but the object listing has {listed_count}; using {using}"
+        )
+
+    if listed_count:
+        return (
+            items_from_listing(
+                base_url, bucket_api, cid, client, names=listed_names, dropped=dropped
+            ),
+            discrepancy("the listing"),
+        )
+
+    # Nothing listable: an index we cannot cross-check still beats nothing —
+    # but the disagreement that made it uncheckable travels with it.
+    if fast:
+        return fast, discrepancy("the index, unverified")
+    return items_from_collection_links(base_url, cid, collection, client, dropped), discrepancy(
+        "the collection's own item links"
+    )

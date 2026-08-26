@@ -1,0 +1,28 @@
+---
+title: F · Extensions
+description: CityGML ADEs and CityJSON Extensions, typed where possible, escape-hatched otherwise.
+sidebar:
+  label: F · Extensions
+---
+
+How CityParquet carries extensions to the CityGML conceptual model — a CityGML **ADE**, or the equivalent **CityJSON Extension**: four extension mechanisms map to four encodings, promoting extension data to typed columns where Parquet allows it and falling back to JSON values where it does not.
+
+## Extensions: typed where possible, escape-hatched otherwise
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** Four extension mechanisms, four encodings. See the [specification](/specification/extensions).
+
+- **Extended feature types** → grouped by module like core types: an extension with its own module gets a file named after that module (`Energy` ADE → `energy.parquet`), while a type specialising an existing class joins that class's module file. The CityJSON `+` marker is stripped from file names.
+- **Extended semantic surfaces** → keep their source name, including CityJSON's `+` prefix, *inside* the `geometry_properties_lod*` JSON value (they are not promoted to column names).
+- **Extended attributes** (`+height`) → the leading `+` is replaced with `ex_`, giving column `ex_height`.
+
+The extension declaration itself is referenced via the `extensions` Parquet metadata key.
+
+**Alternatives considered.** Keeping all extension data in the `other` JSON escape hatch vs promoting extension attributes to first-class typed columns. For file names: preserving CityJSON's `+` marker (`+foo.parquet`), transliterating it to a prefix (`ext_foo.parquet`), or dropping it.
+
+**Why this.** Extension attributes benefit from the same typed-column advantages as [core attributes](/design-decisions/schema-strategy), so they are promoted — but Parquet column names cannot carry a leading `+`, hence the `ex_` convention. Extended *semantics* live in JSON values, where `+` is legal, so no renaming is needed there. The `+` is dropped from file names because it is a CityJSON *encoding* marker — it exists to keep extension types from colliding with core types inside a JSON document — and has no meaning in the CM this format encodes, nor any business in a file name.
+
+**Trade-off.** The `ex_` rename accepts a low, bounded risk of colliding with a genuine `ex_`-prefixed attribute. Dropping the `+` from file names accepts a similar bounded risk: an extension type whose name matches a core type would want the same file. Representing CityGML ADE namespaces beyond this convention is not yet solved.
+
+**Status.** Conventions decided and implemented; the CityGML ADE namespace / object-class metadata representation is **open** — see the [Open questions](/open-questions).

@@ -1,0 +1,55 @@
+[package]
+name = "citylake"
+version = "0.1.0"
+edition = "2021"
+description = "A data lake framework and web API for 3D city models (CityJSON) using DuckDB"
+
+[lib]
+name = "citylake"
+path = "src/lib.rs"
+
+[[bin]]
+name = "citylake"
+path = "src/main.rs"
+
+[dependencies]
+# Database
+# Pinned to v1.5.1 because the cityjson community extension is only published for
+# v1.5.0/v1.5.1 (no v1.5.2 build at the time of writing). Bump in lockstep with
+# the cityjson extension release matrix at community-extensions.duckdb.org.
+duckdb = { version = "=1.10501.0", features = ["bundled", "json"] }
+
+# Web framework (only needed for binary/server)
+axum = { version = "0.8", features = ["multipart"], optional = true }
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async
+async-trait = "0.1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# File operations
+tempfile = "3"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+http = "1"
+
+[features]
+default = ["server"]
+server = ["axum", "tower", "tower-http", "tracing-subscriber"]
