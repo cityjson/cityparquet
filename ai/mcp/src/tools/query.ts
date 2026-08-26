@@ -35,12 +35,22 @@ export async function runQuery(
   const results: StatementResult[] = [];
 
   for (const statement of splitStatements(sql)) {
-    const started = Date.now();
+    const started = performance.now();
+    // Set inside the timer callback: true if and only if the timer fired,
+    // which is exactly the question "did this statement time out?" — and,
+    // unlike comparing elapsed wall-clock time against `timeoutMs`, immune to
+    // clock behaviour (a wall-clock step, or a sub-millisecond-early fire at
+    // a tight threshold) that could otherwise make a genuine timeout look
+    // like an ordinary error.
+    let timedOut = false;
     try {
       // `interrupt` is what makes the deadline recoverable: the statement is
       // cancelled inside the engine rather than abandoned, so the connection is
       // still usable afterwards.
-      const timer = setTimeout(() => engine.connection.interrupt(), timeoutMs);
+      const timer = setTimeout(() => {
+        timedOut = true;
+        engine.connection.interrupt();
+      }, timeoutMs);
       let reader;
       try {
         // One row past the cap, never `runAndReadAll`. Reading everything and
@@ -71,18 +81,14 @@ export async function runQuery(
         // a total; a caller who needs one should SELECT count(*).
         rowCount: rows.length,
         truncated,
-        elapsedMs: Date.now() - started,
+        elapsedMs: Math.round(performance.now() - started),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const elapsed = Date.now() - started;
       results.push({
         statement,
-        error:
-          elapsed >= timeoutMs
-            ? `timed out after ${timeoutMs} ms: ${message}`
-            : message,
-        elapsedMs: elapsed,
+        error: timedOut ? `timed out after ${timeoutMs} ms: ${message}` : message,
+        elapsedMs: Math.round(performance.now() - started),
       });
       break; // a script's later statements almost always depend on its earlier ones
     }

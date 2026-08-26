@@ -54,6 +54,13 @@ describe("runQuery", () => {
     expect(result!.rows![0]![0]).toBe("<VARCHAR 5000 bytes>");
   });
 
+  it("does not mark an exact-boundary result truncated", async () => {
+    const [result] = await runQuery(engine, "SELECT * FROM range(10)", { maxRows: 10 });
+    expect(result!.rows).toHaveLength(10);
+    expect(result!.rowCount).toBe(10);
+    expect(result!.truncated).toBe(false);
+  });
+
   it("times out without killing the engine", async () => {
     const [result] = await runQuery(engine, "SELECT count(*) FROM range(100000000000)", { timeoutMs: 500 });
     expect(result!.error).toMatch(/timed out/i);
