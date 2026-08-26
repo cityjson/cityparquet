@@ -29,6 +29,7 @@ with the reasoning in `04-design-decisions/` and the genuinely unsettled parts i
 | `benchmark/`           | Three benchmark families: `formats/` (cross-format), `databases/` (vs cjdb / 3DCityDB v5), `plot/` (renderers) | `benchmark/README.md`                       |
 | `test/`                | `TESTING.md`, the cross-module manual walkthrough, and `run-all.sh`                                            | —                                           |
 | `ai/design-notes/`     | Dated, unmaintained plans and specs — the record of decisions, not a description of the code                   | `ai/design-notes/README.md`                 |
+| `ai/mcp/`              | The **MCP server** — the specification, the function references, dataset description and sandboxed SQL, for agents | its `CLAUDE.md`                             |
 | `example/`             | Small inputs; anything worth measuring is fetch-scripted                                                       | —                                           |
 
 ## How the pieces fit together
@@ -60,7 +61,8 @@ scripts and renderers it belongs to. `lib/citylake` is a third. Consequences:
 
 - `cd lib/cityparquet-rs && just check` gates the **library alone** and is
   self-contained: no `uv`, no `jq`, no corpus. That is the point of the split.
-  The root `just check` runs both workspaces plus the two harness suites.
+  The root `just check` runs both workspaces, the two harness suites, and the
+  MCP server's gate.
 - `benchmark/readbench` path-depends on `../../lib/cityparquet-rs/crates/core`
   and **must repeat the `[patch.crates-io] cjseq` line** — `[patch]` is honoured
   only in the workspace root being built, and without it the benchmark would
@@ -94,7 +96,8 @@ just hooks                          # rustfmt + Prettier on staged files, one-of
 cd lib/cityparquet-rs && just check  # the Rust gate
 just plot-test                       # benchmark plotting suite   (needs uv)
 just scripts-test                    # benchmark shell suites     (needs jq)
-just check                           # all three, from the root
+just mcp-check                       # the MCP server's gate      (needs pnpm)
+just check                           # all four, from the root
 just docs-build                      # the specification site     (needs pnpm)
 ```
 

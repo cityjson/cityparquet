@@ -78,6 +78,7 @@ check:
     cargo fmt {{READBENCH_CARGO}} --check
     just plot-test
     just scripts-test
+    just mcp-check
 
 # The cross-module manual walkthrough, automated. Needs both DuckDB
 # extensions built — see test/TESTING.md for what each step proves.
@@ -724,3 +725,14 @@ catalog-test:
 # two extension function references. Needs the submodules — `just setup` first.
 mcp-corpus:
     cd ai/mcp && pnpm install --frozen-lockfile && pnpm corpus
+
+# The MCP server's gate: typecheck, tests, and a freshness check on the
+# corpus. The freshness check compares corpus content only, never the
+# `generatedFrom` provenance stamp (which is a `git describe` and so changes
+# on every commit) — see ai/mcp/src/check-corpus-fresh.ts. It builds the
+# comparison in memory and never writes corpus/corpus.json, so this leaves the
+# working tree clean whether it passes or fails. Needs the submodules, for the
+# same reason mcp-corpus does.
+mcp-check:
+    cd ai/mcp && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test
+    cd ai/mcp && pnpm corpus:check
