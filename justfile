@@ -719,3 +719,8 @@ catalog-histogram OUT='out/cityparquet-catalog':
 # That made this recipe exit 2 on a healthy tree.
 catalog-test:
     uv run --directory scripts/catalog2cityparquet --extra dev pytest -v
+
+# Regenerate the MCP server's documentation corpus from documents/docs and the
+# two extension function references. Needs the submodules — `just setup` first.
+mcp-corpus:
+    cd ai/mcp && pnpm install --frozen-lockfile && pnpm corpus
