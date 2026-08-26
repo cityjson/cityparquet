@@ -173,6 +173,17 @@ export class SchemaCache {
     this.run = run;
   }
 
+  /**
+   * Drop what was learned about the sources this statement reads.
+   *
+   * Importing a different file under a name already used would otherwise keep
+   * completing the old file's columns: the cache keys on the expression text,
+   * and that has not changed.
+   */
+  forget(sql: string): void {
+    for (const expression of tableExpressions(sql)) this.columnsByExpression.delete(expression);
+  }
+
   /** Start fetching whatever this statement reads, without waiting for it. */
   warm(sql: string): void {
     void this.functions();

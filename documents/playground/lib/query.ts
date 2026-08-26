@@ -162,6 +162,49 @@ export async function runQuery(session: Session, sql: string): Promise<QueryResu
 }
 
 /**
+ * The query plan, without running the query.
+ *
+ * `EXPLAIN` binds the statement, which for a remote file means reading its
+ * footer — so it is cheap in rows but not free in bytes, and it can hang for
+ * exactly the reason a query can. It therefore takes the same deadline rather
+ * than going through `rowsOf` bare, where a host with broken CORS would hold
+ * the queue with nothing shown.
+ */
+export async function explainQuery(session: Session, sql: string): Promise<string> {
+  const statement = sql.trim().replace(/;\s*$/, "");
+  if (!statement) return "";
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const rows = await Promise.race([
+      rowsOf(session, `EXPLAIN ${statement}`),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Timeout after ${Math.round(QUERY_TIMEOUT_MS / 1000)}s.`)),
+          QUERY_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    // DuckDB answers with one row per plan section, keyed by `explain_key`;
+    // the tree itself is the pre-formatted text in `explain_value`.
+    return rows
+      .map((row) => String(row.explain_value ?? ""))
+      .filter(Boolean)
+      .join("\n\n")
+      .trimEnd();
+  } catch (error) {
+    const message = describe(error);
+    throw new QueryError({
+      kind: classify(message),
+      message,
+      elapsedMs: 0,
+    });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
  * Run a statement and get plain rows back, with no deadline and no byte
  * accounting.
  *

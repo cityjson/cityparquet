@@ -143,6 +143,9 @@ const { config } = data;
     .cp-schema {
       order: 3;
     }
+    .cp-sidebar-body {
+      max-height: 24rem;
+    }
   }
 
   /* Presets */
@@ -206,6 +209,340 @@ const { config } = data;
     font-size: 0.75rem;
     line-height: 1.45;
     color: var(--cp-dim);
+  }
+
+  /* Sidebar tabs */
+  .cp-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    min-width: 0;
+  }
+
+  .cp-tabs {
+    display: flex;
+    gap: 0.25rem;
+    border-bottom: 1px solid var(--cp-border);
+  }
+
+  .cp-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.55rem;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--cp-dim);
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+    /* Sits on the container's own border rather than above it. */
+    margin-bottom: -1px;
+  }
+
+  .cp-tab:hover {
+    color: inherit;
+  }
+
+  .cp-tab-active {
+    color: inherit;
+    font-weight: 600;
+    border-bottom-color: var(--cp-accent);
+  }
+
+  .cp-tab-count {
+    padding: 0.05rem 0.35rem;
+    border-radius: 999px;
+    background: var(--cp-hover);
+    font-family: var(--cp-mono);
+    font-size: 0.68rem;
+    font-weight: 400;
+  }
+
+  .cp-sidebar-body {
+    max-height: 41rem;
+    overflow-y: auto;
+  }
+
+  /* Saved queries */
+  .cp-saved-list,
+  .cp-imported-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .cp-saved {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.15rem 0.2rem 0.15rem 0.4rem;
+    border: 1px solid transparent;
+    border-radius: 4px;
+  }
+
+  .cp-saved:hover {
+    background: var(--cp-hover);
+  }
+
+  .cp-saved-active {
+    border-color: var(--cp-accent);
+    background: color-mix(in srgb, var(--cp-accent) 10%, transparent);
+  }
+
+  .cp-saved-open {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    padding: 0.35rem 0.15rem;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .cp-saved-name {
+    font-size: 0.82rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cp-saved-date {
+    font-size: 0.7rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-saved-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0.35rem 0.4rem;
+    border: 1px solid var(--cp-accent);
+    border-radius: 3px;
+    background: var(--cp-page);
+    color: inherit;
+    font: inherit;
+    font-size: 0.82rem;
+  }
+
+  /* Revealed on hover or focus: three glyphs per row, always visible, would
+     make the list read as a toolbar rather than a list of queries. */
+  .cp-saved-actions {
+    display: flex;
+    gap: 0.1rem;
+    flex: none;
+    opacity: 0;
+  }
+
+  .cp-saved:hover .cp-saved-actions,
+  .cp-saved-actions:focus-within {
+    opacity: 1;
+  }
+
+  .cp-saved-action {
+    padding: 0.15rem 0.3rem;
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: var(--cp-dim);
+    font: inherit;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .cp-saved-action:hover {
+    background: var(--cp-hover);
+    color: inherit;
+  }
+
+  /* Imported files */
+  .cp-imported {
+    padding: 0.5rem 0.55rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+  }
+
+  .cp-imported-head {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .cp-imported-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-family: var(--cp-mono);
+    font-size: 0.75rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cp-imported-meta {
+    margin: 0.2rem 0 0;
+    font-size: 0.7rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-imported-error {
+    margin: 0.35rem 0 0;
+    font-size: 0.7rem;
+    line-height: 1.45;
+    color: #d94f4f;
+  }
+
+  .cp-imported-use {
+    margin-top: 0.4rem;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 3px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+
+  .cp-imported-use:hover {
+    background: var(--cp-hover);
+  }
+
+  /* Editor toolbar */
+  .cp-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+  }
+
+  .cp-toolbar-gap {
+    flex: 1 1 auto;
+  }
+
+  .cp-tool-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.3rem 0.6rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 0.78rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .cp-tool-button:hover:not(:disabled) {
+    background: var(--cp-hover);
+  }
+
+  .cp-tool-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .cp-export {
+    position: relative;
+  }
+
+  .cp-export-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 0.3rem);
+    z-index: 5;
+    min-width: 15rem;
+    padding: 0.3rem;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    /* Opaque: it floats over the editor. */
+    background: var(--cp-page);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+  }
+
+  .cp-export-note {
+    margin: 0.2rem 0.35rem 0.4rem;
+    font-size: 0.7rem;
+    line-height: 1.45;
+    color: var(--cp-dim);
+  }
+
+  .cp-export-item {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.3rem 0.35rem;
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 0.78rem;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .cp-export-item:hover {
+    background: var(--cp-hover);
+  }
+
+  .cp-export-ext {
+    font-family: var(--cp-mono);
+    font-size: 0.7rem;
+    color: var(--cp-dim);
+  }
+
+  /* Query plan */
+  .cp-plan {
+    margin: 0;
+    border: 1px solid var(--cp-border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .cp-plan figcaption {
+    padding: 0.4rem 0.7rem;
+    border-bottom: 1px solid var(--cp-border);
+    background: var(--cp-surface);
+    font-size: 0.75rem;
+    color: var(--cp-dim);
+  }
+
+  .cp-plan figcaption code {
+    font-family: var(--cp-mono);
+  }
+
+  .cp-plan pre {
+    margin: 0;
+    padding: 0.75rem;
+    max-height: min(60vh, 34rem);
+    overflow: auto;
+    font-family: var(--cp-mono);
+    font-size: 0.72rem;
+    line-height: 1.5;
+  }
+
+  .cp-notice {
+    margin: 0;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--cp-border);
+    border-left: 2px solid var(--cp-accent);
+    border-radius: 4px;
+    background: var(--cp-surface);
+    font-size: 0.78rem;
+    line-height: 1.5;
   }
 
   /* Editor */

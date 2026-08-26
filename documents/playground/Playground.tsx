@@ -6,13 +6,35 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EXTENSION_SOURCE } from "./config";
 import { SchemaCache, cityParquetCompletion } from "./lib/completion";
 import { createSession, describe, type Session } from "./lib/duckdb";
-import { QueryError, describeQuery, runQuery, rowsOf, type QueryResult } from "./lib/query";
+import {
+  IMPORT_ACCEPT,
+  download,
+  exportQuery,
+  explainExportFailure,
+  forgetFile,
+  importFile,
+  starterSql,
+  type ExportFormat,
+  type ImportedFile,
+} from "./lib/files";
+import {
+  QueryError,
+  describeQuery,
+  explainQuery,
+  runQuery,
+  rowsOf,
+  type QueryResult,
+} from "./lib/query";
+import { SavedQueries, deriveName, type SavedQuery } from "./lib/saved";
 import { buildHash, parseHash } from "./lib/share";
 import { DEFAULT_PRESET_ID, PRESETS, findPreset, type Preset } from "./presets";
 
 import Editor, { type EditorHandle } from "./components/Editor";
+import EditorToolbar from "./components/EditorToolbar";
+import ImportedFiles from "./components/ImportedFiles";
 import PresetList from "./components/PresetList";
 import ResultsTable from "./components/ResultsTable";
+import SavedList from "./components/SavedList";
 import SchemaPanel from "./components/SchemaPanel";
 import StatusBar from "./components/StatusBar";
 
@@ -25,6 +47,9 @@ interface Column {
   name: string;
   type: string;
 }
+
+/** Which list the left column is showing. */
+type Tab = "examples" | "saved" | "files";
 
 /** The query the page opens with: a shared link if there is one, else a preset. */
 function initialState(): { sql: string; presetId: string | null } {
@@ -44,6 +69,19 @@ export default function Playground() {
   const [columns, setColumns] = useState<Column[]>([]);
   const [schemaLoading, setSchemaLoading] = useState(false);
   const [schemaError, setSchemaError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("examples");
+  const [plan, setPlan] = useState<string | null>(null);
+  const [imported, setImported] = useState<ImportedFile[]>([]);
+  const [exporting, setExporting] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Created once, and only in the browser: constructing it touches
+  // `localStorage`, which is what throws when a browser refuses storage.
+  const [store] = useState(() => SavedQueries.forBrowser());
+  const [saved, setSaved] = useState<SavedQuery[]>([]);
+  useEffect(() => setSaved(store.list()), [store]);
+
+  const fileInput = useRef<HTMLInputElement | null>(null);
 
   // The editor's current text, readable from callbacks without re-binding them.
   const sqlRef = useRef(sql);
@@ -101,6 +139,7 @@ export default function Playground() {
     setError(null);
     try {
       const next = await runQuery(boot.session, statement);
+      setPlan(null);
       setResult(next);
     } catch (cause) {
       setResult(null);
@@ -159,6 +198,7 @@ export default function Playground() {
   const selectPreset = useCallback((preset: Preset) => {
     setQueryState({ sql: preset.sql, presetId: preset.id });
     setError(null);
+    setPlan(null);
   }, []);
 
   // Editing a preset makes the query the user's own, so the share link switches
@@ -174,6 +214,113 @@ export default function Playground() {
   const insertColumn = useCallback((name: string) => {
     editorRef.current?.insertAtCursor(name);
   }, []);
+
+  // Running or explaining replaces whatever the other one left on screen, so
+  // the panel below the editor always answers the last thing that was asked.
+  const explain = useCallback(async () => {
+    if (boot.status !== "ready" || running) return;
+    const statement = sqlRef.current.trim();
+    if (!statement) return;
+
+    setRunning(true);
+    setError(null);
+    try {
+      const text = await explainQuery(boot.session, statement);
+      setResult(null);
+      setPlan(text || "DuckDB returned no plan for that statement.");
+    } catch (cause) {
+      setPlan(null);
+      setError(cause instanceof Error ? cause : new Error(String(cause)));
+    } finally {
+      setRunning(false);
+    }
+  }, [boot, running]);
+
+  const copy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(sqlRef.current);
+      return true;
+    } catch {
+      // Denied permission, or an insecure context. There is no fallback worth
+      // having: `execCommand("copy")` needs a selection the editor already owns.
+      return false;
+    }
+  }, []);
+
+  const save = useCallback(() => {
+    const statement = sqlRef.current.trim();
+    if (!statement) return;
+    const preset = presetId ? findPreset(presetId) : undefined;
+    setSaved(store.save(statement, preset?.title ?? deriveName(statement), Date.now()));
+    setTab("saved");
+    setNotice(
+      store.available ? null : "Saved for this session only — this browser is not storing data.",
+    );
+  }, [presetId, store]);
+
+  const openSaved = useCallback((query: SavedQuery) => {
+    setQueryState({ sql: query.sql, presetId: null });
+    setError(null);
+    setPlan(null);
+  }, []);
+
+  const runImport = useCallback(
+    async (files: FileList | null) => {
+      if (!files || boot.status !== "ready") return;
+      setNotice(null);
+      for (const file of Array.from(files)) {
+        const next = await importFile(boot.session, file);
+        // The completion cache keys on the expression text, and an expression
+        // naming this file may already be in it from a previous import. Drop it
+        // so the new file's columns are the ones offered.
+        schemaCache?.forget(starterSql(next));
+        setImported((current) => [next, ...current.filter((f) => f.name !== next.name)]);
+      }
+      setTab("files");
+    },
+    [boot, schemaCache],
+  );
+
+  // An untouched preset is replaced; anything hand-written is inserted into
+  // instead. Overwriting SQL someone has written to make room for a starter
+  // query destroys work to save a click.
+  const useImported = useCallback(
+    (sql: string) => {
+      if (presetId) setQueryState({ sql, presetId: null });
+      else editorRef.current?.insertAtCursor(sql);
+      setPlan(null);
+    },
+    [presetId],
+  );
+
+  const forget = useCallback(
+    async (name: string) => {
+      if (boot.status !== "ready") return;
+      await forgetFile(boot.session, name);
+      setImported((current) => current.filter((file) => file.name !== name));
+    },
+    [boot],
+  );
+
+  const exportAs = useCallback(
+    async (format: ExportFormat) => {
+      if (boot.status !== "ready" || exporting) return;
+      const statement = sqlRef.current.trim();
+      if (!statement) return;
+
+      setExporting(format.label);
+      setNotice(null);
+      try {
+        download(await exportQuery(boot.session, statement, format));
+      } catch (cause) {
+        const message = describe(cause);
+        setNotice(explainExportFailure(format, message) ?? message);
+      } finally {
+        setExporting(null);
+      }
+    },
+    [boot, exporting],
+  );
 
   return (
     <div className="cp-playground">
@@ -217,9 +364,73 @@ export default function Playground() {
 
       {boot.status === "ready" && (
         <div className="cp-layout">
-          <PresetList presets={PRESETS} activeId={presetId} onSelect={selectPreset} />
+          <div className="cp-sidebar">
+            <div className="cp-tabs" role="tablist" aria-label="Queries and files">
+              {(
+                [
+                  ["examples", "Examples", PRESETS.length],
+                  ["saved", "Saved", saved.length],
+                  ["files", "Files", imported.length],
+                ] as const
+              ).map(([id, label, count]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === id}
+                  className={tab === id ? "cp-tab cp-tab-active" : "cp-tab"}
+                  onClick={() => setTab(id)}
+                >
+                  {label}
+                  {count > 0 && <span className="cp-tab-count">{count}</span>}
+                </button>
+              ))}
+            </div>
+
+            <div className="cp-sidebar-body">
+              {tab === "examples" && (
+                <PresetList presets={PRESETS} activeId={presetId} onSelect={selectPreset} />
+              )}
+              {tab === "saved" && (
+                <SavedList
+                  queries={saved}
+                  activeSql={sql.trim()}
+                  available={store.available}
+                  onSelect={openSaved}
+                  onRename={(id, name) => setSaved(store.rename(id, name))}
+                  onRemove={(id) => setSaved(store.remove(id))}
+                />
+              )}
+              {tab === "files" && (
+                <ImportedFiles files={imported} onUse={useImported} onForget={forget} />
+              )}
+            </div>
+          </div>
 
           <main className="cp-main">
+            <EditorToolbar
+              onCopy={copy}
+              onSave={save}
+              onExplain={explain}
+              onImport={() => fileInput.current?.click()}
+              onExport={exportAs}
+              enabled={!running && !exporting}
+              storageAvailable={store.available}
+              exporting={exporting}
+            />
+            <input
+              ref={fileInput}
+              type="file"
+              accept={IMPORT_ACCEPT}
+              multiple
+              className="cp-sr"
+              onChange={(event) => {
+                void runImport(event.target.files);
+                // Cleared so re-picking the same file fires `change` again.
+                event.target.value = "";
+              }}
+            />
+
             <div className="cp-editor-shell">
               <Editor
                 value={sql}
@@ -233,11 +444,22 @@ export default function Playground() {
 
             <StatusBar result={result} extensions={boot.session.extensions} running={running} />
 
+            {notice && <p className="cp-notice">{notice}</p>}
+
             {error && <ErrorPanel error={error} />}
 
-            {!error && result && <ResultsTable result={result} />}
+            {!error && plan && (
+              <figure className="cp-plan">
+                <figcaption>
+                  Query plan — <code>EXPLAIN</code> only, so no rows were read.
+                </figcaption>
+                <pre>{plan}</pre>
+              </figure>
+            )}
 
-            {!error && !result && !running && (
+            {!error && !plan && result && <ResultsTable result={result} />}
+
+            {!error && !plan && !result && !running && (
               <p className="cp-empty">
                 Pick an example on the left, or write your own, and press Run.
               </p>

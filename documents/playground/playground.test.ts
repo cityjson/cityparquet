@@ -12,6 +12,16 @@ import {
   tableExpressions,
 } from "./lib/completion";
 import { serialiser } from "./lib/serialise";
+import {
+  EXPORT_FORMATS,
+  IMPORT_ACCEPT,
+  IMPORT_FORMATS,
+  explainExportFailure,
+  formatFor,
+  safeName,
+  starterSql,
+} from "./lib/files";
+import { SAVED_KEY, SAVED_LIMIT, SAVED_VERSION, SavedQueries, deriveName } from "./lib/saved";
 import { PRESETS, DEFAULT_PRESET_ID, findPreset } from "./presets";
 import { buildHash, decodeSql, encodeSql, parseHash } from "./lib/share";
 import { formatBytes } from "./lib/bytes";
@@ -424,5 +434,202 @@ describe("running one statement at a time", () => {
 
     await expect(failed).rejects.toThrow("memory access out of bounds");
     expect(await after).toBe("ran anyway");
+  });
+});
+
+describe("naming a saved query", () => {
+  it("prefers the leading comment, which is what a preset explains itself with", () => {
+    expect(deriveName("-- Roof types across the country\nSELECT 1")).toBe(
+      "Roof types across the country",
+    );
+  });
+
+  it("falls back to the first line of SQL", () => {
+    expect(deriveName("SELECT count(*) FROM t;")).toBe("SELECT count(*) FROM t");
+  });
+
+  it("truncates rather than filling the sidebar with one name", () => {
+    const name = deriveName(`-- ${"very long ".repeat(20)}`);
+    expect(name.length).toBeLessThanOrEqual(60);
+    expect(name.endsWith("…")).toBe(true);
+  });
+
+  it("has something to say about a query that is only whitespace", () => {
+    expect(deriveName("   \n\n  ")).toBe("Untitled query");
+  });
+});
+
+describe("saved queries", () => {
+  /** A Storage that behaves, for the cases where storage works. */
+  const fakeStorage = (): Storage => {
+    const map = new Map<string, string>();
+    return {
+      get length() {
+        return map.size;
+      },
+      clear: () => map.clear(),
+      getItem: (key: string) => map.get(key) ?? null,
+      key: (index: number) => [...map.keys()][index] ?? null,
+      removeItem: (key: string) => void map.delete(key),
+      setItem: (key: string, value: string) => void map.set(key, value),
+    } as Storage;
+  };
+
+  it("keeps a query and reads it back", () => {
+    const store = new SavedQueries(fakeStorage());
+    store.save("SELECT 1", "One", 1_000);
+    expect(store.list().map((q) => [q.name, q.sql])).toEqual([["One", "SELECT 1"]]);
+  });
+
+  it("survives a new store over the same storage, which is the whole point", () => {
+    const storage = fakeStorage();
+    new SavedQueries(storage).save("SELECT 1", "One", 1_000);
+    expect(new SavedQueries(storage).list()).toHaveLength(1);
+  });
+
+  it("updates rather than duplicating when the same SQL is saved twice", () => {
+    const store = new SavedQueries(fakeStorage());
+    store.save("SELECT 1", "One", 1_000);
+    const after = store.save("SELECT 1", "Renamed", 2_000);
+    expect(after).toHaveLength(1);
+    expect(after[0].name).toBe("Renamed");
+  });
+
+  it("lists newest first", () => {
+    const store = new SavedQueries(fakeStorage());
+    store.save("SELECT 1", "Older", 1_000);
+    store.save("SELECT 2", "Newer", 2_000);
+    expect(store.list().map((q) => q.name)).toEqual(["Newer", "Older"]);
+  });
+
+  it("renames and removes by id", () => {
+    const store = new SavedQueries(fakeStorage());
+    const [saved] = store.save("SELECT 1", "One", 1_000);
+    expect(store.rename(saved.id, "Two")[0].name).toBe("Two");
+    expect(store.remove(saved.id)).toEqual([]);
+  });
+
+  it("drops the oldest at the limit instead of refusing to save", () => {
+    const store = new SavedQueries(fakeStorage());
+    for (let i = 0; i < SAVED_LIMIT + 5; i++) store.save(`SELECT ${i}`, `q${i}`, 1_000 + i);
+    const list = store.list();
+    expect(list).toHaveLength(SAVED_LIMIT);
+    expect(list[0].name).toBe(`q${SAVED_LIMIT + 4}`);
+  });
+
+  it("ignores data written by a version that is not this one", () => {
+    const storage = fakeStorage();
+    storage.setItem(SAVED_KEY, JSON.stringify({ version: 999, queries: [{ id: "q1" }] }));
+    expect(new SavedQueries(storage).list()).toEqual([]);
+  });
+
+  it("ignores anything malformed rather than rendering it", () => {
+    const storage = fakeStorage();
+    storage.setItem(
+      SAVED_KEY,
+      JSON.stringify({ version: SAVED_VERSION, queries: [{ id: "q1" }, null, "nonsense"] }),
+    );
+    expect(new SavedQueries(storage).list()).toEqual([]);
+  });
+
+  it("still runs when the browser refuses to store anything", () => {
+    // Private mode: the list is right for this session and simply does not last.
+    const store = new SavedQueries(null);
+    expect(store.available).toBe(false);
+    expect(store.save("SELECT 1", "One", 1_000)).toHaveLength(1);
+    expect(store.list()).toEqual([]);
+  });
+
+  it("does not throw when storage throws on write", () => {
+    const storage = {
+      ...fakeStorage(),
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+    } as Storage;
+    const store = new SavedQueries(storage);
+    expect(() => store.save("SELECT 1", "One", 1_000)).not.toThrow();
+  });
+});
+
+describe("importing a local file", () => {
+  it("picks the reader from the longest matching suffix", () => {
+    // `.city.jsonl` must not be read as `.json`-something.
+    expect(formatFor("delft.city.jsonl")?.reader).toBe("read_cityjsonseq");
+    expect(formatFor("delft.city.json")?.reader).toBe("read_cityjson");
+    expect(formatFor("building.parquet")?.reader).toBe("read_parquet");
+    expect(formatFor("delft.fcb")?.reader).toBe("read_flatcitybuf");
+    expect(formatFor("notes.txt")).toBeNull();
+  });
+
+  it("is case-insensitive, because file managers are not consistent", () => {
+    expect(formatFor("BUILDING.PARQUET")?.reader).toBe("read_parquet");
+  });
+
+  it("makes a name that cannot break out of the quotes it is pasted into", () => {
+    // The name lands inside read_parquet('…'), so a quote would end the string.
+    expect(safeName("my data'; DROP TABLE x; --.parquet")).not.toContain("'");
+    expect(safeName("a file with spaces.parquet")).toBe("a_file_with_spaces.parquet");
+    expect(safeName("/tmp/nested/path/file.parquet")).toBe("file.parquet");
+    expect(safeName("...")).toBe("...");
+    expect(safeName("'''")).toBe("imported");
+  });
+
+  it("reads text formats whole and binary ones lazily", () => {
+    // A text reader walks the file start to end and hangs on a lazy handle;
+    // Parquet seeks, which is what makes a local package cheap to open.
+    const by = (id: string) => IMPORT_FORMATS.find((f) => f.id === id)!;
+    expect(by("cityparquet").registration).toBe("handle");
+    expect(by("flatcitybuf").registration).toBe("handle");
+    expect(by("cityjson").registration).toBe("buffer");
+    expect(by("cityjsonseq").registration).toBe("buffer");
+  });
+
+  it("offers every known extension to the file picker", () => {
+    for (const format of IMPORT_FORMATS) {
+      for (const extension of format.extensions) expect(IMPORT_ACCEPT).toContain(extension);
+    }
+  });
+
+  it("starts the reader from a query that names the file", () => {
+    const sql = starterSql({
+      name: "delft.parquet",
+      format: IMPORT_FORMATS[0],
+      size: 1,
+      columns: [],
+      error: null,
+    });
+    expect(sql).toContain("read_parquet('delft.parquet')");
+    expect(sql).toMatch(/\blimit\b/i);
+  });
+});
+
+describe("explaining an export that did not work", () => {
+  const city = EXPORT_FORMATS.find((f) => f.id === "cityjsonseq")!;
+  const csv = EXPORT_FORMATS.find((f) => f.id === "csv")!;
+
+  it("names the writer that reports rows and writes nothing", () => {
+    // The published cityjson build does exactly this in DuckDB-Wasm, and
+    // handing the reader an empty file would be the worst of the outcomes.
+    const said = explainExportFailure(
+      city,
+      "The CityJSONSeq writer reported 20 rows but produced an empty file.",
+    );
+    expect(said).toContain("empty file");
+    expect(said).toContain("Parquet or CSV");
+  });
+
+  it("blames the build when the writer is not in it", () => {
+    expect(
+      explainExportFailure(city, "Copy Function with name cityjsonseq does not exist"),
+    ).toContain("lag");
+  });
+
+  it("explains that a city model needs city columns", () => {
+    expect(explainExportFailure(city, "Binder Error: no column named id")).toContain("id");
+  });
+
+  it("has nothing to add about a plain SQL mistake in a plain format", () => {
+    expect(explainExportFailure(csv, "Parser Error: syntax error at or near")).toBeNull();
   });
 });

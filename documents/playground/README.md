@@ -12,9 +12,10 @@ which it would not survive.
 ```
 config.ts     the data host, the extension source, the caps and the deadline
 presets.ts    the example queries
-lib/          duckdb (boot + extensions), query (run + Arrow), completion,
-              bytes, share
-components/   Editor, PresetList, ResultsTable, SchemaPanel, StatusBar
+lib/          duckdb (boot + extensions), serialise, query (run + Arrow),
+              completion, saved, files, bytes, share
+components/   Editor, EditorToolbar, PresetList, SavedList, ImportedFiles,
+              ResultsTable, SchemaPanel, StatusBar
 ```
 
 ## One statement at a time
@@ -155,6 +156,48 @@ reads the same file, so a session pays for it about twice. It is warmed on the
 same 700 ms debounce the schema panel uses, and the completion source waits
 1.5 s for it before offering what it already has — a popup that hangs is worse
 than one missing its columns for a keystroke.
+
+## Saved queries
+
+`Save in browser` keeps the current query in `localStorage` under
+`cityparquet:playground:saved`, and the sidebar's **Saved** tab lists them. The
+prefix is not decoration: GitHub project pages share one origin, so
+`cityjson.github.io` is every other cityjson project's storage as well.
+
+`lib/saved.ts` is handed its `Storage` rather than reaching for `localStorage`,
+which keeps it testable outside a browser and makes the failure modes explicit.
+They are real ones — a page in private mode throws from the _accessor_, not just
+the write — and all of them degrade to a list that is correct for the session
+and simply does not outlive it. The stored shape carries a `version`, and
+anything written by another version is dropped rather than trusted.
+
+## Local files
+
+`Import file` registers a file from the reader's machine with DuckDB. Nothing is
+uploaded; the formats and their readers are in `lib/files.ts`.
+
+**How a file is registered depends on its reader, and that is not a detail.**
+Parquet gets `registerFileHandle`, so DuckDB pulls ranges out of the browser's
+file handle on demand — the same access pattern a remote package gets, which is
+what makes opening a local 16 GB package unremarkable. The text readers get
+`registerFileBuffer` instead: given a lazy handle, `read_cityjsonseq` does not
+fail, it **never returns**, and since every statement shares one queue that
+takes the page with it. The import `DESCRIBE` is bounded for the same reason.
+
+Two limits of the published extension build, both observed in the browser rather
+than assumed:
+
+- **`read_flatcitybuf` is not in it.** Importing a `.fcb` registers the file and
+  reports the catalog error. It needs a local build — see above.
+- **The city writers report rows and produce nothing.** `COPY … (FORMAT
+cityjsonseq)` answers `Count: 20` and leaves DuckDB-Wasm's virtual filesystem
+  empty; the same statement writes 1 MB as CSV. So `exportQuery` compares the
+  row count `COPY` claims against the bytes it can read back, and refuses rather
+  than handing over an empty file. Parquet, CSV and JSON are unaffected.
+
+An export runs the query **again** — `COPY` takes a statement, not a result set
+— so it writes every row the query matches, not the `ROW_DISPLAY_CAP` the grid
+is holding. The menu says so, and it takes the same deadline as any query.
 
 ## Adding a preset
 
