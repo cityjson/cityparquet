@@ -70,15 +70,76 @@ async function summariseFile(engine: Engine, url: string, name: string): Promise
   }
 }
 
-/** The `city` footer is authoritative for decoding; the STAC Item is a mirror. */
+interface ProjJsonId {
+  readonly authority?: string;
+  readonly code?: string | number;
+}
+
+interface ProjJsonCrs {
+  readonly name?: string;
+  readonly id?: ProjJsonId;
+}
+
+interface CityFooter {
+  readonly crs?: unknown;
+}
+
+interface GeoFooter {
+  readonly primary_column?: string;
+  readonly columns?: Record<string, { readonly crs?: unknown }>;
+}
+
+/**
+ * Renders a PROJJSON CRS object to something an agent can act on: enough to
+ * tell whether coordinates are metres or degrees, not the full definition.
+ */
+function renderCrs(crs: unknown): string | null {
+  if (crs === null || typeof crs !== "object") return null;
+  const candidate = crs as ProjJsonCrs;
+  const id = candidate.id;
+  if (id && id.authority !== undefined && id.code !== undefined) {
+    return candidate.name ? `${candidate.name} (${id.authority}:${id.code})` : `${id.authority}:${id.code}`;
+  }
+  return typeof candidate.name === "string" && candidate.name.length > 0 ? candidate.name : null;
+}
+
+/**
+ * The `city` footer key is authoritative for decoding; `geo`'s primary
+ * column carries the same information in GeoParquet's own vocabulary and is
+ * the fallback when `city` is absent or states no CRS. Both are PROJJSON.
+ *
+ * Reads the raw footer key-value pairs rather than a decoding function: the
+ * `cityjson`/`three_d` extensions this server loads do not expose one (the
+ * function the specification's own source documents describe is not in the
+ * published community build) — `parquet_kv_metadata`, and the `decode()` a
+ * BLOB value needs before it parses as JSON, are both DuckDB core.
+ */
 async function footerCrs(engine: Engine, url: string): Promise<string | null> {
   try {
     const reader = await engine.connection.runAndReadAll(
-      `SELECT cityparquet_city_field(city, 'referenceSystem')
-       FROM (SELECT cityjson_geoparquet_geo(${sqlLiteral(url)}).city AS city)`,
+      `SELECT key, decode(value) FROM parquet_kv_metadata(${sqlLiteral(url)}) WHERE key IN ('city', 'geo')`,
     );
-    const value = reader.getRowsJson()[0]?.[0];
-    return value === null || value === undefined ? null : String(value);
+    const byKey = new Map<string, string>();
+    for (const row of reader.getRowsJson()) {
+      byKey.set(String(row[0]), String(row[1]));
+    }
+
+    const cityRaw = byKey.get("city");
+    if (cityRaw) {
+      const city = JSON.parse(cityRaw) as CityFooter;
+      const rendered = renderCrs(city.crs);
+      if (rendered) return rendered;
+    }
+
+    const geoRaw = byKey.get("geo");
+    if (geoRaw) {
+      const geo = JSON.parse(geoRaw) as GeoFooter;
+      const primary = geo.primary_column ? geo.columns?.[geo.primary_column] : undefined;
+      const rendered = primary ? renderCrs(primary.crs) : null;
+      if (rendered) return rendered;
+    }
+
+    return null;
   } catch {
     return null;
   }
@@ -115,12 +176,18 @@ export async function describe(engine: Engine, url: string): Promise<DescribeRes
       stac = (await response.json()) as Record<string, unknown>;
       const assets = stac.assets as Record<string, { href?: string }> | undefined;
       if (assets) {
-        files = Object.entries(assets)
-          .filter(([, asset]) => asset.href?.endsWith(".parquet"))
-          .map(([name, asset]) => ({
-            name,
-            url: new URL(asset.href!, `${trimmed}/`).toString(),
-          }));
+        // No package legitimately contains the same file twice — but an
+        // Item's assets map can list one file under more than one role (a
+        // generic "data" role alongside a module-named one), so dedupe by
+        // the resolved URL and keep the first occurrence.
+        const seen = new Set<string>();
+        for (const [name, asset] of Object.entries(assets)) {
+          if (!asset.href?.endsWith(".parquet")) continue;
+          const resolved = new URL(asset.href, `${trimmed}/`).toString();
+          if (seen.has(resolved)) continue;
+          seen.add(resolved);
+          files.push({ name, url: resolved });
+        }
         if (files.length > 0) inventory = "stac";
       }
       if (files.length === 0) {

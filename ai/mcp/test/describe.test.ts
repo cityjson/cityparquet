@@ -35,7 +35,15 @@ suite("lodsOf", () => {
 // Both inventory paths, without a network or a real engine. The STAC Item's
 // assets map is a SHOULD, so the probe fallback is a designed path and gets the
 // same coverage as the happy one.
-function fakeEngine(known: Record<string, string[]>): Engine {
+//
+// `kvRows` stands in for `parquet_kv_metadata`'s `(key, decode(value))` rows.
+// The default carries a `city` entry whose crs has no name, just an id — so
+// `footerCrs` renders it as "EPSG:7415", matching what earlier fixtures in
+// this file expect.
+function fakeEngine(
+  known: Record<string, string[]>,
+  kvRows: [string, string][] = [["city", JSON.stringify({ crs: { id: { authority: "EPSG", code: 7415 } } })]],
+): Engine {
   return {
     extensions: [],
     async close() {},
@@ -48,7 +56,8 @@ function fakeEngine(known: Record<string, string[]>): Engine {
           return { getRowsJson: () => columns.map((c) => [c]) };
         }
         if (sql.includes("parquet_file_metadata")) return { getRowsJson: () => [[7]] };
-        return { getRowsJson: () => [["EPSG:7415"]] }; // the footer CRS probe
+        if (sql.includes("parquet_kv_metadata")) return { getRowsJson: () => kvRows };
+        throw new Error(`fakeEngine: unexpected query: ${sql}`);
       },
     },
   } as unknown as Engine;
@@ -97,5 +106,73 @@ suite("describe, package inventory", () => {
   it("throws when nothing under the URL is readable", async () => {
     vi.stubGlobal("fetch", async () => ({ ok: false, status: 404, json: async () => ({}) }));
     await expect(describe(fakeEngine({}), "https://example.test/empty")).rejects.toThrow(/no readable Parquet/);
+  });
+
+  it("deduplicates a STAC asset map that lists the same file under two keys", async () => {
+    // Real STAC Items produced by this stack list a generic "data" role
+    // alongside a module-named one, both pointing at the same href — an
+    // agent reading two table entries would wrongly conclude there are two
+    // building tables.
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        assets: {
+          data: { href: "building.parquet" },
+          "building.parquet": { href: "building.parquet" },
+        },
+      }),
+    }));
+    const result = await describe(
+      fakeEngine({ "https://example.test/pkg/building.parquet": ["id", "geometry_lod2_2"] }),
+      "https://example.test/pkg",
+    );
+    expect(result.tables).toHaveLength(1);
+    expect(result.tables.map((t) => t.name)).toEqual(["data"]); // first occurrence wins
+  });
+});
+
+suite("describe, CRS rendering from the footer", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("renders '<name> (<authority>:<code>)' when the city footer's crs carries an id", async () => {
+    const engine = fakeEngine(
+      { "https://example.test/pkg/building.parquet": ["id"] },
+      [["city", JSON.stringify({
+        crs: { name: "Amersfoort / RD New + NAP height", id: { authority: "EPSG", code: 7415 } },
+      })]],
+    );
+    const result = await describe(engine, "https://example.test/pkg/building.parquet");
+    expect(result.crs).toBe("Amersfoort / RD New + NAP height (EPSG:7415)");
+  });
+
+  it("renders the name alone when the crs carries no id", async () => {
+    const engine = fakeEngine(
+      { "https://example.test/pkg/building.parquet": ["id"] },
+      [["city", JSON.stringify({ crs: { name: "Amersfoort / RD New + NAP height" } })]],
+    );
+    const result = await describe(engine, "https://example.test/pkg/building.parquet");
+    expect(result.crs).toBe("Amersfoort / RD New + NAP height");
+  });
+
+  it("falls back to the geo footer's primary column crs when the city entry has none", async () => {
+    const engine = fakeEngine(
+      { "https://example.test/pkg/building.parquet": ["id"] },
+      [
+        ["city", JSON.stringify({ crs: null })],
+        ["geo", JSON.stringify({
+          primary_column: "geometry_lod0_0",
+          columns: { geometry_lod0_0: { crs: { name: "WGS 84", id: { authority: "EPSG", code: 4326 } } } },
+        })],
+      ],
+    );
+    const result = await describe(engine, "https://example.test/pkg/building.parquet");
+    expect(result.crs).toBe("WGS 84 (EPSG:4326)");
+  });
+
+  it("returns null when neither footer entry carries a usable crs", async () => {
+    const engine = fakeEngine({ "https://example.test/pkg/building.parquet": ["id"] }, []);
+    const result = await describe(engine, "https://example.test/pkg/building.parquet");
+    expect(result.crs).toBeNull();
   });
 });
