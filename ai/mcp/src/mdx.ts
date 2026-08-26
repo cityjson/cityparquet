@@ -34,9 +34,16 @@ function unwrapAdmonitions(markdown: string): string {
   );
 }
 
-/** Tracks whether we are inside a fenced code block. */
-function createFenceTracker(): { isInside(line: string): boolean } {
-  let fence: string | null = null;
+interface FenceTracker {
+  isInside(line: string): boolean;
+  fork(): FenceTracker;
+  getState(): string | null;
+  setState(state: string | null): void;
+}
+
+/** Tracks whether we are inside a fenced code block. Supports forking for speculative scans. */
+function createFenceTracker(initialState: string | null = null): FenceTracker {
+  let fence: string | null = initialState;
   return {
     isInside(line: string): boolean {
       const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
@@ -53,31 +60,32 @@ function createFenceTracker(): { isInside(line: string): boolean } {
       }
       return fence !== null;
     },
+    fork(): FenceTracker {
+      return createFenceTracker(fence);
+    },
+    getState(): string | null {
+      return fence;
+    },
+    setState(state: string | null): void {
+      fence = state;
+    },
   };
 }
 
 function stripJsx(markdown: string): string {
   const lines = markdown.split(/\r?\n/);
   const result: string[] = [];
+  const tracker = createFenceTracker();
   let i = 0;
-  let fence: string | null = null;
 
   while (i < lines.length) {
     const line = lines[i]!;
 
-    // Track fence state (inline, not using the tracker object to avoid state confusion)
-    const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
-    if (fenceMatch) {
-      const marker = fenceMatch[1]!;
-      if (fence === null) {
-        fence = marker;
-      } else if (marker.startsWith(fence[0]!) && marker.length >= fence.length) {
-        fence = null;
-      }
-    }
+    // Track fence state
+    const wasInFence = tracker.isInside(line);
 
     // Inside a fence: preserve everything as-is
-    if (fence !== null) {
+    if (wasInFence) {
       result.push(line);
       i++;
       continue;
@@ -124,36 +132,28 @@ function stripJsx(markdown: string): string {
     // Handle comments: strip line-local comments only; preserve multi-line if they cross fences
     // Check if this line starts a multi-line comment without closing on same line
     if (line.includes("{/*") && !line.includes("*/}")) {
-      // Scan for closing while independently tracking fence state to detect boundary crossings
+      // Scan for closing using a forked tracker to detect boundary crossings
       let j = i + 1;
-      let tempFence: string | null = fence;
-      const commentStartInFence = tempFence !== null;
+      const lookahead = tracker.fork();
+      const commentStartInFence = lookahead.getState() !== null;
 
       while (j < lines.length) {
         const nextLine = lines[j]!;
-
-        // Update temp fence state
-        const nextFenceMatch = /^\s*(```+|~~~+)/.exec(nextLine);
-        if (nextFenceMatch) {
-          const marker = nextFenceMatch[1]!;
-          if (tempFence === null) {
-            tempFence = marker;
-          } else if (marker.startsWith(tempFence[0]!) && marker.length >= tempFence.length) {
-            tempFence = null;
-          }
-        }
+        lookahead.isInside(nextLine); // Advance the forked tracker
 
         if (nextLine.includes("*/}")) {
           // Found closing marker
-          const commentEndInFence = tempFence !== null;
+          const commentEndInFence = lookahead.getState() !== null;
 
-          // Preserve the entire comment if it spans fence boundaries or starts inside a fence
-          if (commentStartInFence || commentStartInFence !== commentEndInFence) {
+          // Preserve the entire comment if it spans fence boundaries
+          if (commentStartInFence !== commentEndInFence) {
             result.push(line);
             for (let k = i + 1; k < j; k++) {
               result.push(lines[k]!);
             }
             result.push(nextLine);
+            // Sync the forked state back to the main tracker
+            tracker.setState(lookahead.getState());
           }
           // Otherwise it's entirely outside fences and was never added
           i = j + 1;

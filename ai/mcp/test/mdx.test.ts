@@ -97,6 +97,17 @@ describe("reduceMdx", () => {
     expect(doc.body).toContain("echo hi");
     expect(doc.body).toContain("After.");
   });
+
+  it("preserves JSX in later fenced blocks after fence-crossing comments", () => {
+    const doc = reduceMdx(
+      "Text {/* comment\n```\ncode */}\n```\n\nMore text.\n\n```jsx\n<Component prop=\"value\" />\n```\n\nEnd.",
+      { siteBaseUrl: SITE },
+    );
+    // Later fence with JSX must survive (JSX inside fence must not be stripped)
+    expect(doc.body).toContain("<Component");
+    expect(doc.body).toContain("prop=");
+    expect(doc.body).toContain("End.");
+  });
 });
 
 describe("splitSections", () => {
