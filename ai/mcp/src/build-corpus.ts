@@ -57,7 +57,11 @@ function mdxDirectory(root: string, relative: string): Chapter[] {
   let declared: string[] = [];
   try {
     declared = declaredOrder(readFileSync(join(directory, "meta.ts"), "utf8"));
-  } catch {
+  } catch (error) {
+    // An absent meta.ts disables the assertion (no order to check against);
+    // anything else — EACCES, encoding failures — must not, since it is
+    // indistinguishable from "absent" and would silently defeat the guard.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     declared = [];
   }
   if (declared.length > 0) {
