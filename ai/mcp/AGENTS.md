@@ -35,13 +35,20 @@ substitutes — see the table in `README.md`.
 ## The startup sequence in `src/duckdb.ts` is load-bearing
 
 `createEngine`'s steps are numbered in the source for a reason — reordering
-any of them reopens a hole or breaks initialisation outright:
+any of them reopens a hole or breaks initialisation outright. The secrets
+setting and the lockdown steps below (1 and 4, and the disabling of
+autoinstall/autoload/community extensions and the local filesystem that sits
+between them) run only when `sandbox: true` — the local stdio entry point
+defaults to `sandbox: false`, so a local client's engine neither restricts
+`allow_persistent_secrets` nor locks its configuration:
 
 1. `allow_persistent_secrets = false` must be set **before any extension
    loads**. `cityjson` touches the secret manager on `LOAD` (it can read URLs
-   itself), and DuckDB permanently locks secret-manager settings once the
-   secret manager has been used — set this after loading `cityjson` and it no
-   longer takes effect, silently.
+   itself), and once the secret manager has been used DuckDB **refuses**
+   further changes to secret-manager settings with `Invalid Input Error:
+   Changing Secret Manager settings after the secret manager is used is not
+   allowed!` — a loud error, not a silent no-op. Set this one first, or the
+   sandboxed engine fails to start.
 2. `INSTALL`/`LOAD` of the wanted extensions must run **before**
    `disabled_filesystems` is set, because installing and loading touch the
    local filesystem.

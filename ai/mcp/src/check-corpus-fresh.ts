@@ -8,10 +8,13 @@
 // run and cannot tell a genuinely stale corpus from the normal case.
 //
 // This compares `corpora` only, ignoring `generatedFrom`, and reports
-// whether documents/docs/ or either extension's FUNCTIONS.md has changed
-// since the committed file was generated. It builds the comparison in
-// memory and writes nothing, so the working tree is left exactly as it was
-// found, whether the check passes or fails.
+// whether the corpus *content* built from documents/docs/ and the two
+// FUNCTIONS.md differs from what is committed — not whether those source
+// files changed at all, since reduceMdx and chaptersFromFunctionsMarkdown
+// strip some of what they contain (a FUNCTIONS.md preamble, for instance),
+// and a change confined to what gets stripped correctly reads as fresh. It
+// builds the comparison in memory and writes nothing, so the working tree is
+// left exactly as it was found, whether the check passes or fails.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
