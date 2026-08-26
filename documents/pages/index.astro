@@ -145,14 +145,15 @@ const mcpTools = [
   },
 ];
 
-// Measured, not illustrative: this is the query below run against tile
-// 10-640-324 of the public demo bucket (2166 rows, 1083 carrying LoD 2.2), with
-// the time the median of three warm repeats. Re-measure before changing them.
+// Measured, not illustrative: this is the query below run against the public
+// 3DBAG package — one 16.4 GB file, 21 555 522 objects — windowed to Delft,
+// which leaves 2137 parts carrying LoD 2.2 and 2118 valid solids. The time is
+// the median of three warm repeats. Re-measure before changing them.
 const result = {
-  volume: "731449",
-  solids: "1076",
-  status: "1 row · 0.14 s · 1076 solids measured",
-  scanning: "scanning gs://cityparquet/3dbag_tiled/10-640-324/building.parquet",
+  volume: "3285792",
+  solids: "2118",
+  status: "1 row · 0.71 s · 2118 solids measured",
+  scanning: "range-reading 4 of 329 row groups · cityparquet.open3d.city",
 };
 
 const query = `LOAD cityjson; LOAD three_d;
@@ -161,7 +162,9 @@ SELECT ROUND(SUM(ST_3DVolume(solid)), 0) AS total_volume_m3
 FROM (SELECT ST_3DTryFromWKB(geometry_lod2_2,
              geometry_properties_lod2_2) AS solid
       FROM read_parquet(
-        'gs://cityparquet/3dbag_tiled/10-640-324/building.parquet'))
+        'https://cityparquet.open3d.city/data/3dbag/building.parquet')
+      WHERE bbox.xmin < 85000 AND bbox.xmax > 84000
+        AND bbox.ymin < 447000 AND bbox.ymax > 446000)
 WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
 
 // A deliberately small SQL tokeniser -- enough for the one query above, on a

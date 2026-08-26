@@ -439,8 +439,8 @@ Configure the `cityjson` build with that flag to write `.fcb`.
 ## Why this is fast
 
 Every query on this page ran against one 16.4 GB file on object storage, from a
-laptop, in seconds — because CityParquet is columnar and DuckDB exploits it at three
-levels:
+single machine, in seconds — because CityParquet is columnar and DuckDB exploits it
+at three levels:
 
 - **Projection pushdown** — a query reads only the columns it names. Counting 10.8 M
   buildings never touches a geometry byte; measuring `geometry_lod2_2` never reads
