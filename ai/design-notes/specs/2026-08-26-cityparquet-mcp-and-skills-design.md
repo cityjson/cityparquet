@@ -693,3 +693,73 @@ commitment**, and should be recorded as such wherever it appears.
   the network layer (§7.1). Every other control in §7 is backed by a
   `duckdb_settings()` probe; this one is not, and the SSRF posture depends on
   it.
+
+## Addendum, 2026-08-26: what phase-1 implementation settled
+
+This note is kept verbatim above, per `ai/design-notes/README.md` — nothing in
+§1–12 is edited. Phase-1 implementation (`ai/mcp/`) is now complete enough that
+several items §12 left open are answered, and two of §12's own claims turned
+out to overreach. Recorded here rather than silently left to mislead a reader
+of the "verified"/"not verified" ledger above.
+
+- **`duckdb_settings()` reports `disabled_filesystems` as empty even while
+  enforcement is fully in force.** `SELECT * FROM duckdb_settings() WHERE name
+  = 'disabled_filesystems'` returns an empty value on a locked-down engine that
+  still refuses `read_csv('/etc/hostname')`, `ATTACH`, and every other
+  filesystem escape in `test/duckdb.test.ts`. This is a DuckDB reporting
+  quirk, not evidence the sandbox is off — an auditor who trusted the settings
+  table alone would wrongly conclude enforcement had not taken. Behavioural
+  probes (attempt the operation, confirm it fails) are the only reliable
+  evidence; see `ai/mcp/CLAUDE.md`.
+- **`allow_persistent_secrets` must be set before any extension loads, which
+  corrects §6.3's ordering.** §6.3 groups `allow_persistent_secrets = false`
+  into step 4 ("close the doors"), after step 2's `INSTALL`/`LOAD`. In
+  practice `LOAD cityjson` itself uses the secret manager (it can read URLs),
+  and DuckDB then refuses any further secret-manager setting with `Invalid
+  Input Error: Changing Secret Manager settings after the secret manager is
+  used is not allowed!` — a sandboxed engine built in the order §6.3 describes
+  fails to start. `src/duckdb.ts` sets `allow_persistent_secrets` first, before
+  any `INSTALL`/`LOAD`, and only then proceeds through the rest of step 4.
+- **Two of §12's "not verified" items are now settled.**
+  `connection.interrupt()` leaves the connection usable after a timeout — the
+  very property §5.3's timeout design depends on — confirmed by
+  `test/query.test.ts`'s "times out without killing the engine" case, which
+  runs a second, ordinary query on the same connection immediately after an
+  interrupted one and gets a correct answer.
+  `@duckdb/node-api@1.5.4-r.1` reports `select version()` as `v1.5.4`, checked
+  directly against a running engine in `test/duckdb.test.ts` rather than
+  inferred from the package's own version string, which carries the `-r.1`
+  Node-binding suffix DuckDB's own `version()` does not.
+- **§12's claim that the startup sequence and the negative tests "were run end
+  to end" was true only against a warm extension directory.** The cold-start
+  path — `INSTALL … FROM community` fetching an extension that is not yet on
+  disk — was not exercised when that line was written, and it is exactly where
+  the secret-manager ordering defect above lived: it surfaces only on the very
+  first `LOAD cityjson` a fresh extension directory ever sees, once secrets
+  have never been touched before. A warm directory does not reveal it, because
+  by then the secret manager's first use predates the run.
+- **§5.2's promise that `describe` "flags the disagreement" between the STAC
+  Item and the footer was dropped at plan time and is not implemented.**
+  `describe()` (`ai/mcp/src/tools/describe.ts`) treats the footer as
+  authoritative for CRS, exactly as designed, but it does not compare that
+  value against anything the STAC Item states and so has no disagreement to
+  flag. Nothing tracks this as a defect; it is simply narrower than what this
+  design document said it would do.
+- **§6.3 step 4 ("close the doors") is gated on `sandbox: true` in the
+  implementation, not unconditional as this document's numbered sequence
+  implies.** Steps 5 and 6 are marked "hosted only" above; step 4 is not, but
+  `createEngine` in `src/duckdb.ts` runs all of step 4 — including
+  `allow_persistent_secrets`, moved earlier per the previous point — only when
+  `sandbox: true`. The local stdio entry point defaults to `sandbox: false`, so
+  a local client's engine leaves autoinstall, autoload, community extensions
+  and persistent secrets exactly as DuckDB defaults them; the user's own
+  machine is the trust boundary there, not the engine's configuration.
+- **The published community extension builds lag their own documentation, as
+  §6.2 warns, and this was confirmed rather than assumed.**
+  `lib/duckdb-cityjson/docs/FUNCTIONS.md` documents `cityjson_geoparquet_geo`
+  and `cityparquet_city_field`; neither exists in the build currently published
+  to the community repository — `SELECT * FROM duckdb_functions() WHERE
+  function_name = '…'` returns nothing for either, against the extensions this
+  server actually loads. `describe()` reads the footer directly with
+  `parquet_kv_metadata` and `decode()` rather than calling either function, for
+  exactly this reason.

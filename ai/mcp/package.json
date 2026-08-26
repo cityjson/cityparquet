@@ -1,0 +1,25 @@
+{
+  "name": "@cityparquet/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "bin": { "cityparquet-mcp": "./dist/stdio.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "corpus": "pnpm build && node dist/build-corpus.js",
+    "corpus:check": "pnpm build && node dist/check-corpus-fresh.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "1.5.4-r.1",
+    "@modelcontextprotocol/server": "2.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
