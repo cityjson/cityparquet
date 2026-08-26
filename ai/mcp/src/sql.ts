@@ -80,14 +80,26 @@ export function splitStatements(sql: string): string[] {
  *
  * The type is passed in rather than sniffed: `getRowsJson()` renders a BLOB as
  * an ordinary string, so the value alone cannot tell you what it was.
+ *
+ * `blobByteLength` is the true byte count of a BLOB cell, from the typed
+ * `getRows()` path — never derive it from `value`. `getRowsJson()` renders a
+ * BLOB by escaping every non-printable byte to `\xNN` (four characters for
+ * one byte), so the escaped string's length is not the blob's length: real
+ * WKB is mostly non-printable, and a length read off the string inflates up
+ * to 4×. When the caller cannot cheaply obtain the true count, omitting the
+ * number entirely (`<BLOB>`) is the honest answer — never a guess dressed up
+ * as a measurement.
  */
-export function elideCell(value: unknown, type: string, maxBytes: number): unknown {
+export function elideCell(
+  value: unknown,
+  type: string,
+  maxBytes: number,
+  blobByteLength?: number,
+): unknown {
   if (value === null || value === undefined) return value;
 
   if (type.toUpperCase().startsWith("BLOB")) {
-    const length =
-      typeof value === "string" ? Buffer.byteLength(value, "utf8") : String(value).length;
-    return `<BLOB ${length} bytes>`;
+    return blobByteLength === undefined ? "<BLOB>" : `<BLOB ${blobByteLength} bytes>`;
   }
 
   if (typeof value === "number" || typeof value === "boolean") return value;

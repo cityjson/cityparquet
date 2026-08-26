@@ -3,6 +3,8 @@
 
 import { DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 
+import { serialiser } from "./serialise.js";
+
 /**
  * `spatial` is deliberately absent. It cannot be loaded alongside `three_d` in
  * either order — `spatial` first breaks `three_d` with "Cannot AlterEntry
@@ -34,6 +36,14 @@ export interface EngineOptions {
 export interface Engine {
   readonly connection: DuckDBConnection;
   readonly extensions: readonly { name: string; version: string }[];
+  /**
+   * Have the connection to yourself for the duration of `task`. All five
+   * tools share this one `DuckDBConnection`; an MCP client pipelines tool
+   * calls, and two statements in flight on it at once interleave inside the
+   * engine rather than queueing. See `serialise.ts` for the mechanism and
+   * why a `query` timeout is the case that made this matter.
+   */
+  exclusive<T>(task: () => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -107,13 +117,20 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     await connection.run("SET lock_configuration = true");
   }
 
-  // 9. Warm the HTTP path so the first real request does not pay for TLS and
-  //    httpfs initialisation.
+  // 9. A liveness check on the connection itself, nothing more: confirm it
+  //    still runs a trivial statement after every setup step above —
+  //    including, in sandbox mode, having just locked the configuration — so
+  //    a startup misconfiguration surfaces here rather than on the first
+  //    real request. `SELECT 1` touches no extension and no network; it does
+  //    not warm httpfs or anything else.
   await connection.run("SELECT 1");
+
+  const exclusive = serialiser();
 
   return {
     connection,
     extensions,
+    exclusive,
     async close() {
       connection.closeSync();
     },

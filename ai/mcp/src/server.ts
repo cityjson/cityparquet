@@ -102,14 +102,19 @@ export function createServer({ corpus, engine }: ServerDeps): McpServer {
         timeout_ms: z.number().int().min(1000).max(600_000).optional(),
       }),
     },
-    async ({ sql, max_rows, max_cell_bytes, timeout_ms }) =>
-      json(
-        await runQuery(engine, sql, {
-          maxRows: max_rows ?? QUERY_DEFAULTS.maxRows,
-          maxCellBytes: max_cell_bytes ?? QUERY_DEFAULTS.maxCellBytes,
-          timeoutMs: timeout_ms ?? QUERY_DEFAULTS.timeoutMs,
-        }),
-      ),
+    async ({ sql, max_rows, max_cell_bytes, timeout_ms }) => {
+      try {
+        return json(
+          await runQuery(engine, sql, {
+            maxRows: max_rows ?? QUERY_DEFAULTS.maxRows,
+            maxCellBytes: max_cell_bytes ?? QUERY_DEFAULTS.maxCellBytes,
+            timeoutMs: timeout_ms ?? QUERY_DEFAULTS.timeoutMs,
+          }),
+        );
+      } catch (error) {
+        return failure(error);
+      }
+    },
   );
 
   // The chapters again, as resources. Client support is uneven, so nothing may

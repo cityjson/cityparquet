@@ -13,8 +13,8 @@ export const SIDECAR_TABLES = ["materials", "textures", "geometry_templates"] as
 export interface TableSummary {
   readonly name: string;
   readonly file: string;
-  readonly rowCount: number | null;
-  readonly geometryColumns: string[];
+  readonly row_count: number | null;
+  readonly geometry_columns: string[];
   readonly lods: string[];
 }
 
@@ -64,7 +64,13 @@ async function summariseFile(engine: Engine, url: string, name: string): Promise
       rowCount = null;
     }
 
-    return { name, file: url, rowCount, geometryColumns, lods: lodsOf(geometryColumns) };
+    return {
+      name,
+      file: url,
+      row_count: rowCount,
+      geometry_columns: geometryColumns,
+      lods: lodsOf(geometryColumns),
+    };
   } catch {
     return null;
   }
@@ -150,17 +156,21 @@ export async function describe(engine: Engine, url: string): Promise<DescribeRes
   const trimmed = url.replace(/\/+$/, "");
 
   if (/\.parquet$/i.test(trimmed)) {
-    const table = await summariseFile(engine, trimmed, trimmed.split("/").pop() ?? trimmed);
-    if (!table) throw new Error(`could not read a Parquet footer at ${trimmed}`);
-    return {
-      url: trimmed,
-      kind: "file",
-      inventory: "probe",
-      crs: await footerCrs(engine, trimmed),
-      stac: null,
-      tables: [table],
-      notes,
-    };
+    // One critical section for both queries this path issues, not one each —
+    // see the package path below for why.
+    return engine.exclusive(async () => {
+      const table = await summariseFile(engine, trimmed, trimmed.split("/").pop() ?? trimmed);
+      if (!table) throw new Error(`could not read a Parquet footer at ${trimmed}`);
+      return {
+        url: trimmed,
+        kind: "file",
+        inventory: "probe",
+        crs: await footerCrs(engine, trimmed),
+        stac: null,
+        tables: [table],
+        notes,
+      };
+    });
   }
 
   // A package. The STAC Item's assets map is the file inventory — but the
@@ -171,7 +181,10 @@ export async function describe(engine: Engine, url: string): Promise<DescribeRes
   let inventory: "stac" | "probe" = "probe";
 
   try {
-    const response = await fetch(`${trimmed}/metadata.json`);
+    // A hung host must not stall the tool for undici's multi-minute default.
+    // Ten seconds is generous for a `metadata.json` fetch and short enough
+    // that a caller notices; the probe fallback below absorbs the failure.
+    const response = await fetch(`${trimmed}/metadata.json`, { signal: AbortSignal.timeout(10_000) });
     if (response.ok) {
       stac = (await response.json()) as Record<string, unknown>;
       const assets = stac.assets as Record<string, { href?: string }> | undefined;
@@ -209,12 +222,24 @@ export async function describe(engine: Engine, url: string): Promise<DescribeRes
     }));
   }
 
-  const summaries = await Promise.all(files.map((f) => summariseFile(engine, f.url, f.name)));
-  const tables = summaries.filter((t): t is TableSummary => t !== null);
-  if (tables.length === 0) throw new Error(`no readable Parquet files under ${trimmed}`);
+  // One critical section for the whole batch — up to fourteen statements
+  // (eleven module tables, three sidecars) plus the footer read — not one
+  // per statement. All five tools share this connection; contending for it
+  // statement by statement would let another tool's query interleave between
+  // this batch's own statements just as readily as between two different
+  // tools' calls, and it would also make this describe() far slower under
+  // concurrent load for no benefit, since the batch has no use for partial
+  // interleaving with itself.
+  return engine.exclusive(async () => {
+    const summaries = await Promise.all(files.map((f) => summariseFile(engine, f.url, f.name)));
+    const tables = summaries.filter((t): t is TableSummary => t !== null);
+    if (tables.length === 0) throw new Error(`no readable Parquet files under ${trimmed}`);
 
-  const crs = await footerCrs(engine, tables[0]!.file);
-  if (crs === null) notes.push("no CRS in the footer — the package states nothing about its coordinate system.");
+    const crs = await footerCrs(engine, tables[0]!.file);
+    if (crs === null) {
+      notes.push("no CRS in the footer — the package states nothing about its coordinate system.");
+    }
 
-  return { url: trimmed, kind: "package", inventory, crs, stac, tables, notes };
+    return { url: trimmed, kind: "package", inventory, crs, stac, tables, notes };
+  });
 }
