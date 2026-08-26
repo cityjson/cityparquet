@@ -193,10 +193,17 @@ fetch-tools:
 # Slices cut at FEATURE boundaries (a CityJSONSeq feature is indivisible),
 # so a slice's actual CityObject count can slightly exceed its nominal
 # SIZE — the `scaling-corpus` binary prints the exact counts per slice. A
-# SIZE the source cannot fill is an ERROR, not a silently short file. No
-# .gml source exists for these slices, so pointing `bench` at DEST skips
-# the `citygml` row with a warning, exactly like the corpus's .city.json
-# entries. Needs curl; network-dependent on the first run (~7.6 GB); kept
+# SIZE the source cannot fill is an ERROR, not a silently short file.
+#
+# These slices carry no .gml of their own, but `readbench_prepare.sh`
+# SYNTHESISES one with citygml-tools, exactly as it does for the read
+# corpus's .city.json entries — so `bench` over DEST measures `citygml`
+# too, and the synthesised artefact is roughly 4x the CityJSONSeq it came
+# from. Budget for that at the large cardinalities: a 1,000,000-object
+# slice is a 2.75 GB stream and a ~10 GB .gml, and `citygml` is the
+# slowest format in the matrix by an order of magnitude.
+#
+# Needs curl; network-dependent on the first run (~7.6 GB); kept
 # OUT of `just check`/CI.
 [doc("Fetch and slice the configuration-axis corpus (7.6 GB source)")]
 fetch-scaling-data DEST=(BENCH / "data/scaling") SIZES='1000,5000,10000,50000':
