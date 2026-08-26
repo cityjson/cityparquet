@@ -57,25 +57,33 @@ function createFenceTracker(): { isInside(line: string): boolean } {
 }
 
 function stripJsx(markdown: string): string {
-  // First, strip MDX comments globally (they can span multiple lines)
-  let text = markdown.replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
-
-  const tracker = createFenceTracker();
-  const lines = text.split(/\r?\n/);
+  const lines = markdown.split(/\r?\n/);
   const result: string[] = [];
   let i = 0;
+  let fence: string | null = null;
 
   while (i < lines.length) {
     const line = lines[i]!;
 
-    // Track fence state
-    if (tracker.isInside(line)) {
+    // Track fence state (inline, not using the tracker object to avoid state confusion)
+    const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1]!;
+      if (fence === null) {
+        fence = marker;
+      } else if (marker.startsWith(fence[0]!) && marker.length >= fence.length) {
+        fence = null;
+      }
+    }
+
+    // Inside a fence: preserve everything as-is
+    if (fence !== null) {
       result.push(line);
       i++;
       continue;
     }
 
-    // Strip single-line import/export statements
+    // Strip single-line import/export statements (only outside fences)
     if (/^import\s+[^\n]*$/.test(line)) {
       i++;
       continue;
@@ -85,13 +93,13 @@ function stripJsx(markdown: string): string {
       continue;
     }
 
-    // Strip single-line JSX elements (complete on one line)
+    // Strip single-line JSX elements (only outside fences)
     if (/^[ \t]*<\/?[A-Z][\w.]*(?:\s[^>]*)?>[ \t]*$/.test(line)) {
       i++;
       continue;
     }
 
-    // Handle multi-line JSX: opening tag that closes on a later line
+    // Handle multi-line JSX: opening tag that closes on a later line (only outside fences)
     const multilineJsxStart = /^[ \t]*<[A-Z][\w.]*(?:\s|$)/.test(line);
     if (multilineJsxStart && !line.includes(">")) {
       // Consume lines until we find the closing >
@@ -113,7 +121,62 @@ function stripJsx(markdown: string): string {
       continue;
     }
 
-    result.push(line);
+    // Handle comments: strip line-local comments only; preserve multi-line if they cross fences
+    // Check if this line starts a multi-line comment without closing on same line
+    if (line.includes("{/*") && !line.includes("*/}")) {
+      // Scan for closing while independently tracking fence state to detect boundary crossings
+      let j = i + 1;
+      let tempFence: string | null = fence;
+      const commentStartInFence = tempFence !== null;
+
+      while (j < lines.length) {
+        const nextLine = lines[j]!;
+
+        // Update temp fence state
+        const nextFenceMatch = /^\s*(```+|~~~+)/.exec(nextLine);
+        if (nextFenceMatch) {
+          const marker = nextFenceMatch[1]!;
+          if (tempFence === null) {
+            tempFence = marker;
+          } else if (marker.startsWith(tempFence[0]!) && marker.length >= tempFence.length) {
+            tempFence = null;
+          }
+        }
+
+        if (nextLine.includes("*/}")) {
+          // Found closing marker
+          const commentEndInFence = tempFence !== null;
+
+          // Preserve the entire comment if it spans fence boundaries or starts inside a fence
+          if (commentStartInFence || commentStartInFence !== commentEndInFence) {
+            result.push(line);
+            for (let k = i + 1; k < j; k++) {
+              result.push(lines[k]!);
+            }
+            result.push(nextLine);
+          }
+          // Otherwise it's entirely outside fences and was never added
+          i = j + 1;
+          break;
+        }
+        j++;
+      }
+      if (j === lines.length) {
+        // No closing found: preserve the line as content
+        result.push(line);
+        i++;
+      }
+      continue;
+    }
+
+    // Strip line-local comments (those that open and close on the same line)
+    let content = line.replace(/\{\/\*.*?\*\/\}/g, "");
+
+    // Add non-empty content or empty lines to preserve structure
+    if (content.trim() || line.trim() === "") {
+      result.push(content);
+    }
+
     i++;
   }
 
@@ -129,17 +192,12 @@ export function splitSections(markdown: string): Section[] {
   const lines = markdown.split(/\r?\n/);
   const sections: Section[] = [];
   let current: { heading: string; level: number; body: string[] } | null = null;
-  let fence: string | null = null;
+  const tracker = createFenceTracker();
 
   for (const line of lines) {
-    const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
-    if (fenceMatch) {
-      const marker = fenceMatch[1]!;
-      if (fence === null) fence = marker;
-      else if (marker.startsWith(fence[0]!) && marker.length >= fence.length) fence = null;
-    }
+    const inFence = tracker.isInside(line);
 
-    const heading = fence === null ? /^(#{2,6})\s+(.*)$/.exec(line) : null;
+    const heading = !inFence ? /^(#{2,6})\s+(.*)$/.exec(line) : null;
     if (heading) {
       if (current) sections.push({ ...current, body: current.body.join("\n") });
       current = { heading: heading[2]!.trim(), level: heading[1]!.length, body: [] };

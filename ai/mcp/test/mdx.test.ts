@@ -75,6 +75,28 @@ describe("reduceMdx", () => {
     expect(doc.body).toContain("</Card>");
     expect(doc.body).toContain("Kept.");
   });
+
+  it("preserves comments inside fenced code blocks", () => {
+    const doc = reduceMdx(
+      "```mdx\n{/* an example comment */}\n```\n\nKept.",
+      { siteBaseUrl: SITE },
+    );
+    expect(doc.body).toContain("{/* an example comment */}");
+    expect(doc.body).toContain("Kept.");
+  });
+
+  it("preserves comments spanning fence boundaries", () => {
+    const doc = reduceMdx(
+      "Before {/* open\n\n```sh\necho hi */} done\n```\n\nAfter.",
+      { siteBaseUrl: SITE },
+    );
+    // Comment and both fence markers must survive
+    expect(doc.body).toContain("{/* open");
+    expect(doc.body).toContain("*/} done");
+    expect(doc.body).toContain("```sh");
+    expect(doc.body).toContain("echo hi");
+    expect(doc.body).toContain("After.");
+  });
 });
 
 describe("splitSections", () => {
