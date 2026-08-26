@@ -316,9 +316,35 @@ SCENARIO_ORDER = [
     "bbox-25pct",
     "attr-filter",
     "attr-stats",
+    # The positional id probes are one row each: caveat 20 reads the three hit
+    # rows as three samples of a distribution, not a position curve, so averaging
+    # them would state something the measurement does not support. `id-lookup` is
+    # the older single-probe key, still produced by the committed scaling runs.
+    "id-10pct",
+    "id-50pct",
+    "id-90pct",
+    "id-miss",
     "id-lookup",
     "project",
 ]
+
+
+def _scenarios_in(data: dict[str, Any]) -> list[str]:
+    """`SCENARIO_ORDER`, less the scenarios this run has no row for at all.
+
+    The read runner has more than one generation in the wild — the current one
+    probes an id at three positions and a miss, an older one probed a single
+    identifier — and a corpus carries one vocabulary or the other, never both.
+    Drawing the absent generation would add an all-empty row per dataset AND
+    make `_missing_note` report it as unmeasured, which is a false statement
+    about a run that measured the same thing under different keys. A scenario
+    measured for SOME datasets and not others is still reported: that is a
+    coverage gap in one run, which is what the note is for.
+    """
+    present = {r["scenario_key"] for r in data["read"]}
+    return [s for s in SCENARIO_ORDER if s in present]
+
+
 # Honesty rule 2: these compare feature-grain against CityObject-grain formats.
 GRAIN_DAGGER = {"full-read", "count", "bbox-1pct", "bbox-5pct", "bbox-25pct"}
 
@@ -1088,10 +1114,11 @@ def _heat_grid(
     cmap: Any,
     norm: Any,
     label_rows: bool,
+    scenarios: Sequence[str],
 ) -> None:
     """One dataset's grid for one metric: scenarios down, formats across."""
     ax.set_xlim(0, len(fmts))
-    ax.set_ylim(len(SCENARIO_ORDER), 0)
+    ax.set_ylim(len(scenarios), 0)
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
@@ -1105,12 +1132,12 @@ def _heat_grid(
             ha="center", va="bottom",
         )
     ax.text(
-        len(fmts) / 2, len(SCENARIO_ORDER) + 0.30, metric["caption"],
+        len(fmts) / 2, len(scenarios) + 0.30, metric["caption"],
         fontsize=FS_FOOTER, family="serif", color=INK_2,
         ha="center", va="top",
     )
 
-    for r, scenario in enumerate(SCENARIO_ORDER):
+    for r, scenario in enumerate(scenarios):
         if label_rows:
             mark = "\u2020" if scenario in GRAIN_DAGGER else ""
             ax.text(
@@ -1207,7 +1234,8 @@ def heatmap(
                     ax, ds["id"], ds["subtitle"], title_y, subtitle_y
                 )
             _heat_grid(
-                ax, ds["id"], fmts, index, metric, cmap, norm, label_rows=m == 0
+                ax, ds["id"], fmts, index, metric, cmap, norm,
+                label_rows=m == 0, scenarios=_scenarios_in(data),
             )
 
     _heat_key(fig, fmts, cmap, norm, vmax, bottom, key_h)
@@ -1811,7 +1839,8 @@ def _missing_note(data: dict[str, Any]) -> str:
         covered.setdefault(r["scenario_key"], set()).add(r["dataset"])
     ids = [d["id"] for d in data["datasets"]]
     missing = {
-        sc: [i for i in ids if i not in covered.get(sc, set())] for sc in SCENARIO_ORDER
+        sc: [i for i in ids if i not in covered.get(sc, set())]
+        for sc in _scenarios_in(data)
     }
     parts = [
         f"{sc} for {len(names)} of {len(ids)} datasets"
@@ -1996,7 +2025,10 @@ PANEL_SCENARIOS = [
     "attr-filter",
     "attr-stats",
     "project",
-    "id-lookup",
+    # One id probe on the print sheet, for the reason the bbox windows are
+    # thinned above: the middle position stands for the family, and the heatmap
+    # and the HTML page carry all four.
+    "id-50pct",
 ]
 SCENARIO_LABEL = {
     "full-read": "full read",
@@ -2008,6 +2040,10 @@ SCENARIO_LABEL = {
     "attr-stats": "attr stats",
     "project": "projection",
     "id-lookup": "id lookup",
+    "id-10pct": "id 10%",
+    "id-50pct": "id 50%",
+    "id-90pct": "id 90%",
+    "id-miss": "id miss",
 }
 # Panels on the per-dataset sheet. Four is what the sheet's two-axis panels fit
 # at a readable size; the selection below is derived, never named.

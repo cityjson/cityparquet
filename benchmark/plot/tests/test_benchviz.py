@@ -389,3 +389,54 @@ def test_a_corpus_with_no_scaling_run_is_stated_not_crashed(tmp_path):
     data, _ = prep.build(prep.Inputs(bench))
     assert data["scaling"]["read"] == []
     assert data["scaling"]["sizes"] == []
+
+
+# Two generations of id-lookup notes live in the committed results at once:
+# `read_results/` carries the positional probes the current runner emits
+# (READ_BENCHMARK.md's `id-10pct` / `id-50pct` / `id-90pct` / `id-miss` table),
+# while `scaling_read_results/` and `scaling_ordering_results/` still hold the
+# single `id=<identifier>` probe of the run that produced them. Those scaling
+# artefacts are hours of measurement and are not regenerated to suit the
+# renderer, so both shapes have to key.
+def test_positional_id_probes_are_separate_scenarios(tmp_path):
+    root = _bench_dir(tmp_path)
+    csv_path = root / "read_results" / "Zurich.csv"
+    lines = csv_path.read_text(encoding="utf-8").splitlines()
+    head = [ln for ln in lines if not ln.split(",")[2:3] == ["id-lookup"]]
+    probes = []
+    for tag in ("id-10pct", "id-50pct", "id-90pct", "id-miss"):
+        count = "0" if tag == "id-miss" else "1"
+        for fmt, note in (
+            ("cityjsonseq", tag),
+            ("cityparquet", tag),
+            # flatcitybuf discloses that its attribute index was not used; the
+            # tag is a suffix on the SAME probe, not a probe of its own.
+            ("flatcitybuf", f"{tag};no-attr-index"),
+        ):
+            probes.append(
+                f"Zurich.city.jsonl,{fmt},id-lookup,0.000005,{count},"
+                f"0.01,0.0001,8366366,21020672,7,{note}"
+            )
+    csv_path.write_text("\n".join(head + probes) + "\n", encoding="utf-8")
+
+    out = prep.main(prep.Inputs(root), out_path=tmp_path / "bench_data.json")
+    data = prep.json.loads(out.read_text(encoding="utf-8"))
+
+    zurich = [r for r in data["read"] if r["dataset"] == "Zurich"]
+    keys = {r["scenario_key"] for r in zurich}
+    assert {"id-10pct", "id-50pct", "id-90pct", "id-miss"} <= keys
+    assert "id-lookup" not in keys, "the positional probes must not collapse"
+
+    # The disclosure suffix must not strand flatcitybuf in a baseline-less group
+    # of its own -- it is measured against the same probe as every other format.
+    at_10pct = {r["format"] for r in zurich if r["scenario_key"] == "id-10pct"}
+    assert {"cityjsonseq", "cityparquet", "flatcitybuf"} <= at_10pct
+
+
+def test_the_older_single_id_probe_still_keys_as_id_lookup(tmp_path):
+    root = _bench_dir(tmp_path)
+    out = prep.main(prep.Inputs(root), out_path=tmp_path / "bench_data.json")
+    data = prep.json.loads(out.read_text(encoding="utf-8"))
+
+    scaling = data["scaling"]["read"] if "read" in data["scaling"] else []
+    assert any(r["scenario_key"] == "id-lookup" for r in scaling + data["read"])

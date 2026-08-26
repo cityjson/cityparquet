@@ -254,8 +254,13 @@ an explicit gap, never drop silently).
 ```
 
 `scenario_key`: `full-read`, `count`, `bbox-1pct`, `bbox-5pct`, `bbox-25pct`
-(scenario + `notes` merged), `attr-filter`, `attr-stats`, `id-lookup`,
-`project`. A run need not measure every scenario for every dataset — that is a
+(scenario + `notes` merged), `attr-filter`, `attr-stats`, `id-10pct`,
+`id-50pct`, `id-90pct`, `id-miss`, `id-lookup`, `project`. The id keys merge
+`notes` the same way the bbox ones do, after dropping any `;`-separated
+disclosure tag (`no-attr-index`, `id-substituted`) — a disclosure qualifies a
+row without changing which measurement it is, so it must not split a format
+off into a group with no baseline. `id-lookup` is the older single-probe key,
+which the committed scaling results still carry. A run need not measure every scenario for every dataset — that is a
 source fact, rendered as "n/a" per cell and counted in the figures' own
 "not measured in this run" footnote, never imputed.
 

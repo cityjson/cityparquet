@@ -183,6 +183,11 @@ COMPRESSION_COLUMNS = [
 ]
 
 BBOX_NOTE_RE = re.compile(r"^bbox-\d+pct$")
+# The positional id probes READ_BENCHMARK.md's id-lookup table defines: the id
+# at 10/50/90% of the canonical order, plus one verified absent. Caveat 20 reads
+# the hit rows as three samples of a distribution, so they stay three scenarios
+# rather than being averaged into one.
+ID_NOTE_RE = re.compile(r"^id-(?:\d+pct|miss)$")
 COLD_RE = re.compile(r"\bcold\b", re.IGNORECASE)
 
 CODEC_LEVEL_NOTE = (
@@ -412,6 +417,18 @@ def compression_caveats(inputs: Inputs) -> list[str]:
 # --------------------------------------------------------------------------
 
 
+def _primary_tag(notes: str) -> str:
+    """A note's own tag, with any ``;``-separated disclosures dropped.
+
+    A disclosure qualifies a measurement without changing WHICH measurement it
+    is — ``no-attr-index`` on the FlatCityBuf rows, ``id-substituted`` when a
+    probe had to be replaced by its nearest verified neighbour. Keying on it
+    would put that format in a group of its own, with no baseline row to be a
+    ratio against, and quietly drop it from the comparison.
+    """
+    return notes.split(";", 1)[0].strip()
+
+
 def _scenario_key(row: dict[str, str]) -> str:
     scenario = row["scenario"]
     notes = row["notes"].strip()
@@ -422,6 +439,15 @@ def _scenario_key(row: dict[str, str]) -> str:
                 f"(dataset={row['dataset']}, format={row['format']})"
             )
         return notes
+    if scenario == "id-lookup":
+        # Two generations of the runner are committed at once: `read_results/`
+        # carries the positional probes, which are one scenario each, while the
+        # scaling directories still hold the single `id=<identifier>` probe of
+        # the run that produced them. An unrecognised tag is that older shape,
+        # not an error — those artefacts are not re-measured to suit a renderer.
+        tag = _primary_tag(notes)
+        if ID_NOTE_RE.match(tag):
+            return tag
     return scenario
 
 
