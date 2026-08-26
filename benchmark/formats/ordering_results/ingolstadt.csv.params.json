@@ -1,0 +1,77 @@
+{
+  "dataset": "ingolstadt.city.json",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.010554089709762533,
+      "window": [
+        678099.288519763,
+        5403711.670000004,
+        412.929,
+        678121.5604802369,
+        5403769.037999995,
+        436.93699999999995
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.05013192612137203,
+      "window": [
+        678088.9748099917,
+        5403685.103999998,
+        412.929,
+        678131.8741900083,
+        5403795.604,
+        436.93699999999995
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.25065963060686014,
+      "window": [
+        678073.0538989054,
+        5403644.095,
+        412.929,
+        678147.7951010945,
+        5403836.612999999,
+        436.93699999999995
+      ],
+      "approx": false
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "4018266",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "4018156",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "4018197",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "4018156-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "object_type": "BuildingInstallation",
+  "object_type_count": 323,
+  "numeric_attr": "materialUncertainty",
+  "cp_object_total": 379
+}
