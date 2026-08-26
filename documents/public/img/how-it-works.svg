@@ -21,6 +21,88 @@
   .cp-readpath .accs { stroke: var(--hero-accent); fill:none; }
   .cp-readpath .frame{ fill:none; stroke:currentColor; stroke-opacity:.26; stroke-width:1.25; }
   .cp-readpath .edge { stroke:currentColor; stroke-opacity:.38; stroke-width:1; stroke-linejoin:round; }
+
+  /* --- read-path animation ------------------------------------------------
+     One 7s loop, replayed: the query picks its columns, the row-group
+     statistics pick a band, the intersection of the two is fetched over a
+     range request, and a semantic 3D model rises out of it.
+
+     Every animated element keeps its finished state in a presentation
+     attribute, so a reader who prefers reduced motion — or any renderer that
+     ignores CSS animation — sees the completed diagram rather than a blank
+     one. */
+  .cp-readpath .cell,
+  .cp-readpath .brk,
+  .cp-readpath .beam,
+  .cp-readpath .beam-head,
+  .cp-readpath .beam-label,
+  .cp-readpath .ground,
+  .cp-readpath .bldg { animation: 7s linear infinite both; }
+
+  .cp-readpath .col       { animation-name: cp-col; }
+  .cp-readpath .hot       { animation-name: cp-hot; }
+  .cp-readpath .band      { animation-name: cp-band; }
+  .cp-readpath .brk       { animation-name: cp-brk; }
+  .cp-readpath .k2        { animation-delay: .16s; }
+  .cp-readpath .k3        { animation-delay: .32s; }
+
+  .cp-readpath .beam       { animation-name: cp-beam, cp-flow;
+                             animation-duration: 7s, 1.5s; }
+  .cp-readpath .beam-head,
+  .cp-readpath .beam-label { animation-name: cp-beam; }
+
+  .cp-readpath .ground { animation-name: cp-ground; }
+  .cp-readpath .bldg   { animation-name: cp-rise;
+                         transform-box: view-box; }
+  .cp-readpath .b1 { transform-origin: 1031px 353.5px; }
+  .cp-readpath .b2 { transform-origin: 984.5px 377.6px; animation-delay: .30s; }
+  .cp-readpath .b3 { transform-origin: 1065.7px 381.9px; animation-delay: .60s; }
+
+  /* Column projection: the three columns the query names light up. */
+  @keyframes cp-col  { 0%, 4% { fill-opacity: 0 }
+                       13%, 92% { fill-opacity: .20 }
+                       99%, 100% { fill-opacity: 0 } }
+  /* Row-group statistics: the surviving band, dim, across every column. */
+  @keyframes cp-band { 0%, 20% { fill-opacity: 0 }
+                       29%, 92% { fill-opacity: .17 }
+                       99%, 100% { fill-opacity: 0 } }
+  @keyframes cp-brk  { 0%, 20% { opacity: 0 }
+                       29%, 92% { opacity: 1 }
+                       99%, 100% { opacity: 0 } }
+  /* The intersection: arrives with its column, then brightens to the bytes
+     actually fetched once the band has been chosen. */
+  @keyframes cp-hot  { 0%, 4% { fill-opacity: 0 }
+                       13%, 29% { fill-opacity: .20 }
+                       38%, 92% { fill-opacity: .92 }
+                       99%, 100% { fill-opacity: 0 } }
+
+  @keyframes cp-beam { 0%, 33% { opacity: 0 }
+                       40%, 90% { opacity: .85 }
+                       97%, 100% { opacity: 0 } }
+  @keyframes cp-flow { from { stroke-dashoffset: 0 }
+                       to   { stroke-dashoffset: -97 } }
+
+  @keyframes cp-ground { 0%, 44% { opacity: 0 }
+                         52%, 92% { opacity: 1 }
+                         99%, 100% { opacity: 0 } }
+  /* Buildings rise out of the ground plane, staggered. */
+  @keyframes cp-rise {
+    0%, 48%   { opacity: 0; transform: scaleY(.03) }
+    56%       { opacity: 1 }
+    64%       { transform: scaleY(1.05) }
+    70%, 92%  { opacity: 1; transform: scaleY(1) }
+    99%, 100% { opacity: 0; transform: scaleY(.03) }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cp-readpath .cell,
+    .cp-readpath .brk,
+    .cp-readpath .beam,
+    .cp-readpath .beam-head,
+    .cp-readpath .beam-label,
+    .cp-readpath .ground,
+    .cp-readpath .bldg { animation: none; }
+  }
 </style>
 <text class="h" x="40" y="38">Where the model lies</text>
 <text class="sub" x="40" y="56">object storage &#183; tens of gigabytes</text>
@@ -51,45 +133,45 @@
 <path d="M266 137 L400 252 L400 389 L266 167 Z" fill="var(--hero-accent)" fill-opacity=".06"/>
 <path d="M266 137 L400 252" class="accs" stroke-opacity=".30" stroke-width="1"/>
 <path d="M266 167 L400 389" class="accs" stroke-opacity=".30" stroke-width="1"/>
-<rect x="400.0" y="252" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
-<rect x="400.0" y="287" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".92"/>
-<rect x="400.0" y="322" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
-<rect x="400.0" y="357" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect class="cell col k1" x="400.0" y="252" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect class="cell hot k1" x="400.0" y="287" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".92"/>
+<rect class="cell col k1" x="400.0" y="322" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect class="cell col k1" x="400.0" y="357" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
 <text class="mono acc" x="424.0" y="242" font-size="10" font-weight="600" transform="rotate(-90 424.0 242)">id</text>
 <rect x="451.3" y="252" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
-<rect x="451.3" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
+<rect class="cell band" x="451.3" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
 <rect x="451.3" y="322" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
 <rect x="451.3" y="357" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
 <text class="mono" x="475.3" y="242" font-size="10" opacity=".45" transform="rotate(-90 475.3 242)">object_type</text>
 <rect x="502.7" y="252" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
-<rect x="502.7" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
+<rect class="cell band" x="502.7" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
 <rect x="502.7" y="322" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
 <rect x="502.7" y="357" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
 <text class="mono" x="526.7" y="242" font-size="10" opacity=".45" transform="rotate(-90 526.7 242)">height</text>
 <rect x="554.0" y="252" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
-<rect x="554.0" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
+<rect class="cell band" x="554.0" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
 <rect x="554.0" y="322" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
 <rect x="554.0" y="357" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
 <text class="mono" x="578.0" y="242" font-size="10" opacity=".45" transform="rotate(-90 578.0 242)">geometry_lod0_0</text>
 <rect x="605.3" y="252" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
-<rect x="605.3" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
+<rect class="cell band" x="605.3" y="287" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".17"/>
 <rect x="605.3" y="322" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
 <rect x="605.3" y="357" width="40" height="32" rx="2.5" fill="currentColor" fill-opacity=".07"/>
 <text class="mono" x="629.3" y="242" font-size="10" opacity=".45" transform="rotate(-90 629.3 242)">geometry_lod1_0</text>
-<rect x="656.7" y="252" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
-<rect x="656.7" y="287" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".92"/>
-<rect x="656.7" y="322" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
-<rect x="656.7" y="357" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect class="cell col k2" x="656.7" y="252" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect class="cell hot k2" x="656.7" y="287" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".92"/>
+<rect class="cell col k2" x="656.7" y="322" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect class="cell col k2" x="656.7" y="357" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
 <text class="mono acc" x="680.7" y="242" font-size="10" font-weight="600" transform="rotate(-90 680.7 242)">geometry_lod2_2</text>
-<rect x="708.0" y="252" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
-<rect x="708.0" y="287" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".92"/>
-<rect x="708.0" y="322" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
-<rect x="708.0" y="357" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect class="cell col k3" x="708.0" y="252" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect class="cell hot k3" x="708.0" y="287" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".92"/>
+<rect class="cell col k3" x="708.0" y="322" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
+<rect class="cell col k3" x="708.0" y="357" width="40" height="32" rx="2.5" fill="var(--hero-accent)" fill-opacity=".20"/>
 <text class="mono acc" x="732.0" y="242" font-size="10" font-weight="600" transform="rotate(-90 732.0 242)">geometry_properties_lod2_2</text>
 <path d="M391 252 h6 M391 284 h6" stroke="currentColor" stroke-opacity=".28" stroke-width="1.1" fill="none"/>
 <path d="M394 252 v32" stroke="currentColor" stroke-opacity=".28" stroke-width="1.1" fill="none"/>
-<path d="M391 287 h6 M391 319 h6" stroke="var(--hero-accent)" stroke-opacity=".8" stroke-width="1.1" fill="none"/>
-<path d="M394 287 v32" stroke="var(--hero-accent)" stroke-opacity=".8" stroke-width="1.1" fill="none"/>
+<path class="brk" d="M391 287 h6 M391 319 h6" stroke="var(--hero-accent)" stroke-opacity=".8" stroke-width="1.1" fill="none"/>
+<path class="brk" d="M394 287 v32" stroke="var(--hero-accent)" stroke-opacity=".8" stroke-width="1.1" fill="none"/>
 <path d="M391 322 h6 M391 354 h6" stroke="currentColor" stroke-opacity=".28" stroke-width="1.1" fill="none"/>
 <path d="M394 322 v32" stroke="currentColor" stroke-opacity=".28" stroke-width="1.1" fill="none"/>
 <path d="M391 357 h6 M391 389 h6" stroke="currentColor" stroke-opacity=".28" stroke-width="1.1" fill="none"/>
@@ -103,23 +185,23 @@
 <rect x="402" y="458.9" width="11" height="3.2" rx="1" fill="var(--hero-accent)" fill-opacity=".92"/>
 <rect x="402" y="462.8" width="11" height="3.2" rx="1" fill="currentColor" fill-opacity=".14"/>
 <text class="cap" x="421" y="464">row-group statistics &#8212; only this band is fetched</text>
-<path d="M754 303.0 H878" stroke="var(--hero-accent)" stroke-width="7" stroke-opacity=".85" stroke-linecap="butt" fill="none" stroke-dasharray="20 9 9 13 24 8 14"/>
-<path d="M878 296.0 l12 7 l-12 7 z" fill="var(--hero-accent)" fill-opacity=".9"/>
-<text class="mono acc" x="816" y="287" font-size="10.5" text-anchor="middle" opacity=".85">GET Range: bytes=&#8230;</text>
+<path class="beam" d="M754 303.0 H878" stroke="var(--hero-accent)" stroke-width="7" stroke-opacity=".85" stroke-linecap="butt" fill="none" stroke-dasharray="20 9 9 13 24 8 14"/>
+<path class="beam-head" d="M878 296.0 l12 7 l-12 7 z" fill="var(--hero-accent)" fill-opacity=".9"/>
+<text class="mono acc beam-label" x="816" y="287" font-size="10.5" text-anchor="middle" opacity=".85">GET Range: bytes=&#8230;</text>
 <g transform="translate(774,321)"><rect x="0" y="0.0" width="25" height="6.2" rx="1.6" fill="none" stroke="currentColor" stroke-opacity=".40" stroke-width="1.15"/><circle cx="4.6" cy="3.1" r="1.15" fill="currentColor" fill-opacity=".40"/><rect x="0" y="8.4" width="25" height="6.2" rx="1.6" fill="none" stroke="currentColor" stroke-opacity=".40" stroke-width="1.15"/><circle cx="4.6" cy="11.5" r="1.15" fill="currentColor" fill-opacity=".40"/><rect x="0" y="16.8" width="25" height="6.2" rx="1.6" fill="none" stroke="currentColor" stroke-opacity=".40" stroke-width="1.15"/><circle cx="4.6" cy="19.9" r="1.15" fill="currentColor" fill-opacity=".40"/><path d="M-4 26 L29 -4" stroke="currentColor" stroke-opacity=".62" stroke-width="1.7" stroke-linecap="round"/></g>
 <text class="tiny" x="808" y="335">no server</text>
-<polygon points="1031.2,295.2 1135.8,355.6 1028.8,417.4 924.2,357.0" fill="var(--hero-ground)" fill-opacity="1" class="edge"/>
-<polygon points="1068.1,332.2 1031.2,353.5 1031.2,305.2 1068.1,283.9" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
+<polygon class="edge ground" points="1031.2,295.2 1135.8,355.6 1028.8,417.4 924.2,357.0" fill="var(--hero-ground)" fill-opacity="1"/>
+<g class="bldg b1"><polygon points="1068.1,332.2 1031.2,353.5 1031.2,305.2 1068.1,283.9" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
 <polygon points="1031.2,353.5 994.3,332.2 994.3,283.9 1012.8,263.3 1031.2,305.2" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
 <polygon points="1068.1,283.9 1031.2,305.2 1012.8,263.3 1049.7,242.0" fill="var(--hero-roof)" fill-opacity="1" class="edge"/>
-<polygon points="1031.2,262.6 994.3,283.9 1012.8,263.3 1049.7,242.0" fill="var(--hero-roof)" fill-opacity="1" class="edge"/>
-<polygon points="1014.0,360.6 984.5,377.6 984.5,340.7 1014.0,323.6" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
+<polygon points="1031.2,262.6 994.3,283.9 1012.8,263.3 1049.7,242.0" fill="var(--hero-roof)" fill-opacity="1" class="edge"/></g>
+<g class="bldg b2"><polygon points="1014.0,360.6 984.5,377.6 984.5,340.7 1014.0,323.6" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
 <polygon points="984.5,377.6 955.0,360.6 955.0,323.6 969.7,306.6 984.5,340.7" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
 <polygon points="1014.0,323.6 984.5,340.7 969.7,306.6 999.3,289.6" fill="var(--hero-roof)" fill-opacity="1" class="edge"/>
-<polygon points="984.5,306.6 955.0,323.6 969.7,306.6 999.3,289.6" fill="var(--hero-roof)" fill-opacity="1" class="edge"/>
-<polygon points="1100.1,362.0 1065.7,381.9 1065.7,302.4 1100.1,282.5" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
+<polygon points="984.5,306.6 955.0,323.6 969.7,306.6 999.3,289.6" fill="var(--hero-roof)" fill-opacity="1" class="edge"/></g>
+<g class="bldg b3"><polygon points="1100.1,362.0 1065.7,381.9 1065.7,302.4 1100.1,282.5" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
 <polygon points="1065.7,381.9 1036.1,364.8 1036.1,285.3 1065.7,302.4" fill="var(--hero-wall)" fill-opacity="1" class="edge"/>
-<polygon points="1070.6,265.4 1100.1,282.5 1065.7,302.4 1036.1,285.3" fill="var(--hero-roof)" fill-opacity="1" class="edge"/>
+<polygon points="1070.6,265.4 1100.1,282.5 1065.7,302.4 1036.1,285.3" fill="var(--hero-roof)" fill-opacity="1" class="edge"/></g>
 <rect x="909" y="434" width="11" height="11" rx="2" fill="var(--hero-roof)" fill-opacity="1" stroke="currentColor" stroke-opacity=".35" stroke-width="1"/>
 <text class="tiny" x="925" y="443">roof</text>
 <rect x="975" y="434" width="11" height="11" rx="2" fill="var(--hero-wall)" fill-opacity="1" stroke="currentColor" stroke-opacity=".35" stroke-width="1"/>
