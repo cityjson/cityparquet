@@ -114,7 +114,15 @@
 # sample; measured and rejected during implementation.
 set -euo pipefail
 
-DUCKDB=${DUCKDB:-/opt/homebrew/bin/duckdb}
+# Resolved from PATH so this runs on Linux as well as on the macOS box it
+# was written on, where the Homebrew prefix happened to be the whole
+# default. Still overridable — `DUCKDB=/path/to/duckdb ...` — for pinning a
+# specific build, which is the only reason the variable exists.
+DUCKDB=${DUCKDB:-$(command -v duckdb || true)}
+if [[ -z "$DUCKDB" || ! -x "$DUCKDB" ]]; then
+    echo "error: no duckdb binary found on PATH; install it or set DUCKDB=/path/to/duckdb" >&2
+    exit 1
+fi
 INPUT=$1
 OUT_CSV=$2
 DATASET=$(basename "$INPUT")
