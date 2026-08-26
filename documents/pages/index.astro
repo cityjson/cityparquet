@@ -21,7 +21,10 @@ const { config } = data;
 const url = (path: string) =>
   `${import.meta.env.BASE_URL}/${path}`.replace(/\/{2,}/g, "/");
 
-const repo = "https://github.com/HideBa/cityparquet-rs";
+// The monorepo, matching the header link `blume.config.ts` builds from
+// `github.owner`/`github.repo`. Not `HideBa/cityparquet-rs`, which is where the
+// reference implementation lived before the stack moved into one tree.
+const repo = "https://github.com/cityjson/cityparquet";
 
 // `/intro` is the former root page. Nothing else on this page links to it, and
 // it holds the long-form comparisons this page only summarises, so it leads.
@@ -87,18 +90,27 @@ const measurements = [
   },
 ];
 
+// `slug` is the repository the card links to, shown as its own label — a reader
+// deciding whether to click wants to see where it goes. The last card has none
+// on purpose: it names an ecosystem, not a project of ours.
 const tools = [
   {
     name: "cityparquet-rs",
     body: "Reference implementation and CLI: convert, export, compare, bench.",
+    slug: "cityjson/cityparquet",
+    href: `${repo}/tree/main/lib/cityparquet-rs`,
   },
   {
     name: "duckdb-cityjson",
     body: "Community extension reading CityJSON and CityJSONSeq into the wide layout.",
+    slug: "cityjson/duckdb-cityjson",
+    href: "https://github.com/cityjson/duckdb-cityjson",
   },
   {
     name: "duckdb-3d",
     body: "Measurable solids from stored WKB: volume, height, validation reports.",
+    slug: "cityjson/duckdb-3d",
+    href: "https://github.com/cityjson/duckdb-3d",
   },
   {
     name: "Arrow · pandas · Spark",
@@ -418,12 +430,39 @@ const queryTokens = tokeniseSql(query);
           <h2>Tooling</h2>
           <span class="cp-heading-note">Ecosystem</span>
         </div>
+        {/* Nominative use, deliberately: CityParquet's own name stays primary
+            and the claim is a factual one about how the format is read. The
+            DuckDB logo is not used — DuckDB's trademark guidelines require
+            written permission for it, and forbid pairing it with another
+            project's mark. */}
+        <div class="cp-duckdb">
+          <div>
+            <p class="cp-duckdb-eyebrow">Works with DuckDB</p>
+            <p class="cp-duckdb-lead">
+              SQL on a 3D city model, with nothing in between.
+            </p>
+          </div>
+          <p class="cp-duckdb-body">
+            A package is Parquet on object storage, so DuckDB opens it as it
+            stands — <code>read_parquet</code> over HTTPS, no import step, no
+            server, no conversion. Two community extensions carry the parts
+            Parquet has no vocabulary for: <code>cityjson</code> reads the text
+            formats, <code>three_d</code> turns stored WKB back into solids you
+            can measure. The panel below is DuckDB doing exactly that.
+          </p>
+        </div>
         <div class="cp-tools">
           {
             tools.map((tool) => (
               <div class="cp-tool">
                 <span class="cp-tool-name">{tool.name}</span>
                 <p>{tool.body}</p>
+                {tool.href && (
+                  <a class="cp-tool-repo" href={tool.href} rel="noopener">
+                    {tool.slug}
+                    <span aria-hidden="true">↗</span>
+                  </a>
+                )}
               </div>
             ))
           }
@@ -469,6 +508,10 @@ const queryTokens = tokeniseSql(query);
             <span data-sql-label>{result.status}</span>
           </div>
         </figure>
+        <p class="cp-trademark">
+          DuckDB is a trademark of the DuckDB Foundation. CityParquet is an
+          independent project and is not affiliated with or endorsed by it.
+        </p>
       </div>
     </section>
 
@@ -1096,6 +1139,61 @@ const queryTokens = tokeniseSql(query);
 
   /* --- tooling -------------------------------------------------------- */
 
+  /* The DuckDB note leads the section: it is the answer to "what do I read this
+     with", and it wants to be read before the grid of names. An accent rule
+     rather than a heading, so the page's number/h2 hierarchy is untouched. */
+  .cp-duckdb {
+    margin: 0 0 1.625rem;
+    padding: 1.5rem 1.5rem 1.5rem 1.75rem;
+    border: 1px solid var(--cp-line);
+    border-left: 2px solid var(--cp-accent);
+    border-radius: var(--cp-radius);
+    background: var(--cp-surface);
+    display: grid;
+    gap: 0.875rem;
+  }
+
+  /* Two columns once there is room: the claim on the left, the reason on the
+     right. One column of prose across a panel this wide would either run to an
+     unreadable measure or leave half of it empty. */
+  @media (min-width: 60rem) {
+    .cp-duckdb {
+      grid-template-columns: minmax(0, 0.85fr) minmax(0, 1fr);
+      column-gap: 2.75rem;
+      align-items: start;
+    }
+  }
+
+  .cp-duckdb-eyebrow {
+    margin: 0;
+    font-family: var(--blume-font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--cp-accent);
+  }
+
+  .cp-duckdb-lead {
+    margin: 0.5rem 0 0;
+    font-size: 1.125rem;
+    line-height: 1.45;
+    color: var(--cp-ink);
+  }
+
+  .cp-duckdb-body {
+    margin: 0;
+    font-size: 0.875rem;
+    line-height: 1.65;
+    color: var(--cp-ink-2);
+  }
+
+  .cp-duckdb-body code {
+    font-family: var(--blume-font-mono);
+    font-size: 0.875em;
+    color: var(--cp-ink);
+  }
+
+
   .cp-tools {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -1125,6 +1223,35 @@ const queryTokens = tokeniseSql(query);
     font-size: 0.875rem;
     line-height: 1.65;
     color: var(--cp-ink-2);
+  }
+
+  /* Pushed to the foot of the card so the links line up across a row whose
+     descriptions are different lengths. */
+  .cp-tool-repo {
+    margin-top: auto;
+    padding-top: 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    align-self: flex-start;
+    font-family: var(--blume-font-mono);
+    font-size: 0.75rem;
+    color: var(--cp-ink-2);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+  }
+
+  .cp-tool-repo:hover {
+    color: var(--cp-accent);
+    border-bottom-color: var(--cp-accent);
+  }
+
+  .cp-trademark {
+    margin: 1.25rem 0 0;
+    font-size: 0.75rem;
+    line-height: 1.6;
+    color: var(--cp-ink-2);
+    opacity: 0.75;
   }
 
   /* The query panel stays dark in both modes — it is the one place on the page
