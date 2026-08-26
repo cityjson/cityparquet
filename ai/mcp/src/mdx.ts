@@ -72,6 +72,31 @@ function createFenceTracker(initialState: string | null = null): FenceTracker {
   };
 }
 
+/**
+ * Unwraps an inline JSX element that is genuinely closed on the same line —
+ * a self-closing `<Foo bar="1" />`, or a paired `<Badge …>text</Badge>` whose
+ * matching close appears before the line ends — keeping its text content and
+ * dropping the tags. Never touches a backtick-delimited code span, which is
+ * where the specification's own type notation (`` `LIST<VARCHAR>` ``,
+ * `` `STRUCT<… LIST<LIST<INT>>>` ``) lives.
+ *
+ * Two independent guards keep that notation intact even though it shares the
+ * `<`/`>` characters: neither regex below matches without an actual closing
+ * tag or a literal `/>`, which `LIST<VARCHAR>` never has; and both are only
+ * ever applied outside backtick spans in the first place, so a construct
+ * that *did* look closed while quoted (there is none in the specification
+ * today) would still survive.
+ */
+function unwrapInlineJsx(line: string): string {
+  const parts = line.split(/(`[^`]*`)/);
+  for (let index = 0; index < parts.length; index += 2) {
+    parts[index] = parts[index]!
+      .replace(/<([A-Z][\w.]*)(?:\s[^<>]*?)?\/>/g, "")
+      .replace(/<([A-Z][\w.]*)(?:\s[^<>]*?)?>([^<>]*)<\/\1>/g, "$2");
+  }
+  return parts.join("");
+}
+
 function stripJsx(markdown: string): string {
   const lines = markdown.split(/\r?\n/);
   const result: string[] = [];
@@ -79,7 +104,7 @@ function stripJsx(markdown: string): string {
   let i = 0;
 
   while (i < lines.length) {
-    const line = lines[i]!;
+    let line = lines[i]!;
 
     // Track fence state
     const wasInFence = tracker.isInside(line);
@@ -106,6 +131,9 @@ function stripJsx(markdown: string): string {
       i++;
       continue;
     }
+
+    // Unwrap inline JSX elements mixed into a line of prose (only outside fences).
+    line = unwrapInlineJsx(line);
 
     // Handle multi-line JSX: opening tag that closes on a later line (only outside fences)
     const multilineJsxStart = /^[ \t]*<[A-Z][\w.]*(?:\s|$)/.test(line);

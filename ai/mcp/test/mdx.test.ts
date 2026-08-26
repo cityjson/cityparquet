@@ -108,6 +108,37 @@ describe("reduceMdx", () => {
     expect(doc.body).toContain("prop=");
     expect(doc.body).toContain("End.");
   });
+
+  it("unwraps an inline JSX element with text content, keeping the text", () => {
+    const doc = reduceMdx('<Badge variant="success">decided</Badge>\n\nKept.', { siteBaseUrl: SITE });
+    expect(doc.body).toContain("decided");
+    expect(doc.body).not.toContain("<Badge");
+    expect(doc.body).not.toContain("</Badge>");
+    expect(doc.body).toContain("Kept.");
+  });
+
+  it("removes an inline self-closing JSX element entirely", () => {
+    const doc = reduceMdx('Before <Foo bar="1" /> after.', { siteBaseUrl: SITE });
+    expect(doc.body).not.toContain("<Foo");
+    expect(doc.body).toContain("Before");
+    expect(doc.body).toContain("after.");
+  });
+
+  it("leaves LIST<> and STRUCT<> type notation inside backticks untouched", () => {
+    const doc = reduceMdx(
+      "The `parents` column is `LIST<VARCHAR>`.\n\nA struct: `STRUCT<type VARCHAR, shells LIST<LIST<INT>>>`.",
+      { siteBaseUrl: SITE },
+    );
+    expect(doc.body).toContain("`LIST<VARCHAR>`");
+    expect(doc.body).toContain("`STRUCT<type VARCHAR, shells LIST<LIST<INT>>>`");
+  });
+
+  it("leaves a bare, unclosed angle-bracket type outside backticks untouched", () => {
+    const doc = reduceMdx("Types include LIST<VARCHAR>, STRUCT<...>, and <VARCHAR>.", { siteBaseUrl: SITE });
+    expect(doc.body).toContain("LIST<VARCHAR>");
+    expect(doc.body).toContain("STRUCT<...>");
+    expect(doc.body).toContain("<VARCHAR>");
+  });
 });
 
 describe("splitSections", () => {
