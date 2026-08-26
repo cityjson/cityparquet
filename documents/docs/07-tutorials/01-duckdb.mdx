@@ -121,8 +121,9 @@ subquery, first capture the GeoParquet `geo` metadata into a variable with
 tools recognise the geometry:
 
 ```sql
-INSTALL cityjson FROM community;
-LOAD cityjson;
+-- Built from source; see the cityjson tutorial. The community registry still
+-- serves an older build whose column names differ.
+LOAD './build/release/extension/cityjson/cityjson.duckdb_extension';
 
 SET VARIABLE geo = (
   SELECT geo FROM cityjson_geoparquet_geo('https://storage.googleapis.com/cityjson/delft.city.jsonl')

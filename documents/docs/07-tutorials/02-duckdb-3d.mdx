@@ -45,58 +45,68 @@ monorepo it is already present as a submodule: run `just setup`, then
 `cd lib/duckdb-3d` and build the same way.
 
 That produces `build/release/duckdb` — a DuckDB shell with `three_d` preloaded. To
-read real CityJSON you also want the `cityjson` community extension available
-(one-time):
+read real CityJSON you also need the [`cityjson`](/tutorials/duckdb-cityjson)
+extension, **built from source as a sibling checkout** — build it once and load it
+by path:
 
 ```sh
-./build/release/duckdb -unsigned -c "INSTALL cityjson FROM community;"
+cd ../duckdb-cityjson && GEN=ninja make release
 ```
 
 Every session then loads both. Note the internal extension name is `three_d`, even
 though the repository is called `duckdb-3d`:
 
 ```sql
-LOAD cityjson;
+LOAD '../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
 LOAD three_d;
 ```
+
+:::caution[Not the community build]
+`INSTALL cityjson FROM community` still serves an older build whose columns are
+named differently — a flat `geometry` BLOB and a `geometry_properties` VARCHAR
+instead of the LoD-suffixed pairs below. `ST_3DFromWKB` accepts either sidecar
+form, but the *column names* differ, so nothing on this page binds against it.
+:::
 
 ## How the two extensions compose
 
 `three_d` never parses CityJSON itself. The division of labour is:
 
-- **`cityjson`** reads CityJSON / CityJSONSeq and, in per-LoD mode (`lod => '...'`),
-  emits a `geometry` BLOB (WKB) column plus a sidecar `geometry_properties`
-  (JSON) column.
-- **`three_d`** consumes that pair through `ST_3DFromWKB(geometry, geometry_properties)`
-  and gives you a `SOLID_3D` you can validate, measure, and transform.
+- **`cityjson`** reads CityJSON / CityJSONSeq and emits, for every LoD present, a
+  `geometry_lodX_Y` BLOB (WKB) column paired with a `geometry_properties_lodX_Y`
+  STRUCT sidecar.
+- **`three_d`** consumes that pair through
+  `ST_3DFromWKB(geometry_lodX_Y, geometry_properties_lodX_Y)` and gives you a
+  `SOLID_3D` you can validate, measure, and transform.
 
 ```text
-CityJSON ──cityjson──▶ (geometry BLOB, geometry_properties JSON) ──three_d──▶ SOLID_3D / GEOM_3D
+CityJSON ──cityjson──▶ (geometry_lod2_2 BLOB, geometry_properties_lod2_2 STRUCT) ──three_d──▶ SOLID_3D / GEOM_3D
 ```
 
-The same pair is exactly what a CityParquet package stores per LoD, so the pipeline
-is identical whether the WKB comes from a live CityJSONSeq read or a converted
-Parquet column — only the names differ, since a package's columns are always
-LoD-suffixed (`geometry_lod2_2`, `geometry_properties_lod2_2`).
+Those are exactly the columns a CityParquet package stores, **under the same
+names**, so the pipeline is identical whether the WKB arrives from a live
+CityJSONSeq read or from a converted Parquet column: only the table function
+changes.
 
 ## Work with SOLID_3D
 
 Before touching the network, confirm the pipeline on the bundled unit-cube fixture.
-Two rules apply to **every** CityJSON read for `three_d`: always pass `lod => '...'`
-(without it, `cityjson` emits a `STRUCT` geometry column that `ST_3DFromWKB` cannot
-consume), and always filter `WHERE geometry IS NOT NULL` (objects lacking the
-requested LoD have a NULL geometry):
+One rule applies to **every** CityJSON read for `three_d`: filter
+`WHERE geometry_lodX_Y IS NOT NULL`, because an object that carries no geometry at
+that LoD has a NULL there. Passing `lod => '...'` is optional — it restricts the
+read to a single LoD (and raises if the file has none), while the default wide
+layout gives you every LoD at once, each as its own consumable column pair:
 
 ```sql
 SELECT id,
        ST_3DNumFaces(solid)              AS faces,
-       ST_3DIsClosed(solid)             AS closed,
+       ST_3DIsClosed(solid)              AS closed,
        ROUND(ST_3DSurfaceArea(solid), 3) AS area,
        ROUND(ST_3DVolume(solid), 3)      AS volume
 FROM (
-  SELECT id, ST_3DFromWKB(geometry, geometry_properties) AS solid
+  SELECT id, ST_3DFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS solid
   FROM read_cityjson('test/data/unit_cube.city.json', lod => '2.2')
-  WHERE geometry IS NOT NULL
+  WHERE geometry_lod2_2 IS NOT NULL
 );
 ```
 
@@ -115,7 +125,7 @@ LoD 2.2:
 
 ```sql
 CREATE TABLE feats AS
-SELECT id, parents, children, geometry, geometry_properties,
+SELECT id, parents, children, geometry_lod2_2, geometry_properties_lod2_2,
        b3_volume_lod22, b3_opp_grond, b3_h_maaiveld     -- 3DBAG ground-truth attributes
 FROM read_cityjsonseq(
     'https://storage.googleapis.com/cityjson/delft.city.jsonl',
@@ -133,13 +143,13 @@ instead of aborting the whole query:
 ```sql
 CREATE TABLE parts AS
 SELECT p.id,
-       ST_3DTryFromWKB(p.geometry, p.geometry_properties) AS solid,
+       ST_3DTryFromWKB(p.geometry_lod2_2, p.geometry_properties_lod2_2) AS solid,
        b.b3_volume_lod22,
        b.b3_opp_grond,
        len(b.children) AS n_parts
 FROM feats p
 JOIN feats b ON b.id = p.parents[1]
-WHERE p.geometry IS NOT NULL;
+WHERE p.geometry_lod2_2 IS NOT NULL;
 ```
 
 ## Validate before you measure
@@ -155,6 +165,17 @@ SELECT count(*)                                                     AS parts,
        count(*) FILTER (WHERE ST_3DIsClosed(solid))                 AS closed
 FROM parts;
 ```
+
+```text
+┌───────┬───────┬────────┐
+│ parts │ valid │ closed │
+├───────┼───────┼────────┤
+│ 1116  │ 1098  │  1107  │
+└───────┴───────┴────────┘
+```
+
+18 of 1116 parts (1.6 %) are not valid solids — the normal state of real
+reconstructed geometry, not a defect in the reader.
 
 ```sql
 -- Inspect any building that fails
@@ -203,8 +224,8 @@ WHERE ST_3DValidationReport(solid).is_valid;
 
 3DBAG ships each building's own computed volume (`b3_volume_lod22`) and
 ground-surface area (`b3_opp_grond`), so you can cross-check the kernel against
-independent ground truth — for single-part, valid buildings the volumes agree within
-about 0.02 % for the vast majority:
+independent ground truth — across the tile's single-part valid buildings the median
+volume disagreement is 0.017 %:
 
 ```sql
 SELECT ROUND(median(
@@ -214,7 +235,7 @@ FROM parts
 WHERE n_parts = 1
   AND ST_3DValidationReport(solid).is_valid
   AND b3_volume_lod22 > 0;
--- ≈ 0.02 %
+-- 0.017
 ```
 
 ## Distance queries
@@ -225,9 +246,9 @@ named buildings:
 
 ```sql
 SELECT ROUND(ST_3DDistance(
-    ST_Geom3DFromWKB((SELECT geometry FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000012869-0')),
-    ST_Geom3DFromWKB((SELECT geometry FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000016459-0'))
-), 1) AS gap_m;                                     -- ≈ 1033.7
+    ST_Geom3DFromWKB((SELECT geometry_lod2_2 FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000012869-0')),
+    ST_Geom3DFromWKB((SELECT geometry_lod2_2 FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000016459-0'))
+), 1) AS gap_m;                                     -- 1033.7
 ```
 
 Find every building within 5 m of a reference building (`ST_3DDWithin`
@@ -235,13 +256,13 @@ short-circuits on distance):
 
 ```sql
 WITH ref AS (
-  SELECT ST_Geom3DFromWKB(geometry) AS g
+  SELECT ST_Geom3DFromWKB(geometry_lod2_2) AS g
   FROM feats WHERE id = 'NL.IMBAG.Pand.0503100000012869-0'
 )
 SELECT p.id
 FROM feats p, ref
-WHERE p.geometry IS NOT NULL
-  AND ST_3DDWithin(ST_Geom3DFromWKB(p.geometry), ref.g, 5.0);
+WHERE p.geometry_lod2_2 IS NOT NULL
+  AND ST_3DDWithin(ST_Geom3DFromWKB(p.geometry_lod2_2), ref.g, 5.0);
 ```
 
 Related `GEOM_3D` functions: `ST_3DMaxDistance`, `ST_3DDFullyWithin`,

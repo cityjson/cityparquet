@@ -22,6 +22,8 @@ instead — that is the maintained, normative half.
 | `plans/2026-08-23-cityparquet-monorepo-migration.md` | The plan that produced this repository's layout |
 | `specs/2026-08-24-geoparquet-2-conformance-design.md` | Removing the arrow-native encoding and adopting GeoParquet 2.0: the `GEOMETRY` logical type, `GeospatialStatistics`, and why a solid column is left unannotated |
 | `specs/2026-08-24-sql-playground-design.md` | The DuckDB-WASM SQL playground at `/playground`: runtime, extension sourcing, and the CORS the data bucket must serve |
+| `specs/2026-08-26-cityparquet-mcp-and-skills-design.md` | The MCP server at `ai/mcp/` and the skills at `ai/plugin/`: the generated documentation corpus, the five tools, the sandbox a public `query` needs, and why the stack pins DuckDB v1.5.4 |
+| `plans/2026-08-26-cityparquet-mcp-phase-1.md` | Phase 1 of the above: the corpus build, the stdio server and its five tools, task by task |
 
 Note that these notes were written while the code lived in several separate
 repositories, so they refer to paths (and, in one case, a local working

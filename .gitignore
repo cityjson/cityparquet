@@ -53,3 +53,4 @@ ai/skills/
 /scripts/catalog2cityparquet/.venv/
 # benchmark/readbench is its own Cargo workspace.
 /benchmark/readbench/target/
+.worktrees/
