@@ -817,6 +817,65 @@ AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
     bytes in `sizes.csv`, never the corpus table's wire figure — that one
     answers download cost for the source only.
 
+19. **FlatCityBuf's `id` is structurally unindexable, so its `id-lookup` is a
+    full walk.** The `.fcb` artefacts are built `fcb ser -A`, which indexes
+    **every attribute**, and the runner does try the B+-tree first. It always
+    falls back: `id` is a CityObject's map KEY, never a member of the
+    CityJSON `attributes` map FCB's schema covers, so there is no entry to
+    find. The `no-attr-index` tag on those rows records a property of the
+    format as it stands, not a gap in this harness. `attr-filter` genuinely
+    does use the index.
+
+20. **A probe's POSITION is only nominal outside the CityJSONSeq stream.**
+    The deciles are cut from the seq order, and the gzipped, FlatCityBuf and
+    CityParquet artefacts are cut from that same file — but neither the
+    CityGML nor the FlatCityBuf artefact preserves it. The CityGML is
+    synthesised independently by `citygml-tools`; the `.fcb` is ordered by
+    its own R-tree. Both therefore show **non-monotonic** times across
+    `id-10pct`/`id-50pct`/`id-90pct`, and on `ingolstadt` FlatCityBuf's
+    `id-90pct` is roughly 40x faster than its `id-10pct`. Presence is
+    verified for every probe; position is not. Read the three hit rows for
+    those two formats as three samples of the distribution, never as a
+    position curve.
+
+21. **A bbox row's target and its achieved selectivity can differ, and
+    `approx` says where.** Row counts are discrete, so a target is not always
+    reachable: 1% of `ingolstadt`'s 379 rows is 3.79 rows. The search accepts
+    a relative tolerance of ±10% and, when it cannot converge inside that,
+    takes the nearest achievable window and appends `approx` to the row's
+    `notes`. A missed target is disclosed in the artefact, never silent.
+
+22. **bbox targets are expressed in CityParquet ROW space.** The search runs
+    over the CityParquet package's per-row bboxes, so `cityparquet`'s own
+    achieved selectivity is the one that lands on the target. Feature-grained
+    formats (`citygml`, `cityjsonseq`, `flatcitybuf`) count a different unit
+    and therefore report a different achieved fraction for the **identical**
+    window — on `ingolstadt`, 0.055 against CityParquet's 0.011 for
+    `bbox-1pct`. The window is the same for every format, which is what makes
+    the timings comparable; the `selectivity` column is not comparable across
+    grains. See Caveat 3 on counting grain.
+
+23. **The scaling family's format set is NOT uniform across its seven
+    cardinalities.** `scaling_read_results/` measures 1k, 5k, 10k, 50k and
+    100k CityObjects with all five formats, but 500k and 1M with **four** —
+    `cityjson`, `cityjsonseq`, `flatcitybuf`, `cityparquet-hilbert`. There is
+    no `citygml` row at the two largest sizes.
+
+    The reason is the artefact, not the reader. These slices carry no `.gml`
+    of their own, so `readbench_prepare.sh` synthesises one with
+    `citygml-tools`, and the synthesised file is roughly 4x the CityJSONSeq
+    it came from. On the 1M slice — a 2.75 GB stream — that pass ran for over
+    four hours at 30 GB resident and had written 6.6 GB of an estimated 10 GB
+    when it was abandoned. The two large cardinalities are therefore measured
+    without it deliberately.
+
+    **What this forbids:** reading a `citygml` scaling curve across the whole
+    axis, or comparing a 1M-row figure against a `citygml` number that does
+    not exist. What it still supports: the four-format curve across all seven
+    cardinalities, and the five-format comparison up to 100k. CityGML's
+    cross-format cost is measured properly in `read_results/`, on six real
+    published datasets, which is what that family is for.
+
 ## Environment
 
 **Two halves, and both must be recorded for a run to be reproducible**: the
