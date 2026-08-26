@@ -120,6 +120,22 @@ that file's prose for `cityparquet_docs_search` and `cityparquet_docs_read` —
 an agent can legitimately read about a function it cannot yet call — but tool
 *implementations* must not assume it is callable.
 
+## `describe()` cannot read a local package directory
+
+`cityparquet_describe` given a package **directory** always takes the STAC
+probe path, never the local one, even when that directory is on the same
+machine and holds a `metadata.json`. `describe()`'s package branch
+(`src/tools/describe.ts`) always calls `fetch(`${url}/metadata.json`)`, and
+`fetch()` throws immediately on a base that is not a URL — a plain filesystem
+path fails there before any attempt to read the file. The `catch` around that
+call absorbs the throw and falls back to probing the normative module
+basenames with `summariseFile`, exactly as it would for a genuinely
+unreachable remote host — so the tool degrades silently rather than reading
+the local `metadata.json` it could otherwise see, and the result's `notes`
+attribute the fallback to a fetch failure rather than to "this is a local
+path". A single `.parquet` file path is unaffected: that branch never calls
+`fetch()`. This is a known gap, not yet fixed.
+
 ## The `cityparquet_` tool prefix is provisional
 
 All five tool names start with `cityparquet_` (see `src/server.ts`). This is a

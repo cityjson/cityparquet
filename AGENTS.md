@@ -104,6 +104,14 @@ just docs-build                      # the specification site     (needs pnpm)
 Benchmarks are **not** a gate and are not in CI — multi-hour, corpus-dependent,
 and the database family needs rootless podman.
 
+**`just check` needs the submodules checked out.** `mcp-check` runs
+`corpus:check`, which rebuilds the MCP server's documentation corpus from
+`lib/duckdb-cityjson/docs/FUNCTIONS.md` and `lib/duckdb-3d/docs/FUNCTIONS.md`
+to compare it against the committed one — so `just check` (and `just
+mcp-check` and `just mcp-corpus` on their own) fail with an ENOENT deep inside
+the corpus build on a fresh clone that has not run `just setup` or `just
+setup-shallow` first.
+
 ## Submodules
 
 `lib/duckdb-cityjson` and `lib/duckdb-3d` are independent git repositories with
