@@ -21,13 +21,21 @@ try the queries below before installing anything locally.
 <Steps>
   <Step title="Install DuckDB and the extensions">
     Grab a [DuckDB](https://duckdb.org/) binary from duckdb.org (or your package
-    manager), then load the `cityjson` community extension so DuckDB can read
-    CityJSON / CityJSONSeq directly and produce the CityParquet wide layout:
+    manager), then add the `cityjson` extension so DuckDB can read CityJSON /
+    CityJSONSeq directly and produce the CityParquet wide layout. Build it from
+    the [`duckdb-cityjson`](https://github.com/cityjson/duckdb-cityjson) source
+    and load it by path:
 
     ```sql
-    INSTALL cityjson FROM community;
-    LOAD cityjson;
+    LOAD './duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
     ```
+
+    :::caution[Not the community build]
+    `INSTALL cityjson FROM community` still serves an older build that emits a
+    single un-suffixed `geometry` column and a `geometry_properties` VARCHAR. The
+    queries on this page use the LoD-suffixed layout the specification defines, so
+    they do not bind against it. Build from source until the registry catches up.
+    :::
 
     For the 3D step below you also need the `three_d` extension, which turns the
     stored WKB geometry into measurable solids (volume, height, validation). It is
@@ -87,26 +95,36 @@ try the queries below before installing anything locally.
     solids:
 
     ```sql
-    LOAD cityjson;
     LOAD three_d;
 
     SELECT ROUND(SUM(ST_3DVolume(solid)), 0) AS total_volume_m3
     FROM (
-      SELECT ST_3DTryFromWKB(geometry, geometry_properties) AS solid
+      SELECT ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS solid
       FROM read_cityjsonseq(
         'https://storage.googleapis.com/cityjson/delft.city.jsonl', lod => '2.2')
-      WHERE geometry IS NOT NULL
+      WHERE geometry_lod2_2 IS NOT NULL
     )
     WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;
     ```
+
+    ```text
+    ┌─────────────────┐
+    │ total_volume_m3 │
+    ├─────────────────┤
+    │    1915861.0    │
+    └─────────────────┘
+    ```
+
+    Every geometry column is LoD-suffixed, in this mode as much as in the default
+    wide one — `lod => '2.2'` restricts the read to one LoD, it does not rename the
+    column to a bare `geometry`.
 
     Against a **CityParquet package on object storage**, the same query is the
     cloud-native win: because only the geometry column is referenced, DuckDB fetches
     only that column's bytes (**projection pushdown**) and prunes the row groups it
     cannot match — so you compute over a national-scale model **without downloading
-    it**. Point `read_parquet` at the package's object table and select the
-    LoD-suffixed pair the same way — `geometry_lod2_2` /
-    `geometry_properties_lod2_2` for the LoD 2.2 solids above.
+    it**. The column names are the same either way, so swapping `read_cityjsonseq`
+    for `read_parquet` against the package's object table is the only change.
 
   </Step>
 </Steps>

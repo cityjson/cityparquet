@@ -21,12 +21,23 @@ including ones affecting data correctness — are expected. Verify results again
 trusted source before use.
 :::
 
-Install and load it once from the community registry:
+Build it from source and load it by path:
+
+```sh
+git clone https://github.com/cityjson/duckdb-cityjson.git
+cd duckdb-cityjson && GEN=ninja make release
+```
 
 ```sql
-INSTALL cityjson FROM community;
-LOAD cityjson;
+LOAD './build/release/extension/cityjson/cityjson.duckdb_extension';
 ```
+
+:::caution[Not the community build]
+`INSTALL cityjson FROM community` still serves an older build with a different
+schema — a flat `geometry` BLOB, a `geometry_properties` VARCHAR, and a `bbox`
+whose fields are `min_x` / `max_x` rather than `xmin` / `xmax`. Nothing on this
+page binds against it. Build from source until the registry catches up.
+:::
 
 :::note[Run it at cloud scale]
 For `COPY`-based conversion of a CityParquet package that lives on a public bucket —
@@ -57,46 +68,57 @@ WHERE object_type = 'Building';
 ### Default wide-layout schema
 
 With no `lod` parameter the reader emits the CityParquet wide layout. Alongside the
-predefined columns (`id`, `feature_id`, `object_type`, `children`, `children_roles`,
-`parents`, `other`) and the dynamic attribute columns inferred from the data, it
-produces:
+predefined columns (`id`, `feature_id`, `object_type`, `parents`, `children`,
+`children_roles`, `address`, `template`, `other`) and the dynamic attribute columns
+inferred from the data, it produces:
 
 - a `bbox` STRUCT — the object's 3D extent in world coordinates, computed from its
   highest-LoD geometry: `STRUCT(xmin, ymin, zmin, xmax, ymax, zmax DOUBLE)`;
 - one set of geometry columns **per LoD** found in the data, named after the
-  normalised LoD (`2.2` → `_lod2_2`; a whole-number LoD like `2.0` → `_lod2`).
-  Note that the extension trims the minor component here, whereas the
-  [specification's suffix grammar](/specification/geometry-semantics) always keeps
-  it (`geometry_lod2_0`, never `geometry_lod2`):
+  normalised LoD. The suffix follows the
+  [specification's grammar](/specification/geometry-semantics) exactly, so it
+  always carries a minor: `2.2` → `_lod2_2`, and a whole-number LoD like `2` →
+  `_lod2_0`, never `_lod2`:
 
 | Column | Type | Description |
 | --- | --- | --- |
 | `geometry_lodX_Y` | BLOB | WKB-encoded geometry for that LoD (NULL if absent) |
-| `geometry_properties_lodX_Y` | JSON | Geometry metadata in CityParquet's [geometry-and-semantics](/specification/geometry-semantics) form |
-| `material_lodX_Y` | JSON | Per-surface material map for that LoD (see [appearance](/specification/appearance-templates)); NULL if none |
-| `texture_lodX_Y` | JSON | Per-surface texture map for that LoD; NULL if none |
+| `geometry_properties_lodX_Y` | STRUCT | Geometry metadata in CityParquet's [geometry-and-semantics](/specification/geometry-semantics) form: `STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])` |
+| `material_lodX_Y` | VARCHAR | Per-surface material map for that LoD as JSON text (see [appearance](/specification/appearance-templates)); NULL if none |
+| `texture_lodX_Y` | VARCHAR | Per-surface texture map for that LoD as JSON text; NULL if none |
 
 The WKB cannot carry semantics or a solid's shell structure, so those live in
-`geometry_properties` as a flattened, WKB-face-aligned JSON object — `type` always,
-plus `shells` (per-shell face counts), `surfaces` (the CityJSON surfaces array
-verbatim), and `face_semantics` (one entry per WKB face, in WKB face order). This is
+`geometry_properties` as a flattened, WKB-face-aligned STRUCT — `type` always,
+plus `shells` (per-solid, per-shell face counts), `surfaces` (the CityJSON surfaces
+array verbatim, as JSON text), and `face_semantics` (one entry per WKB face, in WKB
+face order). There is no `lod` field: the column name carries it. This is
 the same metadata the [`three_d`](/tutorials/duckdb-3d) extension reads from `shells`
 to compute the volume of a solid with inner shells. See the
 [geometry-encoding rationale](/design-decisions/geometry-encoding).
 
 ### Per-LoD mode
 
-Passing `lod => '...'` switches to a narrow schema — `id`, `feature_id`,
-`object_type`, a single `geometry` BLOB, `geometry_properties` (carrying `lod` here,
-since the column name has no suffix), `bbox`, and the inferred attributes. This is
-the shape the `three_d` extension and DuckDB `spatial` consume:
+Passing `lod => '...'` **restricts** the read to one LoD; it does not change the
+column grammar. The result keeps the same predefined columns, the same `bbox`, and
+the same suffixed geometry group as the wide layout — just the one set
+(`geometry_lod2_2`, `geometry_properties_lod2_2`, `material_lod2_2`,
+`texture_lod2_2`) — plus the inferred attributes. The LoD is normalised first, so
+`lod => '2'` reads LoD 2.0 into `geometry_lod2_0`, and asking for a LoD the file
+does not contain raises at bind time rather than returning an empty column.
+
+DuckDB `spatial` consumes the LoD0 footprint directly, because that is the one LoD
+whose WKB is legal GeoParquet:
 
 ```sql
 LOAD spatial;
-SELECT id, ST_GeomFromWKB(geometry) AS geom
-FROM read_cityjsonseq('buildings.city.jsonl', lod => '2.2')
-WHERE geometry IS NOT NULL;
+SELECT id, ST_GeomFromWKB(geometry_lod0_0) AS geom
+FROM read_cityjsonseq('buildings.city.jsonl', lod => '0')
+WHERE geometry_lod0_0 IS NOT NULL;
 ```
+
+The solid LoDs are a `PolyhedralSurface Z`, which `spatial` rejects with
+`Unsupported geometry type in WKB`. Those go to
+[`three_d`](/tutorials/duckdb-3d), which reads the STRUCT sidecar directly.
 
 ## Read CityJSONSeq / remote
 

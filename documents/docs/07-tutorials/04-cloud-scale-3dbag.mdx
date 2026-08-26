@@ -397,7 +397,9 @@ models, `COPY … TO` turns CityParquet back into CityJSON, CityJSONSeq, or Flat
 projection, no `to_json`:
 
 ```sql
-INSTALL cityjson FROM community; LOAD cityjson;
+-- Built from source; see the cityjson tutorial. The community registry still
+-- serves an older build whose column names differ.
+LOAD './build/release/extension/cityjson/cityjson.duckdb_extension';
 
 COPY (
   SELECT * FROM read_parquet('gs://cityparquet/3dbag_tiled/10-640-324/building.parquet')
@@ -424,9 +426,8 @@ instead.
 :::note[FlatCityBuf needs a build flag]
 `COPY … TO (FORMAT flatcitybuf)` produces the cloud-optimised
 [FlatCityBuf](https://github.com/cityjson/flatcitybuf) binary (spatial index, HTTP
-range requests), but it is a **compile-time option** (`-DCITYJSON_ENABLE_FCB=ON`) and
-is not present in the community build. Build the `cityjson` extension from source with
-that flag to write `.fcb`.
+range requests), but it is a **compile-time option** (`-DCITYJSON_ENABLE_FCB=ON`).
+Configure the `cityjson` build with that flag to write `.fcb`.
 :::
 
 ## Why this is fast
