@@ -1,0 +1,77 @@
+{
+  "dataset": "nyc_da13_buildings.city.json",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.010009673213609791,
+      "window": [
+        998118.5031966012,
+        229971.511,
+        -1.5,
+        999423.071803399,
+        232114.16999999998,
+        677.862
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.050006308617571604,
+      "window": [
+        997428.0031969767,
+        228837.41499999998,
+        -1.5,
+        1000113.5718030235,
+        233248.266,
+        677.862
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.24998948563738066,
+      "window": [
+        995595.213926607,
+        225827.192,
+        -1.5,
+        1001946.3610733931,
+        236258.48899999997,
+        677.862
+      ],
+      "approx": false
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "gml_368HKQBS0KYVW7X0FAI97BTVNCW0WXCT05HH",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "gml_2XFOOBYVYVTX4R1YKQP5T35E0TVOM35YM5LM",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "gml_GRVGC026RIOZ1HZH336VU8KCFWI1EWCEF173",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "gml_2XFOOBYVYVTX4R1YKQP5T35E0TVOM35YM5LM-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "object_type": "Building",
+  "object_type_count": 23777,
+  "numeric_attr": null,
+  "cp_object_total": 23777
+}
