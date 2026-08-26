@@ -37,6 +37,44 @@ describe("reduceMdx", () => {
     const doc = reduceMdx("See [duckdb](https://duckdb.org).", { siteBaseUrl: SITE });
     expect(doc.body).toContain("https://duckdb.org");
   });
+
+  it("strips multi-line JSX elements while preserving their content", () => {
+    const doc = reduceMdx(
+      "<Card\n  title=\"Geometry, LoD & spatial metadata\"\n  href=\"/specification/geometry-semantics\"\n  icon=\"box\"\n>\nWKB encoding, surface semantics.\n</Card>\n\nKept.",
+      { siteBaseUrl: SITE },
+    );
+    expect(doc.body).not.toContain("<Card");
+    expect(doc.body).not.toContain("title=");
+    expect(doc.body).not.toContain("href=");
+    expect(doc.body).not.toContain("icon=");
+    expect(doc.body).not.toContain("</Card>");
+    expect(doc.body).toContain("WKB encoding, surface semantics.");
+    expect(doc.body).toContain("Kept.");
+  });
+
+  it("strips single-line and multi-line MDX comments", () => {
+    const doc = reduceMdx(
+      "Text before.\n{/* single-line comment */}\nText middle.\n{/* multi\nline\ncomment */}\nText after.",
+      { siteBaseUrl: SITE },
+    );
+    expect(doc.body).not.toContain("{/*");
+    expect(doc.body).not.toContain("*/}");
+    expect(doc.body).toContain("Text before.");
+    expect(doc.body).toContain("Text middle.");
+    expect(doc.body).toContain("Text after.");
+  });
+
+  it("preserves multi-line JSX inside fenced code blocks", () => {
+    const doc = reduceMdx(
+      "```jsx\n<Card\n  title=\"Example\"\n  href=\"/example\"\n>\nContent\n</Card>\n```\n\nKept.",
+      { siteBaseUrl: SITE },
+    );
+    expect(doc.body).toContain("<Card");
+    expect(doc.body).toContain("title=");
+    expect(doc.body).toContain("href=");
+    expect(doc.body).toContain("</Card>");
+    expect(doc.body).toContain("Kept.");
+  });
 });
 
 describe("splitSections", () => {

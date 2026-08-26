@@ -34,11 +34,90 @@ function unwrapAdmonitions(markdown: string): string {
   );
 }
 
+/** Tracks whether we are inside a fenced code block. */
+function createFenceTracker(): { isInside(line: string): boolean } {
+  let fence: string | null = null;
+  return {
+    isInside(line: string): boolean {
+      const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
+      if (fenceMatch) {
+        const marker = fenceMatch[1]!;
+        if (fence === null) {
+          fence = marker;
+          return true;
+        } else if (marker.startsWith(fence[0]!) && marker.length >= fence.length) {
+          fence = null;
+          return true;
+        }
+        return true;
+      }
+      return fence !== null;
+    },
+  };
+}
+
 function stripJsx(markdown: string): string {
-  return markdown
-    .replace(/^import\s+[^\n]*\n/gm, "")
-    .replace(/^export\s+[^\n]*\n/gm, "")
-    .replace(/^[ \t]*<\/?[A-Z][\w.]*(?:\s[^>]*)?\/?>[ \t]*$/gm, "");
+  // First, strip MDX comments globally (they can span multiple lines)
+  let text = markdown.replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+
+  const tracker = createFenceTracker();
+  const lines = text.split(/\r?\n/);
+  const result: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i]!;
+
+    // Track fence state
+    if (tracker.isInside(line)) {
+      result.push(line);
+      i++;
+      continue;
+    }
+
+    // Strip single-line import/export statements
+    if (/^import\s+[^\n]*$/.test(line)) {
+      i++;
+      continue;
+    }
+    if (/^export\s+[^\n]*$/.test(line)) {
+      i++;
+      continue;
+    }
+
+    // Strip single-line JSX elements (complete on one line)
+    if (/^[ \t]*<\/?[A-Z][\w.]*(?:\s[^>]*)?>[ \t]*$/.test(line)) {
+      i++;
+      continue;
+    }
+
+    // Handle multi-line JSX: opening tag that closes on a later line
+    const multilineJsxStart = /^[ \t]*<[A-Z][\w.]*(?:\s|$)/.test(line);
+    if (multilineJsxStart && !line.includes(">")) {
+      // Consume lines until we find the closing >
+      let j = i + 1;
+      while (j < lines.length) {
+        const nextLine = lines[j]!;
+        if (nextLine.includes(">")) {
+          // Found the closing >; skip all these lines and continue
+          i = j + 1;
+          break;
+        }
+        j++;
+      }
+      if (j === lines.length) {
+        // Never found a closing >, treat as content
+        result.push(line);
+        i++;
+      }
+      continue;
+    }
+
+    result.push(line);
+    i++;
+  }
+
+  return result.join("\n");
 }
 
 function absolutiseLinks(markdown: string, siteBaseUrl: string): string {
