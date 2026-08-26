@@ -71,23 +71,57 @@ function mdxDirectory(root: string, relative: string): Chapter[] {
   return chapters;
 }
 
-/** A FUNCTIONS.md normalises to the same two levels: `##` chapter, `###` section. */
-function functionsReference(root: string, relative: string, title: string): CorpusEntry {
-  const source = readFileSync(join(root, relative), "utf8");
-  const tops = splitSections(source).filter((s) => s.level === 2);
+/**
+ * A FUNCTIONS.md normalises to the same two levels: `##` chapter, `###`
+ * section. `splitSections` returns a *flat* list — every heading, of every
+ * level, as a sibling, each body running only to the next heading of any
+ * level — so a level-2 section's own body never contains its level-3
+ * children; they are later, separate entries in the same flat list. This
+ * walks that flat list once, folding every heading from a `##` up to (but
+ * not including) the next `##` back into one chapter: its own text, plus
+ * each subsection's heading restored as Markdown (`### Heading`, `#### …`,
+ * …) ahead of that subsection's own text, so the chapter reads as complete,
+ * correctly nested Markdown rather than losing everything past its own
+ * opening paragraph. Exported so the reconstruction can be tested directly
+ * against a synthetic source, without a `FUNCTIONS.md` on disk.
+ */
+export function chaptersFromFunctionsMarkdown(source: string): Chapter[] {
+  const flat = splitSections(source);
 
-  const chapters = tops.map((section, index) => ({
-    id: section.heading.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
-    title: section.heading,
+  interface Building {
+    heading: string;
+    parts: string[];
+    sections: { heading: string; level: number }[];
+  }
+
+  const chapters: Building[] = [];
+  let current: Building | null = null;
+
+  for (const section of flat) {
+    if (section.level === 2) {
+      current = { heading: section.heading, parts: [section.body.trim()], sections: [] };
+      chapters.push(current);
+      continue;
+    }
+    if (!current) continue; // headings before the first `##` belong to no chapter
+    const body = section.body.trim();
+    current.parts.push(`${"#".repeat(section.level)} ${section.heading}${body ? `\n\n${body}` : ""}`);
+    if (section.level === 3) current.sections.push({ heading: section.heading, level: 3 });
+  }
+
+  return chapters.map((chapter, index) => ({
+    id: chapter.heading.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+    title: chapter.heading,
     description: "",
     order: index,
-    sections: splitSections(section.body)
-      .filter((s) => s.level === 3)
-      .map(({ heading, level }) => ({ heading, level })),
-    body: section.body.trim(),
+    sections: chapter.sections,
+    body: chapter.parts.filter((p) => p.length > 0).join("\n\n"),
   }));
+}
 
-  return { title, source: relative, chapters };
+function functionsReference(root: string, relative: string, title: string): CorpusEntry {
+  const source = readFileSync(join(root, relative), "utf8");
+  return { title, source: relative, chapters: chaptersFromFunctionsMarkdown(source) };
 }
 
 export function buildCorpus(repoRoot: string, gitStamp: string): Corpus {
