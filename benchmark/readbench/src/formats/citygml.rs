@@ -239,15 +239,6 @@ where
     Ok(members)
 }
 
-/// The scenario dispatch shared by the local and HTTP branches of
-/// [`FormatRunner::run`]: everything below the open (which only differs in
-/// WHERE the bytes come from) is transport-independent.
-///
-/// Every scenario re-streams the document from the start — there is nothing
-/// else a format with no index can do, and pretending otherwise is exactly
-/// what this row exists to disprove. [`Scenario::IdLookup`] may stop at its
-/// hit (see [`stream_members_until`]); it still starts from the beginning.
-
 /// Streams members until `visit` returns `true` (a hit), then stops.
 ///
 /// Deliberately does NOT run [`ensure_every_member_was_mapped`]: the
@@ -284,6 +275,14 @@ where
     Ok(false)
 }
 
+/// The scenario dispatch shared by the local and HTTP branches of
+/// [`FormatRunner::run`]: everything below the open (which only differs in
+/// WHERE the bytes come from) is transport-independent.
+///
+/// Every scenario re-streams the document from the start — there is nothing
+/// else a format with no index can do, and pretending otherwise is exactly
+/// what this row exists to disprove. [`Scenario::IdLookup`] may stop at its
+/// hit (see [`stream_members_until`]); it still starts from the beginning.
 fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Result<u64> {
     match scenario {
         Scenario::Count => stream_members(doc, |_| Ok(())),
