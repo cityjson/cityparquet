@@ -14,7 +14,7 @@ explained so you can adapt it.
 
 :::note[Run it at cloud scale]
 This walkthrough uses a local package. The same reads — projection, predicate, and
-bounding-box pruning — run unchanged over a public bucket of 1000 3DBAG tiles in
+bounding-box pruning — run unchanged over the 16.4 GB national 3DBAG package in
 [Working with 3DBAG at cloud scale](/tutorials/cloud-scale-3dbag).
 :::
 
@@ -126,10 +126,10 @@ tools recognise the geometry:
 LOAD './build/release/extension/cityjson/cityjson.duckdb_extension';
 
 SET VARIABLE geo = (
-  SELECT geo FROM cityjson_geoparquet_geo('https://storage.googleapis.com/cityjson/delft.city.jsonl')
+  SELECT geo FROM cityjson_geoparquet_geo('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
 );
 
-COPY (SELECT * FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl'))
+COPY (SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl'))
 TO 'delft.parquet'
 (FORMAT PARQUET, KV_METADATA {geo: getvariable('geo')});
 ```

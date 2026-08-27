@@ -141,7 +141,7 @@ Remote files over HTTP(S), S3, and GCS work the same way — the `httpfs` extens
 auto-loaded when a remote URL is detected:
 
 ```sql
-SELECT * FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl');
+SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
 ```
 
 Equality filters on the scalar columns `id`, `feature_id`, and `object_type` are

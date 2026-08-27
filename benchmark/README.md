@@ -46,10 +46,10 @@ change what the published numbers mean.
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `formats/scaling_{read,write,compression,ordering}_results/` | **yes** — the configuration-axis evidence, four cardinalities of one 3DBAG slice                                                                                                                                                                               |
 | `formats/archive/2026-08-17-catalogue-corpus/`               | **yes** — the retired 30-dataset corpus and its results, kept so the earlier claims stay checkable                                                                                                                                                             |
-| `formats/READ_BENCHMARK.md`, `formats/README.md`             | **yes** — the methodology, including all 22 fairness caveats                                                                                                                                                                                                   |
+| `formats/READ_BENCHMARK.md`, `formats/README.md`             | **yes** — the methodology, including all 23 fairness caveats                                                                                                                                                                                                   |
 | `databases/results/`                                         | **no, currently** — the CSVs were removed with the read benchmark's, for the same reason and a second one: on Linux the harness recorded `peak_rss_bytes` in KiB, not bytes, so five result files were 1024× wrong. `just db bench <dataset>` repopulates them |
 | `formats/read_results/`                                      | **yes** — the cross-format comparison, six datasets, each CSV beside the `<name>.csv.params.json` sidecar recording the exact windows, ids and attribute the run measured. `just bench` regenerates both                                                       |
-| `formats/ordering_results/`                                  | **no** — the source-order vs Hilbert axis. `just ordering-bench` repopulates it                                                                                                                                                                                |
+| `formats/ordering_results/`                                  | **yes** — the source-order vs Hilbert axis, six datasets, each CSV beside its params sidecar. `just ordering-bench` regenerates it                                                                                                                             |
 | `formats/data/` (~24 GB), `formats/tools/`                   | **no** — fetched from pinned URLs with pinned byte sizes by `just fetch-data` / `just fetch-scaling-data` / `just fetch-tools`                                                                                                                                 |
 | `summary/`, `**/plots/`                                      | **no** — derived from the CSVs in seconds by `just plot-pretty` / `just plot`                                                                                                                                                                                  |
 
@@ -100,7 +100,7 @@ translation:
    what separates a format with an id index from one without.
    (`formats/READ_BENCHMARK.md`, Caveats 9 and 20.)
 
-`formats/READ_BENCHMARK.md` carries twenty-two such caveats. They are numbered and
+`formats/READ_BENCHMARK.md` carries twenty-three such caveats. They are numbered and
 cross-referenced from the tables they qualify; the summary page quotes them
 verbatim rather than paraphrasing, so a page and its methodology cannot drift.
 

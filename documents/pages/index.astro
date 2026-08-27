@@ -118,14 +118,42 @@ const tools = [
   },
 ];
 
-// Measured, not illustrative: this is the query below run against tile
-// 10-640-324 of the public demo bucket (2166 rows, 1083 carrying LoD 2.2), with
-// the time the median of three warm repeats. Re-measure before changing them.
+// The MCP server's five tools, in the order an agent meets them: learn what
+// exists, find the passage, read it, then look at the data. Names drop the
+// `cityparquet_` prefix the server registers them under, which stays
+// provisional while a merge with the sibling CityJSON server is open.
+const mcpTools = [
+  {
+    name: "docs_outline",
+    body: "Every chapter of the specification, the design decisions and both extension function references — titles only.",
+  },
+  {
+    name: "docs_search",
+    body: "The passage that answers a question, with its surrounding snippet, across all three corpora.",
+  },
+  {
+    name: "docs_read",
+    body: "One chapter, or one section of it. Never the whole corpus.",
+  },
+  {
+    name: "describe",
+    body: "What a dataset holds — module tables, row counts, LoDs, geometry columns, CRS — in a single call.",
+  },
+  {
+    name: "query",
+    body: "SQL against a package over HTTPS, one statement at a time, under a deadline and a row cap.",
+  },
+];
+
+// Measured, not illustrative: this is the query below run against the public
+// 3DBAG package — one 16.4 GB file, 21 555 522 objects — windowed to Delft,
+// which leaves 2137 parts carrying LoD 2.2 and 2118 valid solids. The time is
+// the median of three warm repeats. Re-measure before changing them.
 const result = {
-  volume: "731449",
-  solids: "1076",
-  status: "1 row · 0.14 s · 1076 solids measured",
-  scanning: "scanning gs://cityparquet/3dbag_tiled/10-640-324/building.parquet",
+  volume: "3285792",
+  solids: "2118",
+  status: "1 row · 0.71 s · 2118 solids measured",
+  scanning: "range-reading 4 of 329 row groups · cityparquet.open3d.city",
 };
 
 const query = `LOAD cityjson; LOAD three_d;
@@ -134,7 +162,9 @@ SELECT ROUND(SUM(ST_3DVolume(solid)), 0) AS total_volume_m3
 FROM (SELECT ST_3DTryFromWKB(geometry_lod2_2,
              geometry_properties_lod2_2) AS solid
       FROM read_parquet(
-        'gs://cityparquet/3dbag_tiled/10-640-324/building.parquet'))
+        'https://cityparquet.open3d.city/data/3dbag/building.parquet')
+      WHERE bbox.xmin < 85000 AND bbox.xmax > 84000
+        AND bbox.ymin < 447000 AND bbox.ymax > 446000)
 WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;`;
 
 // A deliberately small SQL tokeniser -- enough for the one query above, on a
@@ -512,6 +542,55 @@ const queryTokens = tokeniseSql(query);
           DuckDB is a trademark of the DuckDB Foundation. CityParquet is an
           independent project and is not affiliated with or endorsed by it.
         </p>
+      </div>
+    </section>
+
+    <section class="cp-section cp-ruled">
+      <div class="cp-shell">
+        <div class="cp-heading">
+          <span class="cp-number">06</span>
+          <h2>AI friendly</h2>
+          <span class="cp-heading-note">Agents</span>
+        </div>
+        <p class="cp-lede">
+          A package is static files and SQL, which is most of what an agent
+          needs to work unaided. The gap is knowledge: what the format
+          guarantees, and which DuckDB functions actually exist. An MCP server
+          in the monorepo closes it — serving the specification and the
+          extension function references in chapters, describing a dataset in
+          one call, and running sandboxed SQL.
+        </p>
+        <div class="cp-tools">
+          {
+            mcpTools.map((tool) => (
+              <div class="cp-tool">
+                <span class="cp-tool-name">{tool.name}</span>
+                <p>{tool.body}</p>
+              </div>
+            ))
+          }
+        </div>
+        <p class="cp-lede">
+          The shape matters more than the count. Documentation arrives in
+          chapters, so a model reads the passage it needs rather than the whole
+          specification, and asks after the functions the loaded build provides
+          rather than the ones it half-remembers. Results are bounded on the
+          way back: a row cap, and geometry returned as <code>&lt;BLOB 4213
+          bytes&gt;</code> instead of kilobytes of binary, so one <code>SELECT
+          *</code> over an object table cannot flood the context it was meant
+          to inform.
+        </p>
+        <div class="cp-card cp-note">
+          <span class="cp-tag">Status</span>
+          <p>
+            The server speaks stdio and runs from a clone: there is no
+            published package and no hosted endpoint. It lives at{" "}
+            <a href={`${repo}/tree/main/ai/mcp`} rel="noopener">
+              cityjson/cityparquet
+            </a>{" "}
+            under <code>ai/mcp</code>, alongside the specification it serves.
+          </p>
+        </div>
       </div>
     </section>
 

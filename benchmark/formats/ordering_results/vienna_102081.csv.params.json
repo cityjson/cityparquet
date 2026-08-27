@@ -1,0 +1,77 @@
+{
+  "dataset": "vienna_102081.city.json",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.009833585476550681,
+      "window": [
+        1234.9876624592414,
+        340740.1435000001,
+        27.861,
+        1276.1663375407586,
+        340788.144,
+        84.987
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.05068078668683813,
+      "window": [
+        1206.444,
+        340706.8711796265,
+        27.861,
+        1304.71,
+        340821.4163203736,
+        84.987
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.2503782148260212,
+      "window": [
+        1143.634,
+        340633.65582242946,
+        27.861,
+        1367.52,
+        340894.63167757064,
+        84.987
+      ],
+      "approx": false
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "UUID_LOD2_011573-313fb433-2d3e-4fa6-94d4",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "UUID_LOD2_012127-6b5536ab-9555-4983-8840",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "UUID_LOD2_011981-1e8b2171-0831-45e4-9c74",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "UUID_LOD2_012127-6b5536ab-9555-4983-8840-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "object_type": "BuildingPart",
+  "object_type_count": 1015,
+  "numeric_attr": "measuredHeight",
+  "cp_object_total": 1322
+}

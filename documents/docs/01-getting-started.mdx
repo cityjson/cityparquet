@@ -14,7 +14,7 @@ path**, no theory. For explained, task-oriented walkthroughs, see
 
 :::tip[Nothing to install]
 The [SQL playground](/playground) runs the whole stack — DuckDB, `cityjson` and
-`three_d` — in your browser, over 16.4 GB of 3DBAG on object storage. Use it to
+`three_d` — in your browser, over a 16.4 GB 3DBAG package on object storage. Use it to
 try the queries below before installing anything locally.
 :::
 
@@ -64,7 +64,7 @@ try the queries below before installing anything locally.
     extension — remote URLs work too (the `httpfs` extension is auto-loaded):
 
     ```sql
-    SELECT * FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl');
+    SELECT * FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl');
     ```
 
   </Step>
@@ -76,12 +76,12 @@ try the queries below before installing anything locally.
     ```sql
     -- How many objects of each type?
     SELECT object_type, COUNT(*) AS cnt
-    FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl')
+    FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
     GROUP BY object_type;
 
     -- Just the buildings
     SELECT id, object_type
-    FROM read_cityjsonseq('https://storage.googleapis.com/cityjson/delft.city.jsonl')
+    FROM read_cityjsonseq('https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl')
     WHERE object_type = 'Building';
     ```
 
@@ -101,7 +101,7 @@ try the queries below before installing anything locally.
     FROM (
       SELECT ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS solid
       FROM read_cityjsonseq(
-        'https://storage.googleapis.com/cityjson/delft.city.jsonl', lod => '2.2')
+        'https://cityjson.open3d.city/cityjsonseq/delft.city.jsonl', lod => '2.2')
       WHERE geometry_lod2_2 IS NOT NULL
     )
     WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;

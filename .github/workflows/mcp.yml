@@ -1,0 +1,51 @@
+name: mcp
+
+on:
+  push:
+    # lib/duckdb-cityjson and lib/duckdb-3d are submodule gitlinks: their own
+    # FUNCTIONS.md feeds the corpus too, so a pointer bump must trigger this
+    # the same as an in-repo docs change would.
+    paths:
+      [
+        "ai/mcp/**",
+        "documents/docs/**",
+        "lib/duckdb-cityjson",
+        "lib/duckdb-3d",
+        ".github/workflows/mcp.yml",
+      ]
+  pull_request:
+    paths:
+      [
+        "ai/mcp/**",
+        "documents/docs/**",
+        "lib/duckdb-cityjson",
+        "lib/duckdb-3d",
+        ".github/workflows/mcp.yml",
+      ]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        # One level, not recursive: the corpus needs each extension's own
+        # docs/FUNCTIONS.md, and recursing would pull their vendored duckdb/
+        # and extension-ci-tools/ checkouts — the ~1.2 GB `just setup` warns about.
+        with: { submodules: true }
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with: { node-version: "24", cache: "pnpm", cache-dependency-path: ai/mcp/pnpm-lock.yaml }
+      - run: pnpm install --frozen-lockfile
+        working-directory: ai/mcp
+      - run: pnpm typecheck
+        working-directory: ai/mcp
+      - run: pnpm test
+        working-directory: ai/mcp
+      - name: corpus is fresh
+        # Compares corpus content only, never the `generatedFrom` provenance
+        # stamp — see ai/mcp/src/check-corpus-fresh.ts for why a byte-for-byte
+        # diff against a regenerated file would fail on every commit.
+        run: pnpm corpus:check
+        working-directory: ai/mcp

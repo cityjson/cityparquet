@@ -1,32 +1,134 @@
-# CityParquet
+<p align="center">
+  <img src="documents/public/brand/cityparquet-lockup-stacked.svg" alt="CityParquet" height="170">
+</p>
 
-**A columnar Parquet encoding for 3D city models.**
+<h3 align="center">A columnar encoding of the CityGML data model</h3>
 
-CityParquet stores a CityJSON or CityGML model as a **directory of Parquet
-files, split by CityGML module** — `building.parquet`, `transportation.parquet`,
-… — with one row per city object. Geometry is WKB in a per-LoD
-`geometry_lod*` column, paired with a `geometry_properties_lod*` struct carrying
-what WKB cannot hold (semantic surfaces, shell structure). Materials, textures
-and geometry templates go into sidecar tables, written only when the source has
-them.
+<p align="center">
+  Store a national-scale 3D city model as Parquet on object storage —<br>
+  and query it <em>where it lies</em>, with no database and no server.
+</p>
 
-The point is **pruning**. A national 3D city model is tens of gigabytes; a
-question about one neighbourhood at one level of detail touches a few megabytes
-of it. Row-group statistics prune by bounding box, column projection prunes by
-LoD and by attribute, and both work over plain HTTP range requests — so the
-model can stay on object storage and be queried where it lies, without a server
-in front of it.
+<p align="center">
+  <a href="https://cityjson.github.io/cityparquet/"><img alt="Specification" src="https://img.shields.io/badge/spec-v0.1.0--draft-7253ed"></a>
+  <a href="#licence"><img alt="Licence" src="https://img.shields.io/badge/code-MIT%20OR%20Apache--2.0-blue"></a>
+  <a href="documents/LICENSE"><img alt="Docs licence" src="https://img.shields.io/badge/spec%20%26%20docs-CC%20BY%204.0-blue"></a>
+  <img alt="Status" src="https://img.shields.io/badge/status-experimental-orange">
+</p>
 
-At LoD0 a CityParquet footprint **is** conformant GeoParquet: existing readers
-open it and see a normal geospatial table. Solids step beyond GeoParquet's WKB
-vocabulary and are declared in CityParquet's own `city` footer metadata, which
-strict GeoParquet readers correctly ignore.
+<p align="center">
+  <a href="https://cityjson.github.io/cityparquet/"><b>Documentation</b></a> ·
+  <a href="https://cityjson.github.io/cityparquet/getting-started"><b>Getting started</b></a> ·
+  <a href="https://cityjson.github.io/cityparquet/playground"><b>SQL playground</b></a> ·
+  <a href="https://cityjson.github.io/cityparquet/specification"><b>Specification</b></a> ·
+  <a href="https://cityjson.github.io/cityparquet/benchmark"><b>Benchmark</b></a>
+</p>
 
-> **Status: experimental.** The specification is unversioned and still moving,
-> the implementations are catching up to it, and on-disk output may change
-> without notice. Do not build anything load-bearing on it yet.
+---
+
+A 3D city model describes a city's buildings, roads and vegetation together with
+their **semantics** — a wall is a `WallSurface`, a roof is a `RoofSurface` — not
+just their raw geometry. The OGC **CityGML conceptual model** defines _what_ such a
+model contains; several encodings write that same information down differently.
+CityGML is the XML one, CityJSON the JSON one, 3DCityDB the relational one,
+FlatCityBuf the row-based binary one.
+
+**CityParquet is the columnar one** — built for **analytics at scale over object
+storage**. It replaces none of the others and takes no position on which is "best";
+each serves a different job.
+
+> [!WARNING]
+> **Experimental.** The specification is **v0.1.0-draft** and still moving, the
+> implementations are catching up to it, and on-disk output may change without
+> notice. Do not build anything load-bearing on it yet.
+
+## The problem
+
+CityGML and CityJSON are **text files**. They are excellent for exchange, but they
+were never designed for cloud-scale analytics: to run one query you generally
+**download the whole file**, then **parse the entire document** into memory before
+computing anything. The traditional alternative — a relational database such as
+3DCityDB — means **running a server** and **loading the data in** first, and runs
+into cost and scalability limits as a collection grows to national size.
+
+CityParquet aims instead at static files on commodity object storage, with nothing
+running in front of them.
+
+## How it works
+
+A package is a directory of Parquet files on object storage. A query prunes it
+**twice** before a byte moves — column projection drops the LoDs and attributes it
+does not need, row-group statistics drop the rows outside the window — and fetches
+what is left over plain HTTP range requests. What comes back is still a semantic 3D
+model, not a flattened table.
+
+<p align="center">
+  <img src="documents/public/img/how-it-works.svg" alt="A CityParquet read: column projection and row-group statistics prune the file, a range request fetches what is left, and a semantic 3D model comes back." width="900">
+</p>
+
+Concretely: the whole of 3DBAG — every building in the Netherlands, 21.5 million
+city objects in one 16.4 GB file — answers `count(*) WHERE object_type = 'Building'`
+in about **seven seconds over the network**, because the query touches one column
+and never a geometry byte. Narrowing to a neighbourhood with the `bbox` column
+brings that window's 3D solids down in about **four**.
+
+## What makes it different
+
+- **Columnar — read only what you need.** Projection pushdown fetches only the
+  columns a query names; row-group pruning skips the rows it cannot match. Measuring
+  building volumes never touches the attributes, the textures, or the other LoDs.
+- **Spatial indexing without a server.** Every row carries a bounding box, and the
+  writer can order rows along a Hilbert curve so spatially-near objects share a row
+  group. A window query then prunes the groups it cannot overlap — the behaviour of
+  a spatial index, from plain files.
+- **GeoParquet where the geometry allows.** At LoD0 a CityParquet footprint **is**
+  conformant GeoParquet: GeoPandas, GDAL/OGR and QGIS open it as a normal
+  geospatial table. Solids step beyond GeoParquet's WKB vocabulary and are declared
+  in CityParquet's own `city` footer, which strict GeoParquet readers correctly
+  ignore.
+- **Discovery-ready.** A package's `metadata.json` is a **STAC Item** using a
+  3D-city-model extension, so a catalogue can describe extent, CRS, levels of detail
+  and object types **without downloading the data**.
+
+## The layout
+
+A package is a directory split by CityGML module, one row per city object, with
+geometry as WKB in a **per-LoD** column paired with a struct carrying what WKB
+cannot hold:
+
+```
+delft/
+  building.parquet          id · object_type · b3_* attributes · bbox
+                            geometry_lod0_0    + geometry_properties_lod0_0
+                            geometry_lod2_2    + geometry_properties_lod2_2
+  transportation.parquet
+  metadata.json             a STAC Item (city3d extension)
+  materials.parquet         sidecars — written only when the source has them
+```
+
+`geometry_properties_lod*` is a native struct holding the semantic surfaces and
+shell structure WKB has nowhere to put. Full details in the
+[specification](https://cityjson.github.io/cityparquet/specification).
 
 ## Quickstart
+
+Try it with **nothing installed** in the [SQL
+playground](https://cityjson.github.io/cityparquet/playground) — DuckDB and both
+extensions compiled to WebAssembly, running against that 16.4 GB 3DBAG package.
+
+Or query the package from your own DuckDB, with no extension at all:
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+
+SELECT count(*) AS buildings
+FROM read_parquet('https://cityparquet.open3d.city/data/3dbag/building.parquet')
+WHERE object_type = 'Building';
+-- 10771547
+```
+
+To convert a model of your own, the Rust reference writer produces the full package
+with round-trip guarantees:
 
 ```sh
 git clone --recurse-submodules https://github.com/cityjson/cityparquet.git
@@ -37,17 +139,21 @@ cargo run --release -p cityparquet-cli -- export  delft/ roundtrip.city.jsonl
 cargo run --release -p cityparquet-cli -- compare delft.city.jsonl roundtrip.city.jsonl
 ```
 
-`convert` writes `delft/building.parquet`, `delft/metadata.json` (a STAC Item)
-and any sidecars the source needs. `compare` is the round-trip proof: it checks
-semantic equality, not byte equality, and it is what every claim of losslessness
-in this repository rests on.
+`compare` is the round-trip proof: it checks **semantic** equality, not byte
+equality, and it is what every claim of losslessness in this repository rests on.
 
-Or in SQL, with no Rust at all:
+Or in SQL, with no Rust at all, via the [`cityjson` DuckDB
+extension](https://github.com/cityjson/duckdb-cityjson):
 
 ```sql
-INSTALL cityjson FROM community; LOAD cityjson;
-COPY (SELECT * FROM read_cityjsonseq('delft.city.jsonl')) TO 'delft.parquet' (FORMAT PARQUET);
+COPY (SELECT * FROM read_cityjsonseq('delft.city.jsonl'))
+  TO 'delft.parquet' (FORMAT PARQUET);
 ```
+
+> [!NOTE]
+> Build `cityjson` from source for now. The community registry still serves an
+> older build whose columns are named differently — a flat `geometry` blob rather
+> than the LoD-suffixed pairs the specification defines.
 
 ## What is in this repository
 
