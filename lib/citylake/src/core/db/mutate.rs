@@ -28,6 +28,9 @@ impl DuckLakeService {
         let name = dataset.as_str();
 
         self.with_connection(|conn| {
+            if !self.schema_exists(conn, name)? {
+                return Err(CityLakeError::DatasetNotFound(name.to_string()));
+            }
             let Some(module) = self.module_holding(conn, name, id)? else {
                 return Err(CityLakeError::Internal(format!(
                     "no object with id {id} in dataset {name}"
@@ -167,8 +170,49 @@ fn value_to_sql(value: &serde_json::Value) -> Box<dyn ToSql> {
         serde_json::Value::Null => Box::new(None::<String>),
         serde_json::Value::String(s) => Box::new(s.clone()),
         serde_json::Value::Number(n) if n.is_i64() => Box::new(n.as_i64().unwrap()),
+        // Above i64::MAX but still an exact non-negative integer — CityJSON
+        // attributes carry identifiers and codes that can be this large, and
+        // duckdb-rs's `ToSql` covers `u64` directly, so it is bound exactly
+        // rather than narrowed through `f64`, which starts losing integers
+        // past 2^53.
+        serde_json::Value::Number(n) if n.is_u64() => Box::new(n.as_u64().unwrap()),
         serde_json::Value::Number(n) => Box::new(n.as_f64().unwrap_or_default()),
         serde_json::Value::Bool(b) => Box::new(*b),
         other => Box::new(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duckdb::types::{ToSqlOutput, Value};
+
+    #[test]
+    fn a_number_above_i64_max_binds_as_an_exact_u64_not_a_lossy_f64() {
+        // 2^63 — one past i64::MAX, the smallest value that forces the u64
+        // branch. Round-tripped through f64 this loses precision (f64 only
+        // represents integers exactly up to 2^53); bound as u64 it does not.
+        let huge = serde_json::json!(9_223_372_036_854_775_808u64);
+        let bound = value_to_sql(&huge);
+        assert_eq!(
+            bound.to_sql().unwrap(),
+            ToSqlOutput::Owned(Value::UBigInt(9_223_372_036_854_775_808u64))
+        );
+    }
+
+    #[test]
+    fn an_ordinary_integer_still_binds_as_i64() {
+        let small = serde_json::json!(42i64);
+        let bound = value_to_sql(&small);
+        assert_eq!(
+            bound.to_sql().unwrap(),
+            ToSqlOutput::Owned(Value::BigInt(42))
+        );
+    }
+
+    #[test]
+    fn null_binds_as_a_real_sql_null_not_the_text_null() {
+        let bound = value_to_sql(&serde_json::Value::Null);
+        assert_eq!(bound.to_sql().unwrap(), ToSqlOutput::Owned(Value::Null));
     }
 }

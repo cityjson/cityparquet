@@ -70,6 +70,22 @@ fn an_attribute_update_lands_on_the_row() {
 }
 
 #[test]
+fn updating_an_absent_dataset_is_an_error() {
+    let (service, _dir) = common::test_service();
+    let name = DatasetName::new("nonesuch").unwrap();
+    let mut attributes = serde_json::Map::new();
+    attributes.insert("object_type".into(), json!("Building"));
+
+    let err = service
+        .update_object_impl(&name, "whatever", &attributes)
+        .expect_err("the dataset was never created");
+    assert!(
+        matches!(err, CityLakeError::DatasetNotFound(_)),
+        "a never-created dataset must report DatasetNotFound, got: {err}"
+    );
+}
+
+#[test]
 fn updating_an_absent_id_is_an_error() {
     let (service, _dir, name) = seeded();
     let mut attributes = serde_json::Map::new();
@@ -94,9 +110,14 @@ fn deleting_a_parent_cascades_to_its_children() {
     let parent = before.first().expect("a parent object").clone();
 
     let deleted = service.delete_object_impl(&name, &parent).unwrap();
-    // A cascade removes the parent and everything below it, so the count is
-    // the subtree, not one.
-    assert!(deleted >= 1);
+    // The fixture is one Building with two Storey children, all in the
+    // building module table, so deleting the parent must take the whole
+    // subtree — not the one row a non-cascading delete would remove.
+    assert_eq!(
+        deleted,
+        before.len(),
+        "deleting the parent must cascade to its children"
+    );
 
     let after = ids(&service, &name);
     assert!(!after.contains(&parent));
