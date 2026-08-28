@@ -1,6 +1,5 @@
 mod common;
 
-use citylake::core::db::sql;
 use citylake::core::interface::types::DatasetName;
 
 #[test]
@@ -48,19 +47,9 @@ fn the_declared_crs_arms_the_guard_against_a_mismatched_source() {
 
     // This is the point of minting the footer at all: without it the package
     // states nothing, and a differently-projected source would be accepted.
-    // The insert pragma is issued directly, because it is the guard's own
-    // entry point and `ingest_impl`, which wraps it, arrives in Task 7.
     let source = common::fixture("bench_28992.city.json");
     let err = service
-        .scoped("delft", |conn| {
-            conn.execute_batch(&sql::insert_pragma(
-                "delft",
-                source.to_str().unwrap(),
-                sql::reader_for(source.to_str().unwrap()),
-                true,
-            ))?;
-            Ok(())
-        })
+        .ingest_impl(&name, source.to_str().unwrap())
         .expect_err("a 28992 source must not enter a 7415 package");
     assert!(
         format!("{err}").contains("CRS mismatch"),
