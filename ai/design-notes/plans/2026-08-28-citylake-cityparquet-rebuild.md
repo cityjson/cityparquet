@@ -79,6 +79,11 @@ These were established by probing the real extension binary before this plan was
 | `src/core/db/compaction.rs` | `ducklake_merge_adjacent_files` |
 | `src/app/server.rs`, `src/app/handlers/*.rs` | axum router and handlers, one file per endpoint group |
 
+A module that only adds inherent methods to `DuckLakeService` is declared
+private (`mod ingest;`) — the methods are reachable through the struct, so the
+module itself need not be public. `sql` and `service` are `pub` because tests and
+callers name them directly.
+
 **Deleted:** `src/core/db/lod.rs`, `src/core/db/metadata_table.rs`, `src/core/db/table.rs`, `src/core/db/list.rs`, `src/core/db/insert.rs`, `src/core/db/update.rs`, `src/core/db/delete.rs`, `src/core/db/export.rs`, `src/tests/e2e/*`, `src/tests/integration/*`, `tasks.md`, `milestones.md`.
 
 ---
@@ -1116,6 +1121,7 @@ The one place that owns the connection and the rules for using it. Everything el
 **Files:**
 - Rewrite: `lib/citylake/src/core/db/service.rs`
 - Create: `lib/citylake/tests/common/mod.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `pub mod service;`)
 
 **Interfaces:**
 - Consumes: `CityLakeConfig`, `CityLakeError`, `RepositoryResult` (Task 4); `sql::set_search_path` (Task 3).
@@ -1967,6 +1973,7 @@ One pragma, inside a transaction. Everything difficult — routing by module, re
 
 **Files:**
 - Create: `lib/citylake/src/core/db/ingest.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `mod ingest;`)
 
 **Interfaces:**
 - Consumes: `sql::{reader_for, insert_pragma}`, `DuckLakeService::{scoped, in_transaction, object_tables}`.
@@ -2177,6 +2184,7 @@ transaction that makes a refused insert leave nothing behind."
 
 **Files:**
 - Create: `lib/citylake/src/core/db/query.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `mod query;`)
 
 **Interfaces:**
 - Consumes: `sql::select_objects`, `QueryParams`, `ModuleName`.
@@ -2368,6 +2376,7 @@ There is deliberately no `cityparquet_update`. Attribute edits are ordinary `UPD
 
 **Files:**
 - Create: `lib/citylake/src/core/db/mutate.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `mod mutate;`)
 
 **Interfaces:**
 - Consumes: `sql::{delete_pragma, reconcile_pragma, ident, literal, qualified}`, `DuckLakeService::{object_tables, in_transaction}`.
@@ -2692,6 +2701,7 @@ The boundary between the lake and the file format. This task depends on Task 2 h
 
 **Files:**
 - Create: `lib/citylake/src/core/db/package.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `mod package;`)
 - Modify: `lib/citylake/src/core/db/dataset.rs` (route directory sources into `import_package`)
 
 **Interfaces:**
@@ -3031,6 +3041,7 @@ Both pragmas here materialise findings into a temp table, because a PRAGMA canno
 
 **Files:**
 - Create: `lib/citylake/src/core/db/inspect.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `mod inspect;` and `mod compaction;`)
 - Rewrite: `lib/citylake/src/core/db/compaction.rs`
 
 **Interfaces:**
