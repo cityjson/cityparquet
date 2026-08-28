@@ -104,6 +104,27 @@ fn updating_an_absent_id_is_an_error() {
 }
 
 #[test]
+fn an_empty_attribute_update_against_an_unknown_id_is_still_an_error() {
+    let (service, _dir, name) = seeded();
+    // An empty body is legitimately a no-op against an id that exists, but
+    // the early return for it must not run before the id is checked: the
+    // caller sees 404 either way an unknown id is addressed, not 204 for an
+    // empty body and 404 for a non-empty one.
+    let attributes = serde_json::Map::new();
+
+    let err = service
+        .update_object_impl(&name, "no-such-object", &attributes)
+        .expect_err("an absent id must not silently succeed, even with no attributes");
+    assert!(
+        matches!(
+            &err,
+            CityLakeError::ObjectNotFound { id, .. } if id == "no-such-object"
+        ),
+        "an absent id must report ObjectNotFound regardless of body, got: {err}"
+    );
+}
+
+#[test]
 fn deleting_a_parent_cascades_to_its_children() {
     let (service, _dir, name) = seeded();
     let before = ids(&service, &name);

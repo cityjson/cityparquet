@@ -30,6 +30,12 @@ pub const OBJECT_MODULES: [&str; 11] = [
 /// The optional sidecars, written only when the source has something for them.
 pub const SIDECAR_TABLES: [&str; 3] = ["materials", "textures", "geometry_templates"];
 
+/// The one object table `create_dataset_impl` always seeds before ingest —
+/// there being no pragma that bootstraps a package from nothing. Named here
+/// once so [`seed_table`] and the seed's post-ingest cleanup in `dataset.rs`
+/// cannot drift apart.
+pub const SEED_TABLE: &str = "building";
+
 #[derive(Debug, Error)]
 pub enum SqlError {
     #[error(
@@ -140,7 +146,7 @@ pub fn create_schema(catalog: &str, dataset: &str) -> String {
 pub fn seed_table(catalog: &str, dataset: &str, source: &str, format: SourceFormat) -> String {
     format!(
         "CREATE TABLE {} AS SELECT * FROM {}({}) LIMIT 0",
-        qualified(&[catalog, dataset, "building"]),
+        qualified(&[catalog, dataset, SEED_TABLE]),
         format.read_fn(),
         literal(source)
     )

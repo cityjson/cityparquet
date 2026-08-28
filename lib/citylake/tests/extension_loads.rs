@@ -54,6 +54,8 @@ fn the_cityparquet_pragmas_are_registered() {
     let conn = connect();
     // The package API this rebuild is built on. If any of these is missing the
     // extension is older than v0.4.0 and nothing downstream will work.
+    // `cityparquet_orphans` belongs here too: `vacuum_impl` (src/core/db/inspect.rs)
+    // calls it directly, alongside `cityparquet_vacuum`.
     for name in [
         "cityparquet_read",
         "cityparquet_init",
@@ -62,6 +64,7 @@ fn the_cityparquet_pragmas_are_registered() {
         "cityparquet_delete",
         "cityparquet_reconcile",
         "cityparquet_validate",
+        "cityparquet_orphans",
         "cityparquet_vacuum",
         "cityparquet_city_field",
     ] {
@@ -83,6 +86,51 @@ fn insert_pragmas_are_registered() {
         "insert_cityjson",
         "insert_cityjsonseq",
         "insert_flatcitybuf",
+    ] {
+        let found: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = ?",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|e| panic!("look up {name}: {e}"));
+        assert_eq!(found, 1, "{name} is not registered");
+    }
+}
+
+#[test]
+fn ducklake_maintenance_function_is_registered() {
+    let conn = connect();
+    // compaction.rs::compact calls this directly. It is DuckLake's own
+    // function, not the cityjson extension's, so it is not gated by the
+    // version this contract otherwise pins — but the crate still depends on
+    // it being there, and `LOAD ducklake` succeeding proves only that the
+    // extension loaded, not that this particular function survived to the
+    // version in use. Overloaded (multiple signatures), so `>= 1` rather
+    // than `== 1`.
+    let found: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = ?",
+            ["ducklake_merge_adjacent_files"],
+            |row| row.get(0),
+        )
+        .expect("look up ducklake_merge_adjacent_files");
+    assert!(
+        found >= 1,
+        "ducklake_merge_adjacent_files is not registered"
+    );
+}
+
+#[test]
+fn metadata_table_functions_are_registered() {
+    let conn = connect();
+    // dataset.rs::mint_crs_footer calls one of these, by source format, to
+    // read the CRS a source declares. Missing any means create_dataset_impl
+    // cannot mint a footer for that format.
+    for name in [
+        "cityjson_metadata",
+        "cityjsonseq_metadata",
+        "flatcitybuf_metadata",
     ] {
         let found: i64 = conn
             .query_row(

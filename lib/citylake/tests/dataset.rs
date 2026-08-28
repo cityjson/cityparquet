@@ -93,6 +93,36 @@ fn minting_the_footer_does_not_leave_the_ingest_uncommitted() {
 }
 
 #[test]
+fn a_source_with_no_buildings_leaves_no_building_module() {
+    let (service, _dir) = common::test_service();
+    let name = DatasetName::new("railway").unwrap();
+
+    // This fixture carries only Bridge and CityFurniture objects — no
+    // Building — so create_dataset_impl's seed table (always named
+    // "building") stays empty after ingest. Without cleanup it would stay
+    // registered forever and describe_dataset would report a phantom
+    // building module with zero rows.
+    let info = service
+        .create_dataset_impl(
+            &name,
+            common::fixture("railway_7415.city.jsonl").to_str().unwrap(),
+        )
+        .expect("a Building-less source is still ingestable");
+
+    assert!(
+        !info.modules.iter().any(|m| m.name == "building"),
+        "the empty seed table must be dropped, got modules: {:?}",
+        info.modules
+    );
+    // The CRS still has to be minted from whichever module the source did
+    // populate — the seed's removal must not break that.
+    assert!(
+        info.crs.is_some(),
+        "the footer must still be minted from a real module"
+    );
+}
+
+#[test]
 fn creating_a_dataset_twice_is_refused() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();

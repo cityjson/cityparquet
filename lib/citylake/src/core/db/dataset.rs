@@ -57,14 +57,23 @@ impl DuckLakeService {
                 })
             })?;
 
-            // Phases 2 and 3 — outside that transaction, and they must be:
-            // cityparquet_write sees committed state only, and a transaction
-            // that has written to `lake` may not also write to `memory`.
-            if let Err(e) = self.mint_crs_footer(conn, name, source_path, format) {
+            // Phase 1.5 and phase 2 — outside that transaction, and both must
+            // be: cityparquet_write sees committed state only, and a
+            // transaction that has written to `lake` may not also write to
+            // `memory`, where the CRS probe lives. Cleaning up the seed
+            // first matters because mint_crs_footer picks its probe module
+            // from the registered object tables — an empty, still-registered
+            // seed would be a candidate it has to skip rather than one that
+            // is simply gone.
+            let finish = self
+                .drop_empty_seed(conn, &catalog, name)
+                .and_then(|()| self.mint_crs_footer(conn, name, source_path, format));
+            if let Err(e) = finish {
                 // The ingest is already committed, so unwinding is explicit.
-                // A dataset whose CRS guard is silently off is worse than none.
-                // The mint failure is the one worth returning, so a drop
-                // failure on top of it is logged rather than propagated.
+                // A dataset left half-cleaned or whose CRS guard is silently
+                // off is worse than none. The originating failure is the one
+                // worth returning, so a drop failure on top of it is logged
+                // rather than propagated.
                 if let Err(drop_err) = conn.execute_batch(&format!(
                     "DROP SCHEMA {} CASCADE",
                     sql::qualified(&[&catalog, name])
@@ -118,12 +127,23 @@ impl DuckLakeService {
         })
     }
 
-    /// The `crs` field of any object-table footer.
+    /// The `crs` field of an object-table footer.
     ///
-    /// Every object table in a package states the same CRS — the extension
-    /// refuses a package whose footers disagree — so one row answers for all
-    /// of them. `None` means the package states no CRS, which is a state
-    /// rather than a failure.
+    /// A package built through CityLake holds one CRS: the insert pragmas
+    /// (`insert_cityjson`, `insert_cityjsonseq`, `insert_flatcitybuf` — one
+    /// shared check in `cityparquet_insert.cpp`) and `cityparquet_merge` both
+    /// enforce the one-CRS rule on the way in, so every object table's footer
+    /// agrees by construction. A package imported from disk is not
+    /// re-checked against that rule — none of
+    /// `cityparquet_read`, `cityparquet_write` or `cityparquet_validate`
+    /// enforce it — so a hand-assembled package with disagreeing footers is
+    /// not rejected. This reads the first footer in table-name order
+    /// (`ORDER BY table_name`), which is why the same package always answers
+    /// the same way even when its footers disagree; it does not check that
+    /// they agree, and does not claim to.
+    ///
+    /// `None` means the package states no CRS, which is a state rather than
+    /// a failure.
     ///
     /// A package with no footer row at all already comes back as `Ok(None)`
     /// through `optional`, so only a real failure reaches the error arm. It
@@ -139,7 +159,8 @@ impl DuckLakeService {
             .query_row(
                 &format!(
                     "SELECT cityparquet_city_field(city, 'crs') FROM {}
-                     WHERE role = 'object' AND city IS NOT NULL LIMIT 1",
+                     WHERE role = 'object' AND city IS NOT NULL
+                     ORDER BY table_name LIMIT 1",
                     sql::qualified(&[self.catalog(), dataset, "__cityparquet"])
                 ),
                 [],
@@ -152,6 +173,11 @@ impl DuckLakeService {
     /// The same CRS as the OGC URI that CityJSON's `metadata.referenceSystem`
     /// expects — `https://www.opengis.net/def/crs/EPSG/0/7415` — or `None`
     /// when the footer carries no identifier to build one from.
+    ///
+    /// Reads the first footer in table-name order, same as [`Self::dataset_crs`]
+    /// and for the same reason: nothing re-checks that a package's footers
+    /// agree once it has been read from disk, so this picks a deterministic
+    /// one rather than an engine-dependent one.
     ///
     /// This resolves nothing. `id.authority` and `id.code` are values the
     /// extension itself resolved and wrote into the footer; reading them back
@@ -173,7 +199,8 @@ impl DuckLakeService {
                             || '/0/'
                             || json_extract_string(crs, '$.id.code')
                      FROM (SELECT cityparquet_city_field(city, 'crs') AS crs FROM {}
-                           WHERE role = 'object' AND city IS NOT NULL LIMIT 1)",
+                           WHERE role = 'object' AND city IS NOT NULL
+                           ORDER BY table_name LIMIT 1)",
                     sql::qualified(&[self.catalog(), dataset, "__cityparquet"])
                 ),
                 [],
@@ -241,6 +268,51 @@ impl DuckLakeService {
             name: dataset.to_string(),
             modules,
             crs: self.dataset_crs(conn, dataset)?,
+        })
+    }
+
+    /// Drop the seed table and its `__cityparquet` row if the source
+    /// populated no Buildings.
+    ///
+    /// `create_dataset_impl` always seeds one object table named
+    /// [`sql::SEED_TABLE`] before ingest, because no pragma bootstraps a
+    /// package from nothing. For a source with no Buildings — a Bridge-only
+    /// or Transportation-only file, say — that table stays empty after the
+    /// ingest, but stays registered: `cityparquet_init` is additive and will
+    /// not remove the row on its own. Left in place it would report a
+    /// `building` module with zero rows forever, and worse, its columns were
+    /// inferred from whatever module the source actually used, so a later
+    /// Building ingest would inherit foreign all-NULL attribute columns
+    /// instead of getting a fresh table of its own.
+    ///
+    /// This only ever targets the seed by name — never a module the source
+    /// did populate — and only when it is genuinely empty. A non-empty seed
+    /// (the ordinary case, a source that does carry Buildings) is untouched.
+    fn drop_empty_seed(
+        &self,
+        conn: &Connection,
+        catalog: &str,
+        dataset: &str,
+    ) -> RepositoryResult<()> {
+        let seed = sql::qualified(&[catalog, dataset, sql::SEED_TABLE]);
+        let empty: bool =
+            conn.query_row(&format!("SELECT COUNT(*) = 0 FROM {seed}"), [], |row| {
+                row.get(0)
+            })?;
+        if !empty {
+            return Ok(());
+        }
+
+        self.in_transaction(conn, |conn| {
+            conn.execute_batch(&format!("DROP TABLE {seed}"))?;
+            conn.execute(
+                &format!(
+                    "DELETE FROM {} WHERE table_name = ? AND role = 'object'",
+                    sql::qualified(&[catalog, dataset, "__cityparquet"])
+                ),
+                [sql::SEED_TABLE],
+            )?;
+            Ok(())
         })
     }
 
@@ -391,6 +463,13 @@ impl DuckLakeService {
             Some(reference_system),
         ))?;
 
+        // A genuine read failure must propagate rather than collapse to
+        // `None`: the caller reports that as the generic "no footer came
+        // back" error, which would mask the real cause. `optional` only
+        // turns the no-rows case into `None` — the correct read of a probe
+        // whose write produced no `city` key — and lets everything else
+        // through, matching the discipline `dataset_crs` and
+        // `mint_crs_footer`'s own probe already apply.
         let footer: Option<String> = conn
             .query_row(
                 &format!(
@@ -402,7 +481,7 @@ impl DuckLakeService {
                 [],
                 |row| row.get(0),
             )
-            .ok();
+            .optional()?;
         Ok(footer)
     }
 }

@@ -28,15 +28,18 @@ impl DuckLakeService {
             if !self.schema_exists(conn, name)? {
                 return Err(CityLakeError::DatasetNotFound(name.to_string()));
             }
-            if attributes.is_empty() {
-                return Ok(());
-            }
             let Some(module) = self.module_holding(conn, name, id)? else {
                 return Err(CityLakeError::ObjectNotFound {
                     dataset: name.to_string(),
                     id: id.to_string(),
                 });
             };
+            // Only after the id is known to exist: an empty attribute map is
+            // legitimately a no-op, but that must not let an unknown id
+            // report success just because its body happened to be empty.
+            if attributes.is_empty() {
+                return Ok(());
+            }
 
             self.in_transaction(conn, |conn| {
                 // Column names are identifiers and cannot be parameterised —
