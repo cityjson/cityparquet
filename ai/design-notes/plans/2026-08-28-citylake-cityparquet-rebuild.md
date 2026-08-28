@@ -869,7 +869,7 @@ churn.
 cd lib/citylake && cargo test --lib && cargo clippy --all-targets -- -D warnings
 ```
 
-Expected: the 11 `sql::` tests pass and clippy is clean. They need no database and
+Expected: the 12 `sql::` tests pass and clippy is clean. They need no database and
 run in milliseconds. The crate compiles: everything written against the LoD model
 is gone except `types.rs` and `repository.rs`, which Task 4 replaces.
 
