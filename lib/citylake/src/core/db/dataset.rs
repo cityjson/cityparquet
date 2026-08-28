@@ -5,7 +5,7 @@
 //! package first — there is no pragma that makes one from nothing — and then
 //! give it a CRS the extension's own guard can check against.
 
-use duckdb::Connection;
+use duckdb::{Connection, OptionalExt};
 
 use crate::core::db::service::DuckLakeService;
 use crate::core::db::sql;
@@ -223,7 +223,11 @@ impl DuckLakeService {
                 [],
                 |row| row.get(0),
             )
-            .ok()
+            // A source that declares nothing already comes back as Ok(None),
+            // so only a real failure reaches the error arm — and swallowing
+            // one here would hand back a package whose CRS guard is silently
+            // off, which is the outcome this whole sequence exists to avoid.
+            .optional()?
             .flatten();
 
         let Some(reference_system) = reference_system else {
@@ -262,7 +266,15 @@ impl DuckLakeService {
             &module,
             &reference_system,
         );
-        conn.execute_batch(&format!("DROP SCHEMA {} CASCADE", sql::ident(&probe)))?;
+        if let Err(drop_err) =
+            conn.execute_batch(&format!("DROP SCHEMA {} CASCADE", sql::ident(&probe)))
+        {
+            // The probe's own failure is the one worth reporting, so a drop
+            // failure on top of it is logged rather than returned. The schema
+            // is a throwaway in the default catalog: leaking one costs a name,
+            // not data.
+            tracing::error!(%drop_err, "dropping the CRS probe schema failed");
+        }
 
         // The source stated a CRS, so failing to mint is fatal: the caller
         // would otherwise get a package whose guard is silently off.
