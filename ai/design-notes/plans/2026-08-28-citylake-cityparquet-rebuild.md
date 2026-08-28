@@ -369,7 +369,18 @@ Every statement CityLake issues is assembled here, so this is the only place quo
 
 **Files:**
 - Create: `lib/citylake/src/core/db/sql.rs`
-- Modify: `lib/citylake/src/core/db/mod.rs`
+- Rewrite: `lib/citylake/src/core/db/mod.rs`, `lib/citylake/src/lib.rs`
+- Modify: `lib/citylake/Cargo.toml` (drop the `[[bin]]` target; Task 13 restores it)
+- Move: `lib/citylake/src/tests/data/delft.city.jsonl` → `lib/citylake/tests/data/delft.city.jsonl`
+- Delete: every file under `lib/citylake/src/core/db/` except the new `sql.rs` and `mod.rs`; all of `lib/citylake/src/app/`; all of `lib/citylake/src/tests/`; `lib/citylake/src/main.rs`
+
+**Clear the old implementation here, in one move.** Rust compiles the whole
+library crate for `cargo test --lib`, so a single module still naming a deleted
+type fails the build for every task until it is gone — including this task's own
+verification. The old `db/mod.rs` declares twelve modules and `lib.rs` declares
+`app` and `tests`, all written against `LodKey`, `TableInfo` and the old error
+alias. What survives this task is `sql.rs` and the two interface files Task 4
+rewrites.
 
 **Interfaces:**
 - Consumes: nothing.
@@ -794,30 +805,63 @@ pub fn select_objects(
 }
 ```
 
-Register it in `lib/citylake/src/core/db/mod.rs`:
+Reduce `lib/citylake/src/core/db/mod.rs` to the one module that remains:
 
 ```rust
 pub mod sql;
 ```
 
+and `lib/citylake/src/lib.rs` to:
+
+```rust
+//! CityLake — a lakehouse runtime for CityParquet packages.
+
+pub mod core;
+```
+
+Then clear the rest. `types.rs` and `repository.rs` stay — they still describe
+the LoD model, and Task 4 replaces them:
+
+```bash
+cd lib/citylake
+mkdir -p tests/data
+git mv src/tests/data/delft.city.jsonl tests/data/delft.city.jsonl
+git rm -r --quiet src/tests src/app src/main.rs
+git rm --quiet src/core/db/compaction.rs src/core/db/delete.rs src/core/db/export.rs \
+  src/core/db/insert.rs src/core/db/list.rs src/core/db/lod.rs src/core/db/metadata.rs \
+  src/core/db/metadata_table.rs src/core/db/query.rs src/core/db/service.rs \
+  src/core/db/table.rs src/core/db/update.rs
+```
+
+Drop the `[[bin]]` section from `Cargo.toml` too; Task 13 adds it back with the
+server that needs it. The optional axum dependencies and the `server` feature
+stay — an unused optional dependency costs nothing and re-adding it would be
+churn.
+
 - [ ] **Step 4: Run the tests and watch them pass**
 
 ```bash
-cd lib/citylake && cargo test --lib sql:: && cargo clippy --all-targets -- -D warnings
+cd lib/citylake && cargo test --lib && cargo clippy --all-targets -- -D warnings
 ```
 
-Expected: 11 passed, clippy clean. These need no database and run in milliseconds.
+Expected: the 11 `sql::` tests pass and clippy is clean. They need no database and
+run in milliseconds. The crate compiles: everything written against the LoD model
+is gone except `types.rs` and `repository.rs`, which Task 4 replaces.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/citylake/src/core/db/sql.rs lib/citylake/src/core/db/mod.rs
-git commit -m "feat(citylake): build every statement in one pure SQL module
+git add -A lib/citylake/
+git commit -m "feat(citylake)!: build every statement in one pure SQL module
 
 Identifiers cannot be parameterised, so dataset names are validated and
 module names checked against the specification's closed set; values go
 through a literal renderer that doubles apostrophes. Keeping it pure is
-what lets the quoting be tested without a database."
+what lets the quoting be tested without a database.
+
+The LoD-model implementation goes in the same move: the library crate
+compiles as a unit, so one file still naming a deleted type would break
+every task's test gate until it was removed."
 ```
 
 ---
@@ -829,36 +873,7 @@ Replace the LoD-shaped domain model with the package one, and give the crate a r
 **Files:**
 - Rewrite: `lib/citylake/src/core/interface/types.rs`
 - Rewrite: `lib/citylake/src/core/interface/repository.rs`
-- Rewrite: `lib/citylake/src/lib.rs`, `lib/citylake/src/core/db/mod.rs`
-- Modify: `lib/citylake/Cargo.toml` (drop the `[[bin]]` target; Task 13 restores it)
-- Move: `lib/citylake/src/tests/data/delft.city.jsonl` → `lib/citylake/tests/data/delft.city.jsonl`
-- Delete: every remaining file under `lib/citylake/src/core/db/` except `sql.rs` and `mod.rs`; all of `lib/citylake/src/app/`; all of `lib/citylake/src/tests/`; `lib/citylake/src/main.rs`
-
-**Clear the old implementation in this task, not gradually.** Rust compiles the
-whole library crate for `cargo test --lib`, so a single module still referring to
-a deleted type fails the build for every task until it is gone. The old
-`db/mod.rs` declares twelve modules, `lib.rs` declares `app` and `tests`, and all
-of them are written against `LodKey`, `TableInfo` and the old error alias. Left
-in place they would break Task 4's own verification and every task through
-Task 12. So the crate is reduced here to what compiles and is kept: `sql.rs`
-(Task 3), the two interface files, and nothing else. `db/mod.rs` becomes:
-
-```rust
-pub mod sql;
-```
-
-and `lib.rs` becomes:
-
-```rust
-//! CityLake — a lakehouse runtime for CityParquet packages.
-
-pub mod core;
-```
-
-Drop the `[[bin]]` section from `Cargo.toml` along with `src/main.rs`; Task 13
-adds both back when there is a server to run. The optional axum dependencies and
-the `server` feature stay as they are — an unused optional dependency costs
-nothing and re-adding it would be churn.
+- Delete: `lib/citylake/src/core/db/lod.rs` and `lib/citylake/src/core/db/metadata_table.rs` remnants, if Task 3 left any
 
 **Interfaces:**
 - Consumes: `sql::{validate_dataset, validate_module, SqlError, OBJECT_MODULES}` from Task 3.
@@ -1041,21 +1056,9 @@ pub trait CityLakeRepository: Send + Sync {
 }
 ```
 
-Then clear the old implementation, as the Files list above sets out:
-
-```bash
-cd lib/citylake
-mkdir -p tests/data
-git mv src/tests/data/delft.city.jsonl tests/data/delft.city.jsonl
-git rm -r --quiet src/tests src/app src/main.rs
-git rm --quiet src/core/db/compaction.rs src/core/db/delete.rs src/core/db/export.rs \
-  src/core/db/insert.rs src/core/db/list.rs src/core/db/lod.rs src/core/db/metadata.rs \
-  src/core/db/metadata_table.rs src/core/db/query.rs src/core/db/service.rs \
-  src/core/db/table.rs src/core/db/update.rs
-```
-
-The crate must **compile and pass its tests at the end of this task** — that is
-the point of clearing everything at once rather than module by module.
+Task 3 already cleared the old implementation, so `types.rs` and `repository.rs`
+are the last two files still describing the LoD model. Replacing them leaves the
+crate compiling on `sql.rs` plus this task's two files.
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
