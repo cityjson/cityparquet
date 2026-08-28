@@ -1,6 +1,6 @@
 mod common;
 
-use citylake::core::interface::types::{DatasetName, ModuleName, QueryParams};
+use citylake::core::interface::types::{CityLakeError, DatasetName, ModuleName, QueryParams};
 
 fn seeded() -> (
     citylake::core::db::service::DuckLakeService,
@@ -102,7 +102,7 @@ fn querying_a_dataset_that_was_never_created_names_the_dataset() {
         .query_objects_impl(&name, &module, &QueryParams::default())
         .expect_err("the dataset was never created");
     assert!(
-        format!("{err}").contains("nonesuch"),
-        "the error should name the missing dataset, not the module"
+        matches!(err, CityLakeError::DatasetNotFound(_)),
+        "a never-created dataset must report DatasetNotFound, got: {err}"
     );
 }
