@@ -3068,6 +3068,15 @@ Both pragmas here materialise findings into a temp table, because a PRAGMA canno
 > failure between them leaves the package consistent, merely un-vacuumed. Say in
 > the report which way it went and what the database did.
 
+> **A known limitation to document, not to fix here.** `cityparquet_validate.cpp`
+> probes for template references on an internal connection using two-part names
+> (`HasNonNullTemplateReference`, line 32), so under an attached catalog that
+> probe fails. Its failure path is fail-safe by construction — a failed probe
+> contributes no term and the "undeterminable" fallback fires — so the effect is
+> that `geometry_templates` orphans are **not** vacuumed from a DuckLake-backed
+> package. Missed cleanup, never data loss. Note it in the doc comment on
+> `vacuum_impl`; do not fix the extension from here.
+
 **Interfaces:**
 - Consumes: `sql::{validate_pragma, orphans_pragma, vacuum_pragma, compact}`.
 - Produces:
