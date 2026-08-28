@@ -106,7 +106,7 @@ async executor would let one slow ingest stall every other request.
 `self`, so the blocking task sees the same catalog the caller does.
 
 `app/mod.rs` maps `CityLakeError` to an HTTP status exactly once, via
-`IntoResponse` — `DatasetNotFound`/`ModuleNotFound` to 404,
+`IntoResponse` — `DatasetNotFound`/`ModuleNotFound`/`ObjectNotFound` to 404,
 `DatasetExists` to 409, a malformed `Sql` newtype construction to 400, and a
 pragma's own refusal (a duplicate id, a CRS mismatch, an unresolved parent,
 a reprojection request) to 422. Everything else is 500. Doing this once, as a

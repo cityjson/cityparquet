@@ -255,8 +255,9 @@ would exercise nothing. It is removed, and replaced by two tiers:
 - **Unit tests** over `sql.rs` — construction, quoting, identifier and module
   validation. Pure functions, no database, sub-millisecond.
 - **Integration tests** against a real DuckDB with the real extension, loaded
-  either from `INSTALL cityjson FROM community` or from a local build via
-  `CITYLAKE_CITYJSON_EXTENSION`, over committed fixtures.
+  from a local build via `CITYLAKE_CITYJSON_EXTENSION` — the published
+  community build predates v0.4.0 and lacks the `cityparquet_*` pragmas this
+  suite exercises — over committed fixtures.
 
 The suite's present "57 offline sub-second tests" property does not survive
 this. That is a deliberate trade: those tests passed without the component that
