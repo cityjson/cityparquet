@@ -2195,6 +2195,13 @@ transaction that makes a refused insert leave nothing behind."
 - Consumes: `sql::select_objects`, `QueryParams`, `ModuleName`.
 - Produces: `fn query_objects_impl(&self, dataset: &DatasetName, module: &ModuleName, params: &QueryParams) -> RepositoryResult<Vec<serde_json::Value>>`.
 
+> **If reading the rows as `String` fails**, the cause is `to_json(t)` returning
+> DuckDB's `JSON` logical type rather than `VARCHAR`. duckdb-rs has no `FromSql`
+> for a JSON type of its own, so it depends on the Arrow layer surfacing it as
+> UTF-8. Should it not, change `sql::select_objects` (Task 3) to emit
+> `to_json(t)::VARCHAR` — the cast is free and removes the ambiguity. Do not work
+> around it by reading into an intermediate type.
+
 - [ ] **Step 1: Write the failing tests**
 
 `lib/citylake/tests/query.rs`:
