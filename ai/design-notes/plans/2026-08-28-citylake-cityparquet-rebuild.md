@@ -21,6 +21,26 @@ Every task's requirements implicitly include this section.
 - **British English** in prose and comments. **Document the present, never the past** — no changelog voice, no "previously", no migration notes in reference documentation.
 - **Breaking changes are welcome.** No users, no shims, no deprecation paths, no compatibility aliases.
 - **Identifier safety:** dataset names are validated against `^[a-zA-Z0-9_]+$` (they become schema names and cannot be parameterised); module names are validated against the closed set in Task 3. Values are bound as parameters or quoted through `sql::literal`.
+- **The local extension build is the test environment.** The published community
+  `cityjson` extension is older than v0.4.0 and does **not** carry the
+  `cityparquet_*` pragmas — verified in Task 1, where the two pragma tests fail
+  against it and pass against the local build. So every integration test runs
+  with `CITYLAKE_CITYJSON_EXTENSION` pointing at
+  `lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension`.
+  Export it once per shell:
+
+  ```bash
+  export CITYLAKE_CITYJSON_EXTENSION=/data2/hideba/cityparquet-paper/cityparquet/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension
+  ```
+
+  The community path stays in the code — it is what will work once the release
+  lands — but nothing verifies against it today.
+- **`allow_unsigned_extensions` is a startup-only option.** It must be set on a
+  `Config` passed to `Connection::open_in_memory_with_flags`; `SET
+  allow_unsigned_extensions` on a live connection fails with "Cannot change ...
+  while database is running".
+- **`Cargo.lock` is gitignored** for this crate (`lib/citylake/.gitignore`), so
+  no commit includes it.
 - Every task ends `cargo clippy --all-targets -- -D warnings` clean and `cargo fmt` applied.
 
 ## Verified Ground Truth
@@ -1277,7 +1297,7 @@ Expected: FAIL — `with_connection` and `scoped` do not exist.
 //! [`DuckLakeService::scoped`], which is what keeps the search-path discipline
 //! in one place instead of spread across nine operation modules.
 
-use duckdb::Connection;
+use duckdb::{Config, Connection};
 use std::sync::{Arc, Mutex};
 
 use crate::core::db::sql;
@@ -1292,18 +1312,26 @@ impl DuckLakeService {
     pub fn new(config: CityLakeConfig) -> RepositoryResult<Self> {
         std::fs::create_dir_all(&config.storage_path)?;
 
-        let conn = Connection::open_in_memory()?;
-
         // A locally built extension is loaded by path; otherwise the community
         // build. The extension is a hard dependency — nothing in this crate
         // works without it, so a failure here is fatal rather than deferred.
-        match std::env::var("CITYLAKE_CITYJSON_EXTENSION") {
+        //
+        // `allow_unsigned_extensions` is a startup-only option: it goes on the
+        // Config the connection is opened with, because `SET` on a running
+        // database is refused.
+        let conn = match std::env::var("CITYLAKE_CITYJSON_EXTENSION") {
             Ok(path) => {
-                conn.execute_batch("SET allow_unsigned_extensions = true;")?;
+                let config = Config::default().allow_unsigned_extensions()?;
+                let conn = Connection::open_in_memory_with_flags(config)?;
                 conn.execute_batch(&format!("LOAD {};", sql::literal(&path)))?;
+                conn
             }
-            Err(_) => conn.execute_batch("INSTALL cityjson FROM community; LOAD cityjson;")?,
-        }
+            Err(_) => {
+                let conn = Connection::open_in_memory()?;
+                conn.execute_batch("INSTALL cityjson FROM community; LOAD cityjson;")?;
+                conn
+            }
+        };
         conn.execute_batch("INSTALL ducklake; LOAD ducklake;")?;
         // `json` backs to_json() on the query path and json_object() when the
         // CRS footer is minted.
@@ -3857,9 +3885,22 @@ The root `justfile` has no citylake recipe, though the monorepo's `CLAUDE.md`
 describes it as the third Cargo workspace. Add one and include it in `check`:
 
 ```just
-# Lint and test the CityLake crate (needs the cityjson extension).
+# Lint and test the CityLake crate.
+#
+# The integration tests need the CityParquet package pragmas, which the
+# published community extension does not yet carry — so they run against the
+# local build, and `just -f lib/duckdb-cityjson/justfile build` must have run
+# first. Override the path by exporting CITYLAKE_CITYJSON_EXTENSION yourself.
 citylake-check:
-    cd lib/citylake && cargo clippy --all-targets -- -D warnings && cargo test
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ext="{{justfile_directory()}}/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension"
+    if [ -z "${CITYLAKE_CITYJSON_EXTENSION:-}" ] && [ -f "$ext" ]; then
+        export CITYLAKE_CITYJSON_EXTENSION="$ext"
+    fi
+    cd lib/citylake
+    cargo clippy --all-targets -- -D warnings
+    cargo test
 ```
 
 Add `citylake-check` to the root `check` recipe's dependency list, and update
