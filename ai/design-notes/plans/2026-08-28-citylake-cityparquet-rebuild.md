@@ -3463,6 +3463,12 @@ Handlers translate between HTTP and the trait, and nothing more. No SQL, no Duck
 - Consumes: `Arc<dyn CityLakeRepository>` as axum state.
 - Produces: `fn router(repo: Arc<dyn CityLakeRepository>) -> axum::Router` and `async fn serve(config: CityLakeConfig, repo: Arc<dyn CityLakeRepository>) -> anyhow::Result<()>`, plus `impl IntoResponse for CityLakeError`.
 
+`QueryParams` has no `Deserialize`, so `axum::Query<QueryParams>` will not work
+directly. Give the query endpoint its own boundary DTO — a `Deserialize` struct
+of `filter`/`limit`/`offset` — and convert into `QueryParams`, defaulting the two
+numbers. That is the same validate-at-the-boundary posture the newtypes take:
+what arrives over HTTP is untrusted until a handler has checked it.
+
 **Path parameters use `{name}`, not `:name`.** axum 0.8 moved to matchit 0.8's
 brace syntax; a route registered as `/datasets/:ds` does not capture a parameter
 and panics when the router is built. The table below is already in the new form.
