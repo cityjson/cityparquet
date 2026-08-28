@@ -8,10 +8,6 @@ description = "A data lake framework and web API for 3D city models (CityJSON) u
 name = "citylake"
 path = "src/lib.rs"
 
-[[bin]]
-name = "citylake"
-path = "src/main.rs"
-
 [dependencies]
 # Database
 # Pinned to DuckDB v1.5.4: duckdb-rs versions as 1.105XX.0 for DuckDB 1.5.XX,
