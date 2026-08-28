@@ -13,10 +13,11 @@ use crate::core::interface::types::{
 
 impl DuckLakeService {
     /// Run every structural check `cityparquet_validate` knows and report what
-    /// it found. Read-only: this diagnoses, it does not repair. Empirically
-    /// confirmed columns and order (`check_name`, `severity`, `table_name`,
-    /// `object_id`, `message`) via `DESCRIBE SELECT * FROM
-    /// cityparquet_validation` against a DuckLake-attached catalog.
+    /// it found. Read-only: this diagnoses, it does not repair.
+    /// `cityparquet_validation` has replace semantics — each call's findings
+    /// are the whole result, never appended to a previous call's — and its
+    /// columns are `check_name`, `severity`, `table_name`, `object_id`,
+    /// `message`, in that order.
     pub fn validate_impl(&self, dataset: &DatasetName) -> RepositoryResult<Vec<ValidationFinding>> {
         let name = dataset.as_str();
         self.with_connection(|conn| {
@@ -48,19 +49,19 @@ impl DuckLakeService {
 
     /// Reclaim unreferenced sidecar rows: `cityparquet_orphans` first, so the
     /// returned count reports what vacuum is about to take, then
-    /// `cityparquet_vacuum` itself. Both run inside one transaction --
-    /// confirmed empirically (see the task report) that DuckDB permits this
-    /// even though the pragmas' temp table lives in the `temp` catalog while
-    /// the deletes land in the attached `lake` catalog: unlike Task 6's CRS
-    /// probe, which wrote a *second attached* database, `temp` is not subject
-    /// to the "one attached database per transaction" rule DuckDB enforces.
-    /// If a future DuckDB version tightens that and this transaction starts
-    /// failing, the fallback is to drop `in_transaction` here and run the two
-    /// pragmas as separate statements: `cityparquet_vacuum` is idempotent, so
-    /// a failure between them leaves the package consistent, merely
-    /// un-vacuumed.
+    /// `cityparquet_vacuum` itself. Both run inside one transaction. Both
+    /// pragmas materialise their findings into a temp table, which lives in
+    /// the `temp` catalog, while the deletes land in the attached `lake`
+    /// catalog -- and DuckDB permits `temp` alongside one attached database in
+    /// a single transaction. This differs from the CRS probe in `dataset.rs`,
+    /// which writes to a *second attached* database and for that reason has
+    /// to run outside its ingest transaction. If a future DuckDB version
+    /// tightens the rule and this transaction starts failing, the fallback is
+    /// to drop `in_transaction` here and run the two pragmas as separate
+    /// statements: `cityparquet_vacuum` is idempotent, so a failure between
+    /// them leaves the package consistent, merely un-vacuumed.
     ///
-    /// A known, undocumented-elsewhere limitation: `cityparquet_validate.cpp`'s
+    /// A known limitation: `cityparquet_validate.cpp`'s
     /// `HasNonNullTemplateReference` (line 32) probes for template references
     /// on its own connection using two-part names, which do not resolve under
     /// an attached catalog's search path. That failure is fail-safe by
