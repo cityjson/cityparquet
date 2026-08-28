@@ -94,13 +94,13 @@ fn updating_an_absent_id_is_an_error() {
     let err = service
         .update_object_impl(&name, "no-such-object", &attributes)
         .expect_err("an absent id must not silently succeed");
-    // `Internal` is the only variant this failure can produce — there is no
-    // dedicated "object not found" variant — so checking the variant alone
-    // would not distinguish this failure from an unrelated one. The message
-    // embeds the id verbatim, and only this failure path does that, which is
-    // what makes the substring check unambiguous.
-    assert!(matches!(err, CityLakeError::Internal(_)));
-    assert!(format!("{err}").contains("no-such-object"));
+    assert!(
+        matches!(
+            &err,
+            CityLakeError::ObjectNotFound { id, .. } if id == "no-such-object"
+        ),
+        "an absent id must report ObjectNotFound, got: {err}"
+    );
 }
 
 #[test]

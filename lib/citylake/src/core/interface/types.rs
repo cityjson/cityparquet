@@ -156,15 +156,6 @@ impl ExportFormat {
             ExportFormat::FlatCityBuf => "flatcitybuf",
         }
     }
-
-    /// The file extension for this format.
-    pub fn file_extension(&self) -> &'static str {
-        match self {
-            ExportFormat::CityJson => ".city.json",
-            ExportFormat::CityJsonSeq => ".city.jsonl",
-            ExportFormat::FlatCityBuf => ".fcb",
-        }
-    }
 }
 
 /// Every error a repository method can return. A handler turns each variant
@@ -188,6 +179,9 @@ pub enum CityLakeError {
 
     #[error("module {module:?} not found in dataset {dataset:?}")]
     ModuleNotFound { dataset: String, module: String },
+
+    #[error("object {id:?} not found in dataset {dataset:?}")]
+    ObjectNotFound { dataset: String, id: String },
 
     #[error("dataset {0:?} has no object table")]
     NoObjectTable(String),
@@ -238,13 +232,5 @@ mod tests {
         assert_eq!(params.limit, 100);
         assert_eq!(params.offset, 0);
         assert!(params.filter.is_none());
-    }
-
-    #[test]
-    fn export_formats_map_to_duckdb_and_to_file_extensions() {
-        assert_eq!(ExportFormat::CityJsonSeq.as_duckdb_format(), "cityjsonseq");
-        assert_eq!(ExportFormat::CityJsonSeq.file_extension(), ".city.jsonl");
-        assert_eq!(ExportFormat::CityJson.file_extension(), ".city.json");
-        assert_eq!(ExportFormat::FlatCityBuf.file_extension(), ".fcb");
     }
 }

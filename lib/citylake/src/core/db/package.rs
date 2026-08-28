@@ -18,7 +18,7 @@ impl DuckLakeService {
     /// schema inside the attached catalog and recovers each file's Parquet
     /// footer — the one thing a hand-rolled `read_parquet` load throws away,
     /// and with it the CRS. Nothing needs minting here.
-    pub fn import_package(
+    pub(crate) fn import_package(
         &self,
         dataset: &DatasetName,
         directory: &str,

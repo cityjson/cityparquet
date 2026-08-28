@@ -45,12 +45,18 @@ is for:
 | `cityjson_metadata` / `cityjsonseq_metadata` / `flatcitybuf_metadata` | A source's declared metadata, `referenceSystem` included. |
 | `ducklake_merge_adjacent_files` | DuckLake's own compaction — not CityParquet's, but the mechanism `compact_impl` uses to merge an object table's small Parquet files without rewriting it behind DuckLake's back. |
 
-Every statement above is built in `src/core/db/sql.rs` — the one pure module
-in the crate, and the only place quoting can go wrong. Identifiers (schema,
-table names) cannot be parameterised, so they are validated and
-double-quoted; values go through a literal-escaping helper that doubles
-apostrophes. `sql.rs` touches no database, which is what makes it unit
-testable without one.
+`src/core/db/sql.rs` builds every statement above that names a dataset or
+module — the pragmas, the package operations, the object reads — which is
+where quoting and identifier validation matter: identifiers (schema, table
+names) cannot be parameterised, so they are validated and double-quoted
+through `sql.rs`'s own `ident`/`qualified` helpers, and values go through a
+literal-escaping helper that doubles apostrophes. `sql.rs` touches no
+database, which is what makes it unit testable without one. A handful of
+fixed introspection and DDL statements — the export `COPY TO`, the attribute
+`UPDATE`, `ATTACH`, `DROP SCHEMA`, both footer reads, and the
+`information_schema`/`COUNT(*)` introspection queries — are built inline at
+their call sites instead, reusing `sql.rs`'s quoting helpers where they touch
+an identifier but assembling the surrounding statement themselves.
 
 ## File structure
 
@@ -63,7 +69,7 @@ src/
 │   │   ├── repository.rs   # CityLakeRepository trait — every operation, object-safe
 │   │   └── types.rs        # DatasetName / ModuleName (validated newtypes), CityLakeError, DTOs
 │   └── db/
-│       ├── sql.rs              # every SQL statement this crate issues, pure
+│       ├── sql.rs              # every statement naming a dataset or module, pure
 │       ├── service.rs          # the connection: with_connection, scoped, with_search_path, in_transaction
 │       ├── dataset.rs          # create / list / describe / drop, and the CRS-minting probe
 │       ├── ingest.rs           # insert a further source into an existing dataset
@@ -157,11 +163,11 @@ needs a real footer minted before its guard means anything.
 The footer's `crs` is canonical PROJJSON, resolved by the extension's own CRS
 resolver — CityLake never assembles or guesses it. So minting one means
 asking the extension to do it: write a single row out as a throwaway package
-and read the footer `cityparquet_write` put on it back with
-`cityparquet_city_field`. `dataset.rs::mint_crs_footer` does exactly that —
-one probe schema, one object table with one row copied from whatever module
-in the new dataset already has data, one `cityparquet_write` naming the
-source's declared CRS (`reference_system.authority || ':' ||
+and read the footer `cityparquet_write` put on it back out with
+`parquet_kv_metadata` and `json_extract`. `dataset.rs::mint_crs_footer` does
+exactly that — one probe schema, one object table with one row copied from
+whatever module in the new dataset already has data, one `cityparquet_write`
+naming the source's declared CRS (`reference_system.authority || ':' ||
 reference_system.code`, read from the source's own `*_metadata()` — a struct
 field concatenation, not CRS logic), and one read of `parquet_kv_metadata`'s
 `city` key back out. Only `crs` is kept from that footer: the guard reads
@@ -219,7 +225,7 @@ connected DuckDB is v1.5.4, and every `cityparquet_*` pragma and every
 
 ## The trust model
 
-The API has no authentication, and CORS is permissive. Three surfaces act on
+The API has no authentication, and CORS is permissive. Four surfaces act on
 caller-supplied input directly, and the caller is trusted to have the rights
 that implies:
 
@@ -232,6 +238,14 @@ that implies:
 - `filter`, on query and predicate delete, is a SQL predicate interpolated as
   written — `cityparquet_delete` takes its predicate as a SQL fragment by
   design, so there is nothing to bind it to.
+- the attribute object's **keys**, on object update (`update_object_impl`,
+  `src/core/db/mutate.rs`), become column identifiers, quoted through
+  `sql::ident` — so there is no injection, but they are the only identifiers
+  in the crate not validated through a newtype. A caller can therefore write
+  `id`, `parents`, `children`, `feature_id` or a `geometry_lod*` column
+  through an endpoint documented as updating "attributes". A structural
+  column written this way is re-derived by the reconcile that follows the
+  update, but the endpoint does not restrict which columns a caller may name.
 
 This belongs on a trusted network, run by people who already hold the rights
 it exercises on their behalf. `src/app/handlers/mod.rs` states this in full;

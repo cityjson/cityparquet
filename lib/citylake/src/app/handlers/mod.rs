@@ -4,7 +4,7 @@
 //!
 //! # What this API trusts
 //!
-//! Every caller is trusted, and the API has no authentication. Three surfaces
+//! Every caller is trusted, and the API has no authentication. Four surfaces
 //! act directly on that trust:
 //!
 //! - `source_path` on dataset creation and ingest names a path the SERVER
@@ -17,6 +17,15 @@
 //! - `filter` on query and predicate-delete is a SQL predicate interpolated
 //!   as written, because `cityparquet_delete` takes a predicate string by
 //!   design.
+//! - the attribute object's KEYS on object update (`PUT
+//!   /datasets/{ds}/objects/{id}`) become column identifiers, quoted through
+//!   `sql::ident` — so there is no injection, but they are the only
+//!   identifiers in the crate not validated through a newtype. A caller can
+//!   write `id`, `parents`, `children`, `feature_id` or a `geometry_lod*`
+//!   column through an endpoint documented as updating "attributes". A
+//!   structural column written this way is re-derived by the reconcile that
+//!   follows the update, but the endpoint does not restrict which columns a
+//!   caller may name.
 //!
 //! Together these mean the API belongs on a trusted network, operated by
 //! people who already have the rights it exercises on their behalf. Exposing

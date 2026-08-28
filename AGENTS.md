@@ -61,8 +61,9 @@ scripts and renderers it belongs to. `lib/citylake` is a third. Consequences:
 
 - `cd lib/cityparquet-rs && just check` gates the **library alone** and is
   self-contained: no `uv`, no `jq`, no corpus, no local extension build. That
-  is the point of the split. The root `just check` runs all three workspaces,
-  the two harness suites, the MCP server's gate and `citylake-check`.
+  is the point of the split. The root `just check` runs all three workspaces
+  — the library's own gate, the two `benchmark/readbench` harness suites and
+  `citylake-check` — plus the MCP server's gate.
 - `benchmark/readbench` path-depends on `../../lib/cityparquet-rs/crates/core`
   and **must repeat the `[patch.crates-io] cjseq` line** — `[patch]` is honoured
   only in the workspace root being built, and without it the benchmark would

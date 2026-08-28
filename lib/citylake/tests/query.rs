@@ -62,8 +62,28 @@ fn a_page_is_bounded_and_offsettable() {
 
 #[test]
 fn a_filter_narrows_the_result() {
-    let (service, _dir, name) = seeded();
+    // hierarchy_7415.city.json is a mixed set: one Building (bldg-1) with two
+    // BuildingStorey children, plus a further standalone Building (bldg-2) —
+    // four rows in the building module table, two "Building" and two
+    // "BuildingStorey". Unlike delft.city.jsonl (all Building), a filter here
+    // can actually narrow the result, so this test can fail for its stated
+    // reason: drop the filter from the query and it must fail.
+    let (service, _dir) = common::test_service();
+    let name = DatasetName::new("hierarchy").unwrap();
+    service
+        .create_dataset_impl(
+            &name,
+            common::fixture("hierarchy_7415.city.json")
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
     let module = ModuleName::new("building").unwrap();
+
+    let unfiltered = service
+        .query_objects_impl(&name, &module, &QueryParams::default())
+        .unwrap();
+    assert_eq!(unfiltered.len(), 4, "the fixture carries four objects");
 
     let filtered = service
         .query_objects_impl(
@@ -76,9 +96,16 @@ fn a_filter_narrows_the_result() {
             },
         )
         .unwrap();
+    assert!(!filtered.is_empty(), "two rows are Buildings");
     assert!(filtered
         .iter()
         .all(|row| row.get("object_type").and_then(|v| v.as_str()) == Some("Building")));
+    assert!(
+        filtered.len() < unfiltered.len(),
+        "the filter must actually narrow the result: {} filtered vs {} unfiltered",
+        filtered.len(),
+        unfiltered.len()
+    );
 }
 
 #[test]

@@ -131,3 +131,41 @@ async fn objects_are_queryable_by_module() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(rows.as_array().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn ingesting_a_duplicate_id_is_a_422_not_a_500() {
+    // The extension refuses a duplicate id (`is_refusal`, `src/app/mod.rs`)
+    // by raising a DuckDB error whose text `is_refusal` pattern-matches. This
+    // is the one HTTP-level check on that mapping: it does not fix the
+    // substring coupling to the extension's wording, but it makes a silent
+    // regression (a 500 where a 422 is expected) visible.
+    let (app, _dir) = app();
+    let source = common::fixture("delft.city.jsonl");
+    let body = serde_json::json!({ "source_path": source.to_str().unwrap() }).to_string();
+
+    let (created, _) = send(
+        &app,
+        Request::post("/datasets/delft")
+            .header("content-type", "application/json")
+            .body(Body::from(body.clone()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(created, StatusCode::CREATED);
+
+    // Ingesting the very same source again reintroduces the ids already in
+    // the dataset — the extension's own duplicate-id guard.
+    let (status, response) = send(
+        &app,
+        Request::post("/datasets/delft/objects")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "response body: {response}"
+    );
+}

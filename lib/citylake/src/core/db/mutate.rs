@@ -22,19 +22,20 @@ impl DuckLakeService {
         id: &str,
         attributes: &serde_json::Map<String, serde_json::Value>,
     ) -> RepositoryResult<()> {
-        if attributes.is_empty() {
-            return Ok(());
-        }
         let name = dataset.as_str();
 
         self.with_connection(|conn| {
             if !self.schema_exists(conn, name)? {
                 return Err(CityLakeError::DatasetNotFound(name.to_string()));
             }
+            if attributes.is_empty() {
+                return Ok(());
+            }
             let Some(module) = self.module_holding(conn, name, id)? else {
-                return Err(CityLakeError::Internal(format!(
-                    "no object with id {id} in dataset {name}"
-                )));
+                return Err(CityLakeError::ObjectNotFound {
+                    dataset: name.to_string(),
+                    id: id.to_string(),
+                });
             };
 
             self.in_transaction(conn, |conn| {

@@ -63,10 +63,14 @@ impl DuckLakeService {
             if let Err(e) = self.mint_crs_footer(conn, name, source_path, format) {
                 // The ingest is already committed, so unwinding is explicit.
                 // A dataset whose CRS guard is silently off is worse than none.
-                let _ = conn.execute_batch(&format!(
+                // The mint failure is the one worth returning, so a drop
+                // failure on top of it is logged rather than propagated.
+                if let Err(drop_err) = conn.execute_batch(&format!(
                     "DROP SCHEMA {} CASCADE",
                     sql::qualified(&[&catalog, name])
-                ));
+                )) {
+                    tracing::error!(%drop_err, "dropping the failed dataset's schema failed");
+                }
                 return Err(e);
             }
 
@@ -126,7 +130,7 @@ impl DuckLakeService {
     /// must propagate: a write and an export both choose what CRS to state
     /// from this value, and a swallowed error would silently produce a
     /// CRS-less package instead of failing.
-    pub fn dataset_crs(
+    pub(crate) fn dataset_crs(
         &self,
         conn: &Connection,
         dataset: &str,
@@ -156,7 +160,7 @@ impl DuckLakeService {
     /// question belongs to the extension. The concatenation is NULL-propagating,
     /// so a PROJJSON without an `id` yields `None` rather than a URI with
     /// holes in it.
-    pub fn dataset_crs_uri(
+    pub(crate) fn dataset_crs_uri(
         &self,
         conn: &Connection,
         dataset: &str,
@@ -181,7 +185,11 @@ impl DuckLakeService {
 
     /// The package's object tables, as the extension's own registry records
     /// them. The sidecars are excluded: they hold appearance, not objects.
-    pub fn object_tables(&self, conn: &Connection, dataset: &str) -> RepositoryResult<Vec<String>> {
+    pub(crate) fn object_tables(
+        &self,
+        conn: &Connection,
+        dataset: &str,
+    ) -> RepositoryResult<Vec<String>> {
         let mut stmt = conn.prepare(&format!(
             "SELECT table_name FROM {} WHERE role = 'object' ORDER BY table_name",
             sql::qualified(&[self.catalog(), dataset, "__cityparquet"])
@@ -291,17 +299,25 @@ impl DuckLakeService {
 
         // A non-empty object table is required: cityparquet_write emits one
         // file per non-empty table, and an empty probe would produce no footer.
-        let Some(module) = self.object_tables(conn, dataset)?.into_iter().find(|t| {
-            conn.query_row(
+        // The COUNT(*) query's own failure must propagate rather than read as
+        // "empty" — swallowing it here would surface later as a misleading
+        // NoObjectTable instead of the real cause.
+        let mut module = None;
+        for table in self.object_tables(conn, dataset)? {
+            let non_empty: bool = conn.query_row(
                 &format!(
                     "SELECT COUNT(*) > 0 FROM {}",
-                    sql::qualified(&[self.catalog(), dataset, t])
+                    sql::qualified(&[self.catalog(), dataset, &table])
                 ),
                 [],
-                |row| row.get::<_, bool>(0),
-            )
-            .unwrap_or(false)
-        }) else {
+                |row| row.get(0),
+            )?;
+            if non_empty {
+                module = Some(table);
+                break;
+            }
+        }
+        let Some(module) = module else {
             return Err(CityLakeError::NoObjectTable(dataset.to_string()));
         };
 

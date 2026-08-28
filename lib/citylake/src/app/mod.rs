@@ -23,9 +23,9 @@ use crate::core::interface::types::CityLakeError;
 impl IntoResponse for CityLakeError {
     fn into_response(self) -> Response {
         let status = match &self {
-            CityLakeError::DatasetNotFound(_) | CityLakeError::ModuleNotFound { .. } => {
-                StatusCode::NOT_FOUND
-            }
+            CityLakeError::DatasetNotFound(_)
+            | CityLakeError::ModuleNotFound { .. }
+            | CityLakeError::ObjectNotFound { .. } => StatusCode::NOT_FOUND,
             CityLakeError::DatasetExists(_) => StatusCode::CONFLICT,
             CityLakeError::Sql(_) => StatusCode::BAD_REQUEST,
             // A rejected pragma — a duplicate id, a CRS mismatch — is the
