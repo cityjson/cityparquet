@@ -1,7 +1,7 @@
 //! DuckLake maintenance.
 //!
 //! Compaction here is merging a table's small Parquet files via DuckLake's own
-//! `ducklake_merge_adjacent_files` -- not CTAS, DROP and RENAME, which would
+//! `ducklake_merge_adjacent_files` — not CTAS, DROP and RENAME, which would
 //! rewrite the table behind DuckLake's back and lose its snapshots.
 
 use crate::core::db::service::DuckLakeService;
@@ -29,7 +29,12 @@ impl DuckLakeService {
             for table in self.object_tables(conn, name)? {
                 let mut stmt = conn.prepare(&sql::compact(self.catalog(), name, &table))?;
                 let rows = stmt
-                    .query_map([], |row| Ok((row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)))?
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, i64>("files_processed")?,
+                            row.get::<_, i64>("files_created")?,
+                        ))
+                    })?
                     .collect::<Result<Vec<_>, _>>()?;
                 for (processed, created) in rows {
                     stats.files_processed += processed as usize;

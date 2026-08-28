@@ -18,17 +18,47 @@ fn a_freshly_created_dataset_validates_clean() {
 #[test]
 fn validation_findings_carry_their_check_and_table() {
     let (service, _dir) = common::test_service();
-    let name = DatasetName::new("delft").unwrap();
+    let name = DatasetName::new("hier").unwrap();
     service
-        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
+        .create_dataset_impl(
+            &name,
+            common::fixture("hierarchy.city.json").to_str().unwrap(),
+        )
         .unwrap();
 
-    // Shape, not content: a clean dataset yields no rows, so this asserts the
-    // call succeeds and returns a well-formed (possibly empty) list.
+    // A clean dataset has nothing to report, so `a_freshly_created_dataset_
+    // validates_clean` alone cannot prove validate_impl ever surfaces a real
+    // finding. Corrupt the package underneath the extension's back -- point a
+    // Storey's `parents` at an id the package does not contain -- to give it
+    // one. Confirmed by hand against the same fixture and the same corruption
+    // that this fires cityparquet_validate's `parent_dangling` check with
+    // severity `error` on the `building` table, one finding per corrupted
+    // row (see the task report).
+    let corrupt = format!(
+        "UPDATE {}.{}.building SET parents = ['no-such-parent'] WHERE object_type = 'Storey'",
+        service.catalog(),
+        name.as_str()
+    );
+    service
+        .with_connection(|conn| {
+            conn.execute_batch(&corrupt)?;
+            Ok(())
+        })
+        .expect("corrupt a child's parent reference");
+
     let findings = service.validate_impl(&name).unwrap();
-    for finding in &findings {
+    let dangling: Vec<_> = findings
+        .iter()
+        .filter(|f| f.check_name == "parent_dangling")
+        .collect();
+    assert!(
+        !dangling.is_empty(),
+        "a dangling parent reference must be reported, got: {findings:?}"
+    );
+    for finding in &dangling {
         assert!(!finding.check_name.is_empty());
         assert!(!finding.table_name.is_empty());
+        assert_eq!(finding.severity, "error");
     }
 }
 

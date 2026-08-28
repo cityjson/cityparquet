@@ -2,7 +2,7 @@
 //!
 //! A PRAGMA cannot be a subquery, so both `cityparquet_validate` and
 //! `cityparquet_orphans` materialise their findings into a temp table which is
-//! then selected from -- that is what keeps the results filterable rather
+//! then selected from — that is what keeps the results filterable rather
 //! than fixed at the call.
 
 use crate::core::db::service::DuckLakeService;
@@ -52,7 +52,7 @@ impl DuckLakeService {
     /// `cityparquet_vacuum` itself. Both run inside one transaction. Both
     /// pragmas materialise their findings into a temp table, which lives in
     /// the `temp` catalog, while the deletes land in the attached `lake`
-    /// catalog -- and DuckDB permits `temp` alongside one attached database in
+    /// catalog — and DuckDB permits `temp` alongside one attached database in
     /// a single transaction. This differs from the CRS probe in `dataset.rs`,
     /// which writes to a *second attached* database and for that reason has
     /// to run outside its ingest transaction. If a future DuckDB version
@@ -65,8 +65,8 @@ impl DuckLakeService {
     /// `HasNonNullTemplateReference` (line 32) probes for template references
     /// on its own connection using two-part names, which do not resolve under
     /// an attached catalog's search path. That failure is fail-safe by
-    /// construction -- a failed probe contributes no term and the
-    /// "undeterminable" fallback fires -- so the effect is that
+    /// construction — a failed probe contributes no term and the
+    /// "undeterminable" fallback fires — so the effect is that
     /// `geometry_templates` orphans are **not** vacuumed from a
     /// DuckLake-backed package. Missed cleanup, never data loss. This is the
     /// extension's limitation, not fixed here.
