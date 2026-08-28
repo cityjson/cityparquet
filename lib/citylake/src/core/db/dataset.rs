@@ -23,6 +23,13 @@ impl DuckLakeService {
         dataset: &DatasetName,
         source_path: &str,
     ) -> RepositoryResult<DatasetInfo> {
+        // A directory is an existing package: cityparquet_read loads it and
+        // recovers each file's Parquet footer, so its CRS arrives with it and
+        // none of the file bootstrap applies.
+        if std::path::Path::new(source_path).is_dir() {
+            return self.import_package(dataset, source_path);
+        }
+
         let name = dataset.as_str();
         let format = sql::reader_for(source_path);
         let catalog = self.catalog().to_string();
@@ -147,7 +154,14 @@ impl DuckLakeService {
 
     /// Describe a dataset on a connection the caller already holds, so a
     /// create can report what it built without releasing the lock.
-    fn describe_locked(&self, conn: &Connection, dataset: &str) -> RepositoryResult<DatasetInfo> {
+    ///
+    /// `pub(crate)`, not private: `package.rs` is a sibling module, and an
+    /// import reports what it loaded the same way a create does.
+    pub(crate) fn describe_locked(
+        &self,
+        conn: &Connection,
+        dataset: &str,
+    ) -> RepositoryResult<DatasetInfo> {
         let mut stmt = conn.prepare(&format!(
             "SELECT table_name, role FROM {} ORDER BY role, table_name",
             sql::qualified(&[self.catalog(), dataset, "__cityparquet"])
