@@ -157,4 +157,14 @@ impl DuckLakeService {
         )?;
         Ok(count > 0)
     }
+
+    /// A handle sharing this service's connection, for moving into a blocking
+    /// task. The connection is already behind `Arc<Mutex<_>>`; this shares it
+    /// rather than opening a second one, so DuckLake sees one writer.
+    pub(crate) fn handle(&self) -> Self {
+        Self {
+            connection: Arc::clone(&self.connection),
+            config: self.config.clone(),
+        }
+    }
 }

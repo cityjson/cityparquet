@@ -5,5 +5,6 @@ mod inspect;
 mod mutate;
 mod package;
 mod query;
+mod repository_impl;
 pub mod service;
 pub mod sql;
