@@ -1487,6 +1487,14 @@ The probe lives in the default catalog deliberately — it does not depend on Ta
 
 That splits creation's atomicity, so the failure semantics are stated rather than left to chance: if the source **declares** a `referenceSystem` and minting fails, the schema is dropped and the create fails, because a dataset silently missing the CRS guard is worse than no dataset. If the source declares **none**, there is nothing to mint and a footerless package is the correct "CRS unknown" state, not a failure.
 
+> **Tasks 6-11 test the inherent `*_impl` methods, synchronously.** The async
+> `CityLakeRepository` trait is not implemented until Task 12, so a test calling
+> `service.create_dataset(...).await` here would not compile. Each task's tests
+> therefore exercise what that task actually delivers — the inherent method —
+> and Task 12 proves the trait wiring separately. The `*_impl` methods are `pub`
+> because these are integration tests under `tests/`, which see only the crate's
+> public API.
+
 **Files:**
 - Create: `lib/citylake/src/core/db/dataset.rs`
 - Modify: `lib/citylake/src/core/db/mod.rs`
@@ -1508,17 +1516,15 @@ That splits creation's atomicity, so the failure semantics are stated rather tha
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::DatasetName;
 
-#[tokio::test]
-async fn creating_a_dataset_routes_objects_to_module_tables() {
+#[test]
+fn creating_a_dataset_routes_objects_to_module_tables() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
 
     let info = service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .expect("create the dataset");
 
     // The fixture holds Buildings, so the building module table exists and
@@ -1532,14 +1538,13 @@ async fn creating_a_dataset_routes_objects_to_module_tables() {
     assert_eq!(building.role, "object");
 }
 
-#[tokio::test]
-async fn a_created_dataset_declares_its_crs() {
+#[test]
+fn a_created_dataset_declares_its_crs() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
 
     let info = service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     // The fixture declares EPSG:7415. The footer is minted by the extension,
@@ -1548,20 +1553,18 @@ async fn a_created_dataset_declares_its_crs() {
     assert!(crs.contains("7415"), "unexpected CRS: {crs}");
 }
 
-#[tokio::test]
-async fn the_declared_crs_arms_the_guard_against_a_mismatched_source() {
+#[test]
+fn the_declared_crs_arms_the_guard_against_a_mismatched_source() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     // This is the point of minting the footer at all: without it the package
     // states nothing, and a differently-projected source would be accepted.
     let err = service
-        .ingest(&name, common::fixture("bench_28992.city.json").to_str().unwrap())
-        .await
+        .ingest_impl(&name, common::fixture("bench_28992.city.json").to_str().unwrap())
         .expect_err("a 28992 source must not enter a 7415 package");
     assert!(
         format!("{err}").contains("CRS mismatch"),
@@ -1569,22 +1572,21 @@ async fn the_declared_crs_arms_the_guard_against_a_mismatched_source() {
     );
 }
 
-#[tokio::test]
-async fn a_source_without_a_crs_still_creates_a_dataset() {
+#[test]
+fn a_source_without_a_crs_still_creates_a_dataset() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("nocrs").unwrap();
 
     // Nothing to mint is not a failure: a package that states no CRS is the
     // correct "unknown" state, and the extension treats it as one.
     let info = service
-        .create_dataset(&name, common::fixture("minimal_nocrs.city.json").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("minimal_nocrs.city.json").to_str().unwrap())
         .expect("a source without a referenceSystem is still ingestable");
     assert!(info.modules.iter().any(|m| m.rows > 0));
 }
 
-#[tokio::test]
-async fn minting_the_footer_does_not_leave_the_ingest_uncommitted() {
+#[test]
+fn minting_the_footer_does_not_leave_the_ingest_uncommitted() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
 
@@ -1593,57 +1595,53 @@ async fn minting_the_footer_does_not_leave_the_ingest_uncommitted() {
     // `memory`. Minting inside the ingest transaction fails on both counts —
     // so if this passes, the phases are correctly separated.
     let info = service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .expect("create must survive the probe");
     assert!(info.crs.is_some(), "the footer was not minted");
     assert!(info.modules.iter().map(|m| m.rows).sum::<usize>() > 0, "the ingest was lost");
 }
 
-#[tokio::test]
-async fn creating_a_dataset_twice_is_refused() {
+#[test]
+fn creating_a_dataset_twice_is_refused() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     let source = common::fixture("delft.city.jsonl");
     service
-        .create_dataset(&name, source.to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, source.to_str().unwrap())
         .unwrap();
 
     let err = service
-        .create_dataset(&name, source.to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, source.to_str().unwrap())
         .expect_err("the second create must be refused");
     assert!(format!("{err}").contains("delft"));
 }
 
-#[tokio::test]
-async fn a_failed_create_leaves_no_half_built_schema() {
+#[test]
+fn a_failed_create_leaves_no_half_built_schema() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("broken").unwrap();
 
-    let failed = service.create_dataset(&name, "/nonexistent/source.city.jsonl").await;
+    let failed = service.create_dataset_impl(&name, "/nonexistent/source.city.jsonl");
     assert!(failed.is_err());
 
     // A dataset that failed to ingest must not be left addressable — the next
     // create would then fail as a duplicate.
-    assert!(!service.list_datasets().await.unwrap().contains(&"broken".to_string()));
+    assert!(!service.list_datasets_impl().unwrap().contains(&"broken".to_string()));
 }
 
-#[tokio::test]
-async fn datasets_can_be_listed_described_and_dropped() {
+#[test]
+fn datasets_can_be_listed_described_and_dropped() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
-    assert!(service.list_datasets().await.unwrap().contains(&"delft".to_string()));
-    assert_eq!(service.describe_dataset(&name).await.unwrap().name, "delft");
+    assert!(service.list_datasets_impl().unwrap().contains(&"delft".to_string()));
+    assert_eq!(service.describe_dataset_impl(&name).unwrap().name, "delft");
 
-    service.drop_dataset(&name).await.unwrap();
-    assert!(!service.list_datasets().await.unwrap().contains(&"delft".to_string()));
+    service.drop_dataset_impl(&name).unwrap();
+    assert!(!service.list_datasets_impl().unwrap().contains(&"delft".to_string()));
 }
 ```
 
@@ -1984,21 +1982,18 @@ One pragma, inside a transaction. Everything difficult — routing by module, re
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::DatasetName;
 
-#[tokio::test]
-async fn ingesting_a_second_source_adds_its_objects() {
+#[test]
+fn ingesting_a_second_source_adds_its_objects() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     let before: usize = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .iter()
@@ -2009,14 +2004,12 @@ async fn ingesting_a_second_source_adds_its_objects() {
     // so a source declaring none would be refused here — correctly, but that is
     // the mismatch test's job, not this one's.
     let added = service
-        .ingest(&name, common::fixture("minimal_7415.city.json").to_str().unwrap())
-        .await
+        .ingest_impl(&name, common::fixture("minimal_7415.city.json").to_str().unwrap())
         .expect("ingest a second source");
     assert!(added > 0);
 
     let after: usize = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .iter()
@@ -2025,48 +2018,43 @@ async fn ingesting_a_second_source_adds_its_objects() {
     assert_eq!(after, before + added);
 }
 
-#[tokio::test]
-async fn ingesting_the_same_source_twice_is_refused() {
+#[test]
+fn ingesting_the_same_source_twice_is_refused() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     let source = common::fixture("delft.city.jsonl");
     service
-        .create_dataset(&name, source.to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, source.to_str().unwrap())
         .unwrap();
 
     // Ids are identity: an incoming id already present refuses the whole
     // insert rather than renaming silently.
     let err = service
-        .ingest(&name, source.to_str().unwrap())
-        .await
+        .ingest_impl(&name, source.to_str().unwrap())
         .expect_err("duplicate ids must refuse the insert");
     assert!(format!("{err}").contains("duplicate id"), "got: {err}");
 }
 
-#[tokio::test]
-async fn a_refused_ingest_leaves_the_dataset_untouched() {
+#[test]
+fn a_refused_ingest_leaves_the_dataset_untouched() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     let source = common::fixture("delft.city.jsonl");
     service
-        .create_dataset(&name, source.to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, source.to_str().unwrap())
         .unwrap();
     let before: usize = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .iter()
         .map(|m| m.rows)
         .sum();
 
-    let _ = service.ingest(&name, source.to_str().unwrap()).await;
+    let _ = service.ingest_impl(&name, source.to_str().unwrap());
 
     let after: usize = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .iter()
@@ -2075,25 +2063,22 @@ async fn a_refused_ingest_leaves_the_dataset_untouched() {
     assert_eq!(after, before, "a refused ingest must not partially apply");
 }
 
-#[tokio::test]
-async fn ingesting_a_new_module_creates_its_table() {
+#[test]
+fn ingesting_a_new_module_creates_its_table() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("mixed").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     // This fixture carries a Bridge and a CityFurniture — two further modules.
     // Routing them is the extension's job; create_tables = true is ours.
     service
-        .ingest(&name, common::fixture("railway_7415.city.jsonl").to_str().unwrap())
-        .await
+        .ingest_impl(&name, common::fixture("railway_7415.city.jsonl").to_str().unwrap())
         .unwrap();
 
     let modules: Vec<String> = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .into_iter()
@@ -2207,66 +2192,61 @@ transaction that makes a refused insert leave nothing behind."
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::{DatasetName, ModuleName, QueryParams};
 
-async fn seeded() -> (citylake::core::db::service::DuckLakeService, tempfile::TempDir, DatasetName) {
+fn seeded() -> (citylake::core::db::service::DuckLakeService, tempfile::TempDir, DatasetName) {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
     (service, dir, name)
 }
 
-#[tokio::test]
-async fn objects_come_back_as_json_rows() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn objects_come_back_as_json_rows() {
+    let (service, _dir, name) = seeded();
     let module = ModuleName::new("building").unwrap();
 
     let rows = service
-        .query_objects(&name, &module, &QueryParams::default())
-        .await
+        .query_objects_impl(&name, &module, &QueryParams::default())
         .expect("query the building module");
     assert!(!rows.is_empty());
     assert!(rows[0].get("id").is_some(), "a row should carry its id");
 }
 
-#[tokio::test]
-async fn a_page_is_bounded_and_offsettable() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn a_page_is_bounded_and_offsettable() {
+    let (service, _dir, name) = seeded();
     let module = ModuleName::new("building").unwrap();
 
     let first = service
-        .query_objects(
+        .query_objects_impl(
             &name,
             &module,
             &QueryParams { filter: None, limit: 1, offset: 0 },
         )
-        .await
         .unwrap();
     assert_eq!(first.len(), 1);
 
     let second = service
-        .query_objects(
+        .query_objects_impl(
             &name,
             &module,
             &QueryParams { filter: None, limit: 1, offset: 1 },
         )
-        .await
         .unwrap();
     assert_eq!(second.len(), 1);
     assert_ne!(first[0].get("id"), second[0].get("id"));
 }
 
-#[tokio::test]
-async fn a_filter_narrows_the_result() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn a_filter_narrows_the_result() {
+    let (service, _dir, name) = seeded();
     let module = ModuleName::new("building").unwrap();
 
     let filtered = service
-        .query_objects(
+        .query_objects_impl(
             &name,
             &module,
             &QueryParams {
@@ -2275,21 +2255,19 @@ async fn a_filter_narrows_the_result() {
                 offset: 0,
             },
         )
-        .await
         .unwrap();
     assert!(filtered
         .iter()
         .all(|row| row.get("object_type").and_then(|v| v.as_str()) == Some("Building")));
 }
 
-#[tokio::test]
-async fn querying_a_module_the_dataset_lacks_is_an_error_not_a_panic() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn querying_a_module_the_dataset_lacks_is_an_error_not_a_panic() {
+    let (service, _dir, name) = seeded();
     let module = ModuleName::new("tunnel").unwrap();
 
     let err = service
-        .query_objects(&name, &module, &QueryParams::default())
-        .await
+        .query_objects_impl(&name, &module, &QueryParams::default())
         .expect_err("the fixture has no tunnels");
     assert!(format!("{err}").contains("tunnel"));
 }
@@ -2409,48 +2387,44 @@ There is deliberately no `cityparquet_update`. Attribute edits are ordinary `UPD
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::{DatasetName, ModuleName, QueryParams};
 use serde_json::json;
 
-async fn seeded() -> (citylake::core::db::service::DuckLakeService, tempfile::TempDir, DatasetName) {
+fn seeded() -> (citylake::core::db::service::DuckLakeService, tempfile::TempDir, DatasetName) {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("hier").unwrap();
     // This fixture has a parent/child hierarchy, which is what makes the
     // cascade observable.
     service
-        .create_dataset(&name, common::fixture("hierarchy.city.json").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("hierarchy.city.json").to_str().unwrap())
         .unwrap();
     (service, dir, name)
 }
 
-async fn ids(service: &citylake::core::db::service::DuckLakeService, name: &DatasetName) -> Vec<String> {
+fn ids(service: &citylake::core::db::service::DuckLakeService, name: &DatasetName) -> Vec<String> {
     let module = ModuleName::new("building").unwrap();
     service
-        .query_objects(name, &module, &QueryParams { filter: None, limit: 1000, offset: 0 })
-        .await
+        .query_objects_impl(name, &module, &QueryParams { filter: None, limit: 1000, offset: 0 })
         .unwrap()
         .into_iter()
         .filter_map(|row| row.get("id")?.as_str().map(str::to_string))
         .collect()
 }
 
-#[tokio::test]
-async fn an_attribute_update_lands_on_the_row() {
-    let (service, _dir, name) = seeded().await;
-    let id = ids(&service, &name).await.into_iter().next().unwrap();
+#[test]
+fn an_attribute_update_lands_on_the_row() {
+    let (service, _dir, name) = seeded();
+    let id = ids(&service, &name).into_iter().next().unwrap();
 
     let mut attributes = serde_json::Map::new();
     attributes.insert("object_type".into(), json!("Building"));
     service
-        .update_object(&name, &id, &attributes)
-        .await
+        .update_object_impl(&name, &id, &attributes)
         .expect("update the object");
 
     let module = ModuleName::new("building").unwrap();
     let rows = service
-        .query_objects(
+        .query_objects_impl(
             &name,
             &module,
             &QueryParams {
@@ -2459,52 +2433,49 @@ async fn an_attribute_update_lands_on_the_row() {
                 offset: 0,
             },
         )
-        .await
         .unwrap();
     assert_eq!(rows[0].get("object_type").unwrap(), &json!("Building"));
 }
 
-#[tokio::test]
-async fn updating_an_absent_id_is_an_error() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn updating_an_absent_id_is_an_error() {
+    let (service, _dir, name) = seeded();
     let mut attributes = serde_json::Map::new();
     attributes.insert("object_type".into(), json!("Building"));
 
     let err = service
-        .update_object(&name, "no-such-object", &attributes)
-        .await
+        .update_object_impl(&name, "no-such-object", &attributes)
         .expect_err("an absent id must not silently succeed");
     assert!(format!("{err}").contains("no-such-object"));
 }
 
-#[tokio::test]
-async fn deleting_a_parent_cascades_to_its_children() {
-    let (service, _dir, name) = seeded().await;
-    let before = ids(&service, &name).await;
+#[test]
+fn deleting_a_parent_cascades_to_its_children() {
+    let (service, _dir, name) = seeded();
+    let before = ids(&service, &name);
     let parent = before.first().expect("a parent object").clone();
 
-    let deleted = service.delete_object(&name, &parent).await.unwrap();
+    let deleted = service.delete_object_impl(&name, &parent).unwrap();
     // A cascade removes the parent and everything below it, so the count is
     // the subtree, not one.
     assert!(deleted >= 1);
 
-    let after = ids(&service, &name).await;
+    let after = ids(&service, &name);
     assert!(!after.contains(&parent));
     assert_eq!(before.len() - after.len(), deleted);
 }
 
-#[tokio::test]
-async fn deleting_by_predicate_removes_the_matching_objects() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn deleting_by_predicate_removes_the_matching_objects() {
+    let (service, _dir, name) = seeded();
     let deleted = service
-        .delete_where(&name, "object_type = 'Building'")
-        .await
+        .delete_where_impl(&name, "object_type = 'Building'")
         .expect("delete by predicate");
     assert!(deleted > 0);
 
     let module = ModuleName::new("building").unwrap();
     let remaining = service
-        .query_objects(
+        .query_objects_impl(
             &name,
             &module,
             &QueryParams {
@@ -2513,22 +2484,21 @@ async fn deleting_by_predicate_removes_the_matching_objects() {
                 offset: 0,
             },
         )
-        .await
         .unwrap();
     assert!(remaining.is_empty());
 }
 
-#[tokio::test]
-async fn reconciling_an_untouched_dataset_changes_nothing() {
-    let (service, _dir, name) = seeded().await;
-    let before = ids(&service, &name).await;
+#[test]
+fn reconciling_an_untouched_dataset_changes_nothing() {
+    let (service, _dir, name) = seeded();
+    let before = ids(&service, &name);
 
     // Both the reader and reconcile union a row's geometry across every stored
     // LoD and across its descendants, so a freshly read package is already
     // reconciled for the structural columns.
-    service.reconcile(&name).await.expect("reconcile");
+    service.reconcile_impl(&name).expect("reconcile");
 
-    assert_eq!(ids(&service, &name).await, before);
+    assert_eq!(ids(&service, &name), before);
 }
 ```
 
@@ -2741,22 +2711,19 @@ The boundary between the lake and the file format. This task depends on Task 2 h
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::{DatasetName, ExportFormat, ModuleName};
 
-#[tokio::test]
-async fn a_dataset_writes_out_as_a_package_directory() {
+#[test]
+fn a_dataset_writes_out_as_a_package_directory() {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     let out = dir.path().join("pkg");
     let written = service
-        .write_package(&name, out.to_str().unwrap())
-        .await
+        .write_package_impl(&name, out.to_str().unwrap())
         .expect("write the package");
 
     // One data file per non-empty object table, plus the STAC Item.
@@ -2766,38 +2733,34 @@ async fn a_dataset_writes_out_as_a_package_directory() {
     assert!(out.join("metadata.json").exists());
 }
 
-#[tokio::test]
-async fn a_written_package_carries_the_datasets_crs() {
+#[test]
+fn a_written_package_carries_the_datasets_crs() {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
     let out = dir.path().join("pkg");
-    service.write_package(&name, out.to_str().unwrap()).await.unwrap();
+    service.write_package_impl(&name, out.to_str().unwrap()).unwrap();
 
     // The footer minted at creation is what lets the writer state a CRS
     // instead of an explicit null.
     let reimported = DatasetName::new("reimported").unwrap();
     let info = service
-        .create_dataset(&reimported, out.to_str().unwrap())
-        .await
+        .create_dataset_impl(&reimported, out.to_str().unwrap())
         .expect("load the written package back");
     assert!(info.crs.expect("a CRS").contains("7415"));
 }
 
-#[tokio::test]
-async fn a_package_round_trips_through_the_lake() {
+#[test]
+fn a_package_round_trips_through_the_lake() {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
     let original: usize = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .iter()
@@ -2805,69 +2768,62 @@ async fn a_package_round_trips_through_the_lake() {
         .sum();
 
     let out = dir.path().join("roundtrip");
-    service.write_package(&name, out.to_str().unwrap()).await.unwrap();
+    service.write_package_impl(&name, out.to_str().unwrap()).unwrap();
 
     let loaded = DatasetName::new("loaded").unwrap();
     let info = service
-        .create_dataset(&loaded, out.to_str().unwrap())
-        .await
+        .create_dataset_impl(&loaded, out.to_str().unwrap())
         .unwrap();
     assert_eq!(info.modules.iter().map(|m| m.rows).sum::<usize>(), original);
 }
 
-#[tokio::test]
-async fn a_module_exports_to_a_cityjsonseq_file() {
+#[test]
+fn a_module_exports_to_a_cityjsonseq_file() {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     let out = dir.path().join("delft_out.city.jsonl");
     service
-        .export_module(
+        .export_module_impl(
             &name,
             &ModuleName::new("building").unwrap(),
             out.to_str().unwrap(),
             ExportFormat::CityJsonSeq,
         )
-        .await
         .expect("export the module");
     assert!(out.exists());
     assert!(std::fs::metadata(&out).unwrap().len() > 0);
 }
 
-#[tokio::test]
-async fn merging_folds_one_dataset_into_another() {
+#[test]
+fn merging_folds_one_dataset_into_another() {
     let (service, _dir) = common::test_service();
     let destination = DatasetName::new("dst").unwrap();
     let source = DatasetName::new("src").unwrap();
     service
-        .create_dataset(&destination, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&destination, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
     // Both sides are footers once created, and the merge applies the same CRS
     // rule as an insert — so the source must declare the destination's CRS.
     service
-        .create_dataset(&source, common::fixture("minimal_7415.city.json").to_str().unwrap())
-        .await
+        .create_dataset_impl(&source, common::fixture("minimal_7415.city.json").to_str().unwrap())
         .unwrap();
 
     let before: usize = service
-        .describe_dataset(&destination)
-        .await
+        .describe_dataset_impl(&destination)
         .unwrap()
         .modules
         .iter()
         .map(|m| m.rows)
         .sum();
 
-    service.merge(&destination, &source).await.expect("merge");
+    service.merge_impl(&destination, &source).expect("merge");
 
     let after: usize = service
-        .describe_dataset(&destination)
-        .await
+        .describe_dataset_impl(&destination)
         .unwrap()
         .modules
         .iter()
@@ -3078,75 +3034,69 @@ Both pragmas here materialise findings into a temp table, because a PRAGMA canno
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::DatasetName;
 
-#[tokio::test]
-async fn a_freshly_created_dataset_validates_clean() {
+#[test]
+fn a_freshly_created_dataset_validates_clean() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
-    let findings = service.validate(&name).await.expect("validate");
+    let findings = service.validate_impl(&name).expect("validate");
     let errors: Vec<_> = findings.iter().filter(|f| f.severity == "error").collect();
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
 }
 
-#[tokio::test]
-async fn validation_findings_carry_their_check_and_table() {
+#[test]
+fn validation_findings_carry_their_check_and_table() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     // Shape, not content: a clean dataset yields no rows, so this asserts the
     // call succeeds and returns a well-formed (possibly empty) list.
-    let findings = service.validate(&name).await.unwrap();
+    let findings = service.validate_impl(&name).unwrap();
     for finding in &findings {
         assert!(!finding.check_name.is_empty());
         assert!(!finding.table_name.is_empty());
     }
 }
 
-#[tokio::test]
-async fn vacuum_runs_on_a_dataset_with_no_orphans() {
+#[test]
+fn vacuum_runs_on_a_dataset_with_no_orphans() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
-    let removed = service.vacuum(&name).await.expect("vacuum");
+    let removed = service.vacuum_impl(&name).expect("vacuum");
     assert_eq!(removed, 0, "a fresh dataset has no unreferenced sidecar rows");
 }
 
-#[tokio::test]
-async fn compaction_reports_what_it_merged() {
+#[test]
+fn compaction_reports_what_it_merged() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     // A dataset written in one go may have nothing to merge; the operation must
     // still succeed and report honestly rather than fail on a no-op.
-    let stats = service.compact(&name).await.expect("compact");
+    let stats = service.compact_impl(&name).expect("compact");
     assert!(stats.files_created <= stats.files_processed.max(stats.files_created));
 }
 
-#[tokio::test]
-async fn validating_an_absent_dataset_is_an_error() {
+#[test]
+fn validating_an_absent_dataset_is_an_error() {
     let (service, _dir) = common::test_service();
     let err = service
-        .validate(&DatasetName::new("absent").unwrap())
-        .await
+        .validate_impl(&DatasetName::new("absent").unwrap())
         .expect_err("an absent dataset must not validate clean");
     assert!(format!("{err}").contains("absent"));
 }
