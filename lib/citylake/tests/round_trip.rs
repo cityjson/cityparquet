@@ -8,16 +8,27 @@ use citylake::core::interface::types::{DatasetName, ModuleName, QueryParams};
 #[tokio::test]
 async fn a_cityjson_source_survives_the_full_journey() {
     let (service, dir) = common::test_service();
-    let name = DatasetName::new("delft").unwrap();
+    let name = DatasetName::new("hierarchy").unwrap();
     let building = ModuleName::new("building").unwrap();
 
-    // 1. Ingest.
+    // 1. Ingest. The fixture is one Building (bldg-1) with two Storey
+    // children (storey-1, storey-2), plus an unrelated standalone Building
+    // (bldg-2) — all four routed to the building module table, plus a
+    // declared CRS. bldg-2 exists so the cascade in step 3 (which removes
+    // bldg-1's whole subtree) does not empty the dataset entirely: an object
+    // table left with zero rows cannot be written out and read back as a
+    // package.
     let created = service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
+        .create_dataset(
+            &name,
+            common::fixture("hierarchy_7415.city.json")
+                .to_str()
+                .unwrap(),
+        )
         .await
         .expect("create");
     let ingested: usize = created.modules.iter().map(|m| m.rows).sum();
-    assert!(ingested > 0);
+    assert_eq!(ingested, 4);
     assert!(created.crs.as_ref().expect("a CRS").contains("7415"));
 
     // 2. It validates clean on arrival.
@@ -28,26 +39,32 @@ async fn a_cityjson_source_survives_the_full_journey() {
         .iter()
         .all(|f| f.severity != "error"));
 
-    // 3. Delete one object; the cascade is the extension's.
-    let first = service
+    // 3. Delete the PARENT — not an arbitrary row, and not the standalone
+    // bldg-2 (also a Building, but childless) — so the cascade removes the
+    // whole subtree: the parent plus its two Storey children.
+    let rows = service
         .query_objects(
             &name,
             &building,
             &QueryParams {
                 filter: None,
-                limit: 1,
+                limit: 1000,
                 offset: 0,
             },
         )
         .await
-        .unwrap()[0]["id"]
+        .unwrap();
+    let parent = rows
+        .iter()
+        .find(|row| row["object_type"] == "Building" && !row["children"].is_null())
+        .expect("the Building row with children")["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let removed = service.delete_object(&name, &first).await.expect("delete");
-    assert!(removed >= 1);
+    let removed = service.delete_object(&name, &parent).await.expect("delete");
+    assert_eq!(removed, 3, "the parent and both of its children");
 
-    // 4. Still consistent afterwards — a cascade that left a dangling parent
+    // 4. Still consistent afterwards — a cascade that left a dangling child
     //    or a stale feature_id would show up here.
     assert!(service
         .validate(&name)
