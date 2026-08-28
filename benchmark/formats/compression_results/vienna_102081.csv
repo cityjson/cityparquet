@@ -1,0 +1,9 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
+vienna_102081.city.json,cityparquet,1322,0.591895,1384942,1383111,0,0.010122,0.009805,1,1,true
+vienna_102081.city.json,cityparquet+uncompressed,1322,0.354819,6527791,6525960,0,0.005806,0.004661,1,1,true
+vienna_102081.city.json,cityparquet+snappy,1322,0.341888,2254509,2252678,0,0.008706,0.008535,1,1,true
+vienna_102081.city.json,cityparquet+gzip,1322,0.420619,1325728,1323897,0,0.011576,0.012607,1,1,true
+vienna_102081.city.json,cityparquet+lz4,1322,0.349493,2368885,2367054,0,0.006310,0.006280,1,1,true
+vienna_102081.city.json,cityparquet+brotli,1322,0.369697,1494507,1492676,0,0.060050,0.060822,1,1,true
+vienna_102081.city.json,cityparquet+rg512,1322,0.348958,1404787,1402956,0,0.010952,0.002503,3,1,true
+vienna_102081.city.json,cityparquet+rg4096,1322,0.351929,1384942,1383111,0,0.011198,0.009911,1,1,true

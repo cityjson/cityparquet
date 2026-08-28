@@ -1,0 +1,10 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
+rotterdam_delfshaven.city.json,cityparquet,853,0.365436,822105,815725,3740,0.009959,0.009756,1,1,true
+rotterdam_delfshaven.city.json,parquet-defaults,853,0.218251,824037,817657,3740,0.006074,0.005935,1,1,true
+rotterdam_delfshaven.city.json,no-dictionary,853,0.214681,821820,815440,3740,0.005646,0.005068,1,1,true
+rotterdam_delfshaven.city.json,no-bss,853,0.220356,814480,808100,3740,0.005376,0.005247,1,1,true
+rotterdam_delfshaven.city.json,no-delta,853,0.213443,824407,818027,3740,0.005548,0.005244,1,1,true
+rotterdam_delfshaven.city.json,snappy,853,0.212931,1378854,1372472,3740,0.004400,0.004428,1,1,true
+rotterdam_delfshaven.city.json,cityparquet+hilbert,853,0.232603,811866,805507,3719,0.005326,0.005249,1,1,true
+rotterdam_delfshaven.city.json,cityparquet+rg512,853,0.215167,839993,833613,3740,0.005845,0.005820,2,2,true
+rotterdam_delfshaven.city.json,cityparquet+hilbert+rg512,853,0.243296,821977,815618,3719,0.006391,0.003424,2,1,true
