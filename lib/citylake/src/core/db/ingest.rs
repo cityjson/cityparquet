@@ -37,7 +37,13 @@ impl DuckLakeService {
         })
     }
 
-    fn total_object_rows(&self, conn: &Connection, dataset: &str) -> RepositoryResult<usize> {
+    /// `pub(crate)`, not private: `mutate.rs` needs the same before/after row
+    /// count to report how many rows a delete removed.
+    pub(crate) fn total_object_rows(
+        &self,
+        conn: &Connection,
+        dataset: &str,
+    ) -> RepositoryResult<usize> {
         let mut total = 0usize;
         for table in self.object_tables(conn, dataset)? {
             let rows: i64 = conn.query_row(
