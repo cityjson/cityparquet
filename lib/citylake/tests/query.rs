@@ -91,3 +91,18 @@ fn querying_a_module_the_dataset_lacks_is_an_error_not_a_panic() {
         .expect_err("the fixture has no tunnels");
     assert!(format!("{err}").contains("tunnel"));
 }
+
+#[test]
+fn querying_a_dataset_that_was_never_created_names_the_dataset() {
+    let (service, _dir) = common::test_service();
+    let name = DatasetName::new("nonesuch").unwrap();
+    let module = ModuleName::new("building").unwrap();
+
+    let err = service
+        .query_objects_impl(&name, &module, &QueryParams::default())
+        .expect_err("the dataset was never created");
+    assert!(
+        format!("{err}").contains("nonesuch"),
+        "the error should name the missing dataset, not the module"
+    );
+}

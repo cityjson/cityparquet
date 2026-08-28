@@ -22,6 +22,14 @@ impl DuckLakeService {
 
         self.with_connection(|conn| {
             if !self.table_exists(conn, name, module_name)? {
+                // Distinguish the two ways this can fail only on this error
+                // path, so the common case pays nothing extra: a dataset that
+                // does not exist at all is a different fault from one that
+                // exists but lacks this module, and the two lead a caller to
+                // look in different places.
+                if !self.schema_exists(conn, name)? {
+                    return Err(CityLakeError::DatasetNotFound(name.to_string()));
+                }
                 return Err(CityLakeError::ModuleNotFound {
                     dataset: name.to_string(),
                     module: module_name.to_string(),

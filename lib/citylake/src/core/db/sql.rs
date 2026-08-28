@@ -266,6 +266,10 @@ pub fn select_objects(
     if let Some(predicate) = filter {
         sql.push_str(&format!(" WHERE {predicate}"));
     }
+    // Paging needs a total order: without one, two successive pages may repeat
+    // a row and skip another. `id` is unique across the whole package, so it
+    // orders the page deterministically.
+    sql.push_str(" ORDER BY id");
     sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
     sql
 }
@@ -394,8 +398,11 @@ mod tests {
     #[test]
     fn selects_page_and_filter() {
         let sql = select_objects("lake", "delft", "building", None, 10, 20);
-        assert!(sql.contains("LIMIT 10 OFFSET 20"));
-        assert!(!sql.contains("WHERE"));
+        assert_eq!(
+            sql,
+            "SELECT to_json(t) FROM \"lake\".\"delft\".\"building\" t \
+             ORDER BY id LIMIT 10 OFFSET 20"
+        );
         let filtered = select_objects(
             "lake",
             "delft",
@@ -404,6 +411,13 @@ mod tests {
             10,
             0,
         );
-        assert!(filtered.contains("WHERE b3_h_dak_max > 20"));
+        // ORDER BY must sit between WHERE and LIMIT: a builder that emitted
+        // them out of order would produce invalid SQL that only an
+        // integration test would catch.
+        assert_eq!(
+            filtered,
+            "SELECT to_json(t) FROM \"lake\".\"delft\".\"building\" t \
+             WHERE b3_h_dak_max > 20 ORDER BY id LIMIT 10 OFFSET 0"
+        );
     }
 }
