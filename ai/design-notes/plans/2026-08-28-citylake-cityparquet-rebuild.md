@@ -306,13 +306,31 @@ In `Bind` (around line 420, where `result->schema` is set), resolve and record i
 	result->catalog = schema_entry.catalog.GetName();
 ```
 
-Give `QualifiedName` a catalog-aware overload and route the internal-connection
-call sites through it — every `QualifiedName(bind_data.schema, …)` at lines 455,
-553, 584, 619 and 620, and the `schema` parameters threaded into
-`CollectInventory`, `CollectTemplateInventory` and `CollectFacts`. Simplest
-correct shape: pass `bind_data.catalog + "." + bind_data.schema` where those
-helpers currently receive a bare schema, since `QualifiedName` quotes each dotted
-component it is given.
+Add a **three-argument** `QualifiedName` overload beside the existing one in
+`src/cityjson/cityparquet_package.cpp` (declared in
+`src/include/cityjson/cityparquet_package.hpp`):
+
+```cpp
+std::string QualifiedName(const std::string &catalog, const std::string &schema,
+                          const std::string &table) {
+	return KeywordHelper::WriteOptionallyQuoted(catalog) + "." +
+	       KeywordHelper::WriteOptionallyQuoted(schema) + "." +
+	       KeywordHelper::WriteOptionallyQuoted(table);
+}
+```
+
+**Do not pass a dotted `"catalog.schema"` string as the existing overload's
+`schema` argument.** `QualifiedName` renders each argument through
+`KeywordHelper::WriteOptionallyQuoted`, which treats what it is given as ONE
+identifier — so `"lake.fresh"` would be quoted as the single name `"lake.fresh"`
+rather than as two parts, and would resolve to nothing.
+
+Then route the internal-connection call sites through the new overload — every
+`QualifiedName(bind_data.schema, …)` at lines 455, 553, 584, 619 and 620, and
+the `schema` parameters threaded into `CollectInventory`,
+`CollectTemplateInventory` and `CollectFacts`. Those helpers take a bare schema
+string today; give them the catalog as a further parameter rather than
+concatenating it into the schema.
 
 Note which call sites must **not** change: `ColumnDuckType` and `CopySourceList`
 take `ClientContext &context` and look entries up through the caller's catalog
