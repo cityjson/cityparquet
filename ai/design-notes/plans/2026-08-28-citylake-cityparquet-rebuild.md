@@ -3049,6 +3049,25 @@ Both pragmas here materialise findings into a temp table, because a PRAGMA canno
 - Modify: `lib/citylake/src/core/db/mod.rs` (declare `mod inspect;` and `mod compaction;`)
 - Rewrite: `lib/citylake/src/core/db/compaction.rs`
 
+> **Check this before assuming `vacuum_impl`'s transaction works.** Both pragmas
+> materialise their findings into a **temp** table, which lives in the `temp`
+> catalog, while the vacuum itself deletes from `lake`. DuckDB refuses a
+> transaction that writes to two attached databases — the same rule that forced
+> Task 6's CRS minting out of its ingest transaction. Run the sequence once by
+> hand before writing the Rust:
+>
+> ```sql
+> BEGIN;
+> PRAGMA cityparquet_orphans('<ds>');
+> PRAGMA cityparquet_vacuum('<ds>');
+> COMMIT;
+> ```
+>
+> If DuckDB refuses it, drop `in_transaction` from `vacuum_impl` and run the two
+> pragmas as separate statements — `cityparquet_vacuum` is idempotent, so a
+> failure between them leaves the package consistent, merely un-vacuumed. Say in
+> the report which way it went and what the database did.
+
 **Interfaces:**
 - Consumes: `sql::{validate_pragma, orphans_pragma, vacuum_pragma, compact}`.
 - Produces:
