@@ -3456,29 +3456,33 @@ Handlers translate between HTTP and the trait, and nothing more. No SQL, no Duck
 - Consumes: `Arc<dyn CityLakeRepository>` as axum state.
 - Produces: `fn router(repo: Arc<dyn CityLakeRepository>) -> axum::Router` and `async fn serve(config: CityLakeConfig, repo: Arc<dyn CityLakeRepository>) -> anyhow::Result<()>`, plus `impl IntoResponse for CityLakeError`.
 
+**Path parameters use `{name}`, not `:name`.** axum 0.8 moved to matchit 0.8's
+brace syntax; a route registered as `/datasets/:ds` does not capture a parameter
+and panics when the router is built. The table below is already in the new form.
+
 The routes, exactly:
 
 | Method | Path | Trait method |
 |---|---|---|
 | `GET` | `/health` | — |
 | `GET` | `/datasets` | `list_datasets` |
-| `POST` | `/datasets/:ds` | `create_dataset` (body `{ source_path }`) |
-| `POST` | `/datasets/:ds/upload` | `create_dataset` (multipart) |
-| `GET` | `/datasets/:ds` | `describe_dataset` |
-| `DELETE` | `/datasets/:ds` | `drop_dataset` |
-| `POST` | `/datasets/:ds/objects` | `ingest` (body `{ source_path }`) |
-| `POST` | `/datasets/:ds/objects/upload` | `ingest` (multipart) |
-| `GET` | `/datasets/:ds/modules/:module/objects` | `query_objects` (`?filter=&limit=&offset=`) |
-| `PUT` | `/datasets/:ds/objects/:id` | `update_object` (body: a JSON object of attributes) |
-| `DELETE` | `/datasets/:ds/objects/:id` | `delete_object` |
-| `DELETE` | `/datasets/:ds/objects` | `delete_where` (`?filter=`) |
-| `POST` | `/datasets/:ds/export` | `export_module` (body `{ module, output_path, format }`) |
-| `POST` | `/datasets/:ds/package` | `write_package` (body `{ output_dir }`) |
-| `POST` | `/datasets/:ds/merge` | `merge` (body `{ source }`) |
-| `POST` | `/datasets/:ds/validate` | `validate` |
-| `POST` | `/datasets/:ds/reconcile` | `reconcile` |
-| `POST` | `/datasets/:ds/vacuum` | `vacuum` |
-| `POST` | `/datasets/:ds/compact` | `compact` |
+| `POST` | `/datasets/{ds}` | `create_dataset` (body `{ source_path }`) |
+| `POST` | `/datasets/{ds}/upload` | `create_dataset` (multipart) |
+| `GET` | `/datasets/{ds}` | `describe_dataset` |
+| `DELETE` | `/datasets/{ds}` | `drop_dataset` |
+| `POST` | `/datasets/{ds}/objects` | `ingest` (body `{ source_path }`) |
+| `POST` | `/datasets/{ds}/objects/upload` | `ingest` (multipart) |
+| `GET` | `/datasets/{ds}/modules/{module}/objects` | `query_objects` (`?filter=&limit=&offset=`) |
+| `PUT` | `/datasets/{ds}/objects/{id}` | `update_object` (body: a JSON object of attributes) |
+| `DELETE` | `/datasets/{ds}/objects/{id}` | `delete_object` |
+| `DELETE` | `/datasets/{ds}/objects` | `delete_where` (`?filter=`) |
+| `POST` | `/datasets/{ds}/export` | `export_module` (body `{ module, output_path, format }`) |
+| `POST` | `/datasets/{ds}/package` | `write_package` (body `{ output_dir }`) |
+| `POST` | `/datasets/{ds}/merge` | `merge` (body `{ source }`) |
+| `POST` | `/datasets/{ds}/validate` | `validate` |
+| `POST` | `/datasets/{ds}/reconcile` | `reconcile` |
+| `POST` | `/datasets/{ds}/vacuum` | `vacuum` |
+| `POST` | `/datasets/{ds}/compact` | `compact` |
 
 - [ ] **Step 1: Write the failing tests**
 
