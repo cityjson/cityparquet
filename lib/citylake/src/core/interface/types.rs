@@ -1,7 +1,7 @@
 //! The domain model: a package-shaped dataset, its validated names, and the
 //! error type every repository method returns.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::core::db::sql::{self, SqlError};
@@ -135,7 +135,11 @@ impl Default for QueryParams {
 }
 
 /// Supported CityJSON-family export formats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+///
+/// A closed, fieldless enum — unlike the validated newtypes above, there is
+/// no invariant `Deserialize` could let a caller bypass. Deserialization
+/// itself is the validation: an unrecognised string simply fails to parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExportFormat {
     CityJson,
