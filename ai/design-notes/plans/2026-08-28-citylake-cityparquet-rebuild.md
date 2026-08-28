@@ -363,7 +363,7 @@ Every statement CityLake issues is assembled here, so this is the only place quo
   - `fn ident(name: &str) -> String` — double-quoted, embedded quotes doubled
   - `fn qualified(parts: &[&str]) -> String`
   - `fn set_search_path(catalog: &str, schema: &str) -> String`
-  - `fn reader_for(path: &str) -> SourceFormat`, `enum SourceFormat { CityJson, CityJsonSeq, FlatCityBuf }` with `fn read_fn(&self) -> &'static str` and `fn insert_pragma(&self) -> &'static str`
+  - `fn reader_for(path: &str) -> SourceFormat`, `enum SourceFormat { CityJson, CityJsonSeq, FlatCityBuf }` with `fn read_fn(&self) -> &'static str` and `fn insert_fn(&self) -> &'static str`
   - `fn create_schema(catalog: &str, dataset: &str) -> String`
   - `fn seed_table(catalog: &str, dataset: &str, source: &str, format: SourceFormat) -> String`
   - `fn init_pragma(dataset: &str) -> String`
@@ -434,10 +434,7 @@ mod tests {
         assert_eq!(reader_for("a/b.city.jsonl").read_fn(), "read_cityjsonseq");
         assert_eq!(reader_for("a/b.fcb").read_fn(), "read_flatcitybuf");
         // .jsonl must not be mistaken for .json — check the longer suffix first.
-        assert_eq!(
-            reader_for("a/b.city.jsonl").insert_pragma(),
-            "insert_cityjsonseq"
-        );
+        assert_eq!(reader_for("a/b.city.jsonl").insert_fn(), "insert_cityjsonseq");
     }
 
     #[test]
@@ -607,7 +604,9 @@ impl SourceFormat {
         }
     }
 
-    pub fn insert_pragma(&self) -> &'static str {
+    /// Named `insert_fn` to mirror `read_fn`, and so as not to share a name
+    /// with the free `insert_pragma` below, which builds the whole statement.
+    pub fn insert_fn(&self) -> &'static str {
         match self {
             SourceFormat::CityJson => "insert_cityjson",
             SourceFormat::CityJsonSeq => "insert_cityjsonseq",
@@ -665,7 +664,7 @@ pub fn insert_pragma(
 ) -> String {
     let mut sql = format!(
         "PRAGMA {}({}, {}",
-        format.insert_pragma(),
+        format.insert_fn(),
         literal(dataset),
         literal(source)
     );
@@ -1040,7 +1039,8 @@ The one place that owns the connection and the rules for using it. Everything el
   - `fn config(&self) -> &CityLakeConfig`
   - `fn catalog(&self) -> &str`
   - `fn with_connection<T>(&self, f: impl FnOnce(&Connection) -> RepositoryResult<T>) -> RepositoryResult<T>`
-  - `fn scoped<T>(&self, dataset: &str, f: impl FnOnce(&Connection) -> RepositoryResult<T>) -> RepositoryResult<T>` — sets `search_path`, runs, resets **even on error**
+  - `fn with_search_path<T>(&self, conn: &Connection, path: &str, f: impl FnOnce(&Connection) -> RepositoryResult<T>) -> RepositoryResult<T>` — sets `search_path` to `path`, runs `f`, resets **even on error**, on a connection the caller already holds
+  - `fn scoped<T>(&self, dataset: &str, f: impl FnOnce(&Connection) -> RepositoryResult<T>) -> RepositoryResult<T>` — `with_connection` + `with_search_path` over `<catalog>.<dataset>`
   - `fn in_transaction<T>(&self, conn: &Connection, f: impl FnOnce(&Connection) -> RepositoryResult<T>) -> RepositoryResult<T>`
   - `fn schema_exists(&self, conn: &Connection, dataset: &str) -> RepositoryResult<bool>`
 - Test helper `tests/common/mod.rs` produces `fn test_service() -> (DuckLakeService, TempDir)` — a service over a temporary DuckLake catalog with the real extension loaded, using the same `CITYLAKE_CITYJSON_EXTENSION` convention as Task 1.
@@ -1281,28 +1281,38 @@ impl DuckLakeService {
         f(&guard)
     }
 
-    /// Run `f` with the search path pointed at `dataset`, so the package
-    /// pragmas resolve their bare schema argument inside the attached catalog.
+    /// Run `f` with the search path set to `path`, on a connection the caller
+    /// already holds — which is what lets it nest inside a transaction, where
+    /// [`scoped`] cannot go because that takes a connection of its own.
     ///
     /// The path is reset whether `f` succeeds or fails: leaving it set would
-    /// silently resolve the next operation against this dataset.
+    /// silently resolve the next operation against this dataset. A reset
+    /// failure never masks the body's error.
+    pub fn with_search_path<T>(
+        &self,
+        conn: &Connection,
+        path: &str,
+        f: impl FnOnce(&Connection) -> RepositoryResult<T>,
+    ) -> RepositoryResult<T> {
+        conn.execute_batch(&format!("SET search_path={}", sql::literal(path)))?;
+        let result = f(conn);
+        let reset = conn.execute_batch("RESET search_path");
+        match (result, reset) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Ok(_), Err(e)) => Err(e.into()),
+            (Err(e), _) => Err(e),
+        }
+    }
+
+    /// Point the search path at one dataset, so the package pragmas resolve
+    /// their bare schema argument inside the attached catalog.
     pub fn scoped<T>(
         &self,
         dataset: &str,
         f: impl FnOnce(&Connection) -> RepositoryResult<T>,
     ) -> RepositoryResult<T> {
-        self.with_connection(|conn| {
-            conn.execute_batch(&sql::set_search_path(self.catalog(), dataset))?;
-            let result = f(conn);
-            // Reset unconditionally, and do not let a reset failure mask the
-            // body's error.
-            let reset = conn.execute_batch("RESET search_path");
-            match (result, reset) {
-                (Ok(value), Ok(())) => Ok(value),
-                (Ok(_), Err(e)) => Err(e.into()),
-                (Err(e), _) => Err(e),
-            }
-        })
+        let path = format!("{}.{dataset}", self.catalog());
+        self.with_connection(|conn| self.with_search_path(conn, &path, f))
     }
 
     /// Run `f` inside a transaction, committing on success and rolling back on
@@ -1369,6 +1379,12 @@ when the body fails — is what stops it being re-derived nine times."
 ```
 
 ---
+
+> **Tasks 6-11 use `with_search_path`, never a hand-rolled set/RESET pair.**
+> The code blocks below were written before that helper existed and still show
+> the long form in places; where they do, use the helper. It exists precisely so
+> the fiddly "run, capture, reset, re-raise in the right order" dance is written
+> once rather than eight times.
 
 ### Task 6: `dataset.rs` — creation, and the CRS footer
 
@@ -1472,7 +1488,7 @@ async fn a_source_without_a_crs_still_creates_a_dataset() {
     // Nothing to mint is not a failure: a package that states no CRS is the
     // correct "unknown" state, and the extension treats it as one.
     let info = service
-        .create_dataset(&name, common::fixture("minimal.city.json").to_str().unwrap())
+        .create_dataset(&name, common::fixture("minimal_nocrs.city.json").to_str().unwrap())
         .await
         .expect("a source without a referenceSystem is still ingestable");
     assert!(info.modules.iter().any(|m| m.rows > 0));
@@ -1542,12 +1558,69 @@ async fn datasets_can_be_listed_described_and_dropped() {
 }
 ```
 
-Add the mismatched-CRS fixture:
+**Create the fixture set — every test in the suite reads from it.**
+
+A package states one CRS for every row it holds, so an ingest or merge whose
+source declares none is refused against a destination that declares one. Most of
+the extension's fixtures carry no `referenceSystem`, so pairing them with the
+EPSG:7415 Delft fixture would be refused — correctly, but uselessly for a test
+that means to exercise something else. CityLake therefore keeps its own set:
+CRS-bearing variants where a test needs the CRSs to agree, and a deliberately
+CRS-less one for the case that tests exactly that.
 
 ```bash
-cp lib/duckdb-cityjson/test/data/insert_crs_28992.city.json \
-   lib/citylake/tests/data/bench_28992.city.json
+cd lib/citylake/tests/data
+EXT=../../../duckdb-cityjson/test/data
+
+# A source with no referenceSystem — the "CRS unknown" case, which is a state
+# to handle rather than a failure.
+cp "$EXT/minimal.city.json"   minimal_nocrs.city.json
+
+# A parent with two children, for the cascade. No CRS needed: it is only ever
+# its own dataset, never ingested into another.
+cp "$EXT/hierarchy.city.json" hierarchy.city.json
+
+# A differently-projected source, for the mismatch the guard must refuse.
+cp "$EXT/insert_crs_28992.city.json" bench_28992.city.json
+
+# CRS-bearing variants: same objects, declared EPSG:7415, so they can be
+# ingested into and merged with the Delft fixture.
+python3 - <<'PYEOF'
+import json
+
+CRS = "https://www.opengis.net/def/crs/EPSG/0/7415"
+EXT = "../../../duckdb-cityjson/test/data"
+
+# CityJSON: one document, so the metadata is the document's own.
+doc = json.load(open(f"{EXT}/minimal.city.json"))
+doc.setdefault("metadata", {})["referenceSystem"] = CRS
+json.dump(doc, open("minimal_7415.city.json", "w"))
+
+# CityJSONSeq: the first line is the header and carries the metadata; every
+# line after it is a feature and is copied through untouched.
+with open(f"{EXT}/railway_appearance.city.jsonl") as src, \
+     open("railway_7415.city.jsonl", "w") as dst:
+    header = json.loads(src.readline())
+    header.setdefault("metadata", {})["referenceSystem"] = CRS
+    dst.write(json.dumps(header) + "\n")
+    for line in src:
+        dst.write(line)
+PYEOF
 ```
+
+Confirm the two variants declare what they should before relying on them:
+
+```bash
+cd lib/citylake/tests/data && python3 -c "
+import json
+print('minimal_7415:', json.load(open('minimal_7415.city.json'))['metadata']['referenceSystem'])
+print('railway_7415:', json.loads(open('railway_7415.city.jsonl').readline())['metadata']['referenceSystem'])
+print('minimal_nocrs:', json.load(open('minimal_nocrs.city.json')).get('metadata', {}).get('referenceSystem'))
+"
+```
+
+Expected: both variants print the EPSG:7415 URL, and `minimal_nocrs` prints
+`None`.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -1843,8 +1916,11 @@ async fn ingesting_a_second_source_adds_its_objects() {
         .map(|m| m.rows)
         .sum();
 
+    // The variant declaring EPSG:7415: a package states one CRS for every row,
+    // so a source declaring none would be refused here — correctly, but that is
+    // the mismatch test's job, not this one's.
     let added = service
-        .ingest(&name, common::fixture("minimal.city.json").to_str().unwrap())
+        .ingest(&name, common::fixture("minimal_7415.city.json").to_str().unwrap())
         .await
         .expect("ingest a second source");
     assert!(added > 0);
@@ -1922,7 +1998,7 @@ async fn ingesting_a_new_module_creates_its_table() {
     // This fixture carries a Bridge and a CityFurniture — two further modules.
     // Routing them is the extension's job; create_tables = true is ours.
     service
-        .ingest(&name, common::fixture("railway_appearance.city.jsonl").to_str().unwrap())
+        .ingest(&name, common::fixture("railway_7415.city.jsonl").to_str().unwrap())
         .await
         .unwrap();
 
@@ -1939,12 +2015,7 @@ async fn ingesting_a_new_module_creates_its_table() {
 }
 ```
 
-Copy the two further fixtures:
-
-```bash
-cp lib/duckdb-cityjson/test/data/minimal.city.json lib/citylake/tests/data/
-cp lib/duckdb-cityjson/test/data/railway_appearance.city.jsonl lib/citylake/tests/data/
-```
+The fixtures this task reads were created in Task 6; nothing to copy here.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -2372,9 +2443,10 @@ async fn reconciling_an_untouched_dataset_changes_nothing() {
 }
 ```
 
-```bash
-cp lib/duckdb-cityjson/test/data/hierarchy.city.json lib/citylake/tests/data/
-```
+`hierarchy.city.json` was created in Task 6. It holds one `Building` with two
+`BuildingStorey` children, which the extension normalises to `Storey` and routes
+into the `building` module table — so the parent and its subtree are all in one
+table, which is what makes the cascade observable.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -2686,8 +2758,10 @@ async fn merging_folds_one_dataset_into_another() {
         .create_dataset(&destination, common::fixture("delft.city.jsonl").to_str().unwrap())
         .await
         .unwrap();
+    // Both sides are footers once created, and the merge applies the same CRS
+    // rule as an insert — so the source must declare the destination's CRS.
     service
-        .create_dataset(&source, common::fixture("minimal.city.json").to_str().unwrap())
+        .create_dataset(&source, common::fixture("minimal_7415.city.json").to_str().unwrap())
         .await
         .unwrap();
 
