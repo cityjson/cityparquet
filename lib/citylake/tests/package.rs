@@ -89,6 +89,21 @@ fn a_module_exports_to_a_cityjsonseq_file() {
         .expect("export the module");
     assert!(out.exists());
     assert!(std::fs::metadata(&out).unwrap().len() > 0);
+
+    // A CityJSONSeq file leads with the metadata object.
+    let written = std::fs::read_to_string(&out).unwrap();
+    let header: serde_json::Value =
+        serde_json::from_str(written.lines().next().expect("a first line")).unwrap();
+
+    // CityJSON defines referenceSystem as a URI. The COPY option is written
+    // through verbatim, so an export that hands it the footer's PROJJSON
+    // produces a file declaring a JSON document where a URI belongs —
+    // well-formed, non-empty, and wrong. Assert the URI itself: a length
+    // check cannot tell the two apart.
+    assert_eq!(
+        header["metadata"]["referenceSystem"],
+        serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/7415")
+    );
 }
 
 #[test]

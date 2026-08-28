@@ -120,6 +120,12 @@ impl DuckLakeService {
     /// refuses a package whose footers disagree — so one row answers for all
     /// of them. `None` means the package states no CRS, which is a state
     /// rather than a failure.
+    ///
+    /// A package with no footer row at all already comes back as `Ok(None)`
+    /// through `optional`, so only a real failure reaches the error arm. It
+    /// must propagate: a write and an export both choose what CRS to state
+    /// from this value, and a swallowed error would silently produce a
+    /// CRS-less package instead of failing.
     pub fn dataset_crs(
         &self,
         conn: &Connection,
@@ -135,7 +141,41 @@ impl DuckLakeService {
                 [],
                 |row| row.get(0),
             )
-            .ok()
+            .optional()?
+            .flatten())
+    }
+
+    /// The same CRS as the OGC URI that CityJSON's `metadata.referenceSystem`
+    /// expects — `https://www.opengis.net/def/crs/EPSG/0/7415` — or `None`
+    /// when the footer carries no identifier to build one from.
+    ///
+    /// This resolves nothing. `id.authority` and `id.code` are values the
+    /// extension itself resolved and wrote into the footer; reading them back
+    /// and formatting them into the standard template is string assembly, not
+    /// CRS logic, so it stays on the right side of the rule that every CRS
+    /// question belongs to the extension. The concatenation is NULL-propagating,
+    /// so a PROJJSON without an `id` yields `None` rather than a URI with
+    /// holes in it.
+    pub fn dataset_crs_uri(
+        &self,
+        conn: &Connection,
+        dataset: &str,
+    ) -> RepositoryResult<Option<String>> {
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT 'https://www.opengis.net/def/crs/'
+                            || json_extract_string(crs, '$.id.authority')
+                            || '/0/'
+                            || json_extract_string(crs, '$.id.code')
+                     FROM (SELECT cityparquet_city_field(city, 'crs') AS crs FROM {}
+                           WHERE role = 'object' AND city IS NOT NULL LIMIT 1)",
+                    sql::qualified(&[self.catalog(), dataset, "__cityparquet"])
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .optional()?
             .flatten())
     }
 

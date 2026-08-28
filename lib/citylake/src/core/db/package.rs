@@ -106,10 +106,18 @@ impl DuckLakeService {
 
             // COPY inherits a source's metadata only when the SELECT names
             // exactly one reader. A table is not statically discoverable, so
-            // the CRS has to be stated or the output would declare none. The
-            // value is the footer's own, handed back unread: resolving a CRS
-            // is the extension's job and never this crate's.
-            let crs = self.dataset_crs(conn, name)?;
+            // the CRS has to be stated or the output would declare none.
+            //
+            // What it is stated *as* matters here in a way it does not for a
+            // package write: this value lands verbatim in the output's
+            // `metadata.referenceSystem`, which CityJSON defines as a URI. So
+            // the URI form is preferred, and the footer's PROJJSON is only the
+            // fallback for a CRS whose footer carries no identifier — stating
+            // something imperfect beats stating nothing.
+            let crs = match self.dataset_crs_uri(conn, name)? {
+                uri @ Some(_) => uri,
+                None => self.dataset_crs(conn, name)?,
+            };
             let mut options = format!("FORMAT {}", format.as_duckdb_format());
             if let Some(crs) = crs {
                 options.push_str(&format!(", crs {}", sql::literal(&crs)));
@@ -140,8 +148,12 @@ impl DuckLakeService {
                 }
             }
             // The pragma names both schemas explicitly but qualifies neither
-            // with a catalog, so both must resolve through the search path —
-            // hence two entries rather than one.
+            // with a catalog, so both must resolve through the search path: an
+            // empty one fails with "Schema with name dst does not exist". Two
+            // entries say that requirement outright. One would in fact do —
+            // resolution walks the *catalogs* on the path, and either entry
+            // brings the whole lake catalog with it — but that is incidental,
+            // and a path naming both schemas cannot quietly stop being enough.
             let path = format!("{0}.{dst},{0}.{src}", self.catalog());
             self.in_transaction(conn, |conn| {
                 self.with_search_path(conn, &path, |conn| {
