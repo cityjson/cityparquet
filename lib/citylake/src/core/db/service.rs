@@ -96,13 +96,20 @@ impl DuckLakeService {
         path: &str,
         f: impl FnOnce(&Connection) -> RepositoryResult<T>,
     ) -> RepositoryResult<T> {
-        conn.execute_batch(&format!("SET search_path={}", sql::literal(path)))?;
+        conn.execute_batch(&sql::set_search_path(path))?;
         let result = f(conn);
         let reset = conn.execute_batch("RESET search_path");
         match (result, reset) {
             (Ok(value), Ok(())) => Ok(value),
             (Ok(_), Err(e)) => Err(e.into()),
-            (Err(e), _) => Err(e),
+            (Err(e), Ok(())) => Err(e),
+            (Err(e), Err(reset_err)) => {
+                // The reset failure never masks the body's error, but it must
+                // not vanish silently either — a dying connection is harder
+                // to diagnose without a trace of both failures.
+                tracing::error!(%reset_err, "search_path reset failed after {e}");
+                Err(e)
+            }
         }
     }
 

@@ -74,15 +74,12 @@ pub fn qualified(parts: &[&str]) -> String {
     parts.iter().map(|p| ident(p)).collect::<Vec<_>>().join(".")
 }
 
-/// Scope the package pragmas to a dataset. They take a bare schema name and
-/// resolve it through the search path, so this is how they reach a schema
-/// inside the attached DuckLake catalog. `USE` would do it too, but leaves
-/// sticky session state; this composes.
-pub fn set_search_path(catalog: &str, schema: &str) -> String {
-    format!(
-        "SET search_path={}",
-        literal(&format!("{catalog}.{schema}"))
-    )
+/// Point the search path at one or more schemas, so the package pragmas
+/// resolve their bare schema argument inside the attached catalog. The
+/// caller composes the path, because a merge needs two schemas reachable
+/// at once.
+pub fn set_search_path(path: &str) -> String {
+    format!("SET search_path={}", literal(path))
 }
 
 /// Which reader and insert pragma a source path calls for.
@@ -283,6 +280,19 @@ mod tests {
         // early and let the rest of the string continue the statement.
         assert_eq!(literal("O'Hara"), "'O''Hara'");
         assert_eq!(literal("plain"), "'plain'");
+    }
+
+    #[test]
+    fn the_search_path_takes_a_composed_path() {
+        assert_eq!(
+            set_search_path("lake.delft"),
+            "SET search_path='lake.delft'"
+        );
+        // A merge needs both schemas reachable at once.
+        assert_eq!(
+            set_search_path("lake.dst,lake.src"),
+            "SET search_path='lake.dst,lake.src'"
+        );
     }
 
     #[test]
