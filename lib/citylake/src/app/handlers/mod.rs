@@ -4,7 +4,7 @@
 //!
 //! # What this API trusts
 //!
-//! Every caller is trusted, and the API has no authentication. Four surfaces
+//! Every caller is trusted, and the API has no authentication. Three surfaces
 //! act directly on that trust:
 //!
 //! - `source_path` on dataset creation and ingest names a path the SERVER

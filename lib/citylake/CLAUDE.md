@@ -253,8 +253,8 @@ is the extension's limitation, and is not worked around here.
 
 ## `web/` is stale
 
-`web/` is keyed to the removed LoD-table API and does not build against the
-dataset/module model above. It awaits a follow-up.
+`web/` is keyed to a table-per-LoD API this crate does not expose, and does
+not build against the dataset/module model above. It awaits a follow-up.
 
 ## API
 
