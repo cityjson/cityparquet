@@ -3865,7 +3865,7 @@ read it back, and check the rows and the CRS survived."
 
 **Files:**
 - Rewrite: `lib/citylake/CLAUDE.md`, and copy byte-identically to `lib/citylake/AGENTS.md`
-- Delete: `lib/citylake/tasks.md`, `lib/citylake/milestones.md`
+- Delete: `lib/citylake/tasks.md`, `lib/citylake/milestones.md`, `lib/citylake/lib.rs`, `lib/citylake/main.rs` (stray, unbuilt crate-root copies)
 - Modify: `justfile` (repository root), `lib/citylake/justfile`
 - Modify: the `lib/duckdb-cityjson` submodule pointer
 
@@ -3888,11 +3888,16 @@ Then:
 cp lib/citylake/CLAUDE.md lib/citylake/AGENTS.md
 ```
 
-- [ ] **Step 2: Remove the stale notes**
+- [ ] **Step 2: Remove the stale notes and the stray root-level sources**
 
 ```bash
 git rm lib/citylake/tasks.md lib/citylake/milestones.md
+git rm lib/citylake/lib.rs lib/citylake/main.rs
 ```
+
+`lib/citylake/lib.rs` and `lib/citylake/main.rs` sit at the crate root, beside
+`Cargo.toml`, which points at `src/lib.rs` instead — so Cargo never builds them.
+They are unreferenced copies naming an API this rebuild removed.
 
 They record a Postgres-and-Supabase era, a completed milestone list, and a
 deferred multi-LoD export this rebuild makes moot. History belongs in git.
