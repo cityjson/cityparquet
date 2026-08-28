@@ -137,7 +137,7 @@ impl Default for QueryParams {
 /// Supported CityJSON-family export formats.
 ///
 /// A closed, fieldless enum — unlike the validated newtypes above, there is
-/// no invariant `Deserialize` could let a caller bypass. Deserialization
+/// no invariant `Deserialize` could let a caller bypass. Deserialisation
 /// itself is the validation: an unrecognised string simply fails to parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
