@@ -15,6 +15,8 @@ use super::receive_upload;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateDatasetBody {
+    /// A path the server reads — caller-supplied and acted on as-is; see the
+    /// module-level "What this API trusts" comment.
     source_path: String,
 }
 

@@ -1,6 +1,28 @@
 //! One handler module per resource group: datasets, their objects, the
 //! package operations the extension makes cheap (export, package write,
 //! merge), and housekeeping (validate, reconcile, vacuum, compact).
+//!
+//! # What this API trusts
+//!
+//! Every caller is trusted, and the API has no authentication. Four surfaces
+//! act directly on that trust:
+//!
+//! - `source_path` on dataset creation and ingest names a path the SERVER
+//!   reads. The extension resolves `http(s)://` and `s3://` URLs as readily as
+//!   local paths, so a caller chooses both which of the server's files are
+//!   read and which hosts it contacts.
+//! - `output_path` and `output_dir` on export and package write name a
+//!   destination the SERVER writes, and an existing file at that path is
+//!   replaced.
+//! - `filter` on query and predicate-delete is a SQL predicate interpolated
+//!   as written, because `cityparquet_delete` takes a predicate string by
+//!   design.
+//!
+//! Together these mean the API belongs on a trusted network, operated by
+//! people who already have the rights it exercises on their behalf. Exposing
+//! it more widely needs authentication, a path policy confining reads and
+//! writes to a configured root, and a restricted predicate grammar — none of
+//! which exist.
 
 pub mod dataset;
 pub mod maintenance;
@@ -26,9 +48,7 @@ use crate::core::interface::types::CityLakeError;
 /// A malformed multipart body (no file part, a stream error) is a client
 /// mistake in principle, but `CityLakeError` has no dedicated bucket for it
 /// beyond `Sql` — which is reserved for the dataset/module newtypes — so it
-/// falls through the default arm to 500. That is coarser than ideal; nothing
-/// in this task's test suite exercises the path, so a second error type was
-/// not worth introducing for it.
+/// falls through the default arm to 500.
 pub(crate) async fn receive_upload(
     mut multipart: Multipart,
 ) -> Result<tempfile::NamedTempFile, CityLakeError> {
@@ -53,6 +73,10 @@ pub(crate) async fn receive_upload(
         .map_err(|e| CityLakeError::Internal(format!("reading multipart body: {e}")))?;
 
     let temp = tempfile::Builder::new().suffix(suffix).tempfile()?;
-    std::fs::write(temp.path(), &bytes)?;
+    // Async: the upload can be up to `UPLOAD_BODY_LIMIT` (256 MiB), and a
+    // synchronous write of that size on the executor would stall every other
+    // request the way a blocking DuckDB call does — see
+    // `repository_impl.rs`'s doc comment for the same discipline there.
+    tokio::fs::write(temp.path(), &bytes).await?;
     Ok(temp)
 }

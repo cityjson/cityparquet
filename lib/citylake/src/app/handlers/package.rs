@@ -17,6 +17,9 @@ use crate::core::interface::types::{
 #[derive(Debug, Deserialize)]
 pub struct ExportBody {
     module: String,
+    /// A destination the server writes, replacing an existing file —
+    /// caller-supplied and acted on as-is; see the module-level "What this
+    /// API trusts" comment.
     output_path: String,
     format: ExportFormat,
 }
@@ -37,6 +40,8 @@ pub async fn export(
 
 #[derive(Debug, Deserialize)]
 pub struct WritePackageBody {
+    /// A destination directory the server writes into — caller-supplied and
+    /// acted on as-is; see the module-level "What this API trusts" comment.
     output_dir: String,
 }
 
