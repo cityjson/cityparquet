@@ -3360,7 +3360,14 @@ impl CityLakeRepository for DuckLakeService {
 ```
 
 For `handle()` to exist, `DuckLakeService` needs to be cloneable into something
-`'static`. Give it:
+`'static`. It must be defined **in `service.rs`**, not in this task's new file:
+`connection` and `config` are private fields, and Rust privacy is per-module, so
+an `impl` block in `repository_impl.rs` cannot reach them.
+
+`duckdb::Connection` is `Send` (`unsafe impl Send for Connection`, duckdb
+1.10504.0 `src/lib.rs:272`) but not `Sync` — its inner handle is a `RefCell` —
+which is exactly why the mutex is there and why `Arc<Mutex<Connection>>` is
+`Send + Sync` and may cross into `spawn_blocking`. Add to `service.rs`:
 
 ```rust
 impl DuckLakeService {
