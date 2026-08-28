@@ -220,8 +220,11 @@ need `CITYLAKE_CITYJSON_EXTENSION` pointing at a locally built
 produces one). Without that variable set, `DuckLakeService::new` falls back
 to installing the community build, and every pragma call fails outright.
 `tests/extension_loads.rs` asserts the environment contract directly: the
-connected DuckDB is v1.5.4, and every `cityparquet_*` pragma and every
-`insert_*` pragma this crate calls is registered.
+connected DuckDB is v1.5.4, and every `cityparquet_*` pragma, every
+`insert_*` pragma, every metadata table function (`cityjson_metadata` /
+`cityjsonseq_metadata` / `flatcitybuf_metadata`), and `ducklake_merge_adjacent_files`
+— DuckLake's own maintenance function, not the `cityjson` extension's, but
+one `compaction.rs` still depends on — this crate calls is registered.
 
 ## The trust model
 
