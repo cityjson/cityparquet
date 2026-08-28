@@ -1479,6 +1479,11 @@ when the body fails — is what stops it being re-derived nine times."
 
 The heart of the rebuild. Creating a dataset bootstraps a package, ingests the source, and mints the CRS footer that arms the extension's own guard.
 
+This task creates a dataset from a **CityJSON-family file**. A source that is a
+package *directory* is loaded by `cityparquet_read` instead, which is Task 10's
+`import_package`; Task 10 adds that branch to `create_dataset_impl` when it
+introduces the function.
+
 **Why the minting works this way.** A DuckLake table has no Parquet footer, so `__cityparquet.city` is NULL and the extension's rule — a destination stating nothing has nothing to check — silently disables CRS checking on every later ingest. CityLake cannot write that footer itself: a footer's `crs` is canonical PROJJSON produced by the extension's own resolver, and assembling one in Rust would be resolving a CRS, the one thing this crate must not do. So the extension mints it. One row of the freshly ingested data is copied into a throwaway schema in the **default** catalog, written with `crs => <the source's referenceSystem>`, and the canonical text read straight back out of the Parquet footer. Only the `crs` field is kept: a minimal `{"crs": …}` value is enough for `cityparquet_city_field` to read and for the guard to fire, and it carries no stale inventory from the probe row.
 
 The probe lives in the default catalog deliberately — it does not depend on Task 2, and it is one row, not one dataset.
@@ -1736,14 +1741,6 @@ impl DuckLakeService {
         source_path: &str,
     ) -> RepositoryResult<DatasetInfo> {
         let name = dataset.as_str();
-
-        // A directory is an existing package: cityparquet_read loads it and
-        // recovers each file's Parquet footer, so its CRS arrives with it and
-        // none of the bootstrap below applies.
-        if std::path::Path::new(source_path).is_dir() {
-            return self.import_package(dataset, source_path);
-        }
-
         let format = sql::reader_for(source_path);
         let catalog = self.catalog().to_string();
 
@@ -2695,6 +2692,7 @@ The boundary between the lake and the file format. This task depends on Task 2 h
 
 **Files:**
 - Create: `lib/citylake/src/core/db/package.rs`
+- Modify: `lib/citylake/src/core/db/dataset.rs` (route directory sources into `import_package`)
 
 **Interfaces:**
 - Consumes: `sql::{read_package_pragma, write_package, merge_pragma}`, `dataset_crs` (Task 6).
@@ -2842,6 +2840,21 @@ cd lib/citylake && cargo test --test package
 Expected: FAIL — the package methods do not exist.
 
 - [ ] **Step 3: Implement it**
+
+First, route directory sources into the new import. Add this at the top of
+`create_dataset_impl` in `dataset.rs`, before it picks a reader — Task 6 left the
+branch out because `import_package` did not exist yet:
+
+```rust
+        // A directory is an existing package: cityparquet_read loads it and
+        // recovers each file's Parquet footer, so its CRS arrives with it and
+        // none of the file bootstrap applies.
+        if std::path::Path::new(source_path).is_dir() {
+            return self.import_package(dataset, source_path);
+        }
+```
+
+Then `package.rs` itself:
 
 ```rust
 //! The boundary between the lake and the file format.
