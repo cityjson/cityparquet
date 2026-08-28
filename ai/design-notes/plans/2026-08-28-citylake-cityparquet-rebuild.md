@@ -1256,6 +1256,11 @@ fn search_path_scoping_reaches_the_pragmas() {
 //! There is no offline mode. Every operation in this crate is a pragma, so a
 //! service without the extension would exercise nothing.
 
+// Cargo compiles this module separately into every integration-test binary, so
+// a helper one test file does not call is dead code *there* even though another
+// binary uses it. Without this the crate-wide `-D warnings` gate fails.
+#![allow(dead_code)]
+
 use citylake::core::db::service::DuckLakeService;
 use citylake::core::interface::types::CityLakeConfig;
 use std::path::PathBuf;
