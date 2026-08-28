@@ -2100,6 +2100,14 @@ fn ingesting_a_new_module_creates_its_table() {
 
 The fixtures this task reads were created in Task 6; nothing to copy here.
 
+**Switch Task 6's CRS-mismatch test onto `ingest_impl`.** Task 6's
+`the_declared_crs_arms_the_guard_against_a_mismatched_source` (in
+`tests/dataset.rs`) had to reach the extension through `sql::insert_pragma`
+directly, because `ingest_impl` did not exist yet. It does now, and it wraps the
+identical extension code path — change that one call to `ingest_impl` so the test
+exercises the method rather than a hand-rolled equivalent of it. The assertion on
+`"CRS mismatch"` stays exactly as it is.
+
 - [ ] **Step 2: Run them and watch them fail**
 
 ```bash
