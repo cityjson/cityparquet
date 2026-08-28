@@ -829,7 +829,36 @@ Replace the LoD-shaped domain model with the package one, and give the crate a r
 **Files:**
 - Rewrite: `lib/citylake/src/core/interface/types.rs`
 - Rewrite: `lib/citylake/src/core/interface/repository.rs`
-- Delete: `lib/citylake/src/core/db/lod.rs`, `lib/citylake/src/core/db/metadata_table.rs`
+- Rewrite: `lib/citylake/src/lib.rs`, `lib/citylake/src/core/db/mod.rs`
+- Modify: `lib/citylake/Cargo.toml` (drop the `[[bin]]` target; Task 13 restores it)
+- Move: `lib/citylake/src/tests/data/delft.city.jsonl` → `lib/citylake/tests/data/delft.city.jsonl`
+- Delete: every remaining file under `lib/citylake/src/core/db/` except `sql.rs` and `mod.rs`; all of `lib/citylake/src/app/`; all of `lib/citylake/src/tests/`; `lib/citylake/src/main.rs`
+
+**Clear the old implementation in this task, not gradually.** Rust compiles the
+whole library crate for `cargo test --lib`, so a single module still referring to
+a deleted type fails the build for every task until it is gone. The old
+`db/mod.rs` declares twelve modules, `lib.rs` declares `app` and `tests`, and all
+of them are written against `LodKey`, `TableInfo` and the old error alias. Left
+in place they would break Task 4's own verification and every task through
+Task 12. So the crate is reduced here to what compiles and is kept: `sql.rs`
+(Task 3), the two interface files, and nothing else. `db/mod.rs` becomes:
+
+```rust
+pub mod sql;
+```
+
+and `lib.rs` becomes:
+
+```rust
+//! CityLake — a lakehouse runtime for CityParquet packages.
+
+pub mod core;
+```
+
+Drop the `[[bin]]` section from `Cargo.toml` along with `src/main.rs`; Task 13
+adds both back when there is a server to run. The optional axum dependencies and
+the `server` feature stay as they are — an unused optional dependency costs
+nothing and re-adding it would be churn.
 
 **Interfaces:**
 - Consumes: `sql::{validate_dataset, validate_module, SqlError, OBJECT_MODULES}` from Task 3.
@@ -1012,31 +1041,47 @@ pub trait CityLakeRepository: Send + Sync {
 }
 ```
 
-Delete `lod.rs` and `metadata_table.rs` and remove their `mod` lines from
-`src/core/db/mod.rs`. The crate will not compile until Task 5 replaces the
-service; that is expected, and the unit tests in this task compile because they
-only touch `types.rs`.
-
-- [ ] **Step 4: Run the type tests and watch them pass**
+Then clear the old implementation, as the Files list above sets out:
 
 ```bash
-cd lib/citylake && cargo test --lib types::
+cd lib/citylake
+mkdir -p tests/data
+git mv src/tests/data/delft.city.jsonl tests/data/delft.city.jsonl
+git rm -r --quiet src/tests src/app src/main.rs
+git rm --quiet src/core/db/compaction.rs src/core/db/delete.rs src/core/db/export.rs \
+  src/core/db/insert.rs src/core/db/list.rs src/core/db/lod.rs src/core/db/metadata.rs \
+  src/core/db/metadata_table.rs src/core/db/query.rs src/core/db/service.rs \
+  src/core/db/table.rs src/core/db/update.rs
 ```
 
-Expected: 5 passed.
+The crate must **compile and pass its tests at the end of this task** — that is
+the point of clearing everything at once rather than module by module.
+
+- [ ] **Step 4: Run the tests and watch them pass**
+
+```bash
+cd lib/citylake && cargo test --lib && cargo clippy --all-targets -- -D warnings
+```
+
+Expected: the 11 `sql::` tests from Task 3 and the 5 `types::` tests here, all
+passing, and a clean clippy. The crate compiles: everything that referred to the
+old model is gone.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/citylake/src/core/interface/ lib/citylake/src/core/db/mod.rs
-git rm lib/citylake/src/core/db/lod.rs lib/citylake/src/core/db/metadata_table.rs
+git add -A lib/citylake/
 git commit -m "feat(citylake)!: re-key the domain model from LoD tables to packages
 
 A dataset is a package of module tables, not a family of per-LoD ones,
 so LodKey and the geom_lodX_Y discovery scan have nothing left to
 address. Validated newtypes replace stringly-typed names, and a real
 error enum replaces Box<dyn Error>, which told a handler nothing it
-could turn into a status code."
+could turn into a status code.
+
+The old implementation goes in one move rather than module by module:
+the library crate compiles as a unit, so one file still naming a
+deleted type would break every task until it was removed."
 ```
 
 ---
@@ -1369,12 +1414,7 @@ impl DuckLakeService {
 }
 ```
 
-Copy the fixture the tests read:
-
-```bash
-mkdir -p lib/citylake/tests/data
-git mv lib/citylake/src/tests/data/delft.city.jsonl lib/citylake/tests/data/delft.city.jsonl
-```
+`tests/data/delft.city.jsonl` is already in place — Task 4 moved it there.
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
@@ -3333,14 +3373,8 @@ impl DuckLakeService {
 }
 ```
 
-`lib.rs` becomes:
-
-```rust
-//! CityLake — a lakehouse runtime for CityParquet packages.
-
-pub mod app;
-pub mod core;
-```
+`lib.rs` still declares only `pub mod core;` at this point — the `app` module
+returns in Task 13, with the server that needs it.
 
 - [ ] **Step 4: Run every test and watch them pass**
 
@@ -3588,6 +3622,25 @@ and pass its path to the same trait method the JSON-body variant uses.
 
 `server.rs` builds the router with permissive CORS and a tracing layer, and
 `serve` binds `config.host:config.port`.
+
+Restore the binary target Task 4 removed, in `Cargo.toml`:
+
+```toml
+[[bin]]
+name = "citylake"
+path = "src/main.rs"
+```
+
+and re-declare the module in `lib.rs`:
+
+```rust
+//! CityLake — a lakehouse runtime for CityParquet packages.
+
+pub mod core;
+
+#[cfg(feature = "server")]
+pub mod app;
+```
 
 `main.rs` is the whole binary — initialise tracing, take the default
 `CityLakeConfig`, construct the service, and serve:
