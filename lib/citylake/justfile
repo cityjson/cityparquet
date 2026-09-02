@@ -52,8 +52,8 @@ test-integration:
 
 # Run the suite against the published Delft datasets (network, ~1 min).
 #
-# These are #[ignore]d so a plain `just test` neither reaches the network nor
-# reports them as passing. Nothing is downloaded: the cityjson extension
+# These are #[ignore]d so a plain `cargo test` and `just test-integration`
+# don't reach the network. Nothing is downloaded: the cityjson extension
 # resolves https:// sources directly.
 test-real-data:
     cargo test --test real_data -- --ignored

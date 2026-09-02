@@ -144,7 +144,22 @@ async fn the_object_type_split_matches_the_published_figures() {
 async fn the_real_dataset_validates_clean_on_arrival() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft_real").unwrap();
-    service.create_dataset(&name, DELFT_SEQ).await.unwrap();
+    // Filter to object tables, as in the ingest test above: describe_dataset
+    // also reports sidecar tables, and a clean-on-arrival claim is about
+    // object rows, not sidecar bookkeeping.
+    let ingested: usize = service
+        .create_dataset(&name, DELFT_SEQ)
+        .await
+        .unwrap()
+        .modules
+        .iter()
+        .filter(|m| m.role == "object")
+        .map(|m| m.rows)
+        .sum();
+    assert_eq!(
+        ingested, TOTAL_OBJECTS,
+        "validating clean on arrival must start from the whole feed, not a partial ingest"
+    );
 
     // 2231 objects with a real parent/child hierarchy: feature_id, the
     // reciprocal arrays and bbox are all derived across the whole set, and a
@@ -222,6 +237,10 @@ async fn deleting_a_real_parent_cascades_and_leaves_the_package_valid() {
         .filter(|m| m.role == "object")
         .map(|m| m.rows)
         .sum();
+    assert_eq!(
+        before, TOTAL_OBJECTS,
+        "the cascade must start from the whole feed, not a partial ingest"
+    );
 
     // Find a real parent rather than hardcoding an id: this dataset's
     // Building rows carry BuildingPart children, and picking one from the data
@@ -276,8 +295,8 @@ async fn deleting_a_real_parent_cascades_and_leaves_the_package_valid() {
         .sum();
     assert_eq!(
         after,
-        before - removed,
-        "the module's row count must drop by exactly what the cascade reported"
+        TOTAL_OBJECTS - removed,
+        "the module's row count after the cascade must equal the published total minus what was removed"
     );
 
     // The cascade must not leave a dangling reference behind in a set this

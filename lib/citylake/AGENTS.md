@@ -230,9 +230,10 @@ one `compaction.rs` still depends on — this crate calls is registered.
 feed at its real size (2231 objects), run with `just test-real-data`: that
 they all arrive and route into one `building` module table, that the
 object-type split matches the published 1115 `Building` / 1116
-`BuildingPart` figures, the CRS the probe recovers (EPSG:7415), a package
-round trip through a written directory and back, and a cascading delete
-against a real parent. Every test is `#[ignore]`d, because reaching the
+`BuildingPart` figures, the CRS the probe recovers (EPSG:7415), that the
+dataset validates clean on arrival, a package round trip through a written
+directory and back, and a cascading delete against a real parent. Every
+test is `#[ignore]`d, because reaching the
 network is not something a default gate should do silently — an early
 return on a missing precondition would report the run as passed, and a
 test that cannot fail is worse than no test. `#[ignore]` instead makes a
