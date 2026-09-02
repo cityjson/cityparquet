@@ -28,6 +28,7 @@ instead — that is the maintained, normative half.
 | `plans/2026-08-28-citylake-cityparquet-rebuild.md` | The implementation plan for the above, task by task: the pinned toolchain, the upstream write fix, the pure SQL module, the package operations, and the CRS footer the extension has to mint |
 | `specs/2026-09-02-citylake-real-data-and-ui-e2e-design.md` | Three follow-ups to the CityLake rebuild: network-gated tests against the published Delft datasets, re-pointing the web client at the dataset/module API, and Playwright coverage with a DEV-gated authentication bypass |
 | `plans/2026-09-02-citylake-real-data-tests.md` | Piece A of the above: the network-gated suite against the published Delft feed, with the object-type split, CRS, package round trip and a real cascade pinned to measured figures |
+| `plans/2026-09-02-citylake-web-repoint.md` | Piece B: re-pointing the web client from the removed one-table-per-LoD model at the dataset/module API, minimum viable and matched to the end-to-end journey |
 
 Note that these notes were written while the code lived in several separate
 repositories, so they refer to paths (and, in one case, a local working
