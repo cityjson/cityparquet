@@ -124,6 +124,10 @@ outputs are unaffected:
 
 ## Usage
 
+Input to `energy features` must be 3DBAG-as-CityParquet: the `b3_*` reference
+columns and `oorspronkelijkbouwjaar` present. Other CityParquet packages are
+rejected with a clear error rather than failing deep inside a SQL query.
+
 ```
 energy features --input <path|glob|s3://…> [--lod 2.2] [--output features.parquet]
                 [--faces faces.parquet] [--validate report.json]

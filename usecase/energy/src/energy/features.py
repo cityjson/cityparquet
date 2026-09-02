@@ -6,7 +6,7 @@ import re
 import duckdb
 import pyarrow as pa
 
-from .errors import MissingLoD
+from .errors import MissingColumns, MissingLoD
 
 _REFS = ("b3_volume_lod22", "b3_opp_dak_plat", "b3_opp_dak_schuin",
          "b3_opp_grond", "b3_opp_buitenmuur", "b3_opp_scheidingsmuur")
@@ -36,6 +36,19 @@ def build_features(con: duckdb.DuckDBPyConnection,
         raise MissingLoD(
             f"LoD {lod} not in this package; available: {', '.join(lods)}"
         )
+
+    cols = [d[0] for d in con.sql(
+        "SELECT * FROM read_parquet(?) LIMIT 0", params=[input_glob]
+    ).description]
+    required = ("oorspronkelijkbouwjaar", *_REFS)
+    missing = [c for c in required if c not in cols]
+    if missing:
+        raise MissingColumns(
+            f"input is missing columns: {', '.join(missing)}; "
+            "energy features requires 3DBAG-as-CityParquet input "
+            "(the b3_* reference columns and oorspronkelijkbouwjaar)"
+        )
+
     geom = f"geometry_{suffix}"
     refs = ", ".join(f"any_value(b.{r}) AS {r}" for r in _REFS)
     query = f"""

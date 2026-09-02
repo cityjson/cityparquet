@@ -8,3 +8,7 @@ class ExtensionsNotFound(EnergyError):
 
 class MissingLoD(EnergyError):
     pass
+
+
+class MissingColumns(EnergyError):
+    pass

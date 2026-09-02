@@ -1,7 +1,7 @@
 import duckdb
 import pytest
 
-from energy.errors import MissingLoD
+from energy.errors import MissingColumns, MissingLoD
 from energy.features import available_lods, build_features, lod_to_suffix
 from .conftest import requires_extensions
 
@@ -22,6 +22,26 @@ def test_missing_lod_lists_available(fixture_path):
     con = duckdb.connect()
     with pytest.raises(MissingLoD, match="2.2"):
         build_features(con, str(fixture_path), "9.9")
+
+
+def test_build_features_rejects_non_3dbag_input(fixture_path, tmp_path):
+    """Non-3DBAG CityParquet input (missing oorspronkelijkbouwjaar / b3_*
+    reference columns) must fail with a clear MissingColumns error, not a
+    raw BinderException from the SQL referencing those columns."""
+    con = duckdb.connect()
+    tmp_input = tmp_path / "no_bouwjaar.parquet"
+    con.execute(
+        """
+        COPY (
+          SELECT * EXCLUDE (oorspronkelijkbouwjaar)
+          FROM read_parquet($fixture)
+        ) TO $out (FORMAT PARQUET, COMPRESSION ZSTD)
+        """,
+        {"fixture": str(fixture_path), "out": str(tmp_input)},
+    )
+
+    with pytest.raises(MissingColumns, match="oorspronkelijkbouwjaar"):
+        build_features(con, str(tmp_input), "2.2")
 
 
 @requires_extensions
