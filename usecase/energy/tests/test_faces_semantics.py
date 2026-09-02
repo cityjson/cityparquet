@@ -24,6 +24,11 @@ def test_resolve_semantics_handles_missing():
     assert resolve_semantics([0], CUBE_SURFACES, 3) == ["GroundSurface", "Unknown", "Unknown"]
 
 
+def test_resolve_semantics_handles_wrong_shapes():
+    assert resolve_semantics([0], "null", 1) == ["Unknown"]
+    assert resolve_semantics([0, 0], '["not-a-dict"]', 2) == ["Unknown", "Unknown"]
+
+
 def test_faces_for_part_full_cube():
     records = faces_for_part("B1", "P1", make_polyhedral_wkb(UNIT_CUBE),
                              CUBE_SEMANTICS, CUBE_SURFACES)

@@ -181,9 +181,12 @@ def resolve_semantics(face_semantics, surfaces_json, n_faces: int) -> list[str]:
         surfaces = json.loads(surfaces_json)
     except (TypeError, ValueError):
         return labels
+    if not isinstance(surfaces, list):
+        return labels
     for i, idx in enumerate(face_semantics[:n_faces]):
         if idx is not None and 0 <= idx < len(surfaces):
-            labels[i] = surfaces[idx].get("type", "Unknown")
+            if isinstance(surfaces[idx], dict):
+                labels[i] = surfaces[idx].get("type", "Unknown")
     return labels
 
 
