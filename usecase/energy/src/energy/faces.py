@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 import math
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
+import duckdb
 import numpy as np
+import pyarrow as pa
 
 _Z_FLAG = 0x80000000
 _SURFACE_TYPES = {15, 6}   # PolyhedralSurface, MultiPolygon
@@ -236,3 +238,42 @@ def class_areas(records, flat_tilt_deg: float = 5.0) -> dict[str, float]:
             key = "a_other_m2"
         out[key] += r.area_m2
     return out
+
+
+def compute_face_tables(input_glob: str, lod_suffix: str,
+                        flat_tilt_deg: float) -> tuple[pa.Table, pa.Table]:
+    con = duckdb.connect()
+    rows = con.sql(
+        f"""
+        SELECT p.parents[1] AS building_id, p.id AS part_id,
+               p.geometry_{lod_suffix} AS wkb,
+               p.geometry_properties_{lod_suffix}.face_semantics AS fs,
+               CAST(p.geometry_properties_{lod_suffix}.surfaces AS VARCHAR) AS sj
+        FROM read_parquet($input) p
+        WHERE p.object_type = 'BuildingPart' AND p.geometry_{lod_suffix} IS NOT NULL
+        ORDER BY building_id, part_id
+        """,
+        params={"input": input_glob},
+    ).fetchall()
+
+    all_records = []
+    per_building: dict[str, dict[str, float]] = {}
+    for building_id, part_id, wkb, fs, sj in rows:
+        records = faces_for_part(building_id, part_id, bytes(wkb), fs, sj)
+        all_records.extend(records)
+        areas = class_areas(records, flat_tilt_deg)
+        acc = per_building.setdefault(building_id, dict.fromkeys(areas, 0.0))
+        for key, val in areas.items():
+            acc[key] += val
+
+    face_cols = [f.name for f in fields(FaceRecord)]
+    faces_table = pa.table(
+        {c: [getattr(r, c) for r in all_records] for c in face_cols}
+    )
+    classes_table = pa.table({
+        "building_id": list(per_building),
+        **{k: [v[k] for v in per_building.values()]
+           for k in ("a_roof_flat_m2", "a_roof_pitched_m2",
+                      "a_wall_m2", "a_ground_m2", "a_other_m2")},
+    })
+    return faces_table, classes_table
