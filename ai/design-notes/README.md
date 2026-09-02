@@ -26,6 +26,7 @@ instead — that is the maintained, normative half.
 | `plans/2026-08-26-cityparquet-mcp-phase-1.md` | Phase 1 of the above: the corpus build, the stdio server and its five tools, task by task |
 | `specs/2026-08-27-citylake-cityparquet-rebuild-design.md` | Rebuilding CityLake on the CityParquet package model: a dataset as a DuckLake schema of module tables, the `cityparquet_*` pragmas in place of hand-rolled operations, and the catalog-qualification fix `cityparquet_write` needs |
 | `plans/2026-08-28-citylake-cityparquet-rebuild.md` | The implementation plan for the above, task by task: the pinned toolchain, the upstream write fix, the pure SQL module, the package operations, and the CRS footer the extension has to mint |
+| `specs/2026-09-02-citylake-real-data-and-ui-e2e-design.md` | Three follow-ups to the CityLake rebuild: network-gated tests against the published Delft datasets, re-pointing the web client at the dataset/module API, and Playwright coverage with a DEV-gated authentication bypass |
 
 Note that these notes were written while the code lived in several separate
 repositories, so they refer to paths (and, in one case, a local working
