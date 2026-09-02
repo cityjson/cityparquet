@@ -7,7 +7,9 @@ to a SQL query.
 """
 from __future__ import annotations
 
+import math
 import struct
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -62,3 +64,41 @@ def parse_wkb_polyhedral(wkb: bytes) -> list[list[np.ndarray]]:
             raise ValueError(f"unsupported WKB type {inner}; expected Polygon")
         faces.append([reader.ring() for _ in range(reader.u32())])
     return faces
+
+
+@dataclass
+class FaceMetrics:
+    normal: np.ndarray
+    area: float
+    tilt_deg: float
+    azimuth_deg: float | None
+    centroid: np.ndarray
+
+
+def _newell(ring: np.ndarray) -> np.ndarray:
+    nxt = np.roll(ring, -1, axis=0)
+    return np.array([
+        np.sum((ring[:, 1] - nxt[:, 1]) * (ring[:, 2] + nxt[:, 2])),
+        np.sum((ring[:, 2] - nxt[:, 2]) * (ring[:, 0] + nxt[:, 0])),
+        np.sum((ring[:, 0] - nxt[:, 0]) * (ring[:, 1] + nxt[:, 1])),
+    ])
+
+
+def face_metrics(rings: list[np.ndarray]) -> FaceMetrics:
+    n = _newell(rings[0])
+    exterior_area = float(np.linalg.norm(n)) / 2.0
+    holes = sum(float(np.linalg.norm(_newell(r))) / 2.0 for r in rings[1:])
+    area = max(exterior_area - holes, 0.0)
+
+    norm = np.linalg.norm(n)
+    unit = n / norm if norm > 0 else np.array([0.0, 0.0, 0.0])
+    tilt = float(np.degrees(np.arccos(np.clip(unit[2], -1.0, 1.0))))
+    horiz = math.hypot(unit[0], unit[1])
+    azimuth = None if horiz < 1e-9 else float(np.degrees(np.arctan2(unit[0], unit[1])) % 360.0)
+    return FaceMetrics(
+        normal=unit,
+        area=area,
+        tilt_deg=tilt,
+        azimuth_deg=azimuth,
+        centroid=rings[0].mean(axis=0),
+    )
