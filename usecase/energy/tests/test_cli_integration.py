@@ -22,6 +22,7 @@ def test_features_then_screen_end_to_end(fixture_path, tmp_path, capsys):
     assert "annual_kwh" in table.column_names
 
 
+@requires_extensions
 def test_features_bad_lod_is_a_clean_error(fixture_path, capsys):
     rc = main(["features", "--input", str(fixture_path), "--lod", "9.9",
                "--output", "/dev/null"])
