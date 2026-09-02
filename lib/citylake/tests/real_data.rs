@@ -171,6 +171,10 @@ async fn a_real_package_round_trips_through_the_lake() {
         .filter(|m| m.role == "object")
         .map(|m| m.rows)
         .sum();
+    assert_eq!(
+        ingested, TOTAL_OBJECTS,
+        "the round trip must start from the whole feed, not an empty ingest"
+    );
 
     let out = dir.path().join("delft_pkg");
     let written = service
@@ -234,17 +238,31 @@ async fn deleting_a_real_parent_cascades_and_leaves_the_package_valid() {
         )
         .await
         .expect("find a parent");
-    let parent = parents
-        .first()
-        .and_then(|row| row.get("id"))
+    let parent_row = parents
+        .into_iter()
+        .next()
+        .expect("the feed must contain a Building with children");
+    let parent = parent_row
+        .get("id")
         .and_then(|id| id.as_str())
-        .expect("the feed must contain a Building with children")
+        .expect("the parent row must carry an id")
         .to_string();
 
     let removed = service.delete_object(&name, &parent).await.expect("delete");
-    assert!(
-        removed > 1,
-        "deleting a parent must take its children too; removed {removed}"
+    // This feed is two-level (Building -> BuildingPart), so the parent's own
+    // `children` array is the whole subtree the cascade must remove: the
+    // parent itself plus each listed child. A deeper hierarchy would need the
+    // transitive count instead, and this exact assertion would then be wrong.
+    let expected = 1 + parent_row
+        .get("children")
+        .and_then(|c| c.as_array())
+        .map(|c| c.len())
+        .expect("the parent row must carry its children");
+    assert_eq!(
+        removed,
+        expected,
+        "deleting a parent must remove it and all {} of its children",
+        expected - 1
     );
 
     let after: usize = service
@@ -256,7 +274,11 @@ async fn deleting_a_real_parent_cascades_and_leaves_the_package_valid() {
         .filter(|m| m.role == "object")
         .map(|m| m.rows)
         .sum();
-    assert_eq!(after, before - removed);
+    assert_eq!(
+        after,
+        before - removed,
+        "the module's row count must drop by exactly what the cascade reported"
+    );
 
     // The cascade must not leave a dangling reference behind in a set this
     // size — survivor cleanup is the part small fixtures cannot stress.
