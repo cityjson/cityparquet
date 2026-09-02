@@ -7,6 +7,7 @@ to a SQL query.
 """
 from __future__ import annotations
 
+import json
 import math
 import struct
 from dataclasses import dataclass
@@ -170,3 +171,65 @@ def face_metrics(rings: list[np.ndarray]) -> FaceMetrics:
         azimuth_deg=azimuth,
         centroid=centroid,
     )
+
+
+def resolve_semantics(face_semantics, surfaces_json, n_faces: int) -> list[str]:
+    labels = ["Unknown"] * n_faces
+    if face_semantics is None or surfaces_json is None:
+        return labels
+    try:
+        surfaces = json.loads(surfaces_json)
+    except (TypeError, ValueError):
+        return labels
+    for i, idx in enumerate(face_semantics[:n_faces]):
+        if idx is not None and 0 <= idx < len(surfaces):
+            labels[i] = surfaces[idx].get("type", "Unknown")
+    return labels
+
+
+@dataclass
+class FaceRecord:
+    building_id: str
+    part_id: str
+    face_idx: int
+    semantic: str
+    nx: float
+    ny: float
+    nz: float
+    tilt_deg: float
+    azimuth_deg: float | None
+    area_m2: float
+    cx: float
+    cy: float
+    cz: float
+
+
+def faces_for_part(building_id, part_id, wkb, face_semantics, surfaces_json):
+    faces = parse_wkb_polyhedral(wkb)
+    labels = resolve_semantics(face_semantics, surfaces_json, len(faces))
+    records = []
+    for idx, (rings, label) in enumerate(zip(faces, labels)):
+        m = face_metrics(rings)
+        records.append(FaceRecord(
+            building_id=building_id, part_id=part_id, face_idx=idx, semantic=label,
+            nx=float(m.normal[0]), ny=float(m.normal[1]), nz=float(m.normal[2]),
+            tilt_deg=m.tilt_deg, azimuth_deg=m.azimuth_deg, area_m2=m.area,
+            cx=float(m.centroid[0]), cy=float(m.centroid[1]), cz=float(m.centroid[2]),
+        ))
+    return records
+
+
+def class_areas(records, flat_tilt_deg: float = 5.0) -> dict[str, float]:
+    out = {"a_roof_flat_m2": 0.0, "a_roof_pitched_m2": 0.0,
+           "a_wall_m2": 0.0, "a_ground_m2": 0.0, "a_other_m2": 0.0}
+    for r in records:
+        if r.semantic == "RoofSurface":
+            key = "a_roof_flat_m2" if r.tilt_deg <= flat_tilt_deg else "a_roof_pitched_m2"
+        elif r.semantic == "WallSurface":
+            key = "a_wall_m2"
+        elif r.semantic == "GroundSurface":
+            key = "a_ground_m2"
+        else:
+            key = "a_other_m2"
+        out[key] += r.area_m2
+    return out
