@@ -1,4 +1,4 @@
-from energy.cli import build_parser, main
+from energy.cli import build_parser
 
 
 def test_features_flags_parse():
@@ -47,9 +47,3 @@ def test_screen_defaults():
     assert args.sv_above is None
     assert args.top is None
     assert args.output == "screen.parquet"
-
-
-def test_main_not_implemented_yet(capsys):
-    rc = main(["features", "--input", "x.parquet"])
-    assert rc == 2
-    assert "not implemented" in capsys.readouterr().err
