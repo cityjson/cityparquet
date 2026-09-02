@@ -116,7 +116,7 @@ outputs are unaffected:
 | `part_id`     | the `BuildingPart.id` the face belongs to                     |
 | `face_idx`    | index of the face within the part's solid                     |
 | `semantic`    | `RoofSurface` / `WallSurface` / `GroundSurface` / `Unknown`    |
-| `nx, ny, nz`  | unit outward normal                                            |
+| `nx, ny, nz`  | unit normal (outward for a correctly oriented solid)           |
 | `tilt_deg`    | angle from vertical-up (0° = flat roof facing up)              |
 | `azimuth_deg` | compass bearing of the normal; `NULL` for horizontal faces      |
 | `area_m2`     | face area, exterior ring minus holes                          |
@@ -150,7 +150,7 @@ Output is one row per `Building`: `building_id`, `year`, `n_parts`,
 `a_ground_m2`, `a_other_m2` (faces with no resolvable semantic label), plus
 the `b3_*` reference columns when `--validate` is given.
 
-The command prints a run summary before writing:
+The command finishes by printing a run summary:
 
 ```
 <N> buildings, <M> parts (<X> null-geometry parts skipped, <Y> buildings
