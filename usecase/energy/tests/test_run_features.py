@@ -106,3 +106,17 @@ def test_missing_geometry_buildings_are_counted(fixture_path, tmp_path):
                            faces_out=None, validate_out=None, flat_tilt_deg=5.0)
     assert summary.n_buildings_missing_geometry == 1
     assert summary.n_buildings == 150
+
+
+@requires_extensions
+def test_run_features_validate_report(fixture_path, tmp_path):
+    import json
+
+    from energy.run import run_features
+
+    report_path = tmp_path / "report.json"
+    run_features(str(fixture_path), "2.2", str(tmp_path / "f.parquet"),
+                 faces_out=None, validate_out=str(report_path), flat_tilt_deg=5.0)
+    report = json.loads(report_path.read_text())
+    assert report["volume"]["median_rel_err_pct"] < 1.0
+    assert report["ground"]["median_rel_err_pct"] < 5.0

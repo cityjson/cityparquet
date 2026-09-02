@@ -48,6 +48,22 @@ def run_features(input_glob: str, lod: str, output: str,
     )
     outputs = [output]
 
+    if validate_out:
+        from .validate import validate as _validate, write_report
+
+        full = con.sql(
+            """
+            SELECT f.*, coalesce(c.a_roof_flat_m2, 0) AS a_roof_flat_m2,
+                   coalesce(c.a_roof_pitched_m2, 0) AS a_roof_pitched_m2,
+                   coalesce(c.a_wall_m2, 0) AS a_wall_m2,
+                   coalesce(c.a_ground_m2, 0) AS a_ground_m2,
+                   coalesce(c.a_other_m2, 0) AS a_other_m2
+            FROM features_t f LEFT JOIN classes_t c USING (building_id)
+            """
+        ).to_arrow_table()
+        write_report(_validate(full), validate_out)
+        outputs.append(validate_out)
+
     if faces_out:
         con.register("faces_t", faces)
         con.execute(
