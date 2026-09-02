@@ -18,7 +18,10 @@ def validate(table: pa.Table) -> dict:
     rows = table.to_pylist()
     report: dict = {}
     for name, (computed_col, ref_cols) in _PAIRS.items():
-        entries = []
+        finite_rel_entries = []  # Entries with defined rel_err_pct
+        zero_ref_mismatches = []  # Zero-reference mismatches (rel_err_pct = None)
+        all_entries = []  # All entries for mae calculation
+
         for r in rows:
             refs = [r.get(c) for c in ref_cols]
             if any(v is None for v in refs) or r.get(computed_col) is None:
@@ -26,23 +29,61 @@ def validate(table: pa.Table) -> dict:
             reference = sum(refs)
             computed = r[computed_col]
             err = abs(computed - reference)
-            rel = err / reference * 100.0 if reference else 0.0
-            entries.append((r["building_id"], computed, reference, err, rel))
-        entries.sort(key=lambda e: e[4], reverse=True)
-        rels = sorted(e[4] for e in entries)
-        n = len(entries)
-        if n % 2 == 1:
-            median_rel = rels[n // 2]
+
+            # Store for mae calculation
+            all_entries.append((r["building_id"], computed, reference, err, None))
+
+            if reference == 0.0:
+                # Zero reference case
+                if abs(computed) < 1e-9:
+                    # Genuine 0-vs-0 match: rel = 0.0
+                    rel = 0.0
+                    finite_rel_entries.append((r["building_id"], computed, reference, err, rel))
+                else:
+                    # Zero-reference mismatch: rel = None (undefined)
+                    zero_ref_mismatches.append((r["building_id"], computed, reference, err, None))
+            else:
+                # Normal case: reference != 0
+                rel = err / reference * 100.0
+                finite_rel_entries.append((r["building_id"], computed, reference, err, rel))
+
+        # Sort finite_rel_entries by rel_err_pct descending for worst[]
+        finite_rel_entries.sort(key=lambda e: e[4], reverse=True)
+
+        # Sort zero_ref_mismatches by absolute error descending
+        zero_ref_mismatches.sort(key=lambda e: e[3], reverse=True)
+
+        # Compute median from finite rels only
+        finite_rels = sorted(e[4] for e in finite_rel_entries)
+        n_finite = len(finite_rels)
+        if n_finite > 0:
+            if n_finite % 2 == 1:
+                median_rel = finite_rels[n_finite // 2]
+            else:
+                median_rel = (finite_rels[n_finite // 2 - 1] + finite_rels[n_finite // 2]) / 2
         else:
-            median_rel = (rels[n // 2 - 1] + rels[n // 2]) / 2 if n else None
+            median_rel = None
+
+        # Compute mae from all entries
+        n_total = len(all_entries)
+        mae = sum(e[3] for e in all_entries) / n_total if n_total else None
+
+        # Build worst[] with zero-ref mismatches first, then finite entries
+        worst_entries = []
+        for b, c, ref, err, rel_err in zero_ref_mismatches[:5]:
+            worst_entries.append({"building_id": b, "computed": c, "reference": ref, "rel_err_pct": None})
+
+        # Add finite entries if space in worst (up to 5 total)
+        remaining_slots = 5 - len(worst_entries)
+        for b, c, ref, err, rel_err in finite_rel_entries[:remaining_slots]:
+            worst_entries.append({"building_id": b, "computed": c, "reference": ref, "rel_err_pct": rel_err})
+
         report[name] = {
-            "n": n,
-            "mae": sum(e[3] for e in entries) / n if n else None,
-            "median_rel_err_pct": median_rel if n else None,
-            "worst": [
-                {"building_id": b, "computed": c, "reference": ref, "rel_err_pct": rel}
-                for b, c, ref, _, rel in entries[:5]
-            ],
+            "n": n_total,
+            "mae": mae,
+            "median_rel_err_pct": median_rel if n_finite else None,
+            "n_zero_reference_mismatches": len(zero_ref_mismatches),
+            "worst": worst_entries,
         }
     return report
 
