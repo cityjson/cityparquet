@@ -61,3 +61,13 @@ def test_parse_keeps_interior_rings():
     faces = parse_wkb_polyhedral(make_polyhedral_wkb([face_with_hole]))
     assert len(faces) == 1
     assert len(faces[0]) == 2
+
+
+def test_parse_accepts_ewkb_z_flag():
+    faces = parse_wkb_polyhedral(
+        make_polyhedral_wkb(UNIT_CUBE, type_code=0x80000000 | 15, polygon_code=0x80000000 | 3)
+    )
+    assert len(faces) == 6
+    for face in faces:
+        assert len(face) == 1
+        assert face[0].shape == (4, 3)
