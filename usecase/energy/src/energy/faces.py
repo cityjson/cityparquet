@@ -84,14 +84,82 @@ def _newell(ring: np.ndarray) -> np.ndarray:
     ])
 
 
+def _fan_centroid(ring: np.ndarray, unit_normal: np.ndarray) -> tuple[np.ndarray, float]:
+    """Compute area-weighted centroid of a ring via fan triangulation from v0.
+
+    Returns (centroid_3d, signed_area_sum).
+    """
+    if len(ring) < 3:
+        return ring.mean(axis=0), 0.0
+
+    v0 = ring[0]
+    centroid_acc = np.array([0.0, 0.0, 0.0])
+    area_acc = 0.0
+
+    for i in range(1, len(ring) - 1):
+        vi = ring[i]
+        vi1 = ring[i + 1]
+
+        # Triangle vertices
+        edge1 = vi - v0
+        edge2 = vi1 - v0
+
+        # Signed area = dot(cross(edge1, edge2), unit_normal) / 2
+        cross = np.cross(edge1, edge2)
+        signed_area = float(np.dot(cross, unit_normal)) / 2.0
+
+        # Triangle centroid
+        tri_centroid = (v0 + vi + vi1) / 3.0
+
+        # Accumulate weighted by signed area
+        centroid_acc += signed_area * tri_centroid
+        area_acc += signed_area
+
+    return centroid_acc, area_acc
+
+
 def face_metrics(rings: list[np.ndarray]) -> FaceMetrics:
     n = _newell(rings[0])
+    norm = np.linalg.norm(n)
+    unit = n / norm if norm > 0 else np.array([0.0, 0.0, 0.0])
+
+    # Compute area
     exterior_area = float(np.linalg.norm(n)) / 2.0
     holes = sum(float(np.linalg.norm(_newell(r))) / 2.0 for r in rings[1:])
     area = max(exterior_area - holes, 0.0)
 
-    norm = np.linalg.norm(n)
-    unit = n / norm if norm > 0 else np.array([0.0, 0.0, 0.0])
+    # Compute area-weighted centroid
+    ext_centroid_acc, ext_area_sum = _fan_centroid(rings[0], unit)
+
+    # Exterior ring's actual centroid
+    if abs(ext_area_sum) > 1e-12:
+        ext_centroid = ext_centroid_acc / ext_area_sum
+    else:
+        ext_centroid = rings[0].mean(axis=0)
+
+    # Accumulate weighted centroid
+    total_weight = ext_area_sum
+    weighted_centroid = ext_centroid_acc
+
+    for hole_ring in rings[1:]:
+        hole_centroid_acc, hole_area_sum = _fan_centroid(hole_ring, unit)
+        # Subtract hole's contribution
+        # Note: hole_area_sum may be negative due to winding; use absolute value for weight
+        hole_abs_area = abs(hole_area_sum)
+        if hole_abs_area > 1e-12:
+            hole_centroid = hole_centroid_acc / hole_area_sum  # divide by signed area to get actual centroid
+        else:
+            hole_centroid = hole_ring.mean(axis=0)
+        total_weight -= hole_abs_area
+        weighted_centroid -= hole_abs_area * hole_centroid
+
+    # Compute final centroid
+    if abs(total_weight) < 1e-12:
+        # Degenerate face: fall back to vertex mean
+        centroid = rings[0].mean(axis=0)
+    else:
+        centroid = weighted_centroid / total_weight
+
     tilt = float(np.degrees(np.arccos(np.clip(unit[2], -1.0, 1.0))))
     horiz = math.hypot(unit[0], unit[1])
     azimuth = None if horiz < 1e-9 else float(np.degrees(np.arctan2(unit[0], unit[1])) % 360.0)
@@ -100,5 +168,5 @@ def face_metrics(rings: list[np.ndarray]) -> FaceMetrics:
         area=area,
         tilt_deg=tilt,
         azimuth_deg=azimuth,
-        centroid=rings[0].mean(axis=0),
+        centroid=centroid,
     )

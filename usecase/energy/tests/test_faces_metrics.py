@@ -48,3 +48,29 @@ def test_hole_subtracts_area():
     hole = np.array([(1, 1, 0), (1, 2, 0), (2, 2, 0), (2, 1, 0)], dtype=float)
     m = face_metrics([exterior, hole])
     assert math.isclose(m.area, 16.0 - 1.0, rel_tol=1e-12)
+
+
+def test_concave_face_centroid_is_area_weighted():
+    # L-shaped face (two 1×1 squares joined)
+    ring = np.array([(0, 0, 0), (2, 0, 0), (2, 1, 0), (1, 1, 0), (1, 2, 0), (0, 2, 0)], dtype=float)
+    m = face_metrics([ring])
+    assert math.isclose(m.area, 3.0, rel_tol=1e-12)
+    # Area-weighted centroid: (2.5/3, 2.5/3, 0)
+    expected_centroid = np.array([2.5/3.0, 2.5/3.0, 0.0])
+    np.testing.assert_allclose(m.centroid, expected_centroid, atol=1e-9)
+    # Verify it is NOT the vertex mean (which would be (1, 1, 0))
+    vertex_mean = ring.mean(axis=0)
+    assert not np.allclose(m.centroid, vertex_mean, atol=1e-9)
+
+
+def test_hole_shifts_centroid():
+    # 4×4 square with 1×1 hole in the middle-left
+    exterior = np.array([(0, 0, 0), (4, 0, 0), (4, 4, 0), (0, 4, 0)], dtype=float)
+    hole = np.array([(1, 1, 0), (1, 2, 0), (2, 2, 0), (2, 1, 0)], dtype=float)
+    m = face_metrics([exterior, hole])
+    assert math.isclose(m.area, 15.0, rel_tol=1e-12)
+    # Net area 15: exterior 16 at centroid (2, 2), hole 1 at centroid (1.5, 1.5)
+    # Weighted centroid = (16 * 2 - 1 * 1.5) / 15 = (32 - 1.5) / 15 = 30.5 / 15 ≈ 2.033333
+    expected_centroid_x = 30.5 / 15.0
+    expected_centroid_y = 30.5 / 15.0
+    np.testing.assert_allclose(m.centroid[:2], [expected_centroid_x, expected_centroid_y], atol=1e-9)
