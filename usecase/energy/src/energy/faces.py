@@ -88,9 +88,14 @@ def _newell(ring: np.ndarray) -> np.ndarray:
 
 
 def _fan_centroid(ring: np.ndarray, unit_normal: np.ndarray) -> tuple[np.ndarray, float]:
-    """Compute area-weighted centroid of a ring via fan triangulation from v0.
+    """Accumulate the area-weighted centroid of a ring via fan triangulation
+    from v0.
 
-    Returns (centroid_3d, signed_area_sum).
+    Returns (unnormalised_centroid_acc, signed_area_sum): the first is the
+    sum of each triangle's centroid weighted by its signed area, not yet
+    divided by the total weight, so the caller can combine several rings
+    (e.g. subtracting holes) before normalising. Divide by signed_area_sum
+    to get the actual area-weighted centroid.
     """
     if len(ring) < 3:
         return ring.mean(axis=0), 0.0
@@ -133,12 +138,6 @@ def face_metrics(rings: list[np.ndarray]) -> FaceMetrics:
 
     # Compute area-weighted centroid
     ext_centroid_acc, ext_area_sum = _fan_centroid(rings[0], unit)
-
-    # Exterior ring's actual centroid
-    if abs(ext_area_sum) > 1e-12:
-        ext_centroid = ext_centroid_acc / ext_area_sum
-    else:
-        ext_centroid = rings[0].mean(axis=0)
 
     # Accumulate weighted centroid
     total_weight = ext_area_sum

@@ -70,12 +70,12 @@ def validate(table: pa.Table) -> dict:
 
         # Build worst[] with zero-ref mismatches first, then finite entries
         worst_entries = []
-        for b, c, ref, err, rel_err in zero_ref_mismatches[:5]:
+        for b, c, ref, _, _ in zero_ref_mismatches[:5]:
             worst_entries.append({"building_id": b, "computed": c, "reference": ref, "rel_err_pct": None})
 
         # Add finite entries if space in worst (up to 5 total)
         remaining_slots = 5 - len(worst_entries)
-        for b, c, ref, err, rel_err in finite_rel_entries[:remaining_slots]:
+        for b, c, ref, _, rel_err in finite_rel_entries[:remaining_slots]:
             worst_entries.append({"building_id": b, "computed": c, "reference": ref, "rel_err_pct": rel_err})
 
         report[name] = {

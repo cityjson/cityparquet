@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,9 +75,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"wrote {args.output}")
         return 0
     except EnergyError as err:
-        import sys as _sys
+        import sys
 
-        print(f"energy: {err}", file=_sys.stderr)
+        print(f"energy: {err}", file=sys.stderr)
         return 1
 
 
