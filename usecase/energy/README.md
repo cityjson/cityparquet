@@ -243,12 +243,18 @@ For each metric the report gives `n`, `mae`, `median_rel_err_pct`,
 reference is exactly zero but the computed value is not is a **zero-reference
 mismatch**: it is excluded from `median_rel_err_pct` (a relative error against
 zero is undefined) and surfaced separately, with `rel_err_pct: null` in
-`worst`, rather than masked as either a perfect match or silently dropped.
-Reporting is descriptive only — v1 sets no hard failure thresholds.
+`worst`, rather than masked as either a perfect match or silently dropped. On
+the committed fixture this actually occurs for `roof_flat` (7 buildings) —
+e.g. building `NL.IMBAG.Pand.0928100000041788`, computed `a_roof_flat_m2` =
+33.94 m² against `b3_opp_dak_plat` = 0.0, most plausibly a flat/pitched
+classification-threshold difference between this tool's `--flat-tilt-deg`
+default and 3DBAG's own criterion. Reporting is descriptive only — v1 sets
+no hard failure thresholds.
 
 Measured on the committed fixture (150 buildings, 3DBAG tile 10-756-44):
 volume median relative error 0.0212%, ground median relative error 0.0177%;
-that tile has no zero-reference mismatches.
+`volume`, `roof_pitched`, `ground` and `wall` have no zero-reference
+mismatches on this fixture (`roof_flat`'s 7 are the example above).
 
 ### Party walls
 
