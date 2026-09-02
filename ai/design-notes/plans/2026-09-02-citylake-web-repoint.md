@@ -13,12 +13,24 @@
 ## Global Constraints
 
 - **Minimum viable, matched to the end-to-end journey piece C will drive.** No UI for validate, reconcile, vacuum, merge, package write, export or compact — those are a later piece of work.
-- **The toolchain is not installed here.** `node_modules` is empty and `vp` (Vite+) is absent. Run `npm install` in `lib/citylake/web` first. Do NOT install `vp` — it is a `curl | bash` install of a third-party toolchain, which is not this plan's to perform. Gate on the devDependencies the project already declares instead:
+- **`vp` needs a login shell, and it does not type-check.** The binary is at
+  `/home/hbbaba/.local/share/vite-plus/bin/vp` (v0.3.0), reachable only through
+  `bash -lc '...'` — a plain non-interactive shell does not source the profile that
+  puts it on `PATH`. `node_modules` starts empty, so run `npm install` first.
+
+  **`vp check` alone is not a sufficient gate for this task.** Measured: with a
+  deliberate `const x: number = "not a number"` in `src/lib/api.ts`, `vp check`
+  reported format and lint both passing and said nothing, while
+  `npx tsc --noEmit` caught it immediately. Its own warning explains why — "This
+  project does not use vite-plus", so the local `vite-plus` package is absent and
+  the type-check step is skipped. Since a broken re-point is exactly a type error,
+  the gate is all three:
   ```bash
-  npx tsc --noEmit -p tsconfig.app.json   # the type check that catches a broken re-point
-  npx vite build                           # the production build
+  bash -lc 'npm install'                                   # once
+  bash -lc 'vp check'                                      # format + lint (oxfmt, oxlint)
+  bash -lc 'npx tsc --noEmit -p tsconfig.app.json'         # the type check vp skips
+  bash -lc 'vp build'                                      # the production build
   ```
-  `vp check` and `vp build` remain the documented commands for anyone who has `vp`; they are a superset (they add oxlint and oxfmt).
 - **British English** in prose and comments. **Document the present, never the past** — no changelog voice, no "previously", no comment explaining what the LoD model used to do.
 - **Every server response shape below was read from the Rust handlers**, not guessed. Use them exactly.
 - Scope git operations to `lib/citylake/web/`; explicit pathspec, never `git add -A`.
@@ -68,14 +80,18 @@ Read from `src/app/handlers/` and `src/core/interface/types.rs`:
 - Consumes: nothing.
 - Produces, all exported: `ApiError`; `interface ModuleInfo { name: string; role: string; rows: number }`; `interface DatasetInfo { name: string; modules: ModuleInfo[]; crs: string | null }`; `type ObjectRow = Record<string, unknown>`; and the functions `listDatasets(): Promise<string[]>`, `describeDataset(ds: string): Promise<DatasetInfo>`, `createDataset(ds: string, sourcePath: string): Promise<DatasetInfo>`, `uploadDataset(ds: string, file: File): Promise<DatasetInfo>`, `dropDataset(ds: string): Promise<void>`, `ingestSource(ds: string, sourcePath: string): Promise<{ ingested: number }>`, `queryObjects(ds: string, module: string, params?: { filter?: string; limit?: number; offset?: number }): Promise<ObjectRow[]>`, `deleteObject(ds: string, id: string): Promise<{ deleted: number }>`.
 
-- [ ] **Step 1: Install the toolchain and confirm the gate runs**
+- [ ] **Step 1: Install dependencies and confirm the gate is green before you start**
 
 ```bash
 cd lib/citylake/web
-npm install
-npx tsc --noEmit -p tsconfig.app.json
+bash -lc 'npm install'
+bash -lc 'npx tsc --noEmit -p tsconfig.app.json'
 ```
-Expected: `tsc` reports errors — the pages still reference the old API. That is the red state this task starts from, and it tells you the gate works.
+Expected: **clean, no errors.** The pages speak the old contract and the old contract
+still exists, so the tree is self-consistent right now. The red state arrives in Step 2,
+the moment `api.ts` stops exporting `listTables` and `TableInfo` — that is when every
+consumer breaks at once, and Tasks 2-4 are what close it. Confirming green here tells you
+the gate runs at all, which is the point of the step.
 
 - [ ] **Step 2: Rewrite the contract**
 
@@ -173,9 +189,10 @@ export function deleteObject(ds: string, id: string): Promise<{ deleted: number 
 - [ ] **Step 3: Confirm the contract compiles on its own**
 
 ```bash
-npx tsc --noEmit -p tsconfig.app.json 2>&1 | grep "src/lib/api.ts"
+bash -lc 'npx tsc --noEmit -p tsconfig.app.json' 2>&1 | grep "src/lib/api.ts"
 ```
-Expected: no output — `api.ts` itself is clean. The pages still fail, which Tasks 2-4 fix.
+Expected: no output — `api.ts` itself is clean. The pages now fail loudly, which is the
+red state Tasks 2-4 close. Do not try to silence them here.
 
 - [ ] **Step 4: Commit**
 
@@ -228,7 +245,7 @@ Keep the page's existing shape exactly: the `Eyebrow`/`h1`/description header, t
 
 ```bash
 cd lib/citylake/web
-npx tsc --noEmit -p tsconfig.app.json 2>&1 | grep -E "AppShell|DatasetsPage"
+bash -lc 'npx tsc --noEmit -p tsconfig.app.json' 2>&1 | grep -E "AppShell|DatasetsPage"
 ```
 Expected: no output for these two files.
 
@@ -276,7 +293,7 @@ Then delete `LodTablePage.tsx`.
 
 ```bash
 cd lib/citylake/web
-npx tsc --noEmit -p tsconfig.app.json 2>&1 | grep -E "DatasetDetailPage|ModulePage|LodTablePage"
+bash -lc 'npx tsc --noEmit -p tsconfig.app.json' 2>&1 | grep -E "DatasetDetailPage|ModulePage|LodTablePage"
 ```
 Expected: no output. A lingering `LodTablePage` reference means Task 4's route table has not caught up yet — that is expected until Task 4.
 
@@ -328,10 +345,13 @@ In `App.tsx`, replace the `tables/:tableName` route with `datasets/:ds/modules/:
 
 ```bash
 cd lib/citylake/web
-npx tsc --noEmit -p tsconfig.app.json
-npx vite build
+bash -lc 'vp check'
+bash -lc 'npx tsc --noEmit -p tsconfig.app.json'
+bash -lc 'vp build'
 ```
-Expected: both clean. A type error anywhere means a surface still speaks the old contract.
+Expected: all three clean. A type error means a surface still speaks the old contract —
+and note that `vp check` will pass regardless, since it does not type-check this project,
+so the `tsc` line is the one carrying the weight.
 
 - [ ] **Step 4: Confirm nothing references the removed model**
 
@@ -357,7 +377,13 @@ character class the server enforces on a schema name."
 
 **Spec coverage.** §4's `api.ts` re-key → Task 1, with the response shapes read from the handlers rather than assumed. §4's four pages → Tasks 2-4; `LodTablePage` deleted in Task 3. §4's "Supabase authentication and `ProtectedRoute` untouched" → no task touches `auth/`, `LoginPage` or `AuthCallbackPage`. §4's gate → Task 4, adapted below. §2's minimum-viable scope → the module page drops the edit dialog, and no task adds UI for validate, reconcile, vacuum, merge, package, export or compact.
 
-**One deviation from the spec, deliberate.** The spec names `vp check` and `vp build` as the gate. `vp` is not installed here and installing it means running a `curl | bash` from a third-party host, which is not a plan's business to do unasked. The gate is `npx tsc --noEmit` plus `npx vite build`, using devDependencies the project already declares. That keeps the type check — the part that actually catches a broken re-point — and loses only oxlint and oxfmt. `vp check` remains correct for anyone who has it.
+**One addition to the spec's gate, forced by measurement.** The spec names `vp check` and
+`vp build`. Both are used here — but `vp check` was measured not to type-check this project
+(a deliberate type error passed it, while `tsc` caught it), because the local `vite-plus`
+package is absent and it skips that step. A broken re-point IS a type error, so the gate
+gains `npx tsc --noEmit`. This also means the repository's own `web-check` recipe, which is
+`vp check`, does not currently type-check the web client — worth raising separately, and
+outside this plan's scope to change.
 
 **A fourth surface the spec's file list missed.** §4 names `api.ts` and four pages. `AppShell.tsx` also calls `listTables` and carries its own copy of `groupByBase`, so it is a fifth file and is in Task 2. Had it been left, the sidebar would have silently rendered nothing.
 
