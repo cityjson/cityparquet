@@ -152,7 +152,11 @@ Output is one row per `Building`: `building_id`, `year`, `n_parts`,
 `volume_m3`, `envelope_m2`, `sv_ratio`, `footprint_m2`, `height_m`,
 `is_closed`, `a_roof_flat_m2`, `a_roof_pitched_m2`, `a_wall_m2`,
 `a_ground_m2`, `a_other_m2` (faces with no resolvable semantic label), plus
-the `b3_*` reference columns when `--validate` is given.
+the `b3_*` reference columns when `--validate` is given. `n_parts` counts the
+`BuildingPart`s that contributed a valid solid at the requested LoD, not the
+building's total part count — a part whose geometry is `NULL` or fails
+`ST_3DTryFromWKB` at that LoD is excluded from `n_parts` as well as from
+every summed metric.
 
 The command finishes by printing a run summary:
 
@@ -205,7 +209,7 @@ Filter semantics, since "unknown" is not the same as "excluded":
 ```sh
 cd usecase/energy
 uv run energy features \
-    --input /data2/hideba/cityparquet_data/10-756-44/building.parquet \
+    --input path/to/3dbag-cityparquet/10-756-44/building.parquet \
     --output /tmp/features.parquet
 uv run energy screen \
     --features /tmp/features.parquet --year-before 1975 --top 20 \
@@ -215,7 +219,7 @@ uv run energy screen \
 or, from the monorepo root, via the justfile recipes (see below):
 
 ```sh
-just usecase-energy-features /data2/hideba/cityparquet_data/10-756-44/building.parquet /tmp/features.parquet
+just usecase-energy-features path/to/3dbag-cityparquet/10-756-44/building.parquet /tmp/features.parquet
 ```
 
 ### Remote input (`s3://`)

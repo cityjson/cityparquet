@@ -1,6 +1,6 @@
 """Regenerate tile_slice.parquet from a local 3DBAG-as-CityParquet tile.
 
-Usage: uv run python tests/fixtures/make_fixture.py [SOURCE_PARQUET]
+Usage: uv run python tests/fixtures/make_fixture.py SOURCE_PARQUET
 Committed output: deterministic 150-building slice (plus their parts).
 """
 import sys
@@ -8,12 +8,16 @@ from pathlib import Path
 
 import duckdb
 
-DEFAULT_SOURCE = "/data2/hideba/cityparquet_data/10-756-44/building.parquet"
 OUT = Path(__file__).parent / "tile_slice.parquet"
 
 
 def main() -> None:
-    source = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SOURCE
+    if len(sys.argv) < 2:
+        sys.exit(
+            "usage: uv run python tests/fixtures/make_fixture.py SOURCE_PARQUET\n"
+            "  SOURCE_PARQUET: path to a 3DBAG-as-CityParquet building.parquet tile"
+        )
+    source = sys.argv[1]
     con = duckdb.connect()
     con.execute(
         """
