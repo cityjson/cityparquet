@@ -226,6 +226,25 @@ connected DuckDB is v1.5.4, and every `cityparquet_*` pragma, every
 — DuckLake's own maintenance function, not the `cityjson` extension's, but
 one `compaction.rs` still depends on — this crate calls is registered.
 
+`tests/real_data.rs` runs the same operations against the published Delft
+feed at its real size (2231 objects), run with `just test-real-data`: that
+they all arrive and route into one `building` module table, that the
+object-type split matches the published 1115 `Building` / 1116
+`BuildingPart` figures, the CRS the probe recovers (EPSG:7415), a package
+round trip through a written directory and back, and a cascading delete
+against a real parent. Every test is `#[ignore]`d, because reaching the
+network is not something a default gate should do silently — an early
+return on a missing precondition would report the run as passed, and a
+test that cannot fail is worse than no test. `#[ignore]` instead makes a
+skipped run print `ignored`, which stays visibly skipped. Nothing is
+downloaded or committed: the `cityjson` extension
+resolves an `https://` source directly, so the URL goes straight to
+`create_dataset`. The published CityParquet package at
+`https://cityparquet.open3d.city/data/delft/` is not among them — it cannot
+yet be imported by URL, because `create_dataset` chooses between the file
+bootstrap and `import_package` with `std::path::Path::is_dir()`
+(`src/core/db/dataset.rs`), which is false for a URL.
+
 ## The trust model
 
 The API has no authentication, and CORS is permissive. Four surfaces act on
