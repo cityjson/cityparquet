@@ -7,7 +7,7 @@ use citylake::core::interface::types::CityLakeConfig;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
-    let config = CityLakeConfig::default();
+    let config = CityLakeConfig::from_env();
     let repo: Arc<dyn CityLakeRepository> = Arc::new(DuckLakeService::new(config.clone())?);
     citylake::app::server::serve(config, repo).await
 }

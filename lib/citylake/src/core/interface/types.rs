@@ -33,6 +33,34 @@ impl Default for CityLakeConfig {
     }
 }
 
+impl CityLakeConfig {
+    /// The configuration, with each field taken from its environment variable
+    /// when set and left at its default when not.
+    ///
+    /// An unset variable means "use the default"; a variable set to something
+    /// unusable is an error, because an operator who set it meant it.
+    pub fn from_env() -> Self {
+        let default = Self::default();
+        Self {
+            host: std::env::var("CITYLAKE_HOST").unwrap_or(default.host),
+            port: std::env::var("CITYLAKE_PORT")
+                .ok()
+                .map(|raw| Self::port_from(&raw).expect("CITYLAKE_PORT must be a port number"))
+                .unwrap_or(default.port),
+            catalog_name: std::env::var("CITYLAKE_CATALOG_NAME").unwrap_or(default.catalog_name),
+            catalog_path: std::env::var("CITYLAKE_CATALOG_PATH").unwrap_or(default.catalog_path),
+            storage_path: std::env::var("CITYLAKE_STORAGE_PATH").unwrap_or(default.storage_path),
+        }
+    }
+
+    /// Parse a port, so the parsing is testable without touching the process
+    /// environment — a test that sets a variable can be seen by every other
+    /// test in the binary.
+    pub fn port_from(raw: &str) -> Result<u16, std::num::ParseIntError> {
+        raw.parse()
+    }
+}
+
 /// A validated dataset name. It becomes a schema name, so validation happens
 /// once here and every consumer downstream can assume it.
 ///
@@ -232,5 +260,26 @@ mod tests {
         assert_eq!(params.limit, 100);
         assert_eq!(params.offset, 0);
         assert!(params.filter.is_none());
+    }
+
+    #[test]
+    fn the_config_falls_back_to_its_defaults() {
+        // Nothing set: from_env must agree with Default in every field, so an
+        // unconfigured run behaves exactly as it did before it could be configured.
+        let from_env = CityLakeConfig::from_env();
+        let default = CityLakeConfig::default();
+        assert_eq!(from_env.host, default.host);
+        assert_eq!(from_env.port, default.port);
+        assert_eq!(from_env.catalog_name, default.catalog_name);
+        assert_eq!(from_env.catalog_path, default.catalog_path);
+        assert_eq!(from_env.storage_path, default.storage_path);
+    }
+
+    #[test]
+    fn an_unparseable_port_is_an_error_not_a_silent_default() {
+        // A typo in CITYLAKE_PORT must not quietly serve on 3000 — the operator
+        // asked for something specific and deserves to be told it was not honoured.
+        assert!(CityLakeConfig::port_from("not-a-number").is_err());
+        assert_eq!(CityLakeConfig::port_from("3100").unwrap(), 3100);
     }
 }
