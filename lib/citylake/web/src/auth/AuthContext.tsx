@@ -11,11 +11,39 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+/**
+ * A stand-in session for automated interface tests.
+ *
+ * Both conditions are required, and the first is the one that matters:
+ * Vite replaces `import.meta.env.DEV` with the literal `false` in a
+ * production build, so this branch is constant-folded away and the built
+ * artefact does not contain it. The environment variable alone would be a
+ * switch anybody could flip in production; paired with DEV it can only ever
+ * be flipped in a development server.
+ */
+const E2E_SESSION_ACTIVE = import.meta.env.DEV && import.meta.env.VITE_E2E_AUTH_BYPASS === "1";
+
+/**
+ * Deliberately minimal — not a faithful `Session`. It only needs to satisfy
+ * `ProtectedRoute`'s truthiness check and give `src/lib/api.ts` an
+ * `access_token` to send as a bearer token, which the Rust server ignores.
+ */
+const E2E_SESSION = {
+  access_token: "e2e-bypass-token",
+  token_type: "bearer",
+  user: { id: "e2e-bypass-user" },
+} as Session;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [session, setSession] = useState<Session | null>(E2E_SESSION_ACTIVE ? E2E_SESSION : null);
+  const [loading, setLoading] = useState(!E2E_SESSION_ACTIVE);
 
   useEffect(() => {
+    if (E2E_SESSION_ACTIVE) {
+      // No Supabase project needs to be reachable for an automated run.
+      return;
+    }
+
     let active = true;
 
     supabase.auth.getSession().then(({ data }) => {
@@ -39,6 +67,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       session,
       loading,
       signOut: async () => {
+        if (E2E_SESSION_ACTIVE) {
+          // Nothing to sign out of.
+          return;
+        }
         await supabase.auth.signOut();
       },
     }),
