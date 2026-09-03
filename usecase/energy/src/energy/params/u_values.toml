@@ -1,0 +1,38 @@
+# SCREENING-GRADE defaults, W/(m^2.K), by Dutch construction-year band.
+# These are order-of-magnitude values for ranking only — NOT calibrated.
+# Before any publication-grade run, replace with TABULA NL age-band values
+# (episcope.eu) and cite them here.  Bands are matched as year <= max_year.
+
+[[bands]]
+name = "pre1946"
+max_year = 1945
+u_roof = 2.0
+u_wall = 2.0
+u_ground = 1.7
+
+[[bands]]
+name = "1946-1974"
+max_year = 1974
+u_roof = 1.5
+u_wall = 1.6
+u_ground = 1.7
+
+[[bands]]
+name = "1975-1991"
+max_year = 1991
+u_roof = 0.9
+u_wall = 0.9
+u_ground = 0.9
+
+[[bands]]
+name = "1992-2005"
+max_year = 2005
+u_roof = 0.4
+u_wall = 0.5
+u_ground = 0.6
+
+[[bands]]
+name = "post2005"
+u_roof = 0.3
+u_wall = 0.35
+u_ground = 0.4

@@ -754,3 +754,13 @@ citylake-check:
     cd lib/citylake
     cargo clippy --all-targets -- -D warnings
     cargo test
+
+# ── usecase ──────────────────────────────────────────────────────────
+
+# run the energy tool's test suite
+usecase-energy-test:
+    cd usecase/energy && uv run pytest
+
+# extract features from a CityParquet package: just usecase-energy-features IN OUT
+usecase-energy-features input output="features.parquet":
+    cd usecase/energy && uv run energy features --input '{{input}}' --output '{{output}}'
