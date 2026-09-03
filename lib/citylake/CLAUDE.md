@@ -261,8 +261,10 @@ that implies:
   confined to `CITYLAKE_OUTPUT_ROOT`: the handler resolves the request
   through `src/app/output_path.rs`'s `resolve_output_path` before the
   dataset is even looked up, and refuses an absolute path, a path that
-  escapes the root, or a run with no root configured, with 400. A symlink
-  planted inside the root between that check and the write is not caught.
+  escapes the root — textually or through a symlink inside it — or a run
+  with no root configured, with 400. The check approves a path, not the
+  state of the tree at the moment of the write, so a symlink planted inside
+  the root afterwards is not caught.
 - `filter`, on query and predicate delete, is a SQL predicate interpolated as
   written — `cityparquet_delete` takes its predicate as a SQL fragment by
   design, so there is nothing to bind it to.

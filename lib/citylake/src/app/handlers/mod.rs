@@ -16,9 +16,11 @@
 //!   replaced. Both are resolved against a configured root
 //!   (`CITYLAKE_OUTPUT_ROOT`) by [`resolve_output_path`](crate::app::output_path::resolve_output_path)
 //!   before the dataset is even looked up: an absolute path, a path that
-//!   escapes the root, or a run with no root configured is refused with 400.
-//!   A symlink planted inside the root between that check and the write is
-//!   not caught — see `output_path.rs`'s module doc.
+//!   escapes the root — textually or through a symlink — and a run with no
+//!   root configured are each refused with 400. The check approves a path,
+//!   not the state of the tree at the moment of the write: a symlink planted
+//!   inside the root afterwards is not caught — see `output_path.rs`'s
+//!   module doc.
 //! - `filter` on query and predicate-delete is a SQL predicate interpolated
 //!   as written, because `cityparquet_delete` takes a predicate string by
 //!   design.
