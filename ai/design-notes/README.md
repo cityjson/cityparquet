@@ -31,6 +31,7 @@ instead — that is the maintained, normative half.
 | `plans/2026-09-02-citylake-web-repoint.md` | Piece B: re-pointing the web client from the removed one-table-per-LoD model at the dataset/module API, minimum viable and matched to the end-to-end journey |
 | `plans/2026-09-03-citylake-ui-e2e.md` | Piece C: Playwright over the web client, the development-only session that gets past the login gate, and the server configuration an isolated run needs |
 | `specs/2026-09-03-citylake-output-policy-and-maintenance-ui-design.md` | A configured output root enforced at the HTTP boundary, and client screens for the seven operations that had none |
+| `plans/2026-09-03-citylake-output-policy-and-maintenance-ui.md` | The implementation plan for the above, with the path-resolution algorithm measured against a real filesystem — including the traversal hidden in a non-existent remainder that the spec's own prose would have permitted |
 
 Note that these notes were written while the code lived in several separate
 repositories, so they refer to paths (and, in one case, a local working
