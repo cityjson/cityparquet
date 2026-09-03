@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { Eyebrow } from "@/components/Eyebrow";
+import { MaintenancePanel } from "@/components/MaintenancePanel";
 import { StatusDot } from "@/components/StatusDot";
 import { Tag } from "@/components/Tag";
 import {
@@ -152,6 +153,8 @@ export default function DatasetDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      {ds && <MaintenancePanel ds={ds} />}
 
       <Card accent="error">
         <CardHeader>

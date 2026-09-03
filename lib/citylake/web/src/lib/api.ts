@@ -133,3 +133,44 @@ export function deleteObject(ds: string, id: string): Promise<{ deleted: number 
     { method: "DELETE" },
   );
 }
+
+/**
+ * One structural problem `cityparquet_validate` found. `object_id` is `null`
+ * when the finding is about the table itself rather than one row in it.
+ */
+export interface ValidationFinding {
+  check_name: string;
+  severity: string;
+  table_name: string;
+  object_id: string | null;
+  message: string;
+}
+
+/** Runs every structural check; reports, does not repair. A bare array. */
+export function validateDataset(ds: string): Promise<ValidationFinding[]> {
+  return request<ValidationFinding[]>(`/datasets/${encodeURIComponent(ds)}/validate`, {
+    method: "POST",
+  });
+}
+
+/** Re-derives `feature_id`, the reciprocal hierarchy and bbox. The server answers 204. */
+export function reconcileDataset(ds: string): Promise<void> {
+  return request<void>(`/datasets/${encodeURIComponent(ds)}/reconcile`, { method: "POST" });
+}
+
+/** Reclaims unreferenced sidecar rows. */
+export function vacuumDataset(ds: string): Promise<{ vacuumed: number }> {
+  return request<{ vacuumed: number }>(`/datasets/${encodeURIComponent(ds)}/vacuum`, {
+    method: "POST",
+  });
+}
+
+/** Merges each object table's small Parquet files via DuckLake. */
+export function compactDataset(
+  ds: string,
+): Promise<{ files_processed: number; files_created: number }> {
+  return request<{ files_processed: number; files_created: number }>(
+    `/datasets/${encodeURIComponent(ds)}/compact`,
+    { method: "POST" },
+  );
+}
