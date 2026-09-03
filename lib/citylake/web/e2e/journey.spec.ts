@@ -46,7 +46,7 @@ test("upload, list, open, browse, delete, drop", async ({ page }) => {
   // piece B). AppShell's sidebar mounts its own `["datasets"]` observer once,
   // for the whole authenticated app, and UploadPage's post-upload `navigate`
   // is a client-side route change — so the sidebar's observer has been alive,
-  // unmounted, since before the upload. It refetches here only if something
+  // mounted, since before the upload. It refetches here only if something
   // invalidated the query; nothing else would make it. This has to happen
   // now, before any reload: `page.goto` below is a full navigation that
   // discards the client cache and refetches unconditionally, which would
@@ -172,8 +172,20 @@ test("upload, list, open, browse, delete, drop", async ({ page }) => {
   expect((await dropResponse).ok()).toBe(true);
   await expect(page).toHaveURL(/\/datasets$/);
   expect((await listAfterDropResponse).ok()).toBe(true);
+
+  // As in smoke.spec.ts: `waitForResponse` resolving on headers does not
+  // mean the success branch has rendered yet, and a wrong-shaped 200 body
+  // would let the query succeed while DatasetsPage crashes in render
+  // instead of hitting the `error &&` branch. Anchor on what the success
+  // branch actually produces before checking anything about its content.
+  const main = page.getByRole("main");
+  await expect(main.locator(".animate-pulse")).toHaveCount(0);
+  const emptyState = main.getByText("No datasets yet.");
+  const datasetCard = main.locator('a[href^="/datasets/"]').first();
+  await expect(emptyState.or(datasetCard)).toBeVisible();
+
+  // Belt-and-braces, now evaluated at a meaningful moment rather than
+  // instantly, before anything has rendered.
   await expect(page.getByText(/Failed to load datasets/)).toHaveCount(0);
-  await expect(
-    page.getByRole("main").getByRole("link", { name: new RegExp(DATASET_NAME) }),
-  ).toHaveCount(0);
+  await expect(main.getByRole("link", { name: new RegExp(DATASET_NAME) })).toHaveCount(0);
 });
