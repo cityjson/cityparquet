@@ -9,7 +9,8 @@
     "build": "vp build",
     "check": "vp check",
     "test": "vp test",
-    "preview": "vp preview"
+    "preview": "vp preview",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -29,6 +30,7 @@
     "zod": "^4.4.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^25.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

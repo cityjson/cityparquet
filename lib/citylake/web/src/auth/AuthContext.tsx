@@ -25,8 +25,11 @@ const E2E_SESSION_ACTIVE = import.meta.env.DEV && import.meta.env.VITE_E2E_AUTH_
 
 /**
  * Deliberately minimal — not a faithful `Session`. It only needs to satisfy
- * `ProtectedRoute`'s truthiness check and give `src/lib/api.ts` an
- * `access_token` to send as a bearer token, which the Rust server ignores.
+ * `ProtectedRoute`'s truthiness check and give any reader of
+ * `session.access_token` a value to find, should one look. `src/lib/api.ts`
+ * is not such a reader: it calls `supabase.auth.getSession()` directly
+ * rather than going through this context, so this token is never actually
+ * sent anywhere.
  */
 const E2E_SESSION = {
   access_token: "e2e-bypass-token",
