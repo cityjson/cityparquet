@@ -20,11 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { writePackage, type PackageFile } from "@/lib/api";
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
+import { errorMessage, writePackage, type PackageFile } from "@/lib/api";
 
 /**
  * Writes the dataset out as a CityParquet package directory, relative to
@@ -60,14 +56,7 @@ export function PackageDialog({ ds }: { ds: string }) {
         <p className="text-[13px] text-ink-500">
           Write <code className="cl-code">{ds}</code> out as a CityParquet package directory.
         </p>
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={() => {
-            writeMutation.reset();
-            setOpen(true);
-          }}
-        >
+        <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
           Write package…
         </Button>
       </div>

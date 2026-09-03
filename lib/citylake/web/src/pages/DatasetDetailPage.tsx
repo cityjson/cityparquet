@@ -31,7 +31,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ApiError, describeDataset, dropDataset } from "@/lib/api";
+import { ApiError, describeDataset, dropDataset, errorMessage } from "@/lib/api";
 
 export default function DatasetDetailPage() {
   const { ds = "" } = useParams();
@@ -55,7 +55,7 @@ export default function DatasetDetailPage() {
       navigate("/datasets");
     },
     onError: (err: unknown) => {
-      setDropError(err instanceof Error ? err.message : String(err));
+      setDropError(errorMessage(err));
     },
   });
 

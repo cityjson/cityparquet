@@ -12,11 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { exportModule, type ExportFormat, type ModuleInfo } from "@/lib/api";
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
+import { Select } from "@/components/ui/select";
+import { errorMessage, exportModule, type ExportFormat, type ModuleInfo } from "@/lib/api";
 
 const FORMATS: { value: ExportFormat; label: string }[] = [
   { value: "cityjson", label: "CityJSON" },
@@ -62,14 +59,7 @@ export function ExportDialog({ ds, modules }: { ds: string; modules: ModuleInfo[
         <p className="text-[13px] text-ink-500">
           Write one module to a single CityJSON-family file.
         </p>
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={() => {
-            exportMutation.reset();
-            setOpen(true);
-          }}
-        >
+        <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
           Export…
         </Button>
       </div>
@@ -95,12 +85,12 @@ export function ExportDialog({ ds, modules }: { ds: string; modules: ModuleInfo[
             <form onSubmit={onSubmit} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="export-module">Module</Label>
-                <select
+                <Select
                   id="export-module"
+                  mono
                   required
                   value={module}
                   onChange={(e) => setModule(e.target.value)}
-                  className="flex h-9 w-full rounded-md border border-paper-300 bg-white px-3 py-2 text-[14px] text-ink-900 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lake-300 focus-visible:ring-offset-1 focus-visible:border-lake-500"
                 >
                   <option value="">Choose a module…</option>
                   {objectModules.map((m) => (
@@ -108,23 +98,23 @@ export function ExportDialog({ ds, modules }: { ds: string; modules: ModuleInfo[
                       {m.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="export-format">Format</Label>
-                <select
+                <Select
                   id="export-format"
+                  mono
                   value={format}
                   onChange={(e) => setFormat(e.target.value as ExportFormat)}
-                  className="flex h-9 w-full rounded-md border border-paper-300 bg-white px-3 py-2 text-[14px] text-ink-900 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lake-300 focus-visible:ring-offset-1 focus-visible:border-lake-500"
                 >
                   {FORMATS.map((f) => (
                     <option key={f.value} value={f.value}>
                       {f.label}
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
 
               <div className="space-y-2">

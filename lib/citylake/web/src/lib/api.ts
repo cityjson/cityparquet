@@ -13,6 +13,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The message to show a user for a rejected request. Every mutation in the
+ * interface reports through this, so the one place that decides what a
+ * failure reads like is here rather than in each component: an
+ * {@link ApiError} already carries the server's own sentence, and anything
+ * else is stringified rather than swallowed.
+ */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 async function authHeader(): Promise<HeadersInit> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;

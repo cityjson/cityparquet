@@ -28,7 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ApiError, deleteObject, queryObjects, type ObjectRow } from "@/lib/api";
+import { ApiError, deleteObject, errorMessage, queryObjects, type ObjectRow } from "@/lib/api";
 
 const PAGE_SIZE = 25;
 
@@ -65,7 +65,7 @@ export default function ModulePage() {
       qc.invalidateQueries({ queryKey: ["dataset", ds] });
     },
     onError: (err: unknown) => {
-      setActionError(err instanceof Error ? err.message : String(err));
+      setActionError(errorMessage(err));
     },
   });
 

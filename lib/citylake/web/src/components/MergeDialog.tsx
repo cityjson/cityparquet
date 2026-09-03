@@ -13,11 +13,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { listDatasets, mergeDataset } from "@/lib/api";
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
+import { Select } from "@/components/ui/select";
+import { errorMessage, listDatasets, mergeDataset } from "@/lib/api";
 
 /**
  * Merges another dataset into `ds`. `ds` is the destination and is what
@@ -88,11 +85,11 @@ export function MergeDialog({ ds }: { ds: string }) {
 
           <div className="space-y-2">
             <Label htmlFor="merge-source">Source dataset</Label>
-            <select
+            <Select
               id="merge-source"
+              mono
               value={source}
               onChange={(e) => setSource(e.target.value)}
-              className="flex h-9 w-full rounded-md border border-paper-300 bg-white px-3 py-2 text-[14px] text-ink-900 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lake-300 focus-visible:ring-offset-1 focus-visible:border-lake-500 disabled:cursor-not-allowed disabled:opacity-50"
               disabled={datasetsQuery.isLoading}
             >
               <option value="">
@@ -103,7 +100,7 @@ export function MergeDialog({ ds }: { ds: string }) {
                   {name}
                 </option>
               ))}
-            </select>
+            </Select>
             {datasetsQuery.isError && (
               <p className="font-mono text-[12px] text-roof-700">
                 {errorMessage(datasetsQuery.error)}

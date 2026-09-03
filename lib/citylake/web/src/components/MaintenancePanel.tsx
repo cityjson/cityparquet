@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/table";
 import {
   compactDataset,
+  errorMessage,
   reconcileDataset,
   vacuumDataset,
   validateDataset,
@@ -37,10 +38,6 @@ const severityTone: Record<string, Tone> = {
   warn: "warn",
   info: "info",
 };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 /**
  * The four dataset maintenance operations that take no input beyond the
