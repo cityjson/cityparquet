@@ -2,23 +2,14 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
-use tower::ServiceExt;
+use common::send;
 
 fn app() -> (axum::Router, tempfile::TempDir) {
     let (service, dir) = common::test_service();
     (
-        citylake::app::server::router(std::sync::Arc::new(service)),
+        citylake::app::server::router(std::sync::Arc::new(service), None),
         dir,
     )
-}
-
-async fn send(app: &axum::Router, request: Request<Body>) -> (StatusCode, serde_json::Value) {
-    let response = app.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-    (status, json)
 }
 
 #[tokio::test]

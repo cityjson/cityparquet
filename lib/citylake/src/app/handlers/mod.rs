@@ -13,7 +13,12 @@
 //!   read and which hosts it contacts.
 //! - `output_path` and `output_dir` on export and package write name a
 //!   destination the SERVER writes, and an existing file at that path is
-//!   replaced.
+//!   replaced. Both are resolved against a configured root
+//!   (`CITYLAKE_OUTPUT_ROOT`) by [`resolve_output_path`](crate::app::output_path::resolve_output_path)
+//!   before the dataset is even looked up: an absolute path, a path that
+//!   escapes the root, or a run with no root configured is refused with 400.
+//!   A symlink planted inside the root between that check and the write is
+//!   not caught — see `output_path.rs`'s module doc.
 //! - `filter` on query and predicate-delete is a SQL predicate interpolated
 //!   as written, because `cityparquet_delete` takes a predicate string by
 //!   design.
@@ -29,9 +34,11 @@
 //!
 //! Together these mean the API belongs on a trusted network, operated by
 //! people who already have the rights it exercises on their behalf. Exposing
-//! it more widely needs authentication, a path policy confining reads and
-//! writes to a configured root, and a restricted predicate grammar — none of
-//! which exist.
+//! it more widely still needs authentication and a restricted predicate
+//! grammar. The write half of a path policy now exists (`output_path` /
+//! `output_dir`, above); the read half does not — `source_path` is acted on
+//! as-is, so a caller still chooses both which of the server's files are
+//! read and which hosts it contacts.
 
 pub mod dataset;
 pub mod maintenance;

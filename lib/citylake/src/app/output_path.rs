@@ -16,6 +16,11 @@
 //! then fold the remaining, not-yet-existing components onto it lexically —
 //! `ParentDir` pops, `CurDir` is skipped, `Normal` pushes — before comparing
 //! the result against the canonicalised root by prefix.
+//!
+//! This is a check-then-use control, not an atomic one: nothing stops a
+//! symlink being planted inside the root between this function returning and
+//! the caller opening the path it approved. That gap is accepted residual
+//! risk, not fixed here.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -209,6 +214,29 @@ mod tests {
         assert!(matches!(
             resolve_output_path(Some(root.to_str().unwrap()), "newdir/../../outside/pkg"),
             Err(OutputPathError::Escapes)
+        ));
+    }
+
+    #[test]
+    fn a_sibling_directory_sharing_a_name_prefix_is_refused() {
+        // "root-backup" is not "root" as a path component, even though it
+        // shares a string prefix with it. A naive string-prefix comparison
+        // (rather than the committed component-wise `Path::starts_with`)
+        // would accept this and pass all seven tests above it regardless.
+        let (_dir, root) = fixture();
+        assert!(matches!(
+            resolve_output_path(Some(root.to_str().unwrap()), "../root-backup/pkg"),
+            Err(OutputPathError::Escapes)
+        ));
+    }
+
+    #[test]
+    fn a_root_that_does_not_exist_is_reported_as_parent_missing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing_root = dir.path().join("does-not-exist");
+        assert!(matches!(
+            resolve_output_path(Some(missing_root.to_str().unwrap()), "pkg"),
+            Err(OutputPathError::ParentMissing)
         ));
     }
 }

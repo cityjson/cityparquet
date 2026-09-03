@@ -257,7 +257,12 @@ that implies:
   local paths, so a caller chooses both which of the server's files are read
   and which hosts it contacts.
 - `output_path` / `output_dir`, on export and package write, name a
-  destination the **server** writes, replacing whatever is already there.
+  destination the **server** writes, replacing whatever is already there —
+  confined to `CITYLAKE_OUTPUT_ROOT`: the handler resolves the request
+  through `src/app/output_path.rs`'s `resolve_output_path` before the
+  dataset is even looked up, and refuses an absolute path, a path that
+  escapes the root, or a run with no root configured, with 400. A symlink
+  planted inside the root between that check and the write is not caught.
 - `filter`, on query and predicate delete, is a SQL predicate interpolated as
   written — `cityparquet_delete` takes its predicate as a SQL fragment by
   design, so there is nothing to bind it to.
@@ -272,9 +277,9 @@ that implies:
 
 This belongs on a trusted network, run by people who already hold the rights
 it exercises on their behalf. `src/app/handlers/mod.rs` states this in full;
-exposing the API more widely would need authentication, a path policy
-confining reads and writes to a configured root, and a restricted predicate
-grammar — none of which exist today.
+exposing the API more widely would still need authentication, a path policy
+confining *reads* (`source_path`) to a configured root — writes are confined
+already, as above — and a restricted predicate grammar.
 
 ## `geometry_templates` orphans are not vacuumed
 
