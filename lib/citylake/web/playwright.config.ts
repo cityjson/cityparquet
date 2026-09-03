@@ -13,7 +13,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // share state. `reuseExistingServer: false` below means every run starts
 // from this clean directory rather than a developer's own server.
 export const runDir = path.join(tmpdir(), `citylake-e2e-${process.pid}`);
-mkdirSync(runDir, { recursive: true });
+// This module is also imported by each worker process (they need `use`'s
+// options), which would otherwise `mkdirSync` a second, empty, same-shaped
+// directory under the worker's own pid that nothing ever writes to or
+// cleans up — `TEST_WORKER_INDEX` is set only in a worker, never in the
+// orchestrator that actually starts the webServers above and runs
+// `globalTeardown`, so this keeps directory creation to the one process
+// whose `runDir` is real.
+if (!process.env.TEST_WORKER_INDEX) mkdirSync(runDir, { recursive: true });
 
 // `--manifest-path` needs an absolute path once `cwd` points outside the
 // crate, so resolve both it and the extension relative to this file rather
