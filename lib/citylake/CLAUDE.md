@@ -288,10 +288,14 @@ catalog's search path, so the probe fails and contributes no term — the
 construction: a `geometry_templates` orphan is missed, never deleted data. It
 is the extension's limitation, and is not worked around here.
 
-## `web/` is stale
+## `web/`
 
-`web/` is keyed to a table-per-LoD API this crate does not expose, and does
-not build against the dataset/module model above. It awaits a follow-up.
+`web/` is a React client against the dataset/module API above: a datasets
+list, a dataset detail view showing module tables and CRS, upload and create
+(bootstrapping a dataset from a CityJSON-family file), and module object
+browse and delete. It builds and type-checks clean against the current API.
+The package operations — validate, reconcile, vacuum, merge, package write,
+export, compact — have no UI yet.
 
 ## API
 
@@ -335,7 +339,7 @@ test` is the pure tier; `just test-integration` is the integration tier and
 needs `CITYLAKE_CITYJSON_EXTENSION` set, as above. `just check` is the clippy
 gate.
 `just api` starts the server with a dotenvx-loaded `.env`; `just web`/`just
-dev` are `web/`'s toolchain, which the staleness note above applies to.
+dev` are `web/`'s toolchain, described above.
 
 The root `justfile`'s `citylake-check` runs this crate's clippy gate and full
 test suite as part of `just check` from the repository root, resolving

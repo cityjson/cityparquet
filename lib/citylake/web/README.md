@@ -1,7 +1,7 @@
 # CityLake Web
 
-The CityLake web UI — upload a CityParquet dataset, browse its module tables,
-and CRUD individual CityObjects, all behind Supabase auth.
+The CityLake web UI — upload a CityJSON-family file into a dataset, browse its
+module tables, and CRUD individual CityObjects, all behind Supabase auth.
 
 ## Stack
 
