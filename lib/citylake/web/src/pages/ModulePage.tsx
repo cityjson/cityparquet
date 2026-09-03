@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Pencil, Table2, Trash2 } from "lucide-react";
+import { ArrowLeft, Table2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
@@ -18,16 +18,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -37,100 +28,70 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
-import { ApiError, deleteObject, queryObjects, updateObject, type QueryResponse } from "@/lib/api";
+import { ApiError, deleteObject, queryObjects, type ObjectRow } from "@/lib/api";
 
 const PAGE_SIZE = 25;
 
-interface ObjectRow {
-  id?: string;
-  feature_id?: string;
-  object_type?: string;
-  [k: string]: unknown;
-}
-
-export default function LodTablePage() {
-  const { tableName = "" } = useParams();
+export default function ModulePage() {
+  const { ds = "", module = "" } = useParams();
   const qc = useQueryClient();
 
   const [filter, setFilter] = useState("");
   const [filterDraft, setFilterDraft] = useState("");
   const [page, setPage] = useState(0);
 
-  const [editing, setEditing] = useState<{ id: string; json: string } | null>(null);
-  const [editDraft, setEditDraft] = useState("");
-  const [editError, setEditError] = useState<string | null>(null);
-
   const [deleting, setDeleting] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [lastDeleted, setLastDeleted] = useState<number | null>(null);
 
-  const query = useQuery<QueryResponse>({
-    queryKey: ["objects", tableName, filter, page],
+  const query = useQuery<ObjectRow[]>({
+    queryKey: ["objects", ds, module, filter, page],
     queryFn: () =>
-      queryObjects(tableName, {
+      queryObjects(ds, module, {
         filter: filter || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       }),
-    enabled: !!tableName,
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: ({ id, json }: { id: string; json: string }) => updateObject(tableName, id, json),
-    onSuccess: () => {
-      setEditing(null);
-      setEditError(null);
-      qc.invalidateQueries({ queryKey: ["objects", tableName] });
-    },
-    onError: (err: unknown) => {
-      setEditError(err instanceof Error ? err.message : String(err));
-    },
+    enabled: !!ds && !!module,
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteObject(tableName, id),
-    onSuccess: () => {
+    mutationFn: (id: string) => deleteObject(ds, id),
+    onSuccess: ({ deleted }) => {
       setDeleting(null);
       setActionError(null);
-      qc.invalidateQueries({ queryKey: ["objects", tableName] });
+      setLastDeleted(deleted);
+      qc.invalidateQueries({ queryKey: ["objects", ds, module] });
     },
     onError: (err: unknown) => {
       setActionError(err instanceof Error ? err.message : String(err));
     },
   });
 
-  const objects = (query.data?.objects ?? []) as ObjectRow[];
+  const objects = query.data ?? [];
   const columns = inferColumns(objects);
-
-  const lod = parseLodFromName(tableName);
+  const hasFullPage = objects.length === PAGE_SIZE;
 
   return (
     <div className="space-y-8">
       <Button asChild variant="ghost" size="sm" className="-ml-2">
-        <Link to="/datasets">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back to datasets
+        <Link to={`/datasets/${ds}`}>
+          <ArrowLeft className="h-3.5 w-3.5" /> Back to {ds}
         </Link>
       </Button>
 
       <header className="space-y-2">
         <div className="flex items-center gap-3 flex-wrap">
-          <Eyebrow>LOD table</Eyebrow>
-          {lod && (
-            <Tag tone="info" square>
-              LOD {lod}
-            </Tag>
-          )}
+          <Eyebrow>Module</Eyebrow>
           <Tag tone="ok">
             <StatusDot tone="ok" />
             READY
           </Tag>
         </div>
         <h1 className="font-mono text-[32px] font-semibold leading-tight tracking-tight text-ink-900">
-          {tableName}
+          {module}
         </h1>
-        <p className="text-[14px] text-ink-500">
-          Browse, edit, and delete CityObjects in this LOD table.
-        </p>
+        <p className="text-[14px] text-ink-500">Browse and delete CityObjects in this module.</p>
       </header>
 
       {/* Filter */}
@@ -183,6 +144,14 @@ export default function LodTablePage() {
         </Card>
       )}
 
+      {lastDeleted !== null && !actionError && (
+        <Card accent="ok">
+          <CardContent className="pt-5 font-mono text-[12px] text-moss-700">
+            Deleted {lastDeleted} object{lastDeleted === 1 ? "" : "s"} (including children).
+          </CardContent>
+        </Card>
+      )}
+
       {/* Result grid */}
       <Card className="overflow-hidden">
         <div className="flex items-center gap-2.5 border-b border-paper-200 bg-paper-50 px-3 py-1.5">
@@ -230,20 +199,6 @@ export default function LodTablePage() {
                           size="icon"
                           variant="ghost"
                           onClick={() => {
-                            const id = String(row.id ?? "");
-                            const json = JSON.stringify(row, null, 2);
-                            setEditing({ id, json });
-                            setEditDraft(json);
-                            setEditError(null);
-                          }}
-                          aria-label={`Edit ${row.id}`}
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() => {
                             setDeleting(String(row.id ?? ""));
                             setActionError(null);
                           }}
@@ -264,7 +219,7 @@ export default function LodTablePage() {
       <div className="flex items-center justify-between">
         <p className="font-mono text-[11px] text-ink-500">
           Page {page + 1}
-          {query.data ? ` · ${query.data.count} on this page` : ""}
+          {query.data ? ` · ${objects.length} on this page` : ""}
         </p>
         <div className="flex gap-2">
           <Button
@@ -279,57 +234,12 @@ export default function LodTablePage() {
             variant="secondary"
             size="sm"
             onClick={() => setPage((p) => p + 1)}
-            disabled={!query.data || query.data.count < PAGE_SIZE}
+            disabled={!hasFullPage}
           >
             Next
           </Button>
         </div>
       </div>
-
-      {/* Edit dialog */}
-      <Dialog
-        open={editing !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setEditing(null);
-            setEditError(null);
-          }
-        }}
-      >
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Edit object</DialogTitle>
-            <DialogDescription>
-              Replace the row identified by <code className="cl-code">{editing?.id}</code> with this
-              CityJSONFeature snippet. The new payload is parsed by the cityjson DuckDB extension.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Label htmlFor="cityjson_data">CityJSON snippet</Label>
-            <Textarea
-              id="cityjson_data"
-              value={editDraft}
-              onChange={(e) => setEditDraft(e.target.value)}
-              className="h-72"
-            />
-            {editError && <p className="font-mono text-[12px] text-roof-700">{editError}</p>}
-          </div>
-          <DialogFooter>
-            <Button variant="secondary" onClick={() => setEditing(null)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                if (!editing) return;
-                updateMutation.mutate({ id: editing.id, json: editDraft });
-              }}
-              disabled={updateMutation.isPending}
-            >
-              {updateMutation.isPending ? "Saving…" : "Save"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Delete confirm */}
       <AlertDialog
@@ -343,7 +253,8 @@ export default function LodTablePage() {
             <AlertDialogTitle>Delete object?</AlertDialogTitle>
             <AlertDialogDescription>
               This permanently removes <code className="cl-code">{deleting}</code> from{" "}
-              <code className="cl-code">{tableName}</code>. This action cannot be undone.
+              <code className="cl-code">{module}</code>, along with every object beneath it in the
+              hierarchy. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -387,10 +298,4 @@ function formatCell(value: unknown): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "object") return JSON.stringify(value).slice(0, 80);
   return String(value).slice(0, 80);
-}
-
-function parseLodFromName(name: string): string | null {
-  const m = name.match(/_lod_(\d+)(?:_(\d+))?$/);
-  if (!m) return null;
-  return m[2] ? `${m[1]}.${m[2]}` : m[1];
 }
