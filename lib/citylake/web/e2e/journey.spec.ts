@@ -42,8 +42,23 @@ test("upload, list, open, browse, delete, drop", async ({ page }) => {
   expect(uploadResult.ok()).toBe(true);
   await expect(page).toHaveURL(new RegExp(`/datasets/${DATASET_NAME}$`));
 
+  // Proves the create invalidated the `["datasets"]` query (cache-key defect
+  // piece B). AppShell's sidebar mounts its own `["datasets"]` observer once,
+  // for the whole authenticated app, and UploadPage's post-upload `navigate`
+  // is a client-side route change — so the sidebar's observer has been alive,
+  // unmounted, since before the upload. It refetches here only if something
+  // invalidated the query; nothing else would make it. This has to happen
+  // now, before any reload: `page.goto` below is a full navigation that
+  // discards the client cache and refetches unconditionally, which would
+  // make the same assertion pass whether or not invalidation ever ran.
+  await expect(
+    page.getByRole("navigation").getByRole("link", { name: DATASET_NAME, exact: true }),
+  ).toBeVisible();
+
   // ---- 2. It appears in the list ---------------------------------------
-  // Proves the create invalidated the list query (cache-key defect piece B).
+  // `page.goto` is a full page reload, so this does not exercise the client
+  // cache at all — it proves only that the dataset persisted server-side and
+  // a genuinely fresh list contains it. The invalidation proof is above.
   const listResponse = page.waitForResponse(
     (response) => response.url().endsWith("/api/datasets") && response.request().method() === "GET",
   );
@@ -132,7 +147,12 @@ test("upload, list, open, browse, delete, drop", async ({ page }) => {
   }
 
   // ---- 6. Drop the dataset ------------------------------------------------
-  // Proves the drop and its invalidation.
+  // Proves the drop itself: the dataset is gone from a subsequent list
+  // fetch. It does not independently test invalidation the way the check
+  // after step 1 does — `navigate("/datasets")` mounts a stale-by-default
+  // query observer, which refetches with or without an explicit
+  // invalidation call — but it does catch a drop that silently fails to
+  // remove the dataset.
   await page.getByRole("link", { name: `Back to ${DATASET_NAME}` }).click();
   await expect(page.getByRole("heading", { name: DATASET_NAME, level: 1 })).toBeVisible();
 
