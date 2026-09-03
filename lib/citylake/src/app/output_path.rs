@@ -191,7 +191,8 @@ mod tests {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(dir.path().join("outside"), root.join("escape")).unwrap();
-            std::os::unix::fs::symlink(dir.path().join("root-backup"), root.join("backup")).unwrap();
+            std::os::unix::fs::symlink(dir.path().join("root-backup"), root.join("backup"))
+                .unwrap();
         }
         (dir, root)
     }
@@ -323,12 +324,12 @@ mod tests {
     fn a_dangling_symlink_inside_the_root_is_refused() {
         // `Path::exists()` follows symlinks and reports a *broken* one as
         // not existing at all — no race required, this is wrong on its own:
-        // the link then falls into the lexically-folded remainder instead
-        // of being canonicalised, and the fold never sees where the link
-        // actually points. `symlink_metadata` sees the link entry itself
-        // regardless of whether its target exists, so the ancestor walk
-        // stops there and canonicalising it (which does follow the link)
-        // fails, refusing the request instead of silently approving it.
+        // the walk would step straight past the link and treat it as part
+        // of the not-yet-created remainder, never asking where it points.
+        // `symlink_metadata` sees the link entry itself regardless of
+        // whether its target exists, so the walk stops there and
+        // canonicalising it (which does follow the link) fails, refusing
+        // the request instead of silently approving it.
         let (_dir, root) = fixture();
         let outside = _dir.path().join("nowhere");
         #[cfg(unix)]
