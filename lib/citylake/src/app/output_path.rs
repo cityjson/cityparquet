@@ -76,9 +76,18 @@ pub fn resolve_output_path(
     // normal case for a package about to be created — so this walk finds
     // where resolution has to stop; at worst it stops at `canonical_root`
     // itself, which is guaranteed to exist.
+    //
+    // `symlink_metadata`, not `exists`: `exists` follows the final symlink
+    // and reports a *broken* one as not existing at all, so a dangling link
+    // would fall into the lexically-folded remainder below instead of being
+    // canonicalised — and the fold never sees where the link points, only
+    // its literal name. `symlink_metadata` sees the link entry itself
+    // regardless of what it points to (or whether that target exists), so
+    // the walk stops on the link and the canonicalisation below — which
+    // does follow it — is what refuses it.
     let existing_ancestor = full
         .ancestors()
-        .find(|candidate| candidate.exists())
+        .find(|candidate| candidate.symlink_metadata().is_ok())
         .ok_or(OutputPathError::ParentMissing)?;
 
     // Canonicalising this ancestor is what sees through a symlink planted
@@ -227,6 +236,26 @@ mod tests {
         assert!(matches!(
             resolve_output_path(Some(root.to_str().unwrap()), "../root-backup/pkg"),
             Err(OutputPathError::Escapes)
+        ));
+    }
+
+    #[test]
+    fn a_dangling_symlink_inside_the_root_is_refused() {
+        // `Path::exists()` follows symlinks and reports a *broken* one as
+        // not existing at all — no race required, this is wrong on its own:
+        // the link then falls into the lexically-folded remainder instead
+        // of being canonicalised, and the fold never sees where the link
+        // actually points. `symlink_metadata` sees the link entry itself
+        // regardless of whether its target exists, so the ancestor walk
+        // stops there and canonicalising it (which does follow the link)
+        // fails, refusing the request instead of silently approving it.
+        let (_dir, root) = fixture();
+        let outside = _dir.path().join("nowhere");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("dangling")).unwrap();
+        assert!(matches!(
+            resolve_output_path(Some(root.to_str().unwrap()), "dangling/pkg"),
+            Err(OutputPathError::ParentMissing)
         ));
     }
 

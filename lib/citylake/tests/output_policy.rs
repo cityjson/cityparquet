@@ -116,3 +116,23 @@ async fn exporting_to_the_root_itself_is_refused() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn exporting_to_the_root_itself_via_an_empty_path_is_refused() {
+    // Same guard as above, exercised through the other string
+    // `resolve_output_path` treats as "the root itself" — a regression that
+    // narrowed the handler's check to a literal `"."` match would let this
+    // one back through while the "." test above kept passing.
+    let (app, _dir) = common::app_with_output_root();
+    let (status, _) = common::send(
+        &app,
+        Request::post("/datasets/any/export")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"module":"building","output_path":"","format":"cityjsonseq"}"#,
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
