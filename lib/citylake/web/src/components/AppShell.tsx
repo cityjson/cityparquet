@@ -16,7 +16,7 @@ export default function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["datasets"],
     queryFn: listDatasets,
   });
@@ -63,7 +63,14 @@ export default function AppShell() {
               </div>
             )}
 
-            {!isLoading && datasets.length === 0 && (
+            {isError && (
+              <p className="flex items-center gap-1.5 font-mono text-[11px] text-roof-700 px-2 py-3">
+                <StatusDot tone="error" />
+                Couldn&apos;t load datasets.
+              </p>
+            )}
+
+            {!isLoading && !isError && datasets.length === 0 && (
               <p className="font-mono text-[11px] text-ink-500 px-2 py-3">No datasets yet.</p>
             )}
 

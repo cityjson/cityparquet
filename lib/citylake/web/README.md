@@ -1,7 +1,7 @@
 # CityLake Web
 
-The CityLake web UI — upload CityJSON, browse the LOD-suffixed tables, and CRUD
-individual CityObjects, all behind Supabase auth.
+The CityLake web UI — upload a CityParquet dataset, browse its module tables,
+and CRUD individual CityObjects, all behind Supabase auth.
 
 ## Stack
 
@@ -87,11 +87,11 @@ src/
 │   ├── supabase/client.ts        # @supabase/ssr factory — shadcn-installed
 │   └── utils.ts                  # cn() helper
 ├── pages/
-│   ├── DatasetsPage.tsx          # /datasets — base-name card grid
-│   ├── DatasetDetailPage.tsx     # /datasets/:base — metadata + LOD tables
-│   ├── LodTablePage.tsx          # /tables/:tableName — browse + edit + delete
+│   ├── DatasetsPage.tsx          # /datasets — dataset name card grid
+│   ├── DatasetDetailPage.tsx     # /datasets/:ds — module list (role, rows) + CRS
+│   ├── ModulePage.tsx            # /datasets/:ds/modules/:module — browse + delete
 │   ├── LoginPage.tsx             # /login — magic-link auth
-│   └── UploadPage.tsx            # /upload — multipart create_table
+│   └── UploadPage.tsx            # /upload — multipart dataset upload
 └── vite-env.d.ts
 ```
 
@@ -108,6 +108,7 @@ src/
 
 ## Related changes in the Rust crate
 
-- `GET /tables` endpoint — done.
+- Dataset and module endpoints (`GET /datasets`, `GET /datasets/{ds}`,
+  `GET /datasets/{ds}/modules/{module}/objects`, …) — done.
 - JWT validation middleware that accepts Supabase access tokens — pending.
 - Scoped CORS — pending.

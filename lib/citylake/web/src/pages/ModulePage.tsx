@@ -62,6 +62,7 @@ export default function ModulePage() {
       setActionError(null);
       setLastDeleted(deleted);
       qc.invalidateQueries({ queryKey: ["objects", ds, module] });
+      qc.invalidateQueries({ queryKey: ["dataset", ds] });
     },
     onError: (err: unknown) => {
       setActionError(err instanceof Error ? err.message : String(err));
