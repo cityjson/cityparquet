@@ -111,6 +111,7 @@ export default function UploadPage() {
               <input
                 ref={inputRef}
                 type="file"
+                aria-label="City file"
                 className="hidden"
                 accept=".json,.jsonl,.fcb,.city.json,.city.jsonl"
                 onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
