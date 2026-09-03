@@ -174,3 +174,56 @@ export function compactDataset(
     { method: "POST" },
   );
 }
+
+/**
+ * Merges `source` into `ds`: `ds` is the destination and is what changes.
+ * Object ids must be unique across the whole destination and the two CRSs
+ * must agree, or the extension refuses the entire merge — there is no
+ * partially merged state. The server answers 204.
+ */
+export function mergeDataset(ds: string, source: string): Promise<void> {
+  return request<void>(`/datasets/${encodeURIComponent(ds)}/merge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source }),
+  });
+}
+
+/** One of the CityJSON-family formats `exportModule` can write. */
+export type ExportFormat = "cityjson" | "cityjsonseq" | "flatcitybuf";
+
+export interface ExportBody {
+  module: string;
+  /** Resolved against the server's configured output root. */
+  output_path: string;
+  format: ExportFormat;
+}
+
+/** Exports one module to a single CityJSON-family file. The server answers 204. */
+export function exportModule(ds: string, body: ExportBody): Promise<void> {
+  return request<void>(`/datasets/${encodeURIComponent(ds)}/export`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** One file `writePackage` wrote (or rewrote). */
+export interface PackageFile {
+  file: string;
+  action: string;
+  rows: number;
+  bytes: number;
+}
+
+/**
+ * Writes the dataset out as a CityParquet package directory, resolved
+ * against the server's configured output root.
+ */
+export function writePackage(ds: string, outputDir: string): Promise<PackageFile[]> {
+  return request<PackageFile[]>(`/datasets/${encodeURIComponent(ds)}/package`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ output_dir: outputDir }),
+  });
+}

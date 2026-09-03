@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { Eyebrow } from "@/components/Eyebrow";
-import { Tag } from "@/components/Tag";
+import { Tag, type Tone } from "@/components/Tag";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,15 +24,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  ApiError,
   compactDataset,
   reconcileDataset,
   vacuumDataset,
   validateDataset,
   type ValidationFinding,
 } from "@/lib/api";
-
-type Tone = "neutral" | "ok" | "warn" | "error" | "info";
 
 const severityTone: Record<string, Tone> = {
   error: "error",
@@ -42,7 +39,7 @@ const severityTone: Record<string, Tone> = {
 };
 
 function errorMessage(err: unknown): string {
-  return err instanceof ApiError ? err.message : err instanceof Error ? err.message : String(err);
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -149,7 +146,10 @@ export function MaintenancePanel({ ds }: { ds: string }) {
             <Button
               size="sm"
               variant="danger"
-              onClick={() => setVacuumConfirmOpen(true)}
+              onClick={() => {
+                vacuumMutation.reset();
+                setVacuumConfirmOpen(true);
+              }}
               disabled={vacuumMutation.isPending}
             >
               {vacuumMutation.isPending ? "Vacuuming…" : "Vacuum"}

@@ -4,7 +4,10 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { Eyebrow } from "@/components/Eyebrow";
+import { ExportDialog } from "@/components/ExportDialog";
 import { MaintenancePanel } from "@/components/MaintenancePanel";
+import { MergeDialog } from "@/components/MergeDialog";
+import { PackageDialog } from "@/components/PackageDialog";
 import { StatusDot } from "@/components/StatusDot";
 import { Tag } from "@/components/Tag";
 import {
@@ -155,6 +158,24 @@ export default function DatasetDetailPage() {
       </Card>
 
       {ds && <MaintenancePanel ds={ds} />}
+
+      {ds && (
+        <Card>
+          <CardHeader>
+            <Eyebrow>Package operations</Eyebrow>
+            <CardTitle className="text-[14px] mt-2 font-sans">
+              Merge, export and package write
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <MergeDialog ds={ds} />
+            <div className="border-t border-paper-200" />
+            <ExportDialog ds={ds} modules={modules} />
+            <div className="border-t border-paper-200" />
+            <PackageDialog ds={ds} />
+          </CardContent>
+        </Card>
+      )}
 
       <Card accent="error">
         <CardHeader>
