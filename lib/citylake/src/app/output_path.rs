@@ -40,10 +40,12 @@ pub enum OutputPathError {
     #[error("requested path escapes the configured output root")]
     Escapes,
     /// The configured root does not exist, or an ancestor found while
-    /// resolving the requested path could not be canonicalised (it was
-    /// removed, or became unreadable, between being found and being
-    /// resolved).
-    #[error("configured output root does not exist")]
+    /// resolving the requested path could not be canonicalised — it is a
+    /// broken symlink, or it was removed or became unreadable between being
+    /// found and being resolved.
+    #[error(
+        "the configured output root, or an ancestor of the requested path, could not be resolved"
+    )]
     ParentMissing,
 }
 
