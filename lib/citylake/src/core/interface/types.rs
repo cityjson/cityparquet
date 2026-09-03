@@ -38,18 +38,46 @@ impl CityLakeConfig {
     /// when set and left at its default when not.
     ///
     /// An unset variable means "use the default"; a variable set to something
-    /// unusable is an error, because an operator who set it meant it.
+    /// unusable is an error, because an operator who set it meant it. That
+    /// covers both an unparseable `CITYLAKE_PORT` and any variable set to
+    /// bytes that are not valid UTF-8 — `std::env::var` reports the latter as
+    /// an error distinct from "unset", and treating it the same as unset
+    /// would silently use the default instead of reporting the mistake.
     pub fn from_env() -> Self {
         let default = Self::default();
         Self {
-            host: std::env::var("CITYLAKE_HOST").unwrap_or(default.host),
-            port: std::env::var("CITYLAKE_PORT")
-                .ok()
-                .map(|raw| Self::port_from(&raw).expect("CITYLAKE_PORT must be a port number"))
-                .unwrap_or(default.port),
-            catalog_name: std::env::var("CITYLAKE_CATALOG_NAME").unwrap_or(default.catalog_name),
-            catalog_path: std::env::var("CITYLAKE_CATALOG_PATH").unwrap_or(default.catalog_path),
-            storage_path: std::env::var("CITYLAKE_STORAGE_PATH").unwrap_or(default.storage_path),
+            host: Self::var_or("CITYLAKE_HOST", default.host),
+            port: Self::port_from(&Self::var_or("CITYLAKE_PORT", default.port.to_string()))
+                .expect("CITYLAKE_PORT must be a port number"),
+            catalog_name: Self::var_or("CITYLAKE_CATALOG_NAME", default.catalog_name),
+            catalog_path: Self::var_or("CITYLAKE_CATALOG_PATH", default.catalog_path),
+            storage_path: Self::var_or("CITYLAKE_STORAGE_PATH", default.storage_path),
+        }
+    }
+
+    /// Read one variable: absent means "use the default", present and
+    /// unusable is an error. A value that is set but not valid UTF-8 is a
+    /// mistake worth reporting, not a reason to quietly use something else.
+    fn var_or(name: &str, default: String) -> String {
+        Self::resolve_var(name, std::env::var(name), default)
+    }
+
+    /// The decision `var_or` applies, pulled out of the actual environment
+    /// read so it is testable without touching the process environment — the
+    /// isolation hazard `from_env`'s own tests are written to avoid: unset
+    /// uses the default, set uses the value, and set-but-not-UTF-8 panics
+    /// naming the variable rather than falling back.
+    fn resolve_var(
+        name: &str,
+        result: Result<String, std::env::VarError>,
+        default: String,
+    ) -> String {
+        match result {
+            Ok(value) => value,
+            Err(std::env::VarError::NotPresent) => default,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                panic!("{name} is set to a value that is not valid UTF-8")
+            }
         }
     }
 
@@ -281,5 +309,54 @@ mod tests {
         // asked for something specific and deserves to be told it was not honoured.
         assert!(CityLakeConfig::port_from("not-a-number").is_err());
         assert_eq!(CityLakeConfig::port_from("3100").unwrap(), 3100);
+    }
+
+    #[test]
+    fn var_resolution_uses_the_value_when_present() {
+        // Exercises resolve_var's decision table directly, on a constructed
+        // Result rather than a real environment variable — the isolation
+        // hazard named above applies here too.
+        assert_eq!(
+            CityLakeConfig::resolve_var("X", Ok("set".to_string()), "default".to_string()),
+            "set"
+        );
+    }
+
+    #[test]
+    fn var_resolution_uses_the_default_when_unset() {
+        assert_eq!(
+            CityLakeConfig::resolve_var(
+                "X",
+                Err(std::env::VarError::NotPresent),
+                "default".to_string()
+            ),
+            "default"
+        );
+    }
+
+    #[test]
+    fn var_resolution_panics_naming_the_variable_when_not_utf8() {
+        // A value that is set but not valid UTF-8 must not be treated like
+        // "unset" — that would silently fall back exactly where the operator
+        // set the variable on purpose. The OsString's content is irrelevant:
+        // resolve_var panics on the VarError::NotUnicode variant itself, so
+        // no real invalid-UTF-8 bytes are needed to exercise this arm.
+        let outcome = std::panic::catch_unwind(|| {
+            CityLakeConfig::resolve_var(
+                "CITYLAKE_PORT",
+                Err(std::env::VarError::NotUnicode(std::ffi::OsString::from(
+                    "irrelevant",
+                ))),
+                "default".to_string(),
+            )
+        });
+        let err = outcome.expect_err("resolve_var must panic on a non-UTF-8 value");
+        let message = err
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| err.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+        assert!(message.contains("CITYLAKE_PORT"));
+        assert!(message.contains("not valid UTF-8"));
     }
 }
