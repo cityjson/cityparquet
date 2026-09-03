@@ -55,7 +55,6 @@ const clientUrl = `http://127.0.0.1:${clientPort}`;
 
 export default defineConfig({
   testDir: "./e2e",
-  fullyParallel: true,
   // One worker, deliberately. Parallel workers buy nothing here and cost
   // stability: every API call queues behind the server's single
   // `Mutex<Connection>`, so the DuckDB work these specs are made of is
