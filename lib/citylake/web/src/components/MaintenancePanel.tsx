@@ -152,11 +152,6 @@ export function MaintenancePanel({ ds }: { ds: string }) {
               {vacuumMutation.isPending ? "Vacuuming…" : "Vacuum"}
             </Button>
           </div>
-          {vacuumMutation.isError && (
-            <p className="font-mono text-[12px] text-roof-700">
-              {errorMessage(vacuumMutation.error)}
-            </p>
-          )}
           {vacuumMutation.isSuccess && (
             <p className="font-mono text-[12px] text-moss-700">
               {vacuumMutation.data.vacuumed} row{vacuumMutation.data.vacuumed === 1 ? "" : "s"}{" "}
@@ -210,6 +205,18 @@ export function MaintenancePanel({ ds }: { ds: string }) {
               <code className="cl-code">{ds}</code>. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+
+          {/* Inside the dialog, as `MergeDialog` does it: a failed vacuum
+              leaves this dialog open, and an error rendered in the card
+              behind it sits under the modal overlay where nobody sees it.
+              Success closes the dialog, so the reclaimed count still belongs
+              in the card. */}
+          {vacuumMutation.isError && (
+            <p className="font-mono text-[12px] text-roof-700">
+              {errorMessage(vacuumMutation.error)}
+            </p>
+          )}
+
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction

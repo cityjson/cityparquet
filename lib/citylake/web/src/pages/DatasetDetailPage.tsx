@@ -31,7 +31,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ApiError, describeDataset, dropDataset, errorMessage } from "@/lib/api";
+import { describeDataset, dropDataset, errorMessage } from "@/lib/api";
 
 export default function DatasetDetailPage() {
   const { ds = "" } = useParams();
@@ -94,7 +94,7 @@ export default function DatasetDetailPage() {
       {query.error && (
         <Card accent="error">
           <CardContent className="pt-5 font-mono text-[12px] text-roof-700">
-            {(query.error as ApiError).message}
+            {errorMessage(query.error)}
           </CardContent>
         </Card>
       )}

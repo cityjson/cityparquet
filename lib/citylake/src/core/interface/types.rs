@@ -320,7 +320,19 @@ mod tests {
         assert_eq!(from_env.catalog_name, default.catalog_name);
         assert_eq!(from_env.catalog_path, default.catalog_path);
         assert_eq!(from_env.storage_path, default.storage_path);
-        assert_eq!(from_env.output_root, default.output_root);
+
+        // `output_root` has no default to fall back to, so the field is
+        // stated directly rather than compared against one: there is no
+        // root unless the environment names one, and `from_env` reports
+        // exactly what it finds. Comparing the two structs here would assert
+        // `None == None` in a clean environment and fail in one that already
+        // exports `CITYLAKE_OUTPUT_ROOT` — which says nothing about this
+        // crate either way.
+        assert_eq!(default.output_root, None);
+        assert_eq!(
+            from_env.output_root,
+            std::env::var("CITYLAKE_OUTPUT_ROOT").ok()
+        );
     }
 
     #[test]
