@@ -19,6 +19,12 @@ pub struct CityLakeConfig {
     pub host: String,
     /// Port for the HTTP server.
     pub port: u16,
+    /// Root directory API writes are confined to.
+    ///
+    /// `None` is a legitimate state, unlike the other fields above: there is
+    /// no sensible default root, so the handlers that write refuse to run
+    /// rather than pick one.
+    pub output_root: Option<String>,
 }
 
 impl Default for CityLakeConfig {
@@ -29,6 +35,7 @@ impl Default for CityLakeConfig {
             catalog_name: "lake".to_string(),
             host: "127.0.0.1".to_string(),
             port: 3000,
+            output_root: None,
         }
     }
 }
@@ -52,6 +59,13 @@ impl CityLakeConfig {
             catalog_name: Self::var_or("CITYLAKE_CATALOG_NAME", default.catalog_name),
             catalog_path: Self::var_or("CITYLAKE_CATALOG_PATH", default.catalog_path),
             storage_path: Self::var_or("CITYLAKE_STORAGE_PATH", default.storage_path),
+            // Unlike the fields above, absence here is not "use the
+            // default" — there is no default root — so this reads the
+            // variable directly instead of going through `var_or`, which
+            // would panic on a value that is set but not valid UTF-8. An
+            // operator who has not confined output yet has not made a
+            // mistake.
+            output_root: std::env::var("CITYLAKE_OUTPUT_ROOT").ok(),
         }
     }
 
@@ -244,6 +258,11 @@ pub enum CityLakeError {
 
     #[error("{0}")]
     Internal(String),
+
+    /// The caller's request is malformed or refused by a boundary policy —
+    /// an output path outside the configured root, for instance.
+    #[error("{0}")]
+    BadRequest(String),
 }
 
 /// Result type every repository method returns.
@@ -301,6 +320,7 @@ mod tests {
         assert_eq!(from_env.catalog_name, default.catalog_name);
         assert_eq!(from_env.catalog_path, default.catalog_path);
         assert_eq!(from_env.storage_path, default.storage_path);
+        assert_eq!(from_env.output_root, default.output_root);
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //! cannot classify a string, but a `match` can classify an enum.
 
 pub mod handlers;
+pub mod output_path;
 pub mod server;
 
 use axum::http::StatusCode;
@@ -27,7 +28,7 @@ impl IntoResponse for CityLakeError {
             | CityLakeError::ModuleNotFound { .. }
             | CityLakeError::ObjectNotFound { .. } => StatusCode::NOT_FOUND,
             CityLakeError::DatasetExists(_) => StatusCode::CONFLICT,
-            CityLakeError::Sql(_) => StatusCode::BAD_REQUEST,
+            CityLakeError::Sql(_) | CityLakeError::BadRequest(_) => StatusCode::BAD_REQUEST,
             // A rejected pragma — a duplicate id, a CRS mismatch — is the
             // caller's input being refused, not the server failing.
             CityLakeError::Duckdb(e) if is_refusal(e) => StatusCode::UNPROCESSABLE_ENTITY,
