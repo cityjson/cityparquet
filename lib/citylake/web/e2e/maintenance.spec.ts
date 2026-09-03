@@ -30,16 +30,16 @@ function uniqueName(prefix: string): string {
 const DESTINATION = uniqueName("maint_dst");
 const SOURCE = uniqueName("maint_src");
 
-// One `test`, not one per operation. `fullyParallel: true` parallelises test
-// blocks within a file as well as across files, and these steps are ordered:
-// validate has to see a clean dataset, so it must run before the merge
-// changes one. A single block is also what keeps the two uploads to one
-// pair rather than one pair per operation.
+// One `test`, not one per operation. These steps are ordered — validate has
+// to see a clean dataset, so it must run before the merge changes one — and
+// `workers: 1` (`playwright.config.ts`) orders whole files against each
+// other, not the blocks inside one. A single block is also what keeps the
+// two uploads to one pair rather than one pair per operation.
 //
 // Above the 30s default because this block uploads two datasets and then
-// runs six DuckDB operations against them, every one of which queues behind
-// the API's single `Mutex<Connection>`. A deliberate budget, not a retry:
-// nothing here polls or sleeps, and every wait below is anchored on a
+// runs seven DuckDB operations against them, every one of which queues
+// behind the API's single `Mutex<Connection>`. A deliberate budget, not a
+// retry: nothing here polls or sleeps, and every wait below is anchored on a
 // specific response or a specific rendered result.
 test.setTimeout(120_000);
 
@@ -209,7 +209,37 @@ test("maintain, merge and write a dataset, and refuse a path outside the root", 
   await expect(packageDialog.getByLabel("Output directory")).toBeVisible();
   await expect(packageDialog.getByRole("cell", { name: "building.parquet" })).toHaveCount(0);
 
-  // ---- 8. Clean up -------------------------------------------------------
+  // ---- 8. Export a module ------------------------------------------------
+  // Last, because it is the one step whose result the browser cannot see:
+  // the file lands on the server, inside `CITYLAKE_OUTPUT_ROOT`, and
+  // `tests/output_policy.rs` is what checks it lands at the resolved path.
+  // What this step covers is the dialog — that its module select is
+  // populated from the dataset's object modules (so it can offer
+  // `building` at all), that the format select and the path field submit
+  // together, and that a 204 paints the success branch rather than the
+  // error one.
+  await page.keyboard.press("Escape");
+  await expect(packageDialog).toBeHidden();
+
+  await main.getByRole("button", { name: "Export…" }).click();
+  const exportDialog = page.getByRole("dialog", { name: "Export a module" });
+  await expect(exportDialog).toBeVisible();
+  await exportDialog.getByLabel("Module").selectOption("building");
+  await exportDialog.getByLabel("Format").selectOption("cityjsonseq");
+  await exportDialog.getByLabel("Output path").fill(`${DESTINATION}.city.jsonl`);
+
+  const exportResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/datasets/${DESTINATION}/export`) &&
+      response.request().method() === "POST",
+  );
+  await exportDialog.getByRole("button", { name: "Export", exact: true }).click();
+  expect((await exportResponse).status()).toBe(204);
+  await expect(exportDialog.getByText("Export completed.")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(exportDialog).toBeHidden();
+
+  // ---- 9. Clean up -------------------------------------------------------
   // The per-run directory goes at teardown either way; this keeps the two
   // datasets out of the dataset list the other specs read, on a rerun
   // against a catalog that somehow survived.

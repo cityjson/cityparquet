@@ -96,6 +96,57 @@ async fn writing_a_package_inside_the_root_lands_at_the_resolved_path() {
 }
 
 #[tokio::test]
+async fn exporting_inside_the_root_lands_at_the_resolved_path() {
+    // The export sibling of the package test above, and needed for the same
+    // reason: every other export case here is a refusal, and a refusal is
+    // just as green when the handler resolves the path correctly and then
+    // hands the repository `body.output_path` instead of what it resolved.
+    //
+    // The requested path is one directory deep, and that directory is
+    // created inside the root and nowhere else. So the raw string names
+    // nothing the server process can write relative to its own working
+    // directory: substituting it fails the export outright rather than
+    // quietly writing somewhere off to the side.
+    let (app, dir) = common::app_with_output_root();
+    let source = common::fixture("delft.city.jsonl");
+    let body = serde_json::json!({ "source_path": source.to_str().unwrap() }).to_string();
+    let (status, _) = common::send(
+        &app,
+        Request::post("/datasets/delft")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let exports = dir.path().join("output-root").join("exports");
+    std::fs::create_dir_all(&exports).expect("create the export directory");
+
+    let (status, _) = common::send(
+        &app,
+        Request::post("/datasets/delft/export")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"module":"building","output_path":"exports/delft-building.city.jsonl","format":"cityjsonseq"}"#,
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let written = exports.join("delft-building.city.jsonl");
+    assert!(
+        written.exists(),
+        "the export must land under the configured root at the resolved path, not somewhere else"
+    );
+    assert!(
+        std::fs::metadata(&written).unwrap().len() > 0,
+        "the exported file must carry the module, not be an empty placeholder"
+    );
+}
+
+#[tokio::test]
 async fn exporting_to_the_root_itself_is_refused() {
     // `resolve_output_path` treats a requested path of "" or "." as the root
     // itself — coherent for `package`, which is about to create a directory

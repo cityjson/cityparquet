@@ -304,10 +304,11 @@ browse and delete. It builds and type-checks clean against the current API.
 
 The maintenance operations — validate, reconcile, vacuum and compact — sit in
 `src/components/MaintenancePanel.tsx`; the three that need a form — merge,
-export and package write — are `Merge`, `Export` and `PackageDialog.tsx`,
-mounted from the dataset page. Both write paths are relative to the server's
-configured output root, and the dialogs say so before a user submits.
-`e2e/maintenance.spec.ts` drives all seven in a browser.
+export and package write — are `MergeDialog.tsx`, `ExportDialog.tsx` and
+`PackageDialog.tsx`, mounted from the dataset page. Both write paths are
+relative to the server's configured output root, and the dialogs say so
+before a user submits. `e2e/maintenance.spec.ts` drives all seven in a
+browser, and a path outside the root besides.
 
 ## API
 
