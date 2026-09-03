@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // and suffixed by pid so concurrent runs (or a rerun before cleanup) never
 // share state. `reuseExistingServer: false` below means every run starts
 // from this clean directory rather than a developer's own server.
-const runDir = path.join(tmpdir(), `citylake-e2e-${process.pid}`);
+export const runDir = path.join(tmpdir(), `citylake-e2e-${process.pid}`);
 mkdirSync(runDir, { recursive: true });
 
 // `--manifest-path` needs an absolute path once `cwd` points outside the
@@ -40,7 +40,13 @@ const clientUrl = `http://127.0.0.1:${clientPort}`;
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
-  reporter: "html",
+  // `open: "never"` — the default ("on-failure") serves the report and
+  // blocks the process until interrupted, which turns a deliberately failing
+  // run (or any CI failure) into a hang rather than a clean exit.
+  reporter: [["html", { open: "never" }]],
+  // Removes the per-run directory created below, whether the suite passed
+  // or failed — see e2e/global-teardown.ts.
+  globalTeardown: "./e2e/global-teardown.ts",
   use: {
     baseURL: clientUrl,
     trace: "on-first-retry",
