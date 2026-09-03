@@ -49,7 +49,7 @@ export default function ModulePage() {
     queryFn: () =>
       queryObjects(ds, module, {
         filter: filter || undefined,
-        limit: PAGE_SIZE,
+        limit: PAGE_SIZE + 1,
         offset: page * PAGE_SIZE,
       }),
     enabled: !!ds && !!module,
@@ -68,9 +68,10 @@ export default function ModulePage() {
     },
   });
 
-  const objects = query.data ?? [];
+  const fetched = query.data ?? [];
+  const hasNextPage = fetched.length > PAGE_SIZE;
+  const objects = fetched.slice(0, PAGE_SIZE);
   const columns = inferColumns(objects);
-  const hasFullPage = objects.length === PAGE_SIZE;
 
   return (
     <div className="space-y-8">
@@ -234,7 +235,7 @@ export default function ModulePage() {
             variant="secondary"
             size="sm"
             onClick={() => setPage((p) => p + 1)}
-            disabled={!hasFullPage}
+            disabled={!hasNextPage}
           >
             Next
           </Button>
