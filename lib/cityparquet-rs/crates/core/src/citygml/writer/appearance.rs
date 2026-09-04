@@ -48,7 +48,8 @@ pub fn count_faces(kind: &DecodedKind) -> usize {
 }
 
 /// The ring count of each face in face-walk order — the shape a `texture` map's
-/// `[face][ring]` tree must match (a mismatch would leave ring ids dangling).
+/// `[face][ring]` flat per-face list must match (a mismatch would leave ring
+/// ids dangling).
 pub fn face_ring_counts(kind: &DecodedKind) -> Vec<usize> {
     fn push(kind: &DecodedKind, out: &mut Vec<usize>) {
         match kind {
@@ -540,6 +541,18 @@ mod tests {
         assert_eq!(m[""], vec![Some(3), None, Some(3)]);
         assert!(
             material_face_maps(&serde_json::json!({"": {"values": [3]}}), 3, &materials).is_err()
+        );
+        // `material_face_maps` only accepts the flat per-face list — a
+        // nested per-shell tree (what a `Solid`'s `values` would look like
+        // before flattening) must be rejected, not silently accepted as a
+        // one-shell geometry.
+        assert!(
+            material_face_maps(
+                &serde_json::json!({"": {"values": [[3, null, 3]]}}),
+                3,
+                &materials
+            )
+            .is_err()
         );
 
         let mut textures = HashMap::new();

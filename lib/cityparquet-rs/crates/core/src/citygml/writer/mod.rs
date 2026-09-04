@@ -255,8 +255,8 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
 
         for batch in reader {
             let batch = batch?;
-            let material_cols = appearance_columns(&batch, "material");
-            let texture_cols = appearance_columns(&batch, "texture");
+            let material_cols = appearance_columns(&batch, AppearanceKind::Material);
+            let texture_cols = appearance_columns(&batch, AppearanceKind::Texture);
             let objects = decode_batch(&batch, &table_meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
                 let ty = obj.object.thetype.clone();

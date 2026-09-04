@@ -49,9 +49,12 @@ fn schema_err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Schema(msg.into())
 }
 
-/// Dedupes CityJSON material/texture definitions across an entire dataset
-/// and rewrites per-geometry local index maps to reference the resulting
-/// dataset-global rows, inlining UV coordinates for textures.
+/// Dedupes CityJSON material/texture definitions across an entire dataset,
+/// assigning each distinct definition a single global row id, and flattens
+/// each geometry's per-geometry local index maps into the typed per-WKB-face
+/// cells of [`crate::appearance_columns`] — one entry per WKB face, every
+/// local index replaced by its global id, every texture UV index inlined as
+/// a `[u, v]` pair.
 #[derive(Debug, Default)]
 pub struct AppearanceInterner {
     materials: Vec<Value>,

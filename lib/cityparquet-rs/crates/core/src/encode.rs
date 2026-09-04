@@ -2043,7 +2043,7 @@ mod tests {
     /// theme's per-surface array, record the drop in geometry_properties,
     /// and count it in EncodeStats — downstream sees aligned data only.
     #[test]
-    fn dropped_surface_realigns_semantics_material_and_texture() {
+    fn dropped_surface_flattens_semantics_material_and_texture() {
         let co: CityObject = serde_json::from_value(serde_json::json!({
             "type": "Building",
             "geometry": [{
@@ -2169,7 +2169,7 @@ mod tests {
     /// level before filtering, regardless of what the face entries look
     /// like.
     #[test]
-    fn solid_single_shell_realigns_semantics_material_and_texture_when_face_dropped() {
+    fn solid_single_shell_flattens_semantics_material_and_texture_when_face_dropped() {
         let co: CityObject = serde_json::from_value(serde_json::json!({
             "type": "Building",
             "geometry": [{
@@ -2303,7 +2303,7 @@ mod tests {
     /// counter. Solid0's shell1 ends up with zero faces after its only face
     /// is dropped — a legal (if degenerate) empty shell.
     #[test]
-    fn multisolid_realigns_semantics_material_and_texture_across_solids_and_shells() {
+    fn multisolid_flattens_semantics_material_and_texture_across_solids_and_shells() {
         let co: CityObject = serde_json::from_value(serde_json::json!({
             "type": "Building",
             "geometry": [{

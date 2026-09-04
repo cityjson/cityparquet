@@ -431,43 +431,44 @@ fn build_address_value(
     Ok(Value::Array(arr))
 }
 
-/// Split a flat `face_semantics` slice into consecutive groups of `counts`
-/// lengths — the inverse of the encoder's flatten. A count sum that does not
-/// match the slice length is a corrupt/hand-rolled package, an error.
-fn partition_face_semantics(face_semantics: &[Value], counts: &[usize]) -> Result<Vec<Value>> {
+/// Split a flat per-face list into consecutive groups of `counts` lengths —
+/// the inverse of the encoder's flatten. Shared by `face_semantics` and the
+/// appearance `values` cells (both stored one entry per WKB face, see
+/// [`nest_faces`]), so the error text names neither and speaks of "the flat
+/// per-face list" instead. A count sum that does not match the slice length
+/// is a corrupt/hand-rolled package, an error.
+fn partition_face_semantics(flat: &[Value], counts: &[usize]) -> Result<Vec<Value>> {
     let mut total: usize = 0;
     for &n in counts {
         total = total
             .checked_add(n)
             .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
     }
-    if total != face_semantics.len() {
+    if total != flat.len() {
         return Err(err(format!(
-            "shells counts sum to {total} but face_semantics has {} entries",
-            face_semantics.len()
+            "shells counts sum to {total} but the flat per-face list has {} entries",
+            flat.len()
         )));
     }
     let mut out = Vec::with_capacity(counts.len());
     let mut offset = 0;
     for &n in counts {
-        out.push(Value::Array(face_semantics[offset..offset + n].to_vec()));
+        out.push(Value::Array(flat[offset..offset + n].to_vec()));
         offset += n;
     }
     Ok(out)
 }
 
-/// Splits a flat `face_semantics` slice into ONE `Value::Array` per solid,
-/// each itself the per-shell partition of that solid's slice of faces (used
-/// by both `Solid` — always exactly one solid — and `MultiSolid`/
-/// `CompositeSolid` — one per member — since `shells` nests the same way for
-/// both, spec "Geometry properties and semantics"). Every entry of
-/// `face_semantics` must be consumed by exactly one solid; a shortfall or
-/// overrun means `shells` disagrees with `face_semantics`'s length, a
-/// corrupt/hand-rolled package.
-fn partition_face_semantics_by_solids(
-    face_semantics: &[Value],
-    nested: &[Vec<usize>],
-) -> Result<Vec<Value>> {
+/// Splits a flat per-face list into ONE `Value::Array` per solid, each itself
+/// the per-shell partition of that solid's slice of faces (used by both
+/// `Solid` — always exactly one solid — and `MultiSolid`/`CompositeSolid` —
+/// one per member — since `shells` nests the same way for both, spec
+/// "Geometry properties and semantics"). Shared by `face_semantics` and the
+/// appearance `values` cells, see [`partition_face_semantics`]. Every entry of
+/// `flat` must be consumed by exactly one solid; a shortfall or overrun means
+/// `shells` disagrees with the flat list's length, a corrupt/hand-rolled
+/// package.
+fn partition_face_semantics_by_solids(flat: &[Value], nested: &[Vec<usize>]) -> Result<Vec<Value>> {
     let mut solids = Vec::with_capacity(nested.len());
     let mut offset: usize = 0;
     for shell_counts in nested {
@@ -480,21 +481,21 @@ fn partition_face_semantics_by_solids(
         let end = offset
             .checked_add(n)
             .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
-        let slice = face_semantics.get(offset..end).ok_or_else(|| {
+        let slice = flat.get(offset..end).ok_or_else(|| {
             err(format!(
-                "shells describes more faces than face_semantics has ({} entries)",
-                face_semantics.len()
+                "shells describes more faces than the flat per-face list has ({} entries)",
+                flat.len()
             ))
         })?;
         solids.push(Value::Array(partition_face_semantics(slice, shell_counts)?));
         offset = end;
     }
-    // Every face_semantics entry must be consumed — trailing entries mean
-    // `shells` under-counts the faces, a corrupt package.
-    if offset != face_semantics.len() {
+    // Every entry of `flat` must be consumed — trailing entries mean `shells`
+    // under-counts the faces, a corrupt package.
+    if offset != flat.len() {
         return Err(err(format!(
-            "shells account for {offset} faces but face_semantics has {} entries",
-            face_semantics.len()
+            "shells account for {offset} faces but the flat per-face list has {} entries",
+            flat.len()
         )));
     }
     Ok(solids)
@@ -777,8 +778,8 @@ fn build_header(meta: &CityMetadata, tables: &PackageTables) -> Result<CityJSON>
     Ok(header)
 }
 
-/// The reserved appearance columns for one theme prefix (`"material"` /
-/// `"texture"`) in a batch, resolved ONCE per batch so the per-row reader need
+/// The reserved appearance columns for one [`AppearanceKind`] (`material` /
+/// `texture`) in a batch, resolved ONCE per batch so the per-row reader need
 /// not rescan the schema. Each entry pairs the column's array index with the
 /// canonical LoD key it maps to — taken from the field's `cityparquet:lod`
 /// metadata, or `""` for the transitional bare lod-less column.
@@ -789,7 +790,11 @@ fn build_header(meta: &CityMetadata, tables: &PackageTables) -> Result<CityJSON>
 /// be named `material`, or `material_lod03` (which canonicalises to LoD 3 and
 /// would otherwise collide with the real `material_lod3`). Classifying by the
 /// reserved-role metadata rather than the name alone keeps such attributes out.
-pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usize, String)> {
+pub(crate) fn appearance_columns(
+    batch: &RecordBatch,
+    kind: AppearanceKind,
+) -> Vec<(usize, String)> {
+    let prefix = kind.prefix();
     batch
         .schema()
         .fields()
@@ -829,12 +834,22 @@ pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usiz
 /// Which of the two appearance families a per-LoD column belongs to: the
 /// `material_lod*` columns or the `texture_lod*` ones. The two carry
 /// different cell types (`MaterialCell` / `TextureCell`) and so need
-/// different readers, and this names the choice rather than re-deriving it
-/// from a `"material"`/`"texture"` string a caller could mistype.
+/// different readers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AppearanceKind {
     Material,
     Texture,
+}
+
+impl AppearanceKind {
+    /// The column-name prefix this kind's per-LoD columns share
+    /// (`material_lod*` / `texture_lod*`).
+    fn prefix(self) -> &'static str {
+        match self {
+            AppearanceKind::Material => "material",
+            AppearanceKind::Texture => "texture",
+        }
+    }
 }
 
 /// Rebuild an object row's appearance into an in-memory `{"<lod>": <theme
@@ -1530,8 +1545,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         };
         for batch in reader {
             let batch = batch?;
-            let material_cols = appearance_columns(&batch, "material");
-            let texture_cols = appearance_columns(&batch, "texture");
+            let material_cols = appearance_columns(&batch, AppearanceKind::Material);
+            let texture_cols = appearance_columns(&batch, AppearanceKind::Texture);
             let objects = decode_batch(&batch, &table_meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
                 let material = read_lod_keyed_appearance(
@@ -1792,7 +1807,7 @@ mod tests {
         // which would silently drop LoD0 appearance on export.
         let batch = bare_material_schema(Some("0"));
         assert_eq!(
-            appearance_columns(&batch, "material"),
+            appearance_columns(&batch, AppearanceKind::Material),
             vec![(0, "0".to_string())]
         );
     }
@@ -1802,7 +1817,7 @@ mod tests {
         // The zero-analysis-geometry fallback bare column carries no lod tag.
         let batch = bare_material_schema(None);
         assert_eq!(
-            appearance_columns(&batch, "material"),
+            appearance_columns(&batch, AppearanceKind::Material),
             vec![(0, String::new())]
         );
     }

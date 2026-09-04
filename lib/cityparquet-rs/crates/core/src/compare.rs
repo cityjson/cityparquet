@@ -68,6 +68,21 @@
 //! `Exclusions::appearance` turns that off (skip + `excluded` log), because
 //! the Core-profile exporter deliberately drops the blocks it cannot safely
 //! re-attach.
+//!
+//! ## Known limit: the texture ring-length rule is index-based, the geometry rule is coordinate-based
+//!
+//! [`canonical_texture`]'s per-ring STORED vertex count
+//! ([`crate::encode::face_ring_vertex_counts`], reused so the comparator
+//! predicts exactly what the writer keeps) applies
+//! [`crate::wkb_write::distinct_ring_len`] — INDEX-based, matching the writer
+//! — while this module's OWN boundary/degenerate-ring normalisation above is
+//! COORDINATE-based. A textured ring of more than three vertices closed by a
+//! COORDINATE-duplicate under a DISTINCT index is therefore sized
+//! differently by the two rules: the boundary side strips the duplicate
+//! closing entry (coordinate match), the texture-ring side does not (index
+//! mismatch), and after a genuine round trip through WKB this can report a
+//! spurious texture difference where the geometry itself compares equal. No
+//! fixture in this repository triggers it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -540,8 +555,9 @@ fn resolve_material_index(v: &Value, defs: &AppearanceDefs) -> Result<Value> {
     }
 }
 
-/// Walks a material theme's `values` tree (arbitrarily nested for the Solid
-/// family; flat for the surface-list types), resolving each leaf index.
+/// Walks a material theme's `values` list — the canonical flat form, one
+/// entry per stored WKB face (see [`canonical_material`]) — resolving each
+/// leaf index.
 fn resolve_material_tree(v: &Value, defs: &AppearanceDefs) -> Result<Value> {
     match v {
         Value::Array(items) => Ok(Value::Array(
@@ -561,7 +577,7 @@ fn resolve_material_tree(v: &Value, defs: &AppearanceDefs) -> Result<Value> {
 /// every theme here carries `values`.
 fn resolve_material_map(map: &Value, defs: &AppearanceDefs) -> Result<Value> {
     let obj = map.as_object().ok_or_else(|| {
-        err("material map must be a JSON object of theme -> {value|values}".to_string())
+        err("material map must be a JSON object of theme -> {values}".to_string())
     })?;
     let mut out = Map::with_capacity(obj.len());
     for (theme, inner) in obj {
@@ -681,9 +697,10 @@ fn resolve_texture_tree(v: &Value, defs: &AppearanceDefs) -> Result<Value> {
     }
 }
 
-/// One geometry's whole `texture` map (`{"<theme>": {"values": <tree>}}`)
-/// with every ring resolved — the dereferencing counterpart of the old
-/// (index-comparing) `realigned_appearance`.
+/// One geometry's whole `texture` map with every ring resolved to its actual
+/// texture definition and real `[u, v]` pairs. Called on the canonical flat
+/// form only (see [`canonical_texture`]), so every theme here carries
+/// `values`.
 fn resolve_texture_map(map: &Value, defs: &AppearanceDefs) -> Result<Value> {
     let obj = map
         .as_object()
@@ -727,6 +744,14 @@ fn resolve_texture_map(map: &Value, defs: &AppearanceDefs) -> Result<Value> {
 /// `defs == None` means `exclusions.appearance` already decided this
 /// geometry's appearance is skipped: nothing is resolved, or even validated,
 /// that the caller is about to discard.
+///
+/// A theme with neither `values` nor `value` (below) is not a shape the
+/// comparator can represent at all, so it aborts the whole comparison with an
+/// error; a texture ring with too few UV references
+/// ([`canonical_texture_ring`]), by contrast, is a well-formed but
+/// differently-shaped ring the comparator CAN still represent — it is passed
+/// through as-is and simply compares unequal against the other side, a
+/// reported difference rather than a hard failure.
 fn canonical_material(
     map: &Option<HashMap<String, cjseq::Material>>,
     boundaries: &Value,
@@ -3015,6 +3040,48 @@ mod tests {
             a.texture.unwrap()["visual"]["values"],
             serde_json::json!([[[0, 10, 11, 12, 13], [0, 30, 31, 32]], [[null], [null]]]),
             "canonical texture is flat per stored face, one entry per stored ring"
+        );
+    }
+
+    /// Reviewer follow-up: [`canonical_texture_ring`] passes a UV-shortfall
+    /// ring through as it stands rather than padding it out to the boundary
+    /// ring's stored vertex count. Side A's single-ring, 3-vertex face
+    /// carries only 2 UV references (`[t, u0, u1]`); side B carries 3
+    /// (`[t, u0, u1, u2]`). A later edit that padded a short ring out to the
+    /// ring's vertex count would make these compare equal, hiding a real
+    /// writer bug (too few UV references for the ring) instead of surfacing
+    /// it as a difference.
+    #[test]
+    fn a_uv_shortfall_ring_does_not_pad_to_the_boundarys_vertex_count() {
+        let side_a: Geometry = serde_json::from_value(serde_json::json!({
+            "type": "MultiSurface",
+            "lod": "2",
+            "boundaries": [[[0, 1, 2]]],
+            "texture": {"visual": {"values": [[[0, 10, 11]]]}}
+        }))
+        .unwrap();
+        let side_b: Geometry = serde_json::from_value(serde_json::json!({
+            "type": "MultiSurface",
+            "lod": "2",
+            "boundaries": [[[0, 1, 2]]],
+            "texture": {"visual": {"values": [[[0, 10, 11, 12]]]}}
+        }))
+        .unwrap();
+
+        let vertices: Vec<Vec<i64>> = (0..3).map(|i| vec![i * 1000, i * 7, 0]).collect();
+        let transform = Transform {
+            scale: vec![1.0; 3],
+            translate: vec![0.0; 3],
+        };
+        let pool = VertexPool::new(&vertices, &transform);
+
+        let a = normalise_geometry(&side_a, &pool, Some(&AppearanceDefs::empty())).unwrap();
+        let b = normalise_geometry(&side_b, &pool, Some(&AppearanceDefs::empty())).unwrap();
+        assert_ne!(
+            a.texture, b.texture,
+            "a ring with fewer UV references than the boundary's vertex count must not be \
+             padded out to match it — padding would hide the very writer bug this \
+             passthrough exists to surface"
         );
     }
 
