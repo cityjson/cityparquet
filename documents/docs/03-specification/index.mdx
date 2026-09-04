@@ -58,6 +58,7 @@ encoding is:
 | `BLOB` | `BYTE_ARRAY` (no logical type) |
 | `JSON` | `BYTE_ARRAY` (UTF8), tagged with the Arrow field-metadata extension `ARROW:extension:name = arrow.json`. A reader without Arrow extension support sees a UTF8 string. |
 | `LIST<T>` | Parquet `LIST` of nullable items |
+| `MAP<K, V>` | Parquet `MAP` logical type: a required key of type `K`, a nullable value of type `V`, entries in no defined order |
 | `STRUCT<…>` | Parquet group (see the individual column for field types and nullability) |
 
 A column **MAY** additionally be dictionary-encoded. That is a writer's choice and
