@@ -336,7 +336,7 @@ fn validate_texture(cell: &TextureCell) -> Result<()> {
 impl MaterialCell {
     /// `{"<theme>": {"values": [id|null, …]}}` — the flat CityJSON-shaped map
     /// every reader re-nests from `shells`.
-    pub(crate) fn to_flat_value(&self) -> Value {
+    pub fn to_flat_value(&self) -> Value {
         let mut obj = serde_json::Map::new();
         for (theme, ids) in &self.themes {
             let values: Vec<Value> = ids
@@ -373,7 +373,7 @@ impl TextureRing {
 impl TextureCell {
     /// `{"<theme>": {"values": [ [ [id, [u,v], …] | [null], … ], … ]}}` — per
     /// face, per ring, the inlined ring form.
-    pub(crate) fn to_flat_value(&self) -> Value {
+    pub fn to_flat_value(&self) -> Value {
         let mut obj = serde_json::Map::new();
         for (theme, faces) in &self.themes {
             let values: Vec<Value> = faces
@@ -412,7 +412,7 @@ fn map_entries<'a>(
 }
 
 /// Reads one `material_lod*` cell at `row`. `None` when the cell is null.
-pub(crate) fn read_material_cell(array: &MapArray, row: usize) -> Result<Option<MaterialCell>> {
+pub fn read_material_cell(array: &MapArray, row: usize) -> Result<Option<MaterialCell>> {
     if array.is_null(row) {
         return Ok(None);
     }
@@ -447,7 +447,7 @@ pub(crate) fn read_material_cell(array: &MapArray, row: usize) -> Result<Option<
 }
 
 /// Reads one `texture_lod*` cell at `row`. `None` when the cell is null.
-pub(crate) fn read_texture_cell(array: &MapArray, row: usize) -> Result<Option<TextureCell>> {
+pub fn read_texture_cell(array: &MapArray, row: usize) -> Result<Option<TextureCell>> {
     if array.is_null(row) {
         return Ok(None);
     }
@@ -483,6 +483,18 @@ pub(crate) fn read_texture_cell(array: &MapArray, row: usize) -> Result<Option<T
         themes.push((theme, per_face));
     }
     Ok(Some(TextureCell { themes }))
+}
+
+/// One `material_lod*` cell at `row` as the flat CityJSON-shaped JSON
+/// [`MaterialCell::to_flat_value`] produces. `None` when the cell is null.
+pub fn material_cell_value(array: &MapArray, row: usize) -> Result<Option<Value>> {
+    Ok(read_material_cell(array, row)?.map(|c| c.to_flat_value()))
+}
+
+/// One `texture_lod*` cell at `row` as the flat CityJSON-shaped JSON
+/// [`TextureCell::to_flat_value`] produces. `None` when the cell is null.
+pub fn texture_cell_value(array: &MapArray, row: usize) -> Result<Option<Value>> {
+    Ok(read_texture_cell(array, row)?.map(|c| c.to_flat_value()))
 }
 
 /// A WKB face always has an exterior ring, so a face with no rings is not a

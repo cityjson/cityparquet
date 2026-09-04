@@ -686,6 +686,191 @@ fn multi_lod_object_with_single_lod_appearance_round_trips() {
     );
 }
 
+/// G20 task 4: the flat `material_lod*` / `texture_lod*` cells hold one entry
+/// per WKB face and no geometry-type nesting at all, so export re-nests them
+/// from the same geometry's `geometry_properties_lod*.shells`. No committed
+/// fixture pairs a Solid-family geometry WITH an appearance — delft carries
+/// Solids and no appearance, railway carries appearance on MultiSurfaces — so
+/// the re-nesting is exercised here on a derivative of the real delft
+/// fixture: `NL.IMBAG.Pand.0503100000012869-0`'s lod-1.2 Solid (one shell,
+/// six faces, each a single four-vertex ring) is given a material and a
+/// texture shaped exactly like its own boundaries. The exported CityJSON must
+/// carry the per-shell nesting back, ring for ring.
+#[test]
+fn solid_appearance_round_trips_through_the_flat_cells() {
+    const OBJ_ID: &str = "NL.IMBAG.Pand.0503100000012869-0";
+
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut lines = text.lines();
+    let header_line = lines.next().unwrap().to_string();
+    let line = lines
+        .find(|l| l.contains(OBJ_ID))
+        .expect("precondition: delft must carry the target object");
+    let mut feature: Value = serde_json::from_str(line).unwrap();
+
+    /// The lod-1.2 Solid of the target object.
+    fn target_solid<'a>(feature: &'a mut Value, obj_id: &str) -> &'a mut Value {
+        feature["CityObjects"][obj_id]["geometry"]
+            .as_array_mut()
+            .expect("precondition: the target object carries geometry")
+            .iter_mut()
+            .find(|g| g["lod"] == "1.2" && g["type"] == "Solid")
+            .expect("precondition: the target object carries a lod 1.2 Solid")
+    }
+
+    // The shell's real ring vertex counts: a texture ring carries exactly one
+    // UV index per ring vertex, so they are read from the boundaries rather
+    // than assumed to be four everywhere.
+    let ring_lens: Vec<Vec<usize>> = {
+        let shells = target_solid(&mut feature, OBJ_ID)["boundaries"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(shells.len(), 1, "precondition: the Solid has one shell");
+        shells[0]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|face| {
+                face.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|ring| ring.as_array().unwrap().len())
+                    .collect()
+            })
+            .collect()
+    };
+    assert_eq!(ring_lens.len(), 6, "precondition: the shell has six faces");
+
+    // One texture ring per real ring, its UV indices allocated in ring order.
+    let mut next_uv = 0u64;
+    let mut tex_shell = Vec::with_capacity(ring_lens.len());
+    for face in &ring_lens {
+        let mut rings = Vec::with_capacity(face.len());
+        for &n in face {
+            let mut ring = vec![Value::from(0u64)];
+            for _ in 0..n {
+                ring.push(Value::from(next_uv));
+                next_uv += 1;
+            }
+            rings.push(Value::Array(ring));
+        }
+        tex_shell.push(Value::Array(rings));
+    }
+    let n_uv = next_uv as usize;
+
+    {
+        let geom = target_solid(&mut feature, OBJ_ID);
+        geom["material"] = serde_json::json!({"visual": {"values": [[0, 1, 0, 1, 0, 1]]}});
+        geom["texture"] = serde_json::json!({"visual": {"values": [tex_shell]}});
+    }
+    feature["appearance"] = serde_json::json!({
+        "materials": [
+            {"name": "mat0", "ambientIntensity": 0.5},
+            {"name": "mat1", "ambientIntensity": 0.8}
+        ],
+        "textures": [{"type": "PNG", "image": "tex0.png"}],
+        "vertices-texture": (0..n_uv)
+            .map(|i| serde_json::json!([i as f64 / n_uv as f64, 0.5]))
+            .collect::<Vec<_>>()
+    });
+
+    let input_dir = tempfile::tempdir().unwrap();
+    let input_path = input_dir.path().join("delft_solid_appearance.city.jsonl");
+    std::fs::write(
+        &input_path,
+        format!(
+            "{header_line}\n{}\n",
+            serde_json::to_string(&feature).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let package_dir = tempfile::tempdir().unwrap();
+    convert(&ConvertOptions::new(
+        input_path.clone(),
+        package_dir.path().to_path_buf(),
+    ))
+    .unwrap();
+
+    let export_dir = tempfile::tempdir().unwrap();
+    let export_path = export_dir.path().join("export.city.jsonl");
+    export(&ExportOptions {
+        package_dir: package_dir.path().to_path_buf(),
+        output: export_path.clone(),
+    })
+    .unwrap();
+
+    // The exported feature, read as raw JSON: the comparator canonicalises
+    // appearance to the flat form, so only the raw text proves the nesting.
+    let exported_text = std::fs::read_to_string(&export_path).unwrap();
+    let mut exported_feature: Value = exported_text
+        .lines()
+        .skip(1)
+        .find(|l| l.contains(OBJ_ID))
+        .map(|l| serde_json::from_str(l).unwrap())
+        .expect("the exported Seq must carry the target object");
+    let n_textures = exported_feature["appearance"]["textures"]
+        .as_array()
+        .expect("the exported feature carries a feature-local textures list")
+        .len();
+    let n_uvs = exported_feature["appearance"]["vertices-texture"]
+        .as_array()
+        .expect("the exported feature carries a feature-local UV pool")
+        .len();
+    let geom = target_solid(&mut exported_feature, OBJ_ID);
+
+    // (a) The material is back to the nested one-shell form.
+    let material = geom["material"]["visual"]["values"]
+        .as_array()
+        .expect("the exported Solid carries a nested material values tree");
+    assert_eq!(material.len(), 1, "a Solid nests one list per shell");
+    let shell = material[0]
+        .as_array()
+        .expect("the shell's per-face material list");
+    assert_eq!(shell.len(), 6, "the shell's six faces each keep an entry");
+    for id in shell {
+        let id = id.as_u64().expect("a feature-local material index");
+        assert!(id < 2, "material index {id} must be feature-local");
+    }
+
+    // (b) The texture is back to the nested one-shell form, ring for ring,
+    // in plain index form (one UV index per ring vertex).
+    let texture = geom["texture"]["visual"]["values"]
+        .as_array()
+        .expect("the exported Solid carries a nested texture values tree");
+    assert_eq!(texture.len(), 1, "a Solid nests one list per shell");
+    let faces = texture[0]
+        .as_array()
+        .expect("the shell's per-face texture list");
+    assert_eq!(faces.len(), 6, "the shell's six faces each keep an entry");
+    for (fi, face) in faces.iter().enumerate() {
+        let rings = face.as_array().expect("a face's per-ring texture list");
+        assert_eq!(
+            rings.len(),
+            ring_lens[fi].len(),
+            "face {fi} must keep every one of its rings"
+        );
+        for (ri, ring) in rings.iter().enumerate() {
+            let ring = ring.as_array().expect("a texture ring");
+            assert_eq!(
+                ring.len(),
+                1 + ring_lens[fi][ri],
+                "face {fi} ring {ri} carries its texture id plus one UV index per vertex"
+            );
+        }
+    }
+    assert_texture_rings_are_index_form(&Value::Array(faces.clone()), n_textures, n_uvs);
+
+    // (c) And the whole derivative round-trips.
+    let report = compare_datasets(&input_path, &export_path, &CompareOptions::default()).unwrap();
+    assert!(
+        report.equal,
+        "a Solid carrying appearance must round-trip; differences: {:#?}",
+        report.differences
+    );
+}
+
 /// G20 sol-review Finding 1: with per-LoD appearance columns the bare
 /// `material` / `texture` names are no longer reserved, so a source attribute
 /// may legally be named `material` (a plain `VARCHAR`) or `material_lod03`
