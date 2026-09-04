@@ -31,8 +31,8 @@ Per LoD, beside `geometry_lodX_Y` and `geometry_properties_lodX_Y`:
 
 | Column | Type |
 | --- | --- |
-| `material_lodX_Y` | `MAP<VARCHAR, LIST<INTEGER>>` |
-| `texture_lodX_Y` | `MAP<VARCHAR, LIST<LIST<STRUCT<id INTEGER, uv LIST<LIST<DOUBLE>>>>>>` |
+| `material_lodX_Y` | `MAP<VARCHAR, LIST<BIGINT>>` |
+| `texture_lodX_Y` | `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>` |
 
 - The map key is the **theme** (CityJSON's theme name; `""` for the unnamed
   theme). Themes are an open set, which is what a MAP expresses and a STRUCT
@@ -47,7 +47,11 @@ Per LoD, beside `geometry_lodX_Y` and `geometry_properties_lodX_Y`:
 - A cell is NULL when the geometry carries no material (or texture) in any
   theme. A theme absent from the map has no entries for that geometry.
 - Ids are sidecar `id` values, matched against the sidecar's `id` column,
-  never row positions (unchanged). UV coordinates are inlined (unchanged).
+  never row positions (unchanged). They are `BIGINT` because the sidecar `id`
+  columns are `BIGINT` ("BIGINT throughout", the resolved sidecar-id question):
+  a narrower reference type would leave ids above 2³¹ unreferencable, and the
+  object table's `template.id` is already `BIGINT`. UV coordinates are inlined
+  (unchanged).
 
 ### Invariants (MUST)
 

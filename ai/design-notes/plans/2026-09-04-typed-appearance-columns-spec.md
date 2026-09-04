@@ -16,8 +16,8 @@
 - **Document the present, never the past.** No "previously", "used to be", "was JSON" outside a clearly-marked design-decision or note block that explains a choice. The specification pages state what the format *is*.
 - **Type notation is the specification's own**: `MAP<K, V>`, `LIST<T>`, `STRUCT<name TYPE, …>`, `INT`, `DOUBLE`, `VARCHAR`, `JSON` — exactly as the existing tables on `03-specification/index.mdx` and `02-object-table-schema.mdx` use them. Never DuckDB SQL spellings (`INTEGER[]`, `MAP(VARCHAR, …)`) on the specification pages.
 - The two column types, verbatim, everywhere they appear:
-  - `material_lod*`: `MAP<VARCHAR, LIST<INT>>`
-  - `texture_lod*`: `MAP<VARCHAR, LIST<LIST<STRUCT<id INT, uv LIST<LIST<DOUBLE>>>>>>`
+  - `material_lod*`: `MAP<VARCHAR, LIST<BIGINT>>`
+  - `texture_lod*`: `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>`
 - A map key is the **theme** name; CityJSON's unnamed theme is the empty string `""`.
 - An untextured ring is `{id: null, uv: null}`. There is no broadcast (`value`) form: a whole-geometry material is expanded to one entry per WKB face.
 - Every task ends with `just docs-build` from the repository root passing (it needs `pnpm`; `just docs-install` runs inside it). A build warning about a broken internal link is a failure.
@@ -65,8 +65,8 @@ Insert this row directly after the `LIST<T>` row (keep the table's existing styl
 Replace lines 30–31 (the `material_lod*` and `texture_lod*` rows) with:
 
 ```markdown
-| `material_lod*` | `MAP<VARCHAR, LIST<INT>>` |  | nullable | Per-theme material references for the geometry in the matching `geometry_lod*` cell: theme → one `materials.parquet` `id` (or `null`) per WKB face (see [appearance & templates](/specification/appearance-templates)); one per LoD |
-| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id INT, uv LIST<LIST<DOUBLE>>>>>>` |  | nullable | Per-theme texture references for the geometry in the matching `geometry_lod*` cell: theme → per WKB face → per ring → the `textures.parquet` `id` and the ring's `[u, v]` pairs; one per LoD |
+| `material_lod*` | `MAP<VARCHAR, LIST<BIGINT>>` |  | nullable | Per-theme material references for the geometry in the matching `geometry_lod*` cell: theme → one `materials.parquet` `id` (or `null`) per WKB face (see [appearance & templates](/specification/appearance-templates)); one per LoD |
+| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>` |  | nullable | Per-theme texture references for the geometry in the matching `geometry_lod*` cell: theme → per WKB face → per ring → the `textures.parquet` `id` and the ring's `[u, v]` pairs; one per LoD |
 ```
 
 - [ ] **Step 3: Build**
@@ -141,8 +141,8 @@ by the column name rather than by a key a consumer must match.
 
 | Column | Type |
 |---|---|
-| `material_lod*` | `MAP<VARCHAR, LIST<INT>>` |
-| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id INT, uv LIST<LIST<DOUBLE>>>>>>` |
+| `material_lod*` | `MAP<VARCHAR, LIST<BIGINT>>` |
+| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>` |
 
 These columns carry no `lod` value — the column name already fixes the LoD. The outer
 dimension is a **theme**: a dynamic string key whose set is not known in advance (a
@@ -226,8 +226,8 @@ Replace:
 with:
 
 ```markdown
-| `material_lod*` | `MAP<VARCHAR, LIST<INT>>` |  | Template material mapping, per LoD — the [same shape and invariants](#material--texture-columns) as an object row's |
-| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id INT, uv LIST<LIST<DOUBLE>>>>>>` |  | Template texture mapping, per LoD — the same shape and invariants as an object row's |
+| `material_lod*` | `MAP<VARCHAR, LIST<BIGINT>>` |  | Template material mapping, per LoD — the [same shape and invariants](#material--texture-columns) as an object row's |
+| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>` |  | Template texture mapping, per LoD — the same shape and invariants as an object row's |
 ```
 
 Check the anchor: Blume slugifies `## material / texture columns` — after building, open `documents/dist/specification/appearance-templates/index.html` (or the equivalent output path) and confirm the heading's `id`. If it differs from `material--texture-columns`, use the generated one.
@@ -372,7 +372,7 @@ Appearance goes in separate `material_lod*` / `texture_lod*` columns — typed `
 Replace the **Decision.** paragraph with:
 
 ```markdown
-**Decision.** `materials.parquet` and `textures.parquet` hold reusable definitions; the object table's nullable `material_lod*`/`texture_lod*` columns reference them by the sidecar's **dataset-global `id`** — matched against the `id` column, never a row position. The columns are typed `MAP`s keyed by theme whose values are **flat per WKB face**, in WKB face order — `MAP<VARCHAR, LIST<INT>>` for materials, and per face → per ring `STRUCT<id INT, uv LIST<LIST<DOUBLE>>>` for textures, with the UV coordinates **inlined**. See the [specification](/specification/appearance-templates) → *material / texture columns*.
+**Decision.** `materials.parquet` and `textures.parquet` hold reusable definitions; the object table's nullable `material_lod*`/`texture_lod*` columns reference them by the sidecar's **dataset-global `id`** — matched against the `id` column, never a row position. The columns are typed `MAP`s keyed by theme whose values are **flat per WKB face**, in WKB face order — `MAP<VARCHAR, LIST<BIGINT>>` for materials, and per face → per ring `STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>` for textures, with the UV coordinates **inlined**. See the [specification](/specification/appearance-templates) → *material / texture columns*.
 ```
 
 Under **Alternatives considered.**, after the two existing bullets, add:
