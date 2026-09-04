@@ -1346,8 +1346,9 @@ mod tests {
 
     #[test]
     fn plain_solid_emits_x3d_material_with_targets() {
-        // A plain lod2 solid of 3 faces; material.visual.values = [[0,0,1]] -> red
-        // (global 0) on faces 0,1 and green (global 1) on face 2.
+        // A plain lod2 solid of 3 faces; material.visual.values = [0,0,1] (flat,
+        // one entry per WKB face) -> red (global 0) on faces 0,1 and green
+        // (global 1) on face 2.
         let coords: Vec<[f64; 3]> = (0..9).map(|i| [i as f64, 0.0, 0.0]).collect();
         let geom = DecodedGeometry {
             coords,
@@ -1358,7 +1359,7 @@ mod tests {
             ]),
         };
         let props = serde_json::json!({ "type": "Solid", "shells": [[3]] });
-        let material = serde_json::json!({ "visual": { "values": [[0, 0, 1]] } });
+        let material = serde_json::json!({ "visual": { "values": [0, 0, 1] } });
         let table: HashMap<i64, Value> = HashMap::from([
             (
                 0,
