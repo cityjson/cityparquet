@@ -5,7 +5,7 @@ sidebar:
   label: B · Geometry encoding
 ---
 
-How CityParquet stores geometry: as WKB blobs for interoperability today, with everything WKB cannot carry pushed into parallel JSON columns, one geometry column per level of detail, and CityJSON's quantised vertices expanded to world-coordinate doubles at encode time. Prior art weighed here: GeoParquet, Apache Iceberg, PostGIS EWKB, GeoArrow, and 3DCityDB.
+How CityParquet stores geometry: as WKB blobs for interoperability today, with everything WKB cannot carry pushed into parallel property columns, one geometry column per level of detail, and CityJSON's quantised vertices expanded to world-coordinate doubles at encode time. Prior art weighed here: GeoParquet, Apache Iceberg, PostGIS EWKB, GeoArrow, and 3DCityDB.
 
 ## WKB geometry (including 3D), not native geometry or EWKB
 

@@ -42,14 +42,15 @@ normative.
 
 ## Type notation
 
-Column types are written in DuckDB/Arrow logical-type notation: `VARCHAR`, `BIGINT`,
-`DOUBLE`, `BOOLEAN`, `BLOB`, `JSON`, `LIST<T>`, `STRUCT<…>`. Their physical Parquet
-encoding is:
+Column types are written in DuckDB/Arrow logical-type notation: `VARCHAR`, `INT`,
+`BIGINT`, `DOUBLE`, `BOOLEAN`, `BLOB`, `JSON`, `LIST<T>`, `STRUCT<…>`, `MAP<K, V>`.
+Their physical Parquet encoding is:
 
 | Logical type | Physical Parquet encoding |
 |---|---|
 | `VARCHAR` | `BYTE_ARRAY` (UTF8) |
 | `BIGINT` | `INT64` |
+| `INT` | `INT32` |
 | `DOUBLE` | `DOUBLE` |
 | `BOOLEAN` | `BOOLEAN` |
 | `DATE` | `INT32` with the `DATE` logical type |
