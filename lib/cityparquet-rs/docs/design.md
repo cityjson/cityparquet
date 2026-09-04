@@ -91,21 +91,21 @@ appearance/template references, then the inferred attribute columns.
 
 ### Reserved columns
 
-| Column                                                  | Arrow type                                                          | Notes                                                                    |
-| ------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `id`                                                    | `Utf8` (non-null)                                                   | CityObject id, preserved verbatim end-to-end                             |
-| `feature_id`                                            | `Utf8`                                                              | CityJSONSeq feature grouping id                                          |
-| `object_type`                                           | `Dictionary<Int32, Utf8>` (non-null)                                | dictionary-encoded — few distinct values over many rows                  |
-| `parents`                                               | `List<Utf8>`                                                        | parent ids                                                               |
-| `children`                                              | `List<Utf8>`                                                        | child ids                                                                |
-| `children_roles`                                        | `List<Utf8>`                                                        | one role per child, from CityJSON `children_roles`                       |
-| `bbox`                                                  | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>`                    | see below                                                                |
-| `geometry` _or_ `geometry_lod<k>`                       | `Binary` (WKB)                                                      | one column per LoD                                                       |
-| `geometry_properties` _or_ `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>`                    | semantics WKB can't carry                                                |
-| `material` _or_ `material_lod<k>`                       | `Map<Utf8, List<Int64>>`                                            | theme → one sidecar id (or null) per WKB face, into `materials.parquet`  |
-| `texture` _or_ `texture_lod<k>`                         | `Map<Utf8, List<List<Struct<id: Int64, uv: List<List<Float64>>>>>>` | theme → per WKB face → per ring → `{id, uv}`, into `textures.parquet`    |
-| `template`                                              | `Struct<id: Int64, point: Binary, transformationMatrix: JSON>`      | geometry-instance data; `id` matches `geometry_templates.parquet`'s `id` |
-| `other`                                                 | JSON                                                                | source fields not otherwise mapped                                       |
+| Column                                                  | Arrow type                                                              | Notes                                                                                                         |
+| ------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `id`                                                    | `Utf8` (non-null)                                                       | CityObject id, preserved verbatim end-to-end                                                                  |
+| `feature_id`                                            | `Utf8`                                                                  | CityJSONSeq feature grouping id                                                                               |
+| `object_type`                                           | `Dictionary<Int32, Utf8>` (non-null)                                    | dictionary-encoded — few distinct values over many rows                                                       |
+| `parents`                                               | `List<Utf8>`                                                            | parent ids                                                                                                    |
+| `children`                                              | `List<Utf8>`                                                            | child ids                                                                                                     |
+| `children_roles`                                        | `List<Utf8>`                                                            | one role per child, from CityJSON `children_roles`                                                            |
+| `bbox`                                                  | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>`                        | see below                                                                                                     |
+| `geometry` _or_ `geometry_lod<k>`                       | `Binary` (WKB)                                                          | one column per LoD                                                                                            |
+| `geometry_properties` _or_ `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>`                        | semantics WKB can't carry                                                                                     |
+| `material` _or_ `material_lod<k>`                       | `Map<Utf8, List<Int64>>`                                                | theme → one sidecar id (or null) per WKB face, into `materials.parquet`                                       |
+| `texture` _or_ `texture_lod<k>`                         | `Map<Utf8, List<List<Struct<id: Int64, uv: List<List<Float64>>>>>>`     | theme → per WKB face → per ring → `{id, uv}`, into `textures.parquet`                                         |
+| `template`                                              | `Struct<id: Int64, point: Binary, transformationMatrix: List<Float64>>` | geometry-instance data; `id` matches `geometry_templates.parquet`'s `id`; the matrix is a flat, row-major 4x4 |
+| `other`                                                 | JSON                                                                    | source fields not otherwise mapped                                                                            |
 
 Every field carries self-describing metadata: a `cityparquet:role` key
 (`reserved` / `attribute` / `extension`) and, on geometry columns, a

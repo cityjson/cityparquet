@@ -34,7 +34,7 @@
 //! ([`crate::encode::face_ring_vertex_counts`]), each carrying one `[u, v]`
 //! per distinct ring vertex.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use cityparquet_schema::{CityParquetError, Result};
 use cjseq::GeometryType;
@@ -47,6 +47,18 @@ use crate::encode::{
 
 fn schema_err(msg: impl Into<String>) -> CityParquetError {
     CityParquetError::Schema(msg.into())
+}
+
+/// One appearance map's themes, in sorted name order.
+///
+/// A cell's MAP entry order is exactly this iteration order, and therefore
+/// part of the bytes the writer lays down, so it must be a property of the
+/// theme names alone. `serde_json`'s object map is an `IndexMap` whenever any
+/// member of the dependency graph enables `preserve_order` — which Cargo
+/// unifies workspace-wide, and this workspace does — under which iterating it
+/// directly would leak the source document's member order into the column.
+fn sorted_themes(obj: &serde_json::Map<String, Value>) -> BTreeMap<&str, &Value> {
+    obj.iter().map(|(k, v)| (k.as_str(), v)).collect()
 }
 
 /// Dedupes CityJSON material/texture definitions across an entire dataset,
@@ -144,7 +156,7 @@ impl AppearanceInterner {
         let stored = (0..faces).filter(|i| !dropped.contains(i)).count();
 
         let mut themes = Vec::with_capacity(obj.len());
-        for (theme, inner) in obj {
+        for (theme, inner) in sorted_themes(obj) {
             let inner_obj = inner
                 .as_object()
                 .ok_or_else(|| schema_err(format!("material theme '{theme}' must be an object")))?;
@@ -169,7 +181,7 @@ impl AppearanceInterner {
                     "material theme '{theme}' has neither 'values' nor 'value'"
                 )));
             };
-            themes.push((theme.clone(), ids));
+            themes.push((theme.to_string(), ids));
         }
         Ok(MaterialCell { themes })
     }
@@ -245,7 +257,7 @@ impl AppearanceInterner {
         let dropped: HashSet<usize> = dropped.iter().copied().collect();
 
         let mut themes = Vec::with_capacity(obj.len());
-        for (theme, inner) in obj {
+        for (theme, inner) in sorted_themes(obj) {
             let inner_obj = inner
                 .as_object()
                 .ok_or_else(|| schema_err(format!("texture theme '{theme}' must be an object")))?;
@@ -275,7 +287,7 @@ impl AppearanceInterner {
                 )?;
                 per_face.push(rings);
             }
-            themes.push((theme.clone(), per_face));
+            themes.push((theme.to_string(), per_face));
         }
         Ok(TextureCell { themes })
     }
@@ -632,6 +644,61 @@ mod tests {
             CityParquetError::Schema(msg) => assert!(msg.contains("visual"), "{msg}"),
             other => panic!("expected Schema error, got {other:?}"),
         }
+    }
+
+    /// A cell's MAP entry order is what the writer lays down on disk, so it
+    /// must not depend on the source object's member order — which, under
+    /// serde_json's `preserve_order` (an `IndexMap`, unified workspace-wide
+    /// from another member's dependency), is the source's literal order. Both
+    /// flatteners sort their themes by name, so the same multi-theme geometry
+    /// writes the same bytes on every run.
+    #[test]
+    fn themes_are_flattened_in_sorted_order() {
+        let (b, t) = solid_two_shells();
+        let defs = vec![json!({"name": "a"})];
+        let mut i = AppearanceInterner::new();
+        let cell = i
+            .flatten_material_map(
+                &json!({"night": {"value": 0}, "day": {"value": 0}}),
+                &b,
+                &t,
+                &[],
+                &defs,
+            )
+            .unwrap();
+        assert_eq!(
+            cell.themes
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect::<Vec<_>>(),
+            vec!["day", "night"],
+            "material themes must be written sorted, not in source order"
+        );
+
+        let tex_defs = vec![json!({"type": "PNG", "image": "a.png"})];
+        let uvs = vec![vec![0.0, 0.0]];
+        let values = json!([
+            [[[0, 0, 0, 0, 0], [0, 0, 0, 0]], [[0, 0, 0, 0]]],
+            [[[0, 0, 0, 0]]]
+        ]);
+        let cell = i
+            .flatten_texture_map(
+                &json!({"night": {"values": values.clone()}, "day": {"values": values}}),
+                &b,
+                &t,
+                &[],
+                &tex_defs,
+                &uvs,
+            )
+            .unwrap();
+        assert_eq!(
+            cell.themes
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect::<Vec<_>>(),
+            vec!["day", "night"],
+            "texture themes must be written sorted, not in source order"
+        );
     }
 
     // ---- flatten_texture_map: per stored ring, UVs inlined ----

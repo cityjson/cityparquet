@@ -183,15 +183,24 @@ impl AppearanceAcc {
 
 /// Parse one theme's flat texture `values` list — one entry per WKB face, in
 /// face-walk order, each face an array of its rings' `[t, [u,v]…]` (or
-/// `[null]`) leaves, parsed by [`parse_ring_leaf`].
+/// `[null]`) leaves, parsed by [`parse_ring_leaf`] — of length `n_faces`
+/// exactly, as [`parse_material_values`] demands of its own list.
 fn parse_texture_values(
     theme: &str,
     values: &Value,
+    n_faces: usize,
     textures: &HashMap<i64, Value>,
 ) -> Result<FaceRingTextures> {
-    values
+    let items = values
         .as_array()
-        .ok_or_else(|| err(format!("texture theme '{theme}' values must be an array")))?
+        .ok_or_else(|| err(format!("texture theme '{theme}' values must be an array")))?;
+    if items.len() != n_faces {
+        return Err(err(format!(
+            "texture theme '{theme}' has {} values but geometry has {n_faces} faces",
+            items.len()
+        )));
+    }
+    items
         .iter()
         .map(|face| {
             face.as_array()
@@ -206,9 +215,10 @@ fn parse_texture_values(
 /// One geometry's per-theme flat `[face][ring]` textures (global id + UVs,
 /// `None` = untextured ring): each theme's `values` list is one entry per WKB
 /// face, in face-walk order, and each face entry is an array of its rings'
-/// leaves.
+/// leaves, of length `n_faces` exactly.
 pub fn texture_face_maps(
     texture_map: &Value,
+    n_faces: usize,
     textures: &HashMap<i64, Value>,
 ) -> Result<TextureFaceMaps> {
     let obj = texture_map
@@ -220,7 +230,7 @@ pub fn texture_face_maps(
             .as_object()
             .and_then(|o| o.get("values"))
             .ok_or_else(|| err(format!("texture theme '{theme}' is missing 'values'")))?;
-        let faces = parse_texture_values(theme, values, textures)?;
+        let faces = parse_texture_values(theme, values, n_faces, textures)?;
         out.insert(theme.clone(), faces);
     }
     Ok(out)
@@ -557,9 +567,20 @@ mod tests {
 
         let mut textures = HashMap::new();
         textures.insert(7i64, serde_json::json!({"type": "PNG", "image": "a.png"}));
-        let t = texture_face_maps(&serde_json::json!({"": {"values": [ [ [7, [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], [null] ], [ [null] ] ]}}), &textures).unwrap();
+        let t = texture_face_maps(&serde_json::json!({"": {"values": [ [ [7, [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], [null] ], [ [null] ] ]}}), 2, &textures).unwrap();
         assert_eq!(t[""].len(), 2);
         assert_eq!(t[""][0][0].as_ref().unwrap().0, 7);
         assert!(t[""][0][1].is_none() && t[""][1][0].is_none());
+        // A theme whose face list is shorter than the geometry is refused, as
+        // the material side refuses a short `values`: padding it silently
+        // would leave the trailing faces unaddressed by `app:target`.
+        assert!(
+            texture_face_maps(
+                &serde_json::json!({"": {"values": [ [ [null] ] ]}}),
+                2,
+                &textures
+            )
+            .is_err()
+        );
     }
 }

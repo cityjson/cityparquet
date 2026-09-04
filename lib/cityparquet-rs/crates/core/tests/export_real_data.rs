@@ -696,6 +696,12 @@ fn multi_lod_object_with_single_lod_appearance_round_trips() {
 /// six faces, each a single four-vertex ring) is given a material and a
 /// texture shaped exactly like its own boundaries. The exported CityJSON must
 /// carry the per-shell nesting back, ring for ring.
+///
+/// The first face additionally gets an interior ring — three new vertices
+/// near its centroid, wound opposite the exterior — because a face with only
+/// its exterior ring never distinguishes the texture cell's ring level from
+/// its face level. The hole is textured like every other ring, so the export
+/// must bring back a two-ring first face.
 #[test]
 fn solid_appearance_round_trips_through_the_flat_cells() {
     const OBJ_ID: &str = "NL.IMBAG.Pand.0503100000012869-0";
@@ -716,6 +722,62 @@ fn solid_appearance_round_trips_through_the_flat_cells() {
             .iter_mut()
             .find(|g| g["lod"] == "1.2" && g["type"] == "Solid")
             .expect("precondition: the target object carries a lod 1.2 Solid")
+    }
+
+    // A hole in the first face, before anything is sized from the boundaries:
+    // three vertices a quarter of the way from the face's centroid towards
+    // three of its corners, appended to the feature's own vertex pool and
+    // listed in the opposite winding, as an interior ring is.
+    {
+        let exterior: Vec<usize> = target_solid(&mut feature, OBJ_ID)["boundaries"][0][0][0]
+            .as_array()
+            .expect("precondition: the first face carries an exterior ring")
+            .iter()
+            .map(|i| i.as_u64().unwrap() as usize)
+            .collect();
+        assert_eq!(
+            exterior.len(),
+            4,
+            "precondition: the first face is a four-vertex quad"
+        );
+        let vertices = feature["vertices"].as_array().unwrap().clone();
+        let corner = |i: usize| -> [i64; 3] {
+            let v = vertices[i].as_array().unwrap();
+            std::array::from_fn(|k| v[k].as_i64().unwrap())
+        };
+        let centre: [i64; 3] = {
+            let mut sum = [0i64; 3];
+            for &i in &exterior {
+                let p = corner(i);
+                for k in 0..3 {
+                    sum[k] += p[k];
+                }
+            }
+            sum.map(|s| s / exterior.len() as i64)
+        };
+        let mut hole = Vec::new();
+        let mut coords = std::collections::HashSet::new();
+        for &i in exterior.iter().take(3) {
+            let p = corner(i);
+            let q: [i64; 3] = std::array::from_fn(|k| centre[k] + (p[k] - centre[k]) / 4);
+            coords.insert(q);
+            hole.push(Value::from(vertices.len() + hole.len()));
+            feature["vertices"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!(q));
+        }
+        hole.reverse();
+        assert_eq!(
+            coords.len(),
+            3,
+            "precondition: the hole's three quantised vertices are distinct, \
+             so neither the writer nor the comparator collapses the ring"
+        );
+        target_solid(&mut feature, OBJ_ID)["boundaries"][0][0]
+            .as_array_mut()
+            .expect("precondition: the first face is a list of rings")
+            .push(Value::Array(hole));
     }
 
     // The shell's real ring vertex counts: a texture ring carries exactly one
@@ -829,10 +891,16 @@ fn solid_appearance_round_trips_through_the_flat_cells() {
         .as_array()
         .expect("the shell's per-face material list");
     assert_eq!(shell.len(), 6, "the shell's six faces each keep an entry");
-    for id in shell {
-        let id = id.as_u64().expect("a feature-local material index");
-        assert!(id < 2, "material index {id} must be feature-local");
-    }
+    // First-use localisation numbers the two definitions in the order the
+    // faces reach them, so the source's alternating pattern comes back
+    // unchanged rather than merely "feature-local".
+    assert_eq!(
+        shell
+            .iter()
+            .map(|id| id.as_u64().expect("a feature-local material index"))
+            .collect::<Vec<_>>(),
+        vec![0, 1, 0, 1, 0, 1],
+    );
 
     // (b) The texture is back to the nested one-shell form, ring for ring,
     // in plain index form (one UV index per ring vertex).
@@ -860,6 +928,26 @@ fn solid_appearance_round_trips_through_the_flat_cells() {
             );
         }
     }
+    // The interior ring specifically: the first face comes back with both of
+    // its rings, the exterior's four UV indices and the hole's three, each
+    // behind its texture id.
+    let first_face = faces[0].as_array().expect("the first face's rings");
+    assert_eq!(
+        first_face.len(),
+        2,
+        "the first face keeps its exterior ring and its hole"
+    );
+    assert_eq!(
+        first_face[0].as_array().unwrap().len(),
+        1 + 4,
+        "the exterior ring's texture id plus one UV index per vertex"
+    );
+    assert_eq!(
+        first_face[1].as_array().unwrap().len(),
+        1 + 3,
+        "the hole's texture id plus one UV index per vertex"
+    );
+
     assert_texture_rings_are_index_form(&Value::Array(faces.clone()), n_textures, n_uvs);
 
     // (c) And the whole derivative round-trips.

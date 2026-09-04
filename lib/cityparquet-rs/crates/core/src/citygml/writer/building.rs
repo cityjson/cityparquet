@@ -465,7 +465,8 @@ fn resolve_textures(
         report.appearance_skipped_core_profile += 1;
         return TextureFaceMaps::new();
     };
-    match texture_face_maps(texture, table) {
+    let n_faces = count_faces(kind);
+    match texture_face_maps(texture, n_faces, table) {
         // The `[face][ring]` tree must match the geometry's shape exactly — else
         // ring ids would be allocated for phantom rings and `app:target`s would
         // dangle. A mismatch drops this geometry's textures with a counter.

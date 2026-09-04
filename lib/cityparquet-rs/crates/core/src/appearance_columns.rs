@@ -566,7 +566,7 @@ fn read_face(rings: &dyn Array, theme: &str, face: usize) -> Result<Vec<TextureR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_buffer::OffsetBuffer;
+    use arrow_buffer::{NullBuffer, OffsetBuffer};
     use cityparquet_schema::model::{material_data_type, texture_data_type};
 
     fn ring(id: i64, uv: &[[f64; 2]]) -> TextureRing {
@@ -701,6 +701,13 @@ mod tests {
         pairs_in_uv: i32,
         rings_in_face: i32,
         faces_in_theme: i32,
+        /// The theme's first face entry is NULL.
+        null_face: bool,
+        /// The face's first ring struct is NULL.
+        null_ring: bool,
+        /// The ring's `id` is null while its `uv` is not — the two are
+        /// null together or not at all.
+        half_null_ring: bool,
     }
 
     impl Default for HandBuilt {
@@ -711,6 +718,9 @@ mod tests {
                 pairs_in_uv: 1,
                 rings_in_face: 1,
                 faces_in_theme: 1,
+                null_face: false,
+                null_ring: false,
+                half_null_ring: false,
             }
         }
     }
@@ -742,21 +752,26 @@ mod tests {
             let uv_f = Arc::new(Field::new("uv", uv.data_type().clone(), true));
             let uv: ArrayRef = Arc::new(uv);
             let id_f = Arc::new(Field::new("id", DataType::Int64, true));
-            let id: ArrayRef = Arc::new(Int64Array::from(vec![7]));
+            let id: ArrayRef = Arc::new(Int64Array::from(if self.half_null_ring {
+                vec![None]
+            } else {
+                vec![Some(7)]
+            }));
             let (fields, arrays) = if self.swapped {
                 (vec![uv_f, id_f], vec![uv, id])
             } else {
                 (vec![id_f, uv_f], vec![id, uv])
             };
-            let ring = StructArray::new(Fields::from(fields), arrays, None);
-            let ring_f = Arc::new(Field::new("item", ring.data_type().clone(), false));
+            let ring_nulls = self.null_ring.then(|| NullBuffer::from(vec![false]));
+            let ring = StructArray::new(Fields::from(fields), arrays, ring_nulls);
+            let ring_f = Arc::new(Field::new("item", ring.data_type().clone(), self.null_ring));
             let face = ListArray::new(
                 ring_f,
                 offsets(vec![0, self.rings_in_face]),
                 Arc::new(ring),
-                None,
+                self.null_face.then(|| NullBuffer::from(vec![false])),
             );
-            let face_f = Arc::new(Field::new("item", face.data_type().clone(), false));
+            let face_f = Arc::new(Field::new("item", face.data_type().clone(), self.null_face));
             let value = ListArray::new(
                 face_f,
                 offsets(vec![0, self.faces_in_theme]),
@@ -765,6 +780,43 @@ mod tests {
             );
             map_of_one_theme(Arc::new(value))
         }
+    }
+
+    /// The same map with its single row emptied — offsets `[0, 0]` over the
+    /// same entries, so row 0 carries no theme at all.
+    fn without_entries(m: &MapArray) -> MapArray {
+        let DataType::Map(entries_f, sorted) = m.data_type().clone() else {
+            unreachable!("a MapArray's data type is Map")
+        };
+        MapArray::new(
+            entries_f,
+            offsets(vec![0, 0]),
+            m.entries().clone(),
+            None,
+            sorted,
+        )
+    }
+
+    /// A one-row, one-entry map whose single theme's value is NULL — the
+    /// column type forbids it (the map's value field is non-nullable), so
+    /// only a foreign writer could produce it.
+    fn map_of_null_theme_value() -> MapArray {
+        let value: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Int64, true)),
+            offsets(vec![0, 0]),
+            Arc::new(Int64Array::from(Vec::<i64>::new())),
+            Some(NullBuffer::from(vec![false])),
+        ));
+        let entries = StructArray::new(
+            Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", value.data_type().clone(), true),
+            ]),
+            vec![Arc::new(StringArray::from(vec![""])), value],
+            None,
+        );
+        let entries_f = Arc::new(Field::new("key_value", entries.data_type().clone(), false));
+        MapArray::new(entries_f, offsets(vec![0, 1]), entries, None, false)
     }
 
     /// A one-row, one-entry `MapArray` over `value`, with the empty theme.
@@ -861,6 +913,71 @@ mod tests {
         .build();
         let e = read_texture_cell(&no_pairs, 0).unwrap_err().to_string();
         assert!(e.contains("no [u, v] pair"), "{e}");
+    }
+
+    /// The rest of the reader's refusals, on shapes no builder here can
+    /// produce and the column type forbids, but a foreign writer of the same
+    /// schema could still emit: an empty map, a null map value, a null face,
+    /// a null ring, and a ring whose `id` and `uv` are not null together.
+    /// Every one must be an `Err` — a panic fails this test.
+    #[test]
+    fn the_reader_refuses_every_shape_the_column_type_forbids() {
+        let material = hand_built_material(vec![Some(3)]);
+        let e = read_material_cell(&without_entries(&material), 0)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("empty map"), "{e}");
+
+        let texture = HandBuilt::default().build();
+        let e = read_texture_cell(&without_entries(&texture), 0)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("empty map"), "{e}");
+
+        let null_value = map_of_null_theme_value();
+        let e = read_material_cell(&null_value, 0).unwrap_err().to_string();
+        assert!(e.contains("null value"), "{e}");
+        let e = read_texture_cell(&null_value, 0).unwrap_err().to_string();
+        assert!(e.contains("null value"), "{e}");
+
+        let null_face = HandBuilt {
+            null_face: true,
+            ..Default::default()
+        }
+        .build();
+        let e = read_texture_cell(&null_face, 0).unwrap_err().to_string();
+        assert!(e.contains("face 0 is null"), "{e}");
+
+        let null_ring = HandBuilt {
+            null_ring: true,
+            ..Default::default()
+        }
+        .build();
+        let e = read_texture_cell(&null_ring, 0).unwrap_err().to_string();
+        assert!(e.contains("ring 0 is null"), "{e}");
+
+        let half_null = HandBuilt {
+            half_null_ring: true,
+            ..Default::default()
+        }
+        .build();
+        let e = read_texture_cell(&half_null, 0).unwrap_err().to_string();
+        assert!(e.contains("id and uv must be null together"), "{e}");
+    }
+
+    /// A foreign writer that narrowed the material ids to `INT32` is a type
+    /// mismatch the reader must report, not downcast-unwrap into a panic.
+    #[test]
+    fn material_ids_of_the_wrong_child_type_are_an_error_not_a_panic() {
+        let value = ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, true)),
+            offsets(vec![0, 2]),
+            Arc::new(arrow_array::Int32Array::from(vec![3, 4])),
+            None,
+        );
+        let map = map_of_one_theme(Arc::new(value));
+        let e = read_material_cell(&map, 0).unwrap_err().to_string();
+        assert!(e.contains("material id list"), "{e}");
     }
 
     /// The hazard `geometry_properties` documents for `type`/`surfaces`, one

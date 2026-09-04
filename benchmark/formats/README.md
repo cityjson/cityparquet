@@ -5,12 +5,19 @@ to write, how many bytes it occupies, and how those two move with the writer's
 own knobs — codec, row-group size, row ordering. Its read-side counterpart, and
 the cross-format comparison, is `benchmark/formats/READ_BENCHMARK.md`.
 
-**No write-side CSVs are committed.** The earlier ones were deleted once the
-inputs they measured (three pinned 3DBAG tiles fetched by a script this repo no
-longer carries) stopped being reproducible, and the geometry-encoding default
-changed underneath them. Run the recipes below to produce them; nothing in this
-document quotes a number, so nothing in it can go stale in that particular way
-again.
+**The committed write-side CSVs are `results/` and `compression_results/`**,
+one file per dataset of the six-dataset cityjson.org corpus, alongside the
+configuration-axis runs in `scaling_write_results/` and
+`scaling_compression_results/`. Nothing in this document quotes a number, so
+the methodology here cannot go stale against a re-run; the CSVs themselves can,
+and one caveat already applies.
+
+**The committed write and compression figures predate the typed appearance
+columns.** They were measured while `material_lod*` / `texture_lod*` were JSON
+text cells; those columns are now typed Arrow/Parquet `MAP`s, which the writer
+leaves at parquet's own defaults for dictionary encoding and statistics, so
+neither the committed bytes nor the committed write times describe the current
+writer until both families are re-run.
 
 ## Two benchmarks, two questions
 
