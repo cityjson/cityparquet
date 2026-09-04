@@ -3062,16 +3062,22 @@ mod tests {
             .as_array_mut()
             .expect("exported doc must carry geometry-templates");
         assert_eq!(templates.len(), 3, "railway must carry exactly 3 templates");
-        let material_value = templates[1]["material"]["visual"]["value"].clone();
-        assert_eq!(
-            material_value,
-            serde_json::json!(1),
-            "precondition: template 1's material.visual.value starts at header index 1"
+        // The column stores material flat per WKB face, so the source's
+        // whole-template `{"value": 1}` broadcast exports as one entry per
+        // face — every one of them the same header index.
+        let material_values = templates[1]["material"]["visual"]["values"]
+            .as_array()
+            .expect("template 1 must carry a per-face material values list")
+            .clone();
+        assert!(
+            !material_values.is_empty()
+                && material_values.iter().all(|v| *v == serde_json::json!(1)),
+            "precondition: template 1's material.visual.values are all header index 1, got {material_values:?}"
         );
         // Repoint to a DIFFERENT, still-valid header material index — the
         // corruption must stay a real material-content mismatch, never an
         // out-of-range Schema error.
-        templates[1]["material"]["visual"]["value"] = serde_json::json!(0);
+        templates[1]["material"]["visual"]["values"][0] = serde_json::json!(0);
         let n_materials = doc["appearance"]["materials"]
             .as_array()
             .expect("exported header must carry appearance.materials")

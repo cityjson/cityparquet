@@ -45,7 +45,7 @@ fn err(msg: impl Into<String>) -> CityParquetError {
 /// representation — the column is nullable and a geometry with no material in
 /// any theme is written as a null cell.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct MaterialCell {
+pub struct MaterialCell {
     /// theme -> one sidecar id (or None) per WKB face; insertion order kept.
     pub themes: Vec<(String, Vec<Option<i64>>)>,
 }
@@ -54,7 +54,7 @@ pub(crate) struct MaterialCell {
 ///
 /// `id` and `uv` are null together — an untextured ring is `{null, null}`.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct TextureRing {
+pub struct TextureRing {
     pub id: Option<i64>,
     /// One [u, v] per distinct ring vertex; None exactly when `id` is None.
     pub uv: Option<Vec<[f64; 2]>>,
@@ -62,7 +62,7 @@ pub(crate) struct TextureRing {
 
 /// One `texture_lod*` cell, decoupled from Arrow.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct TextureCell {
+pub struct TextureCell {
     /// theme -> per WKB face -> per ring.
     pub themes: Vec<(String, Vec<Vec<TextureRing>>)>,
 }
@@ -126,6 +126,7 @@ impl MaterialCellBuilder {
                 "material cell has no themes: write a null cell instead of an empty map",
             ));
         }
+        unique_themes(cell.themes.iter().map(|(theme, _)| theme), "material")?;
         for (theme, ids) in &cell.themes {
             self.map.keys().append_value(theme);
             let list = self.map.values();
@@ -231,6 +232,23 @@ impl TextureCellBuilder {
     }
 }
 
+/// A map key names one theme, so the same key twice is not a representable
+/// cell: Parquet's MAP semantics leave duplicate keys undefined, and a reader
+/// would silently keep one of the two. The cells carry their themes as a
+/// `Vec` to preserve insertion order, which admits the duplicate the type
+/// system cannot rule out, so the builders refuse it here.
+fn unique_themes<'a>(themes: impl Iterator<Item = &'a String>, column: &str) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for theme in themes {
+        if !seen.insert(theme) {
+            return Err(err(format!(
+                "{column} cell has theme '{theme}' more than once: map keys are unique"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The invariants a texture cell must satisfy before any of it is written:
 /// at least one theme, and within every ring `id` and `uv` null together,
 /// a textured ring carrying at least one pair.
@@ -240,6 +258,7 @@ fn validate_texture(cell: &TextureCell) -> Result<()> {
             "texture cell has no themes: write a null cell instead of an empty map",
         ));
     }
+    unique_themes(cell.themes.iter().map(|(theme, _)| theme), "texture")?;
     for (theme, faces) in &cell.themes {
         for (f, rings) in faces.iter().enumerate() {
             for (r, ring) in rings.iter().enumerate() {
@@ -499,6 +518,32 @@ mod tests {
     fn empty_material_map_is_refused() {
         let mut b = MaterialCellBuilder::new();
         assert!(b.append_value(&MaterialCell::default()).is_err());
+    }
+
+    #[test]
+    fn a_duplicate_material_theme_is_refused() {
+        let mut b = MaterialCellBuilder::new();
+        let cell = MaterialCell {
+            themes: vec![
+                ("visual".into(), vec![Some(1)]),
+                ("visual".into(), vec![Some(2)]),
+            ],
+        };
+        let e = b.append_value(&cell).unwrap_err().to_string();
+        assert!(e.contains("visual") && e.contains("more than once"), "{e}");
+    }
+
+    #[test]
+    fn a_duplicate_texture_theme_is_refused() {
+        let mut b = TextureCellBuilder::new();
+        let cell = TextureCell {
+            themes: vec![
+                ("visual".into(), vec![vec![bare()]]),
+                ("visual".into(), vec![vec![bare()]]),
+            ],
+        };
+        let e = b.append_value(&cell).unwrap_err().to_string();
+        assert!(e.contains("visual") && e.contains("more than once"), "{e}");
     }
 
     #[test]

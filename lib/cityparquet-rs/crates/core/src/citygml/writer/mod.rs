@@ -268,8 +268,9 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                 // `material_lod*` / `texture_lod*` columns into a
                 // `{"<canonical-lod>": {...}}` map and keyed out per geometry
                 // below. `decode_batch` excludes these columns.
-                let material_col = read_lod_keyed_appearance(&batch, &material_cols, row)?;
-                let texture_col = read_lod_keyed_appearance(&batch, &texture_cols, row)?;
+                let material_col =
+                    read_lod_keyed_appearance(&batch, "material", &material_cols, row)?;
+                let texture_col = read_lod_keyed_appearance(&batch, "texture", &texture_cols, row)?;
                 let mut solids = Vec::new();
                 for (lod, decoded, props) in obj.geometries {
                     // Real semantics on a geometry we are about to skip are

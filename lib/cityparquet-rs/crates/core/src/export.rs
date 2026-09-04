@@ -49,7 +49,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arrow_array::{Array, RecordBatch, StringArray};
+use arrow_array::{Array, MapArray, RecordBatch};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
@@ -60,6 +60,7 @@ use cjseq::{
     Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
 };
 
+use crate::appearance_columns::{read_material_cell, read_texture_cell};
 use crate::decode::{DecodedObject, decode_batch};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use crate::sidecar::{TemplateRow, read_materials, read_templates, read_textures};
@@ -802,7 +803,10 @@ pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usiz
 
 /// Rebuild an object row's appearance into an in-memory `{"<lod>": <theme
 /// map>}` object from the pre-resolved appearance `columns` (see
-/// [`appearance_columns`]), keyed by each column's canonical LoD. This is the
+/// [`appearance_columns`]), keyed by each column's canonical LoD. `prefix`
+/// (`"material"` / `"texture"`) picks which cell reader decodes the MAP
+/// column; each cell is handed on in its flat CityJSON-shaped form
+/// ([`crate::appearance_columns::MaterialCell::to_flat_value`]). This is the
 /// inverse of the encoder's per-LoD column layout: the downstream restore loop
 /// looks appearance up by a geometry's canonical LoD (`lod.to_string()`), and
 /// because both sides now derive that key from the same §9 column suffix, the
@@ -811,6 +815,7 @@ pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usiz
 /// carries no appearance at all.
 pub(crate) fn read_lod_keyed_appearance(
     batch: &RecordBatch,
+    prefix: &str,
     columns: &[(usize, String)],
     row: usize,
 ) -> Result<Option<Value>> {
@@ -820,12 +825,19 @@ pub(crate) fn read_lod_keyed_appearance(
         if col.is_null(row) {
             continue;
         }
-        let arr = col.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+        let arr = col.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
             err(format!(
-                "appearance column at index {index} is not a Utf8 array"
+                "appearance column at index {index} is not a MAP array"
             ))
         })?;
-        map.insert(lod_key.clone(), serde_json::from_str(arr.value(row))?);
+        let cell = if prefix == "material" {
+            read_material_cell(arr, row)?.map(|c| c.to_flat_value())
+        } else {
+            read_texture_cell(arr, row)?.map(|c| c.to_flat_value())
+        };
+        if let Some(cell) = cell {
+            map.insert(lod_key.clone(), cell);
+        }
     }
     Ok((!map.is_empty()).then_some(Value::Object(map)))
 }
@@ -1208,7 +1220,9 @@ fn rebuild_templates(
         let material = row
             .material
             .as_ref()
-            .map(|m| local_appearance.localise_material_map(m))
+            // Task 4 re-nests this from `shells`; for now the flat cell's
+            // CityJSON-shaped value is what the localiser walks.
+            .map(|m| local_appearance.localise_material_map(&m.to_flat_value()))
             .transpose()
             .map_err(|e| {
                 err(format!(
@@ -1220,7 +1234,7 @@ fn rebuild_templates(
         let texture = row
             .texture
             .as_ref()
-            .map(|t| local_appearance.localise_texture_map(t))
+            .map(|t| local_appearance.localise_texture_map(&t.to_flat_value()))
             .transpose()
             .map_err(|e| {
                 err(format!(
@@ -1437,8 +1451,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             let texture_cols = appearance_columns(&batch, "texture");
             let objects = decode_batch(&batch, &table_meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
-                let material = read_lod_keyed_appearance(&batch, &material_cols, row)?;
-                let texture = read_lod_keyed_appearance(&batch, &texture_cols, row)?;
+                let material = read_lod_keyed_appearance(&batch, "material", &material_cols, row)?;
+                let texture = read_lod_keyed_appearance(&batch, "texture", &texture_cols, row)?;
                 let key = obj.feature_id.clone().unwrap_or_else(|| obj.id.clone());
                 object_count += 1;
                 groups.push(key, (obj, material, texture));
@@ -1670,7 +1684,7 @@ mod tests {
         }
         let field = Field::new("material", DataType::Utf8, true).with_metadata(meta);
         let schema = Arc::new(Schema::new(vec![field]));
-        let col: ArrayRef = Arc::new(StringArray::from(vec![None::<&str>]));
+        let col: ArrayRef = Arc::new(arrow_array::StringArray::from(vec![None::<&str>]));
         RecordBatch::try_new(schema, vec![col]).unwrap()
     }
 

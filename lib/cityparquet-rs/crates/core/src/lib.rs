@@ -2,9 +2,7 @@
 
 mod address;
 pub mod appearance;
-// Consumed by the object table, the sidecar and export from Task 3 onwards.
-#[allow(dead_code)]
-mod appearance_columns;
+pub mod appearance_columns;
 mod arrow_compat;
 pub mod citygml;
 pub mod compare;
