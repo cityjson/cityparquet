@@ -29,8 +29,8 @@ by the column name rather than by a key a consumer must match.
 
 | Column | Type |
 |---|---|
-| `material_lod*` | `MAP<VARCHAR, LIST<INT>>` |
-| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id INT, uv LIST<LIST<DOUBLE>>>>>>` |
+| `material_lod*` | `MAP<VARCHAR, LIST<BIGINT>>` |
+| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>` |
 
 These columns carry no `lod` value — the column name already fixes the LoD. The outer
 dimension is a **theme**: a dynamic string key whose set is not known in advance (a
@@ -73,7 +73,8 @@ that geometry.
   **MUST** equal face `i`'s ring count; when `uv` is non-null,
   `len(texture[theme][i][r].uv)` **MUST** equal ring `r`'s vertex count and every
   entry **MUST** hold exactly two values.
-- Every non-null `id` **MUST** match an `id` in the corresponding sidecar.
+- Every non-null `id` **MUST** match an `id` in the corresponding sidecar; references are
+  `BIGINT` because the sidecar `id` columns are.
 
 The key property is the same one `face_semantics` has: **`material[theme][i]` is the
 material of WKB face `i`**, with no geometry-type-specific nesting to walk. A `Solid`'s
@@ -169,8 +170,8 @@ carried by its column name here exactly as it is in an object table.
 | `name` | `VARCHAR` |  | The template's identifier in the source document, when it had one. `id` is an integer so that templates remap like the other sidecars on merge, which leaves nowhere else for a meaningful source name to survive. |
 | `geometry_lod*` | `BLOB` |  | Template WKB in **local** template coordinates (raw doubles — template vertices are not subject to any dataset-level transform); one column per LoD |
 | `geometry_properties_lod*` | `STRUCT<type, surfaces, face_semantics, shells>` |  | Template geometry properties, the [same struct](/specification/geometry-semantics) as an object row's |
-| `material_lod*` | `MAP<VARCHAR, LIST<INT>>` |  | Template material mapping, per LoD — the [same shape and invariants](#material--texture-columns) as an object row's |
-| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id INT, uv LIST<LIST<DOUBLE>>>>>>` |  | Template texture mapping, per LoD — the same shape and invariants as an object row's |
+| `material_lod*` | `MAP<VARCHAR, LIST<BIGINT>>` |  | Template material mapping, per LoD — the [same shape and invariants](#material--texture-columns) as an object row's |
+| `texture_lod*` | `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>` |  | Template texture mapping, per LoD — the same shape and invariants as an object row's |
 
 A template is a single geometry at a single LoD, so each row populates exactly the
 column set matching its own LoD and leaves the others null. The table is sparse by

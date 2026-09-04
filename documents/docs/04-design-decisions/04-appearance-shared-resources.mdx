@@ -11,7 +11,7 @@ How CityParquet handles resources shared across many objects: materials and text
 
 <Badge variant="success">decided</Badge>
 
-**Decision.** `materials.parquet` and `textures.parquet` hold reusable definitions; the object table's nullable `material_lod*`/`texture_lod*` columns reference them by the sidecar's **dataset-global `id`** — matched against the `id` column, never a row position. The columns are typed `MAP`s keyed by theme whose values are **flat per WKB face**, in WKB face order — `MAP<VARCHAR, LIST<INT>>` for materials, and per face → per ring `STRUCT<id INT, uv LIST<LIST<DOUBLE>>>` for textures, with the UV coordinates **inlined**. See the [specification](/specification/appearance-templates) → *material / texture columns*.
+**Decision.** `materials.parquet` and `textures.parquet` hold reusable definitions; the object table's nullable `material_lod*`/`texture_lod*` columns reference them by the sidecar's **dataset-global `id`** — matched against the `id` column, never a row position. The columns are typed `MAP`s keyed by theme whose values are **flat per WKB face**, in WKB face order — `MAP<VARCHAR, LIST<BIGINT>>` for materials, and per face → per ring `STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>` for textures, with the UV coordinates **inlined**. See the [specification](/specification/appearance-templates) → *material / texture columns*.
 
 **Alternatives considered.**
 
