@@ -77,7 +77,7 @@ Questions settled in the 2026-07-21 review, kept here briefly so the trail is le
 
 | Question | Resolution |
 |---|---|
-| Appearance column shape | Per-LoD `material_lod*` / `texture_lod*` columns, parallel to `geometry_lod*`. |
+| Appearance column shape | Per-LoD `material_lod*` / `texture_lod*` columns, parallel to `geometry_lod*`, typed as `MAP`s from theme to per-WKB-face values (flat, like `face_semantics`; settled in the 2026-09-04 review). |
 | Level-of-detail layout | **Column-per-LoD** is normative; row-per-LoD and file-per-LoD rejected. Every geometry column is LoD-suffixed, with the minor always present. |
 | Address struct schema | A reserved `address LIST<STRUCT<…>>` column, lean postal fields + WKB `MultiPointZ` `location`. |
 | Standardise both profiles, or only one? | **Neither** — profiles are removed. A package has object tables plus optional sidecars, written when the source has the data. |
