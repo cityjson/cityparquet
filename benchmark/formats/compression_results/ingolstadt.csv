@@ -1,0 +1,9 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
+ingolstadt.city.json,cityparquet,379,0.406460,975072,970300,0,0.011854,0.011042,1,1,false
+ingolstadt.city.json,cityparquet+uncompressed,379,0.309383,7407229,7402455,0,0.005065,0.005280,1,1,false
+ingolstadt.city.json,cityparquet+snappy,379,0.303722,1695304,1690530,0,0.007731,0.007714,1,1,false
+ingolstadt.city.json,cityparquet+gzip,379,0.363262,969070,964298,0,0.010374,0.010241,1,1,false
+ingolstadt.city.json,cityparquet+lz4,379,0.312541,1818925,1814151,0,0.007675,0.006896,1,1,false
+ingolstadt.city.json,cityparquet+brotli,379,0.329183,1103396,1098622,0,0.030811,0.031427,1,1,false
+ingolstadt.city.json,cityparquet+rg512,379,0.309959,975072,970300,0,0.010658,0.010663,1,1,false
+ingolstadt.city.json,cityparquet+rg4096,379,0.312561,975072,970300,0,0.010840,0.012201,1,1,false

@@ -1,0 +1,10 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
+zurich_building_lod2.city.json,cityparquet,198699,20.398991,74374282,74372395,0,0.717794,0.522201,4,3,true
+zurich_building_lod2.city.json,parquet-defaults,198699,21.019307,73482425,73480538,0,0.519549,0.500379,4,3,true
+zurich_building_lod2.city.json,no-dictionary,198699,20.513921,74428134,74426247,0,0.526633,0.517999,4,3,true
+zurich_building_lod2.city.json,no-bss,198699,20.284282,71875425,71873538,0,0.532333,0.517213,4,3,true
+zurich_building_lod2.city.json,no-delta,198699,21.979640,74886226,74884339,0,0.733744,0.564663,4,3,true
+zurich_building_lod2.city.json,snappy,198699,20.081387,110750042,110748153,0,0.372763,0.367264,4,3,true
+zurich_building_lod2.city.json,cityparquet+hilbert,198699,30.226837,71351644,71349757,0,0.663178,0.166552,4,1,true
+zurich_building_lod2.city.json,cityparquet+rg512,198699,22.648284,78628390,78626503,0,0.740662,0.056338,389,25,true
+zurich_building_lod2.city.json,cityparquet+hilbert+rg512,198699,34.141686,75477441,75475554,0,0.672989,0.008133,389,0,true

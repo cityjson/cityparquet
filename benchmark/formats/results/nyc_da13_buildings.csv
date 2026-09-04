@@ -1,0 +1,10 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
+nyc_da13_buildings.city.json,cityparquet,23777,7.649294,17921647,17920153,0,0.152176,0.151388,1,1,true
+nyc_da13_buildings.city.json,parquet-defaults,23777,7.798097,18017831,18016337,0,0.153278,0.153492,1,1,true
+nyc_da13_buildings.city.json,no-dictionary,23777,7.146135,17786410,17784916,0,0.154493,0.159253,1,1,true
+nyc_da13_buildings.city.json,no-bss,23777,7.383156,17611624,17610130,0,0.148697,0.148664,1,1,true
+nyc_da13_buildings.city.json,no-delta,23777,8.018151,18083220,18081726,0,0.260877,0.262015,1,1,true
+nyc_da13_buildings.city.json,snappy,23777,7.596128,31127937,31126443,0,0.094211,0.089884,1,1,true
+nyc_da13_buildings.city.json,cityparquet+hilbert,23777,9.685384,16977108,16975614,0,0.144440,0.149165,1,1,true
+nyc_da13_buildings.city.json,cityparquet+rg512,23777,7.145200,18348156,18346662,0,0.181712,0.052243,47,13,true
+nyc_da13_buildings.city.json,cityparquet+hilbert+rg512,23777,9.746834,17378948,17377454,0,0.185543,0.006318,47,1,true

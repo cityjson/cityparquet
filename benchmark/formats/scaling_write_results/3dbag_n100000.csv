@@ -1,0 +1,10 @@
+dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
+3dbag_n100000.city.jsonl,cityparquet,100001,14.240341,74134231,74127909,0,0.581905,0.383804,2,1,true
+3dbag_n100000.city.jsonl,parquet-defaults,100001,12.835327,74432834,74426512,0,0.589179,0.391083,2,1,true
+3dbag_n100000.city.jsonl,no-dictionary,100001,13.482337,73123751,73117429,0,0.710500,0.388988,2,1,true
+3dbag_n100000.city.jsonl,no-bss,100001,12.667421,73101516,73095194,0,0.585821,0.380358,2,1,true
+3dbag_n100000.city.jsonl,no-delta,100001,13.565065,74566534,74560212,0,0.595583,0.454356,2,1,true
+3dbag_n100000.city.jsonl,snappy,100001,12.169191,114950584,114944260,0,0.453092,0.325016,2,1,true
+3dbag_n100000.city.jsonl,cityparquet+hilbert,100001,15.293485,74238124,74231802,0,0.582055,0.380013,2,1,true
+3dbag_n100000.city.jsonl,cityparquet+rg512,100001,14.569628,81660910,81654588,0,0.860542,0.021417,196,2,true
+3dbag_n100000.city.jsonl,cityparquet+hilbert+rg512,100001,16.363553,81698015,81691693,0,0.851141,0.024293,196,2,true

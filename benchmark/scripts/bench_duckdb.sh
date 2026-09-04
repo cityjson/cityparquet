@@ -161,7 +161,19 @@ print(time.time() - t0)
 # Untimed one-off: make sure the extension is installed BEFORE any timed
 # block, so no write_s sample pays for the INSTALL (idempotent; may hit
 # the network the first time on a machine).
-"$DUCKDB" -c "INSTALL cityjson FROM community;" > /dev/null
+#
+# The community `cityjson` extension is built per DuckDB version and
+# platform, and is NOT published for every combination — v1.3.2 on
+# linux_amd64 returns a 404. Without it this baseline cannot run at all, so
+# exit 3, a code the caller distinguishes from a real failure: the rest of
+# the write benchmark is unaffected and must still run. A missing baseline
+# is disclosed, never silently absent.
+if ! "$DUCKDB" -c "INSTALL cityjson FROM community; LOAD cityjson;" > /dev/null 2>&1; then
+    echo "bench_duckdb: the community 'cityjson' extension is unavailable for this" >&2
+    echo "              DuckDB build ($("$DUCKDB" --version | head -1)); the duckdb-copy" >&2
+    echo "              baseline rows will be ABSENT from ${OUT_CSV}." >&2
+    exit 3
+fi
 
 # Calibrate the fixed per-invocation overhead every timed write_s sample
 # still carries (process startup + LOAD): median of 5, disclosed on
