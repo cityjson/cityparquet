@@ -42,8 +42,10 @@ Per LoD, beside `geometry_lodX_Y` and `geometry_properties_lodX_Y`:
   entry per face.
 - `texture`: one entry per WKB face; each entry is a list over that face's
   rings in `PolygonZ` ring order (exterior first); each ring is a struct with
-  the sidecar `textures.parquet` `id` and one `[u, v]` pair per ring vertex, in
-  ring vertex order. A ring with no texture is `{id: NULL, uv: NULL}`.
+  the sidecar `textures.parquet` `id` and one `[u, v]` pair per distinct ring
+  vertex, in ring vertex order — the closing repeat a WKB ring carries has no
+  pair, so `len(uv)` is the WKB point count minus one. A ring with no texture
+  is `{id: NULL, uv: NULL}`.
 - A cell is NULL when the geometry carries no material (or texture) in any
   theme. A theme absent from the map has no entries for that geometry.
 - Ids are sidecar `id` values, matched against the sidecar's `id` column,
@@ -58,8 +60,13 @@ Per LoD, beside `geometry_lodX_Y` and `geometry_properties_lodX_Y`:
 - `len(material[theme])` equals the WKB face count.
 - `len(texture[theme])` equals the WKB face count; `len(texture[theme][i])`
   equals face `i`'s ring count; `len(texture[theme][i][r].uv)` equals ring
-  `r`'s vertex count when `uv` is non-null.
+  `r`'s WKB point count minus one when `uv` is non-null.
 - Every non-null id references an existing sidecar row.
+- Map values are non-null and a map is never empty; in `texture`, every face entry
+  and ring struct is non-null, `id` and `uv` are null together, and every `[u, v]`
+  entry and its two values are non-null.
+- A source theme whose every face entry is null stays present as a same-length
+  all-null list; the NULL cell means no appearance at all.
 - The same rules apply to `geometry_templates.parquet`, which uses the same
   per-LoD column grammar.
 

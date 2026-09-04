@@ -61,8 +61,11 @@ that geometry.
   theme's list is one entry per WKB face, each of which is a list over that face's
   rings (exterior ring first, then interior rings, matching the `PolygonZ` ring order),
   and each ring is a struct of the texture `id` and its `uv` list — **one `[u, v]` pair
-  per vertex of that ring**, in ring vertex order, each inner list holding exactly two
-  values. A ring with no texture is `{ id: null, uv: null }`. Flattening a face to one
+  per distinct vertex of that ring**, in ring vertex order, each inner list holding
+  exactly two values. A WKB ring closes by repeating its first point; that closing
+  repeat has no pair, so `len(uv)` is the ring's WKB point count minus one — the
+  CityJSON ring's vertex count. A ring with no texture is `{ id: null, uv: null }`.
+  Flattening a face to one
   `{ id, uv }` would lose the appearance of any interior ring, so the ring level is
   retained even when a face has only its exterior ring.
 
@@ -71,14 +74,22 @@ that geometry.
 - `len(material[theme])` **MUST** equal the WKB face count.
 - `len(texture[theme])` **MUST** equal the WKB face count; `len(texture[theme][i])`
   **MUST** equal face `i`'s ring count; when `uv` is non-null,
-  `len(texture[theme][i][r].uv)` **MUST** equal ring `r`'s vertex count and every
-  entry **MUST** hold exactly two values.
+  `len(texture[theme][i][r].uv)` **MUST** equal ring `r`'s WKB point count minus one
+  (the closing repeat carries no pair) and every entry **MUST** hold exactly two
+  values.
 - Every non-null `id` **MUST** match an `id` in the corresponding sidecar; references are
   `BIGINT` because the sidecar `id` columns are.
+- Map values **MUST** be non-null and a map **MUST NOT** be empty: a theme is either
+  present with a full-length list or absent. In `texture_lod*` every face entry and
+  every ring struct **MUST** be non-null; within a ring struct `id` and `uv` are null
+  together; every `[u, v]` entry and both of its values **MUST** be non-null.
+- A theme the source carries stays present even when every face entry is `null`
+  (a same-length all-null list), exactly as an all-null `face_semantics` is kept. The
+  `null` cell is reserved for a geometry with no material (or no texture) at all.
 
 The key property is the same one `face_semantics` has: **`material[theme][i]` is the
 material of WKB face `i`**, with no geometry-type-specific nesting to walk. A `Solid`'s
-per-shell partition is already recorded once, in `geometry_properties.shells`.
+per-shell partition is already recorded once, in `geometry_properties_lod*.shells`.
 
 Two normalisations apply relative to a CityJSON source:
 

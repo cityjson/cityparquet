@@ -143,7 +143,7 @@ yet fully preserved at all. This table is the contract:
 | Extension attributes | **Exact in value;** name is transformed (`+height` ⇄ `ex_height`). |
 | Geometry (one per object per LoD) | **Exact as a model.** |
 | Per-surface semantics | **Exact up to null-expansion** (see below). |
-| Appearance — materials, textures | **Exact,** via sidecars + inline-UV re-interning. |
+| Appearance — materials, textures | **Exact up to broadcast-expansion** (see below), via sidecars + inline-UV re-interning. |
 | Geometry templates and a **single** instance per object | **Exact.** |
 | **Additional** instances on one object | 🟡 **Lossy** — only the first is kept ([open](/open-questions)). |
 | **Duplicate** geometry at one (object, LoD) | 🟡 **Lossy** — extras dropped ([open](/open-questions)). |
@@ -152,12 +152,16 @@ yet fully preserved at all. This table is the contract:
 | ADE namespace / object-class metadata | 🟡 **Partial** — attributes and types survive; full namespace fidelity is [open](/open-questions). |
 | Synthesised LoD0 footprint ([writer enrichment](/specification/geometry-semantics#lod0-synthesis-writer-feature)) | **Not a round trip** — the object gains a footprint the source lacked; kept on export. |
 
-One deliberate **canonicalisation** — where the result is equal to the source as a
+Two deliberate **canonicalisations** — where the result is equal to the source as a
 model but not byte-for-byte as a document:
 
 - **Per-face semantics are expanded.** CityJSON permits a single `null` to stand for a
   whole shell or solid carrying no semantics; CityParquet stores one entry per face.
   The two are semantically equal, and reconstruction yields the expanded form.
+- **A whole-geometry material is expanded.** CityJSON permits a theme to give one
+  `value` for every surface of a geometry; CityParquet stores one entry per face.
+  The two are semantically equal, and reconstruction yields the per-face `values`
+  form.
 
 The 🟡 rows are the genuine losses, each tracked in the [open questions](/open-questions);
 they arise from source models richer than the current single-slot object-table shape,

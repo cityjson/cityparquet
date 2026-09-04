@@ -48,7 +48,7 @@ An index-based layout would also have to go a level deeper than GeoArrow's own n
 
 **Trade-off.** Semantics live *beside* geometry rather than inside it (the consumer zips the two columns by face index); and aligning `face_semantics` to the *emitted* faces means a strict 1:1 with the source's surfaces is not guaranteed where faces are dropped (a future consideration, noted under open questions).
 
-**Status.** Decided and implemented. A native `LIST<INT>` `face_semantics` column and a strict-1:1 guarantee are [future work](/open-questions).
+**Status.** Decided and implemented, `face_semantics` as a native `LIST<INT>` included; a strict-1:1 guarantee remains [open](/open-questions).
 
 ## One geometry column per LoD
 
