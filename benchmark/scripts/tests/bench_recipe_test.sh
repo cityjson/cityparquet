@@ -279,6 +279,54 @@ case_baseline_invocation_is_guarded() {
   pass "$name"
 }
 
+# --------------------------------------------------------------------------
+# Cases 6-7: the two configuration-axis recipes pass exactly their lists.
+#
+# `codec-bench` and `rowgroup-bench` are one-line delegations to
+# `variant-bench`, and the variant list each passes IS the benchmark: read
+# them out of the recipe rather than trusting a comment.
+# --------------------------------------------------------------------------
+recipe_variants() {
+  # The quoted variant list a delegating recipe passes to `variant-bench`.
+  sed -n "/^$1 /,/^$/p" "$JUSTFILE" \
+    | sed -n 's/.*just variant-bench "{{FOLDER}}" "{{OUT}}" "\([^"]*\)".*/\1/p'
+}
+
+case_codec_bench_list() {
+  local name="codec-bench passes the codec axis, all at the default row-group size"
+  local expected="cityparquet,cityparquet+zstd1,cityparquet+zstd9,cityparquet+zstd19,cityparquet+lz4,cityparquet+snappy,cityparquet+gzip,cityparquet+brotli,cityparquet+uncompressed"
+  local actual
+  actual="$(recipe_variants codec-bench)"
+  if [[ "$actual" != "$expected" ]]; then
+    fail "$name" "codec-bench passes '$actual'"
+    return
+  fi
+  if [[ "$actual" == *"+rg"* ]]; then
+    fail "$name" "a codec variant carries a row-group suffix"
+    return
+  fi
+  pass "$name"
+}
+
+case_rowgroup_bench_list() {
+  local name="rowgroup-bench passes the row-group axis, all at the default codec"
+  local expected="cityparquet,cityparquet+rg32768,cityparquet+rg8192,cityparquet+rg2048,cityparquet+rg512"
+  local actual
+  actual="$(recipe_variants rowgroup-bench)"
+  if [[ "$actual" != "$expected" ]]; then
+    fail "$name" "rowgroup-bench passes '$actual'"
+    return
+  fi
+  local v
+  for v in uncompressed snappy gzip lz4 brotli zstd; do
+    if [[ "$actual" == *"+$v"* ]]; then
+      fail "$name" "a row-group variant carries a codec suffix ($v)"
+      return
+    fi
+  done
+  pass "$name"
+}
+
 case_block_is_extractable
 case_bare_run_omits_the_baseline
 case_naming_the_baseline_appends_it
@@ -286,6 +334,8 @@ case_explicit_list_without_baseline
 case_ordering_run_stays_single_axis
 case_prepare_list_invariants
 case_baseline_invocation_is_guarded
+case_codec_bench_list
+case_rowgroup_bench_list
 
 echo "bench_recipe_test: $PASSED passed, $FAILED failed"
 [[ "$FAILED" -eq 0 ]]

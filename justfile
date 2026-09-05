@@ -16,7 +16,7 @@
 # corpus, which is the point of the split.
 #
 # The four per-dataset recipes (`convert-all`, `bench`, `write-bench`,
-# `compression-bench`) are deliberately in ONE file: they share the
+# `variant-bench`) are deliberately in ONE file: they share the
 # input-extension convention below verbatim, and
 # `benchmark/readbench/tests/strip_extension.rs` extracts all four
 # out of this file and RUNS them to prove they have not drifted apart. Split
@@ -186,7 +186,7 @@ fetch-tools:
 # CityJSONSeq prefixes with a fixed number of CityObjects each: one
 # DEST/3dbag_n<SIZE>.city.jsonl per SIZE, every slice a strict prefix of
 # the next larger one, in source feature order. This is the input for the
-# CONFIGURATION-axis benchmarks (`compression-bench`, `write-bench`,
+# CONFIGURATION-axis benchmarks (`codec-bench`, `rowgroup-bench`,
 # `ordering-bench`): one dataset at several cardinalities shows the trend
 # over size with the data held constant, where a corpus of unrelated city
 # models would entangle every configuration delta with a data delta.
@@ -498,22 +498,30 @@ write-bench FOLDER OUT=(BENCH / "results"):
     fi
     echo "write-bench: ${found} file(s) benchmarked into {{OUT}}"
 
-# Compression-codec + row-group WRITE-bench recipe: for every CityJSON/
-# CityJSONSeq file found under FOLDER (recursive), runs `cityparquet bench`
-# over an 8-variant matrix — a codec axis (bare `cityparquet` = zstd,
-# `+uncompressed`, `+snappy`, `+gzip`, `+lz4`, `+brotli`, all at the default
-# row-group size 65536) and a row-group axis (`cityparquet`, `+rg512`,
-# `+rg4096`, all zstd) — into one OUT/<name>.csv per dataset. Each
-# OUT/<name>.csv is removed first so a re-run is always clean. Once every
-# dataset is done, renders charts from the CSVs via the `compression-plot`
-# recipe (best-effort: a missing `uv`/plotting setup doesn't fail the
-# benchmark run, only skips the charts). Network-independent given already-
-# fetched inputs; kept OUT of `just check`/CI.
-[doc("Codec and row-group WRITE-bench matrix, plus charts")]
-compression-bench FOLDER OUT=(BENCH / "compression_results"):
+# The configuration-axis runner behind `codec-bench` and `rowgroup-bench`:
+# for every CityJSON/CityJSONSeq file under FOLDER (recursive), build the
+# `cityparquet` artefact the query parameters derive from (and the
+# CityJSONSeq the writes convert from), then run the coordinator's
+# `--variants` path: per variant a timed write in a child process (peak RSS,
+# median of 3 warm repeats after a warmup), the package kept as
+# `PREPARED/<name>.<variant>.parquet`, then `full-read` and the three bbox
+# windows against it. One OUT/<name>.csv per input in the read run's exact
+# CSV shape (a `write` row per variant, the variant id in the `format`
+# column), package bytes in OUT/sizes.csv, and the host in OUT/MACHINE.md.
+# Each OUT/<name>.csv is removed first; OUT/sizes.csv is removed once at the
+# start, and each input's run then appends its own rows. Local transport
+# only. Network-independent given already-fetched inputs; multi-hour at the
+# 1M-object slice; kept OUT of `just check`/CI.
+#
+# VARIANTS is the whole benchmark: the two public recipes below pass their
+# lists here and nowhere else, and benchmark/scripts/tests/bench_recipe_test.sh
+# reads those lists back out of this file.
+[doc("Configuration-axis run: timed writes + two reads per variant, over every input under FOLDER")]
+variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "data/readbench"):
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir -p "{{OUT}}"
+    mkdir -p "{{OUT}}" "{{PREPARED}}"
+    rm -f "{{OUT}}/sizes.csv"
     found=0
     while IFS= read -r -d '' f; do
         name="$(basename "$f")"
@@ -524,35 +532,46 @@ compression-bench FOLDER OUT=(BENCH / "compression_results"):
         echo ">> ${f} -> ${out}"
         rm -f "$out"
 
-        cargo run --release {{CARGO}} -p cityparquet-cli --bin cityparquet -- bench \
-            --input "$f" --out "$out" \
-            --variants "cityparquet,cityparquet+uncompressed,cityparquet+snappy,cityparquet+gzip,cityparquet+lz4,cityparquet+brotli,cityparquet+rg512,cityparquet+rg4096"
+        ./{{BENCH_SCRIPTS}}/readbench_prepare.sh --formats cityparquet "$f" "{{PREPARED}}"
+
+        cargo run --release {{READBENCH_CARGO}} -- run \
+            --input "$f" \
+            --prepared-dir "{{PREPARED}}" \
+            --out "$out" \
+            --repeat 7 \
+            --write-repeat 3 \
+            --scenarios full-read,bbox-query \
+            --variants "{{VARIANTS}}"
 
         found=$((found + 1))
     done < <(find "{{FOLDER}}" -type f \
         \( {{KNOWN_INPUT_FIND}} \) ! -name 'metadata.json' -print0 \
         | sort -z)
     if [[ "$found" -eq 0 ]]; then
-        echo "compression-bench: no city-model inputs found under {{FOLDER}}" >&2
+        echo "variant-bench: no city-model inputs found under {{FOLDER}}" >&2
         exit 1
     fi
-    echo "compression-bench: ${found} file(s) benchmarked into {{OUT}}"
+    ./{{BENCH_SCRIPTS}}/machine_record.sh > "{{OUT}}/MACHINE.md"
+    echo "variant-bench: ${found} file(s) benchmarked into {{OUT}}"
 
-    just compression-plot "{{OUT}}" || echo "plot skipped"
+# The CODEC axis: which compression codec, and when. zstd — the codec
+# CityParquet ships with — is swept at levels 1, 3 (the default and the 1x
+# baseline), 9 and 19; the other codecs run at the parquet-rs defaults the
+# writer recipe carries (gzip 6, brotli 1) and are reference points, not a
+# ranking against each other. Every variant at the default 65536-row groups.
+[doc("Codec axis over the scaling slices: zstd 1/3/9/19, lz4, snappy, gzip, brotli, none")]
+codec-bench FOLDER OUT=(BENCH / "scaling_codec_results") PREPARED=(BENCH / "data/readbench"):
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+zstd1,cityparquet+zstd9,cityparquet+zstd19,cityparquet+lz4,cityparquet+snappy,cityparquet+gzip,cityparquet+brotli,cityparquet+uncompressed" "{{PREPARED}}"
+
+# The ROW-GROUP axis: which group size, and when. The 65536-row default is
+# the 1x baseline; every variant at the default codec (zstd 3).
+[doc("Row-group axis over the scaling slices: 65536 (default), 32768, 8192, 2048, 512")]
+rowgroup-bench FOLDER OUT=(BENCH / "scaling_rowgroup_results") PREPARED=(BENCH / "data/readbench"):
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+rg32768,cityparquet+rg8192,cityparquet+rg2048,cityparquet+rg512" "{{PREPARED}}"
 
 # ---------------------------------------------------------------------------
 # Rendering — reads CSVs, measures nothing
 # ---------------------------------------------------------------------------
-
-# Render compression-codec and row-group comparison charts from the
-# compression-bench CSVs in RESULTS (default
-# benchmark/formats/compression_results) via the `benchmark/plot` uv project:
-# per dataset, two codec-axis charts (<name>-codec-size.png,
-# <name>-codec-time.png) and one row-group-axis chart (<name>-rowgroup.png),
-# under RESULTS/plots/. Needs `uv` on PATH.
-[doc("Render codec and row-group charts from compression-bench CSVs")]
-compression-plot RESULTS=(BENCH / "compression_results"):
-    uv run --project {{PLOT}} python -m readbench_plot.compression {{RESULTS}}
 
 # Render charts from the read-benchmark CSVs in RESULTS (default
 # benchmark/formats/read_results) via the `benchmark/plot` uv project: a
@@ -570,7 +589,7 @@ plot RESULTS=(BENCH / "read_results"):
 # print figures the paper embeds. Written under OUT (default
 # benchmark/summary/, gitignored).
 #
-# Measures nothing — it reads what `bench`, `compression-bench` and `sizes` left
+# Measures nothing — it reads what `bench`, `codec-bench`, `rowgroup-bench` and `sizes` left
 # behind, so it is the recipe to run after a benchmark, or after editing the
 # renderers, and re-running it is free. `plot` (above) stays the per-dataset
 # view of one run; this is the comparison across runs' datasets. Needs `uv`.

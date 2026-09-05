@@ -243,7 +243,7 @@ fn justfile_stripper_blocks(justfile: &str) -> Vec<String> {
 fn the_justfile_has_exactly_one_stripper_repeated_verbatim() {
     let justfile = read("justfile");
     let blocks = justfile_stripper_blocks(&justfile);
-    // convert-all, bench, write-bench, compression-bench.
+    // convert-all, bench, write-bench, variant-bench.
     assert_eq!(
         blocks.len(),
         4,
