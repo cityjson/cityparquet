@@ -32,14 +32,14 @@ reciprocal `parents` / `children` / `children_roles` arrays, or `bbox` after an
 edit; nothing checks CRS agreement on ingest; nothing knows that GeoParquet
 legality flips as solids are inserted and deleted.
 
-**The extension already does all of it.** duckdb-cityjson v0.4.0 — published to
-community-extensions, so `INSTALL cityjson FROM community` reaches it — ships
+**The extension already does all of it.** duckdb-cityjson v0.4.0 ships
 `cityparquet_read`, `_init`, `_write`, `_merge`, `_delete`, `_reconcile`,
 `_validate`, `_orphans`, `_vacuum`, and `insert_cityjson` / `insert_cityjsonseq`
 / `insert_flatcitybuf`. Between them they cover module routing, sidecar id
 renumbering with reference rewriting, transitive cascade delete, derived-state
 re-derivation, CRS preconditions, GeoParquet-legal footers and STAC Item
-generation.
+generation. The published community build predates v0.4.0 and does not carry
+these pragmas, so exercising them needs a local build.
 
 CityLake's own rule already says CityJSON I/O goes through the extension and
 CityLake implements none of it. This rebuild extends that rule from *I/O* to
@@ -255,8 +255,9 @@ would exercise nothing. It is removed, and replaced by two tiers:
 - **Unit tests** over `sql.rs` — construction, quoting, identifier and module
   validation. Pure functions, no database, sub-millisecond.
 - **Integration tests** against a real DuckDB with the real extension, loaded
-  either from `INSTALL cityjson FROM community` or from a local build via
-  `CITYLAKE_CITYJSON_EXTENSION`, over committed fixtures.
+  from a local build via `CITYLAKE_CITYJSON_EXTENSION` — the published
+  community build predates v0.4.0 and lacks the `cityparquet_*` pragmas this
+  suite exercises — over committed fixtures.
 
 The suite's present "57 offline sub-second tests" property does not survive
 this. That is a deliberate trade: those tests passed without the component that

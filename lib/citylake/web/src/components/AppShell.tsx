@@ -8,42 +8,20 @@ import { Eyebrow } from "@/components/Eyebrow";
 import { StatusDot } from "@/components/StatusDot";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { listTables, type TableInfo } from "@/lib/api";
+import { listDatasets } from "@/lib/api";
 import { cn } from "@/lib/utils";
-
-const METADATA_TABLE = "cityjson_metadata";
-
-interface Dataset {
-  base: string;
-  lods: string[];
-}
-
-function groupByBase(tables: TableInfo[]): Dataset[] {
-  const map = new Map<string, Dataset>();
-  for (const t of tables) {
-    if (!t.base || !t.lod || t.name === METADATA_TABLE) continue;
-    const existing = map.get(t.base);
-    if (existing) {
-      existing.lods.push(t.lod);
-    } else {
-      map.set(t.base, { base: t.base, lods: [t.lod] });
-    }
-  }
-  for (const ds of map.values()) ds.lods.sort();
-  return Array.from(map.values()).sort((a, b) => a.base.localeCompare(b.base));
-}
 
 export default function AppShell() {
   const { session, signOut } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["tables"],
-    queryFn: listTables,
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["datasets"],
+    queryFn: listDatasets,
   });
 
-  const datasets = data ? groupByBase(data.tables) : [];
+  const datasets = data ?? [];
 
   return (
     <div className="min-h-screen flex flex-col bg-paper-50">
@@ -65,7 +43,7 @@ export default function AppShell() {
         {/* Sidebar */}
         <aside className="w-60 shrink-0 border-r border-paper-200 bg-paper-100 flex flex-col">
           <div className="px-4 pt-3.5 pb-2 flex items-center justify-between">
-            <Eyebrow>Tables · {datasets.length}</Eyebrow>
+            <Eyebrow>Datasets · {datasets.length}</Eyebrow>
             <button
               type="button"
               onClick={() => navigate("/upload")}
@@ -85,16 +63,23 @@ export default function AppShell() {
               </div>
             )}
 
-            {!isLoading && datasets.length === 0 && (
+            {isError && (
+              <p className="flex items-center gap-1.5 font-mono text-[11px] text-roof-700 px-2 py-3">
+                <StatusDot tone="error" />
+                Couldn&apos;t load datasets.
+              </p>
+            )}
+
+            {!isLoading && !isError && datasets.length === 0 && (
               <p className="font-mono text-[11px] text-ink-500 px-2 py-3">No datasets yet.</p>
             )}
 
-            {datasets.map((ds) => {
-              const isActive = location.pathname.startsWith(`/datasets/${ds.base}`);
+            {datasets.map((name) => {
+              const isActive = location.pathname.startsWith(`/datasets/${name}`);
               return (
                 <NavLink
-                  key={ds.base}
-                  to={`/datasets/${ds.base}`}
+                  key={name}
+                  to={`/datasets/${name}`}
                   className={({ isActive: navActive }) =>
                     cn(
                       "flex items-center gap-2 rounded-sm px-2.5 py-2 transition-colors duration-150 ease-cl",
@@ -113,11 +98,7 @@ export default function AppShell() {
                         )}
                       />
                       <div className="min-w-0 flex-1">
-                        <div className="font-mono text-[12px] text-ink-900 truncate">{ds.base}</div>
-                        <div className="font-mono text-[10px] text-ink-500">
-                          {ds.lods.length} LOD
-                          {ds.lods.length === 1 ? "" : "s"} · {ds.lods.join(", ")}
-                        </div>
+                        <div className="font-mono text-[12px] text-ink-900 truncate">{name}</div>
                       </div>
                     </>
                   )}

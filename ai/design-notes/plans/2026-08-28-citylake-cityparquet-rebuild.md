@@ -21,6 +21,26 @@ Every task's requirements implicitly include this section.
 - **British English** in prose and comments. **Document the present, never the past** — no changelog voice, no "previously", no migration notes in reference documentation.
 - **Breaking changes are welcome.** No users, no shims, no deprecation paths, no compatibility aliases.
 - **Identifier safety:** dataset names are validated against `^[a-zA-Z0-9_]+$` (they become schema names and cannot be parameterised); module names are validated against the closed set in Task 3. Values are bound as parameters or quoted through `sql::literal`.
+- **The local extension build is the test environment.** The published community
+  `cityjson` extension is older than v0.4.0 and does **not** carry the
+  `cityparquet_*` pragmas — verified in Task 1, where the two pragma tests fail
+  against it and pass against the local build. So every integration test runs
+  with `CITYLAKE_CITYJSON_EXTENSION` pointing at
+  `lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension`.
+  Export it once per shell:
+
+  ```bash
+  export CITYLAKE_CITYJSON_EXTENSION=/data2/hideba/cityparquet-paper/cityparquet/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension
+  ```
+
+  The community path stays in the code — it is what will work once the release
+  lands — but nothing verifies against it today.
+- **`allow_unsigned_extensions` is a startup-only option.** It must be set on a
+  `Config` passed to `Connection::open_in_memory_with_flags`; `SET
+  allow_unsigned_extensions` on a live connection fails with "Cannot change ...
+  while database is running".
+- **`Cargo.lock` is gitignored** for this crate (`lib/citylake/.gitignore`), so
+  no commit includes it.
 - Every task ends `cargo clippy --all-targets -- -D warnings` clean and `cargo fmt` applied.
 
 ## Verified Ground Truth
@@ -58,6 +78,11 @@ These were established by probing the real extension binary before this plan was
 | `src/core/db/inspect.rs` | `cityparquet_validate` / `_orphans` / `_vacuum`, metadata |
 | `src/core/db/compaction.rs` | `ducklake_merge_adjacent_files` |
 | `src/app/server.rs`, `src/app/handlers/*.rs` | axum router and handlers, one file per endpoint group |
+
+A module that only adds inherent methods to `DuckLakeService` is declared
+private (`mod ingest;`) — the methods are reachable through the struct, so the
+module itself need not be public. `sql` and `service` are `pub` because tests and
+callers name them directly.
 
 **Deleted:** `src/core/db/lod.rs`, `src/core/db/metadata_table.rs`, `src/core/db/table.rs`, `src/core/db/list.rs`, `src/core/db/insert.rs`, `src/core/db/update.rs`, `src/core/db/delete.rs`, `src/core/db/export.rs`, `src/tests/e2e/*`, `src/tests/integration/*`, `tasks.md`, `milestones.md`.
 
@@ -306,13 +331,31 @@ In `Bind` (around line 420, where `result->schema` is set), resolve and record i
 	result->catalog = schema_entry.catalog.GetName();
 ```
 
-Give `QualifiedName` a catalog-aware overload and route the internal-connection
-call sites through it — every `QualifiedName(bind_data.schema, …)` at lines 455,
-553, 584, 619 and 620, and the `schema` parameters threaded into
-`CollectInventory`, `CollectTemplateInventory` and `CollectFacts`. Simplest
-correct shape: pass `bind_data.catalog + "." + bind_data.schema` where those
-helpers currently receive a bare schema, since `QualifiedName` quotes each dotted
-component it is given.
+Add a **three-argument** `QualifiedName` overload beside the existing one in
+`src/cityjson/cityparquet_package.cpp` (declared in
+`src/include/cityjson/cityparquet_package.hpp`):
+
+```cpp
+std::string QualifiedName(const std::string &catalog, const std::string &schema,
+                          const std::string &table) {
+	return KeywordHelper::WriteOptionallyQuoted(catalog) + "." +
+	       KeywordHelper::WriteOptionallyQuoted(schema) + "." +
+	       KeywordHelper::WriteOptionallyQuoted(table);
+}
+```
+
+**Do not pass a dotted `"catalog.schema"` string as the existing overload's
+`schema` argument.** `QualifiedName` renders each argument through
+`KeywordHelper::WriteOptionallyQuoted`, which treats what it is given as ONE
+identifier — so `"lake.fresh"` would be quoted as the single name `"lake.fresh"`
+rather than as two parts, and would resolve to nothing.
+
+Then route the internal-connection call sites through the new overload — every
+`QualifiedName(bind_data.schema, …)` at lines 455, 553, 584, 619 and 620, and
+the `schema` parameters threaded into `CollectInventory`,
+`CollectTemplateInventory` and `CollectFacts`. Those helpers take a bare schema
+string today; give them the catalog as a further parameter rather than
+concatenating it into the schema.
 
 Note which call sites must **not** change: `ColumnDuckType` and `CopySourceList`
 take `ClientContext &context` and look entries up through the caller's catalog
@@ -351,7 +394,18 @@ Every statement CityLake issues is assembled here, so this is the only place quo
 
 **Files:**
 - Create: `lib/citylake/src/core/db/sql.rs`
-- Modify: `lib/citylake/src/core/db/mod.rs`
+- Rewrite: `lib/citylake/src/core/db/mod.rs`, `lib/citylake/src/lib.rs`
+- Modify: `lib/citylake/Cargo.toml` (drop the `[[bin]]` target; Task 13 restores it)
+- Move: `lib/citylake/src/tests/data/delft.city.jsonl` → `lib/citylake/tests/data/delft.city.jsonl`
+- Delete: every file under `lib/citylake/src/core/db/` except the new `sql.rs` and `mod.rs`; all of `lib/citylake/src/app/`; all of `lib/citylake/src/tests/`; `lib/citylake/src/main.rs`
+
+**Clear the old implementation here, in one move.** Rust compiles the whole
+library crate for `cargo test --lib`, so a single module still naming a deleted
+type fails the build for every task until it is gone — including this task's own
+verification. The old `db/mod.rs` declares twelve modules and `lib.rs` declares
+`app` and `tests`, all written against `LodKey`, `TableInfo` and the old error
+alias. What survives this task is `sql.rs` and the two interface files Task 4
+rewrites.
 
 **Interfaces:**
 - Consumes: nothing.
@@ -363,7 +417,7 @@ Every statement CityLake issues is assembled here, so this is the only place quo
   - `fn ident(name: &str) -> String` — double-quoted, embedded quotes doubled
   - `fn qualified(parts: &[&str]) -> String`
   - `fn set_search_path(catalog: &str, schema: &str) -> String`
-  - `fn reader_for(path: &str) -> SourceFormat`, `enum SourceFormat { CityJson, CityJsonSeq, FlatCityBuf }` with `fn read_fn(&self) -> &'static str` and `fn insert_pragma(&self) -> &'static str`
+  - `fn reader_for(path: &str) -> SourceFormat`, `enum SourceFormat { CityJson, CityJsonSeq, FlatCityBuf }` with `fn read_fn(&self) -> &'static str` and `fn insert_fn(&self) -> &'static str`
   - `fn create_schema(catalog: &str, dataset: &str) -> String`
   - `fn seed_table(catalog: &str, dataset: &str, source: &str, format: SourceFormat) -> String`
   - `fn init_pragma(dataset: &str) -> String`
@@ -434,10 +488,7 @@ mod tests {
         assert_eq!(reader_for("a/b.city.jsonl").read_fn(), "read_cityjsonseq");
         assert_eq!(reader_for("a/b.fcb").read_fn(), "read_flatcitybuf");
         // .jsonl must not be mistaken for .json — check the longer suffix first.
-        assert_eq!(
-            reader_for("a/b.city.jsonl").insert_pragma(),
-            "insert_cityjsonseq"
-        );
+        assert_eq!(reader_for("a/b.city.jsonl").insert_fn(), "insert_cityjsonseq");
     }
 
     #[test]
@@ -607,7 +658,9 @@ impl SourceFormat {
         }
     }
 
-    pub fn insert_pragma(&self) -> &'static str {
+    /// Named `insert_fn` to mirror `read_fn`, and so as not to share a name
+    /// with the free `insert_pragma` below, which builds the whole statement.
+    pub fn insert_fn(&self) -> &'static str {
         match self {
             SourceFormat::CityJson => "insert_cityjson",
             SourceFormat::CityJsonSeq => "insert_cityjsonseq",
@@ -665,7 +718,7 @@ pub fn insert_pragma(
 ) -> String {
     let mut sql = format!(
         "PRAGMA {}({}, {}",
-        format.insert_pragma(),
+        format.insert_fn(),
         literal(dataset),
         literal(source)
     );
@@ -777,30 +830,63 @@ pub fn select_objects(
 }
 ```
 
-Register it in `lib/citylake/src/core/db/mod.rs`:
+Reduce `lib/citylake/src/core/db/mod.rs` to the one module that remains:
 
 ```rust
 pub mod sql;
 ```
 
+and `lib/citylake/src/lib.rs` to:
+
+```rust
+//! CityLake — a lakehouse runtime for CityParquet packages.
+
+pub mod core;
+```
+
+Then clear the rest. `types.rs` and `repository.rs` stay — they still describe
+the LoD model, and Task 4 replaces them:
+
+```bash
+cd lib/citylake
+mkdir -p tests/data
+git mv src/tests/data/delft.city.jsonl tests/data/delft.city.jsonl
+git rm -r --quiet src/tests src/app src/main.rs
+git rm --quiet src/core/db/compaction.rs src/core/db/delete.rs src/core/db/export.rs \
+  src/core/db/insert.rs src/core/db/list.rs src/core/db/lod.rs src/core/db/metadata.rs \
+  src/core/db/metadata_table.rs src/core/db/query.rs src/core/db/service.rs \
+  src/core/db/table.rs src/core/db/update.rs
+```
+
+Drop the `[[bin]]` section from `Cargo.toml` too; Task 13 adds it back with the
+server that needs it. The optional axum dependencies and the `server` feature
+stay — an unused optional dependency costs nothing and re-adding it would be
+churn.
+
 - [ ] **Step 4: Run the tests and watch them pass**
 
 ```bash
-cd lib/citylake && cargo test --lib sql:: && cargo clippy --all-targets -- -D warnings
+cd lib/citylake && cargo test --lib && cargo clippy --all-targets -- -D warnings
 ```
 
-Expected: 11 passed, clippy clean. These need no database and run in milliseconds.
+Expected: the 12 `sql::` tests pass and clippy is clean. They need no database and
+run in milliseconds. The crate compiles: everything written against the LoD model
+is gone except `types.rs` and `repository.rs`, which Task 4 replaces.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/citylake/src/core/db/sql.rs lib/citylake/src/core/db/mod.rs
-git commit -m "feat(citylake): build every statement in one pure SQL module
+git add -A lib/citylake/
+git commit -m "feat(citylake)!: build every statement in one pure SQL module
 
 Identifiers cannot be parameterised, so dataset names are validated and
 module names checked against the specification's closed set; values go
 through a literal renderer that doubles apostrophes. Keeping it pure is
-what lets the quoting be tested without a database."
+what lets the quoting be tested without a database.
+
+The LoD-model implementation goes in the same move: the library crate
+compiles as a unit, so one file still naming a deleted type would break
+every task's test gate until it was removed."
 ```
 
 ---
@@ -812,7 +898,7 @@ Replace the LoD-shaped domain model with the package one, and give the crate a r
 **Files:**
 - Rewrite: `lib/citylake/src/core/interface/types.rs`
 - Rewrite: `lib/citylake/src/core/interface/repository.rs`
-- Delete: `lib/citylake/src/core/db/lod.rs`, `lib/citylake/src/core/db/metadata_table.rs`
+- Delete: `lib/citylake/src/core/db/lod.rs` and `lib/citylake/src/core/db/metadata_table.rs` remnants, if Task 3 left any
 
 **Interfaces:**
 - Consumes: `sql::{validate_dataset, validate_module, SqlError, OBJECT_MODULES}` from Task 3.
@@ -995,31 +1081,35 @@ pub trait CityLakeRepository: Send + Sync {
 }
 ```
 
-Delete `lod.rs` and `metadata_table.rs` and remove their `mod` lines from
-`src/core/db/mod.rs`. The crate will not compile until Task 5 replaces the
-service; that is expected, and the unit tests in this task compile because they
-only touch `types.rs`.
+Task 3 already cleared the old implementation, so `types.rs` and `repository.rs`
+are the last two files still describing the LoD model. Replacing them leaves the
+crate compiling on `sql.rs` plus this task's two files.
 
-- [ ] **Step 4: Run the type tests and watch them pass**
+- [ ] **Step 4: Run the tests and watch them pass**
 
 ```bash
-cd lib/citylake && cargo test --lib types::
+cd lib/citylake && cargo test --lib && cargo clippy --all-targets -- -D warnings
 ```
 
-Expected: 5 passed.
+Expected: the 11 `sql::` tests from Task 3 and the 5 `types::` tests here, all
+passing, and a clean clippy. The crate compiles: everything that referred to the
+old model is gone.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/citylake/src/core/interface/ lib/citylake/src/core/db/mod.rs
-git rm lib/citylake/src/core/db/lod.rs lib/citylake/src/core/db/metadata_table.rs
+git add -A lib/citylake/
 git commit -m "feat(citylake)!: re-key the domain model from LoD tables to packages
 
 A dataset is a package of module tables, not a family of per-LoD ones,
 so LodKey and the geom_lodX_Y discovery scan have nothing left to
 address. Validated newtypes replace stringly-typed names, and a real
 error enum replaces Box<dyn Error>, which told a handler nothing it
-could turn into a status code."
+could turn into a status code.
+
+The old implementation goes in one move rather than module by module:
+the library crate compiles as a unit, so one file still naming a
+deleted type would break every task until it was removed."
 ```
 
 ---
@@ -1031,6 +1121,7 @@ The one place that owns the connection and the rules for using it. Everything el
 **Files:**
 - Rewrite: `lib/citylake/src/core/db/service.rs`
 - Create: `lib/citylake/tests/common/mod.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `pub mod service;`)
 
 **Interfaces:**
 - Consumes: `CityLakeConfig`, `CityLakeError`, `RepositoryResult` (Task 4); `sql::set_search_path` (Task 3).
@@ -1040,7 +1131,8 @@ The one place that owns the connection and the rules for using it. Everything el
   - `fn config(&self) -> &CityLakeConfig`
   - `fn catalog(&self) -> &str`
   - `fn with_connection<T>(&self, f: impl FnOnce(&Connection) -> RepositoryResult<T>) -> RepositoryResult<T>`
-  - `fn scoped<T>(&self, dataset: &str, f: impl FnOnce(&Connection) -> RepositoryResult<T>) -> RepositoryResult<T>` — sets `search_path`, runs, resets **even on error**
+  - `fn with_search_path<T>(&self, conn: &Connection, path: &str, f: impl FnOnce(&Connection) -> RepositoryResult<T>) -> RepositoryResult<T>` — sets `search_path` to `path`, runs `f`, resets **even on error**, on a connection the caller already holds
+  - `fn scoped<T>(&self, dataset: &str, f: impl FnOnce(&Connection) -> RepositoryResult<T>) -> RepositoryResult<T>` — `with_connection` + `with_search_path` over `<catalog>.<dataset>`
   - `fn in_transaction<T>(&self, conn: &Connection, f: impl FnOnce(&Connection) -> RepositoryResult<T>) -> RepositoryResult<T>`
   - `fn schema_exists(&self, conn: &Connection, dataset: &str) -> RepositoryResult<bool>`
 - Test helper `tests/common/mod.rs` produces `fn test_service() -> (DuckLakeService, TempDir)` — a service over a temporary DuckLake catalog with the real extension loaded, using the same `CITYLAKE_CITYJSON_EXTENSION` convention as Task 1.
@@ -1164,6 +1256,11 @@ fn search_path_scoping_reaches_the_pragmas() {
 //! There is no offline mode. Every operation in this crate is a pragma, so a
 //! service without the extension would exercise nothing.
 
+// Cargo compiles this module separately into every integration-test binary, so
+// a helper one test file does not call is dead code *there* even though another
+// binary uses it. Without this the crate-wide `-D warnings` gate fails.
+#![allow(dead_code)]
+
 use citylake::core::db::service::DuckLakeService;
 use citylake::core::interface::types::CityLakeConfig;
 use std::path::PathBuf;
@@ -1211,7 +1308,7 @@ Expected: FAIL — `with_connection` and `scoped` do not exist.
 //! [`DuckLakeService::scoped`], which is what keeps the search-path discipline
 //! in one place instead of spread across nine operation modules.
 
-use duckdb::Connection;
+use duckdb::{Config, Connection};
 use std::sync::{Arc, Mutex};
 
 use crate::core::db::sql;
@@ -1226,18 +1323,26 @@ impl DuckLakeService {
     pub fn new(config: CityLakeConfig) -> RepositoryResult<Self> {
         std::fs::create_dir_all(&config.storage_path)?;
 
-        let conn = Connection::open_in_memory()?;
-
         // A locally built extension is loaded by path; otherwise the community
         // build. The extension is a hard dependency — nothing in this crate
         // works without it, so a failure here is fatal rather than deferred.
-        match std::env::var("CITYLAKE_CITYJSON_EXTENSION") {
+        //
+        // `allow_unsigned_extensions` is a startup-only option: it goes on the
+        // Config the connection is opened with, because `SET` on a running
+        // database is refused.
+        let conn = match std::env::var("CITYLAKE_CITYJSON_EXTENSION") {
             Ok(path) => {
-                conn.execute_batch("SET allow_unsigned_extensions = true;")?;
+                let config = Config::default().allow_unsigned_extensions()?;
+                let conn = Connection::open_in_memory_with_flags(config)?;
                 conn.execute_batch(&format!("LOAD {};", sql::literal(&path)))?;
+                conn
             }
-            Err(_) => conn.execute_batch("INSTALL cityjson FROM community; LOAD cityjson;")?,
-        }
+            Err(_) => {
+                let conn = Connection::open_in_memory()?;
+                conn.execute_batch("INSTALL cityjson FROM community; LOAD cityjson;")?;
+                conn
+            }
+        };
         conn.execute_batch("INSTALL ducklake; LOAD ducklake;")?;
         // `json` backs to_json() on the query path and json_object() when the
         // CRS footer is minted.
@@ -1281,28 +1386,38 @@ impl DuckLakeService {
         f(&guard)
     }
 
-    /// Run `f` with the search path pointed at `dataset`, so the package
-    /// pragmas resolve their bare schema argument inside the attached catalog.
+    /// Run `f` with the search path set to `path`, on a connection the caller
+    /// already holds — which is what lets it nest inside a transaction, where
+    /// [`scoped`] cannot go because that takes a connection of its own.
     ///
     /// The path is reset whether `f` succeeds or fails: leaving it set would
-    /// silently resolve the next operation against this dataset.
+    /// silently resolve the next operation against this dataset. A reset
+    /// failure never masks the body's error.
+    pub fn with_search_path<T>(
+        &self,
+        conn: &Connection,
+        path: &str,
+        f: impl FnOnce(&Connection) -> RepositoryResult<T>,
+    ) -> RepositoryResult<T> {
+        conn.execute_batch(&format!("SET search_path={}", sql::literal(path)))?;
+        let result = f(conn);
+        let reset = conn.execute_batch("RESET search_path");
+        match (result, reset) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Ok(_), Err(e)) => Err(e.into()),
+            (Err(e), _) => Err(e),
+        }
+    }
+
+    /// Point the search path at one dataset, so the package pragmas resolve
+    /// their bare schema argument inside the attached catalog.
     pub fn scoped<T>(
         &self,
         dataset: &str,
         f: impl FnOnce(&Connection) -> RepositoryResult<T>,
     ) -> RepositoryResult<T> {
-        self.with_connection(|conn| {
-            conn.execute_batch(&sql::set_search_path(self.catalog(), dataset))?;
-            let result = f(conn);
-            // Reset unconditionally, and do not let a reset failure mask the
-            // body's error.
-            let reset = conn.execute_batch("RESET search_path");
-            match (result, reset) {
-                (Ok(value), Ok(())) => Ok(value),
-                (Ok(_), Err(e)) => Err(e.into()),
-                (Err(e), _) => Err(e),
-            }
-        })
+        let path = format!("{}.{dataset}", self.catalog());
+        self.with_connection(|conn| self.with_search_path(conn, &path, f))
     }
 
     /// Run `f` inside a transaction, committing on success and rolling back on
@@ -1341,12 +1456,7 @@ impl DuckLakeService {
 }
 ```
 
-Copy the fixture the tests read:
-
-```bash
-mkdir -p lib/citylake/tests/data
-git mv lib/citylake/src/tests/data/delft.city.jsonl lib/citylake/tests/data/delft.city.jsonl
-```
+`tests/data/delft.city.jsonl` is already in place — Task 4 moved it there.
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
@@ -1370,9 +1480,20 @@ when the body fails — is what stops it being re-derived nine times."
 
 ---
 
+> **Tasks 6-11 use `with_search_path`, never a hand-rolled set/RESET pair.**
+> The code blocks below were written before that helper existed and still show
+> the long form in places; where they do, use the helper. It exists precisely so
+> the fiddly "run, capture, reset, re-raise in the right order" dance is written
+> once rather than eight times.
+
 ### Task 6: `dataset.rs` — creation, and the CRS footer
 
 The heart of the rebuild. Creating a dataset bootstraps a package, ingests the source, and mints the CRS footer that arms the extension's own guard.
+
+This task creates a dataset from a **CityJSON-family file**. A source that is a
+package *directory* is loaded by `cityparquet_read` instead, which is Task 10's
+`import_package`; Task 10 adds that branch to `create_dataset_impl` when it
+introduces the function.
 
 **Why the minting works this way.** A DuckLake table has no Parquet footer, so `__cityparquet.city` is NULL and the extension's rule — a destination stating nothing has nothing to check — silently disables CRS checking on every later ingest. CityLake cannot write that footer itself: a footer's `crs` is canonical PROJJSON produced by the extension's own resolver, and assembling one in Rust would be resolving a CRS, the one thing this crate must not do. So the extension mints it. One row of the freshly ingested data is copied into a throwaway schema in the **default** catalog, written with `crs => <the source's referenceSystem>`, and the canonical text read straight back out of the Parquet footer. Only the `crs` field is kept: a minimal `{"crs": …}` value is enough for `cityparquet_city_field` to read and for the guard to fire, and it carries no stale inventory from the probe row.
 
@@ -1381,6 +1502,14 @@ The probe lives in the default catalog deliberately — it does not depend on Ta
 **Minting happens after the ingest commits, in three phases, and this is not negotiable.** Two independent constraints force it. `cityparquet_write` sees committed state only, so called inside the open ingest transaction it cannot see the rows it is meant to copy — it fails outright with `Catalog Error: Schema … does not exist!`. And a single transaction may write to only one attached database, so a probe schema in `memory` cannot share a transaction that has already written to `lake`. The phases are therefore: **(1)** schema, seed, init and insert in one transaction against `lake`, committed; **(2)** the probe in `memory`, auto-committed, yielding the footer text; **(3)** the `UPDATE` against `lake.<ds>.__cityparquet`.
 
 That splits creation's atomicity, so the failure semantics are stated rather than left to chance: if the source **declares** a `referenceSystem` and minting fails, the schema is dropped and the create fails, because a dataset silently missing the CRS guard is worse than no dataset. If the source declares **none**, there is nothing to mint and a footerless package is the correct "CRS unknown" state, not a failure.
+
+> **Tasks 6-11 test the inherent `*_impl` methods, synchronously.** The async
+> `CityLakeRepository` trait is not implemented until Task 12, so a test calling
+> `service.create_dataset(...).await` here would not compile. Each task's tests
+> therefore exercise what that task actually delivers — the inherent method —
+> and Task 12 proves the trait wiring separately. The `*_impl` methods are `pub`
+> because these are integration tests under `tests/`, which see only the crate's
+> public API.
 
 **Files:**
 - Create: `lib/citylake/src/core/db/dataset.rs`
@@ -1403,17 +1532,15 @@ That splits creation's atomicity, so the failure semantics are stated rather tha
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::DatasetName;
 
-#[tokio::test]
-async fn creating_a_dataset_routes_objects_to_module_tables() {
+#[test]
+fn creating_a_dataset_routes_objects_to_module_tables() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
 
     let info = service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .expect("create the dataset");
 
     // The fixture holds Buildings, so the building module table exists and
@@ -1427,14 +1554,13 @@ async fn creating_a_dataset_routes_objects_to_module_tables() {
     assert_eq!(building.role, "object");
 }
 
-#[tokio::test]
-async fn a_created_dataset_declares_its_crs() {
+#[test]
+fn a_created_dataset_declares_its_crs() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
 
     let info = service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     // The fixture declares EPSG:7415. The footer is minted by the extension,
@@ -1443,20 +1569,18 @@ async fn a_created_dataset_declares_its_crs() {
     assert!(crs.contains("7415"), "unexpected CRS: {crs}");
 }
 
-#[tokio::test]
-async fn the_declared_crs_arms_the_guard_against_a_mismatched_source() {
+#[test]
+fn the_declared_crs_arms_the_guard_against_a_mismatched_source() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     // This is the point of minting the footer at all: without it the package
     // states nothing, and a differently-projected source would be accepted.
     let err = service
-        .ingest(&name, common::fixture("bench_28992.city.json").to_str().unwrap())
-        .await
+        .ingest_impl(&name, common::fixture("bench_28992.city.json").to_str().unwrap())
         .expect_err("a 28992 source must not enter a 7415 package");
     assert!(
         format!("{err}").contains("CRS mismatch"),
@@ -1464,22 +1588,21 @@ async fn the_declared_crs_arms_the_guard_against_a_mismatched_source() {
     );
 }
 
-#[tokio::test]
-async fn a_source_without_a_crs_still_creates_a_dataset() {
+#[test]
+fn a_source_without_a_crs_still_creates_a_dataset() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("nocrs").unwrap();
 
     // Nothing to mint is not a failure: a package that states no CRS is the
     // correct "unknown" state, and the extension treats it as one.
     let info = service
-        .create_dataset(&name, common::fixture("minimal.city.json").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("minimal_nocrs.city.json").to_str().unwrap())
         .expect("a source without a referenceSystem is still ingestable");
     assert!(info.modules.iter().any(|m| m.rows > 0));
 }
 
-#[tokio::test]
-async fn minting_the_footer_does_not_leave_the_ingest_uncommitted() {
+#[test]
+fn minting_the_footer_does_not_leave_the_ingest_uncommitted() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
 
@@ -1488,66 +1611,119 @@ async fn minting_the_footer_does_not_leave_the_ingest_uncommitted() {
     // `memory`. Minting inside the ingest transaction fails on both counts —
     // so if this passes, the phases are correctly separated.
     let info = service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .expect("create must survive the probe");
     assert!(info.crs.is_some(), "the footer was not minted");
     assert!(info.modules.iter().map(|m| m.rows).sum::<usize>() > 0, "the ingest was lost");
 }
 
-#[tokio::test]
-async fn creating_a_dataset_twice_is_refused() {
+#[test]
+fn creating_a_dataset_twice_is_refused() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     let source = common::fixture("delft.city.jsonl");
     service
-        .create_dataset(&name, source.to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, source.to_str().unwrap())
         .unwrap();
 
     let err = service
-        .create_dataset(&name, source.to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, source.to_str().unwrap())
         .expect_err("the second create must be refused");
     assert!(format!("{err}").contains("delft"));
 }
 
-#[tokio::test]
-async fn a_failed_create_leaves_no_half_built_schema() {
+#[test]
+fn a_failed_create_leaves_no_half_built_schema() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("broken").unwrap();
 
-    let failed = service.create_dataset(&name, "/nonexistent/source.city.jsonl").await;
+    let failed = service.create_dataset_impl(&name, "/nonexistent/source.city.jsonl");
     assert!(failed.is_err());
 
     // A dataset that failed to ingest must not be left addressable — the next
     // create would then fail as a duplicate.
-    assert!(!service.list_datasets().await.unwrap().contains(&"broken".to_string()));
+    assert!(!service.list_datasets_impl().unwrap().contains(&"broken".to_string()));
 }
 
-#[tokio::test]
-async fn datasets_can_be_listed_described_and_dropped() {
+#[test]
+fn datasets_can_be_listed_described_and_dropped() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
-    assert!(service.list_datasets().await.unwrap().contains(&"delft".to_string()));
-    assert_eq!(service.describe_dataset(&name).await.unwrap().name, "delft");
+    assert!(service.list_datasets_impl().unwrap().contains(&"delft".to_string()));
+    assert_eq!(service.describe_dataset_impl(&name).unwrap().name, "delft");
 
-    service.drop_dataset(&name).await.unwrap();
-    assert!(!service.list_datasets().await.unwrap().contains(&"delft".to_string()));
+    service.drop_dataset_impl(&name).unwrap();
+    assert!(!service.list_datasets_impl().unwrap().contains(&"delft".to_string()));
 }
 ```
 
-Add the mismatched-CRS fixture:
+**Create the fixture set — every test in the suite reads from it.**
+
+A package states one CRS for every row it holds, so an ingest or merge whose
+source declares none is refused against a destination that declares one. Most of
+the extension's fixtures carry no `referenceSystem`, so pairing them with the
+EPSG:7415 Delft fixture would be refused — correctly, but uselessly for a test
+that means to exercise something else. CityLake therefore keeps its own set:
+CRS-bearing variants where a test needs the CRSs to agree, and a deliberately
+CRS-less one for the case that tests exactly that.
 
 ```bash
-cp lib/duckdb-cityjson/test/data/insert_crs_28992.city.json \
-   lib/citylake/tests/data/bench_28992.city.json
+cd lib/citylake/tests/data
+EXT=../../../duckdb-cityjson/test/data
+
+# A source with no referenceSystem — the "CRS unknown" case, which is a state
+# to handle rather than a failure.
+cp "$EXT/minimal.city.json"   minimal_nocrs.city.json
+
+# A parent with two children, for the cascade. No CRS needed: it is only ever
+# its own dataset, never ingested into another.
+cp "$EXT/hierarchy.city.json" hierarchy.city.json
+
+# A differently-projected source, for the mismatch the guard must refuse.
+cp "$EXT/insert_crs_28992.city.json" bench_28992.city.json
+
+# CRS-bearing variants: same objects, declared EPSG:7415, so they can be
+# ingested into and merged with the Delft fixture.
+python3 - <<'PYEOF'
+import json
+
+CRS = "https://www.opengis.net/def/crs/EPSG/0/7415"
+EXT = "../../../duckdb-cityjson/test/data"
+
+# CityJSON: one document, so the metadata is the document's own.
+doc = json.load(open(f"{EXT}/minimal.city.json"))
+doc.setdefault("metadata", {})["referenceSystem"] = CRS
+json.dump(doc, open("minimal_7415.city.json", "w"))
+
+# CityJSONSeq: the first line is the header and carries the metadata; every
+# line after it is a feature and is copied through untouched.
+with open(f"{EXT}/railway_appearance.city.jsonl") as src, \
+     open("railway_7415.city.jsonl", "w") as dst:
+    header = json.loads(src.readline())
+    header.setdefault("metadata", {})["referenceSystem"] = CRS
+    dst.write(json.dumps(header) + "\n")
+    for line in src:
+        dst.write(line)
+PYEOF
 ```
+
+Confirm the two variants declare what they should before relying on them:
+
+```bash
+cd lib/citylake/tests/data && python3 -c "
+import json
+print('minimal_7415:', json.load(open('minimal_7415.city.json'))['metadata']['referenceSystem'])
+print('railway_7415:', json.loads(open('railway_7415.city.jsonl').readline())['metadata']['referenceSystem'])
+print('minimal_nocrs:', json.load(open('minimal_nocrs.city.json')).get('metadata', {}).get('referenceSystem'))
+"
+```
+
+Expected: both variants print the EPSG:7415 URL, and `minimal_nocrs` prints
+`None`.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -1576,14 +1752,6 @@ impl DuckLakeService {
         source_path: &str,
     ) -> RepositoryResult<DatasetInfo> {
         let name = dataset.as_str();
-
-        // A directory is an existing package: cityparquet_read loads it and
-        // recovers each file's Parquet footer, so its CRS arrives with it and
-        // none of the bootstrap below applies.
-        if std::path::Path::new(source_path).is_dir() {
-            return self.import_package(dataset, source_path);
-        }
-
         let format = sql::reader_for(source_path);
         let catalog = self.catalog().to_string();
 
@@ -1810,6 +1978,7 @@ One pragma, inside a transaction. Everything difficult — routing by module, re
 
 **Files:**
 - Create: `lib/citylake/src/core/db/ingest.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `mod ingest;`)
 
 **Interfaces:**
 - Consumes: `sql::{reader_for, insert_pragma}`, `DuckLakeService::{scoped, in_transaction, object_tables}`.
@@ -1822,36 +1991,34 @@ One pragma, inside a transaction. Everything difficult — routing by module, re
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::DatasetName;
 
-#[tokio::test]
-async fn ingesting_a_second_source_adds_its_objects() {
+#[test]
+fn ingesting_a_second_source_adds_its_objects() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     let before: usize = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .iter()
         .map(|m| m.rows)
         .sum();
 
+    // The variant declaring EPSG:7415: a package states one CRS for every row,
+    // so a source declaring none would be refused here — correctly, but that is
+    // the mismatch test's job, not this one's.
     let added = service
-        .ingest(&name, common::fixture("minimal.city.json").to_str().unwrap())
-        .await
+        .ingest_impl(&name, common::fixture("minimal_7415.city.json").to_str().unwrap())
         .expect("ingest a second source");
     assert!(added > 0);
 
     let after: usize = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .iter()
@@ -1860,48 +2027,43 @@ async fn ingesting_a_second_source_adds_its_objects() {
     assert_eq!(after, before + added);
 }
 
-#[tokio::test]
-async fn ingesting_the_same_source_twice_is_refused() {
+#[test]
+fn ingesting_the_same_source_twice_is_refused() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     let source = common::fixture("delft.city.jsonl");
     service
-        .create_dataset(&name, source.to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, source.to_str().unwrap())
         .unwrap();
 
     // Ids are identity: an incoming id already present refuses the whole
     // insert rather than renaming silently.
     let err = service
-        .ingest(&name, source.to_str().unwrap())
-        .await
+        .ingest_impl(&name, source.to_str().unwrap())
         .expect_err("duplicate ids must refuse the insert");
     assert!(format!("{err}").contains("duplicate id"), "got: {err}");
 }
 
-#[tokio::test]
-async fn a_refused_ingest_leaves_the_dataset_untouched() {
+#[test]
+fn a_refused_ingest_leaves_the_dataset_untouched() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     let source = common::fixture("delft.city.jsonl");
     service
-        .create_dataset(&name, source.to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, source.to_str().unwrap())
         .unwrap();
     let before: usize = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .iter()
         .map(|m| m.rows)
         .sum();
 
-    let _ = service.ingest(&name, source.to_str().unwrap()).await;
+    let _ = service.ingest_impl(&name, source.to_str().unwrap());
 
     let after: usize = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .iter()
@@ -1910,25 +2072,22 @@ async fn a_refused_ingest_leaves_the_dataset_untouched() {
     assert_eq!(after, before, "a refused ingest must not partially apply");
 }
 
-#[tokio::test]
-async fn ingesting_a_new_module_creates_its_table() {
+#[test]
+fn ingesting_a_new_module_creates_its_table() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("mixed").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     // This fixture carries a Bridge and a CityFurniture — two further modules.
     // Routing them is the extension's job; create_tables = true is ours.
     service
-        .ingest(&name, common::fixture("railway_appearance.city.jsonl").to_str().unwrap())
-        .await
+        .ingest_impl(&name, common::fixture("railway_7415.city.jsonl").to_str().unwrap())
         .unwrap();
 
     let modules: Vec<String> = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .into_iter()
@@ -1939,12 +2098,15 @@ async fn ingesting_a_new_module_creates_its_table() {
 }
 ```
 
-Copy the two further fixtures:
+The fixtures this task reads were created in Task 6; nothing to copy here.
 
-```bash
-cp lib/duckdb-cityjson/test/data/minimal.city.json lib/citylake/tests/data/
-cp lib/duckdb-cityjson/test/data/railway_appearance.city.jsonl lib/citylake/tests/data/
-```
+**Switch Task 6's CRS-mismatch test onto `ingest_impl`.** Task 6's
+`the_declared_crs_arms_the_guard_against_a_mismatched_source` (in
+`tests/dataset.rs`) had to reach the extension through `sql::insert_pragma`
+directly, because `ingest_impl` did not exist yet. It does now, and it wraps the
+identical extension code path — change that one call to `ingest_impl` so the test
+exercises the method rather than a hand-rolled equivalent of it. The assertion on
+`"CRS mismatch"` stays exactly as it is.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -2035,10 +2197,18 @@ transaction that makes a refused insert leave nothing behind."
 
 **Files:**
 - Create: `lib/citylake/src/core/db/query.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `mod query;`)
 
 **Interfaces:**
 - Consumes: `sql::select_objects`, `QueryParams`, `ModuleName`.
 - Produces: `fn query_objects_impl(&self, dataset: &DatasetName, module: &ModuleName, params: &QueryParams) -> RepositoryResult<Vec<serde_json::Value>>`.
+
+> **If reading the rows as `String` fails**, the cause is `to_json(t)` returning
+> DuckDB's `JSON` logical type rather than `VARCHAR`. duckdb-rs has no `FromSql`
+> for a JSON type of its own, so it depends on the Arrow layer surfacing it as
+> UTF-8. Should it not, change `sql::select_objects` (Task 3) to emit
+> `to_json(t)::VARCHAR` — the cast is free and removes the ambiguity. Do not work
+> around it by reading into an intermediate type.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2047,66 +2217,61 @@ transaction that makes a refused insert leave nothing behind."
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::{DatasetName, ModuleName, QueryParams};
 
-async fn seeded() -> (citylake::core::db::service::DuckLakeService, tempfile::TempDir, DatasetName) {
+fn seeded() -> (citylake::core::db::service::DuckLakeService, tempfile::TempDir, DatasetName) {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
     (service, dir, name)
 }
 
-#[tokio::test]
-async fn objects_come_back_as_json_rows() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn objects_come_back_as_json_rows() {
+    let (service, _dir, name) = seeded();
     let module = ModuleName::new("building").unwrap();
 
     let rows = service
-        .query_objects(&name, &module, &QueryParams::default())
-        .await
+        .query_objects_impl(&name, &module, &QueryParams::default())
         .expect("query the building module");
     assert!(!rows.is_empty());
     assert!(rows[0].get("id").is_some(), "a row should carry its id");
 }
 
-#[tokio::test]
-async fn a_page_is_bounded_and_offsettable() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn a_page_is_bounded_and_offsettable() {
+    let (service, _dir, name) = seeded();
     let module = ModuleName::new("building").unwrap();
 
     let first = service
-        .query_objects(
+        .query_objects_impl(
             &name,
             &module,
             &QueryParams { filter: None, limit: 1, offset: 0 },
         )
-        .await
         .unwrap();
     assert_eq!(first.len(), 1);
 
     let second = service
-        .query_objects(
+        .query_objects_impl(
             &name,
             &module,
             &QueryParams { filter: None, limit: 1, offset: 1 },
         )
-        .await
         .unwrap();
     assert_eq!(second.len(), 1);
     assert_ne!(first[0].get("id"), second[0].get("id"));
 }
 
-#[tokio::test]
-async fn a_filter_narrows_the_result() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn a_filter_narrows_the_result() {
+    let (service, _dir, name) = seeded();
     let module = ModuleName::new("building").unwrap();
 
     let filtered = service
-        .query_objects(
+        .query_objects_impl(
             &name,
             &module,
             &QueryParams {
@@ -2115,21 +2280,19 @@ async fn a_filter_narrows_the_result() {
                 offset: 0,
             },
         )
-        .await
         .unwrap();
     assert!(filtered
         .iter()
         .all(|row| row.get("object_type").and_then(|v| v.as_str()) == Some("Building")));
 }
 
-#[tokio::test]
-async fn querying_a_module_the_dataset_lacks_is_an_error_not_a_panic() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn querying_a_module_the_dataset_lacks_is_an_error_not_a_panic() {
+    let (service, _dir, name) = seeded();
     let module = ModuleName::new("tunnel").unwrap();
 
     let err = service
-        .query_objects(&name, &module, &QueryParams::default())
-        .await
+        .query_objects_impl(&name, &module, &QueryParams::default())
         .expect_err("the fixture has no tunnels");
     assert!(format!("{err}").contains("tunnel"));
 }
@@ -2233,6 +2396,7 @@ There is deliberately no `cityparquet_update`. Attribute edits are ordinary `UPD
 
 **Files:**
 - Create: `lib/citylake/src/core/db/mutate.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `mod mutate;`)
 
 **Interfaces:**
 - Consumes: `sql::{delete_pragma, reconcile_pragma, ident, literal, qualified}`, `DuckLakeService::{object_tables, in_transaction}`.
@@ -2249,48 +2413,44 @@ There is deliberately no `cityparquet_update`. Attribute edits are ordinary `UPD
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::{DatasetName, ModuleName, QueryParams};
 use serde_json::json;
 
-async fn seeded() -> (citylake::core::db::service::DuckLakeService, tempfile::TempDir, DatasetName) {
+fn seeded() -> (citylake::core::db::service::DuckLakeService, tempfile::TempDir, DatasetName) {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("hier").unwrap();
     // This fixture has a parent/child hierarchy, which is what makes the
     // cascade observable.
     service
-        .create_dataset(&name, common::fixture("hierarchy.city.json").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("hierarchy.city.json").to_str().unwrap())
         .unwrap();
     (service, dir, name)
 }
 
-async fn ids(service: &citylake::core::db::service::DuckLakeService, name: &DatasetName) -> Vec<String> {
+fn ids(service: &citylake::core::db::service::DuckLakeService, name: &DatasetName) -> Vec<String> {
     let module = ModuleName::new("building").unwrap();
     service
-        .query_objects(name, &module, &QueryParams { filter: None, limit: 1000, offset: 0 })
-        .await
+        .query_objects_impl(name, &module, &QueryParams { filter: None, limit: 1000, offset: 0 })
         .unwrap()
         .into_iter()
         .filter_map(|row| row.get("id")?.as_str().map(str::to_string))
         .collect()
 }
 
-#[tokio::test]
-async fn an_attribute_update_lands_on_the_row() {
-    let (service, _dir, name) = seeded().await;
-    let id = ids(&service, &name).await.into_iter().next().unwrap();
+#[test]
+fn an_attribute_update_lands_on_the_row() {
+    let (service, _dir, name) = seeded();
+    let id = ids(&service, &name).into_iter().next().unwrap();
 
     let mut attributes = serde_json::Map::new();
     attributes.insert("object_type".into(), json!("Building"));
     service
-        .update_object(&name, &id, &attributes)
-        .await
+        .update_object_impl(&name, &id, &attributes)
         .expect("update the object");
 
     let module = ModuleName::new("building").unwrap();
     let rows = service
-        .query_objects(
+        .query_objects_impl(
             &name,
             &module,
             &QueryParams {
@@ -2299,52 +2459,49 @@ async fn an_attribute_update_lands_on_the_row() {
                 offset: 0,
             },
         )
-        .await
         .unwrap();
     assert_eq!(rows[0].get("object_type").unwrap(), &json!("Building"));
 }
 
-#[tokio::test]
-async fn updating_an_absent_id_is_an_error() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn updating_an_absent_id_is_an_error() {
+    let (service, _dir, name) = seeded();
     let mut attributes = serde_json::Map::new();
     attributes.insert("object_type".into(), json!("Building"));
 
     let err = service
-        .update_object(&name, "no-such-object", &attributes)
-        .await
+        .update_object_impl(&name, "no-such-object", &attributes)
         .expect_err("an absent id must not silently succeed");
     assert!(format!("{err}").contains("no-such-object"));
 }
 
-#[tokio::test]
-async fn deleting_a_parent_cascades_to_its_children() {
-    let (service, _dir, name) = seeded().await;
-    let before = ids(&service, &name).await;
+#[test]
+fn deleting_a_parent_cascades_to_its_children() {
+    let (service, _dir, name) = seeded();
+    let before = ids(&service, &name);
     let parent = before.first().expect("a parent object").clone();
 
-    let deleted = service.delete_object(&name, &parent).await.unwrap();
+    let deleted = service.delete_object_impl(&name, &parent).unwrap();
     // A cascade removes the parent and everything below it, so the count is
     // the subtree, not one.
     assert!(deleted >= 1);
 
-    let after = ids(&service, &name).await;
+    let after = ids(&service, &name);
     assert!(!after.contains(&parent));
     assert_eq!(before.len() - after.len(), deleted);
 }
 
-#[tokio::test]
-async fn deleting_by_predicate_removes_the_matching_objects() {
-    let (service, _dir, name) = seeded().await;
+#[test]
+fn deleting_by_predicate_removes_the_matching_objects() {
+    let (service, _dir, name) = seeded();
     let deleted = service
-        .delete_where(&name, "object_type = 'Building'")
-        .await
+        .delete_where_impl(&name, "object_type = 'Building'")
         .expect("delete by predicate");
     assert!(deleted > 0);
 
     let module = ModuleName::new("building").unwrap();
     let remaining = service
-        .query_objects(
+        .query_objects_impl(
             &name,
             &module,
             &QueryParams {
@@ -2353,28 +2510,28 @@ async fn deleting_by_predicate_removes_the_matching_objects() {
                 offset: 0,
             },
         )
-        .await
         .unwrap();
     assert!(remaining.is_empty());
 }
 
-#[tokio::test]
-async fn reconciling_an_untouched_dataset_changes_nothing() {
-    let (service, _dir, name) = seeded().await;
-    let before = ids(&service, &name).await;
+#[test]
+fn reconciling_an_untouched_dataset_changes_nothing() {
+    let (service, _dir, name) = seeded();
+    let before = ids(&service, &name);
 
     // Both the reader and reconcile union a row's geometry across every stored
     // LoD and across its descendants, so a freshly read package is already
     // reconciled for the structural columns.
-    service.reconcile(&name).await.expect("reconcile");
+    service.reconcile_impl(&name).expect("reconcile");
 
-    assert_eq!(ids(&service, &name).await, before);
+    assert_eq!(ids(&service, &name), before);
 }
 ```
 
-```bash
-cp lib/duckdb-cityjson/test/data/hierarchy.city.json lib/citylake/tests/data/
-```
+`hierarchy.city.json` was created in Task 6. It holds one `Building` with two
+`BuildingStorey` children, which the extension normalises to `Storey` and routes
+into the `building` module table — so the parent and its subtree are all in one
+table, which is what makes the cascade observable.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -2564,6 +2721,8 @@ The boundary between the lake and the file format. This task depends on Task 2 h
 
 **Files:**
 - Create: `lib/citylake/src/core/db/package.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `mod package;`)
+- Modify: `lib/citylake/src/core/db/dataset.rs` (route directory sources into `import_package`)
 
 **Interfaces:**
 - Consumes: `sql::{read_package_pragma, write_package, merge_pragma}`, `dataset_crs` (Task 6).
@@ -2580,22 +2739,19 @@ The boundary between the lake and the file format. This task depends on Task 2 h
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::{DatasetName, ExportFormat, ModuleName};
 
-#[tokio::test]
-async fn a_dataset_writes_out_as_a_package_directory() {
+#[test]
+fn a_dataset_writes_out_as_a_package_directory() {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     let out = dir.path().join("pkg");
     let written = service
-        .write_package(&name, out.to_str().unwrap())
-        .await
+        .write_package_impl(&name, out.to_str().unwrap())
         .expect("write the package");
 
     // One data file per non-empty object table, plus the STAC Item.
@@ -2605,38 +2761,34 @@ async fn a_dataset_writes_out_as_a_package_directory() {
     assert!(out.join("metadata.json").exists());
 }
 
-#[tokio::test]
-async fn a_written_package_carries_the_datasets_crs() {
+#[test]
+fn a_written_package_carries_the_datasets_crs() {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
     let out = dir.path().join("pkg");
-    service.write_package(&name, out.to_str().unwrap()).await.unwrap();
+    service.write_package_impl(&name, out.to_str().unwrap()).unwrap();
 
     // The footer minted at creation is what lets the writer state a CRS
     // instead of an explicit null.
     let reimported = DatasetName::new("reimported").unwrap();
     let info = service
-        .create_dataset(&reimported, out.to_str().unwrap())
-        .await
+        .create_dataset_impl(&reimported, out.to_str().unwrap())
         .expect("load the written package back");
     assert!(info.crs.expect("a CRS").contains("7415"));
 }
 
-#[tokio::test]
-async fn a_package_round_trips_through_the_lake() {
+#[test]
+fn a_package_round_trips_through_the_lake() {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
     let original: usize = service
-        .describe_dataset(&name)
-        .await
+        .describe_dataset_impl(&name)
         .unwrap()
         .modules
         .iter()
@@ -2644,67 +2796,62 @@ async fn a_package_round_trips_through_the_lake() {
         .sum();
 
     let out = dir.path().join("roundtrip");
-    service.write_package(&name, out.to_str().unwrap()).await.unwrap();
+    service.write_package_impl(&name, out.to_str().unwrap()).unwrap();
 
     let loaded = DatasetName::new("loaded").unwrap();
     let info = service
-        .create_dataset(&loaded, out.to_str().unwrap())
-        .await
+        .create_dataset_impl(&loaded, out.to_str().unwrap())
         .unwrap();
     assert_eq!(info.modules.iter().map(|m| m.rows).sum::<usize>(), original);
 }
 
-#[tokio::test]
-async fn a_module_exports_to_a_cityjsonseq_file() {
+#[test]
+fn a_module_exports_to_a_cityjsonseq_file() {
     let (service, dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     let out = dir.path().join("delft_out.city.jsonl");
     service
-        .export_module(
+        .export_module_impl(
             &name,
             &ModuleName::new("building").unwrap(),
             out.to_str().unwrap(),
             ExportFormat::CityJsonSeq,
         )
-        .await
         .expect("export the module");
     assert!(out.exists());
     assert!(std::fs::metadata(&out).unwrap().len() > 0);
 }
 
-#[tokio::test]
-async fn merging_folds_one_dataset_into_another() {
+#[test]
+fn merging_folds_one_dataset_into_another() {
     let (service, _dir) = common::test_service();
     let destination = DatasetName::new("dst").unwrap();
     let source = DatasetName::new("src").unwrap();
     service
-        .create_dataset(&destination, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&destination, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
+    // Both sides are footers once created, and the merge applies the same CRS
+    // rule as an insert — so the source must declare the destination's CRS.
     service
-        .create_dataset(&source, common::fixture("minimal.city.json").to_str().unwrap())
-        .await
+        .create_dataset_impl(&source, common::fixture("minimal_7415.city.json").to_str().unwrap())
         .unwrap();
 
     let before: usize = service
-        .describe_dataset(&destination)
-        .await
+        .describe_dataset_impl(&destination)
         .unwrap()
         .modules
         .iter()
         .map(|m| m.rows)
         .sum();
 
-    service.merge(&destination, &source).await.expect("merge");
+    service.merge_impl(&destination, &source).expect("merge");
 
     let after: usize = service
-        .describe_dataset(&destination)
-        .await
+        .describe_dataset_impl(&destination)
         .unwrap()
         .modules
         .iter()
@@ -2723,6 +2870,21 @@ cd lib/citylake && cargo test --test package
 Expected: FAIL — the package methods do not exist.
 
 - [ ] **Step 3: Implement it**
+
+First, route directory sources into the new import. Add this at the top of
+`create_dataset_impl` in `dataset.rs`, before it picks a reader — Task 6 left the
+branch out because `import_package` did not exist yet:
+
+```rust
+        // A directory is an existing package: cityparquet_read loads it and
+        // recovers each file's Parquet footer, so its CRS arrives with it and
+        // none of the file bootstrap applies.
+        if std::path::Path::new(source_path).is_dir() {
+            return self.import_package(dataset, source_path);
+        }
+```
+
+Then `package.rs` itself:
 
 ```rust
 //! The boundary between the lake and the file format.
@@ -2899,7 +3061,36 @@ Both pragmas here materialise findings into a temp table, because a PRAGMA canno
 
 **Files:**
 - Create: `lib/citylake/src/core/db/inspect.rs`
+- Modify: `lib/citylake/src/core/db/mod.rs` (declare `mod inspect;` and `mod compaction;`)
 - Rewrite: `lib/citylake/src/core/db/compaction.rs`
+
+> **Check this before assuming `vacuum_impl`'s transaction works.** Both pragmas
+> materialise their findings into a **temp** table, which lives in the `temp`
+> catalog, while the vacuum itself deletes from `lake`. DuckDB refuses a
+> transaction that writes to two attached databases — the same rule that forced
+> Task 6's CRS minting out of its ingest transaction. Run the sequence once by
+> hand before writing the Rust:
+>
+> ```sql
+> BEGIN;
+> PRAGMA cityparquet_orphans('<ds>');
+> PRAGMA cityparquet_vacuum('<ds>');
+> COMMIT;
+> ```
+>
+> If DuckDB refuses it, drop `in_transaction` from `vacuum_impl` and run the two
+> pragmas as separate statements — `cityparquet_vacuum` is idempotent, so a
+> failure between them leaves the package consistent, merely un-vacuumed. Say in
+> the report which way it went and what the database did.
+
+> **A known limitation to document, not to fix here.** `cityparquet_validate.cpp`
+> probes for template references on an internal connection using two-part names
+> (`HasNonNullTemplateReference`, line 32), so under an attached catalog that
+> probe fails. Its failure path is fail-safe by construction — a failed probe
+> contributes no term and the "undeterminable" fallback fires — so the effect is
+> that `geometry_templates` orphans are **not** vacuumed from a DuckLake-backed
+> package. Missed cleanup, never data loss. Note it in the doc comment on
+> `vacuum_impl`; do not fix the extension from here.
 
 **Interfaces:**
 - Consumes: `sql::{validate_pragma, orphans_pragma, vacuum_pragma, compact}`.
@@ -2915,75 +3106,69 @@ Both pragmas here materialise findings into a temp table, because a PRAGMA canno
 ```rust
 mod common;
 
-use citylake::core::interface::repository::CityLakeRepository;
 use citylake::core::interface::types::DatasetName;
 
-#[tokio::test]
-async fn a_freshly_created_dataset_validates_clean() {
+#[test]
+fn a_freshly_created_dataset_validates_clean() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
-    let findings = service.validate(&name).await.expect("validate");
+    let findings = service.validate_impl(&name).expect("validate");
     let errors: Vec<_> = findings.iter().filter(|f| f.severity == "error").collect();
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
 }
 
-#[tokio::test]
-async fn validation_findings_carry_their_check_and_table() {
+#[test]
+fn validation_findings_carry_their_check_and_table() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     // Shape, not content: a clean dataset yields no rows, so this asserts the
     // call succeeds and returns a well-formed (possibly empty) list.
-    let findings = service.validate(&name).await.unwrap();
+    let findings = service.validate_impl(&name).unwrap();
     for finding in &findings {
         assert!(!finding.check_name.is_empty());
         assert!(!finding.table_name.is_empty());
     }
 }
 
-#[tokio::test]
-async fn vacuum_runs_on_a_dataset_with_no_orphans() {
+#[test]
+fn vacuum_runs_on_a_dataset_with_no_orphans() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
-    let removed = service.vacuum(&name).await.expect("vacuum");
+    let removed = service.vacuum_impl(&name).expect("vacuum");
     assert_eq!(removed, 0, "a fresh dataset has no unreferenced sidecar rows");
 }
 
-#[tokio::test]
-async fn compaction_reports_what_it_merged() {
+#[test]
+fn compaction_reports_what_it_merged() {
     let (service, _dir) = common::test_service();
     let name = DatasetName::new("delft").unwrap();
     service
-        .create_dataset(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
-        .await
+        .create_dataset_impl(&name, common::fixture("delft.city.jsonl").to_str().unwrap())
         .unwrap();
 
     // A dataset written in one go may have nothing to merge; the operation must
     // still succeed and report honestly rather than fail on a no-op.
-    let stats = service.compact(&name).await.expect("compact");
+    let stats = service.compact_impl(&name).expect("compact");
     assert!(stats.files_created <= stats.files_processed.max(stats.files_created));
 }
 
-#[tokio::test]
-async fn validating_an_absent_dataset_is_an_error() {
+#[test]
+fn validating_an_absent_dataset_is_an_error() {
     let (service, _dir) = common::test_service();
     let err = service
-        .validate(&DatasetName::new("absent").unwrap())
-        .await
+        .validate_impl(&DatasetName::new("absent").unwrap())
         .expect_err("an absent dataset must not validate clean");
     assert!(format!("{err}").contains("absent"));
 }
@@ -3225,7 +3410,14 @@ impl CityLakeRepository for DuckLakeService {
 ```
 
 For `handle()` to exist, `DuckLakeService` needs to be cloneable into something
-`'static`. Give it:
+`'static`. It must be defined **in `service.rs`**, not in this task's new file:
+`connection` and `config` are private fields, and Rust privacy is per-module, so
+an `impl` block in `repository_impl.rs` cannot reach them.
+
+`duckdb::Connection` is `Send` (`unsafe impl Send for Connection`, duckdb
+1.10504.0 `src/lib.rs:272`) but not `Sync` — its inner handle is a `RefCell` —
+which is exactly why the mutex is there and why `Arc<Mutex<Connection>>` is
+`Send + Sync` and may cross into `spawn_blocking`. Add to `service.rs`:
 
 ```rust
 impl DuckLakeService {
@@ -3241,14 +3433,8 @@ impl DuckLakeService {
 }
 ```
 
-`lib.rs` becomes:
-
-```rust
-//! CityLake — a lakehouse runtime for CityParquet packages.
-
-pub mod app;
-pub mod core;
-```
+`lib.rs` still declares only `pub mod core;` at this point — the `app` module
+returns in Task 13, with the server that needs it.
 
 - [ ] **Step 4: Run every test and watch them pass**
 
@@ -3285,29 +3471,39 @@ Handlers translate between HTTP and the trait, and nothing more. No SQL, no Duck
 - Consumes: `Arc<dyn CityLakeRepository>` as axum state.
 - Produces: `fn router(repo: Arc<dyn CityLakeRepository>) -> axum::Router` and `async fn serve(config: CityLakeConfig, repo: Arc<dyn CityLakeRepository>) -> anyhow::Result<()>`, plus `impl IntoResponse for CityLakeError`.
 
+`QueryParams` has no `Deserialize`, so `axum::Query<QueryParams>` will not work
+directly. Give the query endpoint its own boundary DTO — a `Deserialize` struct
+of `filter`/`limit`/`offset` — and convert into `QueryParams`, defaulting the two
+numbers. That is the same validate-at-the-boundary posture the newtypes take:
+what arrives over HTTP is untrusted until a handler has checked it.
+
+**Path parameters use `{name}`, not `:name`.** axum 0.8 moved to matchit 0.8's
+brace syntax; a route registered as `/datasets/:ds` does not capture a parameter
+and panics when the router is built. The table below is already in the new form.
+
 The routes, exactly:
 
 | Method | Path | Trait method |
 |---|---|---|
 | `GET` | `/health` | — |
 | `GET` | `/datasets` | `list_datasets` |
-| `POST` | `/datasets/:ds` | `create_dataset` (body `{ source_path }`) |
-| `POST` | `/datasets/:ds/upload` | `create_dataset` (multipart) |
-| `GET` | `/datasets/:ds` | `describe_dataset` |
-| `DELETE` | `/datasets/:ds` | `drop_dataset` |
-| `POST` | `/datasets/:ds/objects` | `ingest` (body `{ source_path }`) |
-| `POST` | `/datasets/:ds/objects/upload` | `ingest` (multipart) |
-| `GET` | `/datasets/:ds/modules/:module/objects` | `query_objects` (`?filter=&limit=&offset=`) |
-| `PUT` | `/datasets/:ds/objects/:id` | `update_object` (body: a JSON object of attributes) |
-| `DELETE` | `/datasets/:ds/objects/:id` | `delete_object` |
-| `DELETE` | `/datasets/:ds/objects` | `delete_where` (`?filter=`) |
-| `POST` | `/datasets/:ds/export` | `export_module` (body `{ module, output_path, format }`) |
-| `POST` | `/datasets/:ds/package` | `write_package` (body `{ output_dir }`) |
-| `POST` | `/datasets/:ds/merge` | `merge` (body `{ source }`) |
-| `POST` | `/datasets/:ds/validate` | `validate` |
-| `POST` | `/datasets/:ds/reconcile` | `reconcile` |
-| `POST` | `/datasets/:ds/vacuum` | `vacuum` |
-| `POST` | `/datasets/:ds/compact` | `compact` |
+| `POST` | `/datasets/{ds}` | `create_dataset` (body `{ source_path }`) |
+| `POST` | `/datasets/{ds}/upload` | `create_dataset` (multipart) |
+| `GET` | `/datasets/{ds}` | `describe_dataset` |
+| `DELETE` | `/datasets/{ds}` | `drop_dataset` |
+| `POST` | `/datasets/{ds}/objects` | `ingest` (body `{ source_path }`) |
+| `POST` | `/datasets/{ds}/objects/upload` | `ingest` (multipart) |
+| `GET` | `/datasets/{ds}/modules/{module}/objects` | `query_objects` (`?filter=&limit=&offset=`) |
+| `PUT` | `/datasets/{ds}/objects/{id}` | `update_object` (body: a JSON object of attributes) |
+| `DELETE` | `/datasets/{ds}/objects/{id}` | `delete_object` |
+| `DELETE` | `/datasets/{ds}/objects` | `delete_where` (`?filter=`) |
+| `POST` | `/datasets/{ds}/export` | `export_module` (body `{ module, output_path, format }`) |
+| `POST` | `/datasets/{ds}/package` | `write_package` (body `{ output_dir }`) |
+| `POST` | `/datasets/{ds}/merge` | `merge` (body `{ source }`) |
+| `POST` | `/datasets/{ds}/validate` | `validate` |
+| `POST` | `/datasets/{ds}/reconcile` | `reconcile` |
+| `POST` | `/datasets/{ds}/vacuum` | `vacuum` |
+| `POST` | `/datasets/{ds}/compact` | `compact` |
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3497,6 +3693,25 @@ and pass its path to the same trait method the JSON-body variant uses.
 `server.rs` builds the router with permissive CORS and a tracing layer, and
 `serve` binds `config.host:config.port`.
 
+Restore the binary target Task 4 removed, in `Cargo.toml`:
+
+```toml
+[[bin]]
+name = "citylake"
+path = "src/main.rs"
+```
+
+and re-declare the module in `lib.rs`:
+
+```rust
+//! CityLake — a lakehouse runtime for CityParquet packages.
+
+pub mod core;
+
+#[cfg(feature = "server")]
+pub mod app;
+```
+
 `main.rs` is the whole binary — initialise tracing, take the default
 `CityLakeConfig`, construct the service, and serve:
 
@@ -3664,7 +3879,7 @@ read it back, and check the rows and the CRS survived."
 
 **Files:**
 - Rewrite: `lib/citylake/CLAUDE.md`, and copy byte-identically to `lib/citylake/AGENTS.md`
-- Delete: `lib/citylake/tasks.md`, `lib/citylake/milestones.md`
+- Delete: `lib/citylake/tasks.md`, `lib/citylake/milestones.md`, `lib/citylake/lib.rs`, `lib/citylake/main.rs` (stray, unbuilt crate-root copies)
 - Modify: `justfile` (repository root), `lib/citylake/justfile`
 - Modify: the `lib/duckdb-cityjson` submodule pointer
 
@@ -3687,11 +3902,16 @@ Then:
 cp lib/citylake/CLAUDE.md lib/citylake/AGENTS.md
 ```
 
-- [ ] **Step 2: Remove the stale notes**
+- [ ] **Step 2: Remove the stale notes and the stray root-level sources**
 
 ```bash
 git rm lib/citylake/tasks.md lib/citylake/milestones.md
+git rm lib/citylake/lib.rs lib/citylake/main.rs
 ```
+
+`lib/citylake/lib.rs` and `lib/citylake/main.rs` sit at the crate root, beside
+`Cargo.toml`, which points at `src/lib.rs` instead — so Cargo never builds them.
+They are unreferenced copies naming an API this rebuild removed.
 
 They record a Postgres-and-Supabase era, a completed milestone list, and a
 deferred multi-LoD export this rebuild makes moot. History belongs in git.
@@ -3702,9 +3922,22 @@ The root `justfile` has no citylake recipe, though the monorepo's `CLAUDE.md`
 describes it as the third Cargo workspace. Add one and include it in `check`:
 
 ```just
-# Lint and test the CityLake crate (needs the cityjson extension).
+# Lint and test the CityLake crate.
+#
+# The integration tests need the CityParquet package pragmas, which the
+# published community extension does not yet carry — so they run against the
+# local build, and `just -f lib/duckdb-cityjson/justfile build` must have run
+# first. Override the path by exporting CITYLAKE_CITYJSON_EXTENSION yourself.
 citylake-check:
-    cd lib/citylake && cargo clippy --all-targets -- -D warnings && cargo test
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ext="{{justfile_directory()}}/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension"
+    if [ -z "${CITYLAKE_CITYJSON_EXTENSION:-}" ] && [ -f "$ext" ]; then
+        export CITYLAKE_CITYJSON_EXTENSION="$ext"
+    fi
+    cd lib/citylake
+    cargo clippy --all-targets -- -D warnings
+    cargo test
 ```
 
 Add `citylake-check` to the root `check` recipe's dependency list, and update
