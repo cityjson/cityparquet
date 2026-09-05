@@ -298,7 +298,7 @@ BODY = r"""
 <div id="tip" hidden role="status" aria-live="polite"></div>
 <main>
   <header class="topbar">
-    <span class="kicker">CityParquet benchmarks &middot; read, size, compression</span>
+    <span class="kicker">CityParquet benchmarks &middot; read, size, configuration axes</span>
     <button class="theme" id="theme-btn" type="button" aria-live="polite">Theme: auto</button>
   </header>
 
@@ -424,25 +424,11 @@ BODY = r"""
 
   <hr class="rule">
 
-  <section id="view-comp" class="deemph" aria-labelledby="h-comp">
-    <h2 id="h-comp">9 &middot; Compression and row-group variants (not citable as a codec ranking)</h2>
-    <div class="callout warn" id="codec-note"></div>
-    <p class="small" id="comp-lede"></p>
-    <div class="grid" id="comp-grid"></div>
-    <div id="comp-notes"></div>
-    <h3>Round-trip status</h3>
-    <p class="small" id="roundtrip-strip"></p>
-  </section>
-
-  <hr class="rule">
-
   <section id="view-caveats" aria-labelledby="h-caveats">
     <h2 id="h-caveats">Fairness caveats, verbatim</h2>
     <p class="small">Quoted at generation time from <span class="num" id="caveat-src"></span>.
     The page cannot drift from the methodology it reports.</p>
     <ol class="caveats" id="caveats"></ol>
-    <h3>Baseline geometry coverage (compression corpus), verbatim</h3>
-    <div id="caveats-comp"></div>
     <h3>Codec levels</h3>
     <div class="verbatim" id="codec-note-verbatim"></div>
   </section>
@@ -554,14 +540,6 @@ JS = r"""
     if (!SIZES[s.dataset]) { SIZES[s.dataset] = {}; }
     SIZES[s.dataset][s.format] = s;
   });
-  var COMP = {};          // dataset -> [records]
-  DATA.compression.forEach(function (c) {
-    if (!COMP[c.dataset]) { COMP[c.dataset] = []; }
-    COMP[c.dataset].push(c);
-  });
-  var COMP_DATASETS = DATASETS.map(function (d) { return d.id; })
-    .filter(function (id) { return COMP[id]; });
-
   function dagger(sc) {
     if (GRAIN[sc] === false) {
       return '<a class="dag" href="#caveat-1" title="counting grain differs across formats' +
@@ -812,8 +790,9 @@ JS = r"""
   el("provenance").innerHTML =
     "Baseline " + esc(META.baseline) + " = 1× &middot; read data " +
     '<span class="num">' + esc(META.sources.read) + "</span> &middot; sizes " +
-    '<span class="num">' + esc(META.sources.sizes) + "</span> &middot; compression " +
-    '<span class="num">' + esc(META.sources.compression) + "</span> &middot; " +
+    '<span class="num">' + esc(META.sources.sizes) + "</span> &middot; codec " +
+    '<span class="num">' + esc(META.sources.codec) + "</span> &middot; row-group " +
+    '<span class="num">' + esc(META.sources.rowgroup) + "</span> &middot; " +
     num(DATA.read.length) + " read records over " + DATASETS.length + " datasets.";
   el("caveat-src").textContent =
     "benchmark/formats/READ_BENCHMARK.md and benchmark/formats/README.md";
@@ -1733,193 +1712,6 @@ JS = r"""
   }
 
   /* =========================================================
-     VIEW 4 — compression variants (de-emphasized)
-     ========================================================= */
-
-  /* short codes, as used by the static figure — long names cannot be placed
-     inside the dense 1×,1× corner without colliding */
-  var VARIANT_CODE = {
-    "cityparquet": "def", "cityparquet+gzip": "gzip", "cityparquet+brotli": "brot",
-    "cityparquet+lz4": "lz4", "cityparquet+snappy": "snap",
-    "cityparquet+uncompressed": "none", "cityparquet+rg512": "rg512",
-    "cityparquet+rg4096": "rg4k"
-  };
-  function variantLabel(v) {
-    return v.replace("cityparquet+", "").replace("cityparquet", "default");
-  }
-  function variantCode(v) { return VARIANT_CODE[v] || variantLabel(v); }
-
-  function renderCompression() {
-    el("codec-note").innerHTML = '<p class="small"><b>Read this before the panels.</b> ' +
-      esc(META.codec_level_note) + "</p>";
-
-    /* A corpus measured for reads but never for compression is normal: the
-       compression benchmark is a separate, much slower pass. Say so where the
-       panels would have been — an empty section reads like a rendering bug. */
-    if (!DATA.compression.length) {
-      el("comp-grid").innerHTML = "";
-      el("comp-lede").innerHTML =
-        "<p><b>No compression run for this corpus.</b> The codec and row-group " +
-        "variants are measured by a separate pass over the same inputs " +
-        "(<span class='num'>just compression-bench</span>), and " +
-        "<span class='num'>benchmark/formats/compression_results</span> is empty for the run " +
-        "reported here. Nothing on this page is derived from an earlier corpus's " +
-        "compression numbers.</p>";
-      el("comp-notes").innerHTML = "";
-      el("roundtrip-strip").innerHTML = "";
-      el("view-comp").setAttribute("aria-label",
-        "Compression variants: not measured for this corpus.");
-      return;
-    }
-
-    var xs = [1], ys = [1];
-    DATA.compression.forEach(function (c) {
-      if (c.write_ratio > 0) { xs.push(c.write_ratio); }
-      if (c.size_ratio > 0) { ys.push(c.size_ratio); }
-    });
-    var xmin = Math.min.apply(null, xs) * 0.85, xmax = Math.max.apply(null, xs) * 1.2;
-    var ymin = Math.min.apply(null, ys) * 0.92, ymax = Math.max.apply(null, ys) * 1.3;
-
-    var W = 230, H = 175, ML = 32, MR = 26, MT = 8, MB = 26;
-    var pw = W - ML - MR, ph = H - MT - MB;
-    var sx = logScale(xmin, xmax, ML, ML + pw);
-    var sy = logScale(ymin, ymax, MT + ph, MT);
-
-    var gapsBy = {};
-    DATA.compression_gaps.forEach(function (g) { gapsBy[g.dataset] = g.issue; });
-
-    var out = "";
-    COMP_DATASETS.forEach(function (id, di) {
-      var recs = COMP[id];
-      var failed = recs.every(function (c) { return c.roundtrip === false; });
-      var svg = "";
-
-      svg += '<line class="refline" x1="' + sx(1).toFixed(1) + '" y1="' + MT + '" x2="' +
-        sx(1).toFixed(1) + '" y2="' + (MT + ph) + '"/>';
-      svg += '<line class="refline" x1="' + ML + '" y1="' + sy(1).toFixed(1) + '" x2="' +
-        (ML + pw) + '" y2="' + sy(1).toFixed(1) + '"/>';
-      var tickBoxes = [];
-      logTicks(xmin, xmax).forEach(function (t) {
-        var tw = tickText(t).length * 4.8;
-        svg += '<text class="tick" x="' + sx(t).toFixed(1) + '" y="' + (MT + ph + 10) +
-          '" text-anchor="middle">' + esc(tickText(t)) + "</text>";
-        tickBoxes.push({ x0: sx(t) - tw / 2 - 2, y0: MT + ph + 2,
-                         x1: sx(t) + tw / 2 + 2, y1: MT + ph + 12 });
-      });
-      logTicks(ymin, ymax).forEach(function (t) {
-        var tw = tickText(t).length * 4.8;
-        svg += '<text class="tick" x="' + (ML - 4) + '" y="' + (sy(t) + 3).toFixed(1) +
-          '" text-anchor="end">' + esc(tickText(t)) + "</text>";
-        tickBoxes.push({ x0: ML - 4 - tw - 2, y0: sy(t) - 5,
-                         x1: ML - 2, y1: sy(t) + 5 });
-      });
-      svg += '<line class="axis" x1="' + ML + '" y1="' + (MT + ph) + '" x2="' + (ML + pw) +
-        '" y2="' + (MT + ph) + '"/>';
-      svg += '<line class="axis" x1="' + ML + '" y1="' + MT + '" x2="' + ML + '" y2="' +
-        (MT + ph) + '"/>';
-
-      var labels = [];
-      recs.forEach(function (c) {
-        if (c.write_ratio == null || c.size_ratio == null) { return; }
-        var x = sx(c.write_ratio), y = sy(c.size_ratio);
-        var lbl = variantLabel(c.variant);
-        labels.push({ px: x, py: y, text: variantCode(c.variant) });
-        var tipTxt = lbl + " · " + id + "\nwrite " + ratio(c.write_ratio) + " (" +
-          secs(c.write_s) + ")\nsize " + ratio(c.size_ratio) + " (" + bytes(c.total_bytes) +
-          ")\nfull scan " + secs(c.full_scan_s) + " · window " + secs(c.window_query_s) +
-          "\nround-trip " + (c.roundtrip ? "equal" : "FAILED") +
-          "\nkind: " + c.kind + (c.kind === "codec"
-            ? " (mismatched levels — not a codec ranking)"
-            : (c.kind === "rowgroup" ? " (row-group size, not a codec)" : ""));
-        var shape;
-        if (c.kind === "default") {
-          shape = '<path class="mk-line mk-gray" d="M' + (x - 3.5).toFixed(1) + " " +
-            (y - 3.5).toFixed(1) + "L" + (x + 3.5).toFixed(1) + " " + (y + 3.5).toFixed(1) +
-            "M" + (x - 3.5).toFixed(1) + " " + (y + 3.5).toFixed(1) + "L" +
-            (x + 3.5).toFixed(1) + " " + (y - 3.5).toFixed(1) + '"/>';
-        } else if (c.kind === "codec") {
-          shape = '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) +
-            '" r="3" class="mk-gray"/>';
-        } else {
-          shape = '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) +
-            '" r="3" class="mk-gray-open"/>';
-        }
-        svg += '<g class="pt" tabindex="0" role="img" aria-label="' +
-          esc(tipTxt.replace(/\n/g, ". ")) + '" data-tip="' + esc(tipTxt) + '">' +
-          '<circle class="halo" cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) +
-          '" r="6" fill="none" stroke="none"/>' +
-          '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) +
-          '" r="6" fill="transparent"/>' + shape + "</g>";
-      });
-
-      /* direct labels: dodged around the markers, kept clear of the tick row */
-      svg += placeLabels(labels,
-        { x0: 2, x1: W - 2, y0: MT + 6, y1: MT + ph + 1 }, "tick", tickBoxes);
-
-      if (di === 0) {
-        svg += '<text class="axlabel" x="' + (ML + pw) + '" y="' + (MT + ph + 21) +
-          '" text-anchor="end">write time ratio (log)</text>';
-        svg += '<text class="axlabel" transform="translate(' + (ML - 21) + ',' + (MT + ph) +
-          ') rotate(-90)">size ratio (log)</text>';
-      }
-
-      out += '<figure class="panel' + (failed ? " dim" : "") +
-        '"><figcaption><span class="name">' + esc(id) + "</span>" +
-        (failed ? ' <span class="badge">roundtrip FAILED — not citable</span>' : "") +
-        '<span class="sub">' + esc(recs.length + " variants vs the default CityParquet recipe") +
-        "</span></figcaption>" +
-        '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' +
-        esc(id + " compression variants: write time and size against the default recipe" +
-            (failed ? " — every variant failed its round-trip check" : "")) + '">' +
-        svg + "</svg>" +
-        (gapsBy[id] ? '<p class="note">' + esc(gapsBy[id]) + "</p>" : "") + "</figure>";
-    });
-    el("comp-grid").innerHTML = out;
-
-    el("comp-lede").innerHTML =
-      COMP_DATASETS.length + " of the " + DATASETS.length + " datasets have a " +
-      "compression run. Each point is one writer variant " +
-      "measured against that dataset's own default CityParquet recipe at 1×, 1× " +
-      "(the cross): horizontal is write time, vertical is total bytes, both logarithmic. " +
-      "Filled circles are codec variants, open circles are row-group-size variants — a " +
-      "different axis of variation shown on the same plot; the whole view is drawn in the " +
-      "neutral grey series, because nothing in it is a citable ranking. Points are " +
-      "labelled directly with short codes — <b>def</b> the default recipe, <b>none</b> " +
-      "uncompressed, <b>brot</b> brotli, <b>snap</b> snappy, <b>gzip</b>, <b>lz4</b>, and " +
-      "<b>rg512</b>/<b>rg4k</b> the two row-group sizes. Where the 1×, 1× cluster leaves no " +
-      "room for a label without overlapping another, the label is omitted rather than " +
-      "overprinted; hover or tab to the point for its name and numbers.";
-
-    var missing = DATASETS.map(function (d) { return d.id; })
-      .filter(function (id) { return !COMP[id]; });
-    el("comp-notes").innerHTML =
-      '<div class="callout"><p class="small"><b>The three datasets without a panel.</b> ' +
-      missing.map(function (id) {
-        return "<b>" + esc(id) + "</b> — " +
-          esc(gapsBy[id] || "no compression run in this corpus");
-      }).join("; ") +
-      ". They are named here rather than dropped silently.</p></div>";
-
-    var strip = COMP_DATASETS.map(function (id) {
-      var recs = COMP[id];
-      var ok = recs.filter(function (c) { return c.roundtrip; }).length;
-      var mark = ok === recs.length ? "✓" : "✗";
-      return esc(id) + "&nbsp;" + mark + "&nbsp;<span class='sub'>(" + ok + "/" +
-        recs.length + ")</span>";
-    }).join(" &middot; ");
-    el("roundtrip-strip").innerHTML =
-      "Every variant is re-read and compared against the source; ✓ means all variants of " +
-      "that dataset round-tripped equal. " + strip + ". " +
-      "Where a dataset shows ✗ for every variant, nothing in its panel is citable — the " +
-      "written bytes did not read back equal to the source.";
-
-    el("view-comp").setAttribute("aria-label",
-      "Compression and row-group variants, de-emphasised. Codec choice moves size by at most " +
-      "a factor of two at mismatched compression levels, so no codec ranking is citable from " +
-      "this benchmark.");
-  }
-
-  /* =========================================================
      Caveats + coverage
      ========================================================= */
 
@@ -2171,53 +1963,63 @@ JS = r"""
   }
 
   function renderConfigVariants() {
-    var recs = (DATA.scaling && DATA.scaling.compression) || [];
-    if (!recs.length) {
-      el("config-var-table").innerHTML =
-        '<p class="small">No codec or row-group run in this corpus - ' +
-        '`just compression-bench` over the scaling corpus produces it.</p>';
-      return;
-    }
-    var slices = [];
-    recs.forEach(function (r) {
-      if (!slices.some(function (s) { return s.id === r.dataset; })) {
-        slices.push({ id: r.dataset, objects: r.objects });
+    var axes = [
+      ["Codec", DATA.scaling.codec, "just codec-bench"],
+      ["Row-group size", DATA.scaling.rowgroup, "just rowgroup-bench"],
+    ];
+    var html = "";
+    axes.forEach(function (axis) {
+      var title = axis[0], data = axis[1], recipe = axis[2];
+      var recs = data.records || [];
+      if (!recs.length) {
+        html += "<p class='small'><b>No " + title.toLowerCase() + " run in this corpus.</b> `" +
+          recipe + "` over the scaling slices produces it.</p>";
+        return;
       }
-    });
-    slices.sort(function (a, b) { return a.objects - b.objects; });
-    var variants = [];
-    recs.forEach(function (r) { if (variants.indexOf(r.variant) < 0) { variants.push(r.variant); } });
-
-    var head = '<tr><th scope="col">Variant</th><th scope="col">Axis</th>';
-    slices.forEach(function (s) {
-      head += '<th scope="col">' + num(s.objects) + " obj</th>";
-    });
-    head += '<th scope="col">Row groups touched</th></tr>';
-    var body = "";
-    variants.forEach(function (v) {
-      var kind = "";
-      var row = '<tr><th scope="row">' + esc(v.replace("cityparquet+", "").replace("cityparquet", "default")) + "</th>";
-      var cells = "", touched = "";
-      slices.forEach(function (s) {
-        var r = recs.filter(function (x) { return x.variant === v && x.dataset === s.id; })[0];
-        kind = r ? r.kind : kind;
-        cells += "<td>" + (r ? esc(bytes(r.total_bytes)) : "&mdash;") + "</td>";
-        if (r && r.row_groups_total) {
-          touched = r.row_groups_touched + " / " + r.row_groups_total;
+      var slices = [];
+      recs.forEach(function (r) {
+        if (!slices.some(function (s) { return s.id === r.dataset; })) {
+          slices.push({ id: r.dataset, objects: r.objects });
         }
       });
-      body += row + "<td>" + esc(kind) + "</td>" + cells + "<td>" + esc(touched || "&mdash;") + "</td></tr>";
+      slices.sort(function (a, b) { return a.objects - b.objects; });
+      var sizes = {};
+      (data.sizes || []).forEach(function (s) { sizes[s.dataset + "|" + s.variant] = s; });
+      var writes = {};
+      recs.forEach(function (r) { if (r.measure === "write") { writes[r.dataset + "|" + r.variant] = r; } });
+
+      var head = '<tr><th scope="col">Variant</th>';
+      slices.forEach(function (s) {
+        head += '<th scope="col" colspan="2">' + num(s.objects) + " obj</th>";
+      });
+      head += "</tr><tr><th></th>";
+      slices.forEach(function () { head += "<th>bytes</th><th>write</th>"; });
+      head += "</tr>";
+      var body = "";
+      data.variants.forEach(function (v) {
+        var row = '<tr><th scope="row">' + esc(v.replace("cityparquet+", "").replace(/^cityparquet$/, "default")) + "</th>";
+        slices.forEach(function (s) {
+          var sz = sizes[s.id + "|" + v], w = writes[s.id + "|" + v];
+          row += "<td>" + (sz ? esc(bytes(sz.bytes)) : "&mdash;") + "</td>";
+          row += "<td>" + (w ? esc(secs(w.time_s)) : "&mdash;") + "</td>";
+        });
+        body += row + "</tr>";
+      });
+      html += '<div class="tablewrap"><table class="corpus"><caption>' +
+        esc(title + ": bytes written and median write time per variant, at each cardinality of " +
+            "the same city model. Read time and peak memory per variant are in the print " +
+            "figures (codec.svg, rowgroup.svg).") +
+        "</caption><thead>" + head + "</thead><tbody>" + body + "</tbody></table></div>";
+      if (META.machine && META.machine[title === "Codec" ? "codec" : "rowgroup"]) {
+        html += '<details><summary>Measurement host</summary><pre class="verbatim">' +
+          esc(META.machine[title === "Codec" ? "codec" : "rowgroup"]) + "</pre></details>";
+      }
     });
-    el("config-var-table").innerHTML =
-      '<div class="tablewrap"><table class="corpus"><caption>' +
-      esc("Bytes written by each writer configuration, at four cardinalities of the " +
-          "same city model. Row groups touched is for the widest spatial window at the " +
-          "largest slice - it is what row-group size actually buys.") +
-      "</caption><thead>" + head + "</thead><tbody>" + body + "</tbody></table></div>";
+    el("config-var-table").innerHTML = html;
     el("config-var-lede").textContent =
-      "Codec and row-group size are write-side axes: the harness reports bytes, write " +
-      "time and row-group counts for them, but no peak RSS and only two query types, so " +
-      "they cannot be drawn in the shape used above.";
+      "Two write-side axes, each measured by the read harness against its own default at 1x: " +
+      "a timed write in a child process (peak RSS), then a full read and the bbox windows on " +
+      "the package it left. " + META.codec_level_note;
   }
 
   /* ---- 4 - scaling trend ------------------------------------------------
@@ -2355,16 +2157,15 @@ JS = r"""
     el("caveats").innerHTML = META.caveats_read.map(function (c, i) {
       return '<li id="caveat-' + (i + 1) + '"><div class="verbatim">' + esc(c) + "</div></li>";
     }).join("");
-    el("caveats-comp").innerHTML = META.caveats_compression.map(function (c) {
-      return '<div class="verbatim">' + esc(c) + "</div>";
-    }).join("");
     el("codec-note-verbatim").textContent = META.codec_level_note;
   }
 
   function renderCoverage() {
     var items = [];
-    DATA.compression_gaps.forEach(function (g) {
-      items.push("<b>" + esc(g.dataset) + "</b> — compression: " + esc(g.issue) + ".");
+    [["codec", DATA.scaling.codec], ["row group", DATA.scaling.rowgroup]].forEach(function (pair) {
+      (pair[1].gaps || []).forEach(function (g) {
+        items.push("<b>" + esc(g.dataset) + "</b> — " + pair[0] + " axis: " + esc(g.issue) + ".");
+      });
     });
     var noStats = DATASETS.filter(function (d) {
       return !(READ[d.id] && READ[d.id]["attr-stats"]);
@@ -2496,7 +2297,6 @@ JS = r"""
   renderPareto();
   renderHeat();
   renderSizes();
-  renderCompression();
   renderCaveats();
   renderCoverage();
 }());
@@ -2510,7 +2310,7 @@ TEMPLATE = """<!DOCTYPE html>
 <title>CityParquet benchmarks — selective reads win, full reads pay</title>
 <meta name="description" content="Self-contained benchmark summary: CityParquet against \
 CityJSONSeq, FlatCityBuf and DuckDB across a corpus of CityJSON datasets — read speed, memory, \
-on-disk size and compression variants, with the fairness caveats quoted verbatim.">
+on-disk size and configuration axes, with the fairness caveats quoted verbatim.">
 <style>
 __CSS__
 </style>
@@ -2565,8 +2365,6 @@ def main(data_path: Path | None = None, out_path: Path | None = None) -> Path:
         "datasets",
         "read",
         "sizes",
-        "compression",
-        "compression_gaps",
         "ordering",
         "scaling",
     ):
