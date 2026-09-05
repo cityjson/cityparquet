@@ -158,6 +158,19 @@ struct RunArgs {
     #[arg(long, value_delimiter = ',', value_parser = parse_format)]
     formats: Option<Vec<Format>>,
 
+    /// Comma-separated variant ids (`cityparquet::variant`'s grammar). A
+    /// CONFIGURATION run: every id is written with its recipe by a write
+    /// child, kept as `<prepared-dir>/<base>.<id>.parquet`, then read by the
+    /// CityParquet runner. Exclusive with `--formats`; the list must contain
+    /// the bare `cityparquet` baseline; local transport only.
+    #[arg(long, value_delimiter = ',')]
+    variants: Option<Vec<String>>,
+
+    /// Warm write repeats per variant (a discarded warmup precedes them).
+    /// Only read by `--variants`. Must be >= 1.
+    #[arg(long, default_value_t = 3)]
+    write_repeat: usize,
+
     /// Comma-separated scenario names (`full-read`, `count`, `bbox-query`,
     /// `attr-filter`, `attr-stats`, `id-lookup`, `project`, or their
     /// [`Scenario::from_str`] aliases); omit for every scenario.
@@ -201,6 +214,8 @@ fn run(cli: Cli) -> Result<()> {
             out: run_args.out,
             repeat: run_args.repeat,
             formats: run_args.formats,
+            variants: run_args.variants,
+            write_repeat: run_args.write_repeat,
             scenarios: run_args.scenarios,
             cold: run_args.cold,
             transport,
