@@ -1,9 +1,9 @@
 dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
-nyc_da13_buildings.city.json,cityparquet,23777,8.375130,17921647,17920153,0,0.155112,0.153086,1,1,true
-nyc_da13_buildings.city.json,cityparquet+uncompressed,23777,6.859400,155019954,155018458,0,0.053265,0.053239,1,1,true
-nyc_da13_buildings.city.json,cityparquet+snappy,23777,7.249931,31127937,31126443,0,0.094693,0.093582,1,1,true
-nyc_da13_buildings.city.json,cityparquet+gzip,23777,7.800440,18455931,18454437,0,0.136634,0.138724,1,1,true
-nyc_da13_buildings.city.json,cityparquet+lz4,23777,7.312802,31031052,31029558,0,0.087015,0.090765,1,1,true
-nyc_da13_buildings.city.json,cityparquet+brotli,23777,7.076430,19738217,19736723,0,0.445140,0.442857,1,1,true
-nyc_da13_buildings.city.json,cityparquet+rg512,23777,8.483944,18348156,18346662,0,0.183513,0.052138,47,13,true
-nyc_da13_buildings.city.json,cityparquet+rg4096,23777,7.700160,17981937,17980443,0,0.159719,0.152067,6,6,true
+nyc_da13_buildings.city.json,cityparquet,23777,8.179438,17921647,17920153,0,0.151809,0.149116,1,1,true
+nyc_da13_buildings.city.json,cityparquet+uncompressed,23777,8.336575,155019954,155018458,0,0.050629,0.050618,1,1,true
+nyc_da13_buildings.city.json,cityparquet+snappy,23777,6.630179,31127937,31126443,0,0.089265,0.094714,1,1,true
+nyc_da13_buildings.city.json,cityparquet+gzip,23777,7.770888,18455931,18454437,0,0.141578,0.138502,1,1,true
+nyc_da13_buildings.city.json,cityparquet+lz4,23777,7.195410,31031052,31029558,0,0.090437,0.087237,1,1,true
+nyc_da13_buildings.city.json,cityparquet+brotli,23777,6.950484,19738217,19736723,0,0.445355,0.443486,1,1,true
+nyc_da13_buildings.city.json,cityparquet+rg512,23777,7.402808,18348156,18346662,0,0.179138,0.048767,47,13,true
+nyc_da13_buildings.city.json,cityparquet+rg4096,23777,6.920042,17981937,17980443,0,0.154015,0.156792,6,6,true

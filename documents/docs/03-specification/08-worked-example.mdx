@@ -30,7 +30,7 @@ becomes a per-face reference into the material sidecar.
 | id | feature_id | object_type | parents | children | bbox | geometry_lod2_2 | geometry_properties_lod2_2 | material_lod2_2 | ex_height | yearOfConstruction |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `b-42` | `b-42` | `Building` | — | `[b-42-0]` | *(union of children)* | *null* | *null* | *null* | `12.5` | `1998` |
-| `b-42-0` | `b-42` | `BuildingPart` | `[b-42]` | — | `{xmin…zmax}` | *WKB PolyhedralSurfaceZ (2 faces)* | `{type:"Solid", surfaces:[…], face_semantics:[0,1], shells:[[2]]}` | `{"":{"values":[3,3]}}` | *null* | *null* |
+| `b-42-0` | `b-42` | `BuildingPart` | `[b-42]` | — | `{xmin…zmax}` | *WKB PolyhedralSurfaceZ (2 faces)* | `{type:"Solid", surfaces:[…], face_semantics:[0,1], shells:[[2]]}` | `{"": [3, 3]}` | *null* | *null* |
 
 **Notes.**
 
@@ -45,8 +45,9 @@ becomes a per-face reference into the material sidecar.
   `shells: [[2]]` recording the single solid's single shell the WKB flattened away.
 - The LoD `2.2` is carried by the column suffix alone — `geometry_properties_lod2_2`
   has no `lod` field.
-- Material is **per face**: the two faces both reference material `3`, so
-  `material_lod2_2` is `{"":{"values":[3,3]}}`. The `3` is the **`id`** of a row in
+- Material is **per face**: the two faces both reference material `3` in the unnamed
+  theme, so `material_lod2_2` is the map `{"": [3, 3]}` — one entry per WKB face,
+  aligned like `face_semantics`. The `3` is the **`id`** of a row in
   [`materials.parquet`](/specification/appearance-templates), not a row position.
 - The `Building` carries no geometry of its own, so its
   [`bbox`](/specification/geometry-semantics) is the union of its part's.
@@ -88,4 +89,5 @@ What the encoding changes, relative to this serialisation:
   `face_semantics` (`[0, 1]`), and the shell partition it carried moves to
   `shells: [[2]]`.
 - The per-shell `material.values` (`[[3, 3]]`) is flattened to the per-face
-  `[3, 3]`, and the feature-local material index becomes the sidecar `id`.
+  `[3, 3]` under its theme key (`""`), and the feature-local material index becomes
+  the sidecar `id`.

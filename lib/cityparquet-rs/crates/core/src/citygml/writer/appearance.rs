@@ -1,13 +1,12 @@
 //! CityGML 2.0 appearance emission (writer side): `app:X3DMaterial`.
 //!
-//! A geometry's stored `material` map is `{theme: {values|value: <global-index
-//! tree>}}` where indices reference the dataset-global `materials.parquet`
-//! table. This module flattens that tree to per-face global ids (in face-walk
-//! order — the material `values` leaves are already in that order, so no shell
-//! partition is needed), accumulates which face `gml:id`s use which material per
-//! theme, and emits one `app:appearance/app:Appearance` per theme, each material
-//! a full literal `app:X3DMaterial` (CityGML has no shared material library) with
-//! its `app:target` face references.
+//! A geometry's stored `material` map is `{theme: {values: [id|null, …]}}`, one
+//! entry per WKB face in face-walk order, referencing the dataset-global
+//! `materials.parquet` table by id. This module reads that flat per-face shape
+//! directly, accumulates which face `gml:id`s use which material per theme, and
+//! emits one `app:appearance/app:Appearance` per theme, each material a full
+//! literal `app:X3DMaterial` (CityGML has no shared material library) with its
+//! `app:target` face references.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
@@ -49,7 +48,8 @@ pub fn count_faces(kind: &DecodedKind) -> usize {
 }
 
 /// The ring count of each face in face-walk order — the shape a `texture` map's
-/// `[face][ring]` tree must match (a mismatch would leave ring ids dangling).
+/// `[face][ring]` flat per-face list must match (a mismatch would leave ring
+/// ids dangling).
 pub fn face_ring_counts(kind: &DecodedKind) -> Vec<usize> {
     fn push(kind: &DecodedKind, out: &mut Vec<usize>) {
         match kind {
@@ -65,47 +65,50 @@ pub fn face_ring_counts(kind: &DecodedKind) -> Vec<usize> {
     out
 }
 
-/// Flatten a material `values` tree's leaves (a non-negative integer -> a global
-/// material id, `null` -> no material) in DFS (face-walk) order, each leaf
-/// checked to name a real row of `materials` — BY ID, not by position: a
-/// merged package's ids are offset-shifted and gapped, so "less than the table
-/// length" is not the same question as "exists".
-fn flatten_leaves(
-    v: &Value,
+/// Parse one theme's flat material `values` list — one entry per WKB face, in
+/// face-walk order, each a non-negative integer -> a global material id, or
+/// `null` -> no material — checking each id against `materials` BY ID, not by
+/// position: a merged package's ids are offset-shifted and gapped, so "less
+/// than the table length" is not the same question as "exists".
+fn parse_material_values(
+    theme: &str,
+    values: &Value,
+    n_faces: usize,
     materials: &HashMap<i64, Value>,
-    out: &mut Vec<Option<usize>>,
-) -> Result<()> {
-    match v {
-        Value::Array(items) => {
-            for it in items {
-                flatten_leaves(it, materials, out)?;
-            }
-            Ok(())
-        }
-        Value::Null => {
-            out.push(None);
-            Ok(())
-        }
-        Value::Number(n) => {
-            let i = n
-                .as_u64()
-                .ok_or_else(|| err("material index is not a non-negative integer"))?
-                as usize;
-            if !materials.contains_key(&(i as i64)) {
-                return Err(err(format!(
-                    "material id {i} does not name a row in materials.parquet"
-                )));
-            }
-            out.push(Some(i));
-            Ok(())
-        }
-        _ => Err(err("material values leaf is neither null nor an integer")),
+) -> Result<Vec<Option<usize>>> {
+    let items = values
+        .as_array()
+        .ok_or_else(|| err(format!("material theme '{theme}' values must be an array")))?;
+    if items.len() != n_faces {
+        return Err(err(format!(
+            "material theme '{theme}' has {} values but geometry has {n_faces} faces",
+            items.len()
+        )));
     }
+    items
+        .iter()
+        .map(|v| match v {
+            Value::Null => Ok(None),
+            Value::Number(n) => {
+                let i = n
+                    .as_u64()
+                    .ok_or_else(|| err("material index is not a non-negative integer"))?
+                    as usize;
+                if !materials.contains_key(&(i as i64)) {
+                    return Err(err(format!(
+                        "material id {i} does not name a row in materials.parquet"
+                    )));
+                }
+                Ok(Some(i))
+            }
+            _ => Err(err("material values entry is neither null nor an integer")),
+        })
+        .collect()
 }
 
-/// One geometry's per-theme flat material ids (each vec has length `n_faces`).
-/// The `values` form is flattened; the scalar `value` form (whole-geometry
-/// material) is expanded to every face.
+/// One geometry's per-theme flat material ids: each theme's `values` list is
+/// one entry per WKB face, in face-walk order (a non-negative integer -> a
+/// global material id, `null` -> no material), of length `n_faces` exactly.
 pub fn material_face_maps(
     material_map: &Value,
     n_faces: usize,
@@ -113,38 +116,14 @@ pub fn material_face_maps(
 ) -> Result<BTreeMap<String, Vec<Option<usize>>>> {
     let obj = material_map
         .as_object()
-        .ok_or_else(|| err("material map must be a JSON object of theme -> {values|value}"))?;
+        .ok_or_else(|| err("material map must be a JSON object of theme -> {values}"))?;
     let mut out = BTreeMap::new();
     for (theme, inner) in obj {
-        let inner = inner
+        let values = inner
             .as_object()
-            .ok_or_else(|| err(format!("material theme '{theme}' must be an object")))?;
-        let flat = if let Some(values) = inner.get("values") {
-            let mut leaves = Vec::new();
-            flatten_leaves(values, materials, &mut leaves)?;
-            if leaves.len() != n_faces {
-                return Err(err(format!(
-                    "material theme '{theme}' has {} values but geometry has {n_faces} faces",
-                    leaves.len()
-                )));
-            }
-            leaves
-        } else if let Some(value) = inner.get("value") {
-            let gid = value
-                .as_u64()
-                .ok_or_else(|| err("scalar material value is not a non-negative integer"))?
-                as usize;
-            if !materials.contains_key(&(gid as i64)) {
-                return Err(err(format!(
-                    "material id {gid} does not name a row in materials.parquet"
-                )));
-            }
-            vec![Some(gid); n_faces]
-        } else {
-            return Err(err(format!(
-                "material theme '{theme}' has neither 'values' nor 'value'"
-            )));
-        };
+            .and_then(|o| o.get("values"))
+            .ok_or_else(|| err(format!("material theme '{theme}' is missing 'values'")))?;
+        let flat = parse_material_values(theme, values, n_faces, materials)?;
         out.insert(theme.clone(), flat);
     }
     Ok(out)
@@ -202,12 +181,44 @@ impl AppearanceAcc {
     }
 }
 
-/// Flatten one geometry's `texture` map to per-theme `[face][ring]` textures
-/// (global id + UVs, `None` = untextured ring). The stored texture tree mirrors
-/// `boundaries` with each ring's `[t, [u,v]…]` (or `[null]`) leaf; the walk over
-/// FACES (in walk order) collapses the shell/solid nesting.
+/// Parse one theme's flat texture `values` list — one entry per WKB face, in
+/// face-walk order, each face an array of its rings' `[t, [u,v]…]` (or
+/// `[null]`) leaves, parsed by [`parse_ring_leaf`] — of length `n_faces`
+/// exactly, as [`parse_material_values`] demands of its own list.
+fn parse_texture_values(
+    theme: &str,
+    values: &Value,
+    n_faces: usize,
+    textures: &HashMap<i64, Value>,
+) -> Result<FaceRingTextures> {
+    let items = values
+        .as_array()
+        .ok_or_else(|| err(format!("texture theme '{theme}' values must be an array")))?;
+    if items.len() != n_faces {
+        return Err(err(format!(
+            "texture theme '{theme}' has {} values but geometry has {n_faces} faces",
+            items.len()
+        )));
+    }
+    items
+        .iter()
+        .map(|face| {
+            face.as_array()
+                .ok_or_else(|| err(format!("texture theme '{theme}' face must be an array")))?
+                .iter()
+                .map(|ring| parse_ring_leaf(ring, textures))
+                .collect::<Result<Vec<_>>>()
+        })
+        .collect()
+}
+
+/// One geometry's per-theme flat `[face][ring]` textures (global id + UVs,
+/// `None` = untextured ring): each theme's `values` list is one entry per WKB
+/// face, in face-walk order, and each face entry is an array of its rings'
+/// leaves, of length `n_faces` exactly.
 pub fn texture_face_maps(
     texture_map: &Value,
+    n_faces: usize,
     textures: &HashMap<i64, Value>,
 ) -> Result<TextureFaceMaps> {
     let obj = texture_map
@@ -219,8 +230,7 @@ pub fn texture_face_maps(
             .as_object()
             .and_then(|o| o.get("values"))
             .ok_or_else(|| err(format!("texture theme '{theme}' is missing 'values'")))?;
-        let mut faces = Vec::new();
-        flatten_texture_faces(values, textures, &mut faces)?;
+        let faces = parse_texture_values(theme, values, n_faces, textures)?;
         out.insert(theme.clone(), faces);
     }
     Ok(out)
@@ -247,13 +257,6 @@ pub fn texture_ring_needs(maps: &TextureFaceMaps, n_faces: usize) -> Vec<Vec<boo
         }
     }
     needs
-}
-
-/// Whether a node is a ring leaf `[t, [u,v]…]` or `[null]` (its first element is
-/// a number or null) — distinguishing a FACE (an array of ring leaves) from a
-/// shell/solid container (an array of faces).
-fn is_ring_leaf(v: &Value) -> bool {
-    matches!(v, Value::Array(a) if matches!(a.first(), Some(Value::Number(_)) | Some(Value::Null) | None))
 }
 
 fn parse_ring_leaf(
@@ -291,29 +294,6 @@ fn parse_ring_leaf(
         }
         _ => Ok(None), // [null]
     }
-}
-
-fn flatten_texture_faces(
-    v: &Value,
-    textures: &HashMap<i64, Value>,
-    out: &mut FaceRingTextures,
-) -> Result<()> {
-    let Value::Array(items) = v else {
-        return Err(err("texture values must be an array"));
-    };
-    if items.first().is_some_and(is_ring_leaf) {
-        // `v` is a FACE: its children are ring leaves.
-        let rings = items
-            .iter()
-            .map(|r| parse_ring_leaf(r, textures))
-            .collect::<Result<Vec<_>>>()?;
-        out.push(rings);
-    } else {
-        for it in items {
-            flatten_texture_faces(it, textures, out)?;
-        }
-    }
-    Ok(())
 }
 
 /// Accumulates, per theme and global texture id, the textured polygons and their
@@ -552,4 +532,55 @@ fn text_elem<W: Write>(w: &mut Writer<W>, tag: &str, text: &str) -> Result<()> {
     w.write_event(Event::Text(BytesText::new(text)))?;
     w.write_event(Event::End(BytesEnd::new(tag)))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn face_maps_read_the_flat_per_face_shape() {
+        let mut materials = HashMap::new();
+        materials.insert(3i64, serde_json::json!({"name": "m"}));
+        let m = material_face_maps(
+            &serde_json::json!({"": {"values": [3, null, 3]}}),
+            3,
+            &materials,
+        )
+        .unwrap();
+        assert_eq!(m[""], vec![Some(3), None, Some(3)]);
+        assert!(
+            material_face_maps(&serde_json::json!({"": {"values": [3]}}), 3, &materials).is_err()
+        );
+        // `material_face_maps` only accepts the flat per-face list — a
+        // nested per-shell tree (what a `Solid`'s `values` would look like
+        // before flattening) must be rejected, not silently accepted as a
+        // one-shell geometry.
+        assert!(
+            material_face_maps(
+                &serde_json::json!({"": {"values": [[3, null, 3]]}}),
+                3,
+                &materials
+            )
+            .is_err()
+        );
+
+        let mut textures = HashMap::new();
+        textures.insert(7i64, serde_json::json!({"type": "PNG", "image": "a.png"}));
+        let t = texture_face_maps(&serde_json::json!({"": {"values": [ [ [7, [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], [null] ], [ [null] ] ]}}), 2, &textures).unwrap();
+        assert_eq!(t[""].len(), 2);
+        assert_eq!(t[""][0][0].as_ref().unwrap().0, 7);
+        assert!(t[""][0][1].is_none() && t[""][1][0].is_none());
+        // A theme whose face list is shorter than the geometry is refused, as
+        // the material side refuses a short `values`: padding it silently
+        // would leave the trailing faces unaddressed by `app:target`.
+        assert!(
+            texture_face_maps(
+                &serde_json::json!({"": {"values": [ [ [null] ] ]}}),
+                2,
+                &textures
+            )
+            .is_err()
+        );
+    }
 }

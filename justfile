@@ -65,12 +65,12 @@ hooks:
 # Gates
 # ---------------------------------------------------------------------------
 
-# Everything that gates a change to the Rust library and the benchmark
-# harness. The library and the harness are separate Cargo workspaces, so each
-# needs its own clippy/test/fmt pass — `cd lib/cityparquet-rs && just check`
-# deliberately does NOT reach the harness, which is what keeps that gate
-# runnable with no `uv`, no `jq` and no corpus.
-[doc("The full gate: both Rust workspaces, the plotting suite, the shell suites")]
+# Everything that gates a change to the Rust library, the benchmark harness
+# and CityLake. The three are separate Cargo workspaces, so each needs its own
+# clippy/test/fmt pass — `cd lib/cityparquet-rs && just check` deliberately
+# does NOT reach the harness or CityLake, which is what keeps that gate
+# runnable with no `uv`, no `jq`, no corpus and no local extension build.
+[doc("The full gate: three Rust workspaces, the plotting suite, the shell suites")]
 check:
     cd {{RS}} && just check
     cargo clippy {{READBENCH_CARGO}} --all-targets -- -D warnings
@@ -79,6 +79,7 @@ check:
     just plot-test
     just scripts-test
     just mcp-check
+    just citylake-check
 
 # The cross-module manual walkthrough, automated. Needs both DuckDB
 # extensions built — see test/TESTING.md for what each step proves.
@@ -745,3 +746,30 @@ mcp-corpus:
 mcp-check:
     cd ai/mcp && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test
     cd ai/mcp && pnpm corpus:check
+
+# Lint and test the CityLake crate.
+#
+# The integration tests need the CityParquet package pragmas, which the
+# published community extension does not yet carry — so they run against the
+# local build, and `just -f lib/duckdb-cityjson/justfile build` must have run
+# first. Override the path by exporting CITYLAKE_CITYJSON_EXTENSION yourself.
+citylake-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ext="{{justfile_directory()}}/lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension"
+    if [ -z "${CITYLAKE_CITYJSON_EXTENSION:-}" ] && [ -f "$ext" ]; then
+        export CITYLAKE_CITYJSON_EXTENSION="$ext"
+    fi
+    cd lib/citylake
+    cargo clippy --all-targets -- -D warnings
+    cargo test
+
+# ── usecase ──────────────────────────────────────────────────────────
+
+# run the energy tool's test suite
+usecase-energy-test:
+    cd usecase/energy && uv run pytest
+
+# extract features from a CityParquet package: just usecase-energy-features IN OUT
+usecase-energy-features input output="features.parquet":
+    cd usecase/energy && uv run energy features --input '{{input}}' --output '{{output}}'

@@ -35,9 +35,7 @@ fn generate_fcb(fixture_name: &str, out_dir: &Path) -> PathBuf {
     let out = out_dir.join(format!("{fixture_name}.fcb"));
     let output = Command::new("fcb")
         .arg("ser")
-        .arg("-i")
         .arg(&src)
-        .arg("-o")
         .arg(&out)
         .arg("-A")
         .output()

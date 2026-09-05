@@ -39,7 +39,8 @@ Thumbs.db
 .env.keys
 design/
 
-# DuckLake runtime state — created on `just api` / `cargo run`.
-metadata.ducklake
-metadata.ducklake.wal
-data/
+# DuckLake runtime state — created on `just api` / `cargo run`, in the crate
+# root. Anchored, so it does not also swallow the test fixtures in tests/data.
+/metadata.ducklake
+/metadata.ducklake.wal
+/data/

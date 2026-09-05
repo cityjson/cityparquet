@@ -30,8 +30,8 @@ use arrow_array::builder::{
     BinaryBuilder, BooleanBuilder, Float64Builder, Int64Builder, ListBuilder, StringBuilder,
 };
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch,
-    StringArray, StructArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, ListArray, MapArray,
+    RecordBatch, StringArray, StructArray,
 };
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::ArrowWriter;
@@ -42,6 +42,11 @@ use serde_json::Value;
 
 use cityparquet_schema::{
     CityMetadata, CityParquetError, Lod, Result, geometry_column_name, sidecar_schemas,
+};
+
+use crate::appearance_columns::{
+    MaterialCell, MaterialCellBuilder, TextureCell, TextureCellBuilder, read_material_cell,
+    read_texture_cell,
 };
 
 use crate::geometry_properties::{
@@ -132,14 +137,6 @@ fn push_opt_bool(b: &mut BooleanBuilder, v: Option<&Value>, field: &str) -> Resu
                 "'{field}' must be a boolean, got {other}"
             )));
         }
-    }
-    Ok(())
-}
-
-fn push_opt_json(b: &mut StringBuilder, v: Option<&Value>) -> Result<()> {
-    match v {
-        None | Some(Value::Null) => b.append_null(),
-        Some(val) => b.append_value(serde_json::to_string(val)?),
     }
     Ok(())
 }
@@ -450,9 +447,10 @@ pub fn write_textures(path: &Path, defs: &[Value]) -> Result<usize> {
 /// `geometry_properties_lod*`/`material_lod*`/`texture_lod*` column set this
 /// row's data lands in, mirroring the main object table's own per-LoD
 /// grammar rather than carrying its own sibling `lod` column the way the
-/// pre-M6 shape did), and its `material`/`texture` maps already rewritten to
-/// dataset-global ids by the same [`crate::appearance::AppearanceInterner`]
-/// the main table and the materials/textures sidecars use. No `other`: spec
+/// pre-M6 shape did), and its `material`/`texture` cells — flat per WKB face,
+/// carrying the dataset-global ids the same
+/// [`crate::appearance::AppearanceInterner`] assigns the main table and the
+/// materials/textures sidecars. No `other`: spec
 /// "a geometry template is a plain geometry (WKB + properties + appearance)
 /// with no members left over to preserve".
 #[derive(Debug, Clone, PartialEq)]
@@ -474,19 +472,19 @@ pub struct TemplateRow {
     pub lod: Lod,
     pub wkb: Vec<u8>,
     pub geometry_properties: Option<Value>,
-    pub material: Option<Value>,
-    pub texture: Option<Value>,
+    pub material: Option<MaterialCell>,
+    pub texture: Option<TextureCell>,
 }
 
 /// One LoD's worth of per-row column builders — the geometry-templates
-/// sidecar's counterpart of `crate::encode::GeometrySlot`, minus the material/
-/// texture arrays being JSON (not the typed geometry-properties struct) since
-/// there is no dedicated appearance builder type to reuse here.
+/// sidecar's counterpart of `crate::encode::GeometrySlot`, driving the same
+/// [`crate::appearance_columns`] builders it does, so both tables' appearance
+/// columns are filled by one implementation.
 struct TemplateSlot {
     geometry: BinaryBuilder,
     properties: GeometryPropertiesBuilder,
-    material: StringBuilder,
-    texture: StringBuilder,
+    material: MaterialCellBuilder,
+    texture: TextureCellBuilder,
 }
 
 impl TemplateSlot {
@@ -494,8 +492,8 @@ impl TemplateSlot {
         Self {
             geometry: BinaryBuilder::new(),
             properties: GeometryPropertiesBuilder::new(),
-            material: StringBuilder::new(),
-            texture: StringBuilder::new(),
+            material: MaterialCellBuilder::new(),
+            texture: TextureCellBuilder::new(),
         }
     }
 
@@ -548,8 +546,14 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
                     .append_value(&GeometryProperties::try_from_value(v)?)?,
                 None => slot.properties.append_null(),
             }
-            push_opt_json(&mut slot.material, row.material.as_ref())?;
-            push_opt_json(&mut slot.texture, row.texture.as_ref())?;
+            match &row.material {
+                Some(cell) => slot.material.append_value(cell)?,
+                None => slot.material.append_null(),
+            }
+            match &row.texture {
+                Some(cell) => slot.texture.append_value(cell)?,
+                None => slot.texture.append_null(),
+            }
         }
     }
 
@@ -557,8 +561,8 @@ pub fn write_templates(path: &Path, rows: &[TemplateRow]) -> Result<usize> {
     for (_, mut slot) in slots {
         arrays.push(Arc::new(slot.geometry.finish()));
         arrays.push(slot.properties.finish());
-        arrays.push(Arc::new(slot.material.finish()));
-        arrays.push(Arc::new(slot.texture.finish()));
+        arrays.push(slot.material.finish());
+        arrays.push(slot.texture.finish());
     }
     let batch = RecordBatch::try_new(schema.clone(), arrays)?;
     write_batch(path, schema, batch)?;
@@ -698,8 +702,8 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
                 lod,
                 wkb: c.geometry.value(row).to_vec(),
                 geometry_properties: read_geometry_properties(c.properties, row)?,
-                material: opt_json(c.material, row)?,
-                texture: opt_json(c.texture, row)?,
+                material: read_material_cell(c.material, row)?,
+                texture: read_texture_cell(c.texture, row)?,
             });
         }
     }
@@ -711,8 +715,8 @@ pub fn read_templates(path: &Path) -> Result<Vec<TemplateRow>> {
 struct TemplateCols<'a> {
     geometry: &'a BinaryArray,
     properties: &'a StructArray,
-    material: &'a StringArray,
-    texture: &'a StringArray,
+    material: &'a MapArray,
+    texture: &'a MapArray,
 }
 
 fn get_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a ArrayRef> {
@@ -1902,8 +1906,8 @@ mod tests {
     ) -> (ArrayRef, ArrayRef, ArrayRef, ArrayRef) {
         let mut geometry = BinaryBuilder::new();
         let mut properties = GeometryPropertiesBuilder::new();
-        let mut material = StringBuilder::new();
-        let mut texture = StringBuilder::new();
+        let mut material = MaterialCellBuilder::new();
+        let mut texture = TextureCellBuilder::new();
         if include_geometry {
             geometry.append_value(&row.wkb);
         } else {
@@ -1915,13 +1919,19 @@ mod tests {
                 .unwrap(),
             None => properties.append_null(),
         }
-        push_opt_json(&mut material, row.material.as_ref()).unwrap();
-        push_opt_json(&mut texture, row.texture.as_ref()).unwrap();
+        match &row.material {
+            Some(cell) => material.append_value(cell).unwrap(),
+            None => material.append_null(),
+        }
+        match &row.texture {
+            Some(cell) => texture.append_value(cell).unwrap(),
+            None => texture.append_null(),
+        }
         (
             Arc::new(geometry.finish()) as ArrayRef,
             properties.finish(),
-            Arc::new(material.finish()) as ArrayRef,
-            Arc::new(texture.finish()) as ArrayRef,
+            material.finish(),
+            texture.finish(),
         )
     }
 

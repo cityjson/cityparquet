@@ -13,6 +13,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The message to show a user for a rejected request. Every mutation in the
+ * interface reports through this, so the one place that decides what a
+ * failure reads like is here rather than in each component: an
+ * {@link ApiError} already carries the server's own sentence, and anything
+ * else is stringified rather than swallowed.
+ */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 async function authHeader(): Promise<HeadersInit> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
@@ -51,96 +62,179 @@ function safeParse(text: string): unknown {
 
 // ---------- typed endpoints ----------
 
-export interface TableInfo {
+/** A module table inside a dataset. `role` is "object" or "sidecar". */
+export interface ModuleInfo {
   name: string;
-  base: string | null;
-  lod: string | null;
+  role: string;
+  rows: number;
 }
 
-export interface ListTablesResponse {
-  count: number;
-  tables: TableInfo[];
+/** A dataset: a CityParquet package, one table per CityGML module. */
+export interface DatasetInfo {
+  name: string;
+  modules: ModuleInfo[];
+  crs: string | null;
 }
 
-export function listTables(): Promise<ListTablesResponse> {
-  return request<ListTablesResponse>("/tables");
+/** One CityObject, as the server returns it: a flat JSON row. */
+export type ObjectRow = Record<string, unknown>;
+
+/** The server returns a bare array of names, not an envelope. */
+export function listDatasets(): Promise<string[]> {
+  return request<string[]>("/datasets");
 }
 
-export interface CreateTableResponse {
-  message: string;
-  base_name: string;
-  tables: string[];
+export function describeDataset(ds: string): Promise<DatasetInfo> {
+  return request<DatasetInfo>(`/datasets/${encodeURIComponent(ds)}`);
 }
 
-export function createTable(
-  base: string,
-  body: { source_path?: string; lod?: string; base_name?: string },
-): Promise<CreateTableResponse> {
-  return request<CreateTableResponse>(`/tables/${encodeURIComponent(base)}`, {
+export function createDataset(ds: string, sourcePath: string): Promise<DatasetInfo> {
+  return request<DatasetInfo>(`/datasets/${encodeURIComponent(ds)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ source_path: sourcePath }),
   });
 }
 
-export function uploadCreateTable(
-  base: string,
-  file: File,
-  qs: { lod?: string; base_name?: string } = {},
-): Promise<CreateTableResponse> {
-  const params = new URLSearchParams();
-  if (qs.lod) params.set("lod", qs.lod);
-  if (qs.base_name) params.set("base_name", qs.base_name);
-  const query = params.toString();
-
+export function uploadDataset(ds: string, file: File): Promise<DatasetInfo> {
   const fd = new FormData();
   fd.append("file", file);
-
-  return request<CreateTableResponse>(
-    `/tables/${encodeURIComponent(base)}/upload${query ? `?${query}` : ""}`,
-    { method: "POST", body: fd },
-  );
+  return request<DatasetInfo>(`/datasets/${encodeURIComponent(ds)}/upload`, {
+    method: "POST",
+    body: fd,
+  });
 }
 
-export interface QueryResponse {
-  table: string;
-  count: number;
-  objects: Array<Record<string, unknown>>;
+/** Drops the dataset and everything in it. The server answers 204. */
+export function dropDataset(ds: string): Promise<void> {
+  return request<void>(`/datasets/${encodeURIComponent(ds)}`, { method: "DELETE" });
 }
 
+export function ingestSource(ds: string, sourcePath: string): Promise<{ ingested: number }> {
+  return request<{ ingested: number }>(`/datasets/${encodeURIComponent(ds)}/objects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_path: sourcePath }),
+  });
+}
+
+/** Also a bare array — there is no envelope and no total count. */
 export function queryObjects(
-  table: string,
+  ds: string,
+  module: string,
   params: { filter?: string; limit?: number; offset?: number } = {},
-): Promise<QueryResponse> {
+): Promise<ObjectRow[]> {
   const qs = new URLSearchParams();
   if (params.filter) qs.set("filter", params.filter);
   if (params.limit !== undefined) qs.set("limit", String(params.limit));
   if (params.offset !== undefined) qs.set("offset", String(params.offset));
   const query = qs.toString();
 
-  return request<QueryResponse>(
-    `/tables/${encodeURIComponent(table)}/objects${query ? `?${query}` : ""}`,
+  return request<ObjectRow[]>(
+    `/datasets/${encodeURIComponent(ds)}/modules/${encodeURIComponent(module)}/objects${
+      query ? `?${query}` : ""
+    }`,
   );
 }
 
-export function deleteObject(table: string, id: string): Promise<{ message: string }> {
-  return request<{ message: string }>(
-    `/tables/${encodeURIComponent(table)}/objects/${encodeURIComponent(id)}`,
+/** Deletes by id, cascading to the object's children; returns how many went. */
+export function deleteObject(ds: string, id: string): Promise<{ deleted: number }> {
+  return request<{ deleted: number }>(
+    `/datasets/${encodeURIComponent(ds)}/objects/${encodeURIComponent(id)}`,
     { method: "DELETE" },
   );
 }
 
-export function updateObject(
-  table: string,
-  id: string,
-  cityjson_data: string,
-): Promise<{ message: string }> {
-  return request<{ message: string }>(
-    `/tables/${encodeURIComponent(table)}/objects/${encodeURIComponent(id)}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cityjson_data }),
-    },
+/**
+ * One structural problem `cityparquet_validate` found. `object_id` is `null`
+ * when the finding is about the table itself rather than one row in it.
+ */
+export interface ValidationFinding {
+  check_name: string;
+  severity: string;
+  table_name: string;
+  object_id: string | null;
+  message: string;
+}
+
+/** Runs every structural check; reports, does not repair. A bare array. */
+export function validateDataset(ds: string): Promise<ValidationFinding[]> {
+  return request<ValidationFinding[]>(`/datasets/${encodeURIComponent(ds)}/validate`, {
+    method: "POST",
+  });
+}
+
+/** Re-derives `feature_id`, the reciprocal hierarchy and bbox. The server answers 204. */
+export function reconcileDataset(ds: string): Promise<void> {
+  return request<void>(`/datasets/${encodeURIComponent(ds)}/reconcile`, { method: "POST" });
+}
+
+/** Reclaims unreferenced sidecar rows. */
+export function vacuumDataset(ds: string): Promise<{ vacuumed: number }> {
+  return request<{ vacuumed: number }>(`/datasets/${encodeURIComponent(ds)}/vacuum`, {
+    method: "POST",
+  });
+}
+
+/** Merges each object table's small Parquet files via DuckLake. */
+export function compactDataset(
+  ds: string,
+): Promise<{ files_processed: number; files_created: number }> {
+  return request<{ files_processed: number; files_created: number }>(
+    `/datasets/${encodeURIComponent(ds)}/compact`,
+    { method: "POST" },
   );
+}
+
+/**
+ * Merges `source` into `ds`: `ds` is the destination and is what changes.
+ * Object ids must be unique across the whole destination and the two CRSs
+ * must agree, or the extension refuses the entire merge — there is no
+ * partially merged state. The server answers 204.
+ */
+export function mergeDataset(ds: string, source: string): Promise<void> {
+  return request<void>(`/datasets/${encodeURIComponent(ds)}/merge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source }),
+  });
+}
+
+/** One of the CityJSON-family formats `exportModule` can write. */
+export type ExportFormat = "cityjson" | "cityjsonseq" | "flatcitybuf";
+
+export interface ExportBody {
+  module: string;
+  /** Resolved against the server's configured output root. */
+  output_path: string;
+  format: ExportFormat;
+}
+
+/** Exports one module to a single CityJSON-family file. The server answers 204. */
+export function exportModule(ds: string, body: ExportBody): Promise<void> {
+  return request<void>(`/datasets/${encodeURIComponent(ds)}/export`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** One file `writePackage` wrote (or rewrote). */
+export interface PackageFile {
+  file: string;
+  action: string;
+  rows: number;
+  bytes: number;
+}
+
+/**
+ * Writes the dataset out as a CityParquet package directory, resolved
+ * against the server's configured output root.
+ */
+export function writePackage(ds: string, outputDir: string): Promise<PackageFile[]> {
+  return request<PackageFile[]>(`/datasets/${encodeURIComponent(ds)}/package`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ output_dir: outputDir }),
+  });
 }

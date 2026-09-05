@@ -17,7 +17,7 @@ PRETTIER_VERSION=3.9.6
 
 # Every Cargo workspace in the tree, as `<path prefix>` — a staged `.rs` under
 # one of these is formatted with that workspace's manifest.
-WORKSPACES=(lib/cityparquet-rs lib/citylake)
+WORKSPACES=(lib/cityparquet-rs lib/citylake benchmark/readbench)
 
 staged_rust=()
 staged_md=()
