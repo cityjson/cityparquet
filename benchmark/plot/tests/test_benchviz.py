@@ -56,12 +56,11 @@ def test_prep_builds_the_design_contract_from_result_csvs(tmp_path):
         "datasets",
         "read",
         "sizes",
-        "compression",
-        "compression_gaps",
         "ordering",
         "scaling",
     ):
         assert key in data, f"bench_data.json lacks '{key}'"
+    assert set(data["scaling"]) == {"read", "sizes", "ordering", "codec", "rowgroup"}
     assert [d["id"] for d in data["datasets"]] == ["Zurich", "delft", "Ingolstadt"]
     assert data["read"]
     # The source labels stay repo-qualified (".../benchmark/formats/read_results"), so the
@@ -78,20 +77,6 @@ def test_prep_builds_the_design_contract_from_result_csvs(tmp_path):
         assert entry["rows"] > 0
     for record in data["read"] + data["sizes"]:
         assert record["format"] in prep.KNOWN_FORMATS
-
-
-def test_prep_records_the_compression_gaps_rather_than_dropping_them(tmp_path):
-    """The two known-bad compression inputs must survive as stated gaps.
-
-    Railway's CSV is header-only and every Ingolstadt row has
-    `roundtrip_equal=false`. Both are undocumented in `benchmark/formats/README.md`, and a
-    reader who cannot see them would read the codec panels as citable.
-    """
-    data, _ = prep.build(prep.Inputs(_bench_dir(tmp_path)))
-
-    gaps = {g["dataset"]: g["issue"] for g in data["compression_gaps"]}
-    assert "header-only" in gaps["Railway"]
-    assert "roundtrip_equal=false" in gaps["Ingolstadt"]
 
 
 def test_object_counts_survive_a_run_that_measured_only_hilbert(tmp_path):
@@ -138,29 +123,85 @@ def test_a_renamed_column_is_still_an_error(tmp_path):
         prep._read_rows(csv_path, prep.READ_COLUMNS)
 
 
-def test_a_corpus_with_no_compression_run_is_stated_not_crashed(tmp_path):
-    """Read-only corpora are normal: compression is a separate, slower run.
+def test_axis_records_are_baselined_against_the_default_variant(tmp_path):
+    """Both configuration axes load through one loader, against `cityparquet`.
 
-    A corpus measured for reads but never for compression must still produce a
-    page — with the compression view saying so — and the compression figure must
-    be skipped rather than drawn empty or raised as a contract error.
+    Ratios are baseline over variant (above 1x is faster, leaner, smaller), the
+    variant order is the CSV's own, and the write row is a measure like any
+    other. The fixture is a measured delft run, so every number here is real.
     """
+    data, _ = prep.build(prep.Inputs(_bench_dir(tmp_path)))
+    for key, expected_variants in (
+        ("codec", ["cityparquet", "cityparquet+zstd1", "cityparquet+lz4"]),
+        ("rowgroup", ["cityparquet", "cityparquet+rg512", "cityparquet+rg2048"]),
+    ):
+        axis = data["scaling"][key]
+        assert axis["variants"] == expected_variants
+        assert axis["gaps"] == []
+        by = {(r["variant"], r["measure"]): r for r in axis["records"]}
+        assert set(m for _, m in by) == set(prep.AXIS_MEASURES)
+        base_write = by[("cityparquet", "write")]
+        assert base_write["kind"] == "default"
+        assert base_write["objects"] == 2231
+        assert base_write["time_ratio"] == 1.0
+        assert base_write["rss_ratio"] == 1.0
+        variant_write = by[(expected_variants[1], "write")]
+        assert variant_write["kind"] == "variant"
+        assert variant_write["base_time_s"] == base_write["time_s"]
+        assert variant_write["time_ratio"] == pytest.approx(
+            base_write["time_s"] / variant_write["time_s"]
+        )
+        assert isinstance(variant_write["below_floor"], bool)
+        assert by[(expected_variants[1], "bbox-5pct")]["dataset"] == "delft"
+
+        sizes = {s["variant"]: s for s in axis["sizes"]}
+        assert set(sizes) == set(expected_variants)
+        assert sizes["cityparquet"]["size_ratio"] == 1.0
+        assert sizes["cityparquet"]["objects"] == 2231
+        assert sizes[expected_variants[1]]["size_ratio"] == pytest.approx(
+            sizes["cityparquet"]["bytes"] / sizes[expected_variants[1]]["bytes"]
+        )
+    assert data["meta"]["axis_baseline"] == "cityparquet"
+    assert data["meta"]["sources"]["codec"].endswith("scaling_codec_results")
+    assert "zstd" in data["meta"]["codec_level_note"]
+
+
+def test_a_corpus_with_no_axis_run_is_stated_not_crashed(tmp_path):
+    """Absence is normal, as for compression before it and ordering beside it."""
     from benchviz import figures
 
     bench = _bench_dir(tmp_path)
-    shutil.rmtree(bench / "compression_results")
-
+    shutil.rmtree(bench / "scaling_codec_results")
     data, _ = prep.build(prep.Inputs(bench))
-    assert data["compression"] == []
-    assert data["compression_gaps"] == []
+    assert data["scaling"]["codec"] == {"records": [], "sizes": [], "gaps": [], "variants": []}
+    assert data["scaling"]["rowgroup"]["records"]
+    assert data["meta"]["machine"]["codec"] is None
 
-    data_path = tmp_path / "no_compression.json"
+    data_path = tmp_path / "no_codec.json"
     data_path.write_text(prep.json.dumps(data), encoding="utf-8")
     written = sorted(
         p.name for p in figures.main(data_path=data_path, out_dir=tmp_path / "f").glob("*")
     )
+    assert "codec.svg" not in written
+    assert "rowgroup.svg" in written
     assert "compression.svg" not in written
-    assert "sizes.svg" in written
+
+
+def test_axis_gaps_are_named_not_dropped(tmp_path):
+    bench = _bench_dir(tmp_path)
+    axis_dir = bench / "scaling_codec_results"
+    header = (axis_dir / "delft.csv").read_text(encoding="utf-8").splitlines()[0]
+    (axis_dir / "empty.csv").write_text(header + "\n", encoding="utf-8")
+    rows = (axis_dir / "delft.csv").read_text(encoding="utf-8").splitlines()
+    kept = [r for r in rows if not r.startswith("delft.city.jsonl,cityparquet,")]
+    (axis_dir / "nobase.csv").write_text("\n".join(kept) + "\n", encoding="utf-8")
+    (axis_dir / "MACHINE.md").write_text("# Measurement host\n\nfake\n", encoding="utf-8")
+
+    data, _ = prep.build(prep.Inputs(bench))
+    gaps = {(g["dataset"], g["issue"]) for g in data["scaling"]["codec"]["gaps"]}
+    assert ("empty", "CSV present but header-only") in gaps
+    assert ("nobase", "no 'cityparquet' baseline rows") in gaps
+    assert data["meta"]["machine"]["codec"].startswith("# Measurement host")
 
 
 def test_figures_refuse_a_corpus_larger_than_their_panel_grid(tmp_path):

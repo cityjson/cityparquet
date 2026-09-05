@@ -1,9 +1,9 @@
 """CSVs -> bench_data.json.
 
 Reads the benchmark result artefacts under ``benchmark/formats/`` — the CSVs a finished
-``just bench`` / ``just compression-bench`` / ``just sizes`` run leaves behind,
-never a benchmark of its own — and emits the ``bench_data.json`` data contract
-described in ``benchviz/DESIGN.md``.
+``just bench`` / ``just codec-bench`` / ``just rowgroup-bench`` / ``just sizes`` run
+leaves behind, never a benchmark of its own — and emits the ``bench_data.json``
+data contract described in ``benchviz/DESIGN.md``.
 
 Every path this module touches is derived from one ``Inputs.bench_dir``, so the
 same code serves the in-repo default (``benchmark/formats/``) and an out-of-tree caller
@@ -37,10 +37,6 @@ class Inputs:
         return self.bench_dir / "read_results"
 
     @property
-    def compression_dir(self) -> Path:
-        return self.bench_dir / "compression_results"
-
-    @property
     def ordering_dir(self) -> Path:
         return self.bench_dir / "ordering_results"
 
@@ -56,8 +52,12 @@ class Inputs:
         return self.bench_dir / "scaling_ordering_results"
 
     @property
-    def scaling_compression_dir(self) -> Path:
-        return self.bench_dir / "scaling_compression_results"
+    def scaling_codec_dir(self) -> Path:
+        return self.bench_dir / "scaling_codec_results"
+
+    @property
+    def scaling_rowgroup_dir(self) -> Path:
+        return self.bench_dir / "scaling_rowgroup_results"
 
     @property
     def sizes_csv(self) -> Path:
@@ -167,20 +167,6 @@ READ_COLUMNS = [
     "notes",
 ]
 SIZES_COLUMNS = ["dataset", "format", "bytes", "mb", "ratio_vs_cityjsonseq"]
-COMPRESSION_COLUMNS = [
-    "dataset",
-    "variant",
-    "object_count",
-    "write_s",
-    "total_bytes",
-    "cityobjects_bytes",
-    "sidecar_bytes",
-    "full_scan_s",
-    "window_query_s",
-    "row_groups_total",
-    "row_groups_touched",
-    "roundtrip_equal",
-]
 
 BBOX_NOTE_RE = re.compile(r"^bbox-\d+pct$")
 # The positional id probes READ_BENCHMARK.md's id-lookup table defines: the id
@@ -191,14 +177,15 @@ ID_NOTE_RE = re.compile(r"^id-(?:\d+pct|miss)$")
 COLD_RE = re.compile(r"\bcold\b", re.IGNORECASE)
 
 CODEC_LEVEL_NOTE = (
-    "Codec levels are mismatched across the compression variants: zstd is "
-    "written at level 3, gzip at level 6 and brotli at level 1. These are the "
-    "parquet-rs defaults carried by the writer recipe "
-    "(crates/core/src/recipe.rs), as benchmark/formats/README.md states, so the "
-    "codec comparison is a comparison of implementation defaults, not of codecs "
-    "at equal effort. \"Smallest codec\" is therefore not a citable claim from "
-    "this benchmark."
+    "The codec axis sweeps zstd, the codec CityParquet ships with, at levels "
+    "1, 3 (the default and the 1x baseline), 9 and 19. The other codecs run "
+    "at the parquet-rs defaults the writer recipe carries (gzip 6, brotli 1; "
+    "crates/core/src/recipe.rs) and are drawn as reference points, not ranked "
+    "against each other: no level was matched across codecs."
 )
+AXIS_BASELINE = "cityparquet"
+AXIS_MEASURES = ("write", "full-read", "bbox-1pct", "bbox-5pct", "bbox-25pct")
+MACHINE_MD_NAME = "MACHINE.md"
 
 
 class PrepError(RuntimeError):
@@ -394,22 +381,6 @@ def read_caveats(inputs: Inputs) -> list[str]:
     if any(not item for item in items):
         raise PrepError(f"{path}: an extracted caveat is empty")
     return items
-
-
-def compression_caveats(inputs: Inputs) -> list[str]:
-    """The write-side baseline's coverage caveat, verbatim — if it still exists.
-
-    Quoted from `benchmark/formats/README.md` so the page cannot drift from the methodology
-    it reports. Returned empty rather than raised when the section is absent:
-    the caveat is about the DuckDB baseline of the *write* benchmark, and a run
-    with no compression data has no view to attach it to.
-    """
-    path = inputs.bench_readme_md
-    try:
-        body = _extract_section(path, "Baseline geometry coverage")
-    except PrepError:
-        return []
-    return [body] if body.strip() else []
 
 
 # --------------------------------------------------------------------------
@@ -646,7 +617,7 @@ def load_scaling(inputs: Inputs) -> dict:
     read_dir = inputs.scaling_read_dir
     slices = {p.stem: _read_rows(p, READ_COLUMNS) for p in _dataset_csvs(read_dir)}
     if not slices:
-        return {"read": [], "sizes": [], "ordering": [], "compression": []}
+        return {"read": [], "sizes": [], "ordering": []}
 
     objects = {name: _scaling_objects(rows) for name, rows in slices.items()}
 
@@ -733,45 +704,132 @@ def load_scaling(inputs: Inputs) -> dict:
                 }
             )
 
-    compression_records: list[dict] = []
-    for path in _dataset_csvs(inputs.scaling_compression_dir):
-        name = path.stem
-        rows = _read_rows(path, COMPRESSION_COLUMNS)
-        default = next((r for r in rows if _compression_kind(r["variant"]) == "default"), None)
-        base_bytes = _float(default["total_bytes"]) if default else None
-        base_write = _float(default["write_s"]) if default else None
-        for row in rows:
-            total = _float(row["total_bytes"])
-            groups_total = _int(row["row_groups_total"])
-            touched = _int(row["row_groups_touched"])
-            compression_records.append(
-                {
-                    "dataset": name,
-                    "objects": objects.get(name),
-                    "variant": row["variant"],
-                    "kind": _compression_kind(row["variant"]),
-                    "write_s": _float(row["write_s"]),
-                    "total_bytes": _int(row["total_bytes"]),
-                    "full_scan_s": _float(row["full_scan_s"]),
-                    "window_query_s": _float(row["window_query_s"]),
-                    "row_groups_total": groups_total,
-                    "row_groups_touched": touched,
-                    "touched_frac": _ratio(
-                        float(touched) if touched is not None else None,
-                        float(groups_total) if groups_total else None,
-                    ),
-                    "size_ratio": _ratio(total, base_bytes),
-                    "write_ratio": _ratio(_float(row["write_s"]), base_write),
-                    "roundtrip": row["roundtrip_equal"].strip().lower() == "true",
-                }
-            )
-
     return {
         "read": read_records,
         "sizes": size_records,
         "ordering": ordering_records,
-        "compression": compression_records,
     }
+
+
+def _measure_key(row: dict[str, str]) -> str:
+    return "write" if row["scenario"] == "write" else _scenario_key(row)
+
+
+def load_scaling_axis(directory: Path, baseline: str = AXIS_BASELINE) -> dict:
+    """One configuration axis (codec or row group) from a `--variants` run.
+
+    Every ratio is baseline over variant, so above 1x is faster, leaner or
+    smaller — the ordering records' convention, not the read records'. The
+    variant order is the CSVs' own first-seen order, because the recipe's
+    list is the figure's order and sorting would lose it. Absolute seconds
+    and bytes stay: the trend strip plots them.
+    """
+    records: list[dict] = []
+    sizes: list[dict] = []
+    gaps: list[dict] = []
+    variants: list[str] = []
+    objects_by: dict[str, int | None] = {}
+
+    for path in _dataset_csvs(directory):
+        name = path.stem
+        rows = _read_rows(path, READ_COLUMNS)
+        if not rows:
+            gaps.append({"dataset": name, "issue": "CSV present but header-only"})
+            continue
+        by_measure: dict[str, dict[str, dict[str, str]]] = {}
+        for row in rows:
+            if COLD_RE.search(row["notes"]):
+                continue
+            by_measure.setdefault(_measure_key(row), {})[row["format"]] = row
+            if row["format"] not in variants:
+                variants.append(row["format"])
+        if not any(baseline in bucket for bucket in by_measure.values()):
+            gaps.append({"dataset": name, "issue": f"no '{baseline}' baseline rows"})
+            continue
+        write_base = by_measure.get("write", {}).get(baseline)
+        objects_by[name] = _int(write_base["result_count"]) if write_base else None
+        present = {v for bucket in by_measure.values() for v in bucket}
+        for key in AXIS_MEASURES:
+            bucket = by_measure.get(key)
+            if not bucket:
+                continue
+            base = bucket.get(baseline)
+            base_t = _float(base["time_s"]) if base else None
+            base_rss = _int(base["peak_rss_bytes"]) if base else None
+            for variant in variants:
+                row = bucket.get(variant)
+                if row is None:
+                    if variant in present:
+                        gaps.append({"dataset": name, "issue": f"{variant} has no {key} row"})
+                    continue
+                t = _float(row["time_s"])
+                rss = _int(row["peak_rss_bytes"])
+                records.append(
+                    {
+                        "dataset": name,
+                        "objects": objects_by[name],
+                        "variant": variant,
+                        "kind": "default" if variant == baseline else "variant",
+                        "measure": key,
+                        "time_s": t,
+                        "rss_b": rss,
+                        "base_time_s": base_t,
+                        "base_rss_b": base_rss,
+                        "time_ratio": _ratio(base_t, t),
+                        "rss_ratio": _ratio(
+                            float(base_rss) if base_rss is not None else None,
+                            float(rss) if rss is not None else None,
+                        ),
+                        "below_floor": (
+                            None
+                            if t is None or base_t is None
+                            else abs(base_t - t) < CITATION_FLOOR_S
+                        ),
+                    }
+                )
+
+    sizes_csv = directory / SIZES_CSV_NAME
+    if sizes_csv.exists():
+        by_ds: dict[str, dict[str, dict[str, str]]] = {}
+        for row in _read_rows(sizes_csv, SIZES_COLUMNS):
+            by_ds.setdefault(row["dataset"], {})[row["format"]] = row
+        measured = {(r["dataset"], r["variant"]) for r in records}
+        for ds, fmts in by_ds.items():
+            base_b = _int(fmts[baseline]["bytes"]) if baseline in fmts else None
+            for fmt in variants:
+                row = fmts.get(fmt)
+                if row is None:
+                    continue
+                b = _int(row["bytes"])
+                if (ds, fmt) not in measured:
+                    gaps.append(
+                        {"dataset": ds, "issue": f"sizes.csv row for {fmt} without a measurement"}
+                    )
+                sizes.append(
+                    {
+                        "dataset": ds,
+                        "objects": objects_by.get(ds),
+                        "variant": fmt,
+                        "bytes": b,
+                        "mb": _float(row["mb"]),
+                        "ratio_vs_cityjsonseq": _float(row["ratio_vs_cityjsonseq"]),
+                        "size_ratio": _ratio(
+                            float(base_b) if base_b is not None else None,
+                            float(b) if b is not None else None,
+                        ),
+                    }
+                )
+
+    gaps.sort(key=lambda g: (g["dataset"], g["issue"]))
+    return {"records": records, "sizes": sizes, "gaps": gaps, "variants": variants}
+
+
+def read_machine(directory: Path) -> str | None:
+    """The run's MACHINE.md, verbatim, or None when the directory has none."""
+    path = directory / MACHINE_MD_NAME
+    if not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------
@@ -812,73 +870,6 @@ def load_sizes(
                 }
             )
     return records, raw_mb
-
-
-# --------------------------------------------------------------------------
-# compression
-# --------------------------------------------------------------------------
-
-
-def _compression_kind(variant: str) -> str:
-    if variant == "cityparquet":
-        return "default"
-    if variant in ("cityparquet+rg512", "cityparquet+rg4096"):
-        return "rowgroup"
-    return "codec"
-
-
-def load_compression(inputs: Inputs) -> tuple[list[dict], list[dict]]:
-    """Compression records and the gaps worth stating.
-
-    A corpus with no compression run at all is normal, not an error: the
-    compression benchmark is a separate, much slower pass over the same inputs.
-    Both renderers say so where the view would have been.
-    """
-    records: list[dict] = []
-    gaps: list[dict] = []
-
-    for path in _dataset_csvs(inputs.compression_dir):
-        dataset = path.stem
-        rows = _read_rows(path, COMPRESSION_COLUMNS)
-        if not rows:
-            gaps.append(
-                {"dataset": dataset, "issue": "CSV present but header-only"}
-            )
-            continue
-
-        base = next((r for r in rows if r["variant"] == "cityparquet"), None)
-        base_write = _float(base["write_s"]) if base else None
-        base_bytes = _float(base["total_bytes"]) if base else None
-
-        roundtrips = [_bool(r["roundtrip_equal"]) for r in rows]
-        if not any(roundtrips):
-            gaps.append(
-                {
-                    "dataset": dataset,
-                    "issue": "all roundtrip_equal=false (undocumented)",
-                }
-            )
-
-        for row in rows:
-            records.append(
-                {
-                    "dataset": dataset,
-                    "variant": row["variant"],
-                    "kind": _compression_kind(row["variant"]),
-                    "write_s": _float(row["write_s"]),
-                    "total_bytes": _int(row["total_bytes"]),
-                    "full_scan_s": _float(row["full_scan_s"]),
-                    "window_query_s": _float(row["window_query_s"]),
-                    "write_ratio": _ratio(_float(row["write_s"]), base_write),
-                    "size_ratio": _ratio(
-                        _float(row["total_bytes"]), base_bytes
-                    ),
-                    "roundtrip": _bool(row["roundtrip_equal"]),
-                }
-            )
-
-    gaps.sort(key=lambda g: g["dataset"])
-    return records, gaps
 
 
 # --------------------------------------------------------------------------
@@ -981,9 +972,10 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     read_records, anomalies = load_read(inputs, excluded)
     size_records, raw_mb = load_sizes(inputs, excluded)
     datasets = build_datasets(read_records, raw_mb)
-    compression_records, compression_gaps = load_compression(inputs)
     ordering_records = load_ordering(inputs)
     scaling = load_scaling(inputs)
+    scaling["codec"] = load_scaling_axis(inputs.scaling_codec_dir)
+    scaling["rowgroup"] = load_scaling_axis(inputs.scaling_rowgroup_dir)
 
     order = {d["id"]: i for i, d in enumerate(datasets)}
     read_records.sort(
@@ -995,9 +987,6 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     )
     size_records.sort(
         key=lambda r: (order.get(r["dataset"], len(order)), r["format"])
-    )
-    compression_records.sort(
-        key=lambda r: (order.get(r["dataset"], len(order)), r["variant"])
     )
     # The ordering corpus is not a subset of `datasets`, so datasets it alone
     # measured sort after the shared ones rather than being dropped.
@@ -1015,26 +1004,29 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
             "sources": {
                 "read": inputs.label(inputs.read_dir),
                 "sizes": inputs.label(inputs.sizes_csv),
-                "compression": inputs.label(inputs.compression_dir),
                 "ordering": inputs.label(inputs.ordering_dir),
                 "scaling": inputs.label(inputs.scaling_read_dir),
+                "codec": inputs.label(inputs.scaling_codec_dir),
+                "rowgroup": inputs.label(inputs.scaling_rowgroup_dir),
             },
             "caveats_read": read_caveats(inputs),
-            "caveats_compression": compression_caveats(inputs),
             "codec_level_note": CODEC_LEVEL_NOTE,
             "citation_floor_s": CITATION_FLOOR_S,
             "ordering_baseline": ORDERING_BASELINE,
             "ordering_variant": ORDERING_VARIANT,
+            "axis_baseline": AXIS_BASELINE,
             "format_axis": list(FORMAT_AXIS),
             "object_grain_formats": list(OBJECT_GRAIN_FORMATS),
             "feature_grain_formats": list(FEATURE_GRAIN_FORMATS),
             "excluded_formats": excluded.as_list(),
+            "machine": {
+                "codec": read_machine(inputs.scaling_codec_dir),
+                "rowgroup": read_machine(inputs.scaling_rowgroup_dir),
+            },
         },
         "datasets": datasets,
         "read": read_records,
         "sizes": size_records,
-        "compression": compression_records,
-        "compression_gaps": compression_gaps,
         "ordering": ordering_records,
         "scaling": scaling,
     }
@@ -1053,8 +1045,8 @@ def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
     print(
         f"  {len(data['datasets'])} datasets, {len(data['read'])} read records, "
         f"{len(data['sizes'])} size records, "
-        f"{len(data['compression'])} compression records, "
-        f"{len(data['compression_gaps'])} compression gaps, "
+        f"{len(data['scaling']['codec']['records'])} codec records, "
+        f"{len(data['scaling']['rowgroup']['records'])} row-group records, "
         f"{len(data['ordering'])} ordering records "
         f"({len({r['dataset'] for r in data['ordering']})} datasets), "
         f"{len(data['scaling']['read'])} scaling read records "
