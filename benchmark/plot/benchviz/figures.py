@@ -2276,6 +2276,33 @@ def _variant_label(variant: str) -> str:
     return suffix
 
 
+def _rowgroup_size(variant: str) -> int:
+    """Rows per group, out of a `cityparquet+rgN` variant name.
+
+    The row-group ramp is sequential, so it has to run with the quantity and not
+    with the order a recipe happened to list: `just rowgroup-bench` sweeps
+    DOWNWARD (32768, 8192, 2048, 512), which taken off the CSV as it comes would
+    paint the largest group lightest and the smallest darkest. A name that
+    carries no group size sorts to the light end and keeps its recipe order.
+    """
+    suffix = variant.removeprefix("cityparquet+")
+    if suffix.startswith("rg") and suffix[2:].isdigit():
+        return int(suffix[2:])
+    return 0
+
+
+def _variant_phrase(variant: str) -> str:
+    """`_variant_label` as it has to read mid-sentence.
+
+    The key strip can call the uncompressed variant "none", because there it is
+    a word beside a swatch in a column of codec names. A headline cannot: "none
+    reads fastest" asserts the opposite of what it means.
+    """
+    if variant == "cityparquet+uncompressed":
+        return "uncompressed"
+    return _variant_label(variant)
+
+
 def _mix(colour: str, white: float) -> str:
     r, g, b = mcolors.to_rgb(colour)
     return mcolors.to_hex((r + (1 - r) * white, g + (1 - g) * white, b + (1 - b) * white))
@@ -2291,7 +2318,9 @@ def _axis_palette(key: str, variants: Sequence[str]) -> dict[str, str]:
         for i, v in enumerate(others):
             palette[v] = CODEC_OTHER_COLOURS[i % len(CODEC_OTHER_COLOURS)]
     else:
-        ordered = [v for v in variants if v != AXIS_BASELINE]
+        ordered = sorted(
+            (v for v in variants if v != AXIS_BASELINE), key=_rowgroup_size
+        )
         for i, v in enumerate(ordered):
             palette[v] = _mix(ROWGROUP_HUE, 0.6 * (1 - i / max(len(ordered) - 1, 1)))
     return palette
@@ -2761,7 +2790,7 @@ def _axis_headline(data: dict[str, Any], key: str) -> tuple[str, str]:
             )
         if reads:
             best, v = max(reads)
-            title += f"; {_variant_label(v)} reads fastest, at {_times(best)} the default"
+            title += f"; {_variant_phrase(v)} reads fastest, at {_times(best)} the default"
         return title + ".", subtitle
     cleared = []
     for v in variants:

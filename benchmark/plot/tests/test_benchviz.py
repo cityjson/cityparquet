@@ -239,6 +239,56 @@ def test_the_axis_sheets_render_from_the_measured_fixture(tmp_path):
     assert figures._times(zstd1_bytes / default_bytes) in codec_title
 
 
+def test_the_axis_vocabulary_survives_the_real_recipes(tmp_path):
+    """Two shapes the pinned fixture's short variant lists cannot show.
+
+    `just rowgroup-bench` sweeps the group sizes DOWNWARD, so a ramp that
+    follows the order the CSVs arrive in paints the largest group lightest —
+    backwards, for a sequential hue. And `just codec-bench` carries an
+    uncompressed variant, whose key-strip label ("none") says the opposite of
+    what it means once a sentence puts it in subject position.
+    """
+    from benchviz import figures
+
+    recipe = [
+        "cityparquet",
+        "cityparquet+rg32768",
+        "cityparquet+rg8192",
+        "cityparquet+rg2048",
+        "cityparquet+rg512",
+    ]
+    palette = figures._axis_palette("rowgroup", recipe)
+    by_size = sorted(recipe[1:], key=lambda v: int(v.removeprefix("cityparquet+rg")))
+    lightness = [sum(figures.mcolors.to_rgb(palette[v])) for v in by_size]
+    assert lightness == sorted(lightness, reverse=True), (
+        f"small groups must be lightest: {list(zip(by_size, lightness))}"
+    )
+
+    data, _ = prep.build(prep.Inputs(_bench_dir(tmp_path)))
+    axis = data["scaling"]["codec"]
+    # The fixture's fastest full read, renamed to the variant the recipe carries.
+    axis["variants"] = [
+        "cityparquet+uncompressed" if v == "cityparquet+lz4" else v
+        for v in axis["variants"]
+    ]
+    for row in axis["records"] + axis["sizes"]:
+        if row["variant"] == "cityparquet+lz4":
+            row["variant"] = "cityparquet+uncompressed"
+    fastest = max(
+        (r["time_ratio"], r["variant"])
+        for r in axis["records"]
+        if r["measure"] == "full-read" and r["time_ratio"]
+    )[1]
+    assert fastest == "cityparquet+uncompressed"
+
+    title, _ = figures._axis_headline(data, "codec")
+    assert "uncompressed reads fastest" in title
+    assert "none reads" not in title
+    # Beside its swatch, where the column of codec names is the context, it
+    # stays the word the key strip has room for.
+    assert figures._variant_label("cityparquet+uncompressed") == "none"
+
+
 def test_figures_refuse_a_corpus_larger_than_their_panel_grid(tmp_path):
     """More datasets than panels must be a stated refusal, not a crash.
 
