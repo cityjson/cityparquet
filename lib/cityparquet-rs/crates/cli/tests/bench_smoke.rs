@@ -410,3 +410,34 @@ fn bench_run_compression_variants_differ_in_total_bytes() {
         "gzip and zstd should produce differently-sized packages, both got {gzip} bytes"
     );
 }
+
+/// The zstd level suffix is part of the shared grammar now, and the bench
+/// must pass it through to the writer: zstd 1 and zstd 19 are different
+/// codecs' worth of bytes on the same input.
+#[test]
+fn bench_run_accepts_a_zstd_level_suffix_and_the_levels_differ_in_bytes() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let opts = BenchOptions {
+        input: fixture("delft.city.jsonl"),
+        out_csv: out_dir.path().join("bench.csv"),
+        repeat: 1,
+        variants: vec![
+            "cityparquet+zstd1".to_string(),
+            "cityparquet+zstd19".to_string(),
+        ],
+        window_frac: 0.05,
+        skip_roundtrip: true,
+    };
+    run(&opts).expect("zstd level suffixes must be accepted");
+    let text = std::fs::read_to_string(out_dir.path().join("bench.csv")).unwrap();
+    let rows: Vec<&str> = text.lines().skip(1).collect();
+    assert_eq!(rows.len(), 2);
+    let bytes = |row: &str| -> u64 { row.split(',').nth(4).unwrap().parse().unwrap() };
+    assert!(rows[0].starts_with("delft.city.jsonl,cityparquet+zstd1,"));
+    assert!(rows[1].starts_with("delft.city.jsonl,cityparquet+zstd19,"));
+    assert_ne!(
+        bytes(rows[0]),
+        bytes(rows[1]),
+        "two zstd levels wrote the same bytes"
+    );
+}

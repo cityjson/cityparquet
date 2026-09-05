@@ -1,15 +1,15 @@
 //! `cityparquet bench`: the variant-matrix benchmark harness (M5 task 6).
 //!
-//! For every requested variant (a [`RecipePreset`] plus optional Hilbert row
-//! ordering), this converts `input` into a fresh tempdir, times the
-//! conversion, measures package size, times a full table scan (also
-//! deriving the dataset bbox by unioning every row's own bbox — cheap,
-//! since the scan already reads every row), times a bbox-pruned "window"
-//! query anchored at the dataset bbox's lower-left corner, counts how many
-//! row groups that window query touches vs. the table's total, and (unless
-//! `--skip-roundtrip`) exports the package back to CityJSONSeq and compares
-//! it against `input` for exact semantic equality. One CSV row per variant
-//! is appended, in variant order, to `--out`.
+//! For every requested variant (parsed by [`cityparquet::variant::Variant`],
+//! see that module for the grammar), this converts `input` into a fresh
+//! tempdir, times the conversion, measures package size, times a full table
+//! scan (also deriving the dataset bbox by unioning every row's own bbox —
+//! cheap, since the scan already reads every row), times a bbox-pruned
+//! "window" query anchored at the dataset bbox's lower-left corner, counts
+//! how many row groups that window query touches vs. the table's total, and
+//! (unless `--skip-roundtrip`) exports the package back to CityJSONSeq and
+//! compares it against `input` for exact semantic equality. One CSV row per
+//! variant is appended, in variant order, to `--out`.
 //!
 //! The single-vs-by-type layout comparison was retired when by-type became
 //! the sole, mandatory table layout (2026-07-21); last numbers under the
@@ -31,10 +31,11 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
-use cityparquet::package::{ConvertOptions, RowOrder, convert};
+use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::reader::{CityParquetReaderBuilder, row_group_intersects};
-use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
+use cityparquet::recipe::RecipePreset;
 use cityparquet::stac::properties::PackageTables;
+use cityparquet::variant::Variant;
 use cityparquet::{CityParquetError, Result};
 
 /// The exact CSV header `run` writes (and the smoke test asserts against).
@@ -49,8 +50,8 @@ pub struct BenchOptions {
     /// Number of repeats per timed measurement (write/full-scan/window-query);
     /// the reported value is the MEDIAN across repeats. Must be >= 1.
     pub repeat: usize,
-    /// Variant identifiers (`<preset>[+hilbert][+rg<N>]`); empty selects the
-    /// default 9-variant set (see [`default_variant_ids`]).
+    /// Variant identifiers (see [`cityparquet::variant`] for the grammar);
+    /// empty selects the default 9-variant set (see [`default_variant_ids`]).
     pub variants: Vec<String>,
     /// Fraction of the dataset bbox's x/y extent the window query covers,
     /// anchored at the bbox's lower-left corner (z is always the full
@@ -101,105 +102,6 @@ fn default_variant_ids() -> Vec<String> {
     ids.push("cityparquet+rg512".to_string());
     ids.push("cityparquet+hilbert+rg512".to_string());
     ids
-}
-
-/// One parsed variant identifier: a [`RecipePreset`] plus the row ordering,
-/// (optional) row-group-size override, and (optional) compression-codec
-/// override its `+hilbert`/`+rg<N>`/`+<codec>` suffixes (if any) select.
-#[derive(Debug, Clone, Copy)]
-struct ParsedVariant {
-    preset: RecipePreset,
-    ordering: RowOrder,
-    /// `Some(n)` overrides [`RecipePreset::recipe`]'s default row-group size
-    /// (parsed from a `+rg<N>` suffix); `None` keeps the preset's default.
-    row_group_size: Option<usize>,
-    /// `Some(codec)` overrides the preset's default compression codec
-    /// (parsed from a `+<codec>` suffix, e.g. `+gzip`); `None` keeps the
-    /// preset's default codec.
-    compression: Option<Codec>,
-}
-
-impl ParsedVariant {
-    /// This variant's [`WriterRecipe`], with [`Self::row_group_size`] and
-    /// [`Self::compression`] applied on top of the preset's default when
-    /// present.
-    fn recipe(&self) -> WriterRecipe {
-        let mut recipe = self.preset.recipe();
-        if let Some(row_group_size) = self.row_group_size {
-            recipe.row_group_size = row_group_size;
-        }
-        if let Some(compression) = self.compression {
-            recipe.compression = Some(compression);
-        }
-        recipe
-    }
-}
-
-/// Parses `<preset>[+hilbert][+rg<N>][+<codec>]` (suffixes in any order,
-/// each at most once) — e.g. `cityparquet`, `cityparquet+hilbert`,
-/// `no-bss+hilbert`, `cityparquet+rg512`, `cityparquet+hilbert+rg512`,
-/// `cityparquet+gzip+rg512`. `<N>` in `+rg<N>` must be a positive (non-zero)
-/// integer; `<codec>` is one of [`Codec::ALL`]'s names
-/// (`uncompressed`/`snappy`/`gzip`/`lz4`/`brotli`/`zstd`). A duplicated
-/// suffix (e.g. `cityparquet+hilbert+hilbert`, two `+rg<N>`s, or two codec
-/// tokens) is rejected rather than silently accepted as a distinct-looking
-/// label for the same or an ambiguous configuration (M5 Codex review, Minor
-/// finding).
-fn parse_variant(id: &str) -> Result<ParsedVariant> {
-    let mut parts = id.split('+');
-    let preset_name = parts.next().unwrap_or("");
-    let preset = RecipePreset::parse(preset_name).ok_or_else(|| variant_grammar_err(id))?;
-
-    let mut ordering = RowOrder::Source;
-    let mut row_group_size: Option<usize> = None;
-    let mut compression: Option<Codec> = None;
-    let mut seen_hilbert = false;
-    for part in parts {
-        if let Some(digits) = part.strip_prefix("rg") {
-            if row_group_size.is_some() {
-                return Err(variant_grammar_err(id));
-            }
-            let n: usize = digits.parse().map_err(|_| variant_grammar_err(id))?;
-            if n == 0 {
-                return Err(variant_grammar_err(id));
-            }
-            row_group_size = Some(n);
-            continue;
-        }
-        if let Some(codec) = Codec::parse(part) {
-            if compression.is_some() {
-                return Err(variant_grammar_err(id));
-            }
-            compression = Some(codec);
-            continue;
-        }
-        match part {
-            "hilbert" if !seen_hilbert => {
-                seen_hilbert = true;
-                ordering = RowOrder::Hilbert;
-            }
-            _ => return Err(variant_grammar_err(id)),
-        }
-    }
-
-    Ok(ParsedVariant {
-        preset,
-        ordering,
-        row_group_size,
-        compression,
-    })
-}
-
-fn variant_grammar_err(id: &str) -> CityParquetError {
-    let presets: Vec<&str> = RecipePreset::ALL.iter().map(|p| p.name()).collect();
-    let codecs: Vec<&str> = Codec::ALL.iter().map(|c| c.name()).collect();
-    CityParquetError::Schema(format!(
-        "invalid variant '{id}': expected `<preset>[+hilbert][+rg<N>][+<codec>]` \
-         (each suffix at most once, <N> a positive integer, <codec> one of: {}) where preset is \
-         one of: {}",
-        codecs.join(", "),
-        presets.join(", ")
-    ))
 }
 
 /// Short file names for a package's table paths, for user-facing messages —
@@ -347,7 +249,7 @@ fn run_variant(
     opts: &BenchOptions,
     dataset: &str,
     variant_id: &str,
-    variant: ParsedVariant,
+    variant: Variant,
 ) -> Result<BenchRow> {
     // --- write_s: `opts.repeat` CLEAN conversions. Each repeat gets its
     // OWN fresh, empty tempdir, created — and, once the sample is captured,
@@ -369,7 +271,7 @@ fn run_variant(
         let mut convert_opts =
             ConvertOptions::new(opts.input.clone(), repeat_dir.path().to_path_buf());
         convert_opts.recipe = variant.recipe();
-        convert_opts.ordering = variant.ordering;
+        convert_opts.ordering = variant.ordering();
         convert_opts.overwrite = false;
 
         let start = Instant::now();
@@ -388,7 +290,7 @@ fn run_variant(
     let out_dir = tempfile::tempdir().map_err(CityParquetError::from)?;
     let mut convert_opts = ConvertOptions::new(opts.input.clone(), out_dir.path().to_path_buf());
     convert_opts.recipe = variant.recipe();
-    convert_opts.ordering = variant.ordering;
+    convert_opts.ordering = variant.ordering();
     convert_opts.overwrite = false;
     let report = convert(&convert_opts)?;
 
@@ -581,7 +483,7 @@ pub fn run(opts: &BenchOptions) -> Result<()> {
     };
     let parsed_variants = variant_ids
         .iter()
-        .map(|id| parse_variant(id).map(|parsed| (id.clone(), parsed)))
+        .map(|id| Variant::parse(id).map(|parsed| (id.clone(), parsed)))
         .collect::<Result<Vec<_>>>()?;
 
     let dataset = opts
