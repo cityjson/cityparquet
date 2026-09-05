@@ -38,7 +38,7 @@ cd cityparquet          # wherever you cloned github.com/cityjson/cityparquet
 > extensions are now under `lib/`; the benchmark corpora, results and plotting
 > project are under `benchmark/`; and every recipe that reaches both halves of
 > the benchmark harness — `bench`, `convert-all`, `write-bench`,
-> `compression-bench`, the fetchers, the renderers, `plot-test`,
+> `variant-bench`, the fetchers, the renderers, `plot-test`,
 > `scripts-test` — is in the **root** `justfile` rather than
 > `lib/cityparquet-rs/justfile`. The commands below are updated to match. The
 > findings, commit references and dates are the record of the pass and are not.
@@ -1350,15 +1350,17 @@ results were regenerated, the compression CSVs of the superseded corpus were
 deleted. Two commands answer the question at the moment you ask it:
 
 ```sh
-ls benchmark/formats/data benchmark/formats/read_results benchmark/formats/ordering_results benchmark/formats/compression_results 2>&1
+ls benchmark/formats/data benchmark/formats/read_results benchmark/formats/ordering_results benchmark/formats/scaling_codec_results benchmark/formats/scaling_rowgroup_results 2>&1
 git log --oneline -3 -- benchmark/formats/read_results benchmark/formats/ordering_results
 ```
 
 The two methodology documents beside them state what a committed run means, and
 are kept current: `benchmark/formats/READ_BENCHMARK.md` (the cross-format read benchmark and
 its fairness caveats — the CSVs it describes are committed) and
-`benchmark/formats/README.md` (the write/compression benchmark — no CSVs committed; run the
-recipes to produce them).
+`benchmark/formats/README.md` (the write and configuration benchmark — the
+write-side CSVs under `results/` and `scaling_write_results/` are committed;
+the codec and row-group axes under `scaling_codec_results/` and
+`scaling_rowgroup_results/` carry a `MACHINE.md` naming the host).
 
 Two things worth knowing before a re-run, because neither is visible from a
 directory listing:
@@ -1421,24 +1423,29 @@ dangling material reference still aborts it under strict mode (Known issues,
 does not opt in). The `benchmark/formats/data/_run` hard-link staging directory remains
 useful for skipping it.
 
-### 5.3 Compression benchmark
+### 5.3 Codec and row-group benchmarks
 
 ```sh
-just compression-bench benchmark/formats/data benchmark/formats/compression_results
+just codec-bench    benchmark/formats/data benchmark/formats/scaling_codec_results
+just rowgroup-bench benchmark/formats/data benchmark/formats/scaling_rowgroup_results
 ```
 
-8 variants per dataset (codec axis: default-zstd, uncompressed, snappy, gzip,
-lz4, brotli; row-group axis: default, rg512, rg4096), then charts via `uv`.
+9 variants per dataset on the codec axis (`cityparquet`, `+zstd1`, `+zstd9`,
+`+zstd19`, `+lz4`, `+snappy`, `+gzip`, `+brotli`, `+uncompressed`) and 5 on the
+row-group axis (`cityparquet`, `+rg32768`, `+rg8192`, `+rg2048`, `+rg512`);
+each variant gets a timed write (peak RSS), then a full read and the bbox
+windows, on the read harness. `just plot-pretty` draws the `codec`/`rowgroup`
+sheets from the resulting CSVs.
 
-> **Do not read a "smallest codec" ranking off this table.** The codec axis
-> runs every codec at its *crate default* — zstd@3, gzip@6, brotli@**1** — so
-> the levels are not matched. Compression-vs-none is citable; codec-vs-codec
-> is not.
+> **Do not read a "smallest codec" ranking off this table.** Zstd is swept at
+> levels 1, 3, 9 and 19; gzip and brotli run at the crate defaults — gzip@6,
+> brotli@**1** — as reference points, not ranked against zstd. "Zstd level N
+> versus level M" is citable; "smallest codec" across codecs is not.
 
 ### 5.4 Write benchmark
 
 ```sh
-just write-bench benchmark/formats/data          # -> benchmark/formats/results/ (not committed)
+just write-bench benchmark/formats/data          # -> benchmark/formats/results/
 ```
 
 Needs network on first run (installs the `cityjson` community extension for the

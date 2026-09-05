@@ -1,30 +1,33 @@
-# CityParquet write & compression benchmark methodology
+# CityParquet write and configuration benchmark methodology
 
 The **write** side of the benchmark suite: how long a CityParquet package takes
 to write, how many bytes it occupies, and how those two move with the writer's
 own knobs — codec, row-group size, row ordering. Its read-side counterpart, and
 the cross-format comparison, is `benchmark/formats/READ_BENCHMARK.md`.
 
-**No write-side CSVs are committed.** The earlier ones were deleted once the
-inputs they measured (three pinned 3DBAG tiles fetched by a script this repo no
-longer carries) stopped being reproducible, and the geometry-encoding default
-changed underneath them. Run the recipes below to produce them; nothing in this
-document quotes a number, so nothing in it can go stale in that particular way
-again.
+The write-side CSVs under `results/` and `scaling_write_results/` are committed
+from the 2026-08-27 run; the configuration axes under `scaling_codec_results/`
+and `scaling_rowgroup_results/` carry a `MACHINE.md` naming the host they were
+measured on.
 
-## Two benchmarks, two questions
+## Three recipes
 
-| recipe                                | what it varies                                                                                                                                                           | output                                                              |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| `just write-bench FOLDER [OUT]`       | the writer's variant matrix over every CityJSON/CityJSONSeq file under FOLDER — codecs, row-group sizes, ordering, plus the DuckDB `COPY … TO (FORMAT PARQUET)` baseline | `OUT/<name>.csv` (default `benchmark/formats/results/`)             |
-| `just compression-bench FOLDER [OUT]` | codec and row-group variants only, with a full scan and a window query re-read per variant, and a round-trip check per variant                                           | `OUT/<name>.csv` (default `benchmark/formats/compression_results/`) |
+| recipe                                        | what it varies                                                                                                                                                           | output                                                              |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `just write-bench FOLDER [OUT]`                | the writer's variant matrix over every CityJSON/CityJSONSeq file under FOLDER — codecs, row-group sizes, ordering, plus the DuckDB `COPY … TO (FORMAT PARQUET)` baseline | `OUT/<name>.csv` (default `benchmark/formats/results/`)             |
+| `just codec-bench FOLDER [OUT] [PREPARED]`    | codec axis over every input under `FOLDER` on the read harness: a timed write per variant (peak RSS), then a full read and the bbox windows                             | `OUT` (default `benchmark/formats/scaling_codec_results/`)          |
+| `just rowgroup-bench FOLDER [OUT] [PREPARED]` | the same for the row-group axis                                                                                                                                          | `OUT` (default `benchmark/formats/scaling_rowgroup_results/`)       |
 
-`just compression-bench`'s CSVs are what the summary page's compression view and
-its static figure read (`benchmark/plot/benchviz`); with none committed, that view
-says so rather than showing an empty grid.
+`just codec-bench`'s and `just rowgroup-bench`'s CSVs are in the READ run's
+shape (`READ_BENCHMARK.md`), with a `write` row per variant and the variant id
+in the `format` column; they feed the summary page's section 3b and the
+`codec`/`rowgroup` print figures (`benchmark/plot/benchviz`).
 
-Neither is `just bench` — that is the cross-format **read** benchmark, writes to
-`benchmark/formats/read_results/`, and shares nothing with these two but the corpus.
+`just bench` is a third thing again — the cross-format **read** benchmark,
+writing to `benchmark/formats/read_results/`. `just codec-bench` and `just
+rowgroup-bench` run on the same read harness and share its CSV shape, but hold
+the format fixed at `cityparquet` and vary the codec or row-group size
+instead of the format.
 
 ## Measurement discipline
 
@@ -38,20 +41,24 @@ Neither is `just bench` — that is the cross-format **read** benchmark, writes 
   of the previous repeat, which inflated everything but the first sample.)
 - **Sub-10 ms deltas are noise** at these repeat counts and are not findings on
   their own — the same floor `benchmark/formats/READ_BENCHMARK.md` applies.
-- **`roundtrip_equal`** is written per variant: the package is exported back to
-  CityJSONSeq and compared against the source with `cityparquet compare`. A
-  `false` there invalidates that variant's bytes as a _lossless_ encoding, so
-  the summary page greys out and badges any dataset whose variants all fail.
+- **`roundtrip_equal`** is written per variant by `write-bench`: the package is
+  exported back to CityJSONSeq and compared against the source with
+  `cityparquet compare`. A `false` there invalidates that variant's bytes as a
+  _lossless_ encoding. `codec-bench` and `rowgroup-bench` run on the read
+  harness and carry no such column.
 
 ## The codec levels are NOT matched
 
-The codec variants are written at the `parquet-rs` defaults carried by
-`crates/core/src/recipe.rs`: **zstd at level 3, gzip at level 6, brotli
-at level 1**. They are therefore a comparison of _implementation defaults_, not
-of codecs at equal effort, and **"the smallest codec" is not a citable claim
-from this benchmark**. Anyone wanting a codec ranking has to re-run with levels
-chosen deliberately. The summary page states this inline above its codec panels
-and cites this section.
+`just codec-bench` sweeps zstd at levels **1, 3, 9 and 19**. Gzip and brotli
+stay at the `parquet-rs` defaults carried by `crates/core/src/recipe.rs` —
+**gzip at level 6, brotli at level 1** — and are reference points, not swept
+axes. **"The smallest codec" remains a non-citable claim across codecs**: gzip,
+brotli and zstd are different implementations at different effort levels, so a
+byte or time difference between them says nothing about the codec family in
+general. **"Zstd level N versus level M" is a measured, citable claim**: it is
+the same codec swept deliberately, and `just codec-bench`'s CSVs are what back
+it. The summary page states this inline above its codec panels and cites this
+section.
 
 ## Baseline geometry coverage — the DuckDB `duckdb-copy` rows
 
@@ -103,12 +110,13 @@ which geometry each side actually wrote.
 ```sh
 just fixtures                          # the two CityJSON fixtures (network)
 just write-bench tests/fixtures        # variant matrix + DuckDB baseline -> benchmark/formats/results/
-just compression-bench tests/fixtures  # codec / row-group matrix -> benchmark/formats/compression_results/
+just codec-bench    tests/fixtures     # codec axis -> benchmark/formats/scaling_codec_results/
+just rowgroup-bench tests/fixtures     # row-group axis -> benchmark/formats/scaling_rowgroup_results/
 ```
 
 Any folder of CityJSON/CityJSONSeq works — `just fetch-data` fetches the
-six-dataset cityjson.org corpus the read benchmark uses, and both recipes walk a
-folder recursively. Each removes `OUT/<name>.csv` before writing it, never
+six-dataset cityjson.org corpus the read benchmark uses, and all three recipes
+walk a folder recursively. Each removes `OUT/<name>.csv` before writing it, never
 appends, so a committed run is one machine, one sitting, per dataset.
 
 Per-dataset, without the recipes:
@@ -118,9 +126,10 @@ cargo run --release -p cityparquet-cli -- bench --input <file> --out <csv>
 ./benchmark/scripts/bench_duckdb.sh <file> <csv>
 ```
 
-**Record the machine with the run.** Nothing in the CSVs carries machine
-metadata, so a committed run without a recorded host is internally comparable
-and externally unquotable:
+**Record the machine with the run.** `codec-bench` and `rowgroup-bench` write
+their own `MACHINE.md` beside the CSVs; `write-bench`'s CSVs carry no machine
+metadata, so a committed `write-bench` run without a recorded host is
+internally comparable and externally unquotable:
 
 ```sh
 uname -a

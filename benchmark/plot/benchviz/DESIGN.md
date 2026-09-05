@@ -3,8 +3,8 @@
 Builds a single self-contained `bench-summary.html` (replacing 14 per-dataset PNG
 pairs + tables) and the static paper figures, from one data-prep step over this
 repository's `benchmark/formats/` result CSVs. It measures nothing: `just bench`,
-`just compression-bench` and `just sizes` produce the CSVs, `just plot-pretty`
-renders them.
+`just codec-bench`, `just rowgroup-bench`, `just ordering-bench` and `just sizes`
+produce the CSVs, `just plot-pretty` renders them.
 
 This package used to live in the paper workspace (`scripts/benchviz/`) and reach
 into `cityparquet-rs/` as a read-only submodule, resolving every path by counting
@@ -81,17 +81,21 @@ calls the same code with its own `--html`/`--figures` destinations.
 4. **duckdb-parquet**: no `peak_heap_bytes` (blank under heap toggle, marked
    "n/a — out-of-process"); carries ~0.06 s un-subtracted startup overhead —
    footnote + tooltip note.
-5. **Compression codec levels are mismatched** — zstd@3 vs gzip@6 vs brotli@1
-   (parquet-rs defaults; `crates/core/src/recipe.rs`). NOT documented in
-   benchmark/formats/README.md. The codec view carries this inline, phrased as sourced from
-   implementation defaults, and the section is visually de-emphasized:
-   "smallest codec" is not a citable claim.
-6. **Round-trip failures and empty inputs are shown, not dropped.** A dataset
-   whose compression rows are all `roundtrip_equal=false` renders grayed-out
-   with a "roundtrip FAILED — not citable" badge; a header-only CSV becomes an
-   explicit empty-panel note. A corpus with no compression run at all (the
-   compression benchmark is a separate, slower pass) says so where the panels
-   would be, and the compression figure is skipped rather than drawn empty.
+5. **Codec levels are swept, not matched across codecs** — `just codec-bench`
+   sweeps zstd, the codec CityParquet ships with, at levels 1, 3 (the default
+   and the axis baseline), 9 and 19; gzip and brotli run at the parquet-rs
+   defaults (`crates/core/src/recipe.rs`: gzip 6, brotli 1) and are drawn as
+   reference points, not ranked against zstd. Documented in
+   `benchmark/formats/README.md`, "The codec levels are NOT matched"
+   (`meta.codec_level_note`). "The smallest codec" stays a non-citable claim
+   across codecs; "zstd level N versus level M" is the measured, citable one.
+   The codec view carries this note inline, above the panels.
+6. **Empty and gap-flagged inputs are shown, not dropped.** A slice with no
+   `cityparquet` baseline row, or a variant missing a measure the baseline
+   has, lands in `scaling.<axis>.gaps` and is named in the view rather than
+   silently absent. A corpus with no codec or row-group run at all says so
+   where the panels would be (`main` prints "… figure skipped" and moves on),
+   rather than drawing an empty grid.
 7. **Verbatim caveats**: the page quotes every one of READ_BENCHMARK.md's
    fairness caveats (11 when this was written, 18 today) and
    README.md's "Baseline geometry coverage" section verbatim at generation time
@@ -116,12 +120,16 @@ an explicit gap, never drop silently).
 {
   "meta": {
     "baseline": "cityjsonseq",
-    "sources": { "read": "...", "sizes": "...", "compression": "..." },
+    "sources": {
+      "read": "...", "sizes": "...", "ordering": "...",
+      "scaling": "...", "codec": "...", "rowgroup": "...",
+    },
     "caveats_read": ["<verbatim caveat 1>", "..."], // as many as the
     // source lists,
     // numbered 1..n
-    "caveats_compression": ["<verbatim baseline-geometry-coverage text>"],
-    "codec_level_note": "<the recipe.rs-sourced mismatch note>",
+    "codec_level_note": "<the zstd-sweep-vs-fixed-default note; see 'The codec levels are NOT matched'>",
+    "axis_baseline": "cityparquet", // the write configuration codec/rowgroup are ratioed against
+    "machine": { "codec": "<MACHINE.md text or null>", "rowgroup": "<MACHINE.md text or null>" },
     "citation_floor_s": 0.01,
     "format_axis": [
       "cityparquet-hilbert",
@@ -185,26 +193,6 @@ an explicit gap, never drop silently).
       "frac_of_baseline": 0.38,
     }, // bytes / cityjsonseq bytes; <1 smaller
   ],
-  "compression": [
-    {
-      "dataset": "delft",
-      "variant": "cityparquet+gzip",
-      "kind": "codec",
-      // kind: "default" | "codec" | "rowgroup"  (rg512/rg4096 are not codecs)
-      "write_s": 0.179,
-      "total_bytes": 2287085,
-      "full_scan_s": 0.0104,
-      "window_query_s": 0.0101,
-      "write_ratio": 1.23,
-      "size_ratio": 0.98, // vs the dataset's "cityparquet" default row
-      "roundtrip": true,
-    },
-  ],
-  "compression_gaps": [
-    // two kinds, both derived from the CSVs themselves:
-    { "dataset": "<id>", "issue": "all roundtrip_equal=false (undocumented)" },
-    { "dataset": "<id>", "issue": "CSV present but header-only" },
-  ],
   "scaling": {
     // One city model cut to N cardinalities: the corpus the CONFIGURATION axes
     // are measured on, because a codec or a row-group size answers "how does
@@ -228,7 +216,20 @@ an explicit gap, never drop silently).
     ],
     "sizes": [], // slice rows only; the source sweeps a shared directory
     "ordering": [], // source vs hilbert, per slice
-    "compression": [], // codec x row-group, per slice, with row_groups_touched
+    "codec": {
+      "variants": ["cityparquet", "cityparquet+zstd1", "..."], // recipe order = figure order
+      "records": [
+        { "dataset": "<slice>", "objects": 50001, "variant": "cityparquet+zstd1",
+          "kind": "variant", "measure": "write",       // write | full-read | bbox-1pct | bbox-5pct | bbox-25pct
+          "time_s": 1.9, "rss_b": 0, "base_time_s": 1.8, "base_rss_b": 0,
+          "time_ratio": 0.95, "rss_ratio": 1.0,        // baseline / variant: > 1 is faster, leaner
+          "below_floor": false },
+      ],
+      "sizes": [ { "dataset": "<slice>", "objects": 50001, "variant": "...", "bytes": 0, "mb": 0.0,
+                   "ratio_vs_cityjsonseq": 0.0, "size_ratio": 1.1 } ],   // baseline / variant: > 1 is smaller
+      "gaps": [ { "dataset": "<slice>", "issue": "..." } ],
+    },
+    "rowgroup": { /* the same shape as "codec" */ },
   },
   "ordering": [
     // The row-ordering run, baselined against the SOURCE-ORDER package rather
@@ -330,12 +331,13 @@ the two comparisons, then the trend:
    column reads that format across all of them. One log scale is shared by
    every panel — a bar means the same thing everywhere — and the bars grow out
    of the 1× rule, per the size grid's reasoning.
-3. **Configuration axes** — row ordering across the whole ordering run, then
-   codec and row-group size on the scaling corpus. The second is a table: those
-   are write-side axes, and the harness reports bytes, write time and row-group
-   counts for them but no peak RSS and only two query types, so they cannot take
-   the shape used above. `row_groups_touched / row_groups_total` is the honest
-   pruning metric — it counts skipping directly, and is immune to the 10 ms floor.
+3. **Configuration axes** — row ordering across the whole ordering run
+   (section 3a), then codec and row-group size on the scaling corpus
+   (section 3b). `just codec-bench` and `just rowgroup-bench` run the
+   configuration axis ON the read harness: a timed write per variant (peak
+   RSS), then a full read and the bbox windows against it — the same shape
+   and the same metrics as section 2, one sheet per axis plus a trend strip
+   across cardinalities.
 4. **Scaling** — see the ratio-rule exception above.
 
 Then the four corpus-wide views, unchanged:
@@ -369,15 +371,11 @@ Then the four corpus-wide views, unchanged:
    and CityGML at up to ~25× of the same bytes, and a linear 0-to-max scale
    collapses the CityParquet series into a sliver. duckdb-parquet is absent —
    it writes no artefact of its own.
-4. **Compression codec grid** (de-emphasized styling), one panel per measured
-   dataset; x = write_ratio, y = size_ratio, default variant at (1,1) cross;
-   codecs = filled markers, row-group variants = open markers (different
-   axis of variation, same plot, distinguished); round-trip failures grayed +
-   badged, gaps named in the key. Codec-level caveat inline above the grid.
-   Roundtrip status: one sentence + per-dataset ✓/✗ strip, no chart.
+4. **`codec` and `rowgroup`** — one sheet each in the `formats` shape plus a
+   trend strip; baseline is the default write, never a bar.
 
 Page order: Title (finding-asserting) → How to read this page (conventions,
-baseline, floor) → Pareto → Heatmap → Sizes → Compression → Fairness caveats
+baseline, floor) → Pareto → Heatmap → Sizes → Codec → Row-group → Fairness caveats
 (verbatim) → Coverage notes. Every view carries an `aria-label` with its key
 finding and has a text/table fallback.
 
@@ -440,7 +438,7 @@ benchmark/plot/                 # uv project, shared with readbench_plot
   benchviz/__main__.py      # python -m benchviz [prep|html|figures] [paths]
   tests/test_benchviz.py    # contract + path-flag tests (`just plot-test`)
   tests/fixtures/benchviz/  # pinned real runs: three datasets read +
-                            #   compression, two more ordering-only
+                            #   scaling (codec/rowgroup), two more ordering-only
 benchmark/summary/              # generated: JSON + page + figures (gitignored)
 ```
 
@@ -450,9 +448,9 @@ benchmark/summary/              # generated: JSON + page + figures (gitignored)
 - HTML output is fully self-contained: inline SVG rendered by a small inline
   JS module from embedded JSON; no external requests; works from file://.
 - Static figures: `formats`, `configuration`, `pareto-full-read`,
-  `pareto-bbox-5pct`, `heatmap`, `sizes`, `compression` as `.svg` + `.png`
+  `pareto-bbox-5pct`, `heatmap`, `sizes`, `codec`, `rowgroup` as `.svg` + `.png`
   (Typst cannot embed PDF). 300 dpi PNG. The static set is NOT the view set:
-  `formats` and `configuration` are print-only, and `compression` and
+  `formats` and `configuration` are print-only, and `codec`, `rowgroup` and
   `configuration` are each skipped with a printed reason when their run is
   absent.
 - **Nothing in a figure is typed by hand about the data.** Every headline

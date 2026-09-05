@@ -84,8 +84,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="benchviz",
         description=(
             "Build the CityParquet benchmark visualisations from the result CSVs "
-            "an earlier `just bench` / `just compression-bench` / `just sizes` run "
-            "left in benchmark/formats/. Runs no benchmark of its own."
+            "an earlier `just bench` / `just codec-bench` / `just rowgroup-bench` / "
+            "`just sizes` run left in benchmark/formats/. Runs no benchmark of its own."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

@@ -112,8 +112,9 @@ just fetch-data                               # the six-dataset read corpus, 423
 just bench benchmark/formats/data/benchmark   # the cross-format read comparison
 
 just fetch-scaling-data                       # the configuration-axis corpus (7.6 GB source)
-just compression-bench benchmark/formats/data/scaling
-just ordering-bench    benchmark/formats/data/scaling
+just codec-bench    benchmark/formats/data/scaling   # codec axis: zstd 1/3/9/19, lz4, snappy, gzip, brotli, none
+just rowgroup-bench benchmark/formats/data/scaling   # row-group axis: 65536, 32768, 8192, 2048, 512
+just ordering-bench benchmark/formats/data/scaling
 
 just plot-pretty                              # the cross-dataset summary page + print figures
 

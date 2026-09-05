@@ -71,7 +71,7 @@ scripts and renderers it belongs to. `lib/citylake` is a third. Consequences:
   measured format's reader; a caret range would let a later release change what
   the published figures mean.
 - Recipes that reach both the library and the benchmark — `bench`,
-  `convert-all`, `write-bench`, `compression-bench`, the fetchers, the
+  `convert-all`, `write-bench`, `variant-bench`, the fetchers, the
   renderers, `plot-test`, `scripts-test`, `catalog-*` — are in the **root
   `justfile`** and run from the repository root.
 - The four per-dataset recipes live in ONE file because

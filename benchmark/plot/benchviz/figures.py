@@ -1,10 +1,10 @@
 """``bench_data.json`` -> static paper figures in ``paper/assets/bench/``.
 
-Six figures, each written as ``.svg`` (Typst primary — it cannot embed PDF)
+Eight figures, each written as ``.svg`` (Typst primary — it cannot embed PDF)
 and ``.png`` at 300 dpi:
 
-``pareto-full-read``, ``pareto-bbox-5pct``, ``heatmap``, ``sizes``, ``codec``,
-``rowgroup``.
+``pareto-full-read``, ``pareto-bbox-5pct``, ``formats``, ``configuration``,
+``heatmap``, ``sizes``, ``codec``, ``rowgroup``.
 
 Everything plotted is a unitless ratio: against the CityJSONSeq baseline for
 the same (dataset, scenario) on the format views, and against the default
