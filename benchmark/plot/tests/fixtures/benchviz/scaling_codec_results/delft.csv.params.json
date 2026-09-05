@@ -1,0 +1,77 @@
+{
+  "dataset": "delft.city.jsonl",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.009861048857014791,
+      "window": [
+        84800.55619810354,
+        446661.96875000006,
+        -3.7475221157073975,
+        84862.31005189648,
+        446723.97475,
+        95.04304504394533
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.0502017032720753,
+      "window": [
+        84772.06079723492,
+        446633.357,
+        -3.7475221157073975,
+        84890.8054527651,
+        446752.58650000003,
+        95.04304504394533
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.25011205737337516,
+      "window": [
+        84718.08062500002,
+        446579.15642215725,
+        -3.7475221157073975,
+        84944.785625,
+        446806.7870778428,
+        95.04304504394533
+      ],
+      "approx": false
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "NL.IMBAG.Pand.0503100000031124",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "NL.IMBAG.Pand.0503100000004404",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "NL.IMBAG.Pand.0503100000012957",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "NL.IMBAG.Pand.0503100000004404-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "object_type": "BuildingPart",
+  "object_type_count": 1116,
+  "numeric_attr": "b3_bag_bag_overlap",
+  "cp_object_total": 2231
+}
