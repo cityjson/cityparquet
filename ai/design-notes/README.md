@@ -25,6 +25,7 @@ instead — that is the maintained, normative half.
 | `specs/2026-08-26-cityparquet-mcp-and-skills-design.md` | The MCP server at `ai/mcp/` and the skills at `ai/plugin/`: the generated documentation corpus, the five tools, the sandbox a public `query` needs, and why the stack pins DuckDB v1.5.4 |
 | `plans/2026-08-26-cityparquet-mcp-phase-1.md` | Phase 1 of the above: the corpus build, the stdio server and its five tools, task by task |
 | `specs/2026-09-04-configuration-axes-benchmark-design.md` | Measuring the codec and row-group axes with the read harness: a `--variants` run with a write child, two recipes over the 3DBAG scaling slices, and the `codec`/`rowgroup` figures that replace the compression scatter |
+| `plans/2026-09-05-configuration-axes-benchmark.md` | The implementation plan for the above, task by task: the `Variant` grammar in the core crate, the write child and `--variants` in the coordinator, the two recipes, the loader and the two sheets, the runs |
 
 Note that these notes were written while the code lived in several separate
 repositories, so they refer to paths (and, in one case, a local working

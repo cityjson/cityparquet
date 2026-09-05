@@ -49,8 +49,9 @@ methodology and still measures a different read path from the read figure.
 ### 3.1 Grammar
 
 The parser for `<preset>[+hilbert][+rg<N>][+<codec>]` moves from
-`crates/cli/src/bench.rs` into the core crate beside `WriterRecipe`
-(`crates/core/src/recipe.rs`) as a `Variant` type:
+`crates/cli/src/bench.rs` into the core crate as its own module,
+`crates/core/src/variant.rs` (`cityparquet::variant::Variant`), since it
+needs both `recipe::WriterRecipe` and `package::RowOrder`:
 
 ```rust
 pub struct Variant { preset: RecipePreset, ordering: RowOrder,
@@ -129,8 +130,13 @@ Rejected loudly: a duplicate id, an unknown suffix, a list without the bare
    peak RSS through the existing `max_rss_bytes` and its heap peak through
    `alloc::peak_heap_bytes`, printing the same line shape the read children
    print (`time_s peak_heap peak_rss result_count`, where `result_count` is
-   the conversion's `object_count`). Each invocation converts into a fresh
-   directory, so no repeat times the deletion of the previous one. Run
+   the conversion's `object_count`). The child fills `ConvertOptions` the way
+   the CLI's `convert` does (`generate_lod0: true`, batch size 4096), so a
+   variant package has the same content as the prepare script's
+   `<base>.parquet`. Each invocation converts into a fresh directory created
+   INSIDE `prepared_dir` (`tempfile::tempdir_in`), so no repeat times the
+   deletion of the previous one and the final rename never crosses a
+   filesystem. Run
    `1 + write_repeat` times: the first is a discarded warmup, the rest are
    warm samples. The **last** repeat's directory is renamed to
    `<prepared_dir>/<base>.<id>.parquet` (an existing one is removed first);
@@ -161,9 +167,12 @@ A write measurement is one more row in the existing thirteen columns:
 | `notes`, `bytes_read`, `http_requests` | empty |
 
 Read rows differ from today only in `format` carrying a variant id.
-Internally the coordinator gains `enum Measure { Write, Read(Scenario) }` and
-`Row.format` becomes a label type that is either a `Format` or a variant id;
-`write` never enters `Scenario::ALL` and `--scenarios write` is rejected.
+Internally `Row` keeps `format: Format` (it selects the runner and keys the
+attr-filter map) and gains `label: String`, which is what the `format` column
+renders: `format.as_str()` for a format run, the variant id for a variant
+run. The `scenario` column is rendered from a `Measure` enum,
+`Write | Read(Scenario)`; `write` never enters `Scenario::ALL` and
+`--scenarios write` is rejected.
 
 ### 4.4 Sizes
 
@@ -213,8 +222,12 @@ and, per slice:
    FlatCityBuf.
 2. `cargo run --release <readbench> -- run --input <slice> --prepared-dir PREPARED --variants <list> --scenarios full-read,bbox-query --out OUT/<base>.csv`.
 
-`codec-bench` passes the nine ids of 3.2; `rowgroup-bench` the five of 3.3.
-Those two lines are the only place the two benchmarks meet. Each recipe
+The loop lives once, in an internal `variant-bench FOLDER OUT VARIANTS
+PREPARED` recipe; `codec-bench` and `rowgroup-bench` are one-line delegations
+that pass the nine ids of 3.2 and the five of 3.3 respectively, the way
+`ordering-bench` delegates to `bench`. Those two lines are the only place the
+two benchmarks meet, and the justfile keeps exactly four per-dataset
+stripper blocks (`convert-all`, `bench`, `write-bench`, `variant-bench`). Each recipe
 removes `OUT/sizes.csv` once at its start and `OUT/<base>.csv` before each
 slice; each slice's coordinator run then appends its own rows to `sizes.csv`
 (4.4). Both recipes end by writing `OUT/MACHINE.md` (5.3).
@@ -355,8 +368,9 @@ the spatial window, and its write cost. Footer: codec-level note, machine
 line, gap list.
 
 **Files.** `codec.png/svg`, `rowgroup.png/svg`; `compression.*` deleted;
-`configuration.*` (ordering) unchanged. `_check_capacity` refuses more than
-five slices in the ratio sheet, as for datasets. One fixture-driven render
+`configuration.*` (ordering) unchanged. `_check_capacity` no longer counts
+compression datasets; the axis sheet always picks four slices and the trend
+strip takes any number, so these two figures impose no capacity limit. One fixture-driven render
 test per figure in `test_benchviz.py`.
 
 In the paper repository, `just bench-summary` renders these into
