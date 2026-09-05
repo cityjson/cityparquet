@@ -38,6 +38,22 @@ struct Cli {
     #[arg(long)]
     child: bool,
 
+    /// With `--child`: measure one CONVERSION instead of one read. Needs
+    /// `--variant`, `--input` (a CityJSONSeq artefact) and `--out` (a
+    /// directory that does not exist yet). Prints the same four-field line
+    /// a read child prints, with the conversion's object count last.
+    #[arg(long)]
+    write: bool,
+
+    /// With `--child --write`: the variant id whose recipe to convert with
+    /// (`cityparquet::variant`'s grammar).
+    #[arg(long)]
+    variant: Option<String>,
+
+    /// With `--child --write`: where the package is written.
+    #[arg(long)]
+    out: Option<PathBuf>,
+
     /// Format backend — one of `Format::ALL`'s canonical names, which
     /// `Format::from_str` validates (and whose error lists them all), so no
     /// list is repeated here to drift out of date.
@@ -200,6 +216,10 @@ fn run(cli: Cli) -> Result<()> {
         );
     }
 
+    if cli.write {
+        return run_write_child(cli);
+    }
+
     let format = cli.format.context("--child requires --format")?;
     let scenario_str = cli.scenario.context("--child requires --scenario")?;
     let input = cli.input.context("--child requires --input")?;
@@ -289,6 +309,44 @@ fn run(cli: Cli) -> Result<()> {
             outcome.result_count
         ),
     }
+    Ok(())
+}
+
+/// One timed conversion, in a process of its own so its peak RSS is its own.
+///
+/// `ConvertOptions` is filled the way the CLI's `convert` fills it
+/// (`generate_lod0: true`, the default batch size), so a variant package has
+/// the same content as the prepare script's `<base>.parquet` and differs from
+/// it only in the recipe under test. A library-default `ConvertOptions::new`
+/// would leave LoD0 generation OFF and the row counts would not line up.
+fn run_write_child(cli: Cli) -> Result<()> {
+    let id = cli.variant.context("--write requires --variant")?;
+    let input = cli.input.context("--write requires --input")?;
+    let out = cli.out.context("--write requires --out")?;
+    let variant = cityparquet::variant::Variant::parse(&id).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if out.exists() {
+        bail!(
+            "--out {} exists; the write child needs a fresh directory",
+            out.display()
+        );
+    }
+
+    let mut opts = cityparquet::package::ConvertOptions::new(input, out);
+    opts.recipe = variant.recipe();
+    opts.ordering = variant.ordering();
+    opts.generate_lod0 = true;
+
+    alloc::reset();
+    let start = Instant::now();
+    let report = cityparquet::package::convert(&opts)
+        .with_context(|| format!("converting with variant '{id}'"))?;
+    let time_s = start.elapsed().as_secs_f64();
+    let peak_heap_bytes = alloc::peak_heap_bytes();
+    let ru_maxrss_bytes = max_rss_bytes()?;
+    println!(
+        "{time_s:.6} {peak_heap_bytes} {ru_maxrss_bytes} {}",
+        report.object_count
+    );
     Ok(())
 }
 
