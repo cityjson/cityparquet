@@ -70,10 +70,7 @@ CityJSON spelling rather than the CityGML 3.0 class name, so the four types that
 non-conformant; this is deliberate pending a decision that would change both reference
 implementations together. `cityparquet_write` also still declares the STAC **Table**
 extension and writes `table:row_count`, which [the metadata
-rules](/specification/metadata) no longer ask for. And the extension still emits
-`material_lod*` / `texture_lod*` as JSON text cells in CityJSON's own nesting, not the
-typed, per-WKB-face `MAP` columns the [appearance
-rules](/specification/appearance-templates) define.
+rules](/specification/metadata) no longer ask for.
 
 Repository: [`cityjson/duckdb-cityjson`](https://github.com/cityjson/duckdb-cityjson),
 consumed by the monorepo as a submodule at `lib/duckdb-cityjson/`.
