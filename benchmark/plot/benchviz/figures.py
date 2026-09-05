@@ -1,16 +1,18 @@
 """``bench_data.json`` -> static paper figures in ``paper/assets/bench/``.
 
-Five figures, each written as ``.svg`` (Typst primary — it cannot embed PDF)
+Six figures, each written as ``.svg`` (Typst primary — it cannot embed PDF)
 and ``.png`` at 300 dpi:
 
-``pareto-full-read``, ``pareto-bbox-5pct``, ``heatmap``, ``sizes``,
-``compression``.
+``pareto-full-read``, ``pareto-bbox-5pct``, ``heatmap``, ``sizes``, ``codec``,
+``rowgroup``.
 
-Everything plotted is a unitless ratio against the CityJSONSeq baseline for the
-same (dataset, scenario); lower/left is better everywhere and the baseline sits
-at 1x.  Styling follows the Tufte rules used across this project: no top/right
-spines, range-framed bottom/left spines, serif titles, sans tick labels, no
-gridlines, no matplotlib legends (direct labels plus a key panel instead).
+Everything plotted is a unitless ratio: against the CityJSONSeq baseline for
+the same (dataset, scenario) on the format views, and against the default
+CityParquet write of the same slice on the two configuration-axis sheets.  The
+baseline sits at 1x in either case.  Styling follows the Tufte rules used
+across this project: no top/right spines, range-framed bottom/left spines,
+serif titles, sans tick labels, no gridlines, no matplotlib legends (direct
+labels plus a key panel instead).
 
 The DESIGN.md honesty rules are carried *inside* the figures, so each one is
 readable without its future Typst caption: the 10 ms citation floor is drawn as
@@ -37,6 +39,7 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
+from matplotlib.ticker import NullFormatter
 
 from .paths import DEFAULT_DATA_PATH, DEFAULT_FIGURES_DIR
 
@@ -242,6 +245,27 @@ FORMAT_LABEL = {
     "flatcitybuf": "FlatCityBuf",
 }
 
+# The configuration axes' bars. Codec: the zstd sweep is one family in the
+# accent hue at four lightness steps, the other codecs five muted hues; row
+# group: one sequential hue from small groups (light) to large (dark). The
+# baseline is never a bar, so it needs no colour.
+AXIS_BASELINE = "cityparquet"
+AXIS_ROWS = [
+    ("write", "write"),
+    ("full-read", "full read"),
+    ("bbox-5pct", "spatial 5%"),
+    ("size", "bytes on disk"),
+]
+AXIS_PANELS = 4
+TREND_PANELS = [
+    ("size", "bytes on disk", "MB"),
+    ("write", "write time", "s"),
+    ("write-rss", "write peak RSS", "MB"),
+    ("bbox-5pct", "spatial 5% time", "s"),
+]
+CODEC_OTHER_COLOURS = ["#4e79a7", "#59a14f", "#9c755f", "#b07aa1", "#76b7b2"]
+ROWGROUP_HUE = "#3b6ea5"
+
 # Small-multiple geometry. One panel per dataset plus one for the key, on a
 # 7.1-inch-wide sheet: four columns up to a dozen panels (what the figures were
 # drawn at, so a corpus that size keeps its exact layout), five beyond that, and
@@ -252,7 +276,6 @@ FORMAT_LABEL = {
 GRID_MAX_ROWS = 5
 GRID_MAX_COLS = 5
 MAX_PANELS = GRID_MAX_ROWS * GRID_MAX_COLS - 1
-MAX_COMPRESSION_PANELS = MAX_PANELS
 # Tallest sheet worth printing (inches): roughly a journal page's text height.
 MAX_SHEET_HEIGHT = 9.4
 
@@ -378,7 +401,7 @@ def _load(data_path: Path) -> dict[str, Any]:
     with data_path.open(encoding="utf-8") as handle:
         data = json.load(handle)
 
-    for key in ("meta", "datasets", "read", "sizes", "compression"):
+    for key in ("meta", "datasets", "read", "sizes", "ordering", "scaling"):
         if key not in data:
             raise DataContractError(f"bench_data.json lacks the '{key}' key.")
     meta = data["meta"]
@@ -1504,234 +1527,6 @@ def sizes(
 
 
 # --------------------------------------------------------------------------
-# figure 5: compression variant grid (deliberately plainer / de-emphasised)
-# --------------------------------------------------------------------------
-
-
-def compression(
-    data: dict[str, Any], headline: tuple[str, str], out_dir: Path
-) -> list[Path]:
-    order = [d["id"] for d in data["datasets"]]
-    rows_by_ds: dict[str, list[dict[str, Any]]] = {}
-    for row in data["compression"]:
-        rows_by_ds.setdefault(row["dataset"], []).append(row)
-    populated = [d for d in order if rows_by_ds.get(d)]
-    if not populated:
-        raise DataContractError("bench_data.json carries no compression rows.")
-
-    failed = {
-        gap["dataset"]
-        for gap in data.get("compression_gaps", [])
-        if "roundtrip" in gap.get("issue", "")
-    }
-    for ds, rows in rows_by_ds.items():
-        if all(r.get("roundtrip") is False for r in rows):
-            failed.add(ds)
-
-    xs = [r["write_ratio"] for r in data["compression"] if r.get("write_ratio")]
-    ys = [r["size_ratio"] for r in data["compression"] if r.get("size_ratio")]
-    xlim = (min(xs) * 0.82, max(xs) * 1.22)
-    ylim = (min(ys) * 0.88, max(ys) * 1.5)
-
-    rows_n, cols_n, figsize = _sheet(
-        len(populated) + 1, 6.3 / 3, cols_small=3, rows_small=3
-    )
-    fig, axes = plt.subplots(rows_n, cols_n, figsize=figsize, sharex=True, sharey=True)
-    head_bottom = _headline(fig, *headline)
-    footer = _wrap(data["meta"]["codec_level_note"], 150)
-    gaps = data.get("compression_gaps", [])
-    if gaps:
-        footer += _wrap(
-            "Flagged in this run: "
-            + "; ".join(f"{g['dataset']} — {g['issue']}" for g in gaps)
-            + ". A failed round-trip is drawn grey and badged; a dataset with no "
-            "rows has no panel. Both are named here rather than dropped silently.",
-            150,
-        )
-    bottom = _footer_reserve(fig, footer, 0.165)
-    fig.subplots_adjust(
-        left=0.085,
-        right=0.99,
-        top=min(0.855, head_bottom - 0.055),
-        bottom=bottom,
-        wspace=0.20,
-        hspace=0.55,
-    )
-    flat = axes.ravel()
-    n = len(populated)
-
-    for ax, ds_id in zip(flat, populated, strict=False):
-        rows = rows_by_ds[ds_id]
-        grayed = ds_id in failed
-        ax.set_yscale("log")
-        ax.set_xlim(*xlim)
-        ax.set_ylim(*ylim)
-        _panel_heading(ax, ds_id, "")
-        ax.axvline(1.0, color=AXIS, linewidth=0.4, zorder=0)
-        ax.axhline(1.0, color=AXIS, linewidth=0.4, zorder=0)
-
-        base_color = "#c8c8bf" if grayed else GRAY
-        label_color = "#c8c8bf" if grayed else INK_2
-        items = []
-        for row in rows:
-            wx, sy = row.get("write_ratio"), row.get("size_ratio")
-            if not wx or not sy:
-                continue
-            kind = row.get("kind")
-            code = COMPRESSION_CODE.get(row["variant"], row["variant"].split("+")[-1])
-            if kind == "default":
-                ax.plot(
-                    [wx],
-                    [sy],
-                    marker="x",
-                    markersize=4.4,
-                    markeredgewidth=0.9,
-                    linestyle="none",
-                    color=base_color,
-                    zorder=3,
-                )
-            elif kind == "rowgroup":
-                ax.plot(
-                    [wx],
-                    [sy],
-                    marker="o",
-                    markersize=3.8,
-                    markerfacecolor="none",
-                    markeredgecolor=base_color,
-                    markeredgewidth=0.8,
-                    linestyle="none",
-                    zorder=3,
-                )
-            else:
-                ax.plot(
-                    [wx],
-                    [sy],
-                    marker="o",
-                    markersize=3.4,
-                    markerfacecolor=base_color,
-                    markeredgecolor=base_color,
-                    linestyle="none",
-                    zorder=3,
-                )
-            items.append((wx, sy, code, label_color))
-        _place_labels(ax, items, fontsize=4.5)
-
-        if grayed:
-            ax.text(
-                0.5,
-                0.5,
-                "roundtrip FAILED\n— not citable",
-                transform=ax.transAxes,
-                fontsize=5.4,
-                family="serif",
-                color="#8c8c84",
-                ha="center",
-                va="center",
-            )
-
-        ax.set_xticks([0.5, 1.0, 1.5, 2.0])
-        ax.set_xticklabels(["0.5×", "1×", "1.5×", "2×"])
-        yticks = [1, 2, 4, 8]
-        ax.set_yticks(yticks)
-        ax.set_yticklabels([f"{t}×" for t in yticks])
-        ax.minorticks_off()
-        _range_frame(ax, [it[0] for it in items], [it[1] for it in items])
-        _sans(ax)
-
-    for i, ax in enumerate(flat[:n]):
-        ax.tick_params(labelbottom=(i + cols_n) >= n, labelleft=(i % cols_n == 0))
-
-    key_ax = _replace_axes(fig, flat[n]) if n < len(flat) else None
-    if key_ax is not None:
-        _blank(key_ax)
-        key_ax.text(
-            0.0,
-            1.20,
-            "How to read",
-            transform=key_ax.transAxes,
-            fontsize=FS_PANEL,
-            family="serif",
-            color=INK,
-            va="bottom",
-        )
-        key_ax.text(
-            0.0,
-            1.045,
-            "vs each dataset's default CityParquet write",
-            transform=key_ax.transAxes,
-            fontsize=FS_PANEL_SUB,
-            family="serif",
-            color=INK_3,
-            va="bottom",
-        )
-        entries = [
-            ("x", True, "def = default recipe, at (1×, 1×)"),
-            ("o", True, "codec: gzip, brot(li), lz4, snap(py), none"),
-            ("o", False, "row group: rg512, rg4k (not a codec)"),
-        ]
-        for j, (marker, filled, text) in enumerate(entries):
-            y = 0.88 - j * 0.16
-            key_ax.plot(
-                [0.05],
-                [y],
-                marker=marker,
-                markersize=3.8,
-                markerfacecolor=GRAY if filled else "none",
-                markeredgecolor=GRAY,
-                markeredgewidth=0.8,
-                linestyle="none",
-            )
-            key_ax.text(
-                0.14, y, text, fontsize=4.7, family="serif", color=INK_2, va="center"
-            )
-        gap_lines = [
-            f"{gap['dataset']}: {gap['issue']}"
-            for gap in data.get("compression_gaps", [])
-        ]
-        for j, text in enumerate(gap_lines):
-            for k, part in enumerate(_wrap(text, 46)):
-                key_ax.text(
-                    0.0,
-                    0.36 - (j * 2 + k) * 0.085,
-                    part,
-                    fontsize=4.5,
-                    family="serif",
-                    color=INK_3,
-                    va="center",
-                )
-        for ax in flat[n + 1 :]:
-            ax.set_visible(False)
-
-    fig.text(
-        0.53,
-        bottom - 0.053,
-        "write time ÷ default write time",
-        fontsize=FS_LABEL,
-        family="serif",
-        color=INK_2,
-        ha="center",
-    )
-    fig.text(
-        0.014,
-        0.53,
-        "total bytes ÷ default bytes (log)",
-        fontsize=FS_LABEL,
-        family="serif",
-        color=INK_2,
-        rotation=90,
-        va="center",
-    )
-
-    _footer(fig, footer)
-    return _save(fig, "compression", out_dir)
-
-
-# --------------------------------------------------------------------------
-# entry point
-# --------------------------------------------------------------------------
-
-
-# --------------------------------------------------------------------------
 # headline sentences, computed from the data they describe
 # --------------------------------------------------------------------------
 #
@@ -1983,31 +1778,6 @@ def _sizes_headline(data: dict[str, Any]) -> tuple[str, str]:
         parts.append("The other formats on the axis: " + "; ".join(stated) + ".")
     note = _density_note(data)
     return title + ".", " ".join(parts) + (f" {note}" if note else "")
-
-
-def _compression_headline(data: dict[str, Any]) -> tuple[str, str]:
-    rows = data["compression"]
-    sizes = [r["size_ratio"] for r in rows if r.get("size_ratio")]
-    writes = [r["write_ratio"] for r in rows if r.get("write_ratio")]
-    datasets = len({r["dataset"] for r in rows})
-    title = (
-        "Compression variants move size far more than write time — and none of it "
-        "is a citable codec ranking"
-    )
-    if sizes and writes:
-        title = (
-            f"Compression variants move size across {_times(min(sizes))}–"
-            f"{_times(max(sizes))} of the default write's bytes for "
-            f"{_times(min(writes))}–{_times(max(writes))} of its time — and none of "
-            "it is a citable codec ranking"
-        )
-    subtitle = (
-        f"{datasets} dataset(s) measured, each variant against that dataset's own "
-        "default CityParquet write at (1×, 1×). Codecs are filled markers, row-group "
-        "variants open ones. The codec levels are not matched, so this figure is "
-        "exploratory."
-    )
-    return title + ".", subtitle
 
 
 # --------------------------------------------------------------------------
@@ -2429,10 +2199,9 @@ def configuration(
         "where the most scenarios clear the floor and the one where the largest "
         "difference is smallest. Everything else about the two packages -- "
         "writer, reader, codec, row-group size -- is identical.",
-        "Row ordering is the only configuration axis this run measures. The "
-        "codec and row-group axes come from `just compression-bench`, which "
-        "reports write time, size and row-group counts but no peak RSS and only "
-        "two query types; partitioning granularity has no recipe at all.",
+        "Row ordering is one of three configuration axes; the codec and "
+        "row-group axes are measured the same way by `just codec-bench` and "
+        "`just rowgroup-bench` and drawn on their own sheets.",
     ]
     bottom = _footer_reserve(fig, footer, 0.14) + 0.045
     fig.subplots_adjust(
@@ -2487,6 +2256,371 @@ def configuration(
 
     _footer(fig, footer)
     return _save(fig, "configuration", out_dir)
+
+
+# --------------------------------------------------------------------------
+# figure 8 + 9: the codec and row-group configuration axes
+# --------------------------------------------------------------------------
+
+
+def _variant_label(variant: str) -> str:
+    if variant == AXIS_BASELINE:
+        return "default"
+    suffix = variant.removeprefix("cityparquet+")
+    if suffix.startswith("rg"):
+        return f"{int(suffix[2:]):,} rows"
+    if suffix == "uncompressed":
+        return "none"
+    if suffix.startswith("zstd") and suffix != "zstd":
+        return f"zstd {suffix[4:]}"
+    return suffix
+
+
+def _mix(colour: str, white: float) -> str:
+    r, g, b = mcolors.to_rgb(colour)
+    return mcolors.to_hex((r + (1 - r) * white, g + (1 - g) * white, b + (1 - b) * white))
+
+
+def _axis_palette(key: str, variants: Sequence[str]) -> dict[str, str]:
+    palette: dict[str, str] = {}
+    if key == "codec":
+        zstd = [v for v in variants if v.startswith("cityparquet+zstd")]
+        others = [v for v in variants if v not in zstd and v != AXIS_BASELINE]
+        for i, v in enumerate(zstd):
+            palette[v] = _mix(ACCENT, 0.55 * (1 - i / max(len(zstd) - 1, 1)))
+        for i, v in enumerate(others):
+            palette[v] = CODEC_OTHER_COLOURS[i % len(CODEC_OTHER_COLOURS)]
+    else:
+        ordered = [v for v in variants if v != AXIS_BASELINE]
+        for i, v in enumerate(ordered):
+            palette[v] = _mix(ROWGROUP_HUE, 0.6 * (1 - i / max(len(ordered) - 1, 1)))
+    return palette
+
+
+def _axis_slices(axis: dict[str, Any]) -> list[dict[str, Any]]:
+    """Slices of the run, largest first, in the shape `_panel_pick` reads."""
+    seen: dict[str, int | None] = {}
+    for r in axis["records"]:
+        seen.setdefault(r["dataset"], r.get("objects"))
+    slices = [
+        {"id": ds, "objects": n or 0, "subtitle": f"{n:,} CityObjects" if n else ""}
+        for ds, n in seen.items()
+    ]
+    return sorted(slices, key=lambda s: -s["objects"])
+
+
+def _axis_cell(
+    axis: dict[str, Any], dataset: str, measure: str, variant: str
+) -> dict[str, Any] | None:
+    """The ratio cell for one (slice, row, variant): a record, or a size entry
+    dressed as one for the `size` row."""
+    if measure == "size":
+        for s in axis["sizes"]:
+            if s["dataset"] == dataset and s["variant"] == variant:
+                return {
+                    "time_ratio": s.get("size_ratio"),
+                    "rss_ratio": None,
+                    "below_floor": False,
+                    "base": None,
+                }
+        return None
+    for r in axis["records"]:
+        if r["dataset"] == dataset and r["measure"] == measure and r["variant"] == variant:
+            return {
+                "time_ratio": r.get("time_ratio"),
+                "rss_ratio": r.get("rss_ratio"),
+                "below_floor": bool(r.get("below_floor")),
+                "base": r.get("base_time_s"),
+            }
+    return None
+
+
+def _axis_base_size(axis: dict[str, Any], dataset: str) -> float | None:
+    for s in axis["sizes"]:
+        if s["dataset"] == dataset and s["variant"] == AXIS_BASELINE:
+            return s.get("mb")
+    return None
+
+
+def _machine_note(machine: str | None) -> str:
+    """One line naming the measurement host, out of the run's MACHINE.md.
+
+    `benchmark/scripts/machine_record.sh` writes a heading, a capture line and a
+    fenced block whose first line is `uname -a`; that line is the host. Anything
+    that does not have it is reported as absent rather than quoted blindly.
+    """
+    if not machine:
+        return "No machine record for this run."
+    lines = [ln.strip() for ln in machine.strip().splitlines()]
+    for i, line in enumerate(lines):
+        if line.startswith("```") and i + 1 < len(lines) and lines[i + 1]:
+            return "Measured on: " + lines[i + 1] + "."
+    return "No machine record for this run."
+
+
+def axis_sheet(
+    data: dict[str, Any], key: str, headline: tuple[str, str], out_dir: Path
+) -> list[Path]:
+    """One configuration axis: the read-figure sheet on top, the trend strip below.
+
+    Top: four slices spread across the run by object count, rows write / full
+    read / spatial 5 % / bytes on disk, bars per variant against the default at
+    the 1x rule; time (and size) left, peak memory right. Bottom: every slice on
+    log-log axes, absolute values, one line per variant — the "when" half.
+    """
+    axis = data["scaling"][key]
+    variants = [v for v in axis["variants"] if v != AXIS_BASELINE]
+    if not variants or not axis["records"]:
+        raise DataContractError(f"bench_data.json carries no {key} records.")
+    slices = _axis_slices(axis)
+    picked = _panel_pick(slices, AXIS_PANELS)
+    palette = _axis_palette(key, axis["variants"])
+    floor_ms = data["meta"]["citation_floor_s"] * 1000
+
+    ratios, mems = [], []
+    for ds in picked:
+        for measure, _ in AXIS_ROWS:
+            for v in variants:
+                cell = _axis_cell(axis, ds["id"], measure, v)
+                if cell and cell["time_ratio"]:
+                    ratios.append(cell["time_ratio"])
+                if cell and cell["rss_ratio"]:
+                    mems.append(cell["rss_ratio"])
+    if not ratios:
+        raise DataContractError(f"bench_data.json carries no usable {key} ratios.")
+    tlo, thi = min(min(ratios) / 2, 0.5), max(max(ratios) * 2, 2.0)
+    mlo, mhi = (min(min(mems) / 2, 0.5), max(max(mems) * 2, 2.0)) if mems else (0.5, 2.0)
+
+    cols_n = 2 if len(picked) > 1 else 1
+    rows_n = math.ceil(len(picked) / cols_n)
+    fig = plt.figure(figsize=(7.1, min(MAX_SHEET_HEIGHT, 2.6 * rows_n + 4.4)))
+    head_bottom = _headline(fig, *headline)
+    slice_word = "slice" if len(slices) == 1 else "slices"
+    footer = [
+        "Bars grow out of the 1x rule -- the default CityParquet write of the "
+        "same slice, same measure -- on a logarithmic axis. Right of the rule is "
+        "faster, leaner, or on the bytes row smaller, than the default; the "
+        "default itself is not a bar.",
+        "Every bar prints its ratio. A faded bar is a time difference under the "
+        f"{floor_ms:.0f} ms citation floor and its ratio carries a ≈. The grey "
+        "figure beside each row is the default's own absolute value. The bytes "
+        "row has no memory column.",
+        f"{len(picked)} of {len(slices)} {slice_word} drawn above, spread by "
+        "CityObject count; the strip below carries every slice on log-log axes "
+        "with absolute values, one line per variant, the default drawn heavier.",
+        data["meta"]["codec_level_note"]
+        if key == "codec"
+        else "Every row-group variant is written with the default codec (zstd 3); "
+        "only the rows per group change.",
+        _machine_note((data["meta"].get("machine") or {}).get(key)),
+    ]
+    if axis["gaps"]:
+        footer.append(
+            "Flagged in this run: "
+            + "; ".join(f"{g['dataset']} — {g['issue']}" for g in axis["gaps"])
+            + "."
+        )
+    bottom = _footer_reserve(fig, footer, 0.10) + 0.02
+
+    # Vertical budget, in inches rather than figure fractions: the sheet is 7 in
+    # tall for a one-slice run and 9.4 in for a four-panel one, and a clearance
+    # that reads on one has to read on the other. The ratio sheet takes what is
+    # left once the trend strip, the key strip and the footer have theirs.
+    fh = fig.get_figheight()
+    strip_h = 1.15 / fh
+    strip_y0 = bottom + 0.36 / fh           # + the strip's ticks and its x caption
+    key_y = strip_y0 + strip_h + 0.40 / fh  # + the strip's own heading
+    # The panel headings are drawn 0.30 in ABOVE each panel's axes, so the top
+    # of the grid has to clear the subtitle by that much and not by a hairline.
+    sheet_top = min(0.88, head_bottom - 0.44 / fh)
+    sheet_bottom = key_y + 0.52 / fh        # + the bottom panels' ticks and label
+    left, right, gutter, inner = 0.012, 0.992, 0.145, 0.028
+    w = (right - left - cols_n * (gutter + inner)) / (2 * cols_n)
+    cell_w = gutter + inner + 2 * w
+    # A wider row gap than the read sheet's 0.34: this sheet's panel heading
+    # carries a subtitle under it, and on a two-row grid it would otherwise sit
+    # in the row above's axis label.
+    h = (sheet_top - sheet_bottom) / (rows_n + (rows_n - 1) * 0.44)
+    gap = 0.44 * h
+    panel_in = h * fh
+    pw_in = w * fig.get_figwidth()
+    title_y, subtitle_y = 1.0 + 0.30 / panel_in, 1.0 + 0.13 / panel_in
+    x_label, x_secs = -0.42 / pw_in, -0.045 / pw_in
+
+    step = len(variants) + 1.4
+    # One group's worth of separation is allowed BETWEEN groups, not after the
+    # last one: `_format_panel_axis` reads this as the row after the final bar.
+    rows_total = (len(AXIS_ROWS) - 1) * step + len(variants)
+    for i, ds in enumerate(picked):
+        row, col = divmod(i, cols_n)
+        x0 = left + col * cell_w + gutter
+        y0 = sheet_top - (row + 1) * h - row * gap
+        ax_t = fig.add_axes([x0, y0, w, h])
+        ax_m = fig.add_axes([x0 + w + inner, y0, w, h])
+        _panel_heading(ax_t, ds["id"], ds["subtitle"], title_y, subtitle_y)
+        for si, (measure, label) in enumerate(AXIS_ROWS):
+            base_y = si * step
+            mid = base_y + (len(variants) - 1) / 2
+            ax_t.text(
+                x_label, mid, label, transform=ax_t.get_yaxis_transform(),
+                fontsize=FS_LABEL, family="serif", color=INK, ha="right", va="center",
+            )
+            if si:
+                for ax in (ax_t, ax_m):
+                    ax.axhline(
+                        base_y - (step - (len(variants) - 1)) / 2,
+                        color=AXIS, linewidth=0.4, zorder=0,
+                    )
+            cells = [(v, _axis_cell(axis, ds["id"], measure, v)) for v in variants]
+            if not any(c for _, c in cells):
+                ax_t.text(
+                    0.02, mid, "not measured in this run",
+                    transform=ax_t.get_yaxis_transform(), fontsize=FS_MARK,
+                    family="serif", color=INK_3, ha="left", va="center", style="italic",
+                )
+                continue
+            if measure == "size":
+                base_mb = _axis_base_size(axis, ds["id"])
+                base_text = f"{base_mb:,.1f} MB" if base_mb else ""
+            else:
+                base_s = next((c["base"] for _, c in cells if c and c["base"]), None)
+                base_text = _secs(base_s) if base_s else ""
+            if base_text:
+                ax_t.text(
+                    x_secs, mid, base_text, transform=ax_t.get_yaxis_transform(),
+                    fontsize=FS_MARK, family="serif", color=INK_3, ha="right", va="center",
+                )
+            for vi, (v, cell) in enumerate(cells):
+                y = base_y + vi
+                if not cell:
+                    continue
+                colour = palette[v]
+                if cell["time_ratio"]:
+                    ratio = cell["time_ratio"]
+                    faded = cell["below_floor"] and measure != "size"
+                    _ratio_bar(
+                        ax_t, y, ratio, tlo, thi, height=BAR_H, color=colour,
+                        alpha=0.34 if faded else 1.0, linewidth=0,
+                    )
+                    _bar_value_label(
+                        ax_t, y, ratio, tlo, thi, _speedup_label(ratio, faded),
+                        pw_in / (math.log10(thi) - math.log10(tlo)),
+                    )
+                if cell["rss_ratio"]:
+                    lean = cell["rss_ratio"]
+                    _ratio_bar(
+                        ax_m, y, lean, mlo, mhi, height=BAR_H, color=colour,
+                        alpha=1.0, linewidth=0,
+                    )
+                    _bar_value_label(
+                        ax_m, y, lean, mlo, mhi, _speedup_label(lean, False),
+                        pw_in / (math.log10(mhi) - math.log10(mlo)),
+                    )
+        _format_panel_axis(ax_t, tlo, thi, rows_total, max_ticks=3)
+        _format_panel_axis(ax_m, mlo, mhi, rows_total, max_ticks=3)
+        # Both labels stay inside a panel that is 1.1 in wide on the two-up
+        # grid; what the "better" direction means per row is in the footer.
+        _axis_label(ax_t, "time & bytes (x better)")
+        _axis_label(ax_m, "peak memory (x leaner)")
+
+    _axis_key(fig, variants, palette, key_y)
+    _trend_strip(fig, axis, variants, palette, strip_y0, strip_h)
+    _footer(fig, footer)
+    return _save(fig, key, out_dir)
+
+
+def _axis_key(
+    fig: Figure, variants: Sequence[str], palette: dict[str, str], y: float
+) -> None:
+    x = 0.012
+    for v in variants:
+        fig.add_artist(
+            Rectangle(
+                (x, y), 0.016, 0.006, transform=fig.transFigure,
+                facecolor=palette[v], edgecolor="none", zorder=5,
+            )
+        )
+        label = _variant_label(v)
+        fig.text(
+            x + 0.020, y, label, fontsize=FS_LABEL, family="serif", color=INK, va="bottom"
+        )
+        x += 0.024 + 0.0088 * len(label)
+    fig.text(
+        x + 0.006, y, "-- same order in every group; the default is the 1x rule",
+        fontsize=FS_MARK, family="serif", color=INK_2, va="bottom", style="italic",
+    )
+
+
+def _trend_value(axis: dict[str, Any], dataset: str, panel: str, variant: str) -> float | None:
+    if panel == "size":
+        for s in axis["sizes"]:
+            if s["dataset"] == dataset and s["variant"] == variant:
+                return s.get("mb")
+        return None
+    measure = "write" if panel in ("write", "write-rss") else panel
+    for r in axis["records"]:
+        if r["dataset"] == dataset and r["measure"] == measure and r["variant"] == variant:
+            if panel == "write-rss":
+                return r["rss_b"] / (1024 * 1024) if r.get("rss_b") else None
+            return r.get("time_s")
+    return None
+
+
+def _trend_strip(
+    fig: Figure, axis: dict[str, Any], variants: Sequence[str],
+    palette: dict[str, str], y0: float, height: float,
+) -> None:
+    """Every slice, absolute values, log-log: the slope is the finding."""
+    slices = sorted(_axis_slices(axis), key=lambda s: s["objects"])
+    xs = [s["objects"] for s in slices]
+    n = len(TREND_PANELS)
+    left, right, inner = 0.075, 0.992, 0.05
+    w = (right - left - (n - 1) * inner) / n
+    for pi, (panel, title, unit) in enumerate(TREND_PANELS):
+        ax = fig.add_axes([left + pi * (w + inner), y0, w, height])
+        drawn_y: list[float] = []
+        for v in [AXIS_BASELINE, *variants]:
+            ys = [_trend_value(axis, s["id"], panel, v) for s in slices]
+            pts = [(x, y) for x, y in zip(xs, ys, strict=True) if y]
+            if not pts:
+                continue
+            drawn_y.extend(y for _, y in pts)
+            ax.plot(
+                [p[0] for p in pts], [p[1] for p in pts],
+                color=GRAY if v == AXIS_BASELINE else palette[v],
+                linewidth=1.6 if v == AXIS_BASELINE else 0.9,
+                marker="o", markersize=2.2, zorder=3 if v == AXIS_BASELINE else 2,
+            )
+        ax.set_xscale("log")
+        # Log only where the span earns it. Under a decade matplotlib labels the
+        # MINOR ticks instead, in its own "3.6 x 10^0" notation, which is five
+        # characters of nothing across a panel this narrow.
+        if drawn_y and min(drawn_y) > 0 and max(drawn_y) / min(drawn_y) >= 10:
+            ax.set_yscale("log")
+        else:
+            # `locator_params` speaks to a MaxNLocator; a log axis has its own.
+            ax.locator_params(axis="y", nbins=4)
+        ax.xaxis.set_minor_formatter(NullFormatter())
+        ax.yaxis.set_minor_formatter(NullFormatter())
+        ax.set_title(
+            f"{title} ({unit})", fontsize=FS_PANEL_SUB, family="serif",
+            color=INK_2, loc="left",
+        )
+        ax.tick_params(labelsize=FS_VALUE)
+        if len(xs) > 1:
+            _range_frame(ax, xs, drawn_y or [1.0])
+        _sans(ax)
+        if pi == 0:
+            ax.set_ylabel("absolute", fontsize=FS_MARK, family="serif", color=INK_3)
+    fig.text(
+        0.012, y0 + height + 0.20 / fig.get_figheight(), "trend across every slice",
+        fontsize=FS_LABEL, family="serif", color=INK, va="bottom",
+    )
+    fig.text(
+        (left + right) / 2, y0 - 0.20 / fig.get_figheight(),
+        "CityObjects per slice (log)",
+        fontsize=FS_MARK, family="serif", color=INK_2, ha="center", va="top",
+    )
 
 
 def _formats_headline(data: dict[str, Any]) -> tuple[str, str]:
@@ -2579,14 +2713,90 @@ def _configuration_headline(data: dict[str, Any]) -> tuple[str, str]:
     return title + ".", subtitle
 
 
+def _span(values: Sequence[float]) -> str:
+    """A range of ratios, or the single one a short sweep leaves."""
+    lo, hi = min(values), max(values)
+    return _times(lo) if math.isclose(lo, hi) else f"{_times(lo)}–{_times(hi)}"
+
+
+def _axis_headline(data: dict[str, Any], key: str) -> tuple[str, str]:
+    """What one configuration axis did to this corpus, counted from it."""
+    axis = data["scaling"][key]
+    recipe = "codec-bench" if key == "codec" else "rowgroup-bench"
+    if not axis["records"]:
+        return (f"No {key} run in this corpus.", f"`just {recipe}` produces it.")
+    slices = _axis_slices(axis)
+    largest = slices[0]
+    variants = [v for v in axis["variants"] if v != AXIS_BASELINE]
+    objects = f"{largest['objects']:,}"
+    subtitle = (
+        f"{len(slices)} {'slice' if len(slices) == 1 else 'slices'} of one 3DBAG "
+        f"model, write / full read / a 5 % spatial window beside bytes on disk, "
+        f"and {len(variants)} variants, each against the default CityParquet write "
+        "of the same slice at 1×. Time and bytes left, peak memory right; both "
+        "logarithmic."
+    )
+    if key == "codec":
+        zstd = [v for v in variants if v.startswith("cityparquet+zstd")]
+        # Every ratio in this data is baseline OVER variant -- above 1x is
+        # smaller or faster. The sentence below says "of the default's bytes",
+        # which is the variant over the baseline, so it inverts them.
+        sizes = [
+            1 / c["time_ratio"] for v in zstd
+            if (c := _axis_cell(axis, largest["id"], "size", v)) and c["time_ratio"]
+        ]
+        writes = [
+            1 / c["time_ratio"] for v in zstd
+            if (c := _axis_cell(axis, largest["id"], "write", v)) and c["time_ratio"]
+        ]
+        reads = [
+            (c["time_ratio"], v) for v in variants
+            if (c := _axis_cell(axis, largest["id"], "full-read", v)) and c["time_ratio"]
+        ]
+        title = f"On {objects} objects"
+        if sizes and writes:
+            title += (
+                f" the zstd sweep covers {_span(sizes)} of the default's bytes for "
+                f"{_span(writes)} of its write time"
+            )
+        if reads:
+            best, v = max(reads)
+            title += f"; {_variant_label(v)} reads fastest, at {_times(best)} the default"
+        return title + ".", subtitle
+    cleared = []
+    for v in variants:
+        c = _axis_cell(axis, largest["id"], "bbox-5pct", v)
+        if c and c["time_ratio"] and c["time_ratio"] > 1 and not c["below_floor"]:
+            w = _axis_cell(axis, largest["id"], "write", v)
+            cleared.append(
+                (
+                    int(v.removeprefix("cityparquet+rg")),
+                    c["time_ratio"],
+                    w["time_ratio"] if w and w["time_ratio"] else None,
+                )
+            )
+    if not cleared:
+        title = (
+            f"On {objects} objects no row-group size clears the "
+            f"{data['meta']['citation_floor_s'] * 1000:.0f} ms floor on the spatial window"
+        )
+    else:
+        rows, gain, write = max(cleared)  # the largest group that still pays
+        title = (
+            f"Row groups of {rows:,} rows answer the 5 % window {_times(gain)} faster "
+            f"than the default on {objects} objects"
+        )
+        if write:
+            title += f", for {_times(1 / write)} the write time"
+    return title + ".", subtitle
+
+
 def _check_capacity(data: dict[str, Any]) -> None:
     datasets = len(data["datasets"])
-    compression = len({r["dataset"] for r in data["compression"]})
-    if datasets > MAX_PANELS or compression > MAX_COMPRESSION_PANELS:
+    if datasets > MAX_PANELS:
         raise SystemExit(
             "benchviz figures: this run does not fit the figures' panel grid "
-            f"({datasets} datasets and {compression} compression datasets "
-            f"against room for {MAX_PANELS} and {MAX_COMPRESSION_PANELS}).\n"
+            f"({datasets} datasets against room for {MAX_PANELS}).\n"
             "  The HTML summary page has no such limit and covers all of them; "
             "only the static print figures are pinned.\n"
             "  Re-fitting them means deciding a layout for that many panels "
@@ -2632,14 +2842,15 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
         )
     written += heatmap(data, _heatmap_headline(data), out_dir)
     written += sizes(data, _sizes_headline(data), out_dir)
-    if data["compression"]:
-        written += compression(data, _compression_headline(data), out_dir)
-    else:
-        print(
-            "  compression figure skipped: this corpus has no compression run "
-            "(benchmark/formats/compression_results is empty) — `just compression-bench` "
-            "produces it"
-        )
+    for key, recipe in (("codec", "codec-bench"), ("rowgroup", "rowgroup-bench")):
+        if data["scaling"].get(key, {}).get("records"):
+            written += axis_sheet(data, key, _axis_headline(data, key), out_dir)
+        else:
+            print(
+                f"  {key} figure skipped: this corpus has no {key} run "
+                f"(benchmark/formats/scaling_{key}_results is empty) — `just {recipe}` "
+                "produces it"
+            )
 
     print(f"benchviz figures -> {out_dir}")
     for path in written:

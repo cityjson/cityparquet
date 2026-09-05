@@ -204,6 +204,41 @@ def test_axis_gaps_are_named_not_dropped(tmp_path):
     assert data["meta"]["machine"]["codec"].startswith("# Measurement host")
 
 
+def test_the_axis_sheets_render_from_the_measured_fixture(tmp_path):
+    """Both configuration axes draw from one function, one slice or many."""
+    from benchviz import figures
+
+    data, _ = prep.build(prep.Inputs(_bench_dir(tmp_path)))
+    data_path = tmp_path / "axes.json"
+    data_path.write_text(prep.json.dumps(data), encoding="utf-8")
+    written = sorted(
+        p.name for p in figures.main(data_path=data_path, out_dir=tmp_path / "f").glob("*")
+    )
+    for name in ("codec.svg", "codec.png", "rowgroup.svg", "rowgroup.png"):
+        assert name in written
+    assert "compression.svg" not in written
+
+    title, subtitle = figures._axis_headline(data, "rowgroup")
+    assert "512" in title or "2048" in title or "floor" in title
+    assert "2231" in subtitle.replace(",", "") or "1 slice" in subtitle
+
+    # Every ratio in the axis data is baseline over variant, so zstd 1 writing a
+    # BIGGER file than the default reads as a size_ratio below 1x and its bar
+    # points left. A sentence phrased "of the default's bytes" is the other way
+    # up, and has said so backwards once already.
+    codec_title, _ = figures._axis_headline(data, "codec")
+    default_bytes, zstd1_bytes = (
+        next(
+            s["bytes"]
+            for s in data["scaling"]["codec"]["sizes"]
+            if s["variant"] == variant
+        )
+        for variant in ("cityparquet", "cityparquet+zstd1")
+    )
+    assert zstd1_bytes > default_bytes
+    assert figures._times(zstd1_bytes / default_bytes) in codec_title
+
+
 def test_figures_refuse_a_corpus_larger_than_their_panel_grid(tmp_path):
     """More datasets than panels must be a stated refusal, not a crash.
 
