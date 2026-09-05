@@ -4,42 +4,17 @@ import { Link } from "react-router-dom";
 
 import { Eyebrow } from "@/components/Eyebrow";
 import { StatusDot } from "@/components/StatusDot";
-import { Tag } from "@/components/Tag";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { listTables, type TableInfo } from "@/lib/api";
-
-const METADATA_TABLE = "cityjson_metadata";
-
-interface Dataset {
-  base: string;
-  lods: string[];
-  tables: TableInfo[];
-}
-
-function groupByBase(tables: TableInfo[]): Dataset[] {
-  const map = new Map<string, Dataset>();
-  for (const t of tables) {
-    if (!t.base || !t.lod || t.name === METADATA_TABLE) continue;
-    const existing = map.get(t.base);
-    if (existing) {
-      existing.lods.push(t.lod);
-      existing.tables.push(t);
-    } else {
-      map.set(t.base, { base: t.base, lods: [t.lod], tables: [t] });
-    }
-  }
-  for (const ds of map.values()) ds.lods.sort();
-  return Array.from(map.values()).sort((a, b) => a.base.localeCompare(b.base));
-}
+import { listDatasets } from "@/lib/api";
 
 export default function DatasetsPage() {
   const { data, isLoading, error } = useQuery({
-    queryKey: ["tables"],
-    queryFn: listTables,
+    queryKey: ["datasets"],
+    queryFn: listDatasets,
   });
 
-  const datasets = data ? groupByBase(data.tables) : [];
+  const datasets = data ?? [];
 
   return (
     <div className="space-y-8">
@@ -49,8 +24,8 @@ export default function DatasetsPage() {
           Datasets
         </h1>
         <p className="text-[14px] text-ink-500 max-w-prose">
-          CityJSON datasets ingested into CityLake. Each dataset is split into one table per Level
-          of Detail.
+          CityJSON datasets ingested into CityLake. Each dataset is a CityParquet package, one table
+          per CityGML module.
         </p>
       </header>
 
@@ -65,7 +40,7 @@ export default function DatasetsPage() {
       {error && (
         <Card accent="error">
           <CardContent className="pt-5 font-mono text-[12px] text-roof-700">
-            Failed to load tables: {(error as Error).message}
+            Failed to load datasets: {(error as Error).message}
           </CardContent>
         </Card>
       )}
@@ -84,38 +59,21 @@ export default function DatasetsPage() {
 
       {datasets.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {datasets.map((ds) => (
-            <Link key={ds.base} to={`/datasets/${ds.base}`} className="block">
+          {datasets.map((name) => (
+            <Link key={name} to={`/datasets/${name}`} className="block">
               <Card className="transition-colors duration-150 ease-cl hover:border-paper-300/0 hover:bg-white hover:shadow-cl-2">
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
                     <Eyebrow className="flex items-center gap-1.5">
-                      <span>Table</span>
+                      <span>Dataset</span>
                       <span className="text-paper-300">·</span>
                       <StatusDot tone="ok" />
                       <span className="text-moss-700">READY</span>
                     </Eyebrow>
                     <ChevronRight className="h-4 w-4 text-ink-400" />
                   </div>
-                  <CardTitle className="font-mono text-[18px] mt-2">{ds.base}</CardTitle>
+                  <CardTitle className="font-mono text-[18px] mt-2">{name}</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[12px] text-ink-500">
-                    <dt>lods</dt>
-                    <dd className="text-ink-900">
-                      {ds.lods.length} · {ds.lods.join(", ")}
-                    </dd>
-                    <dt>tables</dt>
-                    <dd className="text-ink-900">{ds.tables.length}</dd>
-                  </dl>
-                  <div className="flex flex-wrap gap-1.5">
-                    {ds.lods.map((lod) => (
-                      <Tag key={lod} tone="info" square>
-                        LOD {lod}
-                      </Tag>
-                    ))}
-                  </div>
-                </CardContent>
               </Card>
             </Link>
           ))}

@@ -24,6 +24,14 @@ instead — that is the maintained, normative half.
 | `specs/2026-08-24-sql-playground-design.md` | The DuckDB-WASM SQL playground at `/playground`: runtime, extension sourcing, and the CORS the data bucket must serve |
 | `specs/2026-08-26-cityparquet-mcp-and-skills-design.md` | The MCP server at `ai/mcp/` and the skills at `ai/plugin/`: the generated documentation corpus, the five tools, the sandbox a public `query` needs, and why the stack pins DuckDB v1.5.4 |
 | `plans/2026-08-26-cityparquet-mcp-phase-1.md` | Phase 1 of the above: the corpus build, the stdio server and its five tools, task by task |
+| `specs/2026-08-27-citylake-cityparquet-rebuild-design.md` | Rebuilding CityLake on the CityParquet package model: a dataset as a DuckLake schema of module tables, the `cityparquet_*` pragmas in place of hand-rolled operations, and the catalog-qualification fix `cityparquet_write` needs |
+| `plans/2026-08-28-citylake-cityparquet-rebuild.md` | The implementation plan for the above, task by task: the pinned toolchain, the upstream write fix, the pure SQL module, the package operations, and the CRS footer the extension has to mint |
+| `specs/2026-09-02-citylake-real-data-and-ui-e2e-design.md` | Three follow-ups to the CityLake rebuild: network-gated tests against the published Delft datasets, re-pointing the web client at the dataset/module API, and Playwright coverage with a DEV-gated authentication bypass |
+| `plans/2026-09-02-citylake-real-data-tests.md` | Piece A of the above: the network-gated suite against the published Delft feed, with the object-type split, CRS, package round trip and a real cascade pinned to measured figures |
+| `plans/2026-09-02-citylake-web-repoint.md` | Piece B: re-pointing the web client from the removed one-table-per-LoD model at the dataset/module API, minimum viable and matched to the end-to-end journey |
+| `plans/2026-09-03-citylake-ui-e2e.md` | Piece C: Playwright over the web client, the development-only session that gets past the login gate, and the server configuration an isolated run needs |
+| `specs/2026-09-03-citylake-output-policy-and-maintenance-ui-design.md` | A configured output root enforced at the HTTP boundary, and client screens for the seven operations that had none |
+| `plans/2026-09-03-citylake-output-policy-and-maintenance-ui.md` | The implementation plan for the above, with the path-resolution algorithm measured against a real filesystem — including the traversal hidden in a non-existent remainder that the spec's own prose would have permitted |
 
 Note that these notes were written while the code lived in several separate
 repositories, so they refer to paths (and, in one case, a local working

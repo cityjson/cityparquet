@@ -1,9 +1,9 @@
 dataset,variant,object_count,write_s,total_bytes,cityobjects_bytes,sidecar_bytes,full_scan_s,window_query_s,row_groups_total,row_groups_touched,roundtrip_equal
-vienna_102081.city.json,cityparquet,1322,0.591895,1384942,1383111,0,0.010122,0.009805,1,1,true
-vienna_102081.city.json,cityparquet+uncompressed,1322,0.354819,6527791,6525960,0,0.005806,0.004661,1,1,true
-vienna_102081.city.json,cityparquet+snappy,1322,0.341888,2254509,2252678,0,0.008706,0.008535,1,1,true
-vienna_102081.city.json,cityparquet+gzip,1322,0.420619,1325728,1323897,0,0.011576,0.012607,1,1,true
-vienna_102081.city.json,cityparquet+lz4,1322,0.349493,2368885,2367054,0,0.006310,0.006280,1,1,true
-vienna_102081.city.json,cityparquet+brotli,1322,0.369697,1494507,1492676,0,0.060050,0.060822,1,1,true
-vienna_102081.city.json,cityparquet+rg512,1322,0.348958,1404787,1402956,0,0.010952,0.002503,3,1,true
-vienna_102081.city.json,cityparquet+rg4096,1322,0.351929,1384942,1383111,0,0.011198,0.009911,1,1,true
+vienna_102081.city.json,cityparquet,1322,0.460629,1384942,1383111,0,0.009840,0.010926,1,1,true
+vienna_102081.city.json,cityparquet+uncompressed,1322,0.353456,6527791,6525960,0,0.005285,0.004323,1,1,true
+vienna_102081.city.json,cityparquet+snappy,1322,0.353425,2254509,2252678,0,0.008928,0.007839,1,1,true
+vienna_102081.city.json,cityparquet+gzip,1322,0.433719,1325728,1323897,0,0.012200,0.012085,1,1,true
+vienna_102081.city.json,cityparquet+lz4,1322,0.435461,2368885,2367054,0,0.008962,0.008938,1,1,true
+vienna_102081.city.json,cityparquet+brotli,1322,0.362686,1494507,1492676,0,0.062550,0.061249,1,1,true
+vienna_102081.city.json,cityparquet+rg512,1322,0.669242,1404787,1402956,0,0.012586,0.002596,3,1,true
+vienna_102081.city.json,cityparquet+rg4096,1322,0.440828,1384942,1383111,0,0.010914,0.010909,1,1,true
