@@ -261,7 +261,7 @@ def test_the_axis_vocabulary_survives_the_real_recipes(tmp_path):
     by_size = sorted(recipe[1:], key=lambda v: int(v.removeprefix("cityparquet+rg")))
     lightness = [sum(figures.mcolors.to_rgb(palette[v])) for v in by_size]
     assert lightness == sorted(lightness, reverse=True), (
-        f"small groups must be lightest: {list(zip(by_size, lightness))}"
+        f"small groups must be lightest: {list(zip(by_size, lightness, strict=True))}"
     )
 
     data, _ = prep.build(prep.Inputs(_bench_dir(tmp_path)))
@@ -287,6 +287,45 @@ def test_the_axis_vocabulary_survives_the_real_recipes(tmp_path):
     # Beside its swatch, where the column of codec names is the context, it
     # stays the word the key strip has room for.
     assert figures._variant_label("cityparquet+uncompressed") == "none"
+
+
+def test_the_row_group_headline_names_the_best_trade_off(tmp_path):
+    """The figure asks which group size and when, so the sentence names the winner.
+
+    The LARGEST size that clears the floor is the smallest departure from the
+    default, which is a different question. On the measured 1M slice 8,192 rows
+    answer the window faster than 32,768 rows AND write faster, so a headline
+    reaching for the largest clearing size names the size that lost on both
+    counts.
+    """
+    from benchviz import figures
+
+    data, _ = prep.build(prep.Inputs(_bench_dir(tmp_path)))
+    axis = data["scaling"]["rowgroup"]
+    dataset = figures._axis_slices(axis)[0]["id"]
+    axis["variants"] = ["cityparquet", "cityparquet+rg32768", "cityparquet+rg8192"]
+    spatial = {"cityparquet+rg8192": 2.29, "cityparquet+rg32768": 2.22}
+    writes = {"cityparquet+rg8192": 1.01, "cityparquet+rg32768": 0.99}
+    proto = axis["records"][0]
+    axis["records"] = [
+        dict(proto, dataset=dataset, variant=v, measure=measure,
+             time_ratio=table[v], below_floor=False)
+        for measure, table in (("bbox-5pct", spatial), ("write", writes))
+        for v in spatial
+    ]
+
+    title, _ = figures._axis_headline(data, "rowgroup")
+    assert "8,192 rows" in title
+    assert "32,768" not in title
+    assert figures._times(2.29) in title
+
+    # A tie goes the other way: the larger group is the smaller departure from
+    # the default, so it wins when nothing separates them on the window.
+    for record in axis["records"]:
+        if record["measure"] == "bbox-5pct":
+            record["time_ratio"] = 2.29
+    tied, _ = figures._axis_headline(data, "rowgroup")
+    assert "32,768 rows" in tied
 
 
 def test_figures_refuse_a_corpus_larger_than_their_panel_grid(tmp_path):

@@ -2799,7 +2799,7 @@ def _axis_headline(data: dict[str, Any], key: str) -> tuple[str, str]:
             w = _axis_cell(axis, largest["id"], "write", v)
             cleared.append(
                 (
-                    int(v.removeprefix("cityparquet+rg")),
+                    _rowgroup_size(v),
                     c["time_ratio"],
                     w["time_ratio"] if w and w["time_ratio"] else None,
                 )
@@ -2810,7 +2810,11 @@ def _axis_headline(data: dict[str, Any], key: str) -> tuple[str, str]:
             f"{data['meta']['citation_floor_s'] * 1000:.0f} ms floor on the spatial window"
         )
     else:
-        rows, gain, write = max(cleared)  # the largest group that still pays
+        # The best trade-off, not the size nearest the default: the figure asks
+        # which group size and when, so the sentence names the one that answers
+        # the window fastest. Ties go to the larger group, which is the smaller
+        # departure from the default.
+        rows, gain, write = max(cleared, key=lambda c: (c[1], c[0]))
         title = (
             f"Row groups of {rows:,} rows answer the 5 % window {_times(gain)} faster "
             f"than the default on {objects} objects"
