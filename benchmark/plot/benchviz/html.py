@@ -430,6 +430,11 @@ BODY = r"""
     The page cannot drift from the methodology it reports.</p>
     <ol class="caveats" id="caveats"></ol>
     <h3>Codec levels</h3>
+    <p class="small">This one is the renderer's own statement of what the codec
+    axis varies (<span class="num">benchviz/prep.py</span>,
+    <span class="num">CODEC_LEVEL_NOTE</span>), mirroring
+    <span class="num">benchmark/formats/README.md</span>'s "The codec levels are
+    NOT matched" section rather than quoted from it.</p>
     <div class="verbatim" id="codec-note-verbatim"></div>
   </section>
 
@@ -794,8 +799,7 @@ JS = r"""
     '<span class="num">' + esc(META.sources.codec) + "</span> &middot; row-group " +
     '<span class="num">' + esc(META.sources.rowgroup) + "</span> &middot; " +
     num(DATA.read.length) + " read records over " + DATASETS.length + " datasets.";
-  el("caveat-src").textContent =
-    "benchmark/formats/READ_BENCHMARK.md and benchmark/formats/README.md";
+  el("caveat-src").textContent = "benchmark/formats/READ_BENCHMARK.md";
 
   el("howto").innerHTML = [
     "<p><b>Section 0 is the summary; sections 1 to 4 are the evidence.</b> " +

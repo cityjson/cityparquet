@@ -8,13 +8,14 @@ here is hand-written: they are measured rows, trimmed to three datasets.
 Why a pinned copy rather than the live `benchmark/formats/read_results`: a benchmark run
 replaces those CSVs with whatever corpus, formats and columns it measured, so a
 test reading them asserts something different after every run. The three
-datasets kept here are the ones that exercise the awkward cases —
+datasets kept here span the range the views have to handle —
 
-- **Zurich** — largest object count, so it must sort first;
-- **delft** — an ordinary, complete dataset;
-- **Ingolstadt** — the third `read_results/` dataset; it no longer carries a
-  compression-axis role now that `compression_results/` (and its
-  `roundtrip_equal=false` rows) is gone — see below.
+- **Zurich** — 198,699 objects, the largest, so it must sort first, and the one
+  dataset whose scenarios almost all clear the 10 ms citation floor;
+- **delft** — 2,231 objects: an ordinary, complete dataset in the middle;
+- **Ingolstadt** — 379 objects, the smallest, so it sorts last, and 18 of its
+  53 read rows fall inside the citation floor — the muted, "≈"-prefixed cells
+  and the widest noise band on the Pareto panels.
 
 `ordering_results/` holds two datasets from the row-ordering run instead, and
 deliberately shares none of its names with `read_results/`: the ordering

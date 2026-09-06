@@ -7,8 +7,12 @@ the cross-format comparison, is `benchmark/formats/READ_BENCHMARK.md`.
 
 The write-side CSVs under `results/` and `scaling_write_results/` are committed
 from the 2026-08-27 run; the configuration axes under `scaling_codec_results/`
-and `scaling_rowgroup_results/` carry a `MACHINE.md` naming the host they were
-measured on.
+and `scaling_rowgroup_results/` carry a `MACHINE.md` describing the host they
+were measured on. The corpus runs — `read_results/`, `scaling_read_results/`
+and `ordering_results/` — carry no such record, so whether they ran on the same
+host cannot be established from what is committed. Absolute times are therefore
+not comparable across a directory that has a machine record and one that does
+not; what the figures cite is the ratios within a single directory.
 
 ## Three recipes
 

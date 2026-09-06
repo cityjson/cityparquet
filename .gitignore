@@ -27,8 +27,9 @@
 # unpacked ~28 MB of JARs is not.
 /benchmark/formats/tools/
 
-# Generated charts (`just plot`, `just compression-plot`, `just bench`) — the
-# inputs are the CSVs beside them, not these PNGs.
+# Generated charts (`just plot`, `just sizes`) — the inputs are the CSVs beside
+# them, not these PNGs. `just plot-pretty` writes the summary output instead,
+# which the rule below covers.
 /benchmark/**/plots/
 
 # `just plot-pretty` output (bench_data.json, bench-summary.html, figures/):
