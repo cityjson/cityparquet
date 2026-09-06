@@ -222,6 +222,12 @@ def test_the_axis_sheets_render_from_the_measured_fixture(tmp_path):
     assert "512" in title or "2048" in title or "floor" in title
     assert "2231" in subtitle.replace(",", "") or "1 slice" in subtitle
 
+    # The corpus names itself from the slice ids. Hand-typing "3DBAG" into a
+    # computed subtitle survives a run of a different corpus unchanged, which
+    # is a caption asserting something the records never said.
+    assert "(delft)" in subtitle
+    assert "3DBAG" not in subtitle
+
     # Every ratio in the axis data is baseline over variant, so zstd 1 writing a
     # BIGGER file than the default reads as a size_ratio below 1x and its bar
     # points left. A sentence phrased "of the default's bytes" is the other way
@@ -289,6 +295,83 @@ def test_the_axis_vocabulary_survives_the_real_recipes(tmp_path):
     assert figures._variant_label("cityparquet+uncompressed") == "none"
 
 
+def test_the_codec_headline_crowns_a_winner_only_outside_the_noise(tmp_path):
+    """A 4 % lead over a 3-5 % dispersion is not a fastest codec.
+
+    On the measured 1M slice the default full read takes 50.93 s with a MAD of
+    1.73 and snappy 49.17 s with a MAD of 2.36. Ranking the two names the top
+    of a list the run cannot order, so the sentence may name a codec only when
+    its lead over the default clears both MADs together — and must otherwise
+    say that the axis found no separation.
+    """
+    from benchviz import figures
+
+    data, _ = prep.build(prep.Inputs(_bench_dir(tmp_path)))
+    axis = data["scaling"]["codec"]
+    reads = [r for r in axis["records"] if r["measure"] == "full-read"]
+    assert all(r["time_mad_s"] is not None for r in reads)
+
+    # As measured on the fixture slice, lz4 leads by 0.030 s over MADs summing
+    # to 0.009 — separable, and named.
+    title, _ = figures._axis_headline(data, "codec")
+    assert "lz4 reads fastest" in title
+
+    # The same times read with a dispersion that swallows every lead.
+    for record in reads:
+        record["base_time_mad_s"] = record["time_mad_s"] = 0.5
+    noisy, _ = figures._axis_headline(data, "codec")
+    assert "every codec reads within measurement noise of the default" in noisy
+    assert "reads fastest" not in noisy
+    assert "except" not in noisy
+
+    # A codec slower than the default by more than the two MADs is still an
+    # effect, and the clause names it rather than dropping it into the parity.
+    slow = next(r for r in reads if r["variant"] == "cityparquet+lz4")
+    slow["time_s"] = slow["base_time_s"] * 10
+    slow["time_ratio"] = 0.1
+    named, _ = figures._axis_headline(data, "codec")
+    assert f"except lz4, at {figures._times(0.1)}" in named
+
+
+def test_the_machine_line_describes_the_host_without_naming_it(tmp_path):
+    """The footer answers "what was this measured on", not "where does it live".
+
+    `machine_record.sh` captures `uname -srm`, so no hostname is recorded; the
+    line is assembled from the CPU model, the core count and the memory total
+    rather than quoted off the top of the file, which used to print an internal
+    FQDN onto a figure bound for publication.
+    """
+    from benchviz import figures
+
+    record = (
+        "# Measurement host\n\n"
+        "Captured by benchmark/scripts/machine_record.sh at 2026-09-06T02:15:33Z.\n\n"
+        "```\n"
+        "Linux 6.8.0-136-generic x86_64\n"
+        "Architecture:                            x86_64\n"
+        "CPU(s):                                  128\n"
+        "On-line CPU(s) list:                     0-127\n"
+        "Vendor ID:                               AuthenticAMD\n"
+        "Model name:                              AMD EPYC 7542 32-Core Processor\n"
+        "               total        used        free\n"
+        "Mem:     540725092352 67899543552  6151950336\n"
+        "rustc 1.93.1 (01f6ddf75 2026-02-11)\n"
+        "```\n"
+    )
+    note = figures._machine_note(record)
+    assert "AMD EPYC 7542 32-Core Processor" in note
+    assert "128 CPUs" in note
+    assert "541 GB" in note
+    assert "Linux 6.8.0-136-generic x86_64" in note
+    assert "gilfoyle" not in note and ".tudelft.nl" not in note
+
+    assert figures._machine_note(None) == "No machine record for this run."
+    without_memory = "\n".join(
+        ln for ln in record.splitlines() if not ln.startswith("Mem:")
+    )
+    assert figures._machine_note(without_memory) == "No machine record for this run."
+
+
 def test_the_row_group_headline_names_the_best_trade_off(tmp_path):
     """The figure asks which group size and when, so the sentence names the winner.
 
@@ -307,10 +390,15 @@ def test_the_row_group_headline_names_the_best_trade_off(tmp_path):
     spatial = {"cityparquet+rg8192": 2.29, "cityparquet+rg32768": 2.22}
     writes = {"cityparquet+rg8192": 1.01, "cityparquet+rg32768": 0.99}
     proto = axis["records"][0]
+    # Seconds and MADs consistent with the ratios above, because the write
+    # clause reads them: at a 2 s dispersion either way, a 1 % write ratio is
+    # the writer's own spread and the sentence must not price it.
     axis["records"] = [
         dict(proto, dataset=dataset, variant=v, measure=measure,
-             time_ratio=table[v], below_floor=False)
-        for measure, table in (("bbox-5pct", spatial), ("write", writes))
+             time_ratio=table[v], below_floor=False,
+             base_time_s=100.0, time_s=100.0 / table[v],
+             base_time_mad_s=mad, time_mad_s=mad)
+        for measure, table, mad in (("bbox-5pct", spatial, 0.0), ("write", writes, 2.0))
         for v in spatial
     ]
 
@@ -318,6 +406,14 @@ def test_the_row_group_headline_names_the_best_trade_off(tmp_path):
     assert "8,192 rows" in title
     assert "32,768" not in title
     assert figures._times(2.29) in title
+    assert "for the same write time" in title
+
+    # Tighten the write runs and the same 1 % is an effect, priced as one.
+    for record in axis["records"]:
+        if record["measure"] == "write":
+            record["base_time_mad_s"] = record["time_mad_s"] = 0.0
+    priced, _ = figures._axis_headline(data, "rowgroup")
+    assert f"for {figures._times(1 / 1.01)} the write time" in priced
 
     # A tie goes the other way: the larger group is the smaller departure from
     # the default, so it wins when nothing separates them on the window.

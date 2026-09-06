@@ -67,10 +67,6 @@ class Inputs:
     def read_benchmark_md(self) -> Path:
         return self.bench_dir / "READ_BENCHMARK.md"
 
-    @property
-    def bench_readme_md(self) -> Path:
-        return self.bench_dir / "README.md"
-
     def label(self, path: Path) -> str:
         """A repo-qualified label for a source path, e.g.
 
@@ -279,15 +275,6 @@ def _ratio(value: float | None, base: float | None) -> float | None:
     if value is None or base is None or base == 0:
         return None
     return value / base
-
-
-def _bool(value: str) -> bool:
-    v = value.strip().lower()
-    if v in ("true", "1", "yes"):
-        return True
-    if v in ("false", "0", "no", ""):
-        return False
-    raise PrepError(f"unparseable boolean {value!r}")
 
 
 def _dataset_csvs(directory: Path) -> list[Path]:
@@ -755,6 +742,10 @@ def load_scaling_axis(directory: Path, baseline: str = AXIS_BASELINE) -> dict:
                 continue
             base = bucket.get(baseline)
             base_t = _float(base["time_s"]) if base else None
+            # The dispersion travels with the time it belongs to: a headline
+            # that names one variant the fastest has to be able to check the
+            # lead against the two runs' own spread, not against a fixed floor.
+            base_mad = _float(base["time_mad_s"]) if base else None
             base_rss = _int(base["peak_rss_bytes"]) if base else None
             for variant in variants:
                 row = bucket.get(variant)
@@ -763,6 +754,7 @@ def load_scaling_axis(directory: Path, baseline: str = AXIS_BASELINE) -> dict:
                         gaps.append({"dataset": name, "issue": f"{variant} has no {key} row"})
                     continue
                 t = _float(row["time_s"])
+                mad = _float(row["time_mad_s"])
                 rss = _int(row["peak_rss_bytes"])
                 records.append(
                     {
@@ -772,8 +764,10 @@ def load_scaling_axis(directory: Path, baseline: str = AXIS_BASELINE) -> dict:
                         "kind": "default" if variant == baseline else "variant",
                         "measure": key,
                         "time_s": t,
+                        "time_mad_s": mad,
                         "rss_b": rss,
                         "base_time_s": base_t,
+                        "base_time_mad_s": base_mad,
                         "base_rss_b": base_rss,
                         "time_ratio": _ratio(base_t, t),
                         "rss_ratio": _ratio(

@@ -3,7 +3,7 @@
 Captured by benchmark/scripts/machine_record.sh at 2026-09-06T02:15:33Z.
 
 ```
-Linux gilfoyle.bk.tudelft.nl 6.8.0-136-generic #136-Ubuntu SMP PREEMPT_DYNAMIC Wed Jul  1 21:53:05 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+Linux 6.8.0-136-generic x86_64
 Architecture:                            x86_64
 CPU op-mode(s):                          32-bit, 64-bit
 Address sizes:                           48 bits physical, 48 bits virtual

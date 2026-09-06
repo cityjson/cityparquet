@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import json
 import math
+import os.path
+import re
 import textwrap
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -2351,6 +2353,9 @@ def _axis_cell(
                     "rss_ratio": None,
                     "below_floor": False,
                     "base": None,
+                    "time": None,
+                    "mad": None,
+                    "base_mad": None,
                 }
         return None
     for r in axis["records"]:
@@ -2360,8 +2365,30 @@ def _axis_cell(
                 "rss_ratio": r.get("rss_ratio"),
                 "below_floor": bool(r.get("below_floor")),
                 "base": r.get("base_time_s"),
+                "time": r.get("time_s"),
+                "mad": r.get("time_mad_s"),
+                "base_mad": r.get("base_time_mad_s"),
             }
     return None
+
+
+def _beats_noise(cell: dict[str, Any] | None) -> int:
+    """+1, -1 or 0: is a variant's time apart from the default's beyond the MADs?
+
+    The harness reports a median absolute deviation beside every time, and a
+    difference smaller than the two together is dispersion rather than an
+    effect — a headline naming a winner inside it asserts more than the run
+    measured. A missing MAD counts as zero dispersion, which is what a CSV
+    column left empty can support and nothing more.
+    """
+    if not cell or cell.get("time") is None or cell.get("base") is None:
+        return 0
+    noise = (cell.get("mad") or 0.0) + (cell.get("base_mad") or 0.0)
+    if cell["base"] - cell["time"] > noise:
+        return 1
+    if cell["time"] - cell["base"] > noise:
+        return -1
+    return 0
 
 
 def _axis_base_size(axis: dict[str, Any], dataset: str) -> float | None:
@@ -2372,19 +2399,40 @@ def _axis_base_size(axis: dict[str, Any], dataset: str) -> float | None:
 
 
 def _machine_note(machine: str | None) -> str:
-    """One line naming the measurement host, out of the run's MACHINE.md.
+    """One line describing the measurement host, out of the run's MACHINE.md.
 
     `benchmark/scripts/machine_record.sh` writes a heading, a capture line and a
-    fenced block whose first line is `uname -a`; that line is the host. Anything
-    that does not have it is reported as absent rather than quoted blindly.
+    fenced block whose first line is `uname -srm`, followed by the head of
+    `lscpu` and of `free -b`. The sentence is assembled from the CPU model, the
+    core count, the memory total and that kernel line: what a reader needs to
+    judge a timing, and no more — a machine record is not an address, so no
+    hostname is captured and none is printed. A file missing any of the four is
+    reported as absent rather than quoted blindly.
     """
     if not machine:
         return "No machine record for this run."
     lines = [ln.strip() for ln in machine.strip().splitlines()]
-    for i, line in enumerate(lines):
-        if line.startswith("```") and i + 1 < len(lines) and lines[i + 1]:
-            return "Measured on: " + lines[i + 1] + "."
-    return "No machine record for this run."
+    kernel = next(
+        (
+            lines[i + 1]
+            for i, line in enumerate(lines)
+            if line.startswith("```") and i + 1 < len(lines) and lines[i + 1]
+        ),
+        None,
+    )
+    fields: dict[str, str] = {}
+    for line in lines:
+        # Exact keys, not a substring search: "On-line CPU(s) list" and "NUMA
+        # node(s) CPU(s)" both carry "CPU(s)" and neither is the core count.
+        key, sep, value = line.partition(":")
+        if sep and value.strip():
+            fields.setdefault(key.strip(), value.strip())
+    model, cpus = fields.get("Model name"), fields.get("CPU(s)")
+    mem = fields.get("Mem", "").split()
+    total = int(mem[0]) if mem and mem[0].isdigit() else None
+    if not (kernel and model and cpus and total):
+        return "No machine record for this run."
+    return f"Measured on: {model}, {cpus} CPUs, {total / 1e9:.0f} GB, {kernel}."
 
 
 def axis_sheet(
@@ -2758,9 +2806,14 @@ def _axis_headline(data: dict[str, Any], key: str) -> tuple[str, str]:
     largest = slices[0]
     variants = [v for v in axis["variants"] if v != AXIS_BASELINE]
     objects = f"{largest['objects']:,}"
+    # The corpus names itself: the slices share a stem the fetcher gave them
+    # ("3dbag_n1000000" and its siblings), and naming the model by hand is a
+    # claim about which corpus ran that the records cannot contradict.
+    prefix = re.sub(r"_n?$", "", os.path.commonprefix([s["id"] for s in slices]))
+    model = f"one city model ({prefix})" if prefix else "one city model"
     subtitle = (
-        f"{len(slices)} {'slice' if len(slices) == 1 else 'slices'} of one 3DBAG "
-        f"model, write / full read / a 5 % spatial window beside bytes on disk, "
+        f"{len(slices)} {'slice' if len(slices) == 1 else 'slices'} of {model}"
+        f", write / full read / a 5 % spatial window beside bytes on disk, "
         f"and {len(variants)} variants, each against the default CityParquet write "
         "of the same slice at 1×. Time and bytes left, peak memory right; both "
         "logarithmic."
@@ -2779,7 +2832,7 @@ def _axis_headline(data: dict[str, Any], key: str) -> tuple[str, str]:
             if (c := _axis_cell(axis, largest["id"], "write", v)) and c["time_ratio"]
         ]
         reads = [
-            (c["time_ratio"], v) for v in variants
+            (c, v) for v in variants
             if (c := _axis_cell(axis, largest["id"], "full-read", v)) and c["time_ratio"]
         ]
         title = f"On {objects} objects"
@@ -2789,20 +2842,31 @@ def _axis_headline(data: dict[str, Any], key: str) -> tuple[str, str]:
                 f"{_span(writes)} of its write time"
             )
         if reads:
-            best, v = max(reads)
-            title += f"; {_variant_phrase(v)} reads fastest, at {_times(best)} the default"
+            # A codec is only "fastest" if its lead over the default survives
+            # both runs' dispersion. On a corpus where the decoder is not the
+            # bottleneck none of them does, and the sentence has to say so
+            # rather than crown the top of a noisy ranking.
+            faster = [(c["time_ratio"], v) for c, v in reads if _beats_noise(c) > 0]
+            slower = [(c["time_ratio"], v) for c, v in reads if _beats_noise(c) < 0]
+            if faster:
+                best, v = max(faster)
+                title += (
+                    f"; {_variant_phrase(v)} reads fastest, at {_times(best)} the default"
+                )
+            else:
+                title += "; every codec reads within measurement noise of the default"
+                if slower:
+                    # Ratios are baseline over variant, so the slowest is the
+                    # smallest of them and prints below 1x.
+                    worst, v = min(slower)
+                    title += f", except {_variant_phrase(v)}, at {_times(worst)}"
         return title + ".", subtitle
     cleared = []
     for v in variants:
         c = _axis_cell(axis, largest["id"], "bbox-5pct", v)
         if c and c["time_ratio"] and c["time_ratio"] > 1 and not c["below_floor"]:
-            w = _axis_cell(axis, largest["id"], "write", v)
             cleared.append(
-                (
-                    _rowgroup_size(v),
-                    c["time_ratio"],
-                    w["time_ratio"] if w and w["time_ratio"] else None,
-                )
+                (_rowgroup_size(v), c["time_ratio"], _axis_cell(axis, largest["id"], "write", v))
             )
     if not cleared:
         title = (
@@ -2819,8 +2883,13 @@ def _axis_headline(data: dict[str, Any], key: str) -> tuple[str, str]:
             f"Row groups of {rows:,} rows answer the 5 % window {_times(gain)} faster "
             f"than the default on {objects} objects"
         )
-        if write:
-            title += f", for {_times(1 / write)} the write time"
+        if write and write["time_ratio"]:
+            # A write ratio a hair off 1x is the writer's own run-to-run spread,
+            # not a cost of the group size, so it is reported as no cost at all.
+            if _beats_noise(write) == 0:
+                title += ", for the same write time"
+            else:
+                title += f", for {_times(1 / write['time_ratio'])} the write time"
     return title + ".", subtitle
 
 

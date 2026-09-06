@@ -97,10 +97,12 @@ calls the same code with its own `--html`/`--figures` destinations.
    where the panels would be (`main` prints "… figure skipped" and moves on),
    rather than drawing an empty grid.
 7. **Verbatim caveats**: the page quotes every one of READ_BENCHMARK.md's
-   fairness caveats (11 when this was written, 18 today) and
-   README.md's "Baseline geometry coverage" section verbatim at generation time
-   (same policy as the previous page — the page cannot drift from the
-   methodology it reports).
+   fairness caveats (11 when this was written, 18 today) verbatim at generation
+   time (same policy as the previous page — the page cannot drift from the
+   methodology it reports). The codec-level note printed beside them is the
+   renderer's own statement, `prep.CODEC_LEVEL_NOTE`, mirroring
+   `benchmark/formats/README.md`'s "The codec levels are NOT matched" section
+   rather than extracted from it.
 8. **Memory metric**: primary = `peak_rss_bytes` ratio (present for every
    format the coordinator measures; platform units cancel in ratios). `peak_heap_bytes` ratio is the
    HTML toggle, annotated: allocator view; FCB streams (tiny heap by design);
@@ -222,6 +224,8 @@ an explicit gap, never drop silently).
         { "dataset": "<slice>", "objects": 50001, "variant": "cityparquet+zstd1",
           "kind": "variant", "measure": "write",       // write | full-read | bbox-1pct | bbox-5pct | bbox-25pct
           "time_s": 1.9, "rss_b": 0, "base_time_s": 1.8, "base_rss_b": 0,
+          "time_mad_s": 0.04, "base_time_mad_s": 0.03, // the CSV's dispersion, carried so a
+                                                       // headline can test a lead against it
           "time_ratio": 0.95, "rss_ratio": 1.0,        // baseline / variant: > 1 is faster, leaner
           "below_floor": false },
       ],
