@@ -133,10 +133,13 @@ cargo run --release -p cityparquet-cli -- bench --input <file> --out <csv>
 **Record the machine with the run.** `codec-bench` and `rowgroup-bench` write
 their own `MACHINE.md` beside the CSVs; `write-bench`'s CSVs carry no machine
 metadata, so a committed `write-bench` run without a recorded host is
-internally comparable and externally unquotable:
+internally comparable and externally unquotable. `benchmark/scripts/machine_record.sh`
+is the canonical capture — the two axis recipes call it, and a `write-bench`
+run should too:
 
 ```sh
-uname -a
+uname -srm     # kernel, release and architecture; NOT `uname -a`, whose node
+               # name is the host's address and these files are published
 # Linux: lscpu | sed -n '1,15p'; free -b | head -2
 # macOS: sysctl -n machdep.cpu.brand_string hw.memsize
 duckdb --version; cargo --version; rustc --version

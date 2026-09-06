@@ -34,7 +34,11 @@ direction, variant order and `sizes.csv` join are all exercised on measured
 rows. One slice only: the trend strip is drawn from one point, which is a
 valid degenerate case, and nothing here is edited by hand.
 
-The methodology documents are deliberately NOT copied here. `tests/test_benchviz.py`
-takes `READ_BENCHMARK.md` and `README.md` from the live `benchmark/formats/` directory,
-because the page quotes their caveats verbatim and extraction is supposed to
-fail when they change shape.
+The methodology documents are deliberately NOT copied here. `_bench_dir` in
+`tests/test_benchviz.py` takes them from the live `benchmark/formats/`
+directory: `READ_BENCHMARK.md` because the page quotes its fairness caveats
+verbatim and the extraction is supposed to fail when that document changes
+shape, and `README.md` for no remaining reason — nothing in `benchviz` reads it
+since the compression axis went, and the copy stays because
+`prep.Inputs` names one `benchmark/formats/` directory and a faithful stand-in
+for it costs a line.

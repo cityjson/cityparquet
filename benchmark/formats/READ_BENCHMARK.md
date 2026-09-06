@@ -908,10 +908,15 @@ the artefacts. Treat the committed numbers as internally comparable (one machine
 one sitting, per dataset) but do not quote an absolute time against another
 paper's hardware.
 
-Capture this block as part of the next run, and paste its output here:
+`benchmark/scripts/machine_record.sh` is the canonical capture: it runs the
+`uname`, `lscpu`/`sysctl` and `free` lines below, plus `rustc`, `cargo` and the
+commit hash, into a results directory's `MACHINE.md` — how `codec-bench` and
+`rowgroup-bench` record their host. Run it as part of the next read run, add
+the two lines it does not cover, and paste the result here:
 
 ```sh
-uname -a
+uname -srm     # kernel, release and architecture; NOT `uname -a`, whose node
+               # name is the host's address and these files are published
 # Linux: lscpu | sed -n '1,15p'; free -b | head -2
 # macOS: sysctl -n machdep.cpu.brand_string hw.memsize
 duckdb --version; cargo --version; rustc --version; fcb --version
