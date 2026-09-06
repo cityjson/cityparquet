@@ -250,15 +250,25 @@ pub(crate) struct Drops {
 /// drops rings that cannot form a structural WKB ring at all;
 /// coordinate-level degeneracy is data quality, out of scope.
 pub(crate) fn normalise_ring(ring: &[usize]) -> Option<&[usize]> {
-    let mut stripped = ring;
+    distinct_ring_len(ring).map(|len| &ring[..len])
+}
+
+/// How many vertices of `ring` a normalised WKB ring stores, or `None` when
+/// [`normalise_ring`] drops the ring entirely. This is the length side of the
+/// same rule, spelled once: the encoder writes exactly this many points
+/// (plus the closing repeat WKB adds), and the appearance flattening inlines
+/// exactly this many `[u, v]` pairs, so the two can never disagree about a
+/// ring's vertex count.
+pub(crate) fn distinct_ring_len(ring: &[usize]) -> Option<usize> {
+    let mut len = ring.len();
     // Strip while MORE than 3 vertices remain, not to a `>= 2` fixpoint:
     // that bound lets a doubly-baked closure ([0,1,0,0]) still converge to
     // its real 3-vertex shape, while never stripping a ring's third vertex
     // — the stripping itself must never be what turns a ring degenerate.
-    while stripped.len() > 3 && stripped.first() == stripped.last() {
-        stripped = &stripped[..stripped.len() - 1];
+    while len > 3 && ring[0] == ring[len - 1] {
+        len -= 1;
     }
-    (stripped.len() >= 3).then_some(stripped)
+    (len >= 3).then_some(len)
 }
 
 /// Normalise one surface's rings. Returns the kept rings, or `None` when

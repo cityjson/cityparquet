@@ -2,6 +2,7 @@
 
 mod address;
 pub mod appearance;
+pub mod appearance_columns;
 mod arrow_compat;
 pub mod citygml;
 pub mod compare;

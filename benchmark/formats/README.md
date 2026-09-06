@@ -5,14 +5,30 @@ to write, how many bytes it occupies, and how those two move with the writer's
 own knobs — codec, row-group size, row ordering. Its read-side counterpart, and
 the cross-format comparison, is `benchmark/formats/READ_BENCHMARK.md`.
 
-The write-side CSVs under `results/` and `scaling_write_results/` are committed
-from the 2026-08-27 run; the configuration axes under `scaling_codec_results/`
-and `scaling_rowgroup_results/` carry a `MACHINE.md` describing the host they
-were measured on. The corpus runs — `read_results/`, `scaling_read_results/`
-and `ordering_results/` — carry no such record, so whether they ran on the same
-host cannot be established from what is committed. Absolute times are therefore
-not comparable across a directory that has a machine record and one that does
-not; what the figures cite is the ratios within a single directory.
+**The committed write-side CSVs are `results/` and `scaling_write_results/`**
+(the writer's variant matrix over the six-dataset cityjson.org corpus and over
+the 3DBAG scaling slices), alongside the configuration axes under
+`scaling_codec_results/` and `scaling_rowgroup_results/`, which carry a
+`MACHINE.md` describing the host they were measured on. The corpus runs —
+`read_results/`, `scaling_read_results/` and `ordering_results/` — carry no
+such record, so whether they ran on the same host cannot be established from
+what is committed. Absolute times are therefore not comparable across a
+directory that has a machine record and one that does not; what the figures
+cite is the ratios within a single directory. Nothing in this document quotes
+a number, so the methodology here cannot go stale against a re-run; the CSVs
+themselves can, and one caveat already applies.
+
+**Every committed write-side and configuration-axis CSV predates the typed
+appearance columns.** They were measured while `material_lod*` /
+`texture_lod*` were JSON text cells; those columns are now typed Arrow/Parquet
+`MAP`s, which the writer leaves at parquet's own defaults for dictionary
+encoding and statistics. For `results/` and `scaling_write_results/` that
+means neither the committed bytes nor the committed write times describe the
+current writer until both families are re-run. The codec and row-group runs
+were measured at the branch point before that change; the 3DBAG slices carry
+no appearance data, so those columns are empty in every package measured and
+the effect on their bytes and times is expected to be negligible, but the two
+axes have not been repeated on the current writer either.
 
 ## Three recipes
 

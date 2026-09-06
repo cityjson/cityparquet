@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-type Tone = "neutral" | "ok" | "warn" | "error" | "info";
+export type Tone = "neutral" | "ok" | "warn" | "error" | "info";
 
 interface Props extends React.HTMLAttributes<HTMLSpanElement> {
   tone?: Tone;

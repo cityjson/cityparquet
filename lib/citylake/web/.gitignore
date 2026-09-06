@@ -15,3 +15,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright — the run's catalog and storage live outside the repository
+# (a pid-suffixed directory under the OS temp dir, see playwright.config.ts),
+# so only its own report output needs ignoring here.
+test-results/
+playwright-report/
