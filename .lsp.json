@@ -1,0 +1,48 @@
+{
+  "rust-analyzer": {
+    "command": "rust-analyzer",
+    "extensionToLanguage": {
+      ".rs": "rust"
+    }
+  },
+  "typescript-language-server": {
+    "command": "typescript-language-server",
+    "args": [
+      "--stdio"
+    ],
+    "extensionToLanguage": {
+      ".ts": "typescript",
+      ".tsx": "typescriptreact",
+      ".mts": "typescript",
+      ".cts": "typescript",
+      ".js": "javascript",
+      ".jsx": "javascriptreact",
+      ".mjs": "javascript",
+      ".cjs": "javascript"
+    }
+  },
+  "pyright": {
+    "command": "pyright-langserver",
+    "args": [
+      "--stdio"
+    ],
+    "extensionToLanguage": {
+      ".py": "python",
+      ".pyi": "python"
+    }
+  },
+  "clangd": {
+    "command": "clangd",
+    "extensionToLanguage": {
+      ".c": "c",
+      ".h": "cpp",
+      ".cpp": "cpp",
+      ".cc": "cpp",
+      ".cxx": "cpp",
+      ".hpp": "cpp",
+      ".hxx": "cpp",
+      ".C": "cpp",
+      ".H": "cpp"
+    }
+  }
+}

@@ -10,6 +10,7 @@ dependencies:
   - skills-directory/skill-codex/plugins/skill-codex
   - HideBa/apm/research
   - caylent/tufte-data-viz
+  - HideBa/apm/decision-records
   mcp: []
 includes: auto
 scripts: {}

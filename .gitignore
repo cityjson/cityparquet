@@ -62,3 +62,5 @@ ai/skills/
 # benchmark/readbench is its own Cargo workspace.
 /benchmark/readbench/target/
 .worktrees/
+
+.agents/

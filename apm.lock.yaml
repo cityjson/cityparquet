@@ -1,14 +1,20 @@
 lockfile_version: '1'
-generated_at: '2026-08-02T11:57:42.163231+00:00'
+generated_at: '2026-09-07T12:50:46.601305+00:00'
 apm_version: 0.20.0
 dependencies:
 - repo_url: BuilderIO/skills
   host: github.com
-  resolved_commit: 3a7b1d98901fc8fabfaa1a387d9be4dea36e37b3
+  resolved_commit: 8cd59582774e0badf23796a6fc86c26c7117988e
   virtual_path: skills/efficient-fable
   is_virtual: true
   package_type: claude_skill
   deployed_files:
+  - .agents/skills/efficient-fable
+  - .agents/skills/efficient-fable/README.md
+  - .agents/skills/efficient-fable/SKILL.md
+  - .agents/skills/efficient-fable/assets/fable-orchestrator-dark.png
+  - .agents/skills/efficient-fable/assets/fable-orchestrator.excalidraw
+  - .agents/skills/efficient-fable/assets/fable-orchestrator.png
   - .claude/skills/efficient-fable
   - .claude/skills/efficient-fable/README.md
   - .claude/skills/efficient-fable/SKILL.md
@@ -16,6 +22,11 @@ dependencies:
   - .claude/skills/efficient-fable/assets/fable-orchestrator.excalidraw
   - .claude/skills/efficient-fable/assets/fable-orchestrator.png
   deployed_file_hashes:
+    .agents/skills/efficient-fable/README.md: sha256:9949d921e46d2a22a514cf917b80a0501982808bbb79cf9a2a492cd0e74798ca
+    .agents/skills/efficient-fable/SKILL.md: sha256:88323da64a6ac7cd63ff40b4c798b7bb994de599ff48ee5db56bb2bf9123e675
+    .agents/skills/efficient-fable/assets/fable-orchestrator-dark.png: sha256:2ef235b84ef1d49a197cbd21599190528ff4bdeccd905360d94ee7f70c337e78
+    .agents/skills/efficient-fable/assets/fable-orchestrator.excalidraw: sha256:201fff8842ab23f01bf673af7a2fe4f170b2acc3bd58265893109985d8f36ac8
+    .agents/skills/efficient-fable/assets/fable-orchestrator.png: sha256:444ca9f93f890774b1cd070feafdf921368f9962df6beff5578cd57b99bba8a1
     .claude/skills/efficient-fable/README.md: sha256:9949d921e46d2a22a514cf917b80a0501982808bbb79cf9a2a492cd0e74798ca
     .claude/skills/efficient-fable/SKILL.md: sha256:88323da64a6ac7cd63ff40b4c798b7bb994de599ff48ee5db56bb2bf9123e675
     .claude/skills/efficient-fable/assets/fable-orchestrator-dark.png: sha256:2ef235b84ef1d49a197cbd21599190528ff4bdeccd905360d94ee7f70c337e78
@@ -24,18 +35,73 @@ dependencies:
   content_hash: sha256:1bea4b72716d89b4ac5e022118fb585b71d71f55433eba3430ee63130eb88bce
 - repo_url: HideBa/apm
   host: github.com
-  resolved_commit: 5e4198ee8cc1ba6cc1c674ef738f89c8a76f5caf
+  resolved_commit: 5a63c7025ec356ab122e1def64aae30d427e1d9e
+  virtual_path: decision-records
+  is_virtual: true
+  package_type: apm_package
+  deployed_files:
+  - .agents/skills/decision-records
+  - .agents/skills/decision-records/SKILL.md
+  - .agents/skills/decision-records/evals/evals.json
+  - .agents/skills/decision-records/references/example.md
+  - .agents/skills/decision-records/scripts/adr.py
+  - .claude/hooks/decision-records/scripts/adr_nudge.py
+  - .claude/skills/decision-records
+  - .claude/skills/decision-records/SKILL.md
+  - .claude/skills/decision-records/evals/evals.json
+  - .claude/skills/decision-records/references/example.md
+  - .claude/skills/decision-records/scripts/adr.py
+  - .codex/hooks/decision-records/scripts/adr_nudge.py
+  deployed_file_hashes:
+    .agents/skills/decision-records/SKILL.md: sha256:b7cf0f3776ff4c988f063cba8a43b51a6c1b968993989fffc4a5796c1da325ce
+    .agents/skills/decision-records/evals/evals.json: sha256:9a0d19f1d2db6685d2c7309969f8e9ac6c6df917e60b46f92282c080c0d60280
+    .agents/skills/decision-records/references/example.md: sha256:b9188b6bfba3151d23df8d52c3fe60970c71e08f635282aa4d5521300c4b6f38
+    .agents/skills/decision-records/scripts/adr.py: sha256:1c329c96a4c4906a55d7b6a98bebaa3ef6ff24519c2780932eaebe5b16f8e90f
+    .claude/hooks/decision-records/scripts/adr_nudge.py: sha256:f9565c0d9b961cb8d022935760dd1a858e2dc062861fedbee866b4ee4ff6da0d
+    .claude/skills/decision-records/SKILL.md: sha256:b7cf0f3776ff4c988f063cba8a43b51a6c1b968993989fffc4a5796c1da325ce
+    .claude/skills/decision-records/evals/evals.json: sha256:9a0d19f1d2db6685d2c7309969f8e9ac6c6df917e60b46f92282c080c0d60280
+    .claude/skills/decision-records/references/example.md: sha256:b9188b6bfba3151d23df8d52c3fe60970c71e08f635282aa4d5521300c4b6f38
+    .claude/skills/decision-records/scripts/adr.py: sha256:1c329c96a4c4906a55d7b6a98bebaa3ef6ff24519c2780932eaebe5b16f8e90f
+    .codex/hooks/decision-records/scripts/adr_nudge.py: sha256:f9565c0d9b961cb8d022935760dd1a858e2dc062861fedbee866b4ee4ff6da0d
+  content_hash: sha256:f1187aa3fc5b6456eacb0ed74ee3c7cae2cd5bff21f16392fe3fe701026e4bde
+- repo_url: HideBa/apm
+  host: github.com
+  resolved_commit: 5a63c7025ec356ab122e1def64aae30d427e1d9e
   virtual_path: library-dev
   is_virtual: true
   package_type: apm_package
   content_hash: sha256:e81aa8849018b72b01d796d5cc6e478b9fb9f734bf8c52a88a2febfe7e38074b
 - repo_url: HideBa/apm
   host: github.com
-  resolved_commit: 6a01dbf984c71f41fe103a215065f4fa0058b5b6
+  resolved_commit: 5a63c7025ec356ab122e1def64aae30d427e1d9e
   virtual_path: research
   is_virtual: true
   package_type: apm_package
-  content_hash: sha256:283eda0dc7347e898c0c40bebcd2b720618a816b71c474e7f02e7fc7e2cbed88
+  deployed_files:
+  - .agents/skills/paper-preflight
+  - .agents/skills/paper-preflight/SKILL.md
+  - .agents/skills/paper-preflight/evals/evals.json
+  - .agents/skills/paper-preflight/references/formats.md
+  - .agents/skills/paper-preflight/scripts/check_consistency.py
+  - .agents/skills/paper-preflight/scripts/verify_refs.py
+  - .claude/skills/paper-preflight
+  - .claude/skills/paper-preflight/SKILL.md
+  - .claude/skills/paper-preflight/evals/evals.json
+  - .claude/skills/paper-preflight/references/formats.md
+  - .claude/skills/paper-preflight/scripts/check_consistency.py
+  - .claude/skills/paper-preflight/scripts/verify_refs.py
+  deployed_file_hashes:
+    .agents/skills/paper-preflight/SKILL.md: sha256:86509d80c4cde3bd27ac6683c31560dc8d0bfda6873912a16f5883396e61c856
+    .agents/skills/paper-preflight/evals/evals.json: sha256:a9b74fbb13ab52e175ad8b68c03fcecd42baa56cc0d878aefce54737149d45d0
+    .agents/skills/paper-preflight/references/formats.md: sha256:0a17a5e151beaaebc354104986621a513ebc07b9d5e5df58e0e18e56ec2769a9
+    .agents/skills/paper-preflight/scripts/check_consistency.py: sha256:226a726d2023510a1b242a5fb9598177a5c2de69d5ec4f54b483854f5a90a109
+    .agents/skills/paper-preflight/scripts/verify_refs.py: sha256:1d8b78ff7555196670e80eec7bb4ddc9a7d14be1f85e904ab14f3023f2a92da2
+    .claude/skills/paper-preflight/SKILL.md: sha256:86509d80c4cde3bd27ac6683c31560dc8d0bfda6873912a16f5883396e61c856
+    .claude/skills/paper-preflight/evals/evals.json: sha256:a9b74fbb13ab52e175ad8b68c03fcecd42baa56cc0d878aefce54737149d45d0
+    .claude/skills/paper-preflight/references/formats.md: sha256:0a17a5e151beaaebc354104986621a513ebc07b9d5e5df58e0e18e56ec2769a9
+    .claude/skills/paper-preflight/scripts/check_consistency.py: sha256:226a726d2023510a1b242a5fb9598177a5c2de69d5ec4f54b483854f5a90a109
+    .claude/skills/paper-preflight/scripts/verify_refs.py: sha256:1d8b78ff7555196670e80eec7bb4ddc9a7d14be1f85e904ab14f3023f2a92da2
+  content_hash: sha256:7042198625be0cb46ae9cdc2190857820eef3e461631bb1100d57fed37731c46
 - repo_url: caylent/tufte-data-viz
   host: github.com
   resolved_commit: ae7ca0de7819db83241b24a2618810d5f1171145
@@ -179,7 +245,7 @@ dependencies:
   content_hash: sha256:327533c3d34985286655ea27f5c730779dee08fe9f7bcab9f09451571385d1d1
 - repo_url: haydenbleasel/blume
   host: github.com
-  resolved_commit: 8d7e7799803b1ab3fce22f09a789422b83a2463e
+  resolved_commit: b3d59c752a6c0a59a80d2fb2d874cc591e775d6a
   package_type: skill_bundle
   deployed_files:
   - .agents/skills/blume
@@ -213,34 +279,34 @@ dependencies:
   - .claude/skills/blume-update-docs/references/audit-checklist.md
   - .claude/skills/blume/SKILL.md
   deployed_file_hashes:
-    .agents/skills/blume-migrate/SKILL.md: sha256:e4cf16f4b99fa59bd46ee2a0f7095d9344d24f0d016e4128d79df0b98250f568
+    .agents/skills/blume-migrate/SKILL.md: sha256:bce4e33e2ed64e51c5e1ba8030e4b9d04155c7373ddbb3192417eebd6ee196bd
     .agents/skills/blume-migrate/assets/oxfmt@0.55.0.patch: sha256:2ca0d4459d0b9d979cd6da2879ffec503994bbfd052c5b38361ce6061c548d3e
-    .agents/skills/blume-migrate/references/docusaurus.md: sha256:aa1cebc4b21909f081b4d96282e172ae0ebe64141daaab75af9d77f352fd9bf3
-    .agents/skills/blume-migrate/references/fumadocs.md: sha256:7e69d1786e1d6dab99affe30098f62b014b018061bf2f27f0cd36202fd63170f
-    .agents/skills/blume-migrate/references/mintlify.md: sha256:d14775212fcc0c0bd63522e19800c18c69a7fffbad32e794cd3e3a8fb96ae669
-    .agents/skills/blume-migrate/references/monorepo.md: sha256:25c2ccbddf1225a3a72a73937b7dfef455e7a92ce2495f2cd1330dc8578dd8fa
-    .agents/skills/blume-migrate/references/nextra.md: sha256:d203f8b286aa7a7841e9ceea11b22fd81c96d826a2661c4a8edc9b74451686e3
-    .agents/skills/blume-migrate/references/starlight.md: sha256:b71efe33e2b272227bfa82f7300f80f998ba759a9ceda31782ce34436f4c7a72
-    .agents/skills/blume-migrate/scripts/mintlify-codemod.mjs: sha256:4fdd481a181eca485fd3f69d51007fe6dc86d1058c54a51e117f432b5cf4dfcd
+    .agents/skills/blume-migrate/references/docusaurus.md: sha256:c59c6bfd815d592b016f56de31d3c537104ba7b30c470667aeadd5d7a0411ba8
+    .agents/skills/blume-migrate/references/fumadocs.md: sha256:e52a982ef314c064440730a8da380598963ca2cb9cf3be8226056ae62aec67a4
+    .agents/skills/blume-migrate/references/mintlify.md: sha256:2cbd5db03cf74ed8186c069b34790ce755e8688171c76972432b2bdf2b719a47
+    .agents/skills/blume-migrate/references/monorepo.md: sha256:96381882372751d8e8c9919e13a4ace9e7ea5bdee250b8d5172e32ce4125b568
+    .agents/skills/blume-migrate/references/nextra.md: sha256:c9266a33839d31ba10e03f145feecc9dd589cd4d53b325464b496b0c0cf00cc9
+    .agents/skills/blume-migrate/references/starlight.md: sha256:f1a675024060511e6b77801eb25db25d9ec6fa0be9115b81a788b35bdadf3966
+    .agents/skills/blume-migrate/scripts/mintlify-codemod.mjs: sha256:277cb2918e8bbee2d1b4b6257d309e8296570ebf5c20b87c4ca4798fe8b53909
     .agents/skills/blume-update-docs/SKILL.md: sha256:30fffeed8fd159bb6108687d5638f677e1145820f89d131c6bc76609bd523ec3
     .agents/skills/blume-update-docs/references/audit-checklist.md: sha256:8728904175254b6d22bc3a2fb4c9a89fdbae04893d6caa1b36f7a4d310c807ef
-    .agents/skills/blume/SKILL.md: sha256:a0c262b0058cf488a3a03bdfe008ef52b0d3c3f0b74e8d3382c1cb3cd9a299e3
-    .claude/skills/blume-migrate/SKILL.md: sha256:e4cf16f4b99fa59bd46ee2a0f7095d9344d24f0d016e4128d79df0b98250f568
+    .agents/skills/blume/SKILL.md: sha256:deab31efe25f44bfd231201fcb74bdf8aad243a29dca7ece4f12a95130a989bf
+    .claude/skills/blume-migrate/SKILL.md: sha256:bce4e33e2ed64e51c5e1ba8030e4b9d04155c7373ddbb3192417eebd6ee196bd
     .claude/skills/blume-migrate/assets/oxfmt@0.55.0.patch: sha256:2ca0d4459d0b9d979cd6da2879ffec503994bbfd052c5b38361ce6061c548d3e
-    .claude/skills/blume-migrate/references/docusaurus.md: sha256:aa1cebc4b21909f081b4d96282e172ae0ebe64141daaab75af9d77f352fd9bf3
-    .claude/skills/blume-migrate/references/fumadocs.md: sha256:7e69d1786e1d6dab99affe30098f62b014b018061bf2f27f0cd36202fd63170f
-    .claude/skills/blume-migrate/references/mintlify.md: sha256:d14775212fcc0c0bd63522e19800c18c69a7fffbad32e794cd3e3a8fb96ae669
-    .claude/skills/blume-migrate/references/monorepo.md: sha256:25c2ccbddf1225a3a72a73937b7dfef455e7a92ce2495f2cd1330dc8578dd8fa
-    .claude/skills/blume-migrate/references/nextra.md: sha256:d203f8b286aa7a7841e9ceea11b22fd81c96d826a2661c4a8edc9b74451686e3
-    .claude/skills/blume-migrate/references/starlight.md: sha256:b71efe33e2b272227bfa82f7300f80f998ba759a9ceda31782ce34436f4c7a72
-    .claude/skills/blume-migrate/scripts/mintlify-codemod.mjs: sha256:4fdd481a181eca485fd3f69d51007fe6dc86d1058c54a51e117f432b5cf4dfcd
+    .claude/skills/blume-migrate/references/docusaurus.md: sha256:c59c6bfd815d592b016f56de31d3c537104ba7b30c470667aeadd5d7a0411ba8
+    .claude/skills/blume-migrate/references/fumadocs.md: sha256:e52a982ef314c064440730a8da380598963ca2cb9cf3be8226056ae62aec67a4
+    .claude/skills/blume-migrate/references/mintlify.md: sha256:2cbd5db03cf74ed8186c069b34790ce755e8688171c76972432b2bdf2b719a47
+    .claude/skills/blume-migrate/references/monorepo.md: sha256:96381882372751d8e8c9919e13a4ace9e7ea5bdee250b8d5172e32ce4125b568
+    .claude/skills/blume-migrate/references/nextra.md: sha256:c9266a33839d31ba10e03f145feecc9dd589cd4d53b325464b496b0c0cf00cc9
+    .claude/skills/blume-migrate/references/starlight.md: sha256:f1a675024060511e6b77801eb25db25d9ec6fa0be9115b81a788b35bdadf3966
+    .claude/skills/blume-migrate/scripts/mintlify-codemod.mjs: sha256:277cb2918e8bbee2d1b4b6257d309e8296570ebf5c20b87c4ca4798fe8b53909
     .claude/skills/blume-update-docs/SKILL.md: sha256:30fffeed8fd159bb6108687d5638f677e1145820f89d131c6bc76609bd523ec3
     .claude/skills/blume-update-docs/references/audit-checklist.md: sha256:8728904175254b6d22bc3a2fb4c9a89fdbae04893d6caa1b36f7a4d310c807ef
-    .claude/skills/blume/SKILL.md: sha256:a0c262b0058cf488a3a03bdfe008ef52b0d3c3f0b74e8d3382c1cb3cd9a299e3
-  content_hash: sha256:3f32377f0b43adbd504059b4ff825a947f1ccacf1f3f433a62fd399146f95ad1
+    .claude/skills/blume/SKILL.md: sha256:deab31efe25f44bfd231201fcb74bdf8aad243a29dca7ece4f12a95130a989bf
+  content_hash: sha256:10c1109f1685b5efd7622bbd4e7b43397a44bc1cea30890ad260d6e2a43c9c62
 - repo_url: skills-directory/skill-codex
   host: github.com
-  resolved_commit: 0cce7fc7c49b08fd60ae05bdf7934590d7bc34b5
+  resolved_commit: 7a9151630396f7ae0ce4d1f5700daaf98c97c0e1
   virtual_path: plugins/skill-codex
   is_virtual: true
   package_type: marketplace_plugin
@@ -250,39 +316,39 @@ dependencies:
   - .claude/skills/codex
   - .claude/skills/codex/SKILL.md
   deployed_file_hashes:
-    .agents/skills/codex/SKILL.md: sha256:0461207a36113ce224c5e193fd0fd90be6a8d0ca7088900fe0cd9620e3f31843
-    .claude/skills/codex/SKILL.md: sha256:0461207a36113ce224c5e193fd0fd90be6a8d0ca7088900fe0cd9620e3f31843
-  content_hash: sha256:94b4fb627786d227bab41f652524993b03ccd7455f2ff09b2e359b5383ae9d95
+    .agents/skills/codex/SKILL.md: sha256:76ca5c8efaf074343368f299ebcc4db6877ae7d6547cb4cf9696e42569d2f508
+    .claude/skills/codex/SKILL.md: sha256:76ca5c8efaf074343368f299ebcc4db6877ae7d6547cb4cf9696e42569d2f508
+  content_hash: sha256:0c57a8e2595afb47f4f09e495cf6f8ecc4b667114c8900571e680b04c586a3f4
 - repo_url: anthropics/claude-plugins-official
   host: github.com
-  resolved_commit: 518259c1c3449a4f396505d4840c2163420bfb6c
+  resolved_commit: 85cce0381e7860082641b59d961a2b8c368b8b79
   virtual_path: external_plugins/context7
   is_virtual: true
   depth: 2
   resolved_by: HideBa/apm
   package_type: marketplace_plugin
-  content_hash: sha256:6967008859305616d3e9a6a2e0ab9b860bf22d46b2416b6d90b1d35fd5fdaeb0
+  content_hash: sha256:3d64f915dc8f1c88580b7f62827d4395c0e2b1d4c4914cf3eda57c343fc5c949
 - repo_url: anthropics/claude-plugins-official
   host: github.com
-  resolved_commit: 518259c1c3449a4f396505d4840c2163420bfb6c
+  resolved_commit: 85cce0381e7860082641b59d961a2b8c368b8b79
   virtual_path: external_plugins/github
   is_virtual: true
   depth: 2
   resolved_by: HideBa/apm
   package_type: marketplace_plugin
-  content_hash: sha256:958c062c0283bd2d5415acddaeb2695d3ac863b5511812560d903b16895ed891
+  content_hash: sha256:21bd625c8b78f090e5f6df2b18b2f24a80864e24b98cbd2afc42fdc178b4c780
 - repo_url: anthropics/claude-plugins-official
   host: github.com
-  resolved_commit: 518259c1c3449a4f396505d4840c2163420bfb6c
+  resolved_commit: 85cce0381e7860082641b59d961a2b8c368b8b79
   virtual_path: external_plugins/playwright
   is_virtual: true
   depth: 2
   resolved_by: HideBa/apm
   package_type: marketplace_plugin
-  content_hash: sha256:1a7b4ce45abf05e11488aa9c7dc7248b5c5bd5f84c8573f379be939a1a10ef8b
+  content_hash: sha256:b36ebf9806a44716f9691081b2f0f09657c8a2cacc5e4274ae4920cf33d263ff
 - repo_url: anthropics/claude-plugins-official
   host: github.com
-  resolved_commit: 518259c1c3449a4f396505d4840c2163420bfb6c
+  resolved_commit: 85cce0381e7860082641b59d961a2b8c368b8b79
   virtual_path: plugins/claude-md-management
   is_virtual: true
   depth: 2
@@ -313,7 +379,7 @@ dependencies:
   content_hash: sha256:eef0aa5a71845be937066ef304fbd152d523d2574587474d342def4c3e8514d4
 - repo_url: anthropics/claude-plugins-official
   host: github.com
-  resolved_commit: 518259c1c3449a4f396505d4840c2163420bfb6c
+  resolved_commit: 85cce0381e7860082641b59d961a2b8c368b8b79
   virtual_path: plugins/code-modernization
   is_virtual: true
   depth: 2
@@ -326,6 +392,7 @@ dependencies:
   - .claude/agents/scaffolder.md
   - .claude/agents/security-auditor.md
   - .claude/agents/test-engineer.md
+  - .claude/agents/uplift-migrator.md
   - .claude/agents/version-delta-analyst.md
   - .claude/commands/modernize-assess.md
   - .claude/commands/modernize-brief.md
@@ -337,6 +404,14 @@ dependencies:
   - .claude/commands/modernize-status.md
   - .claude/commands/modernize-transform.md
   - .claude/commands/modernize-uplift.md
+  - .codex/agents/architecture-critic.toml
+  - .codex/agents/business-rules-extractor.toml
+  - .codex/agents/legacy-analyst.toml
+  - .codex/agents/scaffolder.toml
+  - .codex/agents/security-auditor.toml
+  - .codex/agents/test-engineer.toml
+  - .codex/agents/uplift-migrator.toml
+  - .codex/agents/version-delta-analyst.toml
   deployed_file_hashes:
     .claude/agents/architecture-critic.md: sha256:a1de2a6a3d5a208a5722dd3902dcb2488ff9a879a5494f34a170518126495065
     .claude/agents/business-rules-extractor.md: sha256:aa718e013a378929adcd83a2c3efdc75266fbf69b3e31eebe085e617005d1491
@@ -344,21 +419,30 @@ dependencies:
     .claude/agents/scaffolder.md: sha256:67686ebb1b7eb6884e7eef386cd03463582e3b8458fea54715ac7f85a242ad78
     .claude/agents/security-auditor.md: sha256:0910739fa2df087ff5566ea1f34271f5fdd7569c16621ca14e01c1cca2c379d6
     .claude/agents/test-engineer.md: sha256:2bb01314295aef845536e1677ef28a6dbfecb9375d95b8c1489b7c82dc8481c1
-    .claude/agents/version-delta-analyst.md: sha256:984c7cf4c74d93c1e138908cadf3fc1e8608cdf347cffd6a788fb2aaffa8e034
+    .claude/agents/uplift-migrator.md: sha256:d32d9c88a8cf30a8a2357e651da83c1767430d20c32b811d9e078bc4e688b791
+    .claude/agents/version-delta-analyst.md: sha256:58403196643880f23d911cb26266c5590758fbb6d0c158234401090e782013fa
     .claude/commands/modernize-assess.md: sha256:abff811bc729926ec88fba16f216060d512c3244699a8e91e1077a0556f7bd14
-    .claude/commands/modernize-brief.md: sha256:f851d43b76c9bcc81fd8fb04b419345cea6963738c9ea6933969aa44565c0325
+    .claude/commands/modernize-brief.md: sha256:e84e6fc67c890974dd3ca7282b30d667028e57b787bd05dcc95a53c35a56968b
     .claude/commands/modernize-extract-rules.md: sha256:c61b6eaaebc3823f2c5fdb1a2c05c562a52b4f7d0ad6a1e8c8f42a22b9752b76
     .claude/commands/modernize-harden.md: sha256:2d1b83ff429768e4997f1ddea47dc989520b886256330e6ff2877046d929320c
     .claude/commands/modernize-map.md: sha256:7952d021c2379a41ddac02e5ab8177b8d9cdccb24f959bbd72f65fb2eba53c8e
-    .claude/commands/modernize-preflight.md: sha256:9d7f77b98e0ec3d1d295a6c75c08b36110996f4fd41aed13881ba319c79a564c
-    .claude/commands/modernize-reimagine.md: sha256:7b1c18bd5d4d06e0350a83eda23491e03db9e892742ef11aa947e13429d88679
-    .claude/commands/modernize-status.md: sha256:67a39b4a8b8e552ce95e13768a6a02a7e0a0b780a82800c987ae4d0f4f66543e
-    .claude/commands/modernize-transform.md: sha256:39d03f9d92066d0df27a15814b6ee5fd0f6c8fb11ec9cb5fefdc61e266502af0
-    .claude/commands/modernize-uplift.md: sha256:c300d193c841acb45245eac07953a324681587981aa0049871af5c36c3b28398
-  content_hash: sha256:4b0fcb7f251678e82aba1546b2de5d5c4306e6d501e39591e89eeb2feb04db8b
+    .claude/commands/modernize-preflight.md: sha256:7d716aaff2f46690b77803a67c9ef6964b544fbc9bab2705eceb6b644028c8f8
+    .claude/commands/modernize-reimagine.md: sha256:596a7d87b5f2d4c890a8ae3065f3b989128dca1e01ab4ae5edf0270733ad6755
+    .claude/commands/modernize-status.md: sha256:585773aec9cf620393fd3efca4a2ef44b5a6bfcc97926608ac9e1be9653255c4
+    .claude/commands/modernize-transform.md: sha256:6e5d218a1559a759f125a0986b4030520627ca1d16b1fddd4d5a6430b80d4dcc
+    .claude/commands/modernize-uplift.md: sha256:45e45e37f0b1c16bb771f2f6d5c6ba78bde55f7203e17484a491d7824bd7dac2
+    .codex/agents/architecture-critic.toml: sha256:82e853e84903ce0a95347be887b00c157d7443b4c2f9ec48aa9eeeac1737b4cb
+    .codex/agents/business-rules-extractor.toml: sha256:dc6f4df0b396f2d8aad2168c258cfbb53bd4a9cebb9dc86e5ae1de4a9613704e
+    .codex/agents/legacy-analyst.toml: sha256:34d37975650696a374e50dc31583e79bf121647d9324425514dd043946c6f66d
+    .codex/agents/scaffolder.toml: sha256:a10855f93092150c0fef4c0b6105a847722b6761a53bd2931a57daa4f22f23d7
+    .codex/agents/security-auditor.toml: sha256:3f6bd9a245d7d736c14fa30a9dc6e70047c4377862be4f61d98d95bc0dc89df7
+    .codex/agents/test-engineer.toml: sha256:f20ae30855868dabf8870a2ac56fc3aa25569fe3c3091e8decb0954dc5766d72
+    .codex/agents/uplift-migrator.toml: sha256:e60e93c464d10b720e8962458520bb35ae176b9bd9c2b63b85b6ade7b53380ca
+    .codex/agents/version-delta-analyst.toml: sha256:ba2fb6fded27bdd31735543cce732e6b647d1844ca6f6a997a9b723089d51b00
+  content_hash: sha256:1edbb7192761b95cc400d077ba1d99a001e9348db47b0e251e1fdf9cb7c599cb
 - repo_url: anthropics/claude-plugins-official
   host: github.com
-  resolved_commit: 518259c1c3449a4f396505d4840c2163420bfb6c
+  resolved_commit: 85cce0381e7860082641b59d961a2b8c368b8b79
   virtual_path: plugins/code-simplifier
   is_virtual: true
   depth: 2
@@ -366,12 +450,14 @@ dependencies:
   package_type: marketplace_plugin
   deployed_files:
   - .claude/agents/code-simplifier.md
+  - .codex/agents/code-simplifier.toml
   deployed_file_hashes:
     .claude/agents/code-simplifier.md: sha256:2a51e8d210580d9f66ac2ed1226c41f9374565fc275da30d7bb95f65c2cc87bb
+    .codex/agents/code-simplifier.toml: sha256:9311dc226a96ae3dad15abb1abff498dbcefe400e3e0ebf09f6e68e6ca2b98b8
   content_hash: sha256:17829c1e01585fdaac1ff7de902433fca42517c678ed627640617ef9492bc6e8
 - repo_url: anthropics/claude-plugins-official
   host: github.com
-  resolved_commit: 518259c1c3449a4f396505d4840c2163420bfb6c
+  resolved_commit: 85cce0381e7860082641b59d961a2b8c368b8b79
   virtual_path: plugins/commit-commands
   is_virtual: true
   depth: 2
@@ -385,10 +471,10 @@ dependencies:
     .claude/commands/clean_gone.md: sha256:24ce5c79da87b481d346d26b297cbe327862f1e4bbee05406589f4b5468c7fa3
     .claude/commands/commit-push-pr.md: sha256:63ee94bcf2a60101d542ec46bf2afa18b31565105ebfc63f1a38e4d308d3cd2f
     .claude/commands/commit.md: sha256:366740b9d9f45e05bf7cc5b703156f95fe28180012899ceb90d89d34d4110e47
-  content_hash: sha256:7b16b47d77397e11c73fe20ed610f520e8556cbf33f2d0fa8a0a3b5bb534fc77
+  content_hash: sha256:740f11b929f7d23d1135600d41d751c935daf0d9a8eb9cf3a2b4e5e914d9bb5f
 - repo_url: anthropics/claude-plugins-official
   host: github.com
-  resolved_commit: 518259c1c3449a4f396505d4840c2163420bfb6c
+  resolved_commit: 85cce0381e7860082641b59d961a2b8c368b8b79
   virtual_path: plugins/feature-dev
   is_virtual: true
   depth: 2
@@ -399,15 +485,21 @@ dependencies:
   - .claude/agents/code-explorer.md
   - .claude/agents/code-reviewer.md
   - .claude/commands/feature-dev.md
+  - .codex/agents/code-architect.toml
+  - .codex/agents/code-explorer.toml
+  - .codex/agents/code-reviewer.toml
   deployed_file_hashes:
     .claude/agents/code-architect.md: sha256:c50fb08d59a4bbd19660860626a049e44cf1a2b0c1cf782e6c7a99ba7e71b0c3
     .claude/agents/code-explorer.md: sha256:3b277703de7458988ec3b8021c716f79f642e174950ed332629310f68322029a
     .claude/agents/code-reviewer.md: sha256:a7df173bf77a00da5584c6401a1061524fdbe477b6fef5dd496d4c7a9113c78c
     .claude/commands/feature-dev.md: sha256:656a01ce40782ee849c444916362df0e4e4173afcd33313777fa86021d89994b
-  content_hash: sha256:b861bfa2aa453d073f4e13110b8b894c548ff54f46159f942f03490b865624f0
+    .codex/agents/code-architect.toml: sha256:adbd9094b97953ed001b3ceaa4664c46b58ef97478b495fb84bd24c8f619f1e4
+    .codex/agents/code-explorer.toml: sha256:b2f82af012a033ba946464e3195e85533f08fec04f3b2082ee8735ee7f5bdcb1
+    .codex/agents/code-reviewer.toml: sha256:65c86ee9608822619c44f9325cdb604ea7f68d161c11bcfab75f91cc4801c577
+  content_hash: sha256:f3e24b0684e525db5fda5f421a333421e6c4caff61ab4b5230462c17be3c7988
 - repo_url: anthropics/claude-plugins-official
   host: github.com
-  resolved_commit: 518259c1c3449a4f396505d4840c2163420bfb6c
+  resolved_commit: 85cce0381e7860082641b59d961a2b8c368b8b79
   virtual_path: plugins/ralph-loop
   is_virtual: true
   depth: 2
@@ -428,7 +520,7 @@ dependencies:
   content_hash: sha256:505ef90f057b672ca418a7ba10da05be195d28b7089063beed4c614a08fb3c07
 - repo_url: anthropics/claude-plugins-official
   host: github.com
-  resolved_commit: 518259c1c3449a4f396505d4840c2163420bfb6c
+  resolved_commit: 85cce0381e7860082641b59d961a2b8c368b8b79
   virtual_path: plugins/skill-creator
   is_virtual: true
   depth: 2
@@ -510,10 +602,493 @@ dependencies:
     .claude/skills/skill-creator/scripts/run_eval.py: sha256:43e3b8f80dbf69c343967ba77e268fae991d9fa3ed68b32a0ff02532cd48657f
     .claude/skills/skill-creator/scripts/run_loop.py: sha256:7bd6f674203168520517eec94c55f493c0d154339b061b4d7c0f0dad187d0f21
     .claude/skills/skill-creator/scripts/utils.py: sha256:3af8ae62c40c73ab712207436a0d9a981e845f25c5a7040229eb189cc8e45bb1
-  content_hash: sha256:4a46dda521cb4e88faf058cf3e819eee8914af55d41a32925fc58c9e93351475
+  content_hash: sha256:f9c0344c0a2a95339c2af2f821e507301a7710770b608cb74a44c4c9830f7e7a
+- repo_url: apcamargo/typst-skills
+  host: github.com
+  resolved_commit: 93978422d58d4e5c21efe4bfa9f3e6dd9940cf96
+  virtual_path: touying-author
+  is_virtual: true
+  depth: 2
+  resolved_by: HideBa/apm
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/touying-author
+  - .agents/skills/touying-author/SKILL.md
+  - .agents/skills/touying-author/docs/build-your-own-theme.md
+  - .agents/skills/touying-author/docs/changelog.md
+  - .agents/skills/touying-author/docs/code-styles.md
+  - .agents/skills/touying-author/docs/dynamic/complex.md
+  - .agents/skills/touying-author/docs/dynamic/cover.md
+  - .agents/skills/touying-author/docs/dynamic/equation.md
+  - .agents/skills/touying-author/docs/dynamic/handout.md
+  - .agents/skills/touying-author/docs/dynamic/other.md
+  - .agents/skills/touying-author/docs/dynamic/simple.md
+  - .agents/skills/touying-author/docs/external/pdfpc.md
+  - .agents/skills/touying-author/docs/external/pympress.md
+  - .agents/skills/touying-author/docs/external/typst-preview.md
+  - .agents/skills/touying-author/docs/global-settings.md
+  - .agents/skills/touying-author/docs/integration/cetz.md
+  - .agents/skills/touying-author/docs/integration/codly.md
+  - .agents/skills/touying-author/docs/integration/fletcher.md
+  - .agents/skills/touying-author/docs/integration/mitex.md
+  - .agents/skills/touying-author/docs/integration/pinit.md
+  - .agents/skills/touying-author/docs/integration/theorion.md
+  - .agents/skills/touying-author/docs/intro.md
+  - .agents/skills/touying-author/docs/layout.md
+  - .agents/skills/touying-author/docs/multi-file.md
+  - .agents/skills/touying-author/docs/progress/counters.md
+  - .agents/skills/touying-author/docs/progress/sections.md
+  - .agents/skills/touying-author/docs/sections.md
+  - .agents/skills/touying-author/docs/start.md
+  - .agents/skills/touying-author/docs/themes/aqua.md
+  - .agents/skills/touying-author/docs/themes/custom.md
+  - .agents/skills/touying-author/docs/themes/dewdrop.md
+  - .agents/skills/touying-author/docs/themes/metropolis.md
+  - .agents/skills/touying-author/docs/themes/simple.md
+  - .agents/skills/touying-author/docs/themes/stargazer.md
+  - .agents/skills/touying-author/docs/themes/university.md
+  - .agents/skills/touying-author/docs/utilities/fit-to.md
+  - .agents/skills/touying-author/examples/aqua-zh.typ
+  - .agents/skills/touying-author/examples/aqua.typ
+  - .agents/skills/touying-author/examples/default.typ
+  - .agents/skills/touying-author/examples/dewdrop.typ
+  - .agents/skills/touying-author/examples/example.typ
+  - .agents/skills/touying-author/examples/metropolis.typ
+  - .agents/skills/touying-author/examples/simple.typ
+  - .agents/skills/touying-author/examples/stargazer.typ
+  - .agents/skills/touying-author/examples/university.typ
+  - .claude/skills/touying-author
+  - .claude/skills/touying-author/SKILL.md
+  - .claude/skills/touying-author/docs/build-your-own-theme.md
+  - .claude/skills/touying-author/docs/changelog.md
+  - .claude/skills/touying-author/docs/code-styles.md
+  - .claude/skills/touying-author/docs/dynamic/complex.md
+  - .claude/skills/touying-author/docs/dynamic/cover.md
+  - .claude/skills/touying-author/docs/dynamic/equation.md
+  - .claude/skills/touying-author/docs/dynamic/handout.md
+  - .claude/skills/touying-author/docs/dynamic/other.md
+  - .claude/skills/touying-author/docs/dynamic/simple.md
+  - .claude/skills/touying-author/docs/external/pdfpc.md
+  - .claude/skills/touying-author/docs/external/pympress.md
+  - .claude/skills/touying-author/docs/external/typst-preview.md
+  - .claude/skills/touying-author/docs/global-settings.md
+  - .claude/skills/touying-author/docs/integration/cetz.md
+  - .claude/skills/touying-author/docs/integration/codly.md
+  - .claude/skills/touying-author/docs/integration/fletcher.md
+  - .claude/skills/touying-author/docs/integration/mitex.md
+  - .claude/skills/touying-author/docs/integration/pinit.md
+  - .claude/skills/touying-author/docs/integration/theorion.md
+  - .claude/skills/touying-author/docs/intro.md
+  - .claude/skills/touying-author/docs/layout.md
+  - .claude/skills/touying-author/docs/multi-file.md
+  - .claude/skills/touying-author/docs/progress/counters.md
+  - .claude/skills/touying-author/docs/progress/sections.md
+  - .claude/skills/touying-author/docs/sections.md
+  - .claude/skills/touying-author/docs/start.md
+  - .claude/skills/touying-author/docs/themes/aqua.md
+  - .claude/skills/touying-author/docs/themes/custom.md
+  - .claude/skills/touying-author/docs/themes/dewdrop.md
+  - .claude/skills/touying-author/docs/themes/metropolis.md
+  - .claude/skills/touying-author/docs/themes/simple.md
+  - .claude/skills/touying-author/docs/themes/stargazer.md
+  - .claude/skills/touying-author/docs/themes/university.md
+  - .claude/skills/touying-author/docs/utilities/fit-to.md
+  - .claude/skills/touying-author/examples/aqua-zh.typ
+  - .claude/skills/touying-author/examples/aqua.typ
+  - .claude/skills/touying-author/examples/default.typ
+  - .claude/skills/touying-author/examples/dewdrop.typ
+  - .claude/skills/touying-author/examples/example.typ
+  - .claude/skills/touying-author/examples/metropolis.typ
+  - .claude/skills/touying-author/examples/simple.typ
+  - .claude/skills/touying-author/examples/stargazer.typ
+  - .claude/skills/touying-author/examples/university.typ
+  deployed_file_hashes:
+    .agents/skills/touying-author/SKILL.md: sha256:fb3859d2997f62749a5e63e4773f928b9adb1410292078f325d6f2312fde8814
+    .agents/skills/touying-author/docs/build-your-own-theme.md: sha256:814919860d0119a17fe27cdb66ae1f7594711d28d9f49b0dd475d63ae7cca825
+    .agents/skills/touying-author/docs/changelog.md: sha256:aeab9a4db1e227319f37864d795e77c8dd9fbd7fbc4e1b20af075b1fed398193
+    .agents/skills/touying-author/docs/code-styles.md: sha256:75847a3f448702d30d119ea34adc9e298d4e67476f116a5e0f709561d8d071a5
+    .agents/skills/touying-author/docs/dynamic/complex.md: sha256:9384135bf0405d69686fa3b681d3a3e595f520f5bf78736291ce8fe348a1e430
+    .agents/skills/touying-author/docs/dynamic/cover.md: sha256:ed3dbb86ec2744692e932d19fb0c04d01744149f525e7cf4c84a364127fa13d3
+    .agents/skills/touying-author/docs/dynamic/equation.md: sha256:c17a5303f6d9814b59e483a8a2e1d8197c43e66ad7293e473c00b83676b0f02c
+    .agents/skills/touying-author/docs/dynamic/handout.md: sha256:ae78e81594f45a3d1e7d6fb043f204b2f4567c8d08bf9f4d9c90cc9a71280883
+    .agents/skills/touying-author/docs/dynamic/other.md: sha256:38dadb386fb5d7a00edc1bdc5583f65db3a063f4f3fb5bd9b7109ddb0865cdea
+    .agents/skills/touying-author/docs/dynamic/simple.md: sha256:f0cdc5c88a65d177464ea3e9b4399dbe96dbb2b489980ec1e33e05393f20add5
+    .agents/skills/touying-author/docs/external/pdfpc.md: sha256:83bf0f42ffaed6e488788ba7d075f2faeeb3c73f80f08eb1227ee9c89e649b4e
+    .agents/skills/touying-author/docs/external/pympress.md: sha256:77d30e62ada9e07ff522ef70dd7641c220d5d52eb27bca6477b61fd4d40a5e78
+    .agents/skills/touying-author/docs/external/typst-preview.md: sha256:fac0b221bb6c1171df3e0d5b135dcbc424a112086ca18ff20ff11987006fc520
+    .agents/skills/touying-author/docs/global-settings.md: sha256:a5d633c3f3ca24b2fb0932b274a27cf5f657314cce1c0dcd3aa0a13544a6640d
+    .agents/skills/touying-author/docs/integration/cetz.md: sha256:76ab649a9bae3a7b7b7d9d5278f5928644159b255b7e2f8afb6b8eff001d09df
+    .agents/skills/touying-author/docs/integration/codly.md: sha256:8bfc8f3e013aa1f520ee67d04b5cf32bde92cb9e90633b0a27cdaa5a0281456f
+    .agents/skills/touying-author/docs/integration/fletcher.md: sha256:0eb6f251709babc54897f4163a4708ebf33162cb5d06da326de10face588d303
+    .agents/skills/touying-author/docs/integration/mitex.md: sha256:a7b5d29609685dc9d91d8617f086c9bea0425431b84df8d6b9f3c18426e43638
+    .agents/skills/touying-author/docs/integration/pinit.md: sha256:cc1382535dae0e71758cbaa2740dea01eeef9d9b9d5bb45948f0b02d2e204224
+    .agents/skills/touying-author/docs/integration/theorion.md: sha256:9c6bb3e141442e2ee0fa46e0fe02d3bd62dd8005611604282541adc465cc5bfe
+    .agents/skills/touying-author/docs/intro.md: sha256:97cfd260104b3e7e3e55a6cf87ca35810877505bd9accfa8ea177b533f87b9ad
+    .agents/skills/touying-author/docs/layout.md: sha256:41c83cf238fc427babc2d6005f32f8df971d3350302c51a75635ff46f2dc8aee
+    .agents/skills/touying-author/docs/multi-file.md: sha256:d9e8816ad5b30b232fd6b4684eefc4c3ff4e8fac5f4ec92a96d65018dfef6932
+    .agents/skills/touying-author/docs/progress/counters.md: sha256:a423fe81dca444fe14ac634ee1d2ca362bbd31a3325cc2588913d070fbf82986
+    .agents/skills/touying-author/docs/progress/sections.md: sha256:ae9883fe8e3bd93e3bee741218b3031d2567661ec29d3f6917c362fa4a05582b
+    .agents/skills/touying-author/docs/sections.md: sha256:6063031b5801d188a7d0d371b5e0fbc86a4c64a7463dfc936945aa0bde195aa2
+    .agents/skills/touying-author/docs/start.md: sha256:d5747f55c9a130025c20951cf8aefda0958250e22f83e4261823825039ea6b51
+    .agents/skills/touying-author/docs/themes/aqua.md: sha256:68d858ebd56374b83971d1c3cd8da4eb5cd6c679237508cd0a5f6cf1c7eb46ed
+    .agents/skills/touying-author/docs/themes/custom.md: sha256:c9cbf18d5f57cfe57505e1f4695d27facf4b104d2a0e1de26d4f021c51d3912d
+    .agents/skills/touying-author/docs/themes/dewdrop.md: sha256:1b9fbe87474a660f2c5a09fcb3a6e54e20c24855fb84a1c816e92a3a1f81fdb0
+    .agents/skills/touying-author/docs/themes/metropolis.md: sha256:73e3778f4935e24ec4bab5f22f2a3a5092b09bfd786a9a2ab5beb594f833d028
+    .agents/skills/touying-author/docs/themes/simple.md: sha256:6472942d965083cde476c85572f117b1a24b3f2e875b3c9e28b523dd0f9f6903
+    .agents/skills/touying-author/docs/themes/stargazer.md: sha256:8c2918003cc04c963bbd56c2111eed38721dc7b70acfce6ea8b4cf552bf9b098
+    .agents/skills/touying-author/docs/themes/university.md: sha256:c0760a5ac8071f334d20109def8870c63c9196cc03563747500eb2e9940ab852
+    .agents/skills/touying-author/docs/utilities/fit-to.md: sha256:7f150ab249c122094f57e5cabf033cb8fde17d8709e73fb235b6087818178da7
+    .agents/skills/touying-author/examples/aqua-zh.typ: sha256:2c2b8f3a715c08830bbba82748bc69400720e9d81b7d5f1ab881176ab183acb1
+    .agents/skills/touying-author/examples/aqua.typ: sha256:596da2d1790a40bf08e9446059546e54162bd41e195f3c0ea64dc252767458a6
+    .agents/skills/touying-author/examples/default.typ: sha256:f37de236486cb4063cbad0322a3a392bd53aa608a42b4e71e4c9c49542a51710
+    .agents/skills/touying-author/examples/dewdrop.typ: sha256:01d5b5a0ff82d2e33f39d91bab731bba33adde7f7a4a54c08688fd54694308a3
+    .agents/skills/touying-author/examples/example.typ: sha256:142ac9e61f473a95a1c846e0665fe188e43604dd591ce11610cc2bf84e40aef7
+    .agents/skills/touying-author/examples/metropolis.typ: sha256:ee43483610947381ddf0cc147a4888eb083e3b90e368554ae02fde019f394af7
+    .agents/skills/touying-author/examples/simple.typ: sha256:978a0444861561af4588fc43dbce8aba1f637bacaa4b5b3cfbfb34b3a81d4198
+    .agents/skills/touying-author/examples/stargazer.typ: sha256:082226fbcc25752e91984382c54a75842128f7c1826b766eaf1caf7610ecc929
+    .agents/skills/touying-author/examples/university.typ: sha256:8bffbb28bc7a9afea12ccfcc6cdd8889937456616c034bbd91c079c40d96e8bf
+    .claude/skills/touying-author/SKILL.md: sha256:fb3859d2997f62749a5e63e4773f928b9adb1410292078f325d6f2312fde8814
+    .claude/skills/touying-author/docs/build-your-own-theme.md: sha256:814919860d0119a17fe27cdb66ae1f7594711d28d9f49b0dd475d63ae7cca825
+    .claude/skills/touying-author/docs/changelog.md: sha256:aeab9a4db1e227319f37864d795e77c8dd9fbd7fbc4e1b20af075b1fed398193
+    .claude/skills/touying-author/docs/code-styles.md: sha256:75847a3f448702d30d119ea34adc9e298d4e67476f116a5e0f709561d8d071a5
+    .claude/skills/touying-author/docs/dynamic/complex.md: sha256:9384135bf0405d69686fa3b681d3a3e595f520f5bf78736291ce8fe348a1e430
+    .claude/skills/touying-author/docs/dynamic/cover.md: sha256:ed3dbb86ec2744692e932d19fb0c04d01744149f525e7cf4c84a364127fa13d3
+    .claude/skills/touying-author/docs/dynamic/equation.md: sha256:c17a5303f6d9814b59e483a8a2e1d8197c43e66ad7293e473c00b83676b0f02c
+    .claude/skills/touying-author/docs/dynamic/handout.md: sha256:ae78e81594f45a3d1e7d6fb043f204b2f4567c8d08bf9f4d9c90cc9a71280883
+    .claude/skills/touying-author/docs/dynamic/other.md: sha256:38dadb386fb5d7a00edc1bdc5583f65db3a063f4f3fb5bd9b7109ddb0865cdea
+    .claude/skills/touying-author/docs/dynamic/simple.md: sha256:f0cdc5c88a65d177464ea3e9b4399dbe96dbb2b489980ec1e33e05393f20add5
+    .claude/skills/touying-author/docs/external/pdfpc.md: sha256:83bf0f42ffaed6e488788ba7d075f2faeeb3c73f80f08eb1227ee9c89e649b4e
+    .claude/skills/touying-author/docs/external/pympress.md: sha256:77d30e62ada9e07ff522ef70dd7641c220d5d52eb27bca6477b61fd4d40a5e78
+    .claude/skills/touying-author/docs/external/typst-preview.md: sha256:fac0b221bb6c1171df3e0d5b135dcbc424a112086ca18ff20ff11987006fc520
+    .claude/skills/touying-author/docs/global-settings.md: sha256:a5d633c3f3ca24b2fb0932b274a27cf5f657314cce1c0dcd3aa0a13544a6640d
+    .claude/skills/touying-author/docs/integration/cetz.md: sha256:76ab649a9bae3a7b7b7d9d5278f5928644159b255b7e2f8afb6b8eff001d09df
+    .claude/skills/touying-author/docs/integration/codly.md: sha256:8bfc8f3e013aa1f520ee67d04b5cf32bde92cb9e90633b0a27cdaa5a0281456f
+    .claude/skills/touying-author/docs/integration/fletcher.md: sha256:0eb6f251709babc54897f4163a4708ebf33162cb5d06da326de10face588d303
+    .claude/skills/touying-author/docs/integration/mitex.md: sha256:a7b5d29609685dc9d91d8617f086c9bea0425431b84df8d6b9f3c18426e43638
+    .claude/skills/touying-author/docs/integration/pinit.md: sha256:cc1382535dae0e71758cbaa2740dea01eeef9d9b9d5bb45948f0b02d2e204224
+    .claude/skills/touying-author/docs/integration/theorion.md: sha256:9c6bb3e141442e2ee0fa46e0fe02d3bd62dd8005611604282541adc465cc5bfe
+    .claude/skills/touying-author/docs/intro.md: sha256:97cfd260104b3e7e3e55a6cf87ca35810877505bd9accfa8ea177b533f87b9ad
+    .claude/skills/touying-author/docs/layout.md: sha256:41c83cf238fc427babc2d6005f32f8df971d3350302c51a75635ff46f2dc8aee
+    .claude/skills/touying-author/docs/multi-file.md: sha256:d9e8816ad5b30b232fd6b4684eefc4c3ff4e8fac5f4ec92a96d65018dfef6932
+    .claude/skills/touying-author/docs/progress/counters.md: sha256:a423fe81dca444fe14ac634ee1d2ca362bbd31a3325cc2588913d070fbf82986
+    .claude/skills/touying-author/docs/progress/sections.md: sha256:ae9883fe8e3bd93e3bee741218b3031d2567661ec29d3f6917c362fa4a05582b
+    .claude/skills/touying-author/docs/sections.md: sha256:6063031b5801d188a7d0d371b5e0fbc86a4c64a7463dfc936945aa0bde195aa2
+    .claude/skills/touying-author/docs/start.md: sha256:d5747f55c9a130025c20951cf8aefda0958250e22f83e4261823825039ea6b51
+    .claude/skills/touying-author/docs/themes/aqua.md: sha256:68d858ebd56374b83971d1c3cd8da4eb5cd6c679237508cd0a5f6cf1c7eb46ed
+    .claude/skills/touying-author/docs/themes/custom.md: sha256:c9cbf18d5f57cfe57505e1f4695d27facf4b104d2a0e1de26d4f021c51d3912d
+    .claude/skills/touying-author/docs/themes/dewdrop.md: sha256:1b9fbe87474a660f2c5a09fcb3a6e54e20c24855fb84a1c816e92a3a1f81fdb0
+    .claude/skills/touying-author/docs/themes/metropolis.md: sha256:73e3778f4935e24ec4bab5f22f2a3a5092b09bfd786a9a2ab5beb594f833d028
+    .claude/skills/touying-author/docs/themes/simple.md: sha256:6472942d965083cde476c85572f117b1a24b3f2e875b3c9e28b523dd0f9f6903
+    .claude/skills/touying-author/docs/themes/stargazer.md: sha256:8c2918003cc04c963bbd56c2111eed38721dc7b70acfce6ea8b4cf552bf9b098
+    .claude/skills/touying-author/docs/themes/university.md: sha256:c0760a5ac8071f334d20109def8870c63c9196cc03563747500eb2e9940ab852
+    .claude/skills/touying-author/docs/utilities/fit-to.md: sha256:7f150ab249c122094f57e5cabf033cb8fde17d8709e73fb235b6087818178da7
+    .claude/skills/touying-author/examples/aqua-zh.typ: sha256:2c2b8f3a715c08830bbba82748bc69400720e9d81b7d5f1ab881176ab183acb1
+    .claude/skills/touying-author/examples/aqua.typ: sha256:596da2d1790a40bf08e9446059546e54162bd41e195f3c0ea64dc252767458a6
+    .claude/skills/touying-author/examples/default.typ: sha256:f37de236486cb4063cbad0322a3a392bd53aa608a42b4e71e4c9c49542a51710
+    .claude/skills/touying-author/examples/dewdrop.typ: sha256:01d5b5a0ff82d2e33f39d91bab731bba33adde7f7a4a54c08688fd54694308a3
+    .claude/skills/touying-author/examples/example.typ: sha256:142ac9e61f473a95a1c846e0665fe188e43604dd591ce11610cc2bf84e40aef7
+    .claude/skills/touying-author/examples/metropolis.typ: sha256:ee43483610947381ddf0cc147a4888eb083e3b90e368554ae02fde019f394af7
+    .claude/skills/touying-author/examples/simple.typ: sha256:978a0444861561af4588fc43dbce8aba1f637bacaa4b5b3cfbfb34b3a81d4198
+    .claude/skills/touying-author/examples/stargazer.typ: sha256:082226fbcc25752e91984382c54a75842128f7c1826b766eaf1caf7610ecc929
+    .claude/skills/touying-author/examples/university.typ: sha256:8bffbb28bc7a9afea12ccfcc6cdd8889937456616c034bbd91c079c40d96e8bf
+  content_hash: sha256:81996f12abf03709a59a86afbee3a06784e6291e8987bd17e83398cc388a4f9c
+- repo_url: apcamargo/typst-skills
+  host: github.com
+  resolved_commit: 93978422d58d4e5c21efe4bfa9f3e6dd9940cf96
+  virtual_path: typst-author
+  is_virtual: true
+  depth: 2
+  resolved_by: HideBa/apm
+  package_type: claude_skill
+  deployed_files:
+  - .agents/skills/typst-author
+  - .agents/skills/typst-author/SKILL.md
+  - .agents/skills/typst-author/docs/changelog/0.1.0.md
+  - .agents/skills/typst-author/docs/changelog/0.10.0.md
+  - .agents/skills/typst-author/docs/changelog/0.11.0.md
+  - .agents/skills/typst-author/docs/changelog/0.11.1.md
+  - .agents/skills/typst-author/docs/changelog/0.12.0.md
+  - .agents/skills/typst-author/docs/changelog/0.13.0.md
+  - .agents/skills/typst-author/docs/changelog/0.13.1.md
+  - .agents/skills/typst-author/docs/changelog/0.14.0.md
+  - .agents/skills/typst-author/docs/changelog/0.14.1.md
+  - .agents/skills/typst-author/docs/changelog/0.14.2.md
+  - .agents/skills/typst-author/docs/changelog/0.15.0.md
+  - .agents/skills/typst-author/docs/changelog/0.2.0.md
+  - .agents/skills/typst-author/docs/changelog/0.3.0.md
+  - .agents/skills/typst-author/docs/changelog/0.4.0.md
+  - .agents/skills/typst-author/docs/changelog/0.5.0.md
+  - .agents/skills/typst-author/docs/changelog/0.6.0.md
+  - .agents/skills/typst-author/docs/changelog/0.7.0.md
+  - .agents/skills/typst-author/docs/changelog/0.8.0.md
+  - .agents/skills/typst-author/docs/changelog/0.9.0.md
+  - .agents/skills/typst-author/docs/changelog/earlier.md
+  - .agents/skills/typst-author/docs/changelog/index.md
+  - .agents/skills/typst-author/docs/changelog/utils.md
+  - .agents/skills/typst-author/docs/guides/accessibility.md
+  - .agents/skills/typst-author/docs/guides/for-latex-users.md
+  - .agents/skills/typst-author/docs/guides/index.md
+  - .agents/skills/typst-author/docs/guides/page-setup.md
+  - .agents/skills/typst-author/docs/guides/tables.md
+  - .agents/skills/typst-author/docs/index.md
+  - .agents/skills/typst-author/docs/overview.md
+  - .agents/skills/typst-author/docs/reference/export/bundle.md
+  - .agents/skills/typst-author/docs/reference/export/html.md
+  - .agents/skills/typst-author/docs/reference/export/index.md
+  - .agents/skills/typst-author/docs/reference/export/pdf.md
+  - .agents/skills/typst-author/docs/reference/export/png.md
+  - .agents/skills/typst-author/docs/reference/export/svg.md
+  - .agents/skills/typst-author/docs/reference/index.md
+  - .agents/skills/typst-author/docs/reference/language/context.md
+  - .agents/skills/typst-author/docs/reference/language/index.md
+  - .agents/skills/typst-author/docs/reference/language/scripting.md
+  - .agents/skills/typst-author/docs/reference/language/styling.md
+  - .agents/skills/typst-author/docs/reference/language/syntax.md
+  - .agents/skills/typst-author/docs/reference/library/data-loading.md
+  - .agents/skills/typst-author/docs/reference/library/emoji.md
+  - .agents/skills/typst-author/docs/reference/library/foundations.md
+  - .agents/skills/typst-author/docs/reference/library/index.md
+  - .agents/skills/typst-author/docs/reference/library/introspection.md
+  - .agents/skills/typst-author/docs/reference/library/layout.md
+  - .agents/skills/typst-author/docs/reference/library/math.md
+  - .agents/skills/typst-author/docs/reference/library/model.md
+  - .agents/skills/typst-author/docs/reference/library/sym.md
+  - .agents/skills/typst-author/docs/reference/library/text.md
+  - .agents/skills/typst-author/docs/reference/library/visualize.md
+  - .agents/skills/typst-author/docs/tutorial/1-writing.md
+  - .agents/skills/typst-author/docs/tutorial/2-formatting.md
+  - .agents/skills/typst-author/docs/tutorial/3-advanced.md
+  - .agents/skills/typst-author/docs/tutorial/4-template.md
+  - .agents/skills/typst-author/docs/tutorial/index.md
+  - .claude/skills/typst-author
+  - .claude/skills/typst-author/SKILL.md
+  - .claude/skills/typst-author/docs/changelog/0.1.0.md
+  - .claude/skills/typst-author/docs/changelog/0.10.0.md
+  - .claude/skills/typst-author/docs/changelog/0.11.0.md
+  - .claude/skills/typst-author/docs/changelog/0.11.1.md
+  - .claude/skills/typst-author/docs/changelog/0.12.0.md
+  - .claude/skills/typst-author/docs/changelog/0.13.0.md
+  - .claude/skills/typst-author/docs/changelog/0.13.1.md
+  - .claude/skills/typst-author/docs/changelog/0.14.0.md
+  - .claude/skills/typst-author/docs/changelog/0.14.1.md
+  - .claude/skills/typst-author/docs/changelog/0.14.2.md
+  - .claude/skills/typst-author/docs/changelog/0.15.0.md
+  - .claude/skills/typst-author/docs/changelog/0.2.0.md
+  - .claude/skills/typst-author/docs/changelog/0.3.0.md
+  - .claude/skills/typst-author/docs/changelog/0.4.0.md
+  - .claude/skills/typst-author/docs/changelog/0.5.0.md
+  - .claude/skills/typst-author/docs/changelog/0.6.0.md
+  - .claude/skills/typst-author/docs/changelog/0.7.0.md
+  - .claude/skills/typst-author/docs/changelog/0.8.0.md
+  - .claude/skills/typst-author/docs/changelog/0.9.0.md
+  - .claude/skills/typst-author/docs/changelog/earlier.md
+  - .claude/skills/typst-author/docs/changelog/index.md
+  - .claude/skills/typst-author/docs/changelog/utils.md
+  - .claude/skills/typst-author/docs/guides/accessibility.md
+  - .claude/skills/typst-author/docs/guides/for-latex-users.md
+  - .claude/skills/typst-author/docs/guides/index.md
+  - .claude/skills/typst-author/docs/guides/page-setup.md
+  - .claude/skills/typst-author/docs/guides/tables.md
+  - .claude/skills/typst-author/docs/index.md
+  - .claude/skills/typst-author/docs/overview.md
+  - .claude/skills/typst-author/docs/reference/export/bundle.md
+  - .claude/skills/typst-author/docs/reference/export/html.md
+  - .claude/skills/typst-author/docs/reference/export/index.md
+  - .claude/skills/typst-author/docs/reference/export/pdf.md
+  - .claude/skills/typst-author/docs/reference/export/png.md
+  - .claude/skills/typst-author/docs/reference/export/svg.md
+  - .claude/skills/typst-author/docs/reference/index.md
+  - .claude/skills/typst-author/docs/reference/language/context.md
+  - .claude/skills/typst-author/docs/reference/language/index.md
+  - .claude/skills/typst-author/docs/reference/language/scripting.md
+  - .claude/skills/typst-author/docs/reference/language/styling.md
+  - .claude/skills/typst-author/docs/reference/language/syntax.md
+  - .claude/skills/typst-author/docs/reference/library/data-loading.md
+  - .claude/skills/typst-author/docs/reference/library/emoji.md
+  - .claude/skills/typst-author/docs/reference/library/foundations.md
+  - .claude/skills/typst-author/docs/reference/library/index.md
+  - .claude/skills/typst-author/docs/reference/library/introspection.md
+  - .claude/skills/typst-author/docs/reference/library/layout.md
+  - .claude/skills/typst-author/docs/reference/library/math.md
+  - .claude/skills/typst-author/docs/reference/library/model.md
+  - .claude/skills/typst-author/docs/reference/library/sym.md
+  - .claude/skills/typst-author/docs/reference/library/text.md
+  - .claude/skills/typst-author/docs/reference/library/visualize.md
+  - .claude/skills/typst-author/docs/tutorial/1-writing.md
+  - .claude/skills/typst-author/docs/tutorial/2-formatting.md
+  - .claude/skills/typst-author/docs/tutorial/3-advanced.md
+  - .claude/skills/typst-author/docs/tutorial/4-template.md
+  - .claude/skills/typst-author/docs/tutorial/index.md
+  deployed_file_hashes:
+    .agents/skills/typst-author/SKILL.md: sha256:502cee1e506ee64a5930a152e8b140b08608935b4ead4ecc9f25d27b1f014d1d
+    .agents/skills/typst-author/docs/changelog/0.1.0.md: sha256:e25a659975075581476ab76253c50cef3fe0e30e8548772906e35161291c47a1
+    .agents/skills/typst-author/docs/changelog/0.10.0.md: sha256:278f383c19ab3399d2e3b49e9fb00c644aa036ae670b8a8c23496adfdb50cf6f
+    .agents/skills/typst-author/docs/changelog/0.11.0.md: sha256:c920cd5c7ae56a99ae405ef5a068a6955b00f0cb6fe426bab7c8c6b6bff93e7e
+    .agents/skills/typst-author/docs/changelog/0.11.1.md: sha256:7ca8d8daab4c2c0c7be509f8dc81a28f3115ce3f13e8d7f1e92cf0489982ef51
+    .agents/skills/typst-author/docs/changelog/0.12.0.md: sha256:3d6c4d62085880b5e3e775a0452ef14423f5f4bd2055bf4806e16a23a7efe60f
+    .agents/skills/typst-author/docs/changelog/0.13.0.md: sha256:b66ccd19bdb4b7d2808d9d546026aaaed036d4f2aaad18a9f29b624924a41bd7
+    .agents/skills/typst-author/docs/changelog/0.13.1.md: sha256:28987653b2f6afb5159a453fe99a219620c71fef0c008a8dfe6376b871648ba7
+    .agents/skills/typst-author/docs/changelog/0.14.0.md: sha256:3c154ff3d7c64c3e07fec88f0f752cfed2e1360f1507a2b389c6c5192bf3374a
+    .agents/skills/typst-author/docs/changelog/0.14.1.md: sha256:544d6485051ad598c81545685ac227ce2ad6c46e5033288c71eeb062b68ad5f5
+    .agents/skills/typst-author/docs/changelog/0.14.2.md: sha256:117db73045a635a310fda374144193d208e41322a47cfc9362505b7be23bef69
+    .agents/skills/typst-author/docs/changelog/0.15.0.md: sha256:b09c92e6cfc8472a8ca779aab108c9e264f68a1465881a2149a9cab95ea4d462
+    .agents/skills/typst-author/docs/changelog/0.2.0.md: sha256:3dcdb95ab7bce8c24806b718d17ae4086408cab23cf69789f9d925b6d9e32c03
+    .agents/skills/typst-author/docs/changelog/0.3.0.md: sha256:f9f48bd2bebbe1f3e8462eaf7e9722eb5e7c5dbd65b07c6a1da0d2c980e76c6d
+    .agents/skills/typst-author/docs/changelog/0.4.0.md: sha256:f29ca5edd83aea6c08349aef85444fbb777044966646dd2ce12fb9278e92c216
+    .agents/skills/typst-author/docs/changelog/0.5.0.md: sha256:eab5427be99fcf7057e898827a9413fee9aaf2ab7416ac715617cdbe8c039128
+    .agents/skills/typst-author/docs/changelog/0.6.0.md: sha256:afe0b6952ed4762c9e8a95394fb718d2e387d1c4f20e1bb51501251522301a12
+    .agents/skills/typst-author/docs/changelog/0.7.0.md: sha256:7193d4d02a0d9a7a4b55610348586694dc37d91d759529a90cefa7a15f30d223
+    .agents/skills/typst-author/docs/changelog/0.8.0.md: sha256:b75e288590ce1ba22b09fee925c84e05cd77a005895d542899651867c1aee55e
+    .agents/skills/typst-author/docs/changelog/0.9.0.md: sha256:e4f901c67409eba1b6d8f6a2e3a02e26ebb7da29ccd5283622cb6a381d07451e
+    .agents/skills/typst-author/docs/changelog/earlier.md: sha256:4a069900b2507bdb9d040d62946c861a63ad494c743d4f3a52401d07908274ef
+    .agents/skills/typst-author/docs/changelog/index.md: sha256:414664a0e408cfff9b6ab3e091b23bcd2376c0d416adcefe915ae6355bca58ac
+    .agents/skills/typst-author/docs/changelog/utils.md: sha256:01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b
+    .agents/skills/typst-author/docs/guides/accessibility.md: sha256:dace4a6594f6b529c4b70638c73bddc74dda03861e4063c7236f4641ffddfec0
+    .agents/skills/typst-author/docs/guides/for-latex-users.md: sha256:464014f14a2c60c0adffa813186d3916b104a3c6d24308d44e4dc562ed447659
+    .agents/skills/typst-author/docs/guides/index.md: sha256:7063773b43af9723dcd342cc5a0e71382e79ba72a977155eb3747af2bf9f4ed8
+    .agents/skills/typst-author/docs/guides/page-setup.md: sha256:1463f39cd6cd3ef6f5d1b0c6b1c882333b47e152a1099d0a9986b16b9769a593
+    .agents/skills/typst-author/docs/guides/tables.md: sha256:dc55e2b6c449b7e1a4e1df1d5be7fa069913a74b68748a897859ded7cd7b98ff
+    .agents/skills/typst-author/docs/index.md: sha256:c21b12a2d2cffa06c8c27c4d6b81e835eda4698e2f7516a593e692f1733f059e
+    .agents/skills/typst-author/docs/overview.md: sha256:c9d24bed08ff6715bf25339e7b0ed9e02363128b1e9a2043e19acb4ad71a045c
+    .agents/skills/typst-author/docs/reference/export/bundle.md: sha256:6efda943ab0997d28a324bb0f5e6924984481eed0c562ba33a64bc52792034fc
+    .agents/skills/typst-author/docs/reference/export/html.md: sha256:a0adc00bb928f62be675a02480898bb58d24cf51418d33aefd6010c515608ee4
+    .agents/skills/typst-author/docs/reference/export/index.md: sha256:028ff5b83688cbc68c023dacb3b67fa1b32d1cf61767982f301e6f67a253fc06
+    .agents/skills/typst-author/docs/reference/export/pdf.md: sha256:17efdd551a3ce83c1bd2e26c29aa197152ad6758e63d994e6347ae405b7e211b
+    .agents/skills/typst-author/docs/reference/export/png.md: sha256:06daeebfa4619688e5b86b0ae828583f24907e56d528309e8e0c1ba11b60ce80
+    .agents/skills/typst-author/docs/reference/export/svg.md: sha256:e13192eb5a44c69ea3a78f8c2c0f3e094c91c1f231aa58b3ec86a210c97435e1
+    .agents/skills/typst-author/docs/reference/index.md: sha256:eb2d14cdb81bb7482757c26e606e59187323476de3a64ab3a05989023d62194c
+    .agents/skills/typst-author/docs/reference/language/context.md: sha256:a5f66b905a719a988cefa4e513dbd8f7b56af7243045f2494dddc8d5be7230ec
+    .agents/skills/typst-author/docs/reference/language/index.md: sha256:73f796e1b6323f6148c446c9161abb68253dca88af268f60f79203ded374f2a9
+    .agents/skills/typst-author/docs/reference/language/scripting.md: sha256:d67920ad3f82c1cc76cbb2b6064e2e2d35cd653c6c364247e51857e9b7ad4518
+    .agents/skills/typst-author/docs/reference/language/styling.md: sha256:d5c4ba75f7edfd5666c9a3a229a1085672fefa1bf757074e2d5a82f3958db304
+    .agents/skills/typst-author/docs/reference/language/syntax.md: sha256:af1f0d39bb37b021a26a92188c52a6b898013c788c4deb5e0dbe0b1336261018
+    .agents/skills/typst-author/docs/reference/library/data-loading.md: sha256:a54ac9af4bceb09e88d79c9444baf5df861037519b20f0ac9a779dbe80e7655c
+    .agents/skills/typst-author/docs/reference/library/emoji.md: sha256:b07588fb50dbea79f781a6c0196e7dab3b1d66c02ef63b9e778a05a4684893ea
+    .agents/skills/typst-author/docs/reference/library/foundations.md: sha256:c1a5bc2f5568777c4d3cc3c12eebe7142b075e47470b8b149f42f66c9eb1ed71
+    .agents/skills/typst-author/docs/reference/library/index.md: sha256:4f0d1f890ada7a28ed17b75ee065d6d0786da3a85376d3d1afc5fc176dd0b47e
+    .agents/skills/typst-author/docs/reference/library/introspection.md: sha256:68efadc5aeb0dea37dd9647787c6ab92dcb1e5cc7e3c0ac03650d58c88049cdf
+    .agents/skills/typst-author/docs/reference/library/layout.md: sha256:9a6b4d563fd5a762b32c6e6dd48c70b6172394bde02e591d994ab9d60429940f
+    .agents/skills/typst-author/docs/reference/library/math.md: sha256:891033992ae3e978ee0ceb0816f78f123d0a626029b4aa9d3110f47ac712c9e0
+    .agents/skills/typst-author/docs/reference/library/model.md: sha256:41928d915d29746c4cce0440801f543e1622268b5f1d9ffef30fcc80d3489711
+    .agents/skills/typst-author/docs/reference/library/sym.md: sha256:8e1d93e5647088f3446625456f4bf3e4470960af454413541567d224fcac4e65
+    .agents/skills/typst-author/docs/reference/library/text.md: sha256:d159aa3b69be686ded2b004661d5b2842d3ef1abcdf9463b8ccc833e330a9a3b
+    .agents/skills/typst-author/docs/reference/library/visualize.md: sha256:2386868624ffd9d6362c06d85b396822dbbacccd31b725e9a4e87676cad06a19
+    .agents/skills/typst-author/docs/tutorial/1-writing.md: sha256:54cbfddf65b8a3753561ebcddd38bdfd54c5acd2efcb4d1d14baec9308dfe7e2
+    .agents/skills/typst-author/docs/tutorial/2-formatting.md: sha256:7557a756e2f7cd4d58e90c791d5c530bcfe418c2efd0f6bbb6ebd96707172295
+    .agents/skills/typst-author/docs/tutorial/3-advanced.md: sha256:9d7f78b6c563a2d620d02256b0af4c5ae87b3b9ca23d727b7444def8342e0905
+    .agents/skills/typst-author/docs/tutorial/4-template.md: sha256:961cd6abe6906922a6fcafd4d2edbd9e5ab4bf3a7b897819cb8d89e27558af08
+    .agents/skills/typst-author/docs/tutorial/index.md: sha256:3847e6332ecd335217372704c0140accb11779037bb44bad9e1f656f02010c86
+    .claude/skills/typst-author/SKILL.md: sha256:502cee1e506ee64a5930a152e8b140b08608935b4ead4ecc9f25d27b1f014d1d
+    .claude/skills/typst-author/docs/changelog/0.1.0.md: sha256:e25a659975075581476ab76253c50cef3fe0e30e8548772906e35161291c47a1
+    .claude/skills/typst-author/docs/changelog/0.10.0.md: sha256:278f383c19ab3399d2e3b49e9fb00c644aa036ae670b8a8c23496adfdb50cf6f
+    .claude/skills/typst-author/docs/changelog/0.11.0.md: sha256:c920cd5c7ae56a99ae405ef5a068a6955b00f0cb6fe426bab7c8c6b6bff93e7e
+    .claude/skills/typst-author/docs/changelog/0.11.1.md: sha256:7ca8d8daab4c2c0c7be509f8dc81a28f3115ce3f13e8d7f1e92cf0489982ef51
+    .claude/skills/typst-author/docs/changelog/0.12.0.md: sha256:3d6c4d62085880b5e3e775a0452ef14423f5f4bd2055bf4806e16a23a7efe60f
+    .claude/skills/typst-author/docs/changelog/0.13.0.md: sha256:b66ccd19bdb4b7d2808d9d546026aaaed036d4f2aaad18a9f29b624924a41bd7
+    .claude/skills/typst-author/docs/changelog/0.13.1.md: sha256:28987653b2f6afb5159a453fe99a219620c71fef0c008a8dfe6376b871648ba7
+    .claude/skills/typst-author/docs/changelog/0.14.0.md: sha256:3c154ff3d7c64c3e07fec88f0f752cfed2e1360f1507a2b389c6c5192bf3374a
+    .claude/skills/typst-author/docs/changelog/0.14.1.md: sha256:544d6485051ad598c81545685ac227ce2ad6c46e5033288c71eeb062b68ad5f5
+    .claude/skills/typst-author/docs/changelog/0.14.2.md: sha256:117db73045a635a310fda374144193d208e41322a47cfc9362505b7be23bef69
+    .claude/skills/typst-author/docs/changelog/0.15.0.md: sha256:b09c92e6cfc8472a8ca779aab108c9e264f68a1465881a2149a9cab95ea4d462
+    .claude/skills/typst-author/docs/changelog/0.2.0.md: sha256:3dcdb95ab7bce8c24806b718d17ae4086408cab23cf69789f9d925b6d9e32c03
+    .claude/skills/typst-author/docs/changelog/0.3.0.md: sha256:f9f48bd2bebbe1f3e8462eaf7e9722eb5e7c5dbd65b07c6a1da0d2c980e76c6d
+    .claude/skills/typst-author/docs/changelog/0.4.0.md: sha256:f29ca5edd83aea6c08349aef85444fbb777044966646dd2ce12fb9278e92c216
+    .claude/skills/typst-author/docs/changelog/0.5.0.md: sha256:eab5427be99fcf7057e898827a9413fee9aaf2ab7416ac715617cdbe8c039128
+    .claude/skills/typst-author/docs/changelog/0.6.0.md: sha256:afe0b6952ed4762c9e8a95394fb718d2e387d1c4f20e1bb51501251522301a12
+    .claude/skills/typst-author/docs/changelog/0.7.0.md: sha256:7193d4d02a0d9a7a4b55610348586694dc37d91d759529a90cefa7a15f30d223
+    .claude/skills/typst-author/docs/changelog/0.8.0.md: sha256:b75e288590ce1ba22b09fee925c84e05cd77a005895d542899651867c1aee55e
+    .claude/skills/typst-author/docs/changelog/0.9.0.md: sha256:e4f901c67409eba1b6d8f6a2e3a02e26ebb7da29ccd5283622cb6a381d07451e
+    .claude/skills/typst-author/docs/changelog/earlier.md: sha256:4a069900b2507bdb9d040d62946c861a63ad494c743d4f3a52401d07908274ef
+    .claude/skills/typst-author/docs/changelog/index.md: sha256:414664a0e408cfff9b6ab3e091b23bcd2376c0d416adcefe915ae6355bca58ac
+    .claude/skills/typst-author/docs/changelog/utils.md: sha256:01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b
+    .claude/skills/typst-author/docs/guides/accessibility.md: sha256:dace4a6594f6b529c4b70638c73bddc74dda03861e4063c7236f4641ffddfec0
+    .claude/skills/typst-author/docs/guides/for-latex-users.md: sha256:464014f14a2c60c0adffa813186d3916b104a3c6d24308d44e4dc562ed447659
+    .claude/skills/typst-author/docs/guides/index.md: sha256:7063773b43af9723dcd342cc5a0e71382e79ba72a977155eb3747af2bf9f4ed8
+    .claude/skills/typst-author/docs/guides/page-setup.md: sha256:1463f39cd6cd3ef6f5d1b0c6b1c882333b47e152a1099d0a9986b16b9769a593
+    .claude/skills/typst-author/docs/guides/tables.md: sha256:dc55e2b6c449b7e1a4e1df1d5be7fa069913a74b68748a897859ded7cd7b98ff
+    .claude/skills/typst-author/docs/index.md: sha256:c21b12a2d2cffa06c8c27c4d6b81e835eda4698e2f7516a593e692f1733f059e
+    .claude/skills/typst-author/docs/overview.md: sha256:c9d24bed08ff6715bf25339e7b0ed9e02363128b1e9a2043e19acb4ad71a045c
+    .claude/skills/typst-author/docs/reference/export/bundle.md: sha256:6efda943ab0997d28a324bb0f5e6924984481eed0c562ba33a64bc52792034fc
+    .claude/skills/typst-author/docs/reference/export/html.md: sha256:a0adc00bb928f62be675a02480898bb58d24cf51418d33aefd6010c515608ee4
+    .claude/skills/typst-author/docs/reference/export/index.md: sha256:028ff5b83688cbc68c023dacb3b67fa1b32d1cf61767982f301e6f67a253fc06
+    .claude/skills/typst-author/docs/reference/export/pdf.md: sha256:17efdd551a3ce83c1bd2e26c29aa197152ad6758e63d994e6347ae405b7e211b
+    .claude/skills/typst-author/docs/reference/export/png.md: sha256:06daeebfa4619688e5b86b0ae828583f24907e56d528309e8e0c1ba11b60ce80
+    .claude/skills/typst-author/docs/reference/export/svg.md: sha256:e13192eb5a44c69ea3a78f8c2c0f3e094c91c1f231aa58b3ec86a210c97435e1
+    .claude/skills/typst-author/docs/reference/index.md: sha256:eb2d14cdb81bb7482757c26e606e59187323476de3a64ab3a05989023d62194c
+    .claude/skills/typst-author/docs/reference/language/context.md: sha256:a5f66b905a719a988cefa4e513dbd8f7b56af7243045f2494dddc8d5be7230ec
+    .claude/skills/typst-author/docs/reference/language/index.md: sha256:73f796e1b6323f6148c446c9161abb68253dca88af268f60f79203ded374f2a9
+    .claude/skills/typst-author/docs/reference/language/scripting.md: sha256:d67920ad3f82c1cc76cbb2b6064e2e2d35cd653c6c364247e51857e9b7ad4518
+    .claude/skills/typst-author/docs/reference/language/styling.md: sha256:d5c4ba75f7edfd5666c9a3a229a1085672fefa1bf757074e2d5a82f3958db304
+    .claude/skills/typst-author/docs/reference/language/syntax.md: sha256:af1f0d39bb37b021a26a92188c52a6b898013c788c4deb5e0dbe0b1336261018
+    .claude/skills/typst-author/docs/reference/library/data-loading.md: sha256:a54ac9af4bceb09e88d79c9444baf5df861037519b20f0ac9a779dbe80e7655c
+    .claude/skills/typst-author/docs/reference/library/emoji.md: sha256:b07588fb50dbea79f781a6c0196e7dab3b1d66c02ef63b9e778a05a4684893ea
+    .claude/skills/typst-author/docs/reference/library/foundations.md: sha256:c1a5bc2f5568777c4d3cc3c12eebe7142b075e47470b8b149f42f66c9eb1ed71
+    .claude/skills/typst-author/docs/reference/library/index.md: sha256:4f0d1f890ada7a28ed17b75ee065d6d0786da3a85376d3d1afc5fc176dd0b47e
+    .claude/skills/typst-author/docs/reference/library/introspection.md: sha256:68efadc5aeb0dea37dd9647787c6ab92dcb1e5cc7e3c0ac03650d58c88049cdf
+    .claude/skills/typst-author/docs/reference/library/layout.md: sha256:9a6b4d563fd5a762b32c6e6dd48c70b6172394bde02e591d994ab9d60429940f
+    .claude/skills/typst-author/docs/reference/library/math.md: sha256:891033992ae3e978ee0ceb0816f78f123d0a626029b4aa9d3110f47ac712c9e0
+    .claude/skills/typst-author/docs/reference/library/model.md: sha256:41928d915d29746c4cce0440801f543e1622268b5f1d9ffef30fcc80d3489711
+    .claude/skills/typst-author/docs/reference/library/sym.md: sha256:8e1d93e5647088f3446625456f4bf3e4470960af454413541567d224fcac4e65
+    .claude/skills/typst-author/docs/reference/library/text.md: sha256:d159aa3b69be686ded2b004661d5b2842d3ef1abcdf9463b8ccc833e330a9a3b
+    .claude/skills/typst-author/docs/reference/library/visualize.md: sha256:2386868624ffd9d6362c06d85b396822dbbacccd31b725e9a4e87676cad06a19
+    .claude/skills/typst-author/docs/tutorial/1-writing.md: sha256:54cbfddf65b8a3753561ebcddd38bdfd54c5acd2efcb4d1d14baec9308dfe7e2
+    .claude/skills/typst-author/docs/tutorial/2-formatting.md: sha256:7557a756e2f7cd4d58e90c791d5c530bcfe418c2efd0f6bbb6ebd96707172295
+    .claude/skills/typst-author/docs/tutorial/3-advanced.md: sha256:9d7f78b6c563a2d620d02256b0af4c5ae87b3b9ca23d727b7444def8342e0905
+    .claude/skills/typst-author/docs/tutorial/4-template.md: sha256:961cd6abe6906922a6fcafd4d2edbd9e5ab4bf3a7b897819cb8d89e27558af08
+    .claude/skills/typst-author/docs/tutorial/index.md: sha256:3847e6332ecd335217372704c0140accb11779037bb44bad9e1f656f02010c86
+  content_hash: sha256:2390bca32dde23935d6846e5eb8addd98df89904d49d82586d13844d5b9033b2
+- repo_url: cookjohn/gs-skills
+  host: github.com
+  resolved_commit: df03c99f1a741ff816e6f0e12c13308279bcd730
+  depth: 2
+  resolved_by: HideBa/apm
+  package_type: skill_bundle
+  deployed_files:
+  - .agents/skills/gs-advanced-search
+  - .agents/skills/gs-advanced-search/SKILL.md
+  - .agents/skills/gs-cited-by
+  - .agents/skills/gs-cited-by/SKILL.md
+  - .agents/skills/gs-export
+  - .agents/skills/gs-export/SKILL.md
+  - .agents/skills/gs-export/scripts/push_to_zotero.py
+  - .agents/skills/gs-fulltext
+  - .agents/skills/gs-fulltext/SKILL.md
+  - .agents/skills/gs-navigate-pages
+  - .agents/skills/gs-navigate-pages/SKILL.md
+  - .agents/skills/gs-search
+  - .agents/skills/gs-search/SKILL.md
+  - .claude/skills/gs-advanced-search
+  - .claude/skills/gs-advanced-search/SKILL.md
+  - .claude/skills/gs-cited-by
+  - .claude/skills/gs-cited-by/SKILL.md
+  - .claude/skills/gs-export
+  - .claude/skills/gs-export/SKILL.md
+  - .claude/skills/gs-export/scripts/push_to_zotero.py
+  - .claude/skills/gs-fulltext
+  - .claude/skills/gs-fulltext/SKILL.md
+  - .claude/skills/gs-navigate-pages
+  - .claude/skills/gs-navigate-pages/SKILL.md
+  - .claude/skills/gs-search
+  - .claude/skills/gs-search/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/gs-advanced-search/SKILL.md: sha256:36dee0ab6ee668478029ec98a9fbeaca4579b468e6f2aa1b50473a3dda05089f
+    .agents/skills/gs-cited-by/SKILL.md: sha256:b9e0c5a601ce0aecc8458e0f8d1431829325c9d4ec0750f0215ee1b3c8ce4cbb
+    .agents/skills/gs-export/SKILL.md: sha256:b6a7f9907ec6dee485c71b70d8319b2433fa0db7d9d5dd94d86820229ab0a430
+    .agents/skills/gs-export/scripts/push_to_zotero.py: sha256:ba4ee1bea4f16142f1dd0569b15274ad154771a832928a8cdca4f7acfd498ffc
+    .agents/skills/gs-fulltext/SKILL.md: sha256:43ff7d4d17fa3efe047a4bd24e73e4dd420ec054faed94dd720e158dc31dd492
+    .agents/skills/gs-navigate-pages/SKILL.md: sha256:729d2a9dab3a277b5cfb7e4323d1a17f70ca3bf267601b969f81b75176603520
+    .agents/skills/gs-search/SKILL.md: sha256:20874caa2b0488e1a99a3a0d5dc2b2e8b5d6aeca9df33aa55c5490f310580609
+    .claude/skills/gs-advanced-search/SKILL.md: sha256:36dee0ab6ee668478029ec98a9fbeaca4579b468e6f2aa1b50473a3dda05089f
+    .claude/skills/gs-cited-by/SKILL.md: sha256:b9e0c5a601ce0aecc8458e0f8d1431829325c9d4ec0750f0215ee1b3c8ce4cbb
+    .claude/skills/gs-export/SKILL.md: sha256:b6a7f9907ec6dee485c71b70d8319b2433fa0db7d9d5dd94d86820229ab0a430
+    .claude/skills/gs-export/scripts/push_to_zotero.py: sha256:ba4ee1bea4f16142f1dd0569b15274ad154771a832928a8cdca4f7acfd498ffc
+    .claude/skills/gs-fulltext/SKILL.md: sha256:43ff7d4d17fa3efe047a4bd24e73e4dd420ec054faed94dd720e158dc31dd492
+    .claude/skills/gs-navigate-pages/SKILL.md: sha256:729d2a9dab3a277b5cfb7e4323d1a17f70ca3bf267601b969f81b75176603520
+    .claude/skills/gs-search/SKILL.md: sha256:20874caa2b0488e1a99a3a0d5dc2b2e8b5d6aeca9df33aa55c5490f310580609
+  content_hash: sha256:988737193395227201dd49f22962c21dce1eddf84605b3b4a40fd4f3ea9d88ae
 - repo_url: obra/superpowers
   host: github.com
-  resolved_commit: b62616fc12f6a007c6fd5118146821d748da0d33
+  resolved_commit: b36e0829c6d0140e93cfef2ca599b1b07d4a7797
   depth: 2
   resolved_by: HideBa/apm
   package_type: marketplace_plugin
@@ -541,7 +1116,9 @@ dependencies:
   - .agents/skills/subagent-driven-development
   - .agents/skills/subagent-driven-development/SKILL.md
   - .agents/skills/subagent-driven-development/implementer-prompt.md
+  - .agents/skills/subagent-driven-development/re-review-prompt.md
   - .agents/skills/subagent-driven-development/scripts/review-package
+  - .agents/skills/subagent-driven-development/scripts/sdd-workspace
   - .agents/skills/subagent-driven-development/scripts/task-brief
   - .agents/skills/subagent-driven-development/task-reviewer-prompt.md
   - .agents/skills/systematic-debugging
@@ -558,16 +1135,15 @@ dependencies:
   - .agents/skills/systematic-debugging/test-pressure-3.md
   - .agents/skills/test-driven-development
   - .agents/skills/test-driven-development/SKILL.md
-  - .agents/skills/test-driven-development/testing-anti-patterns.md
+  - .agents/skills/test-driven-development/writing-good-tests.md
   - .agents/skills/using-git-worktrees
   - .agents/skills/using-git-worktrees/SKILL.md
   - .agents/skills/using-superpowers
   - .agents/skills/using-superpowers/SKILL.md
   - .agents/skills/using-superpowers/references/antigravity-tools.md
-  - .agents/skills/using-superpowers/references/claude-code-tools.md
   - .agents/skills/using-superpowers/references/codex-tools.md
-  - .agents/skills/using-superpowers/references/copilot-tools.md
   - .agents/skills/using-superpowers/references/gemini-tools.md
+  - .agents/skills/using-superpowers/references/hermes-tools.md
   - .agents/skills/using-superpowers/references/pi-tools.md
   - .agents/skills/verification-before-completion
   - .agents/skills/verification-before-completion/SKILL.md
@@ -606,7 +1182,9 @@ dependencies:
   - .claude/skills/subagent-driven-development
   - .claude/skills/subagent-driven-development/SKILL.md
   - .claude/skills/subagent-driven-development/implementer-prompt.md
+  - .claude/skills/subagent-driven-development/re-review-prompt.md
   - .claude/skills/subagent-driven-development/scripts/review-package
+  - .claude/skills/subagent-driven-development/scripts/sdd-workspace
   - .claude/skills/subagent-driven-development/scripts/task-brief
   - .claude/skills/subagent-driven-development/task-reviewer-prompt.md
   - .claude/skills/systematic-debugging
@@ -623,16 +1201,15 @@ dependencies:
   - .claude/skills/systematic-debugging/test-pressure-3.md
   - .claude/skills/test-driven-development
   - .claude/skills/test-driven-development/SKILL.md
-  - .claude/skills/test-driven-development/testing-anti-patterns.md
+  - .claude/skills/test-driven-development/writing-good-tests.md
   - .claude/skills/using-git-worktrees
   - .claude/skills/using-git-worktrees/SKILL.md
   - .claude/skills/using-superpowers
   - .claude/skills/using-superpowers/SKILL.md
   - .claude/skills/using-superpowers/references/antigravity-tools.md
-  - .claude/skills/using-superpowers/references/claude-code-tools.md
   - .claude/skills/using-superpowers/references/codex-tools.md
-  - .claude/skills/using-superpowers/references/copilot-tools.md
   - .claude/skills/using-superpowers/references/gemini-tools.md
+  - .claude/skills/using-superpowers/references/hermes-tools.md
   - .claude/skills/using-superpowers/references/pi-tools.md
   - .claude/skills/verification-before-completion
   - .claude/skills/verification-before-completion/SKILL.md
@@ -649,112 +1226,114 @@ dependencies:
   - .claude/skills/writing-skills/testing-skills-with-subagents.md
   - .codex/hooks/superpowers/hooks/run-hook.cmd
   deployed_file_hashes:
-    .agents/skills/brainstorming/SKILL.md: sha256:e14914605f640e0841758e45d0ab2a53243b59b921f929e47921c99668f2e61d
+    .agents/skills/brainstorming/SKILL.md: sha256:74edf03ea6d24ef53db48677b93558d14a979bdf052ca3f57ecdca0c66791608
     .agents/skills/brainstorming/scripts/frame-template.html: sha256:6a8a4e58bd6a44b904e2e3c57de774481d909204597e1498de53f1b2fecc4c4e
     .agents/skills/brainstorming/scripts/helper.js: sha256:43c6d69954a46ec34a2a262bcc62a9a7e83e839c739f199cb72646d397c686e3
     .agents/skills/brainstorming/scripts/server.cjs: sha256:2d2961ea8d11f56c5f4c3a1a68d22709efa5d7601a2246d8c880774e7e9e8412
     .agents/skills/brainstorming/scripts/start-server.sh: sha256:a4e5ae84275bcaacd2f84345afeabe59cf7b00ba080e123da7cc1fb226f12847
     .agents/skills/brainstorming/scripts/stop-server.sh: sha256:0b5ccbbd57f62d3ed88993f7940b5ee0e5c0fc9b21c550c623da4f6292e47daf
     .agents/skills/brainstorming/spec-document-reviewer-prompt.md: sha256:95a0a195de9d984be2fffa95bab16fc8c563bc296a9cfc5e9c29cb3ece0d7457
-    .agents/skills/brainstorming/visual-companion.md: sha256:60cbad29b9dd7eaf08da020e301c498a72230b2e13c1813fa967a135ffcc1d71
-    .agents/skills/dispatching-parallel-agents/SKILL.md: sha256:f0df13f584049059cc5619f90061405b89dcc6e28ab3f2a8517d27d99c7a46a6
-    .agents/skills/executing-plans/SKILL.md: sha256:b357c2a2e5bf24adf237b5d4a83cacd828f07b886d0873ad91546aa3c99905c9
-    .agents/skills/finishing-a-development-branch/SKILL.md: sha256:e6d4a812de900d33c6eacfb40747f99427f25c304a7b7099120f9373b115a47f
-    .agents/skills/receiving-code-review/SKILL.md: sha256:647036bbdab7bf2317e14e079595e984c9030f64295e2b4c0fb57dbeb48f25dd
-    .agents/skills/requesting-code-review/SKILL.md: sha256:1017ccdd5bc61fab67c654cf118cbdb520464b313073a0a6b9a6b9aa647a3ad6
-    .agents/skills/requesting-code-review/code-reviewer.md: sha256:b2f2ec7596925fe52dac158fdfbca19b3a7d779d619c481e6706a6c0001662d3
-    .agents/skills/subagent-driven-development/SKILL.md: sha256:46024335cbd77a6d8400b6bb0d3ef51b8eadde28203c982fde0e03ecc1d97329
-    .agents/skills/subagent-driven-development/implementer-prompt.md: sha256:49018b28dc11bc9f3d13a28959bb10ae1a96eabc5d8f19f4079d901f9ff2bf64
-    .agents/skills/subagent-driven-development/scripts/review-package: sha256:74d14b38a5bae7e52c2ce930e02140d8dfc6f77417ce76bc3857892c4fe833b9
-    .agents/skills/subagent-driven-development/scripts/task-brief: sha256:c4b830094d64bb512ffde664fba57bbdd642632a09b7df75481f00005d2e7440
-    .agents/skills/subagent-driven-development/task-reviewer-prompt.md: sha256:2eb9d54373420de25bc0bd00635d3a3123a6c0eb30c881168e6f3348e2387331
+    .agents/skills/brainstorming/visual-companion.md: sha256:77eb44a4ec3408bb3dafb872288ecd94beb8cf21da4f2bafa54fd08255d7808b
+    .agents/skills/dispatching-parallel-agents/SKILL.md: sha256:1968923066f3b707eb01d1992cdf4c42284c3855f70253b9cd5000ff45fca13c
+    .agents/skills/executing-plans/SKILL.md: sha256:c4c3d8b628c51114cd165fb8246fe02744cd8be180032328391252e653028d9b
+    .agents/skills/finishing-a-development-branch/SKILL.md: sha256:8db5a922b242dd4e1bf824cb91c13b3e8d8e8a86d6ceaf7f0774eb9cce909d65
+    .agents/skills/receiving-code-review/SKILL.md: sha256:091df1629510af1b92fc4abd6f96732ebedb4cb2c0f3457e8f2740b0504a2438
+    .agents/skills/requesting-code-review/SKILL.md: sha256:d71cc01ba56d2325cf8af5f7c11837819b63ecd57de0bfdb812f7f3ff7751df8
+    .agents/skills/requesting-code-review/code-reviewer.md: sha256:5eca5fcfd48a50e0a526ce5ffd64bf625d6b81bb46d11795274dae451fe6ffd4
+    .agents/skills/subagent-driven-development/SKILL.md: sha256:1b19d4953dcc602516d729c27aefe1b168e5bf1c17a52a997b9dde326ae3fc41
+    .agents/skills/subagent-driven-development/implementer-prompt.md: sha256:81dd9d5a3fb0b09b96b5829f03b9796842f3199ef7591d1ba1c2db2a515f64d0
+    .agents/skills/subagent-driven-development/re-review-prompt.md: sha256:db0d5849478bc79cbde97b9b2cf0e58b50be8b8ed18464b0252c2bf27b6440a6
+    .agents/skills/subagent-driven-development/scripts/review-package: sha256:fac3d4bd7f94369e8037b9ead2a8a502dca6ab333902b560b9455dbb3c450ebe
+    .agents/skills/subagent-driven-development/scripts/sdd-workspace: sha256:95a09d9d3983ad1aafd093ca72b4587946dea885c6e302caa02a779a2f911c31
+    .agents/skills/subagent-driven-development/scripts/task-brief: sha256:d6954ef7841c7da3d77373e6ff5118b3f2f2e998606fd95d33e6527851bce044
+    .agents/skills/subagent-driven-development/task-reviewer-prompt.md: sha256:eea23e33ec570c3041f40e9569fa711d61b8029f9eecf908345138aa1c6e61ab
     .agents/skills/systematic-debugging/CREATION-LOG.md: sha256:c24733a5b1821bd6bed1fc950261f0b9f4e90097e0bbb96459d8179713730789
-    .agents/skills/systematic-debugging/SKILL.md: sha256:3b20719eca4f0461cb51a195221320d775dcf03b6859271066a03a5132a6ce7a
+    .agents/skills/systematic-debugging/SKILL.md: sha256:808fc5717aa88ad65efff312b11c186294d3e6ee301afb584e2f86599b137787
     .agents/skills/systematic-debugging/condition-based-waiting-example.ts: sha256:40ae5ebe497fdf310200e43fe986552546d0a22837c0d39e855db1cfd33eb88e
     .agents/skills/systematic-debugging/condition-based-waiting.md: sha256:e89fec8400d6cd50f43407cec9fab50976ba4d55d0ec2eb51c0bd68036b54c26
     .agents/skills/systematic-debugging/defense-in-depth.md: sha256:1e175fb86fc357e58c6aebf5441e481e1b7868b4380c0456b63a17eefbd18ba7
-    .agents/skills/systematic-debugging/find-polluter.sh: sha256:6462747eae9b175ac145b78bcfaeab755654a75e32637f08eb633f065a9e1d7c
+    .agents/skills/systematic-debugging/find-polluter.sh: sha256:dd7b8f13c4cc2a24b33ff87b18da9248f3e1c80a085c3316224f69ff0fa5c43c
     .agents/skills/systematic-debugging/root-cause-tracing.md: sha256:6b0622269e098ca1399e123e553fd385f0b6412d88ef0e9c4f5a8ea9cf1cec7b
     .agents/skills/systematic-debugging/test-academic.md: sha256:fe2ba480d78ac0d686dc025f41c2a32a43d642bf533f91b0c6053a04d35d6486
     .agents/skills/systematic-debugging/test-pressure-1.md: sha256:0b6a915db0054577819834c79be9eb614e97bddba10d73768e1fbe91cfed048a
     .agents/skills/systematic-debugging/test-pressure-2.md: sha256:b2030aeffba07050e8ad573ddf87486457c4a016a786bb326235bebd856f2016
     .agents/skills/systematic-debugging/test-pressure-3.md: sha256:96b50a52e2c7989c9cf20fb752c47c1e9a3a70dc362f8f7989f8f5b64dac7708
-    .agents/skills/test-driven-development/SKILL.md: sha256:b5b4717b8b761cce15a6cfe9022e33fd959e0894c0c39d72c9cb49c23486c10e
-    .agents/skills/test-driven-development/testing-anti-patterns.md: sha256:bde453bc258f06543987477c837939afaa774ea2acbd9f308d702fc452bc4283
-    .agents/skills/using-git-worktrees/SKILL.md: sha256:e2c3ec142e52868a51af246c620cd76ab648dcf27d6900d47e6ffd07159a9794
-    .agents/skills/using-superpowers/SKILL.md: sha256:918562bbba1c73d1407c50de77a92eeaa6930508bdb57a64324d7d508a9069e1
-    .agents/skills/using-superpowers/references/antigravity-tools.md: sha256:00b16e8e8166d972766613c4244a7901d0413af37944741a8b8f40105f9f7f05
-    .agents/skills/using-superpowers/references/claude-code-tools.md: sha256:7d9244dd278db15caa8f9f86bda0546c91fc65163f94b2499999fc72b69c3666
-    .agents/skills/using-superpowers/references/codex-tools.md: sha256:cbce77a3a430688ef0cc3c8f03d17d2df1a2c78603e8b138cec522b74d75e4ab
-    .agents/skills/using-superpowers/references/copilot-tools.md: sha256:9627943f22c8db64ac7fbac3b6e399f73650a5cf3618f7966e802e7fa58d4595
+    .agents/skills/test-driven-development/SKILL.md: sha256:bf1b8216e523851a411e91d429a7c1c2a173e79d88957bc78e348218d50edd54
+    .agents/skills/test-driven-development/writing-good-tests.md: sha256:51471c853306ff92ca8bb41dcaea05f31c0e46b03651f8f3c99754b7172f4ae1
+    .agents/skills/using-git-worktrees/SKILL.md: sha256:8cfb86f121269e8f7f12361e6795c4f6738828340e28964c9229d365666c9edd
+    .agents/skills/using-superpowers/SKILL.md: sha256:30f2ab78e20ddc27ee7158ae8d4a2abe161c360981c7cc3548070913142d3dc3
+    .agents/skills/using-superpowers/references/antigravity-tools.md: sha256:4880f6de3da4e32f9659ebe7a72b9e0ebfff04e028c2ed96173f86d0387a04c0
+    .agents/skills/using-superpowers/references/codex-tools.md: sha256:1a38ad9b188c393052f58d95657a1c35ea6aafc8b5a27f198f3922912f70bbe7
     .agents/skills/using-superpowers/references/gemini-tools.md: sha256:62b9157bcb0ee3c6784e3d0da0798ddfa5872f9e0c34bea48f3079dabea71965
-    .agents/skills/using-superpowers/references/pi-tools.md: sha256:e89e2d5c7b89cdd2a511aa7ad3c191290baaaed8913006c30f283ac7c4b091fb
-    .agents/skills/verification-before-completion/SKILL.md: sha256:ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c
-    .agents/skills/writing-plans/SKILL.md: sha256:272e1af349f5062c28dc282b3e21b220d58d683a7314a10c455b7432ec91d845
+    .agents/skills/using-superpowers/references/hermes-tools.md: sha256:e2185c976a3c87503910e05e2aea58cc89bc8e569bb624b93df9958ac47a9190
+    .agents/skills/using-superpowers/references/pi-tools.md: sha256:703dbc83d23ecab9c6f388460c38abc482e9dee2fe6772a8c7a255152ad3a4d5
+    .agents/skills/verification-before-completion/SKILL.md: sha256:2befe7fc55bcadaa3d97dd9e8efeb633d2561c0ebe74c5a8b17c4d9e7e4520b3
+    .agents/skills/writing-plans/SKILL.md: sha256:48508f44bbfd7d24b029fbf3a314f3cd14c9615599059366e922f47b8dc08cf2
     .agents/skills/writing-plans/plan-document-reviewer-prompt.md: sha256:aa728b96aad603c8be28875a4305637f6c984aa81ffcadcb13e743202fa2a0c7
-    .agents/skills/writing-skills/SKILL.md: sha256:4c359737ed3e3ce1f5bd3117353757872802dd5fd73b25906f1805a8fa8f2baf
+    .agents/skills/writing-skills/SKILL.md: sha256:16148d03c58f718abe2a9cfbb3edd06159b4a454391c5c2b933dfa1c25f9601e
     .agents/skills/writing-skills/anthropic-best-practices.md: sha256:217629b356c09c9bd11017c9788e8fc654ca1b32c92d4a51cd490e16dd65e59a
     .agents/skills/writing-skills/examples/CLAUDE_MD_TESTING.md: sha256:0b379a3415e185d3c434b3ad283d8aa132f3022c2a4f210f168865b5986bcef0
     .agents/skills/writing-skills/graphviz-conventions.dot: sha256:e2890a593c91370e384b42f2f67b1a6232c9e69dddea7891a0c1c46d7b20b694
     .agents/skills/writing-skills/persuasion-principles.md: sha256:a51bc9bf75189ea73a27b3fb504a2fdfdb966fb1f7f1cdf03203230a216ccc03
-    .agents/skills/writing-skills/render-graphs.js: sha256:ccda971a87bb185f8febf81c56b556a20d026fa980c17b35fa3e8824fbb37852
+    .agents/skills/writing-skills/render-graphs.js: sha256:c7f412cc629461c4d10287e668731874c0497707023e3e3f74a5355eb2cee196
     .agents/skills/writing-skills/testing-skills-with-subagents.md: sha256:c711346852c911b24a84aa161e0cff06a4cd7f4e2fa9e9c0a266cead5afcbade
     .claude/hooks/superpowers/hooks/run-hook.cmd: sha256:d3d9c6199678dab2858e60509dde5e7414f13c2a2b5e48a38b1d368b6e1d6abb
-    .claude/skills/brainstorming/SKILL.md: sha256:e14914605f640e0841758e45d0ab2a53243b59b921f929e47921c99668f2e61d
+    .claude/skills/brainstorming/SKILL.md: sha256:74edf03ea6d24ef53db48677b93558d14a979bdf052ca3f57ecdca0c66791608
     .claude/skills/brainstorming/scripts/frame-template.html: sha256:6a8a4e58bd6a44b904e2e3c57de774481d909204597e1498de53f1b2fecc4c4e
     .claude/skills/brainstorming/scripts/helper.js: sha256:43c6d69954a46ec34a2a262bcc62a9a7e83e839c739f199cb72646d397c686e3
     .claude/skills/brainstorming/scripts/server.cjs: sha256:2d2961ea8d11f56c5f4c3a1a68d22709efa5d7601a2246d8c880774e7e9e8412
     .claude/skills/brainstorming/scripts/start-server.sh: sha256:a4e5ae84275bcaacd2f84345afeabe59cf7b00ba080e123da7cc1fb226f12847
     .claude/skills/brainstorming/scripts/stop-server.sh: sha256:0b5ccbbd57f62d3ed88993f7940b5ee0e5c0fc9b21c550c623da4f6292e47daf
     .claude/skills/brainstorming/spec-document-reviewer-prompt.md: sha256:95a0a195de9d984be2fffa95bab16fc8c563bc296a9cfc5e9c29cb3ece0d7457
-    .claude/skills/brainstorming/visual-companion.md: sha256:60cbad29b9dd7eaf08da020e301c498a72230b2e13c1813fa967a135ffcc1d71
-    .claude/skills/dispatching-parallel-agents/SKILL.md: sha256:f0df13f584049059cc5619f90061405b89dcc6e28ab3f2a8517d27d99c7a46a6
-    .claude/skills/executing-plans/SKILL.md: sha256:b357c2a2e5bf24adf237b5d4a83cacd828f07b886d0873ad91546aa3c99905c9
-    .claude/skills/finishing-a-development-branch/SKILL.md: sha256:e6d4a812de900d33c6eacfb40747f99427f25c304a7b7099120f9373b115a47f
-    .claude/skills/receiving-code-review/SKILL.md: sha256:647036bbdab7bf2317e14e079595e984c9030f64295e2b4c0fb57dbeb48f25dd
-    .claude/skills/requesting-code-review/SKILL.md: sha256:1017ccdd5bc61fab67c654cf118cbdb520464b313073a0a6b9a6b9aa647a3ad6
-    .claude/skills/requesting-code-review/code-reviewer.md: sha256:b2f2ec7596925fe52dac158fdfbca19b3a7d779d619c481e6706a6c0001662d3
-    .claude/skills/subagent-driven-development/SKILL.md: sha256:46024335cbd77a6d8400b6bb0d3ef51b8eadde28203c982fde0e03ecc1d97329
-    .claude/skills/subagent-driven-development/implementer-prompt.md: sha256:49018b28dc11bc9f3d13a28959bb10ae1a96eabc5d8f19f4079d901f9ff2bf64
-    .claude/skills/subagent-driven-development/scripts/review-package: sha256:74d14b38a5bae7e52c2ce930e02140d8dfc6f77417ce76bc3857892c4fe833b9
-    .claude/skills/subagent-driven-development/scripts/task-brief: sha256:c4b830094d64bb512ffde664fba57bbdd642632a09b7df75481f00005d2e7440
-    .claude/skills/subagent-driven-development/task-reviewer-prompt.md: sha256:2eb9d54373420de25bc0bd00635d3a3123a6c0eb30c881168e6f3348e2387331
+    .claude/skills/brainstorming/visual-companion.md: sha256:77eb44a4ec3408bb3dafb872288ecd94beb8cf21da4f2bafa54fd08255d7808b
+    .claude/skills/dispatching-parallel-agents/SKILL.md: sha256:1968923066f3b707eb01d1992cdf4c42284c3855f70253b9cd5000ff45fca13c
+    .claude/skills/executing-plans/SKILL.md: sha256:c4c3d8b628c51114cd165fb8246fe02744cd8be180032328391252e653028d9b
+    .claude/skills/finishing-a-development-branch/SKILL.md: sha256:8db5a922b242dd4e1bf824cb91c13b3e8d8e8a86d6ceaf7f0774eb9cce909d65
+    .claude/skills/receiving-code-review/SKILL.md: sha256:091df1629510af1b92fc4abd6f96732ebedb4cb2c0f3457e8f2740b0504a2438
+    .claude/skills/requesting-code-review/SKILL.md: sha256:d71cc01ba56d2325cf8af5f7c11837819b63ecd57de0bfdb812f7f3ff7751df8
+    .claude/skills/requesting-code-review/code-reviewer.md: sha256:5eca5fcfd48a50e0a526ce5ffd64bf625d6b81bb46d11795274dae451fe6ffd4
+    .claude/skills/subagent-driven-development/SKILL.md: sha256:1b19d4953dcc602516d729c27aefe1b168e5bf1c17a52a997b9dde326ae3fc41
+    .claude/skills/subagent-driven-development/implementer-prompt.md: sha256:81dd9d5a3fb0b09b96b5829f03b9796842f3199ef7591d1ba1c2db2a515f64d0
+    .claude/skills/subagent-driven-development/re-review-prompt.md: sha256:db0d5849478bc79cbde97b9b2cf0e58b50be8b8ed18464b0252c2bf27b6440a6
+    .claude/skills/subagent-driven-development/scripts/review-package: sha256:fac3d4bd7f94369e8037b9ead2a8a502dca6ab333902b560b9455dbb3c450ebe
+    .claude/skills/subagent-driven-development/scripts/sdd-workspace: sha256:95a09d9d3983ad1aafd093ca72b4587946dea885c6e302caa02a779a2f911c31
+    .claude/skills/subagent-driven-development/scripts/task-brief: sha256:d6954ef7841c7da3d77373e6ff5118b3f2f2e998606fd95d33e6527851bce044
+    .claude/skills/subagent-driven-development/task-reviewer-prompt.md: sha256:eea23e33ec570c3041f40e9569fa711d61b8029f9eecf908345138aa1c6e61ab
     .claude/skills/systematic-debugging/CREATION-LOG.md: sha256:c24733a5b1821bd6bed1fc950261f0b9f4e90097e0bbb96459d8179713730789
-    .claude/skills/systematic-debugging/SKILL.md: sha256:3b20719eca4f0461cb51a195221320d775dcf03b6859271066a03a5132a6ce7a
+    .claude/skills/systematic-debugging/SKILL.md: sha256:808fc5717aa88ad65efff312b11c186294d3e6ee301afb584e2f86599b137787
     .claude/skills/systematic-debugging/condition-based-waiting-example.ts: sha256:40ae5ebe497fdf310200e43fe986552546d0a22837c0d39e855db1cfd33eb88e
     .claude/skills/systematic-debugging/condition-based-waiting.md: sha256:e89fec8400d6cd50f43407cec9fab50976ba4d55d0ec2eb51c0bd68036b54c26
     .claude/skills/systematic-debugging/defense-in-depth.md: sha256:1e175fb86fc357e58c6aebf5441e481e1b7868b4380c0456b63a17eefbd18ba7
-    .claude/skills/systematic-debugging/find-polluter.sh: sha256:6462747eae9b175ac145b78bcfaeab755654a75e32637f08eb633f065a9e1d7c
+    .claude/skills/systematic-debugging/find-polluter.sh: sha256:dd7b8f13c4cc2a24b33ff87b18da9248f3e1c80a085c3316224f69ff0fa5c43c
     .claude/skills/systematic-debugging/root-cause-tracing.md: sha256:6b0622269e098ca1399e123e553fd385f0b6412d88ef0e9c4f5a8ea9cf1cec7b
     .claude/skills/systematic-debugging/test-academic.md: sha256:fe2ba480d78ac0d686dc025f41c2a32a43d642bf533f91b0c6053a04d35d6486
     .claude/skills/systematic-debugging/test-pressure-1.md: sha256:0b6a915db0054577819834c79be9eb614e97bddba10d73768e1fbe91cfed048a
     .claude/skills/systematic-debugging/test-pressure-2.md: sha256:b2030aeffba07050e8ad573ddf87486457c4a016a786bb326235bebd856f2016
     .claude/skills/systematic-debugging/test-pressure-3.md: sha256:96b50a52e2c7989c9cf20fb752c47c1e9a3a70dc362f8f7989f8f5b64dac7708
-    .claude/skills/test-driven-development/SKILL.md: sha256:b5b4717b8b761cce15a6cfe9022e33fd959e0894c0c39d72c9cb49c23486c10e
-    .claude/skills/test-driven-development/testing-anti-patterns.md: sha256:bde453bc258f06543987477c837939afaa774ea2acbd9f308d702fc452bc4283
-    .claude/skills/using-git-worktrees/SKILL.md: sha256:e2c3ec142e52868a51af246c620cd76ab648dcf27d6900d47e6ffd07159a9794
-    .claude/skills/using-superpowers/SKILL.md: sha256:918562bbba1c73d1407c50de77a92eeaa6930508bdb57a64324d7d508a9069e1
-    .claude/skills/using-superpowers/references/antigravity-tools.md: sha256:00b16e8e8166d972766613c4244a7901d0413af37944741a8b8f40105f9f7f05
-    .claude/skills/using-superpowers/references/claude-code-tools.md: sha256:7d9244dd278db15caa8f9f86bda0546c91fc65163f94b2499999fc72b69c3666
-    .claude/skills/using-superpowers/references/codex-tools.md: sha256:cbce77a3a430688ef0cc3c8f03d17d2df1a2c78603e8b138cec522b74d75e4ab
-    .claude/skills/using-superpowers/references/copilot-tools.md: sha256:9627943f22c8db64ac7fbac3b6e399f73650a5cf3618f7966e802e7fa58d4595
+    .claude/skills/test-driven-development/SKILL.md: sha256:bf1b8216e523851a411e91d429a7c1c2a173e79d88957bc78e348218d50edd54
+    .claude/skills/test-driven-development/writing-good-tests.md: sha256:51471c853306ff92ca8bb41dcaea05f31c0e46b03651f8f3c99754b7172f4ae1
+    .claude/skills/using-git-worktrees/SKILL.md: sha256:8cfb86f121269e8f7f12361e6795c4f6738828340e28964c9229d365666c9edd
+    .claude/skills/using-superpowers/SKILL.md: sha256:30f2ab78e20ddc27ee7158ae8d4a2abe161c360981c7cc3548070913142d3dc3
+    .claude/skills/using-superpowers/references/antigravity-tools.md: sha256:4880f6de3da4e32f9659ebe7a72b9e0ebfff04e028c2ed96173f86d0387a04c0
+    .claude/skills/using-superpowers/references/codex-tools.md: sha256:1a38ad9b188c393052f58d95657a1c35ea6aafc8b5a27f198f3922912f70bbe7
     .claude/skills/using-superpowers/references/gemini-tools.md: sha256:62b9157bcb0ee3c6784e3d0da0798ddfa5872f9e0c34bea48f3079dabea71965
-    .claude/skills/using-superpowers/references/pi-tools.md: sha256:e89e2d5c7b89cdd2a511aa7ad3c191290baaaed8913006c30f283ac7c4b091fb
-    .claude/skills/verification-before-completion/SKILL.md: sha256:ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c
-    .claude/skills/writing-plans/SKILL.md: sha256:272e1af349f5062c28dc282b3e21b220d58d683a7314a10c455b7432ec91d845
+    .claude/skills/using-superpowers/references/hermes-tools.md: sha256:e2185c976a3c87503910e05e2aea58cc89bc8e569bb624b93df9958ac47a9190
+    .claude/skills/using-superpowers/references/pi-tools.md: sha256:703dbc83d23ecab9c6f388460c38abc482e9dee2fe6772a8c7a255152ad3a4d5
+    .claude/skills/verification-before-completion/SKILL.md: sha256:2befe7fc55bcadaa3d97dd9e8efeb633d2561c0ebe74c5a8b17c4d9e7e4520b3
+    .claude/skills/writing-plans/SKILL.md: sha256:48508f44bbfd7d24b029fbf3a314f3cd14c9615599059366e922f47b8dc08cf2
     .claude/skills/writing-plans/plan-document-reviewer-prompt.md: sha256:aa728b96aad603c8be28875a4305637f6c984aa81ffcadcb13e743202fa2a0c7
-    .claude/skills/writing-skills/SKILL.md: sha256:4c359737ed3e3ce1f5bd3117353757872802dd5fd73b25906f1805a8fa8f2baf
+    .claude/skills/writing-skills/SKILL.md: sha256:16148d03c58f718abe2a9cfbb3edd06159b4a454391c5c2b933dfa1c25f9601e
     .claude/skills/writing-skills/anthropic-best-practices.md: sha256:217629b356c09c9bd11017c9788e8fc654ca1b32c92d4a51cd490e16dd65e59a
     .claude/skills/writing-skills/examples/CLAUDE_MD_TESTING.md: sha256:0b379a3415e185d3c434b3ad283d8aa132f3022c2a4f210f168865b5986bcef0
     .claude/skills/writing-skills/graphviz-conventions.dot: sha256:e2890a593c91370e384b42f2f67b1a6232c9e69dddea7891a0c1c46d7b20b694
     .claude/skills/writing-skills/persuasion-principles.md: sha256:a51bc9bf75189ea73a27b3fb504a2fdfdb966fb1f7f1cdf03203230a216ccc03
-    .claude/skills/writing-skills/render-graphs.js: sha256:ccda971a87bb185f8febf81c56b556a20d026fa980c17b35fa3e8824fbb37852
+    .claude/skills/writing-skills/render-graphs.js: sha256:c7f412cc629461c4d10287e668731874c0497707023e3e3f74a5355eb2cee196
     .claude/skills/writing-skills/testing-skills-with-subagents.md: sha256:c711346852c911b24a84aa161e0cff06a4cd7f4e2fa9e9c0a266cead5afcbade
     .codex/hooks/superpowers/hooks/run-hook.cmd: sha256:d3d9c6199678dab2858e60509dde5e7414f13c2a2b5e48a38b1d368b6e1d6abb
-  content_hash: sha256:8206d720fc4f340c4bc83dec27a1632debb5065a3ceeca53a7cd96a90425038f
+  content_hash: sha256:5f5d6db39d5b1c18aa738777f5e34aeae62ae7024d74fb788e8ad56334780241
 - repo_url: vercel-labs/agent-skills
   host: github.com
-  resolved_commit: f8a72b9603728bb92a217a879b7e62e43ad76c81
+  resolved_commit: 063bee94c3f4df8453406c830b0a7df0f2860278
   depth: 2
   resolved_by: HideBa/apm
   package_type: skill_bundle
@@ -908,6 +1487,7 @@ dependencies:
   - .agents/skills/react-view-transitions/references/implementation.md
   - .agents/skills/react-view-transitions/references/nextjs.md
   - .agents/skills/react-view-transitions/references/patterns.md
+  - .agents/skills/react-view-transitions/references/troubleshooting.md
   - .agents/skills/vercel-cli-with-tokens
   - .agents/skills/vercel-cli-with-tokens/SKILL.md
   - .agents/skills/vercel-optimize
@@ -1220,6 +1800,7 @@ dependencies:
   - .claude/skills/react-view-transitions/references/implementation.md
   - .claude/skills/react-view-transitions/references/nextjs.md
   - .claude/skills/react-view-transitions/references/patterns.md
+  - .claude/skills/react-view-transitions/references/troubleshooting.md
   - .claude/skills/vercel-cli-with-tokens
   - .claude/skills/vercel-cli-with-tokens/SKILL.md
   - .claude/skills/vercel-optimize
@@ -1520,14 +2101,15 @@ dependencies:
     .agents/skills/react-native-skills/rules/ui-safe-area-scroll.md: sha256:3dd776caef2344d73529010940b50042861d06d31a192122a4df64bc06aed0e8
     .agents/skills/react-native-skills/rules/ui-scrollview-content-inset.md: sha256:89e4bbe5e9a602660f4155e9d4c0dee09db1adf21c73f47213cd67ec896e5a13
     .agents/skills/react-native-skills/rules/ui-styling.md: sha256:cdef4d8b1a097b844e5992ab78e66a2dc604faf1e90f8d325a0eb116e8ef6a7e
-    .agents/skills/react-view-transitions/AGENTS.md: sha256:847e68771417af6cffd9d3ecd4c9412dae1b2bda559912681e17d5d9aa8da435
-    .agents/skills/react-view-transitions/README.md: sha256:5679d93a30c29d0fcf27fd3f2545043166a9ac622c9c97e47ecfd6ff74efa0ba
-    .agents/skills/react-view-transitions/SKILL.md: sha256:8c4c0f8b5581ef473fbf388b2df7d13e02d418ab2150a912b9b7eafdf4b76a01
+    .agents/skills/react-view-transitions/AGENTS.md: sha256:83fd29aec273cf4318a4f428ed2725f2cd3b6adbd76640e495c31f0a2521c702
+    .agents/skills/react-view-transitions/README.md: sha256:aba31b4ac31c1b13d2a8054179604abd4498b0d7324746635ff0e3b0aea9d608
+    .agents/skills/react-view-transitions/SKILL.md: sha256:1520343c8814c972fee001cac6d6185976d6eb3f4edcac33afe95c10f3b3228b
     .agents/skills/react-view-transitions/metadata.json: sha256:b1a5ae09f3904dc83dab79f518d033bd98f1e2f55caabfdb5beeeaaf0ca5e4c2
-    .agents/skills/react-view-transitions/references/css-recipes.md: sha256:c75e195a3c80fe12be65a0ff439bb80bb06a5629a1850208c4cf220c60339102
-    .agents/skills/react-view-transitions/references/implementation.md: sha256:f6e3bca5becf7b08abc00ddc1ca3b7d139bcd02a92cd65e5424c20373bb99393
-    .agents/skills/react-view-transitions/references/nextjs.md: sha256:cd8116e3d2730d16e7271857b9c7da334faa3bd97b49f70f33c92cf92594bca5
-    .agents/skills/react-view-transitions/references/patterns.md: sha256:c2b4657b3dfe1524bf374dd94f851874a47afd4be62e6423a779ef9da87539e3
+    .agents/skills/react-view-transitions/references/css-recipes.md: sha256:f4a5b92a7aad6befd2779e498ab04311277f179b240d2170f0a68a1444024d51
+    .agents/skills/react-view-transitions/references/implementation.md: sha256:87687de5fa2f775a6b5134ee02863ebede9ee6bc42ea8ed99bd53aa5325e78f4
+    .agents/skills/react-view-transitions/references/nextjs.md: sha256:f926a645d5e4c62fcc2d5832be0f3ad048f2ee1d17f8476324e2bc407e4b3a07
+    .agents/skills/react-view-transitions/references/patterns.md: sha256:da24d7f37c7e6b8ecbcf05525ef613d8f5be94655c233d6fa62833c8a746604f
+    .agents/skills/react-view-transitions/references/troubleshooting.md: sha256:aa6811d276dcf06dcc9aba90d1e11e1d0a29146604bf7c89a9e93a6fa8883c7a
     .agents/skills/vercel-cli-with-tokens/SKILL.md: sha256:c06bea99e75eab07fde4fae26069baa002f82f39b53f07981704c2901551dd4c
     .agents/skills/vercel-optimize/AGENTS.md: sha256:922a35993ffd98c923d61fa3d7a722bc1bc17466ea1e0b5828f67de21fbb0e7a
     .agents/skills/vercel-optimize/CONTRIBUTING.md: sha256:4a3c6695f23ada3228582f1062509545dbad485e5011434c12b7ddd81bf1370a
@@ -1823,14 +2405,15 @@ dependencies:
     .claude/skills/react-native-skills/rules/ui-safe-area-scroll.md: sha256:3dd776caef2344d73529010940b50042861d06d31a192122a4df64bc06aed0e8
     .claude/skills/react-native-skills/rules/ui-scrollview-content-inset.md: sha256:89e4bbe5e9a602660f4155e9d4c0dee09db1adf21c73f47213cd67ec896e5a13
     .claude/skills/react-native-skills/rules/ui-styling.md: sha256:cdef4d8b1a097b844e5992ab78e66a2dc604faf1e90f8d325a0eb116e8ef6a7e
-    .claude/skills/react-view-transitions/AGENTS.md: sha256:847e68771417af6cffd9d3ecd4c9412dae1b2bda559912681e17d5d9aa8da435
-    .claude/skills/react-view-transitions/README.md: sha256:5679d93a30c29d0fcf27fd3f2545043166a9ac622c9c97e47ecfd6ff74efa0ba
-    .claude/skills/react-view-transitions/SKILL.md: sha256:8c4c0f8b5581ef473fbf388b2df7d13e02d418ab2150a912b9b7eafdf4b76a01
+    .claude/skills/react-view-transitions/AGENTS.md: sha256:83fd29aec273cf4318a4f428ed2725f2cd3b6adbd76640e495c31f0a2521c702
+    .claude/skills/react-view-transitions/README.md: sha256:aba31b4ac31c1b13d2a8054179604abd4498b0d7324746635ff0e3b0aea9d608
+    .claude/skills/react-view-transitions/SKILL.md: sha256:1520343c8814c972fee001cac6d6185976d6eb3f4edcac33afe95c10f3b3228b
     .claude/skills/react-view-transitions/metadata.json: sha256:b1a5ae09f3904dc83dab79f518d033bd98f1e2f55caabfdb5beeeaaf0ca5e4c2
-    .claude/skills/react-view-transitions/references/css-recipes.md: sha256:c75e195a3c80fe12be65a0ff439bb80bb06a5629a1850208c4cf220c60339102
-    .claude/skills/react-view-transitions/references/implementation.md: sha256:f6e3bca5becf7b08abc00ddc1ca3b7d139bcd02a92cd65e5424c20373bb99393
-    .claude/skills/react-view-transitions/references/nextjs.md: sha256:cd8116e3d2730d16e7271857b9c7da334faa3bd97b49f70f33c92cf92594bca5
-    .claude/skills/react-view-transitions/references/patterns.md: sha256:c2b4657b3dfe1524bf374dd94f851874a47afd4be62e6423a779ef9da87539e3
+    .claude/skills/react-view-transitions/references/css-recipes.md: sha256:f4a5b92a7aad6befd2779e498ab04311277f179b240d2170f0a68a1444024d51
+    .claude/skills/react-view-transitions/references/implementation.md: sha256:87687de5fa2f775a6b5134ee02863ebede9ee6bc42ea8ed99bd53aa5325e78f4
+    .claude/skills/react-view-transitions/references/nextjs.md: sha256:f926a645d5e4c62fcc2d5832be0f3ad048f2ee1d17f8476324e2bc407e4b3a07
+    .claude/skills/react-view-transitions/references/patterns.md: sha256:da24d7f37c7e6b8ecbcf05525ef613d8f5be94655c233d6fa62833c8a746604f
+    .claude/skills/react-view-transitions/references/troubleshooting.md: sha256:aa6811d276dcf06dcc9aba90d1e11e1d0a29146604bf7c89a9e93a6fa8883c7a
     .claude/skills/vercel-cli-with-tokens/SKILL.md: sha256:c06bea99e75eab07fde4fae26069baa002f82f39b53f07981704c2901551dd4c
     .claude/skills/vercel-optimize/AGENTS.md: sha256:922a35993ffd98c923d61fa3d7a722bc1bc17466ea1e0b5828f67de21fbb0e7a
     .claude/skills/vercel-optimize/CONTRIBUTING.md: sha256:4a3c6695f23ada3228582f1062509545dbad485e5011434c12b7ddd81bf1370a
@@ -1990,7 +2573,7 @@ dependencies:
     .claude/skills/vercel-optimize/scripts/verify-finding.mjs: sha256:534590f7900e20648f67cc2d6845502960709ddfeb10cbb6733ade37b2eebe8e
     .claude/skills/web-design-guidelines/SKILL.md: sha256:f4647ca866a3accf763777f83e7682954f0187cd6bea7eea0399796652414e8f
     .claude/skills/writing-guidelines/SKILL.md: sha256:89a5f581193289b80af58b980090aeed535047c8df2b55ccbaae0de40283a99d
-  content_hash: sha256:18653366c6acc38365e61c70f29199d323b0a9ebbbc8f11f074aa600c7b0efad
+  content_hash: sha256:d39eb1ad225e1abab72ba585dd6390f3b51c027a01a1f3cca9e5aeecf94c44ec
 lsp_servers:
 - clangd
 - pyright
