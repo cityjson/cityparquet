@@ -18,17 +18,15 @@ cite is the ratios within a single directory. Nothing in this document quotes
 a number, so the methodology here cannot go stale against a re-run; the CSVs
 themselves can, and one caveat already applies.
 
-**Every committed write-side and configuration-axis CSV predates the typed
-appearance columns.** They were measured while `material_lod*` /
+**The committed `results/` and `scaling_write_results/` CSVs predate the
+typed appearance columns.** They were measured while `material_lod*` /
 `texture_lod*` were JSON text cells; those columns are now typed Arrow/Parquet
 `MAP`s, which the writer leaves at parquet's own defaults for dictionary
-encoding and statistics. For `results/` and `scaling_write_results/` that
-means neither the committed bytes nor the committed write times describe the
-current writer until both families are re-run. The codec and row-group runs
-were measured at the branch point before that change; the 3DBAG slices carry
-no appearance data, so those columns are empty in every package measured and
-the effect on their bytes and times is expected to be negligible, but the two
-axes have not been repeated on the current writer either.
+encoding and statistics, so neither the committed bytes nor the committed
+write times describe the current writer until both families are re-run. The
+codec and row-group runs are measured on the current writer: each directory's
+`MACHINE.md` names the commit, and the 3DBAG slices carry no appearance data,
+so those columns are empty in every package they measured.
 
 ## Three recipes
 

@@ -1,6 +1,6 @@
 # Measurement host
 
-Captured by benchmark/scripts/machine_record.sh at 2026-09-06T02:15:33Z.
+Captured by benchmark/scripts/machine_record.sh at 2026-09-07T05:22:37Z.
 
 ```
 Linux 6.8.0-136-generic x86_64
@@ -20,8 +20,8 @@ Socket(s):                               2
 Stepping:                                0
 Frequency boost:                         enabled
                total        used        free      shared  buff/cache   available
-Mem:     540725092352 67899543552  6151950336  3643064320 478181539840 472825548800
+Mem:     540725092352 56333594624 22522810368  2094456832 471814152192 484391497728
 rustc 1.93.1 (01f6ddf75 2026-02-11)
 cargo 1.93.1 (083ac5135 2025-12-15)
-git 7453bfda6487ea67f48e8db95f3e2a9ce3e73e62
+git 09f3f6281acdfaed1bc4a8095a60ab6118082404
 ```
