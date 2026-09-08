@@ -28,24 +28,33 @@ codec and row-group runs are measured on the current writer: each directory's
 `MACHINE.md` names the commit, and the 3DBAG slices carry no appearance data,
 so those columns are empty in every package they measured.
 
-## Three recipes
+## Running the suite
 
-| recipe                                        | what it varies                                                                                                                                                           | output                                                              |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| `just write-bench FOLDER [OUT]`                | the writer's variant matrix over every CityJSON/CityJSONSeq file under FOLDER — codecs, row-group sizes, ordering, plus the DuckDB `COPY … TO (FORMAT PARQUET)` baseline | `OUT/<name>.csv` (default `benchmark/formats/results/`)             |
-| `just codec-bench FOLDER [OUT] [PREPARED]`    | codec axis over every input under `FOLDER` on the read harness: a timed write per variant (peak RSS), then a full read and the bbox windows                             | `OUT` (default `benchmark/formats/scaling_codec_results/`)          |
-| `just rowgroup-bench FOLDER [OUT] [PREPARED]` | the same for the row-group axis                                                                                                                                          | `OUT` (default `benchmark/formats/scaling_rowgroup_results/`)       |
+Use the root entry points:
 
-`just codec-bench`'s and `just rowgroup-bench`'s CSVs are in the READ run's
-shape (`READ_BENCHMARK.md`), with a `write` row per variant and the variant id
-in the `format` column; they feed the summary page's section 3b and the
-`codec`/`rowgroup` print figures (`benchmark/plot/benchviz`).
+```sh
+just bench-prep --families formats,codec,rowgroup
+just bench-run --families formats,codec,rowgroup
+just bench-summary
+```
 
-`just bench` is a third thing again — the cross-format **read** benchmark,
-writing to `benchmark/formats/read_results/`. `just codec-bench` and `just
-rowgroup-bench` run on the same read harness and share its CSV shape, but hold
-the format fixed at `cityparquet` and vary the codec or row-group size
-instead of the format.
+The `formats` family compares write and read performance across file formats.
+The `codec` and `rowgroup` families hold the format fixed and change one
+configuration dimension over nested 3DBAG slices. Their write and read rows
+share a dataset/configuration identity; write measurements are independent of
+the subsequent read queries. Read scenarios for configuration experiments are
+full read, the bbox windows and the middle-position ID lookup.
+
+The primary format configuration is Hilbert-ordered CityParquet, displayed as
+**CityParquet** in figures. Internal variant IDs retain the ordering and codec
+information needed to reproduce each configuration. The codec and row-group
+figures show the largest measured slice and a separate scaling line chart.
+See [`../README.md`](../README.md) for the experimental matrix and figure list.
+
+The older `results/` and `scaling_write_results/` writer matrices use a
+separate schema and are not a substitute for the format family's write
+measurements. Their provenance and geometry qualifications below still apply
+when inspecting those files.
 
 ## Measurement discipline
 
@@ -126,35 +135,14 @@ which geometry each side actually wrote.
 ## Reproduce
 
 ```sh
-just fixtures                          # the two CityJSON fixtures (network)
-just write-bench tests/fixtures        # variant matrix + DuckDB baseline -> benchmark/formats/results/
-just codec-bench    tests/fixtures     # codec axis -> benchmark/formats/scaling_codec_results/
-just rowgroup-bench tests/fixtures     # row-group axis -> benchmark/formats/scaling_rowgroup_results/
+just bench-prep --families codec,rowgroup
+just bench-run --families codec,rowgroup
+just bench-summary
 ```
 
-Any folder of CityJSON/CityJSONSeq works — `just fetch-data` fetches the
-six-dataset cityjson.org corpus the read benchmark uses, and all three recipes
-walk a folder recursively. Each removes `OUT/<name>.csv` before writing it, never
-appends, so a committed run is one machine, one sitting, per dataset.
-
-Per-dataset, without the recipes:
-
-```sh
-cargo run --release -p cityparquet-cli -- bench --input <file> --out <csv>
-./benchmark/scripts/bench_duckdb.sh <file> <csv>
-```
-
-**Record the machine with the run.** `codec-bench` and `rowgroup-bench` write
-their own `MACHINE.md` beside the CSVs; `write-bench`'s CSVs carry no machine
-metadata, so a committed `write-bench` run without a recorded host is
-internally comparable and externally unquotable. `benchmark/scripts/machine_record.sh`
-is the canonical capture — the two axis recipes call it, and a `write-bench`
-run should too:
-
-```sh
-uname -srm     # kernel, release and architecture; NOT `uname -a`, whose node
-               # name is the host's address and these files are published
-# Linux: lscpu | sed -n '1,15p'; free -b | head -2
-# macOS: sysctl -n machdep.cpu.brand_string hw.memsize
-duckdb --version; cargo --version; rustc --version
-```
+Add `--smoke` for a small pipeline check. Full experiments use all configured
+scaling slices; actual counts are recorded because feature boundaries can
+cross a nominal target. Keep machine metadata, source identity, software
+revision, query parameters and repetition settings alongside the results.
+Prepared data and result directories have separate responsibilities: preparing
+an artefact does not constitute a timed write measurement.

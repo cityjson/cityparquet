@@ -1,7 +1,7 @@
 [project]
 name = "readbench-plot"
 version = "0.1.0"
-description = "Chart the cityparquet-rs benchmark result CSVs (readbench_plot + benchviz)."
+description = "Render paper-focused CityParquet benchmark figures."
 requires-python = ">=3.11"
 dependencies = [
     "matplotlib>=3.9",
@@ -11,16 +11,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
-[project.scripts]
-readbench-plot = "readbench_plot.__main__:main"
-
 # Two packages, one project: `readbench_plot` renders the per-dataset charts of
 # a single run (`just plot`), `benchviz` renders the cross-dataset summary page
 # and the static paper figures (`just plot-pretty`). They read the same CSVs and
 # `benchviz`'s dependencies are a subset of these, so a second uv project would
 # only buy a second lockfile to keep in step.
 [tool.hatch.build.targets.wheel]
-packages = ["readbench_plot", "benchviz"]
+packages = ["benchviz"]
 
 [dependency-groups]
 dev = [

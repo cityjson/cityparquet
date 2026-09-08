@@ -1,0 +1,81 @@
+# Shared identity and selection manifest for the benchmark suite.  Result CSVs
+# remain the raw evidence; this file only gives stable IDs and paper labels to
+# the inputs that produced them.
+
+[suite]
+version = 1
+families = ["sizes", "formats", "codec", "rowgroup", "databases"]
+scaling_sizes = [1000, 5000, 10000, 50000, 100000, 500000, 1000000]
+largest_scaling_dataset = "3dbag_n1000000"
+
+[datasets.rotterdam]
+source = "rotterdam_delfshaven.city.json"
+title = "Rotterdam"
+role = "corpus"
+
+[datasets.ingolstadt]
+source = "ingolstadt.city.json"
+title = "Ingolstadt"
+role = "corpus"
+
+[datasets.vienna]
+source = "vienna_102081.city.json"
+title = "Vienna"
+role = "corpus"
+
+[datasets.new_york]
+source = "nyc_da13_buildings.city.json"
+title = "New York"
+role = "corpus"
+
+[datasets.zurich]
+source = "zurich_building_lod2.city.json"
+title = "Zurich"
+role = "corpus"
+
+# The scaling generator cuts strict CityObject prefixes from one published
+# FlatCityBuf source.  The largest prefix replaces the former small 3DBAG
+# corpus entry in the format and size comparisons.
+[datasets.3dbag_n1000]
+source = "3dbag_n1000.city.jsonl"
+title = "3DBAG"
+target_objects = 1000
+role = "scaling"
+
+[datasets.3dbag_n5000]
+source = "3dbag_n5000.city.jsonl"
+title = "3DBAG"
+target_objects = 5000
+role = "scaling"
+
+[datasets.3dbag_n10000]
+source = "3dbag_n10000.city.jsonl"
+title = "3DBAG"
+target_objects = 10000
+role = "scaling"
+
+[datasets.3dbag_n50000]
+source = "3dbag_n50000.city.jsonl"
+title = "3DBAG"
+target_objects = 50000
+role = "scaling"
+
+[datasets.3dbag_n100000]
+source = "3dbag_n100000.city.jsonl"
+title = "3DBAG"
+target_objects = 100000
+role = "scaling"
+
+[datasets.3dbag_n500000]
+source = "3dbag_n500000.city.jsonl"
+title = "3DBAG"
+target_objects = 500000
+role = "scaling"
+
+[datasets.3dbag_n1000000]
+source = "3dbag_n1000000.city.jsonl"
+title = "3DBAG"
+# The feature-boundary cutter records the observed total in each result
+# sidecar; this nominal identifier remains stable for paths and commands.
+target_objects = 1000000
+role = "largest-scaling"

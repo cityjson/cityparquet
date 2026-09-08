@@ -1,127 +1,144 @@
 # Benchmarks
 
-Three benchmark families, each answering a different question, each with its own
-corpus and its own caveats. This page is the map: what each one measures, what
-it will and will not support as a claim, and which caveats are load-bearing. The
-methodology lives with each family; nothing here restates a number.
-
-| Directory                           | Question                                                                       | Compared against                                                 |
-| ----------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
-| [`formats/`](formats/README.md)     | How does CityParquet read, write and compress against the other file formats?  | CityGML, CityJSON, CityJSONSeq, gzipped CityJSONSeq, FlatCityBuf |
-| [`databases/`](databases/README.md) | How does reading CityParquet compare with querying a 3D city model _database_? | cjdb, 3DCityDB v5 (both PostgreSQL), DuckDB over CityParquet     |
-| [`plot/`](plot/)                    | Neither — it renders. A uv project holding the two chart packages.             | —                                                                |
-
-## What is in here
-
-Everything the benchmark is:
-
-|              |                                                                    |
-| ------------ | ------------------------------------------------------------------ |
-| `readbench/` | the cross-format read harness — its **own Cargo workspace**        |
-| `scripts/`   | the conversion chain, the fetchers, and their own bash test suites |
-| `formats/`   | the read/write/compression corpora, results and methodology        |
-| `databases/` | the database comparison — its own uv project and justfile          |
-| `plot/`      | the renderers; measures nothing                                    |
-
-**The recipes are not here, and that is deliberate.** `just bench`,
-`just fetch-data`, `just plot-pretty` and the rest live in the **root**
-`justfile` and run from the repository root, because a benchmark run has to
-reach the _library_ as well — it builds the `cityparquet` converter it measures,
-from `lib/cityparquet-rs`. A recipe that spans both belongs above both.
-
-`readbench/` is a separate workspace from the library on purpose: it keeps
-`cd lib/cityparquet-rs && just check` a gate on the **library alone**, runnable
-with no `uv`, no `jq` and no corpus. The root `just check` runs both.
-
-Two things in `readbench/Cargo.toml` are load-bearing and easy to "tidy" away:
-it repeats the `[patch.crates-io] cjseq` line (a `[patch]` is honoured only in
-the workspace root being built, so without it the benchmark would silently use
-the unpatched upstream), and its `fcb_core`/`cjseq2` pins are **exact** — they
-are a measured format's reader, and a caret range would let a later release
-change what the published numbers mean.
-
-## What is in git and what is not
-
-| Artefact                                                     | Committed?                                                                                                                                                                                                                                                     |
-| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `formats/scaling_{read,write,compression,ordering}_results/` | **yes** — the configuration-axis evidence, four cardinalities of one 3DBAG slice                                                                                                                                                                               |
-| `formats/archive/2026-08-17-catalogue-corpus/`               | **yes** — the retired 30-dataset corpus and its results, kept so the earlier claims stay checkable                                                                                                                                                             |
-| `formats/READ_BENCHMARK.md`, `formats/README.md`             | **yes** — the methodology, including all 23 fairness caveats                                                                                                                                                                                                   |
-| `databases/results/`                                         | **no, currently** — the CSVs were removed with the read benchmark's, for the same reason and a second one: on Linux the harness recorded `peak_rss_bytes` in KiB, not bytes, so five result files were 1024× wrong. `just db bench <dataset>` repopulates them |
-| `formats/read_results/`                                      | **yes** — the cross-format comparison, six datasets, each CSV beside the `<name>.csv.params.json` sidecar recording the exact windows, ids and attribute the run measured. `just bench` regenerates both                                                       |
-| `formats/ordering_results/`                                  | **yes** — the source-order vs Hilbert axis, six datasets, each CSV beside its params sidecar. `just ordering-bench` regenerates it                                                                                                                             |
-| `formats/data/` (~24 GB), `formats/tools/`                   | **no** — fetched from pinned URLs with pinned byte sizes by `just fetch-data` / `just fetch-scaling-data` / `just fetch-tools`                                                                                                                                 |
-| `summary/`, `**/plots/`                                      | **no** — derived from the CSVs in seconds by `just plot-pretty` / `just plot`                                                                                                                                                                                  |
-
-`just plot-pretty` renders whichever CSVs are present; a family whose results
-are not committed produces a summary page saying so rather than an empty grid.
-That is the intended behaviour, not a failure.
-
-**`databases/README.md` still cites "the currently committed `results/…`"** in
-half a dozen places, and quotes numbers from them. Those files were removed in
-the same sweep and the prose has not caught up; the figures it quotes were
-measured, but you cannot check them against a file in this repository until a
-re-run puts one back. Treat every such number there as provisional.
-
-## Caveats that are load-bearing
-
-Read the family's own methodology before citing anything from it. Four caveats
-are quoted here because they are the ones most likely to be dropped in
-translation:
-
-1. **"Smallest codec" is not a citable claim from `formats/`.** The codec
-   variants are written at the `parquet-rs` implementation defaults — zstd at
-   level 3, gzip at 6, brotli at 1. That is a comparison of defaults, not of
-   codecs at equal effort. A codec ranking needs a re-run with levels chosen
-   deliberately. (`formats/README.md`, "The codec levels are NOT matched".)
-
-2. **Ingest is deliberately not compared in `databases/`.** Encoding a
-   CityParquet package and populating an indexed relational schema are different
-   operations, not two points on one scale. Ingest wall-clock is recorded in
-   each dataset's manifest, never in the results CSV, and carries an explicit
-   caveat where it appears. (`databases/README.md`, "Purpose and claim".)
-
-3. **The `citygml` row measures a _synthesised_ artefact.** Every entry in the
-   read corpus is fetched as CityJSON and its CityGML is derived from it by
-   `citygml-tools`, because not one of the `.gml` files published beside those
-   datasets is CityGML 2.0 — six are 1.0 and two are 3.0, and this repository's
-   reader accepts only 2.0. What that costs is stated in full in
-   `formats/READ_BENCHMARK.md`'s "CityGML synthesis" section, and one entry
-   (`3dbag_9-284-556`) additionally loses an LoD in the round trip, so its
-   `citygml` row is not content-equivalent to its other seven.
-
-4. **`id-lookup` is four rows per format, and only `id-miss` compares across
-   them.** Each format is probed at 10%, 50% and 90% of the CityJSONSeq
-   stream's order plus one verified-absent id, because a single target made
-   the number a function of where that id sat rather than of the format. The
-   three hit rows are not comparable across formats — `citygml` and
-   `flatcitybuf` do not preserve the seq order, so their positions are
-   nominal and their times non-monotonic. `id-miss` is position-free and is
-   what separates a format with an id index from one without.
-   (`formats/READ_BENCHMARK.md`, Caveats 9 and 20.)
-
-`formats/READ_BENCHMARK.md` carries twenty-three such caveats. They are numbered and
-cross-referenced from the tables they qualify; the summary page quotes them
-verbatim rather than paraphrasing, so a page and its methodology cannot drift.
-
-## Running them
+The suite compares file formats, CityParquet configurations and database query
+systems. Run the three public commands from the repository root:
 
 ```sh
-just fetch-tools                              # pinned citygml-tools + cjseq (one-off)
-just fetch-data                               # the six-dataset read corpus, 423 MB
-just bench benchmark/formats/data/benchmark   # the cross-format read comparison
-
-just fetch-scaling-data                       # the configuration-axis corpus (7.6 GB source)
-just codec-bench    benchmark/formats/data/scaling   # codec axis: zstd 1/3/9/19, lz4, snappy, gzip, brotli, uncompressed
-just rowgroup-bench benchmark/formats/data/scaling   # row-group axis: 65536, 32768, 8192, 2048, 512
-just ordering-bench benchmark/formats/data/scaling
-
-just plot-pretty                              # the cross-dataset summary page + print figures
-
-just db --list                                # the database comparison's own recipes
+just bench-prep
+just bench-run
+just bench-summary
 ```
 
-None of these is in CI. They are multi-hour, corpus-dependent, and in the
-database family's case need podman. `just plot-test` and `just scripts-test` —
-the harness's own suites, which need neither a corpus nor a network — are the
-gates that run cheaply.
+Preparation downloads and prepares inputs; running measures them; summarising
+renders existing results. Rendering never starts a benchmark.
+
+On this machine the data and output root is
+`benchmark/runs/`. Its layout is:
+
+| Path | Contents |
+| --- | --- |
+| `data/benchmark/`, `data/scaling/` | Source corpus and nested 3DBAG slices |
+| `data/readbench/` | Prepared format artefacts |
+| `formats/results/`, `formats/scaling_{codec,rowgroup}_results/` | Full format and configuration measurements |
+| `formats/smoke/` | Isolated smoke measurements |
+| `databases/{prepared,results,smoke}/` | Database lifecycle inputs and measurements |
+| `summary/{full,smoke}/` | Rendered figures and combined HTML |
+
+Benchmark inputs, derived artefacts, results and rendered summaries are generated
+beneath this ignored directory. The paper checkout may explicitly export figures
+to `paper/assets/bench/`.
+
+## Selecting work
+
+```sh
+just bench-prep --families formats
+just bench-run --families codec,rowgroup
+just bench-run --datasets 3dbag --smoke
+just bench-summary --data-root benchmark/runs
+```
+
+The family names are `sizes`, `formats`, `codec`, `rowgroup` and `databases`.
+With no selection, the suite includes all five. Use each command's `--help`
+for its selection and output options. Smoke runs validate the pipeline with
+small inputs and fewer repetitions; their results are not publication runs.
+
+## Full run
+
+Run the full matrix only after the smoke run succeeds:
+
+```sh
+just bench-prep --data-root benchmark/runs
+just bench-run --data-root benchmark/runs
+just bench-summary --data-root benchmark/runs
+```
+
+Preparation fetches the six-file corpus (about 423 MB), uses the pinned 7.6 GB
+3DBAG FlatCityBuf source to make seven nested slices through the nominal
+one-million-object prefix, prepares all required format artefacts, builds the
+release CityParquet CLI, and prepares the database environment. It needs Rust
+and Cargo, Java 17 or later, `fcb`, `cjseq`, the pinned citygml-tools archive,
+Python with `uv`, and rootless Podman plus the database images for the database
+family. The full run writes substantial prepared packages and result files
+under the data root and takes hours; the database family also needs its own
+container storage and available local ports. `bench-summary` only reads those
+results.
+
+Use `--families` to run one family after preparing it. `--datasets` accepts
+manifest IDs, `3dbag` for the scaling series, and `largest` for the largest
+slice. A selected database run requires `largest`; its normal dataset is the
+largest 3DBAG slice. The selector rejects data roots outside `benchmark/runs/`.
+
+## Experimental matrix
+
+| Family | Data | Measurements | Read queries |
+| --- | --- | --- | --- |
+| `sizes` | Corpus with the largest 3DBAG scaling slice | Complete file or package size | None |
+| `formats` | Same corpus | Write time and peak memory; read time and peak memory | All format queries |
+| `codec` | Nested 3DBAG scaling slices | Size and the four performance metrics | Full read, bbox windows, middle-position ID |
+| `rowgroup` | Same slices | Same metrics | Same queries |
+| `databases` | Largest 3DBAG slice | Storage including indexes; mean query time and peak memory | Database query suite |
+
+The corpus retains Rotterdam, Ingolstadt, Vienna, New York and Zurich, and
+uses the largest scaling slice for 3DBAG. Dataset IDs identify artefacts;
+figures use readable display names. The scaling generator takes whole features
+from a pinned FlatCityBuf source in source order. Slices are nested prefixes,
+not replicated objects. Actual CityObject counts can exceed the nominal target
+because a feature is indivisible; the recorded counts determine plot positions.
+
+The format comparison displays the Hilbert-ordered configuration as
+**CityParquet**. Its internal configuration ID remains distinct from source
+order. Codec experiments hold ordering and row-group size fixed; row-group
+experiments hold ordering and codec fixed. Codec levels are not matched for
+compression effort across codec families.
+
+## Figures
+
+`just bench-summary` produces individual SVG and PNG files and a self-contained
+`index.html` collecting the same figures and their conditions.
+
+| Figure | Content |
+| --- | --- |
+| `sizes` | Vertical size bars, one subplot per dataset; actual sizes and ratios to CityJSONSeq |
+| `heatmap` | One panel per dataset, with write time, write memory, read time and read memory heatmaps |
+| `codec`, `rowgroup` | Five metric panels for the largest measured scaling dataset |
+| `codec-scaling`, `rowgroup-scaling` | Absolute metrics against actual CityObject counts |
+| `databases` | Storage bars and query time/memory heatmaps |
+
+Heatmap colours encode measurement divided by baseline: **lower is better**,
+with 1× neutral. Cell labels show actual values and units. Format comparisons
+use CityJSONSeq; configuration comparisons use their fixed default; database
+comparisons use **3DCityDB**. A missing baseline is not replaced by another
+system. Missing, unsupported or failed measurements remain explicit rather
+than becoming zeros. The combined HTML reports incomplete coverage.
+
+## Evidence and interpretation
+
+Keep source identity, query parameters, software revisions, machine information
+and repetition settings with measurements. Do not combine old write runs and
+new read runs as if they were one experiment. Database memory must cover the
+execution system, not only its client process; the database methodology defines
+the measurement boundary and sampling limitations.
+
+Read the detailed methodology before citing a result:
+
+- [Format queries and fairness caveats](formats/READ_BENCHMARK.md)
+- [Writing and configuration experiments](formats/README.md)
+- [Database measurements](databases/README.md)
+
+Relevant qualifications include CityGML synthesis and possible information
+loss, feature-versus-CityObject counting grain, source-position-dependent ID
+lookups, and small timing differences relative to repetition spread. Preserve
+these qualifications in captions and reports. Database ingest time is separate
+from the query comparison.
+
+## Layout and checks
+
+`readbench/` is a separate Rust workspace for the format harness. `scripts/`
+holds preparation and orchestration. `formats/` and `databases/` own their
+measurement artefacts. `plot/` renders them; `summary/` holds generated output.
+Large source files and prepared packages are fetched or generated, not committed.
+
+Run `just plot-test`, `just scripts-test`, the readbench Rust tests and the
+database unit tests when changing the corresponding components. Benchmarks are
+separate from CI checks: complete runs require the corpus, external converters
+and database containers, and can take hours.

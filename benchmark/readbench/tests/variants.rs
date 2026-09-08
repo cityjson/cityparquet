@@ -94,6 +94,27 @@ fn a_variants_run_writes_reads_keeps_the_packages_and_records_sizes() {
         ("cityparquet+zstd1", "bbox-query"),
         ("cityparquet+zstd1", "bbox-query"),
     ];
+    let samples: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.samples.json")).unwrap(),
+    )
+    .unwrap();
+    let samples = samples.as_array().unwrap();
+    assert_eq!(samples.len(), 30, "15 measurements x warmup + one sample");
+    assert_eq!(
+        samples
+            .iter()
+            .filter(|sample| sample["scenario"] == "write")
+            .count(),
+        6
+    );
+    assert_eq!(
+        samples
+            .iter()
+            .filter(|sample| sample["warmup"] == true)
+            .count(),
+        15
+    );
+
     assert_eq!(rows.len(), expected_order.len(), "rows:\n{text}");
     for (row, (label, scenario)) in rows.iter().zip(expected_order) {
         assert_eq!(field(row, 0), "delft.city.jsonl");

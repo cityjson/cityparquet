@@ -137,7 +137,7 @@ struct RunArgs {
 
     /// Directory `just readbench-prepare` wrote the per-format artefacts
     /// into.
-    #[arg(long, default_value = "benchmark/formats/data/readbench")]
+    #[arg(long, default_value = "benchmark/runs/data/readbench")]
     prepared_dir: PathBuf,
 
     /// Result CSV path. This run OWNS the file: a fresh truncate + write, so
@@ -176,6 +176,11 @@ struct RunArgs {
     /// [`Scenario::from_str`] aliases); omit for every scenario.
     #[arg(long, value_delimiter = ',')]
     scenarios: Option<Vec<String>>,
+
+    /// Restrict `id-lookup` to resolved probe tags, for example `id-50pct`.
+    /// Omit to retain the full positioned-hit plus miss matrix.
+    #[arg(long, value_delimiter = ',')]
+    id_probes: Option<Vec<String>>,
 
     /// After the warm matrix, run one additional `FullRead` per format,
     /// tagged `cold` in `notes` (see [`coordinator::run`]'s own doc comment
@@ -217,6 +222,7 @@ fn run(cli: Cli) -> Result<()> {
             variants: run_args.variants,
             write_repeat: run_args.write_repeat,
             scenarios: run_args.scenarios,
+            id_probes: run_args.id_probes,
             cold: run_args.cold,
             transport,
             base_url: run_args.base_url,

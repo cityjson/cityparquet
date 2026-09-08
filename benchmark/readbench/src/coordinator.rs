@@ -89,7 +89,7 @@ pub struct RunOptions {
     /// artefact `benchmark/scripts/readbench_prepare.sh` built there.
     pub input: PathBuf,
     /// Directory `just readbench-prepare` wrote the per-format artefacts
-    /// into (default `benchmark/formats/data/readbench`).
+    /// into (default `benchmark/runs/data/readbench`).
     pub prepared_dir: PathBuf,
     /// Result CSV path; this run OWNS the file (fresh truncate + write).
     pub out: PathBuf,
@@ -111,6 +111,9 @@ pub struct RunOptions {
     /// Requested scenario names (canonical [`Scenario::as_str`] spelling,
     /// case-insensitive); `None`/empty selects every [`Scenario::ALL`].
     pub scenarios: Option<Vec<String>>,
+    /// Optional subset of resolved `id-lookup` probe tags. Configuration runs
+    /// use this to hold lookup position at 50%; format comparisons retain all.
+    pub id_probes: Option<Vec<String>>,
     /// After the warm matrix, run one additional `FullRead` per format,
     /// tagged `cold` in `notes` (see [`run`]'s own doc comment on the
     /// `sudo purge` protocol this does NOT automate).
@@ -146,6 +149,41 @@ pub fn params_sidecar_path(out: &Path) -> PathBuf {
     let mut name = out.as_os_str().to_os_string();
     name.push(".params.json");
     PathBuf::from(name)
+}
+
+/// Raw child-process samples beside the aggregate CSV. Warmups are retained
+/// and labelled, so a published aggregate can always be recomputed.
+#[derive(Debug, serde::Serialize)]
+struct Sample {
+    dataset: String,
+    format: String,
+    scenario: String,
+    query_tag: String,
+    sample_index: usize,
+    warmup: bool,
+    time_s: f64,
+    peak_rss_bytes: u64,
+    peak_heap_bytes: u64,
+    result_count: u64,
+}
+
+fn samples_sidecar_path(out: &Path) -> PathBuf {
+    let mut name = out.as_os_str().to_os_string();
+    name.push(".samples.json");
+    PathBuf::from(name)
+}
+
+fn write_samples(out: &Path, samples: &[Sample]) -> Result<()> {
+    let target = samples_sidecar_path(out);
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating sample sidecar beside {}", target.display()))?;
+    serde_json::to_writer_pretty(&mut temporary, samples).context("serialising raw samples")?;
+    temporary
+        .persist(&target)
+        .map_err(|error| error.error)
+        .with_context(|| format!("atomically writing {}", target.display()))?;
+    Ok(())
 }
 
 /// Runs `opts`'s whole (format x scenario) matrix, writing `opts.out` fresh.
@@ -312,12 +350,41 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         }
         Artefact::NotCoordinated => None,
     };
-    let resolved = params::resolve(
+    let mut resolved = params::resolve(
         &dataset,
         &cp_table,
         seq_path.as_deref(),
         gml_path.as_deref(),
     )?;
+
+    if let Some(requested) = &opts.id_probes {
+        if requested.is_empty() {
+            bail!("--id-probes must name at least one resolved probe tag");
+        }
+        let available: Vec<&str> = resolved
+            .id_probes
+            .iter()
+            .map(|probe| probe.tag.as_str())
+            .collect();
+        let unknown: Vec<&String> = requested
+            .iter()
+            .filter(|tag| !available.iter().any(|available| available == &tag.as_str()))
+            .collect();
+        if !unknown.is_empty() {
+            bail!(
+                "--id-probes requested unavailable tag(s) {}; available: {}",
+                unknown
+                    .iter()
+                    .map(|tag| tag.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                available.join(", ")
+            );
+        }
+        resolved
+            .id_probes
+            .retain(|probe| requested.iter().any(|tag| tag == &probe.tag));
+    }
 
     eprintln!(
         "cityparquet-readbench: derived params for '{dataset}': windows={:?}, object_type \
@@ -372,6 +439,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // concerns instead of living only on stderr, where a spoiled run looks
     // exactly like a clean one to anyone reading the artefact.
     let mut rows: Vec<Row> = Vec::new();
+    let mut samples: Vec<Sample> = Vec::new();
 
     // A configuration run's own sources: one write child per variant, timed
     // into `rows` and measured into `sizes`, each leaving the package the
@@ -402,6 +470,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         for (id, _) in list {
             let package = run_write(
                 &mut rows,
+                &mut samples,
                 &dataset,
                 base,
                 id,
@@ -435,6 +504,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 Scenario::Count | Scenario::FullRead => {
                     run_measurement(
                         &mut rows,
+                        &mut samples,
                         &dataset,
                         format,
                         label,
@@ -463,6 +533,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         };
                         run_measurement(
                             &mut rows,
+                            &mut samples,
                             &dataset,
                             format,
                             label,
@@ -486,6 +557,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                     let notes = format!("object_type={}", resolved.object_type);
                     let count = run_measurement(
                         &mut rows,
+                        &mut samples,
                         &dataset,
                         format,
                         label,
@@ -507,6 +579,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         let notes = format!("attr={column}");
                         run_measurement(
                             &mut rows,
+                            &mut samples,
                             &dataset,
                             format,
                             label,
@@ -545,6 +618,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         }
                         run_measurement(
                             &mut rows,
+                            &mut samples,
                             &dataset,
                             format,
                             label,
@@ -579,7 +653,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 peak_rss_bytes: line.ru_maxrss_bytes,
                 repeat: 1,
                 // Exactly `cold`, and nothing else ever appended:
-                // `benchmark/plot/readbench_plot/plot.py` drops a cold row with
+                // `the benchmark renderer` drops a cold row with
                 // an EXACT `notes == "cold"` test, so a tag alongside it
                 // would put the purged-cache measurement into the warm
                 // charts. Nothing is lost by it — the only disclosures a
@@ -635,6 +709,8 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     for row in &rows {
         writeln!(csv, "{}", row.render()).context("writing a CSV row")?;
     }
+
+    write_samples(&opts.out, &samples)?;
 
     if variants.is_some() {
         let seq = variant_seq
@@ -982,6 +1058,7 @@ fn total_count_for(format: Format, source: &Source) -> Result<u64> {
 #[allow(clippy::too_many_arguments)]
 fn run_measurement(
     rows: &mut Vec<Row>,
+    samples: &mut Vec<Sample>,
     dataset: &str,
     format: Format,
     label: &str,
@@ -1008,6 +1085,18 @@ fn run_measurement(
 
     for i in 0..=repeat {
         let line = spawn_child(format, scenario, source, params)?;
+        samples.push(Sample {
+            dataset: dataset.to_string(),
+            format: label.to_string(),
+            scenario: scenario.to_string(),
+            query_tag: notes.to_string(),
+            sample_index: i,
+            warmup: i == 0,
+            time_s: line.time_s,
+            peak_rss_bytes: line.ru_maxrss_bytes,
+            peak_heap_bytes: line.peak_heap_bytes,
+            result_count: line.result_count,
+        });
         if i == 0 {
             // Warmup: discarded entirely (never contributes to the median,
             // the MAX peak metrics, or `result_count`).
@@ -1064,6 +1153,7 @@ fn run_measurement(
 /// `<prepared_dir>/<base>.<id>.parquet`; returns that path.
 fn run_write(
     rows: &mut Vec<Row>,
+    samples: &mut Vec<Sample>,
     dataset: &str,
     base: &str,
     id: &str,
@@ -1125,6 +1215,18 @@ fn run_write(
         let count: u64 = fields[3]
             .parse()
             .with_context(|| format!("parsing object_count from '{}'", fields[3]))?;
+        samples.push(Sample {
+            dataset: dataset.to_string(),
+            format: id.to_string(),
+            scenario: "write".to_string(),
+            query_tag: String::new(),
+            sample_index: i,
+            warmup: i == 0,
+            time_s,
+            peak_rss_bytes: rss,
+            peak_heap_bytes: heap,
+            result_count: count,
+        });
         if i == 0 {
             continue; // warmup: the directory drops here and is deleted
         }
@@ -1406,7 +1508,7 @@ mod tests {
     }
 
     /// A `cold` row is excluded from the charts by an EXACT `notes == "cold"`
-    /// test in `benchmark/plot/readbench_plot/plot.py`, so its `notes` field must
+    /// test in `the benchmark renderer`, so its `notes` field must
     /// render as exactly that — a purged-cache measurement plotted among the
     /// warm ones would be read as a warm number.
     #[test]

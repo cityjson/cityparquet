@@ -127,6 +127,7 @@ class CjdbSystem:
         # docstring) has not been built yet.
         patched_cjdb_source()
         self._conn = pg.connect(self._port)
+        pg.disable_parallel_query(self._conn)
 
     def ingest(self, dataset: Dataset) -> IngestResult:
         cjdb_source = patched_cjdb_source()
@@ -168,8 +169,9 @@ class CjdbSystem:
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
             server_times_s=[s[2] for s in samples],
-            peak_rss_bytes=None,
+            peak_rss_bytes=max((s[3] for s in samples if len(s) > 3 and s[3] is not None), default=None),
             peak_heap_bytes=None,
+            notes="memory-scope: postgresql-backend-rss",
         )
 
     def size(self) -> SizeReport:

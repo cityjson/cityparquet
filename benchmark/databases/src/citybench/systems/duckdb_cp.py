@@ -16,6 +16,7 @@ from citybench.config import Dataset, IngestResult, Measurement, Params, SizeRep
 from citybench.scenarios import registry, sql_duckdb
 from citybench.systems import pg
 from citybench.systems.base import register
+from citybench.stats import peak_resident_bytes
 
 # The STAC asset role `cityparquet convert` stamps on every per-module
 # OBJECT table it writes (verified against a real converted package's
@@ -137,11 +138,14 @@ class DuckDBCityParquet:
 
         mode = registry.count_mode(scenario)
 
-        def once() -> tuple[int, float]:
-            start = time.perf_counter()
-            rows = self._conn.execute(sql, list(args)).fetchall()
-            elapsed = time.perf_counter() - start
-            return pg.extract_count(rows, mode), elapsed
+        def once() -> tuple[int, float, int | None]:
+            def execute() -> tuple[int, float]:
+                start = time.perf_counter()
+                rows = self._conn.execute(sql, list(args)).fetchall()
+                return pg.extract_count(rows, mode), time.perf_counter() - start
+
+            (count, elapsed), peak = peak_resident_bytes(execute)
+            return count, elapsed, peak
 
         once()  # discarded warm-up
         samples = [once() for _ in range(repeat)]
@@ -149,8 +153,9 @@ class DuckDBCityParquet:
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
             server_times_s=[],   # in-process: no client-server split to report
-            peak_rss_bytes=None,
+            peak_rss_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
             peak_heap_bytes=None,
+            notes="memory-scope: duckdb-process-rss",
         )
 
     def size(self) -> SizeReport:

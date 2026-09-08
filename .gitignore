@@ -64,3 +64,6 @@ ai/skills/
 .worktrees/
 
 .agents/
+
+# Generated benchmark inputs, raw evidence and rendered summaries.
+/benchmark/runs/

@@ -27,7 +27,7 @@ BENCHMARK_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BENCH_DIR = BENCHMARK_ROOT / "formats"
 DEFAULT_OUT_DIR = BENCHMARK_ROOT / "summary"
 DEFAULT_DATA_PATH = DEFAULT_OUT_DIR / "bench_data.json"
-DEFAULT_HTML_PATH = DEFAULT_OUT_DIR / "bench-summary.html"
+DEFAULT_HTML_PATH = DEFAULT_OUT_DIR / "index.html"
 DEFAULT_FIGURES_DIR = DEFAULT_OUT_DIR / "figures"
 
 

@@ -154,7 +154,7 @@ KNOWN_INPUT_FIND := "-name '*.json' -o -name '*.jsonl' -o -name '*.gml' -o -name
 # by `readbench_prepare.sh` — see benchmark/formats/READ_BENCHMARK.md's CityGML
 # synthesis section for what that costs. The 30-dataset catalogue corpus this
 # replaced is archived, still fetchable, under
-# benchmark/formats/archive/2026-08-17-catalogue-corpus/.
+# the retired catalogue corpus.
 #
 # ONLY selects the entries that can serve one benchmark set: `default` (the
 # DEFAULT, the default format set with the `citygml` row included),
@@ -167,7 +167,7 @@ KNOWN_INPUT_FIND := "-name '*.json' -o -name '*.jsonl' -o -name '*.gml' -o -name
 # table does not describe — most likely the previous corpus, which used this
 # same directory (`--allow-foreign` overrides).
 [doc("Fetch the read benchmark's six-dataset corpus (423 MB, pinned)")]
-fetch-data DEST=(BENCH / "data/benchmark") ONLY='default':
+fetch-data DEST=(BENCH / "runs/data/benchmark") ONLY='default':
     ./{{BENCH_SCRIPTS}}/fetch_benchmark.sh --only {{ONLY}} {{DEST}}
 
 # Fetch the pinned external converters the read benchmark's conversion chain
@@ -208,13 +208,14 @@ fetch-tools:
 # Needs curl; network-dependent on the first run (~7.6 GB); kept
 # OUT of `just check`/CI.
 [doc("Fetch and slice the configuration-axis corpus (7.6 GB source)")]
-fetch-scaling-data DEST=(BENCH / "data/scaling") SIZES='1000,5000,10000,50000':
+fetch-scaling-data DEST=(BENCH / "runs/data/scaling") SIZES='1000,5000,10000,50000':
     #!/usr/bin/env bash
     set -euo pipefail
     url='https://flatcitybuf.open3d.city/data/3dbag_subset2_all_index.fcb'
-    src='{{BENCH}}/data/3dbag_subset2_all_index.fcb'
+    data_root="${CITYPARQUET_BENCH_ROOT:-{{BENCH}}/runs}"
+    src="$data_root/data/3dbag_subset2_all_index.fcb"
     expected=7587969439
-    mkdir -p '{{BENCH}}/data'
+    mkdir -p "$data_root/data" "{{DEST}}"
     actual=$(wc -c < "$src" 2>/dev/null || echo 0)
     if [[ "$actual" -ne "$expected" ]]; then
         curl -fL --retry 3 -C - -o "$src" "$url"
@@ -288,8 +289,9 @@ convert-all FOLDER OUT='out/cityparquet':
 # fetch-tools` for citygml-tools + cjseq; `fcb`, `jq`, `gzip`);
 # network-independent given already-fetched inputs and tools; kept OUT of
 # `just check`/CI.
+[private]
 [doc("Build the per-format artefacts for ONE input, measuring nothing")]
-readbench-prepare INPUT OUTDIR=(BENCH / "data/readbench") FORMATS='':
+readbench-prepare INPUT OUTDIR=(BENCH / "runs/data/readbench") FORMATS='':
     #!/usr/bin/env bash
     set -euo pipefail
     # `${a[@]+"${a[@]}"}`, never a bare `"${a[@]}"`: see the same note in
@@ -334,11 +336,12 @@ readbench-prepare INPUT OUTDIR=(BENCH / "data/readbench") FORMATS='':
 # benchmark/formats/READ_BENCHMARK.md documents as holding five.
 # `benchmark/scripts/tests/bench_recipe_test.sh` pins that both ways —
 # a bare run must not append it, naming it must.
+[private]
 [doc("Cross-format READ benchmark over every input under FOLDER")]
-bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
+bench FOLDER OUT=(BENCH / "runs/formats/results") FORMATS='' PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir -p "{{OUT}}" '{{BENCH}}/data/readbench'
+    mkdir -p "{{OUT}}" "{{PREPARED}}"
     # FORMATS reaches two consumers that do NOT accept the same vocabulary:
     #   - the coordinator takes the list verbatim (it knows every
     #     `Format::ALL` name, `duckdb-parquet` included, and reports the ones
@@ -394,18 +397,22 @@ bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
         echo ">> ${f} -> ${out}"
         rm -f "$out"
 
-        ./{{BENCH_SCRIPTS}}/readbench_prepare.sh ${prepare_args[@]+"${prepare_args[@]}"} \
-            "$f" '{{BENCH}}/data/readbench'
+        # Preparation belongs to `just bench-prep`; a run never turns a
+        # missing artefact into an unrecorded conversion.
+        if [[ ! -e "{{PREPARED}}/${name}.city.jsonl" ]]; then
+            echo "bench: missing prepared artefacts for ${name}; run bench-prep first" >&2
+            exit 1
+        fi
 
         cargo run --release {{READBENCH_CARGO}} -- run \
             --input "$f" \
-            --prepared-dir '{{BENCH}}/data/readbench' \
+            --prepared-dir "{{PREPARED}}" \
             --out "$out" \
-            --repeat 7 \
+            --repeat {{REPEAT}} \
             ${run_args[@]+"${run_args[@]}"}
 
         if [[ "$want_duckdb" -eq 1 ]]; then
-            pkg="{{BENCH}}/data/readbench/${name}.parquet"
+            pkg="{{PREPARED}}/${name}.parquet"
             # Every query parameter comes from the coordinator's own
             # resolved-parameters sidecar, written beside "$out" by the
             # `cityparquet-readbench run` above. The numeric-column
@@ -428,14 +435,6 @@ bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
     fi
     echo "bench: ${found} file(s) benchmarked into {{OUT}}"
 
-    # Best-effort: a missing `uv` must not fail a benchmark that already
-    # produced its CSVs. `sizes` additionally reports nothing for a run whose
-    # FORMATS built no `.fcb`/`.jsonl.gz` (it discovers datasets by those two
-    # artefacts) — an ordering-only run, for instance — which is a skip, not
-    # a failure, so the message names both causes rather than blaming `uv`.
-    just plot "{{OUT}}" || echo "plot skipped (needs uv)"
-    just sizes '{{BENCH}}/data/readbench' "{{OUT}}" \
-        || echo "sizes skipped (needs uv, and a run that built the .fcb/.jsonl.gz artefacts it sizes)"
 
 # The ORDERING-COMPARISON run: the same benchmark, restricted to
 # `Format::ORDERING_SET`
@@ -451,6 +450,7 @@ bench FOLDER OUT=(BENCH / "read_results") FORMATS='':
 #
 # It DELEGATES to `bench` rather than copying its body — a forked recipe is
 # how the two would drift apart.
+[private]
 [doc("The same run restricted to the ordering axis (source order vs Hilbert)")]
 ordering-bench FOLDER OUT=(BENCH / "ordering_results"):
     just bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet-hilbert"
@@ -461,6 +461,7 @@ ordering-bench FOLDER OUT=(BENCH / "ordering_results"):
 # OUT/<name>.csv is removed first so a re-run is always clean.
 # Network-dependent (the DuckDB baseline installs the `cityjson` community
 # extension); kept OUT of `just check`/CI.
+[private]
 [doc("Encoding-variant WRITE benchmark plus the DuckDB COPY baseline")]
 write-bench FOLDER OUT=(BENCH / "results"):
     #!/usr/bin/env bash
@@ -517,8 +518,9 @@ write-bench FOLDER OUT=(BENCH / "results"):
 # VARIANTS is the whole benchmark: the two public recipes below pass their
 # lists here and nowhere else, and benchmark/scripts/tests/bench_recipe_test.sh
 # reads those lists back out of this file.
+[private]
 [doc("Configuration-axis run: timed writes + two reads per variant, over every input under FOLDER")]
-variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "data/readbench"):
+variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
@@ -533,15 +535,19 @@ variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "data/readbench"):
         echo ">> ${f} -> ${out}"
         rm -f "$out"
 
-        ./{{BENCH_SCRIPTS}}/readbench_prepare.sh --formats cityparquet "$f" "{{PREPARED}}"
+        if [[ ! -e "{{PREPARED}}/${name}.city.jsonl" ]]; then
+            echo "variant-bench: missing prepared artefacts for ${name}; run bench-prep first" >&2
+            exit 1
+        fi
 
         cargo run --release {{READBENCH_CARGO}} -- run \
             --input "$f" \
             --prepared-dir "{{PREPARED}}" \
             --out "$out" \
-            --repeat 7 \
-            --write-repeat 3 \
-            --scenarios full-read,bbox-query \
+            --repeat {{REPEAT}} \
+            --write-repeat {{WRITE_REPEAT}} \
+            --scenarios full-read,bbox-query,id-lookup \
+            --id-probes id-50pct \
             --variants "{{VARIANTS}}"
 
         found=$((found + 1))
@@ -560,73 +566,17 @@ variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "data/readbench"):
 # baseline), 9 and 19; the other codecs run at the parquet-rs defaults the
 # writer recipe carries (gzip 6, brotli 1) and are reference points, not a
 # ranking against each other. Every variant at the default 65536-row groups.
+[private]
 [doc("Codec axis over the scaling slices: zstd 1/3/9/19, lz4, snappy, gzip, brotli, none")]
-codec-bench FOLDER OUT=(BENCH / "scaling_codec_results") PREPARED=(BENCH / "data/readbench"):
-    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+zstd1,cityparquet+zstd9,cityparquet+zstd19,cityparquet+lz4,cityparquet+snappy,cityparquet+gzip,cityparquet+brotli,cityparquet+uncompressed" "{{PREPARED}}"
+codec-bench FOLDER OUT=(BENCH / "runs/formats/scaling_codec_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3':
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+zstd1,cityparquet+zstd9,cityparquet+zstd19,cityparquet+lz4,cityparquet+snappy,cityparquet+gzip,cityparquet+brotli,cityparquet+uncompressed" "{{PREPARED}}" "{{REPEAT}}" "{{WRITE_REPEAT}}"
 
 # The ROW-GROUP axis: which group size, and when. The 65536-row default is
 # the 1x baseline; every variant at the default codec (zstd 3).
+[private]
 [doc("Row-group axis over the scaling slices: 65536 (default), 32768, 8192, 2048, 512")]
-rowgroup-bench FOLDER OUT=(BENCH / "scaling_rowgroup_results") PREPARED=(BENCH / "data/readbench"):
-    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+rg32768,cityparquet+rg8192,cityparquet+rg2048,cityparquet+rg512" "{{PREPARED}}"
-
-# ---------------------------------------------------------------------------
-# Rendering — reads CSVs, measures nothing
-# ---------------------------------------------------------------------------
-
-# Render charts from the read-benchmark CSVs in RESULTS (default
-# benchmark/formats/read_results) via the `benchmark/plot` uv project: a
-# grouped bar chart of median time_s and one of peak_heap_bytes per scenario x
-# format, one PNG pair per dataset CSV, under RESULTS/plots/. Needs `uv` on
-# PATH.
-[doc("Render per-dataset charts from read-benchmark CSVs")]
-plot RESULTS=(BENCH / "read_results"):
-    uv run --project {{PLOT}} python -m readbench_plot {{RESULTS}}
-
-# The CROSS-DATASET view of the SAME already-measured CSVs: one self-contained
-# `bench-summary.html` (every dataset and every format on one page, as ratios
-# against the CityJSONSeq baseline, with the fairness caveats quoted verbatim
-# from benchmark/formats/READ_BENCHMARK.md at generation time) plus the static
-# print figures the paper embeds. Written under OUT (default
-# benchmark/summary/, gitignored).
-#
-# Measures nothing — it reads what `bench`, `codec-bench`, `rowgroup-bench` and `sizes` left
-# behind, so it is the recipe to run after a benchmark, or after editing the
-# renderers, and re-running it is free. `plot` (above) stays the per-dataset
-# view of one run; this is the comparison across runs' datasets. Needs `uv`.
-#
-# The FIGURES STEP IS ALLOWED TO FAIL and says why: those five figures are
-# hand-laid print sheets with room for 11 dataset panels, and each asserts its
-# finding in a written caption tied to the corpus it was drawn from. A corpus
-# that outgrows the grid needs a layout decision and revised captions, not a
-# silent stretch — the HTML page has no such limit and still covers everything.
-# See benchmark/plot/benchviz/DESIGN.md for the data contract and honesty rules.
-[doc("Render the cross-dataset summary page and the print figures")]
-plot-pretty OUT='benchmark/summary':
-    uv run --project {{PLOT}} python -m benchviz prep --out {{OUT}}
-    uv run --project {{PLOT}} python -m benchviz html --out {{OUT}}
-    uv run --project {{PLOT}} python -m benchviz figures --out {{OUT}} \
-        || echo "figures skipped (see the message above; the HTML page is written)"
-
-# Render the file-size / compression-ratio report from PREPARED_DIR (default
-# benchmark/formats/data/readbench, the same per-format artefacts
-# `readbench_prepare.sh` populates): OUT/sizes.csv (dataset, format, bytes, mb,
-# ratio_vs_cityjsonseq, baseline_format, ratio_vs_baseline) plus two grouped
-# bar charts under OUT/plots/ (sizes.png, compression-ratio.png). Needs `uv`
-# on PATH.
-#
-# TWO ratio columns, not one: `ratio_vs_cityjsonseq` keeps its literal
-# meaning and is EMPTY for a CityGML-native dataset that no run ever cut a
-# raw CityJSONSeq from, while (`baseline_format`, `ratio_vs_baseline`) is
-# always populated and self-describing — `baseline_format` names the
-# denominator actually used (raw CityJSONSeq where one exists, otherwise the
-# least-processed form the dataset exists in). The chart plots
-# `ratio_vs_baseline`. See benchmark/plot/readbench_plot/sizes.py's own module
-# doc for why answering "how much smaller than raw CityJSONSeq?" with a
-# CityGML size would be a lie in a measurement artefact.
-[doc("Render the file-size / compression-ratio report from the prepared artefacts")]
-sizes PREPARED_DIR=(BENCH / "data/readbench") OUT=(BENCH / "read_results"):
-    uv run --project {{PLOT}} python -m readbench_plot.sizes {{PREPARED_DIR}} {{OUT}}
+rowgroup-bench FOLDER OUT=(BENCH / "runs/formats/scaling_rowgroup_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3':
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+rg32768,cityparquet+rg8192,cityparquet+rg2048,cityparquet+rg512" "{{PREPARED}}" "{{REPEAT}}" "{{WRITE_REPEAT}}"
 
 # ---------------------------------------------------------------------------
 # The harness's own test suites
@@ -792,3 +742,20 @@ usecase-energy-test:
 # extract features from a CityParquet package: just usecase-energy-features IN OUT
 usecase-energy-features input output="features.parquet":
     cd usecase/energy && uv run energy features --input '{{input}}' --output '{{output}}'
+
+# The concise public benchmark interface. The selector validates families and
+# datasets before delegating to the measured low-level recipes above.
+[doc("Fetch and prepare selected benchmark inputs without measuring")]
+[positional-arguments]
+bench-prep *ARGS:
+    python3 benchmark/scripts/bench_suite.py prep "$@"
+
+[doc("Run selected benchmark families; --smoke keeps validation outputs separate")]
+[positional-arguments]
+bench-run *ARGS:
+    python3 benchmark/scripts/bench_suite.py run "$@"
+
+[doc("Render paper figures and one combined HTML page from existing results")]
+[positional-arguments]
+bench-summary *ARGS:
+    python3 benchmark/scripts/bench_suite.py summary "$@"

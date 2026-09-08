@@ -36,7 +36,7 @@ services:
       - "55432:5432"
     volumes:
       - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
-      - cjdb-data:/var/lib/postgresql/data
+      - ${CITYBENCH_DB_ROOT:?CITYBENCH_DB_ROOT_must_be_set}/cjdb:/var/lib/postgresql/data
 
   # The OFFICIAL 3DCityDB v5 image, not plain postgis: it creates the v5
   # schema on first start, which removes the need for any schema-creation
@@ -64,7 +64,7 @@ services:
       - "55433:5432"
     volumes:
       - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
-      - citydb-data:/var/lib/postgresql/data
+      - ${CITYBENCH_DB_ROOT:?CITYBENCH_DB_ROOT_must_be_set}/citydb:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bench -d bench"]
       interval: 3s
@@ -76,7 +76,3 @@ services:
         limits:
           cpus: "16"
           memory: 32G
-
-volumes:
-  cjdb-data:
-  citydb-data:

@@ -377,7 +377,7 @@ fn the_duckdb_baseline_recovers_the_justfile_dataset_name() {
             let program = format!(
                 "set -euo pipefail\nPKG_BASE=\"$(basename \"$1\")\"\n{stripper}printf '%s' \"$PKG_BASE\"\n"
             );
-            let package = format!("benchmark/formats/data/readbench/{dataset}{suffix}");
+            let package = format!("benchmark/runs/data/readbench/{dataset}{suffix}");
             let out = Command::new("bash")
                 .arg("-c")
                 .arg(&program)

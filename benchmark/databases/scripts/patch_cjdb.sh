@@ -54,7 +54,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo ">> downloading cjdb==$CJDB_VERSION sdist"
-python3 -m pip download --no-deps --no-binary :all: \
+uv run --with "pip==25.0.1" python -m pip download --no-deps --no-binary :all: \
     "cjdb==$CJDB_VERSION" -d "$WORK" --quiet
 
 SDIST="$WORK/cjdb-${CJDB_VERSION}.tar.gz"

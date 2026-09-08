@@ -27,6 +27,8 @@ with the reasoning in `04-design-decisions/` and the genuinely unsettled parts i
 | `lib/duckdb-cityjson/` | DuckDB CityJSON extension — SQL-native CityJSON I/O and an executable prototype of the encoding. **Submodule** | its `CLAUDE.md`                             |
 | `lib/duckdb-3d/`       | DuckDB 3D extension — 3D solid processing (`SOLID_3D`). Strict TDD. **Submodule**                              | its `CLAUDE.md`                             |
 | `benchmark/`           | Three benchmark families: `formats/` (cross-format), `databases/` (vs cjdb / 3DCityDB v5), `plot/` (renderers) | `benchmark/README.md`                       |
+
+Generated benchmark inputs, evidence and summaries belong in the ignored `benchmark/runs/` directory. Do not place new benchmark outputs in a sibling checkout.
 | `test/`                | `TESTING.md`, the cross-module manual walkthrough, and `run-all.sh`                                            | —                                           |
 | `ai/design-notes/`     | Dated, unmaintained plans and specs — the record of decisions, not a description of the code                   | `ai/design-notes/README.md`                 |
 | `ai/mcp/`              | The **MCP server** — the specification, the function references, dataset description and sandboxed SQL, for agents | its `CLAUDE.md`                             |

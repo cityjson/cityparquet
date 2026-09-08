@@ -18,6 +18,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,7 +35,11 @@ class Inputs:
 
     @property
     def read_dir(self) -> Path:
-        return self.bench_dir / "read_results"
+        return (
+            self.bench_dir / "results"
+            if (self.bench_dir / "results").exists()
+            else self.bench_dir / "read_results"
+        )
 
     @property
     def ordering_dir(self) -> Path:
@@ -65,7 +70,7 @@ class Inputs:
 
     @property
     def read_benchmark_md(self) -> Path:
-        return self.bench_dir / "READ_BENCHMARK.md"
+        return Path(__file__).resolve().parents[2] / "formats" / "READ_BENCHMARK.md"
 
     def label(self, path: Path) -> str:
         """A repo-qualified label for a source path, e.g.
@@ -180,7 +185,7 @@ CODEC_LEVEL_NOTE = (
     "against each other: no level was matched across codecs."
 )
 AXIS_BASELINE = "cityparquet"
-AXIS_MEASURES = ("write", "full-read", "bbox-1pct", "bbox-5pct", "bbox-25pct")
+AXIS_MEASURES = ("write", "full-read", "bbox-1pct", "bbox-5pct", "bbox-25pct", "id-50pct")
 MACHINE_MD_NAME = "MACHINE.md"
 
 
@@ -285,7 +290,9 @@ def _dataset_csvs(directory: Path) -> list[Path]:
     stem is the authoritative dataset id.
     """
     return sorted(
-        p for p in directory.glob("*.csv") if p.name != SIZES_CSV_NAME
+        p
+        for p in directory.glob("*.csv")
+        if p.name != SIZES_CSV_NAME and not p.name.endswith(".samples.csv")
     )
 
 
@@ -303,9 +310,7 @@ def _extract_section(path: Path, heading_prefix: str) -> str:
             start = i + 1
             break
     if start is None:
-        raise PrepError(
-            f"{path}: could not find a '## {heading_prefix}...' heading"
-        )
+        raise PrepError(f"{path}: could not find a '## {heading_prefix}...' heading")
     end = len(lines)
     for i in range(start, len(lines)):
         if lines[i].startswith("## "):
@@ -335,9 +340,7 @@ def _dedent_item(text: str) -> str:
     """Drop the ``N. `` marker and the hanging indent of continuation lines."""
     lines = text.splitlines()
     head = re.sub(r"^\d+\.\s+", "", lines[0])
-    indents = [
-        len(ln) - len(ln.lstrip(" ")) for ln in lines[1:] if ln.strip()
-    ]
+    indents = [len(ln) - len(ln.lstrip(" ")) for ln in lines[1:] if ln.strip()]
     strip = min(indents) if indents else 0
     tail = [ln[strip:] if ln.strip() else "" for ln in lines[1:]]
     return "\n".join([head, *tail]).strip()
@@ -359,9 +362,7 @@ def read_caveats(inputs: Inputs) -> list[str]:
     raw = _split_numbered_items(body)
     numbers = [int(re.match(r"^(\d+)\.", item).group(1)) for item in raw]
     if numbers != list(range(1, len(raw) + 1)):
-        raise PrepError(
-            f"{path}: fairness caveats are not numbered 1..n without a gap: {numbers}"
-        )
+        raise PrepError(f"{path}: fairness caveats are not numbered 1..n without a gap: {numbers}")
     items = [_dedent_item(item) for item in raw]
     if not items:
         raise PrepError(f"{path}: no fairness caveats found")
@@ -391,12 +392,12 @@ def _scenario_key(row: dict[str, str]) -> str:
     scenario = row["scenario"]
     notes = row["notes"].strip()
     if scenario == "bbox-query":
-        if not BBOX_NOTE_RE.match(notes):
+        if not BBOX_NOTE_RE.match(notes.split(";", 1)[0]):
             raise PrepError(
                 f"bbox-query row with unrecognised notes tag {notes!r} "
                 f"(dataset={row['dataset']}, format={row['format']})"
             )
-        return notes
+        return notes.split(";", 1)[0]
     if scenario == "id-lookup":
         # Two generations of the runner are committed at once: `read_results/`
         # carries the positional probes, which are one scenario each, while the
@@ -409,9 +410,7 @@ def _scenario_key(row: dict[str, str]) -> str:
     return scenario
 
 
-def load_read(
-    inputs: Inputs, excluded: ExcludedFormats
-) -> tuple[list[dict], list[str]]:
+def load_read(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], list[str]]:
     """Return (read records, anomaly notes)."""
     anomalies: list[str] = []
     cold_rows = 0
@@ -432,9 +431,7 @@ def load_read(
         per_dataset[dataset] = kept
 
     if cold_rows:
-        anomalies.append(
-            f"excluded {cold_rows} cold-tagged read row(s) (warm-only policy)"
-        )
+        anomalies.append(f"excluded {cold_rows} cold-tagged read row(s) (warm-only policy)")
 
     records: list[dict] = []
     for dataset, rows in per_dataset.items():
@@ -476,8 +473,7 @@ def load_read(
                         "dataset": dataset,
                         "format": fmt,
                         "scenario_key": key,
-                        "grain_comparable": key
-                        not in GRAIN_INCOMPARABLE_SCENARIOS,
+                        "grain_comparable": key not in GRAIN_INCOMPARABLE_SCENARIOS,
                         "time_s": time_s,
                         "time_mad_s": _float(row["time_mad_s"]),
                         # The reference's own seconds, so a view can turn a
@@ -496,6 +492,8 @@ def load_read(
                             base_rss,
                         ),
                         "below_floor": below_floor,
+                        "notes": row["notes"],
+                        "status": row.get("status", ""),
                     }
                 )
     return records, anomalies
@@ -530,8 +528,7 @@ def load_ordering(inputs: Inputs) -> list[dict]:
             bucket = groups.setdefault(_scenario_key(row), {})
             if row["format"] in bucket:
                 raise PrepError(
-                    f"{dataset}: duplicate ordering row for "
-                    f"({_scenario_key(row)}, {row['format']})"
+                    f"{dataset}: duplicate ordering row for ({_scenario_key(row)}, {row['format']})"
                 )
             bucket[row["format"]] = row
 
@@ -632,14 +629,8 @@ def load_scaling(inputs: Inputs) -> dict:
                         "time_s": time_s,
                         "rss_b": rss_b,
                         "time_ratio": _ratio(time_s, base_t),
-                        "rss_ratio": _ratio(
-                            float(rss_b) if rss_b is not None else None, base_rss
-                        ),
-                        "below_floor": (
-                            None
-                            if time_s is None
-                            else time_s < CITATION_FLOOR_S
-                        ),
+                        "rss_ratio": _ratio(float(rss_b) if rss_b is not None else None, base_rss),
+                        "below_floor": (None if time_s is None else time_s < CITATION_FLOOR_S),
                     }
                 )
 
@@ -705,8 +696,8 @@ def _measure_key(row: dict[str, str]) -> str:
 def load_scaling_axis(directory: Path, baseline: str = AXIS_BASELINE) -> dict:
     """One configuration axis (codec or row group) from a `--variants` run.
 
-    Every ratio is baseline over variant, so above 1x is faster, leaner or
-    smaller — the ordering records' convention, not the read records'. The
+    Every ratio is variant over default, so values below 1x use less time,
+    memory or disk. The
     variant order is the CSVs' own first-seen order, because the recipe's
     list is the figure's order and sorting would lose it. Absolute seconds
     and bytes stay: the trend strip plots them.
@@ -734,28 +725,52 @@ def load_scaling_axis(directory: Path, baseline: str = AXIS_BASELINE) -> dict:
             gaps.append({"dataset": name, "issue": f"no '{baseline}' baseline rows"})
             continue
         write_base = by_measure.get("write", {}).get(baseline)
-        objects_by[name] = _int(write_base["result_count"]) if write_base else None
+        write_valid = write_base is not None and write_base.get("status", "").strip().lower() in {"", "ok"}
+        objects_by[name] = (
+            _int(write_base["result_count"])
+            if write_valid and _int(write_base["result_count"]) is not None
+            else next(
+                (
+                    _int(r["result_count"])
+                    for bucket in by_measure.values()
+                    for r in bucket.values()
+                    if r.get("status", "").strip().lower() in {"", "ok"}
+                    and _int(r["result_count"]) is not None
+                ),
+                None,
+            )
+        )
         present = {v for bucket in by_measure.values() for v in bucket}
         for key in AXIS_MEASURES:
             bucket = by_measure.get(key)
             if not bucket:
                 continue
             base = bucket.get(baseline)
-            base_t = _float(base["time_s"]) if base else None
+            base_status = (base.get("status", "") if base else "missing").strip()
+            base_valid = base is not None and base_status.lower() in {"", "ok"}
+            base_t = _float(base["time_s"]) if base_valid else None
             # The dispersion travels with the time it belongs to: a headline
             # that names one variant the fastest has to be able to check the
             # lead against the two runs' own spread, not against a fixed floor.
-            base_mad = _float(base["time_mad_s"]) if base else None
-            base_rss = _int(base["peak_rss_bytes"]) if base else None
+            base_mad = _float(base["time_mad_s"]) if base_valid else None
+            base_rss = _int(base["peak_rss_bytes"]) if base_valid else None
+            if base is not None and not base_valid:
+                gaps.append({"dataset": name, "issue": f"{baseline} {key} status={base_status}"})
             for variant in variants:
                 row = bucket.get(variant)
                 if row is None:
                     if variant in present:
                         gaps.append({"dataset": name, "issue": f"{variant} has no {key} row"})
                     continue
-                t = _float(row["time_s"])
-                mad = _float(row["time_mad_s"])
-                rss = _int(row["peak_rss_bytes"])
+                status = row.get("status", "").strip()
+                valid = status.lower() in {"", "ok"}
+                if not valid:
+                    gaps.append({"dataset": name, "issue": f"{variant} {key} status={status}"})
+                # Failed, skipped and mismatched probes remain visible to the
+                # renderer as labelled empty cells; they never become ratios.
+                t = _float(row["time_s"]) if valid else None
+                mad = _float(row["time_mad_s"]) if valid else None
+                rss = _int(row["peak_rss_bytes"]) if valid else None
                 records.append(
                     {
                         "dataset": name,
@@ -769,16 +784,18 @@ def load_scaling_axis(directory: Path, baseline: str = AXIS_BASELINE) -> dict:
                         "base_time_s": base_t,
                         "base_time_mad_s": base_mad,
                         "base_rss_b": base_rss,
-                        "time_ratio": _ratio(base_t, t),
+                        "time_ratio": _ratio(t, base_t),
                         "rss_ratio": _ratio(
-                            float(base_rss) if base_rss is not None else None,
                             float(rss) if rss is not None else None,
+                            float(base_rss) if base_rss is not None else None,
                         ),
                         "below_floor": (
                             None
                             if t is None or base_t is None
                             else abs(base_t - t) < CITATION_FLOOR_S
                         ),
+                        "status": status,
+                        "notes": row.get("notes", ""),
                     }
                 )
 
@@ -831,9 +848,7 @@ def read_machine(directory: Path) -> str | None:
 # --------------------------------------------------------------------------
 
 
-def load_sizes(
-    inputs: Inputs, excluded: ExcludedFormats
-) -> tuple[list[dict], dict[str, float]]:
+def load_sizes(inputs: Inputs, excluded: ExcludedFormats) -> tuple[list[dict], dict[str, float]]:
     """Return (size records, {dataset: baseline MB})."""
     sizes_csv = inputs.sizes_csv
     rows = _read_rows(sizes_csv, SIZES_COLUMNS)
@@ -845,9 +860,7 @@ def load_sizes(
     raw_mb: dict[str, float] = {}
     for dataset in sorted(by_dataset):
         group = by_dataset[dataset]
-        base = next(
-            (r for r in group if r["format"] == BASELINE_FORMAT), None
-        )
+        base = next((r for r in group if r["format"] == BASELINE_FORMAT), None)
         base_bytes = _float(base["bytes"]) if base else None
         if base is not None:
             raw_mb[dataset] = float(base["mb"])
@@ -877,9 +890,7 @@ def _format_mb(mb: float) -> str:
     return f"{round(mb):,}"
 
 
-def build_datasets(
-    read_records: list[dict], raw_mb: dict[str, float]
-) -> list[dict]:
+def build_datasets(read_records: list[dict], raw_mb: dict[str, float]) -> list[dict]:
     counts: dict[str, dict[str, int | None]] = {}
     for rec in read_records:
         if rec["scenario_key"] != "full-read":
@@ -899,32 +910,31 @@ def build_datasets(
             entry["features"] = rec["result_count"]
 
     datasets = []
-    for dataset in sorted(counts):
-        entry = counts[dataset]
+    for dataset in sorted(set(counts) | set(raw_mb) | {r["dataset"] for r in read_records}):
+        entry = counts.get(dataset, {})
         objects = entry.get("objects")
         if objects is None:
             objects = entry.get("objects_hilbert")
         features = entry.get("features")
         mb = raw_mb.get(dataset)
-        if objects is None or mb is None:
-            raise PrepError(
-                f"{dataset}: missing full-read CityObject count (no cityparquet "
-                f"or cityparquet-hilbert row) or sizes.csv baseline row "
-                f"(objects={objects}, raw_mb={mb})"
-            )
         datasets.append(
             {
                 "id": dataset,
                 "objects": objects,
                 "features": features,
                 "raw_mb": mb,
-                "subtitle": (
-                    f"{objects:,} CityObjects · {_format_mb(mb)} MB CityJSONSeq"
+                "subtitle": " · ".join(
+                    part
+                    for part in (
+                        f"{objects:,} CityObjects" if objects is not None else "",
+                        f"{_format_mb(mb)} MB CityJSONSeq" if mb is not None else "",
+                    )
+                    if part
                 ),
             }
         )
     # Objects descending; ties broken by id for a stable, reproducible order.
-    datasets.sort(key=lambda d: (-d["objects"], d["id"]))
+    datasets.sort(key=lambda d: (-(d["objects"] or 0), d["id"]))
     return datasets
 
 
@@ -959,13 +969,106 @@ def _require_read_results(inputs: Inputs) -> None:
     )
 
 
+def load_databases(inputs: Inputs) -> dict:
+    """Load one selected database result set, preserving unavailable cells."""
+
+    def safe_float(value: str | None) -> float | None:
+        try:
+            return _float(value)
+        except ValueError:
+            return None
+
+    def safe_int(value: str | None) -> int | None:
+        try:
+            return _int(value)
+        except ValueError:
+            return None
+
+    smoke = inputs.bench_dir.name == "smoke"
+    data_root = inputs.bench_dir.parent.parent if smoke else inputs.bench_dir.parent
+    directory = data_root / "databases" / ("smoke" if smoke else "results")
+    if not directory.exists():
+        return {"baseline": "3dcitydb", "records": [], "sizes": []}
+    candidates = sorted(
+        p for p in directory.glob("*.csv") if not p.name.endswith((".sizes.csv", ".samples.csv"))
+    )
+    groups: list[tuple[int, Path, list[dict[str, str]]]] = []
+    for path in candidates:
+        rows = list(csv.DictReader(path.open(encoding="utf-8", newline="")))
+        params = path.with_suffix(".params.json")
+        objects = 0
+        if params.exists():
+            objects = int(json.loads(params.read_text()).get("total_city_objects", 0))
+        groups.append((objects, path, rows))
+    if not groups:
+        return {"baseline": "3dcitydb", "records": [], "sizes": []}
+    objects, path, rows = max(groups, key=lambda item: (item[0], item[1].name))
+    records, sizes = [], []
+    for row in rows:
+        note = row.get("notes", "")
+        scenario = row.get("scenario", "")
+        match = re.search(r"\bbbox-(\d+pct)\b", note)
+        query = f"bbox-{match.group(1)}" if match else scenario
+        records.append(
+            {
+                "dataset": path.stem,
+                "objects": objects,
+                "format": row.get("format"),
+                "scenario": query,
+                "time_s": safe_float(row.get("time_s")),
+                "peak_rss_bytes": safe_int(row.get("peak_rss_bytes")),
+                "size_bytes": safe_int(row.get("size_bytes")),
+                "status": row.get("status", ""),
+                "notes": note,
+            }
+        )
+    by_system: dict[str, dict] = {}
+    for row in records:
+        if row["format"] and row["format"] not in by_system:
+            by_system[row["format"]] = row
+    for system, row in by_system.items():
+        sizes.append({"format": system, "size_bytes": row["size_bytes"]})
+    return {
+        "baseline": "3dcitydb",
+        "records": records,
+        "sizes": sizes,
+        "dataset": path.stem,
+        "objects": objects,
+    }
+
+
+def apply_manifest_titles(inputs: Inputs, datasets: list[dict]) -> None:
+    path = Path(__file__).resolve().parents[2] / "manifest.toml"
+    if not path.exists():
+        return
+    manifest = tomllib.loads(path.read_text(encoding="utf-8"))
+    entries = manifest.get("datasets", {})
+    for dataset in datasets:
+        entry = next(
+            (
+                item
+                for item in entries.values()
+                if item.get("source", "").removesuffix(".city.jsonl").removesuffix(".city.json")
+                == dataset["id"]
+            ),
+            {},
+        )
+        if entry.get("title"):
+            dataset["title"] = entry["title"]
+
+
 def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     inputs = inputs or Inputs()
-    _require_read_results(inputs)
     excluded = ExcludedFormats()
-    read_records, anomalies = load_read(inputs, excluded)
-    size_records, raw_mb = load_sizes(inputs, excluded)
+    has_read = bool(_dataset_csvs(inputs.read_dir))
+    has_sizes = inputs.sizes_csv.exists()
+    read_records, anomalies = load_read(inputs, excluded) if has_read else ([], [])
+    size_records, raw_mb = load_sizes(inputs, excluded) if has_sizes else ([], {})
+    for row in size_records:
+        raw_mb.setdefault(row["dataset"], None)
     datasets = build_datasets(read_records, raw_mb)
+    apply_manifest_titles(inputs, datasets)
+    database_data = load_databases(inputs)
     ordering_records = load_ordering(inputs)
     scaling = load_scaling(inputs)
     scaling["codec"] = load_scaling_axis(inputs.scaling_codec_dir)
@@ -979,9 +1082,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
             r["format"],
         )
     )
-    size_records.sort(
-        key=lambda r: (order.get(r["dataset"], len(order)), r["format"])
-    )
+    size_records.sort(key=lambda r: (order.get(r["dataset"], len(order)), r["format"]))
     # The ordering corpus is not a subset of `datasets`, so datasets it alone
     # measured sort after the shared ones rather than being dropped.
     ordering_records.sort(
@@ -1023,6 +1124,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
         "sizes": size_records,
         "ordering": ordering_records,
         "scaling": scaling,
+        "databases": database_data,
     }
     return data, anomalies + excluded.notes()
 
@@ -1034,6 +1136,15 @@ def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
     text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text + "\n", encoding="utf-8")
+    completeness = {
+        "formats": bool(data["read"] or data["sizes"]),
+        "codec": bool(data["scaling"]["codec"]["records"]),
+        "rowgroup": bool(data["scaling"]["rowgroup"]["records"]),
+        "databases": bool(data["databases"]["records"] or data["databases"]["sizes"]),
+    }
+    (out.parent / "completeness.json").write_text(
+        json.dumps(completeness, indent=2) + "\n", encoding="utf-8"
+    )
 
     print(f"wrote {out} ({out.stat().st_size / 1024:.1f} KB)")
     print(

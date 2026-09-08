@@ -41,8 +41,8 @@ def test_required_keys_is_exactly_the_eight_documented_fields():
     # wrong does not error, so the SRID each PostgreSQL-backed system
     # actually landed on is recorded, not just requested.
     assert required_keys() == (
-        "dataset", "host", "versions", "pg_settings", "ingest", "sizes",
-        "patches", "srid",
+        "dataset", "source", "baseline", "host", "versions", "pg_settings", "ingest", "sizes",
+        "patches", "srid", "memory_measurement",
     )
 
 
