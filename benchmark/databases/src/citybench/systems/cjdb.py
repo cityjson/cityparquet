@@ -101,11 +101,13 @@ def patch_disclosure() -> dict[str, str]:
         "upstream_version": CJDB_UPSTREAM_VERSION,
         "patched": "true",
         "patch_file": "vendor/cjdb/ground-surfaces-tie.patch",
+        "patch_sha256": _sha256(_PATCH_FILE),
         "patch_summary": (
-            "get_ground_surfaces() no longer drops non-vertical footprint "
-            "faces that share a mean Z height with another face (was a "
-            "dict keyed by mean Z; now a list, so ties are retained). "
-            "See vendor/cjdb/README.md."
+            "get_ground_surfaces() retains tied-Z footprint faces; the "
+            "CityJSONSeq importer also streams input and uses 5,000-row "
+            "INSERT batches. Object batches share cjdb's original object "
+            "transaction; relationship batches remain deferred until all "
+            "objects are present. See vendor/cjdb/README.md."
         ),
         "built_from": str(source),
     }

@@ -14,6 +14,7 @@ import subprocess
 import time
 
 from citybench.config import Dataset, IngestResult, Measurement, Params, SizeReport
+from citybench.lifecycle import citydb_tool_temp_directory
 from citybench.scenarios import registry, sql_citydb
 from citybench.systems import pg
 from citybench.systems.base import register
@@ -54,7 +55,9 @@ class CityDbSystem:
         subprocess.run(
             [
                 "podman", "run", "--rm", "--network", "host",
-                "-v", f"{self._mount}:/work", _IMAGE, *args,
+                "-v", f"{self._mount}:/work",
+                "-v", f"{citydb_tool_temp_directory()}:/tmp",
+                _IMAGE, *args,
                 "-H", "localhost", "-P", str(self._port),
                 "-d", "bench", "-u", "bench", "-p", "bench",
                 "-S", self._schema,

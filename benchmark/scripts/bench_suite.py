@@ -285,7 +285,7 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
             raise SystemExit("database input is not prepared; run just bench-prep --families databases first")
         output = locations["databases"] / ("smoke" if smoke else "results")
         root = locations["formats"].parent
-        command("uv", "run", "--project", "benchmark/databases", "python", "-m", "citybench.cli", "smoke" if smoke else "run", "--data-root", str(root), "--prepared-dir", str(locations["databases"] / "prepared"), "--dataset", str(database_input), "--output-dir", str(output))
+        command("uv", "run", "--project", "benchmark/databases", "python", "-m", "citybench.cli", "smoke" if smoke else "run", "--data-root", str(root), "--prepared-dir", str(locations["prepared"]), "--dataset", str(database_input), "--output-dir", str(output))
 
 
 def parser() -> argparse.ArgumentParser:

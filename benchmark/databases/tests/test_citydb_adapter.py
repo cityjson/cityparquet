@@ -135,6 +135,18 @@ def test_ingest_passes_threads_flag_to_avoid_exhausting_max_connections(tmp_path
     assert "--threads=4" in captured["argv"]
 
 
+def test_ingest_mounts_the_scoped_temporary_directory_at_tmp(tmp_path, monkeypatch):
+    captured = {}
+    temp_directory = tmp_path / "citybench-temp"
+    monkeypatch.setenv("CITYBENCH_CITYDB_TOOL_TMPDIR", str(temp_directory))
+    monkeypatch.setattr(citydb_module.subprocess, "run", lambda argv, **kw: captured.update(argv=argv))
+    system, _ = _system_with_fake_conn(monkeypatch)
+
+    system.ingest(_dataset(tmp_path))
+
+    assert f"{temp_directory.resolve()}:/tmp" in captured["argv"]
+
+
 def test_ingest_mounts_the_dataset_parent_directory_and_references_it_by_name(tmp_path, monkeypatch):
     captured = {}
     monkeypatch.setattr(citydb_module.subprocess, "run", lambda argv, **kw: captured.update(argv=argv))

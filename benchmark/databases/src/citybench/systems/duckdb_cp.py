@@ -13,6 +13,7 @@ from pathlib import Path
 import duckdb
 
 from citybench.config import Dataset, IngestResult, Measurement, Params, SizeReport
+from citybench.lifecycle import duckdb_temp_directory
 from citybench.scenarios import registry, sql_duckdb
 from citybench.systems import pg
 from citybench.systems.base import register
@@ -85,6 +86,8 @@ class DuckDBCityParquet:
         # given more of the machine than another.
         self._conn.execute(f"SET threads TO {self._threads}")
         self._conn.execute(f"SET memory_limit = '{self._memory_limit}'")
+        temp_directory = str(duckdb_temp_directory()).replace("'", "''")
+        self._conn.execute(f"SET temp_directory = '{temp_directory}'")
 
     def ingest(self, dataset: Dataset) -> IngestResult:
         """No load step: DuckDB reads the package in place.
@@ -93,7 +96,15 @@ class DuckDBCityParquet:
         absence of a load step is the property under discussion, not a
         measurement gap.
         """
-        self._package = dataset.cityparquet_dir
+        package = dataset.cityparquet_dir
+        files = object_table_files(package)
+        missing = [path for path in files if not Path(path).is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"CityParquet object table assets missing from {package}: "
+                + ", ".join(missing)
+            )
+        self._package = package
         return IngestResult(wall_clock_s=0.0, notes="no load step")
 
     def _table(self) -> str:

@@ -17,6 +17,7 @@ though `_versions()` also stamps a terse marker for at-a-glance visibility.
 
 from __future__ import annotations
 
+import os
 import platform
 import hashlib
 from typing import Any
@@ -32,7 +33,7 @@ _INGEST_CAVEAT = (
 def required_keys() -> tuple[str, ...]:
     return (
         "dataset", "source", "baseline", "host", "versions", "pg_settings", "ingest", "sizes",
-        "patches", "srid", "memory_measurement",
+        "patches", "srid", "memory_measurement", "temporary_storage",
     )
 
 
@@ -79,5 +80,12 @@ def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, f
             "duckdb": "process executing the embedded engine; includes its idle baseline",
             "cityparquet": "fresh reader child process; includes its idle baseline",
             "sampling_interval_ms": 5,
+        },
+        "temporary_storage": {
+            "host_tmpdir": os.environ.get("TMPDIR"),
+            "run_root": os.environ.get("CITYBENCH_TEMP_DIR"),
+            "citydb_tool_tmpdir": os.environ.get("CITYBENCH_CITYDB_TOOL_TMPDIR"),
+            "duckdb_tmpdir": os.environ.get("CITYBENCH_DUCKDB_TMPDIR"),
+            "description": "Per-run scratch directories are under host_tmpdir; PostgreSQL containers receive separate /tmp binds, and DuckDB sets temp_directory explicitly.",
         },
     }

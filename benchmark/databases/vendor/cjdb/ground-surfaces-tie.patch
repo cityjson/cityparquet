@@ -1,8 +1,8 @@
 --- a/cjdb/modules/geometric.py
 +++ b/cjdb/modules/geometric.py
 @@ -187,7 +187,17 @@
-
-
+ 
+ 
  def get_ground_surfaces(polygons: List[Polygon]) -> List[Polygon]:
 -    ground_surfaces = {}
 +    # PATCHED by the CityParquet database-benchmark harness -- see
@@ -39,6 +39,69 @@
 +    # against a count-weighted mean, deliberately not acted on here.
 +    z_mean = mean({z for z, _ in ground_surfaces})
 +    return [polygon for z, polygon in ground_surfaces if z < z_mean]
-
-
+ 
+ 
  def merge_into_a_multipolygon(
+--- a/cjdb/modules/importer.py
++++ b/cjdb/modules/importer.py
+@@ -9,6 +9,12 @@
+ from sqlalchemy.dialects.postgresql import insert
+ from sqlalchemy.orm import Session
+ 
++
++# Bound each PostgreSQL INSERT statement for large CityJSONSeq imports.
++# Object and relationship batches remain in their respective original
++# transactions; relationships are written only after every object is present.
++INSERT_BATCH_ROWS = 5_000
++
+ import cjdb.modules.exceptions as exceptions
+ from cjdb.logger import logger
+ from cjdb.model.sqlalchemy_models import (BaseModel,
+@@ -436,24 +442,38 @@
+         metadata_ok = self.extract_cj_metadatadata(first_line_json)
+         if not metadata_ok:
+             return False
+-        for line in f.readlines():
+-            line_json = json.loads(line.rstrip("\n"))
+-            self.process_line(line_json)
+-        if self.current.city_objects:
+-            logger.debug("Importing city objects")
++        def flush_object_batch(batch):
++            logger.debug("Importing %d city objects", len(batch))
+             obj_insert = (
+                 insert(CjObjectModel)
+-                .values(self.current.city_objects)
++                .values(batch)
+                 .on_conflict_do_nothing()
+             )
+             self.session.execute(obj_insert)
++
++        # Iterate the stream instead of materialising the whole CityJSONSeq.
++        # A feature can itself exceed INSERT_BATCH_ROWS, hence the while loop.
++        for line in f:
++            line_json = json.loads(line.rstrip("\n"))
++            self.process_line(line_json)
++            while len(self.current.city_objects) >= INSERT_BATCH_ROWS:
++                batch = self.current.city_objects[:INSERT_BATCH_ROWS]
++                del self.current.city_objects[:INSERT_BATCH_ROWS]
++                flush_object_batch(batch)
++        if self.current.city_objects:
++            flush_object_batch(self.current.city_objects)
++            self.current.city_objects.clear()
++        # Preserve cjdb's object-before-relationship transaction boundary.
+         self.session.commit()
+ 
+-        if self.current.families:
+-            logger.debug("Importing city object relationships")
++        # Parent/child references may point to objects in later features, so
++        # relationships remain deferred until all object batches are present.
++        for start in range(0, len(self.current.families), INSERT_BATCH_ROWS):
++            batch = self.current.families[start : start + INSERT_BATCH_ROWS]
++            logger.debug("Importing %d city object relationships", len(batch))
+             city_object_relationships_insert = (
+                 insert(CityObjectRelationshipModel)
+-                .values(self.current.families)
++                .values(batch)
+                 .on_conflict_do_nothing()
+             )
+             self.session.execute(city_object_relationships_insert)

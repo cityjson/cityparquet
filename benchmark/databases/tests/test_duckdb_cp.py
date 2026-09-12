@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from citybench.config import Dataset
+from citybench.systems import duckdb_cp
 from citybench.systems.duckdb_cp import DuckDBCityParquet, object_table_files
 
 
@@ -140,3 +142,66 @@ def test_column_names_discovers_the_real_schema_and_caches_it(tmp_path):
     finally:
         if system._conn is not None:
             system._conn.close()
+
+
+def test_prepare_sets_duckdb_temporary_directory_explicitly(tmp_path, monkeypatch):
+    commands = []
+
+    class Connection:
+        def execute(self, sql):
+            commands.append(sql)
+
+    monkeypatch.setenv("CITYBENCH_DUCKDB_TMPDIR", str(tmp_path))
+    monkeypatch.setattr(duckdb_cp.duckdb, "connect", lambda: Connection())
+
+    DuckDBCityParquet().prepare()
+
+    assert f"SET temp_directory = '{tmp_path.resolve()}'" in commands
+
+
+def _dataset_for_package(tmp_path: Path, package: Path) -> Dataset:
+    source = tmp_path / "source.city.jsonl"
+    source.write_text("")
+    return Dataset(
+        name="fixture",
+        source=source,
+        cityparquet_dir=package,
+        hilbert_dir=tmp_path / "hilbert",
+    )
+
+
+def test_ingest_fails_before_other_systems_for_a_missing_package(tmp_path):
+    system = DuckDBCityParquet()
+
+    with pytest.raises(FileNotFoundError, match="metadata.json"):
+        system.ingest(_dataset_for_package(tmp_path, tmp_path / "missing"))
+
+
+def test_ingest_rejects_a_package_with_a_missing_object_table_asset(tmp_path):
+    package = tmp_path / "prepared"
+    _write_manifest(package, {
+        "building.parquet": {
+            "href": "./building.parquet",
+            "roles": ["cityparquet-objects"],
+        },
+    })
+
+    with pytest.raises(FileNotFoundError, match="building.parquet"):
+        DuckDBCityParquet().ingest(_dataset_for_package(tmp_path, package))
+
+
+def test_ingest_accepts_a_package_with_existing_object_table_assets(tmp_path):
+    package = tmp_path / "prepared"
+    _write_manifest(package, {
+        "building.parquet": {
+            "href": "./building.parquet",
+            "roles": ["cityparquet-objects"],
+        },
+    })
+    (package / "building.parquet").touch()
+    system = DuckDBCityParquet()
+
+    result = system.ingest(_dataset_for_package(tmp_path, package))
+
+    assert result.wall_clock_s == 0.0
+    assert system._package == package

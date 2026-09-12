@@ -1,7 +1,11 @@
 from citybench.manifest import collect, required_keys
 
 
-def test_manifest_records_everything_needed_to_cite_a_number():
+def test_manifest_records_everything_needed_to_cite_a_number(monkeypatch):
+    monkeypatch.setenv("TMPDIR", "/data2/hideba/tmp")
+    monkeypatch.setenv("CITYBENCH_TEMP_DIR", "/data2/hideba/tmp/citybench-run")
+    monkeypatch.setenv("CITYBENCH_CITYDB_TOOL_TMPDIR", "/data2/hideba/tmp/citybench-run/citydb-tool")
+    monkeypatch.setenv("CITYBENCH_DUCKDB_TMPDIR", "/data2/hideba/tmp/citybench-run/duckdb")
     m = collect(
         dataset_name="delft",
         ingest={"cjdb": 12.5, "3dcitydb": 40.1},
@@ -11,6 +15,9 @@ def test_manifest_records_everything_needed_to_cite_a_number():
     )
     for key in required_keys():
         assert key in m, f"manifest missing {key}"
+    assert m["temporary_storage"]["host_tmpdir"] == "/data2/hideba/tmp"
+    assert m["temporary_storage"]["run_root"] == "/data2/hideba/tmp/citybench-run"
+    assert m["temporary_storage"]["duckdb_tmpdir"].endswith("/duckdb")
 
 
 def test_ingest_times_are_marked_non_comparable():
@@ -42,7 +49,7 @@ def test_required_keys_is_exactly_the_eight_documented_fields():
     # actually landed on is recorded, not just requested.
     assert required_keys() == (
         "dataset", "source", "baseline", "host", "versions", "pg_settings", "ingest", "sizes",
-        "patches", "srid", "memory_measurement",
+        "patches", "srid", "memory_measurement", "temporary_storage",
     )
 
 

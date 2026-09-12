@@ -21,8 +21,13 @@ tests needing `just up` first.
 
 from __future__ import annotations
 
+import ast
+import copy
+import io
 import json
 import subprocess
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -82,3 +87,89 @@ def test_patched_source_directory_name_embeds_the_current_patch_hash():
     # patched_cjdb_source() would have already raised before this line.
     source = patched_cjdb_source()
     assert source.name.startswith("cjdb-2.2.0+")
+
+
+def test_patched_importer_batches_a_large_single_feature_without_extra_commits():
+    """Exercise the patched method with a feature larger than one batch.
+
+    This compiles ``process_file`` from the same content-addressed source that
+    the adapter passes to ``cjdb import``.  Fake SQLAlchemy objects expose the
+    batch boundaries and commit order without needing a PostgreSQL service.
+    """
+    source = patched_cjdb_source() / "cjdb" / "modules" / "importer.py"
+    tree = ast.parse(source.read_text())
+    importer = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Importer")
+    method = copy.deepcopy(next(node for node in importer.body if isinstance(node, ast.FunctionDef) and node.name == "process_file"))
+    namespace: dict[str, object] = {}
+
+    class Metadata:
+        finished_at = None
+
+    class SingleFileImport:
+        def __init__(self, _filepath):
+            self.city_objects = []
+            self.families = []
+            self.cj_metadata = Metadata()
+
+    class Insert:
+        def __init__(self, model):
+            self.model = model
+
+        def values(self, rows):
+            self.rows = list(rows)
+            return self
+
+        def on_conflict_do_nothing(self):
+            return (self.model, self.rows)
+
+    class Session:
+        def __init__(self):
+            self.events = []
+
+        def execute(self, statement):
+            self.events.append(("execute", statement[0], statement[1]))
+
+        def commit(self):
+            self.events.append(("commit",))
+
+    namespace.update(
+        json=json,
+        sys=SimpleNamespace(stdin=io.StringIO('{"type": "CityJSON"}\n{"type": "CityJSONFeature"}\n')),
+        SingleFileImport=SingleFileImport,
+        logger=SimpleNamespace(info=lambda *_args: None, debug=lambda *_args: None),
+        insert=Insert,
+        is_cityjson_object=lambda _value: True,
+        INSERT_BATCH_ROWS=5_000,
+        CjObjectModel="objects",
+        CityObjectRelationshipModel="relationships",
+        func=SimpleNamespace(now=lambda: "finished"),
+    )
+    executable = ast.Module(body=[method], type_ignores=[])
+    exec(compile(ast.fix_missing_locations(executable), str(source), "exec"), namespace)
+
+    class FakeImporter:
+        def __init__(self):
+            self.session = Session()
+
+        def extract_cj_metadatadata(self, _metadata):
+            return True
+
+        def process_line(self, _feature):
+            # One CityJSONFeature can be larger than INSERT_BATCH_ROWS.
+            self.current.city_objects.extend({"id": i} for i in range(12_001))
+            self.current.families.extend({"child_id": i} for i in range(12_001))
+
+    fake = FakeImporter()
+    namespace["process_file"](fake, "stdin")
+    events = fake.session.events
+    executions = [event for event in events if event[0] == "execute"]
+    object_batches = [event[2] for event in executions if event[1] == "objects"]
+    relationship_batches = [event[2] for event in executions if event[1] == "relationships"]
+
+    assert [len(batch) for batch in object_batches] == [5_000, 5_000, 2_001]
+    assert [len(batch) for batch in relationship_batches] == [5_000, 5_000, 2_001]
+    assert all(len(batch) <= 5_000 for batch in object_batches + relationship_batches)
+    first_commit = events.index(("commit",))
+    assert all(event[1] == "objects" for event in events[:first_commit] if event[0] == "execute")
+    assert sum(event == ("commit",) for event in events) == 2
+    assert events[-1] == ("commit",)
