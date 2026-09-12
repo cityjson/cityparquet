@@ -1,0 +1,16 @@
+dataset,format,scenario,sample,time_s,peak_rss_bytes
+nyc_da13_buildings,citygml,write,1,27.115778,4109139968
+nyc_da13_buildings,citygml,write,2,29.008583,4128731136
+nyc_da13_buildings,citygml,write,3,26.549376,4217851904
+nyc_da13_buildings,cityjson,write,1,10.297322,1173995520
+nyc_da13_buildings,cityjson,write,2,7.992515,1174630400
+nyc_da13_buildings,cityjson,write,3,9.868963,1174118400
+nyc_da13_buildings,cityjsonseq,write,1,0.002860,14680064
+nyc_da13_buildings,cityjsonseq,write,2,0.002461,14680064
+nyc_da13_buildings,cityjsonseq,write,3,0.002209,14680064
+nyc_da13_buildings,flatcitybuf,write,1,5.682277,795209728
+nyc_da13_buildings,flatcitybuf,write,2,6.215724,795705344
+nyc_da13_buildings,flatcitybuf,write,3,5.694039,794820608
+nyc_da13_buildings,cityparquet-hilbert,write,1,8.975375,1589723136
+nyc_da13_buildings,cityparquet-hilbert,write,2,9.080975,1589788672
+nyc_da13_buildings,cityparquet-hilbert,write,3,8.861228,1589866496

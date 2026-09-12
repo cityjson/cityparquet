@@ -16,10 +16,11 @@ trivial and lossless, but not "no transformation".
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 from citybench.config import Measurement
-from citybench.stats import mad, median
+from citybench.stats import mad, mean, median
 
 COLUMNS: tuple[str, ...] = (
     "dataset",
@@ -38,6 +39,9 @@ COLUMNS: tuple[str, ...] = (
     "server_time_s",
     "size_bytes",
     "size_bytes_no_index",
+    "status",
+    "raw_time_samples_s",
+    "raw_server_time_samples_s",
 )
 
 _PRECISION = 6
@@ -74,7 +78,7 @@ def row_from_measurement(
         "scenario": scenario,
         "selectivity": _fmt(selectivity),
         "result_count": _int(measurement.result_count),
-        "time_s": _fmt(median(times)) if times else "",
+        "time_s": _fmt(mean(times)) if times else "",
         "time_mad_s": _fmt(mad(times)) if times else "",
         "peak_heap_bytes": _int(measurement.peak_heap_bytes),
         "peak_rss_bytes": _int(measurement.peak_rss_bytes),
@@ -83,9 +87,14 @@ def row_from_measurement(
         # Always empty: this harness measures local transport only.
         "bytes_read": "",
         "http_requests": "",
-        "server_time_s": _fmt(median(server)) if server else "",
+        "server_time_s": _fmt(mean(server)) if server else "",
         "size_bytes": _int(size_bytes),
         "size_bytes_no_index": _int(size_bytes_no_index),
+        "status": ("error" if measurement.notes.startswith("error:") else
+                   "skipped" if measurement.notes.startswith("skipped:") else
+                   "mismatch" if "count-mismatch" in measurement.notes else "ok"),
+        "raw_time_samples_s": json.dumps(times, separators=(",", ":")),
+        "raw_server_time_samples_s": json.dumps(server, separators=(",", ":")),
     }
 
 

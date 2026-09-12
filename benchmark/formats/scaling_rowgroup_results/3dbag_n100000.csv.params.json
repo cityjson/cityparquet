@@ -1,0 +1,77 @@
+{
+  "dataset": "3dbag_n100000.city.jsonl",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.00999990000099999,
+      "window": [
+        194655.25993433257,
+        440149.38899853505,
+        0.0,
+        194934.79406139493,
+        441217.77800146485,
+        107.89952087402344
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.04999950000499995,
+      "window": [
+        194520.02099572754,
+        439632.50114554906,
+        0.0,
+        195070.03299999997,
+        441734.66585445084,
+        107.89952087402344
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.24999750002499976,
+      "window": [
+        193846.49114689443,
+        437058.24700634764,
+        0.0,
+        195743.56284883307,
+        444308.91999365226,
+        107.89952087402344
+      ],
+      "approx": false
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "NL.IMBAG.Pand.0282100000006016",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "NL.IMBAG.Pand.0293100000006220",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "NL.IMBAG.Pand.0275100000001953",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "NL.IMBAG.Pand.0293100000006220-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "object_type": "BuildingPart",
+  "object_type_count": 50019,
+  "numeric_attr": "b3_bag_bag_overlap",
+  "cp_object_total": 100001
+}

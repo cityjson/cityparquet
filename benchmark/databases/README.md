@@ -596,14 +596,7 @@ Read before citing a number.
    `run_matrix` calls specifically so this never surfaces as a spurious
    `error:` row against the native readers.
 
-6. **`peak_rss_bytes` is not captured for the PostgreSQL systems or
-   DuckDB.** A PostgreSQL backend's RSS includes a share of
-   `shared_buffers` (8GB, shared across every connection — see "Tuning
-   parity" above) and is not a like-for-like figure against an in-process
-   allocator's own high-water mark; DuckDB's Python client has no
-   equivalent hook wired up here either. It **is** populated for the two
-   native-reader rows (`cityparquet`/`cityparquet-hilbert`), and in the
-   currently committed CSVs that value is in **KiB, not bytes** — the Rust
+6. **`peak_rss_bytes` has an explicit process scope.** PostgreSQL rows sample the backend process, never the Python client; DuckDB rows sample the process executing DuckDB. It is not a charge for shared PostgreSQL buffers or a whole-server figure. Native-reader rows (`cityparquet`/`cityparquet-hilbert`) still use their child-process high-water mark, and in the currently committed CSVs that value is in **KiB, not bytes** — the Rust
    source's `max_rss_bytes()` targeted macOS development and applied no
    `cfg`-gated conversion for Linux's `getrusage(2)`. That conversion now
    exists (`rss_to_bytes`), so runs made with the current binary report

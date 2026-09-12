@@ -1,0 +1,16 @@
+dataset,format,scenario,sample,time_s,peak_rss_bytes
+rotterdam_delfshaven,citygml,write,1,3.449990,418414592
+rotterdam_delfshaven,citygml,write,2,3.504804,462761984
+rotterdam_delfshaven,citygml,write,3,3.420320,465129472
+rotterdam_delfshaven,cityjson,write,1,0.230312,26947584
+rotterdam_delfshaven,cityjson,write,2,0.263790,26755072
+rotterdam_delfshaven,cityjson,write,3,0.258516,26771456
+rotterdam_delfshaven,cityjsonseq,write,1,0.002665,14680064
+rotterdam_delfshaven,cityjsonseq,write,2,0.003350,14680064
+rotterdam_delfshaven,cityjsonseq,write,3,0.002646,14680064
+rotterdam_delfshaven,flatcitybuf,write,1,0.116137,22020096
+rotterdam_delfshaven,flatcitybuf,write,2,0.113368,22020096
+rotterdam_delfshaven,flatcitybuf,write,3,0.129184,22020096
+rotterdam_delfshaven,cityparquet-hilbert,write,1,0.815393,229421056
+rotterdam_delfshaven,cityparquet-hilbert,write,2,0.620598,230854656
+rotterdam_delfshaven,cityparquet-hilbert,write,3,0.823454,230473728

@@ -1,0 +1,16 @@
+dataset,format,scenario,sample,time_s,peak_rss_bytes
+ingolstadt,citygml,write,1,3.441043,578605056
+ingolstadt,citygml,write,2,3.563053,542724096
+ingolstadt,citygml,write,3,3.476751,490049536
+ingolstadt,cityjson,write,1,0.531166,48975872
+ingolstadt,cityjson,write,2,0.516346,48963584
+ingolstadt,cityjson,write,3,0.494791,48877568
+ingolstadt,cityjsonseq,write,1,0.003555,14680064
+ingolstadt,cityjsonseq,write,2,0.002694,14680064
+ingolstadt,cityjsonseq,write,3,0.002640,14680064
+ingolstadt,flatcitybuf,write,1,0.177434,27262976
+ingolstadt,flatcitybuf,write,2,0.169054,28311552
+ingolstadt,flatcitybuf,write,3,0.184410,27262976
+ingolstadt,cityparquet-hilbert,write,1,0.996289,251826176
+ingolstadt,cityparquet-hilbert,write,2,0.971878,245506048
+ingolstadt,cityparquet-hilbert,write,3,0.938316,251441152

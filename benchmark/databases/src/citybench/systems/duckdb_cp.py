@@ -13,9 +13,11 @@ from pathlib import Path
 import duckdb
 
 from citybench.config import Dataset, IngestResult, Measurement, Params, SizeReport
+from citybench.lifecycle import duckdb_temp_directory
 from citybench.scenarios import registry, sql_duckdb
 from citybench.systems import pg
 from citybench.systems.base import register
+from citybench.stats import peak_resident_bytes
 
 # The STAC asset role `cityparquet convert` stamps on every per-module
 # OBJECT table it writes (verified against a real converted package's
@@ -84,6 +86,8 @@ class DuckDBCityParquet:
         # given more of the machine than another.
         self._conn.execute(f"SET threads TO {self._threads}")
         self._conn.execute(f"SET memory_limit = '{self._memory_limit}'")
+        temp_directory = str(duckdb_temp_directory()).replace("'", "''")
+        self._conn.execute(f"SET temp_directory = '{temp_directory}'")
 
     def ingest(self, dataset: Dataset) -> IngestResult:
         """No load step: DuckDB reads the package in place.
@@ -92,7 +96,15 @@ class DuckDBCityParquet:
         absence of a load step is the property under discussion, not a
         measurement gap.
         """
-        self._package = dataset.cityparquet_dir
+        package = dataset.cityparquet_dir
+        files = object_table_files(package)
+        missing = [path for path in files if not Path(path).is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"CityParquet object table assets missing from {package}: "
+                + ", ".join(missing)
+            )
+        self._package = package
         return IngestResult(wall_clock_s=0.0, notes="no load step")
 
     def _table(self) -> str:
@@ -137,11 +149,14 @@ class DuckDBCityParquet:
 
         mode = registry.count_mode(scenario)
 
-        def once() -> tuple[int, float]:
-            start = time.perf_counter()
-            rows = self._conn.execute(sql, list(args)).fetchall()
-            elapsed = time.perf_counter() - start
-            return pg.extract_count(rows, mode), elapsed
+        def once() -> tuple[int, float, int | None]:
+            def execute() -> tuple[int, float]:
+                start = time.perf_counter()
+                rows = self._conn.execute(sql, list(args)).fetchall()
+                return pg.extract_count(rows, mode), time.perf_counter() - start
+
+            (count, elapsed), peak = peak_resident_bytes(execute)
+            return count, elapsed, peak
 
         once()  # discarded warm-up
         samples = [once() for _ in range(repeat)]
@@ -149,8 +164,9 @@ class DuckDBCityParquet:
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
             server_times_s=[],   # in-process: no client-server split to report
-            peak_rss_bytes=None,
+            peak_rss_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
             peak_heap_bytes=None,
+            notes="memory-scope: duckdb-process-rss",
         )
 
     def size(self) -> SizeReport:

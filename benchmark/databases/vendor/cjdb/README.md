@@ -73,6 +73,19 @@ the face-dropping bug and is not bundled into this fix. (Whether a
 count-weighted mean would in fact be a *better* split rule is a separate
 question, noted but not acted on — see the Task 12 fix report.)
 
+## Large-import batching
+
+The same patch also changes only the importer transport for large CityJSONSeq
+files. Stock cjdb builds one PostgreSQL `INSERT` containing every CityObject
+in a file; the million-object scaling input makes that statement and its client
+output buffer impractically large. The patched importer streams input lines and
+executes 5,000-row object and relationship statements. Object batches share the
+same transaction as stock cjdb's object insert, then relationships are inserted
+in their own original subsequent transaction after every object is present.
+`on_conflict_do_nothing()` and the original parent/child ordering are unchanged.
+This is an ingestion scalability fix, not a query-semantic change; its batch
+size and presence are recorded in each run manifest.
+
 ## Building it
 
 ```

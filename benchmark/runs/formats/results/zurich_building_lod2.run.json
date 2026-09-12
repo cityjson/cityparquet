@@ -1,0 +1,52 @@
+{
+  "code": {
+    "git_head": "454928f0e0984f163511bcfc44aa67ccf1f7fa3c",
+    "tracked_diff_sha256": "9854d9c4efe777879c2a51827710351e652c2201e23bb85b1da128def66ac408",
+    "untracked_sources_sha256": {
+      "benchmark/databases/src/citybench/lifecycle.py": "67a5114f9764b271ca7ed4b65b028abd71ad898e218005fe643c1efc1b07eabe",
+      "benchmark/databases/tests/test_lifecycle.py": "5bcad544fa6fe3a114b1a9a0720168d6bedad097f8b9cdfc91ddb43c7974c413",
+      "benchmark/manifest.toml": "01b317ff729aabeac203fc90382f2d0a45cbbe13c5d92d992ca5e985def2a550",
+      "benchmark/plot/tests/test_axis_validity.py": "610d186ee53151e464ed21358493593fa28fcc09650284716f464716a4fc9cf1",
+      "benchmark/plot/tests/test_cli_selection.py": "3d1cec6f9dcb9542ecdcc8a8556a8fa41f5d337a82862c6002900a1b94f97fb3",
+      "benchmark/scripts/bench_suite.py": "739709c28cdd7c85474f7e1008445e84eef8384c121f4196e890aba39d95c950",
+      "benchmark/scripts/format_write.py": "81d032753f0043095dc1821703a79dbd4e196b9ac63f978c89c10dbabae94bdf",
+      "benchmark/scripts/measure_sizes.py": "afb88c3ee1bb6afc46ffa21e5927490f7f8f3f76f4c2a6b1e7bc1dcdc3819cc6",
+      "benchmark/scripts/tests/test_bench_suite.py": "d571d4fe83b1a6a4cefdfe7c7c88a3b9f7f64adc22119dc21d6d476bb2c5bfd2"
+    }
+  },
+  "family": "formats",
+  "machine": {
+    "machine": "x86_64",
+    "processor": "x86_64",
+    "python": "3.12.3",
+    "release": "6.8.0-136-generic",
+    "system": "Linux"
+  },
+  "measurement": {
+    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq",
+    "read_repeat": 7,
+    "write_repeat": 3
+  },
+  "result": {
+    "csv": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/formats/results/zurich_building_lod2.csv",
+    "files_sha256": {
+      "zurich_building_lod2.csv": "3ab24be5a0922ebe463e60abe16177c027d6483bf5e16ed794957bc720abf571",
+      "zurich_building_lod2.csv.params.json": "ac91add8f24f19cdf8d3c546177751e5baead5e42d6a47211257dde0e5c41557",
+      "zurich_building_lod2.csv.samples.json": "845676d078f2009124ed863e207a70b028860e81b99c34b3ee6e2f2cdd608e7e",
+      "zurich_building_lod2.write.samples.csv": "0601ba91e12d650aa1ad54d9556b37cb47c87392f216b833716a9c5d84b6b050"
+    },
+    "params_sha256": "ac91add8f24f19cdf8d3c546177751e5baead5e42d6a47211257dde0e5c41557"
+  },
+  "schema": 1,
+  "smoke": false,
+  "source": {
+    "path": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/data/benchmark/zurich_building_lod2.city.json",
+    "sha256": "a7dde7f306e69a4134b2bf30b8ead58fe11d3499f8b30d7596ba346aeae6f0f8"
+  },
+  "tools": {
+    "cityparquet": "unavailable",
+    "cjseq": "cjseq 0.3.1",
+    "fcb": "fcb 0.7.8",
+    "rust": "rustc 1.93.1 (01f6ddf75 2026-02-11)"
+  }
+}

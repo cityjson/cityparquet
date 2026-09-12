@@ -101,11 +101,13 @@ def patch_disclosure() -> dict[str, str]:
         "upstream_version": CJDB_UPSTREAM_VERSION,
         "patched": "true",
         "patch_file": "vendor/cjdb/ground-surfaces-tie.patch",
+        "patch_sha256": _sha256(_PATCH_FILE),
         "patch_summary": (
-            "get_ground_surfaces() no longer drops non-vertical footprint "
-            "faces that share a mean Z height with another face (was a "
-            "dict keyed by mean Z; now a list, so ties are retained). "
-            "See vendor/cjdb/README.md."
+            "get_ground_surfaces() retains tied-Z footprint faces; the "
+            "CityJSONSeq importer also streams input and uses 5,000-row "
+            "INSERT batches. Object batches share cjdb's original object "
+            "transaction; relationship batches remain deferred until all "
+            "objects are present. See vendor/cjdb/README.md."
         ),
         "built_from": str(source),
     }
@@ -127,6 +129,7 @@ class CjdbSystem:
         # docstring) has not been built yet.
         patched_cjdb_source()
         self._conn = pg.connect(self._port)
+        pg.disable_parallel_query(self._conn)
 
     def ingest(self, dataset: Dataset) -> IngestResult:
         cjdb_source = patched_cjdb_source()
@@ -168,8 +171,9 @@ class CjdbSystem:
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
             server_times_s=[s[2] for s in samples],
-            peak_rss_bytes=None,
+            peak_rss_bytes=max((s[3] for s in samples if len(s) > 3 and s[3] is not None), default=None),
             peak_heap_bytes=None,
+            notes="memory-scope: postgresql-backend-rss",
         )
 
     def size(self) -> SizeReport:

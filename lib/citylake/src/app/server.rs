@@ -1,80 +1,108 @@
-use axum::extract::DefaultBodyLimit;
+//! The axum router: every route the API exposes, wired to its handler, and
+//! the server that binds and serves it.
+
+use std::sync::Arc;
+
+use axum::extract::{DefaultBodyLimit, FromRef};
+use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::Router;
-use std::sync::Arc;
+use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
 
 use crate::core::interface::repository::CityLakeRepository;
 use crate::core::interface::types::CityLakeConfig;
 
-use super::handlers;
-use super::middleware;
+use super::handlers::{dataset, maintenance, objects, package};
 
-/// Upper bound on multipart upload size. Axum's default is 2 MiB which is
-/// instantly blown by realistic CityJSON files; 256 MiB is generous enough for
-/// typical municipal datasets without inviting accidental DoS.
+/// Upper bound on a multipart upload. Axum's default body limit (2 MiB) is
+/// blown instantly by a realistic CityJSON source; this is generous enough
+/// for a municipal dataset without leaving the limit unbounded.
 const UPLOAD_BODY_LIMIT: usize = 256 * 1024 * 1024;
 
-/// Build the axum router with all routes and middleware.
-pub fn build_router(repo: Arc<dyn CityLakeRepository>) -> Router {
+/// Router state: the repository every handler calls through, plus the root
+/// the two write endpoints (`package::export`, `package::write_package`)
+/// confine an API-supplied output path to.
+///
+/// `dataset`, `maintenance` and `objects` extract `State<Arc<dyn
+/// CityLakeRepository>>` directly, unaware this struct exists at all — the
+/// `FromRef` impl below is what makes that keep compiling: axum derives
+/// their narrower state from this one. Only `package`'s `export` and
+/// `write_package` extract `State<AppState>`, because they are the only
+/// handlers that need `output_root`.
+#[derive(Clone)]
+pub struct AppState {
+    pub(crate) repo: Arc<dyn CityLakeRepository>,
+    pub(crate) output_root: Option<String>,
+}
+
+impl FromRef<AppState> for Arc<dyn CityLakeRepository> {
+    fn from_ref(state: &AppState) -> Self {
+        state.repo.clone()
+    }
+}
+
+/// Build the router. The API has no authentication — CORS is permissive and
+/// every route is open to whoever can reach the port. `output_root` is
+/// `CITYLAKE_OUTPUT_ROOT`; when `None`, `export` and `write_package` refuse
+/// every request rather than writing wherever the caller names.
+pub fn router(repo: Arc<dyn CityLakeRepository>, output_root: Option<String>) -> Router {
+    let state = AppState { repo, output_root };
     Router::new()
-        // Catalog
-        .route("/tables", get(handlers::list::list_tables))
-        // Table operations
-        .route("/tables/{table_name}", post(handlers::table::create_table))
+        .route("/health", get(health))
+        .route("/datasets", get(dataset::list))
         .route(
-            "/tables/{table_name}/upload",
-            post(handlers::table::create_table_upload)
-                .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
-        )
-        // Object CRUD
-        .route(
-            "/tables/{table_name}/objects",
-            post(handlers::insert::insert_objects).get(handlers::query::query_objects),
+            "/datasets/{ds}",
+            post(dataset::create)
+                .get(dataset::describe)
+                .delete(dataset::drop_dataset),
         )
         .route(
-            "/tables/{table_name}/objects/upload",
-            post(handlers::insert::insert_objects_upload)
-                .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
+            "/datasets/{ds}/upload",
+            post(dataset::create_upload).layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
         )
         .route(
-            "/tables/{table_name}/objects/{id}",
-            put(handlers::update::update_object).delete(handlers::delete::delete_object),
+            "/datasets/{ds}/objects",
+            post(objects::ingest).delete(objects::delete_where),
         )
-        // Compaction
         .route(
-            "/tables/{table_name}/compact",
-            post(handlers::compaction::compact_table),
+            "/datasets/{ds}/objects/upload",
+            post(objects::ingest_upload).layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
         )
-        // Export
         .route(
-            "/tables/{table_name}/export",
-            post(handlers::export::export_table),
+            "/datasets/{ds}/modules/{module}/objects",
+            get(objects::query),
         )
-        // Health check
-        .route("/health", get(health_check))
-        // Middleware
-        .layer(middleware::trace_layer())
-        .layer(middleware::cors_layer())
-        // State
-        .with_state(repo)
+        .route(
+            "/datasets/{ds}/objects/{id}",
+            put(objects::update).delete(objects::delete),
+        )
+        .route("/datasets/{ds}/export", post(package::export))
+        .route("/datasets/{ds}/package", post(package::write_package))
+        .route("/datasets/{ds}/merge", post(package::merge))
+        .route("/datasets/{ds}/validate", post(maintenance::validate))
+        .route("/datasets/{ds}/reconcile", post(maintenance::reconcile))
+        .route("/datasets/{ds}/vacuum", post(maintenance::vacuum))
+        .route("/datasets/{ds}/compact", post(maintenance::compact))
+        .layer(TraceLayer::new_for_http())
+        .layer(CorsLayer::permissive())
+        .with_state(state)
 }
 
-/// Start the HTTP server.
-pub async fn start_server(
+async fn health() -> StatusCode {
+    StatusCode::OK
+}
+
+/// Build the router and serve it on `config.host:config.port`.
+pub async fn serve(
+    config: CityLakeConfig,
     repo: Arc<dyn CityLakeRepository>,
-    config: &CityLakeConfig,
 ) -> anyhow::Result<()> {
-    let app = build_router(repo);
+    let output_root = config.output_root.clone();
+    let app = router(repo, output_root);
     let addr = format!("{}:{}", config.host, config.port);
-
-    tracing::info!("Starting CityLake server on {addr}");
-
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    tracing::info!(%addr, "CityLake listening");
     axum::serve(listener, app).await?;
-
     Ok(())
-}
-
-async fn health_check() -> &'static str {
-    "ok"
 }

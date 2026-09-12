@@ -1,19 +1,17 @@
 # CityParquet read-benchmark methodology
 
-This is the **read**-side counterpart to `benchmark/formats/README.md` (the write/encoding
-benchmark's methodology): same repo, same discipline — real published data, warm
-medians + MAD at 6-decimal precision, fixed overheads disclosed rather than
-hidden — but a separate methodology and its own measurement artefacts,
-`benchmark/formats/read_results/*.csv` (format comparison) and `benchmark/formats/ordering_results/*.csv`
-(ordering comparison), produced by `just bench` / `just ordering-bench`.
+The format family's query definitions and fairness caveats live here. The
+suite entry points, dataset selection and figure layout are described in
+[`../README.md`](../README.md). Run `just bench-prep --families formats`,
+`just bench-run --families formats`, then `just bench-summary` from the
+monorepo root. The format family measures writes as well as these reads.
 
-**Both comparisons are committed.** `benchmark/formats/read_results/` holds a
-full run over the six-dataset corpus, and `benchmark/formats/ordering_results/`
-the source-order vs Hilbert axis over the same one. Each CSV sits beside a
-`<name>.csv.params.json` sidecar recording the exact windows, id probes and
-attribute predicate that run measured, so a committed number can be traced to
-the query that produced it. The retired 30-dataset catalogue corpus and its
-results are kept under `benchmark/formats/archive/2026-08-17-catalogue-corpus/`.
+Result files must be interpreted with their own query-parameter sidecars and
+run provenance. Existing `read_results/` and `ordering_results/` CSVs describe
+the datasets and configurations named in those files; they do not establish
+measurements for the replacement large 3DBAG dataset. Detailed caveats below
+include observations on those datasets and remain qualifications on that
+evidence until equivalent checks have been made on a new run.
 
 ## Purpose
 
@@ -52,63 +50,26 @@ reading all of it. That is not an omission in the harness — it is the finding
 the benchmark exists to quantify, and the reason a `count` gap grows linearly
 with dataset size while CityParquet's stays flat.
 
-## The two benchmark sets
+## Format and ordering configurations
 
-The benchmark answers **two different questions**, and measuring them in one
-run would confound both — a CSV holding `citygml`, `cityjson`, `cityjsonseq`,
-`flatcitybuf`, `cityparquet` _and_ `cityparquet-hilbert` cannot tell you
-whether a CityParquet-vs-FlatCityBuf gap is about the encoding or about the
-row order, because two variables moved at once. So there are two sets, each
-single-axis, each in its own results directory (`just plot` charts a whole
-directory, so mixing them would put two axes on one chart and answer
-neither). Both are defined once, in `Format` (`format.rs`), and threaded from
-there to the justfile and the coordinator:
+The suite's format comparison uses one configuration per format family:
+`citygml`, `cityjson`, `cityjsonseq`, `flatcitybuf` and
+`cityparquet-hilbert`. The last is displayed as **CityParquet** in figures;
+Hilbert ordering is an experimental condition, not a different format name.
+The harness retains separate internal identifiers for source order
+(`cityparquet`) and Hilbert order (`cityparquet-hilbert`). They must not be
+merged when interpreting configuration measurements.
 
-| set                                                                                                    | tags                                                                       | recipe                               | output                                |
-| ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------- |
-| **Format comparison** (`Format::DEFAULT_SET`) — _how do the formats a city model can ship as compare?_ | `citygml`, `cityjson`, `cityjsonseq`, `flatcitybuf`, `cityparquet-hilbert` | `just bench <folder>` (no `FORMATS`) | `benchmark/formats/read_results/`     |
-| **Ordering comparison** (`Format::ORDERING_SET`) — _does Hilbert-curve ordering pay for itself?_       | `cityparquet`, `cityparquet-hilbert`                                       | `just ordering-bench <folder>`       | `benchmark/formats/ordering_results/` |
+`Format::DEFAULT_SET` defines these five reader identifiers. The lower-level
+harness also supports `Format::ORDERING_SET` for source-order versus Hilbert
+experiments, gzipped CityJSONSeq, and DuckDB over Parquet. These are not extra
+series in the default format comparison. The database family compares DuckDB
+with cjdb and 3DCityDB separately.
 
-Three deliberate choices in that first row:
-
-- **One tag per format family.** The format axis carries exactly one
-  CityParquet row, so the chart compares formats and nothing else.
-- **CityParquet is represented by its BEST configuration**,
-  `cityparquet-hilbert` — the configuration we would actually ship. Entering
-  the source-ordered package instead would handicap the format comparison
-  with an ordering choice no other format in the set faces, and entering both
-  would confound the axes. The ordering choice is a real question, and it is
-  asked separately, on its own axis, by the second row.
-- **`cityjsonseq-gz` and `duckdb-parquet` are opt-in, not default.** Neither
-  is a _format_: `cityjsonseq-gz` is a compression variant of a format
-  already in the set, and `duckdb-parquet` is an SQL-**engine** baseline over
-  a file already in the set. Neither belongs on a format axis unasked, so
-  **a bare `just bench <folder>` produces a CSV with exactly the five
-  `DEFAULT_SET` series in it** — no sixth, non-format row. Both are measured
-  on request, by naming them:
-
-  ```sh
-  just bench <folder> benchmark/formats/read_results \
-      "citygml,cityjson,cityjsonseq,cityjsonseq-gz,flatcitybuf,cityparquet-hilbert,duckdb-parquet"
-  ```
-
-  `duckdb-parquet` is the _only_ thing that triggers the
-  `benchmark/scripts/readbench_duckdb.sh` append step. This is pinned in both
-  directions — a bare run must not append it, naming it must — by
-  `scripts/tests/bench_recipe_test.sh`, which extracts the `bench` recipe's
-  own format-selection block from the justfile and runs it. The justfile used
-  to disagree with `Format::DEFAULT_SET` here, appending the baseline on every
-  default run; the test exists so that cannot come back.
-
-`duckdb-parquet` is **not** the write benchmark's `duckdb-copy` baseline.
-`duckdb-copy` there reads CityJSON through the community `cityjson`
-extension's `read_cityjson`/`read_cityjsonseq` table functions and re-writes
-it via `COPY ... TO (FORMAT PARQUET)` — a baseline with well-documented
-partial-geometry gaps (see `benchmark/formats/README.md`'s "Baseline geometry
-coverage"). `duckdb-parquet` here instead runs `read_parquet()` straight
-over a `cityparquet-rs`-**written** package: it carries our full geometry
-and our typed `bbox` STRUCT column, so none of that write-side coverage
-caveat applies to it (see Caveat 5 below for what _does_ apply).
+The reader's `duckdb-parquet` identifier means DuckDB reading a CityParquet
+package. It does not mean the older writer experiment's `duckdb-copy`, which
+uses the community CityJSON extension to encode a different Parquet table and
+has separate geometry-coverage qualifications in `README.md`.
 
 ## HTTP transport
 
@@ -193,45 +154,23 @@ coordinator.rs`'s own module doc). This means an http-transport run still
 
 ## The corpus
 
-Six published city models from the CityJSON project's own dataset page
-(<https://www.cityjson.org/datasets/>), 423 MB on the wire, pinned by byte
-size in `benchmark/scripts/fetch_benchmark.sh` with per-entry provenance in
-`benchmark/formats/corpus_urls.txt`. Counts measured 2026-08-23 from the source CityJSON.
+The format and size families use Rotterdam, Ingolstadt, Vienna, New York,
+Zurich and the largest 3DBAG scaling slice. Published CityJSON inputs are
+listed with their provenance in `corpus_urls.txt`. The suite manifest selects
+five of those inputs and replaces the small 3DBAG tile with the scaling
+source. The source list remains a download inventory, not the experimental
+matrix.
 
-| dataset                | source CityJSON | objects | LoD                     | numeric attribute     |
-| ---------------------- | --------------: | ------: | ----------------------- | --------------------- |
-| `rotterdam_delfshaven` |          2.7 MB |     853 | 2                       | `TerrainHeight`       |
-| `ingolstadt`           |          5.1 MB |     379 | **3**                   | `measuredHeight` (55) |
-| `vienna_102081`        |          5.6 MB |   1,322 | 2                       | `measuredHeight`      |
-| `3dbag_9-284-556`      |          7.0 MB |   2,221 | **0 / 1.2 / 1.3 / 2.2** | `b3_h_dak_50p`        |
-| `nyc_da13_buildings`   |          110 MB |  23,777 | 2                       | — (see Caveat 17)     |
-| `zurich_building_lod2` |          293 MB | 198,699 | 2                       | `Geomtype`            |
+The 3DBAG slices are nested prefixes of a pinned FlatCityBuf source, cut at
+whole-feature boundaries. Their names give nominal targets; recorded actual
+CityObject counts determine the scaling axis. All families that request the
+largest slice must use the same source bytes and derived query parameters.
 
-**The corpus is selected for comparability, not for coverage**, and that is a
-deliberate trade made on 2026-08-23. It replaced a 30-dataset, 6.5 GB corpus
-sampled from the city3d STAC catalogue which spanned far more geographies,
-publishers and CityGML modules — and which produced, for its CityJSON-sourced
-entries, **seven** format rows rather than eight. Since every claim this
-benchmark makes is a comparison BETWEEN formats, a dataset missing the CityGML
-baseline does not weaken the comparison so much as remove it. The retired
-corpus, its provenance file and its results are kept, still fetchable, under
-`benchmark/formats/archive/2026-08-17-catalogue-corpus/`.
-
-What the six buy, beyond producing all eight formats each:
-
-- **A ~108x size ladder with LoD held constant.** Four of the six are LoD2
-  buildings-only, spanning 853 to 198,699 objects, so size is the only
-  variable moving across them.
-- **One multi-LoD entry.** `3dbag_9-284-556` is the only dataset here
-  exercising CityParquet's per-LoD `geometry_lod*` columns — and the only one
-  whose `citygml` row is not content-equivalent to its others, because
-  CityGML 2.0 cannot express LoD 1.2 and 1.3 separately (Caveat 14).
-- **One LoD3 entry.** `ingolstadt`, so the corpus is not purely an LoD2 story.
-
-Every entry resolves to a single `building.parquet`, which is a hard
-requirement rather than a preference — the coordinator refuses a multi-table
-package outright (Caveat 16), which is what excludes the two remaining
-cityjson.org datasets, Den Haag and LoD3 Railway.
+The corpus is building-focused and does not establish coverage of all CityGML
+modules. Ingolstadt provides LoD3 data; 3DBAG provides multiple LoDs. Synthesised
+CityGML must be checked for information loss, including collapse of fractional
+LoDs (Caveat 14). This limitation also needs checking on the large 3DBAG slice;
+a successful conversion alone does not prove equivalent content.
 
 ## The seven scenarios
 
@@ -908,10 +847,15 @@ the artefacts. Treat the committed numbers as internally comparable (one machine
 one sitting, per dataset) but do not quote an absolute time against another
 paper's hardware.
 
-Capture this block as part of the next run, and paste its output here:
+`benchmark/scripts/machine_record.sh` is the canonical capture: it runs the
+`uname`, `lscpu`/`sysctl` and `free` lines below, plus `rustc`, `cargo` and the
+commit hash, into a results directory's `MACHINE.md` — how `codec-bench` and
+`rowgroup-bench` record their host. Run it as part of the next read run, add
+the two lines it does not cover, and paste the result here:
 
 ```sh
-uname -a
+uname -srm     # kernel, release and architecture; NOT `uname -a`, whose node
+               # name is the host's address and these files are published
 # Linux: lscpu | sed -n '1,15p'; free -b | head -2
 # macOS: sysctl -n machdep.cpu.brand_string hw.memsize
 duckdb --version; cargo --version; rustc --version; fcb --version
@@ -925,71 +869,20 @@ column.
 
 ## Reproduce
 
-What produces the CSVs (there are none committed — see the top of this
-document):
+From the monorepo root:
 
 ```sh
-just fetch-tools                     # pinned citygml-tools + cjseq (network, needs java 17+)
-just fetch-data                      # the six-dataset cityjson.org corpus -> benchmark/formats/data/benchmark (network, 423 MB)
-just bench benchmark/formats/data/benchmark      # FORMAT comparison  -> benchmark/formats/read_results/ + charts
-just ordering-bench benchmark/formats/data/benchmark   # ORDERING comparison -> benchmark/formats/ordering_results/ + charts
+just bench-prep --families formats
+just bench-run --families formats
+just bench-summary
 ```
 
-The two runs are deliberately separate and land in separate directories —
-see "The two benchmark sets" above for why merging them would answer neither
-question. `just bench` removes each `OUT/<name>.csv` before writing it (a
-fresh `rm -f` precedes each; it never appends across runs), so a committed
-run is always one machine, one sitting, per dataset.
+Use `--datasets` to select datasets and `--smoke` for a small validation run.
+Run each command with `--help` for the available options. The three commands
+separate preparation, measurement and rendering; a summary never measures data.
 
-**Clear `benchmark/formats/data/readbench/` first if it predates commit `fb5e3de`.**
-Artefacts built before that commit derive from the wrong stage — for a
-`.city.json` input no `.city.jsonl` was cut at all, so its `<name>.jsonl.gz`
-is a gzip of the whole CityJSON document (measured: 0.254909 s / 61,192,614 B
-against the real seq-gz's 0.092799 s / 1,798,710 B — 2.75x too slow, 34x too
-heavy) and its `.fcb`/`.parquet` were serialised from the document rather
-than from the seq. The prepare script skips an artefact that already exists,
-so those would be reused silently. It does not rely on this paragraph being
-read: each dataset's artefacts carry the version of the chain that built them
-in `benchmark/formats/data/readbench/.readbench-chain/<name>`, and a stale or absent
-stamp makes `readbench_prepare.sh` REFUSE the dataset, printing the exact
-`rm -rf` that clears it (`CHAIN_VERSION` in that script owns the version and
-the history of what each one changed).
-
-`fetch-data` defaults to `--only default`. On the current corpus that selects
-all six entries — every one serves every format — so the flag is inert here.
-It still matters for a `$CORPUS_MANIFEST` input such as the archived corpus,
-which carries two entries that cannot serve a default-set run and would abort
-the whole folder loop rather than lose their own row:
-
-```sh
-CORPUS_MANIFEST=benchmark/formats/archive/2026-08-17-catalogue-corpus/corpus.manifest \
-    ./benchmark/scripts/fetch_benchmark.sh --only all benchmark/formats/data/legacy
-just bench benchmark/formats/data/legacy benchmark/formats/data/legacy_results \
-    "cityjson,cityjsonseq,flatcitybuf,cityparquet-hilbert"
-```
-
-Per-dataset manual invocation (what `just bench` itself calls, one input at a
-time — useful when a single dataset needs re-measuring):
-
-```sh
-just readbench-prepare <input> benchmark/formats/data/readbench        # artefacts only, no measurement
-cargo run --release -p cityparquet-readbench -- run \
-    --input <input> --prepared-dir benchmark/formats/data/readbench \
-    --out benchmark/formats/read_results/<name>.csv --repeat 7
-./benchmark/scripts/readbench_duckdb.sh benchmark/formats/data/readbench/<name>.parquet \
-    benchmark/formats/read_results/<name>.csv --numeric-column <col>
-```
-
-`just readbench-prepare` takes an optional third argument, a comma-separated
-format list, when only some artefacts are wanted (e.g.
-`just readbench-prepare <input> benchmark/formats/data/readbench "cityparquet,flatcitybuf"`);
-`duckdb-parquet` is not accepted there, because it has no artefact of its own.
-
-The `readbench_duckdb.sh` step is only needed when the `duckdb-parquet`
-baseline is wanted — it is opt-in, and `just bench` appends it **only when
-`duckdb-parquet` is explicitly named in `FORMATS`**, never on a bare run.
-`--numeric-column` is in turn only needed to enable that baseline's
-`attr-stats` row; omit it for datasets with no numeric attribute (e.g.
-`lod3_railway.city.json`, where `attr-stats` is skipped for every format —
-see `benchmark/readbench/src/coordinator.rs`'s own
-`pick_numeric_attribute`, logged on stderr, never fabricated).
+Prepared artefacts carry conversion-chain stamps. Inputs whose stamps do not
+match the active preparation chain must be rebuilt before measurement; an
+existing filename is not evidence of a valid cache. Keep the source identity,
+query-parameter sidecars and run configuration with the output. Do not append
+repetitions from a different source or software revision to an existing run.

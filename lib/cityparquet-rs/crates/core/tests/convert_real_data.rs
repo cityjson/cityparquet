@@ -2,8 +2,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use arrow_array::types::Int32Type;
-use arrow_array::{Array, DictionaryArray, Float64Array, StringArray, StructArray};
+use arrow_array::{
+    Array, BinaryArray, DictionaryArray, Float64Array, MapArray, StringArray, StructArray,
+};
 use cityparquet::CityParquetError;
+use cityparquet::appearance_columns::{material_cell_value, texture_cell_value};
 use cityparquet::compare::{CompareOptions, compare_datasets};
 use cityparquet::export::{ExportOptions, export};
 use cityparquet::order::hilbert_index;
@@ -127,6 +130,69 @@ fn assert_every_texture_ring_valid(v: &Value, limit: usize) {
     }
 }
 
+/// The number of WKB faces a stored geometry carries — the length every
+/// appearance cell's per-theme `values` list must have.
+fn wkb_face_count(wkb: &[u8]) -> usize {
+    fn walk(kind: &cityparquet::wkb_read::DecodedKind) -> usize {
+        use cityparquet::wkb_read::DecodedKind;
+        match kind {
+            DecodedKind::PolyhedralSurface(fs) | DecodedKind::MultiPolygon(fs) => fs.len(),
+            DecodedKind::GeometryCollection(ms) => ms.iter().map(walk).sum(),
+            _ => 0,
+        }
+    }
+    walk(&cityparquet::wkb_read::wkb_to_geometry(wkb).unwrap().kind)
+}
+
+/// A `material_lod*` cell is the flat `{"<theme>": {"values": [id|null, …]}}`
+/// shape — one entry per WKB face, never the source's geometry-type nesting.
+fn assert_flat_material_cell(cell: &Value, faces: usize) {
+    for (theme, inner) in cell.as_object().expect("a material cell is an object") {
+        let values = inner["values"]
+            .as_array()
+            .unwrap_or_else(|| panic!("material theme '{theme}' must carry a values list"));
+        assert_eq!(
+            values.len(),
+            faces,
+            "material theme '{theme}' must carry one entry per WKB face"
+        );
+        for v in values {
+            assert!(
+                v.is_number() || v.is_null(),
+                "a flat material entry is an id or null, got {v}"
+            );
+        }
+    }
+}
+
+/// A `texture_lod*` cell is the flat `{"<theme>": {"values": [[ring, …], …]}}`
+/// shape — one face per WKB face, each face a list of its rings.
+fn assert_flat_texture_cell(cell: &Value, faces: usize) {
+    for (theme, inner) in cell.as_object().expect("a texture cell is an object") {
+        let values = inner["values"]
+            .as_array()
+            .unwrap_or_else(|| panic!("texture theme '{theme}' must carry a values list"));
+        assert_eq!(
+            values.len(),
+            faces,
+            "texture theme '{theme}' must carry one entry per WKB face"
+        );
+        for face in values {
+            let rings = face
+                .as_array()
+                .unwrap_or_else(|| panic!("a flat texture face is a list of rings, got {face}"));
+            assert!(!rings.is_empty(), "a face always has an exterior ring");
+            for ring in rings {
+                assert!(
+                    ring.as_array()
+                        .is_some_and(|r| matches!(r.first(), Some(Value::Number(_) | Value::Null))),
+                    "a texture ring starts with its id or is [null], got {ring}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn delft_full_convert_round_trips_through_parquet() {
     let out = tempfile::tempdir().unwrap();
@@ -204,21 +270,24 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
     convert(&ConvertOptions::new(railway_path, out.path().to_path_buf())).unwrap();
 
     // Per-LoD appearance columns (§11.1, G20): each `material_lod*` /
-    // `texture_lod*` cell holds the plain `{"<theme>": …}` shape. The index
-    // checks are structure-agnostic (they recurse for integer leaves), so
-    // each per-LoD column value can be walked directly.
-    let per_lod_cols = |batch: &arrow_array::RecordBatch, prefix: &str| -> Vec<usize> {
+    // `texture_lod*` MAP cell reads back as the flat `{"<theme>": {"values":
+    // …}}` shape, one entry per WKB face. The index checks are
+    // structure-agnostic (they recurse for integer leaves), so each per-LoD
+    // cell value can be walked directly. The column's LoD suffix names the
+    // `geometry_lod*` column the faces are counted from.
+    let per_lod_cols = |batch: &arrow_array::RecordBatch, prefix: &str| -> Vec<(usize, String)> {
         batch
             .schema()
             .fields()
             .iter()
             .enumerate()
-            .filter(|(_, f)| {
-                f.name()
+            .filter_map(|(i, f)| {
+                let suffix = f
+                    .name()
                     .strip_prefix(prefix)
-                    .is_some_and(|r| r.starts_with("_lod"))
+                    .filter(|r| r.starts_with("_lod"))?;
+                Some((i, format!("geometry{suffix}")))
             })
-            .map(|(i, _)| i)
             .collect()
     };
 
@@ -236,20 +305,35 @@ fn railway_core_convert_rewrites_appearance_maps_to_global_ids() {
             let batch = batch.unwrap();
             let material_idx = per_lod_cols(&batch, "material");
             let texture_idx = per_lod_cols(&batch, "texture");
+            // The paired geometry column, so every cell's per-theme list can
+            // be measured against the face count it claims to describe.
+            let faces = |geom_col: &str, row: usize| -> usize {
+                let geom: &BinaryArray = batch
+                    .column_by_name(geom_col)
+                    .unwrap_or_else(|| panic!("{geom_col} must pair the appearance column"))
+                    .as_any()
+                    .downcast_ref()
+                    .unwrap();
+                assert!(
+                    !geom.is_null(row),
+                    "an appearance cell always has a geometry to describe"
+                );
+                wkb_face_count(geom.value(row))
+            };
             for row in 0..batch.num_rows() {
-                for &i in &material_idx {
-                    let col: &StringArray = batch.column(i).as_any().downcast_ref().unwrap();
-                    if !col.is_null(row) {
-                        let map: Value = serde_json::from_str(col.value(row)).unwrap();
-                        assert_every_material_index_below(&map, 83);
+                for (i, geom_col) in &material_idx {
+                    let col: &MapArray = batch.column(*i).as_any().downcast_ref().unwrap();
+                    if let Some(cell) = material_cell_value(col, row).unwrap() {
+                        assert_every_material_index_below(&cell, 83);
+                        assert_flat_material_cell(&cell, faces(geom_col, row));
                         checked_material = true;
                     }
                 }
-                for &i in &texture_idx {
-                    let col: &StringArray = batch.column(i).as_any().downcast_ref().unwrap();
-                    if !col.is_null(row) {
-                        let map: Value = serde_json::from_str(col.value(row)).unwrap();
-                        assert_every_texture_ring_valid(&map, 33);
+                for (i, geom_col) in &texture_idx {
+                    let col: &MapArray = batch.column(*i).as_any().downcast_ref().unwrap();
+                    if let Some(cell) = texture_cell_value(col, row).unwrap() {
+                        assert_every_texture_ring_valid(&cell, 33);
+                        assert_flat_texture_cell(&cell, faces(geom_col, row));
                         checked_texture = true;
                     }
                 }

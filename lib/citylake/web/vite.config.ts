@@ -54,8 +54,13 @@ export default defineConfig(() => {
       proxy: {
         // Forward API calls to the local CityLake server during dev so we don't
         // need CORS toggles. Override with VITE_API_BASE_URL when deployed.
+        //
+        // The target itself is read from `process.env.CITYLAKE_API_TARGET`,
+        // same style as the Supabase variables above, so a harness that
+        // starts the API on a non-default port (Playwright's `webServer`,
+        // for one) can point the proxy at it without editing this file.
         "/api": {
-          target: "http://127.0.0.1:3000",
+          target: process.env.CITYLAKE_API_TARGET || "http://127.0.0.1:3000",
           changeOrigin: true,
           rewrite: (p) => p.replace(/^\/api/, ""),
         },

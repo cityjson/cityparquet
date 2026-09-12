@@ -173,9 +173,9 @@ enum Commands {
         repeat: usize,
 
         /// Comma-separated variant identifiers
-        /// (`<preset>[+hilbert][+rg<N>][+<codec>]`, e.g.
-        /// `cityparquet+hilbert`, `cityparquet+rg512`,
-        /// `cityparquet+gzip+rg512`); omit for the default 9-variant set
+        /// (`<preset>[+hilbert][+rg<N>][+<codec>[<level>]]`, e.g.
+        /// `cityparquet+hilbert`, `cityparquet+rg512`, `cityparquet+zstd9`;
+        /// see `cityparquet::variant`); omit for the default 9-variant set
         #[arg(long)]
         variants: Option<String>,
 

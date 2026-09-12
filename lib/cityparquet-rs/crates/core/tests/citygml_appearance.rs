@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use arrow_array::RecordBatch;
-use arrow_array::{Array, StringArray};
+use arrow_array::{Array, MapArray, RecordBatch};
+use cityparquet::appearance_columns::{material_cell_value, texture_cell_value};
 use cityparquet::citygml::writer::{WriteOptions, write_package};
 use cityparquet::decode::decode_batch;
 use cityparquet::package::{ConvertOptions, convert, convert_source};
@@ -134,10 +134,11 @@ fn texture_faces(v: &Value, out: &mut Vec<Vec<Value>>) {
 /// independent.
 type FaceMaterials = BTreeMap<(String, String, String), Vec<(String, Option<String>)>>;
 
-/// Rebuild the old `{"<lod>": {"<theme>": …}}` per-object appearance map from
-/// the per-LoD `material_lod*` / `texture_lod*` columns (§11.1, G20), so these
-/// face-level assertions keep their LoD-keyed view. `None` when the row has
-/// no appearance for `prefix`.
+/// Rebuild the `{"<lod>": {"<theme>": …}}` per-object appearance map from the
+/// per-LoD `material_lod*` / `texture_lod*` MAP columns (§11.1, G20), so these
+/// face-level assertions keep their LoD-keyed view. Each cell is read through
+/// the shared column readers and flattened to its CityJSON-shaped JSON.
+/// `None` when the row has no appearance for `prefix`.
 fn lod_keyed_appearance(batch: &RecordBatch, prefix: &str, row: usize) -> Option<Value> {
     let mut map = serde_json::Map::new();
     for (i, field) in batch.schema().fields().iter().enumerate() {
@@ -151,16 +152,15 @@ fn lod_keyed_appearance(batch: &RecordBatch, prefix: &str, row: usize) -> Option
         let Some(lod) = Lod::from_column_suffix(suffix) else {
             continue;
         };
-        let Some(col) = batch.column(i).as_any().downcast_ref::<StringArray>() else {
+        let Some(col) = batch.column(i).as_any().downcast_ref::<MapArray>() else {
             continue;
         };
-        if col.is_null(row) {
-            continue;
-        }
-        map.insert(
-            lod.to_string(),
-            serde_json::from_str(col.value(row)).unwrap(),
-        );
+        let cell = match prefix {
+            "material" => material_cell_value(col, row).unwrap(),
+            _ => texture_cell_value(col, row).unwrap(),
+        };
+        let Some(cell) = cell else { continue };
+        map.insert(lod.to_string(), cell);
     }
     (!map.is_empty()).then_some(Value::Object(map))
 }

@@ -50,7 +50,8 @@ Source (CityJSON doc or CityJSONSeq stream)
    │
    └─ pass 2 ── encode ───────► stream of RecordBatch conforming to that schema
                 │                (one row per CityObject; geometry → WKB via
-                │                 wkb_write; semantics/appearance → JSON columns)
+                │                 wkb_write; semantics → the geometry_properties
+                │                 struct; appearance → typed per-WKB-face MAP cells)
                 │
                 ├─ recipe ─────► per-column WriterProperties (the benchmark variable)
                 │
@@ -160,9 +161,13 @@ share the blind spot. Two layers:
    and without this rule the two sides would spuriously differ. Applied
    identically to both sides, reusing the same strip/realign machinery.
 
-`material`/`texture` blocks are compared by default (same JSON equality as
-`semantics`, after the same surface realignment); `Exclusions::appearance`
-turns that off for the Core profile's deliberate drops.
+`material`/`texture` blocks are compared by default, after both sides are
+canonicalised to the flat per-WKB-face form the columns carry — a source's
+per-shell nesting, its whole-geometry `value` broadcast and its writer-dropped
+face positions all normalise away, and every index is dereferenced to its
+definition, so the comparison is of appearance content rather than of CityJSON
+spelling. `Exclusions::appearance` turns that off for the Core profile's
+deliberate drops.
 
 ## Benchmark harness
 

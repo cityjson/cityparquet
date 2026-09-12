@@ -51,15 +51,15 @@ CityParquet borrows 3DCityDB's shape deliberately is the
 | `geometry[].lod`                          | the column's LoD suffix (`lod2_2`); exact source spelling not separately retained |
 | `geometry[].semantics`                    | `geometry_properties_lod*` — `surfaces` verbatim, `values` flattened to `face_semantics` |
 | `geometry[]` shell nesting                | `geometry_properties_lod*.shells`                           |
-| `geometry[].material`                     | [`material_lod*`](/specification/appearance-templates) for the geometry's LoD |
-| `geometry[].texture`                      | `texture_lod*` for the geometry's LoD                       |
+| `geometry[].material`                     | [`material_lod*`](/specification/appearance-templates) for the geometry's LoD — one map entry per theme, `values` flattened to one sidecar `id` per WKB face, a whole-geometry `value` expanded per face |
+| `geometry[].texture`                      | `texture_lod*` for the geometry's LoD — one map entry per theme, `values` flattened per WKB face, each ring's texture index and UV indices resolved to `{id, uv}` |
 | `geometry[].template`                     | `template.id`                                               |
 | `geometry[].transformationMatrix`         | `template.transformationMatrix`                             |
 | geometry instance reference point         | `template.point` as WKB `PointZ`                            |
 | `CityObjects.{id}.geographicalExtent`     | `bbox` (unioned with the extent computed from the object's subtree geometry; reconstructed from `bbox` on export) |
 | `appearance.materials`                    | `materials.parquet`                                         |
 | `appearance.textures`                     | `textures.parquet`                                          |
-| `appearance.vertices-texture`             | inlined into `texture_lod*` UV pairs                        |
+| `appearance.vertices-texture`             | resolved into the `uv` pairs of `texture_lod*`; no UV pool is stored |
 | `geometry-templates.templates`            | `geometry_templates.parquet`, one row per template          |
 | `geometry-templates.vertices-templates`   | encoded into the template WKB geometry                      |
 | `metadata`                                | `city.other` and/or the [STAC Item](/specification/metadata)'s `city3d:*` fields |

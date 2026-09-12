@@ -1,15 +1,15 @@
 //! Cut fixed-cardinality CityJSONSeq prefixes ("scaling slices") out of one
 //! source feature stream.
 //!
-//! The configuration-axis benchmarks (`just compression-bench`,
-//! `just ordering-bench`) vary an encoding parameter — codec, row-group
-//! size, row ordering — and want the DATASET axis held still. A corpus of
-//! unrelated city models (3DBAG next to PLATEAU next to Vienna) confounds
-//! that: every configuration delta is entangled with a data delta. A
-//! scaling corpus instead takes ONE source and cuts it at several
-//! CityObject cardinalities, so a measurement series shows the trend over
-//! size with the data held constant — every slice is a strict prefix of
-//! the next larger one, in source feature order.
+//! The configuration-axis benchmarks (`just codec-bench`, `just
+//! rowgroup-bench`, `just ordering-bench`) vary an encoding parameter —
+//! codec, row-group size, row ordering — and want the DATASET axis held
+//! still. A corpus of unrelated city models (3DBAG next to PLATEAU next to
+//! Vienna) confounds that: every configuration delta is entangled with a
+//! data delta. A scaling corpus instead takes ONE source and cuts it at
+//! several CityObject cardinalities, so a measurement series shows the
+//! trend over size with the data held constant — every slice is a strict
+//! prefix of the next larger one, in source feature order.
 //!
 //! The slice boundary is the FEATURE, not the CityObject: a CityJSONSeq
 //! feature is indivisible (one top-level CityObject plus all its children

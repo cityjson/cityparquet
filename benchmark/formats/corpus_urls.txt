@@ -21,7 +21,7 @@
 # each produce all eight from one source document. That is the whole selection
 # criterion, and it is why this corpus replaced a 30-dataset one drawn from the
 # city3d STAC catalogue (archived, with its own provenance file, under
-# benchmark/formats/archive/2026-08-17-catalogue-corpus/).
+# the repository history before the benchmark archive was removed).
 #
 # WHY CityJSON AND NOT THE PUBLISHED .gml. The cityjson.org table offers a
 # matching CityGML file beside every CityJSON one, and it would be preferable

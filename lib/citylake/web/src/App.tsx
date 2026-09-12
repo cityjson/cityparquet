@@ -5,7 +5,7 @@ import AppShell from "@/components/AppShell";
 import AuthCallbackPage from "@/pages/AuthCallbackPage";
 import DatasetDetailPage from "@/pages/DatasetDetailPage";
 import DatasetsPage from "@/pages/DatasetsPage";
-import LodTablePage from "@/pages/LodTablePage";
+import ModulePage from "@/pages/ModulePage";
 import UploadPage from "@/pages/UploadPage";
 
 export default function App() {
@@ -23,8 +23,8 @@ export default function App() {
       >
         <Route index element={<Navigate to="/datasets" replace />} />
         <Route path="datasets" element={<DatasetsPage />} />
-        <Route path="datasets/:base" element={<DatasetDetailPage />} />
-        <Route path="tables/:tableName" element={<LodTablePage />} />
+        <Route path="datasets/:ds" element={<DatasetDetailPage />} />
+        <Route path="datasets/:ds/modules/:module" element={<ModulePage />} />
         <Route path="upload" element={<UploadPage />} />
         <Route path="*" element={<Navigate to="/datasets" replace />} />
       </Route>

@@ -30,10 +30,12 @@ not subtracted from one another.
 from __future__ import annotations
 
 import time
+import os
 
 import psycopg
 
 from citybench.config import SizeReport
+from citybench.stats import container_init_host_pid, host_pid_for_namespace_pid, host_pid_from_podman, peak_resident_bytes
 
 
 def connect(port: int, *, dbname: str = "bench", user: str = "bench",
@@ -58,10 +60,12 @@ def parse_explain_execution_time(plan: list) -> float:
 
 
 def time_query(conn: psycopg.Connection, sql: str, args: tuple = (),
-               *, count_mode: str = "first-column") -> tuple[int, float, float]:
+               *, count_mode: str = "first-column") -> tuple[int, float, float, int | None]:
     """Run ``sql`` once, fully materialising results.
 
-    Returns ``(result_count, wall_seconds, server_seconds)``. Rows are read
+    Returns ``(result_count, wall_seconds, server_seconds, peak_backend_rss_bytes)``.
+    The fourth value is sampled from the PostgreSQL backend process, never the
+    Python client process. Rows are read
     to exhaustion so no system can win by returning a lazy cursor.
 
     ``server_seconds`` comes from a SECOND, untimed re-run under
@@ -75,10 +79,35 @@ def time_query(conn: psycopg.Connection, sql: str, args: tuple = (),
     whole-branch review).
     """
     with conn.cursor() as cur:
-        start = time.perf_counter()
-        cur.execute(sql, args)
-        rows = cur.fetchall() if cur.description is not None else []
-        wall = time.perf_counter() - start
+        cur.execute("SELECT pg_backend_pid()")
+        backend_pid = int(cur.fetchone()[0])
+
+    def execute() -> tuple[list, float]:
+        with conn.cursor() as cur:
+            start = time.perf_counter()
+            cur.execute(sql, args)
+            rows = cur.fetchall() if cur.description is not None else []
+            return rows, time.perf_counter() - start
+
+    port = getattr(getattr(conn, "info", None), "port", None)
+    container_by_port = {
+        int(os.environ.get("CITYBENCH_CJDB_PORT", "55432")): os.environ.get("CITYBENCH_CJDB_CONTAINER", "citybench-cjdb"),
+        int(os.environ.get("CITYBENCH_CITYDB_PORT", "55433")): os.environ.get("CITYBENCH_CITYDB_CONTAINER", "citybench-citydb"),
+    }
+    container = container_by_port.get(port)
+    host_pid = host_pid_from_podman(container, backend_pid) if container else None
+    if host_pid is None:
+        host_pid = host_pid_for_namespace_pid(
+            backend_pid,
+            container_init_pid=container_init_host_pid(container) if container else None,
+        )
+    if host_pid is None:
+        # A container PID is not safe to interpret as a host PID. Preserve an
+        # unavailable measurement as blank rather than sampling another process.
+        rows, wall = execute()
+        peak_rss = None
+    else:
+        (rows, wall), peak_rss = peak_resident_bytes(execute, pid=host_pid)
 
     count = extract_count(rows, count_mode)
 
@@ -87,7 +116,17 @@ def time_query(conn: psycopg.Connection, sql: str, args: tuple = (),
         payload = cur.fetchone()[0]
     server = parse_explain_execution_time(payload)
 
-    return count, wall, server
+    return count, wall, server, peak_rss
+
+
+def disable_parallel_query(conn: psycopg.Connection) -> None:
+    """Keep query execution in its measured backend process.
+
+    This makes the per-query RSS boundary unambiguous; without it PostgreSQL
+    could add parallel workers whose resident memory is outside that PID.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SET max_parallel_workers_per_gather = 0")
 
 
 def extract_count(rows: list, mode: str) -> int:

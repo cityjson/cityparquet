@@ -105,7 +105,7 @@
 # the ORIGINAL input's file name, e.g. `9-196-328.city.json`, WITH
 # extension). It derives `dataset` from the package directory's own base
 # name with a trailing `.parquet` and (if present) `-hilbert` suffix
-# stripped, e.g. `benchmark/formats/data/readbench/9-196-328.parquet` and
+# stripped, e.g. `benchmark/runs/data/readbench/9-196-328.parquet` and
 # `9-196-328-hilbert.parquet` both yield `dataset=9-196-328` — matching how
 # the coordinator itself uses ONE shared `dataset` string across its own
 # `cityparquet`/`cityparquet-hilbert` rows for the same package. Rows from
