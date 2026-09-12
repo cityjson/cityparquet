@@ -1,0 +1,77 @@
+{
+  "dataset": "zurich_building_lod2.city.json",
+  "windows": [
+    {
+      "tag": "bbox-1pct",
+      "target": 0.01,
+      "achieved": 0.010000050327379604,
+      "window": [
+        2682405.494,
+        1247926.6696162554,
+        0.0,
+        2683001.83,
+        1248525.2573837447,
+        1044.25
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-5pct",
+      "target": 0.05,
+      "achieved": 0.05000025163689802,
+      "window": [
+        2682115.275,
+        1247635.354747971,
+        0.0,
+        2683292.049,
+        1248816.572252029,
+        1044.25
+      ],
+      "approx": false
+    },
+    {
+      "tag": "bbox-25pct",
+      "target": 0.25,
+      "achieved": 0.2500012581844901,
+      "window": [
+        2681386.292,
+        1246903.6191047968,
+        0.0,
+        2684021.032,
+        1249548.3078952034,
+        1044.25
+      ],
+      "approx": false
+    }
+  ],
+  "id_probes": [
+    {
+      "tag": "id-10pct",
+      "id": "UUID_cbd4a7d0-fab2-4273-8d58-0a1ca878af30",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-50pct",
+      "id": "UUID_33ff9550-fefd-47bf-8609-78269077019a",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-90pct",
+      "id": "UUID_8cdd0912-e834-41f0-b769-1c40adca4e7c",
+      "present": true,
+      "substituted": false
+    },
+    {
+      "tag": "id-miss",
+      "id": "UUID_33ff9550-fefd-47bf-8609-78269077019a-readbench-absent",
+      "present": false,
+      "substituted": false
+    }
+  ],
+  "object_type": "BuildingPart",
+  "object_type_count": 145865,
+  "numeric_attr": "GebaeudeStatus",
+  "cp_object_total": 198699
+}
