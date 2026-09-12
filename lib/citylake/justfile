@@ -74,7 +74,7 @@ build-lib:
 
 # Start the web dev server (HMR + /api proxy to 127.0.0.1:3000).
 web:
-    cd {{web_dir}} && dotenvx run --quiet -f {{env_file}} -- vp dev
+    cd {{web_dir}} && op run --environment 6jxjklylm3tkpn6fqyhbyhq55m -- vp dev
 
 # Production build of the web app.
 web-build:
