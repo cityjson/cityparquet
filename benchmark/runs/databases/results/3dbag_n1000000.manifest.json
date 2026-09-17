@@ -1,0 +1,83 @@
+{
+  "baseline": "3dcitydb",
+  "dataset": "3dbag_n1000000",
+  "host": {
+    "platform": "Linux-6.8.0-136-generic-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "python": "3.12.1"
+  },
+  "ingest": {
+    "caveat": "Ingest timings are context only and are NOT comparable across systems. Encoding a CityParquet package and populating an indexed relational schema are different operations; this benchmark is scoped to steady-state query performance.",
+    "wall_clock_s": {
+      "3dcitydb": 2298.4402829268947,
+      "cjdb": 3107.236123564653,
+      "duckdb-cityparquet": 0.0
+    }
+  },
+  "memory_measurement": {
+    "cityparquet": "fresh reader child process; includes its idle baseline",
+    "duckdb": "process executing the embedded engine; includes its idle baseline",
+    "metric": "peak_rss_bytes",
+    "postgresql": "query backend PID after disabling parallel workers; excludes other backend, background-worker, and idle-server processes; mapped shared pages can contribute to RSS; blank if procfs namespace mapping cannot be verified",
+    "sampling_interval_ms": 5,
+    "scope": "execution process only"
+  },
+  "patches": {
+    "cjdb": {
+      "built_from": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/databases/.cjdb-patched/cjdb-2.2.0+a54a9fd1909a",
+      "patch_file": "vendor/cjdb/ground-surfaces-tie.patch",
+      "patch_sha256": "a54a9fd1909a0ce9d6414eb0971c19b565efca5fa3d6d2847723b0c8c4d16f29",
+      "patch_summary": "get_ground_surfaces() retains tied-Z footprint faces; the CityJSONSeq importer also streams input and uses 5,000-row INSERT batches. Object batches share cjdb's original object transaction; relationship batches remain deferred until all objects are present. See vendor/cjdb/README.md.",
+      "patched": "true",
+      "upstream_version": "2.2.0"
+    }
+  },
+  "pg_settings": {
+    "3dcitydb": {
+      "effective_cache_size": "24GB",
+      "max_parallel_workers": "16",
+      "max_parallel_workers_per_gather": "0 (benchmark session)",
+      "random_page_cost": "1.1",
+      "shared_buffers": "8GB",
+      "work_mem": "256MB"
+    },
+    "cjdb": {
+      "effective_cache_size": "24GB",
+      "max_parallel_workers": "16",
+      "max_parallel_workers_per_gather": "0 (benchmark session)",
+      "random_page_cost": "1.1",
+      "shared_buffers": "8GB",
+      "work_mem": "256MB"
+    }
+  },
+  "sizes": {
+    "3dcitydb": {
+      "no_index_bytes": 12563251200,
+      "total_bytes": 23104962560
+    },
+    "cjdb": {
+      "no_index_bytes": 2323529728,
+      "total_bytes": 3866812416
+    },
+    "duckdb-cityparquet": {
+      "no_index_bytes": 779701619,
+      "total_bytes": 779701619
+    }
+  },
+  "source": "b20fce5a8c5477eb905c9c4f8a5c15a2c4b1ec18f4c5a5f16c1af9d8cf7f9b29",
+  "srid": {
+    "3dcitydb": 7415,
+    "cjdb": 7415
+  },
+  "temporary_storage": {
+    "citydb_tool_tmpdir": "/data2/hideba/tmp/citybench-2o4o2kd_/citydb-tool",
+    "description": "Per-run scratch directories are under host_tmpdir; PostgreSQL containers receive separate /tmp binds, and DuckDB sets temp_directory explicitly.",
+    "duckdb_tmpdir": "/data2/hideba/tmp/citybench-2o4o2kd_/duckdb",
+    "host_tmpdir": "/data2/hideba/tmp",
+    "run_root": "/data2/hideba/tmp/citybench-2o4o2kd_"
+  },
+  "versions": {
+    "cjdb": "2.2.0+ground-surfaces-tie-patch",
+    "duckdb": "1.5.5"
+  }
+}
