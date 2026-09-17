@@ -319,9 +319,11 @@ def main() -> None:
     else:
         output = (args.out or locations["summary"] / ("smoke" if args.smoke else "full")).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None
-        for label, candidate in (("--out", output), ("--figures", figures)):
-            if candidate is not None and not candidate.is_relative_to(allowed):
-                raise SystemExit(f"{label} must be below /data2/hideba")
+        # The summary HTML and JSON stay under the data root; the figures may be
+        # exported anywhere the caller owns, which is how the paper checkout
+        # writes them to paper/assets/bench/ (benchmark/README.md).
+        if not output.is_relative_to(allowed):
+            raise SystemExit(f"--out must be below {allowed}")
         bench_dir = locations["formats"] / "smoke" if args.smoke else locations["formats"]
         cmd = ["uv", "run", "--project", "benchmark/plot", "python", "-m", "benchviz", "summary", "--data-root", str(root), "--bench-dir", str(bench_dir), "--out", str(output)]
         # Render exactly the suite selection requested by the caller.  The

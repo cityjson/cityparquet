@@ -47,8 +47,21 @@
       ]
     },
     "databases": {
-      "present": false,
-      "metrics": []
+      "present": true,
+      "metrics": [
+        "attr-filter",
+        "attr-stats",
+        "bbox-1pct",
+        "bbox-25pct",
+        "bbox-5pct",
+        "count",
+        "full-read",
+        "hierarchy",
+        "id-lookup",
+        "lod-extract",
+        "project",
+        "semantic-surface"
+      ]
     }
   }
 }

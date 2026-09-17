@@ -71,7 +71,7 @@
       "features": 499703,
       "raw_mb": 2754.209255,
       "subtitle": "1,000,001 CityObjects \u00b7 2,754 MB CityJSONSeq",
-      "title": "3DBAG"
+      "title": "3DBAG (Netherlands)"
     },
     {
       "id": "zurich_building_lod2",
@@ -18644,7 +18644,419 @@
   },
   "databases": {
     "baseline": "3dcitydb",
-    "records": [],
-    "sizes": []
+    "records": [
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "full-read",
+        "time_s": 1.199379,
+        "peak_rss_bytes": 1788256256,
+        "size_bytes": 779701619,
+        "status": "ok",
+        "notes": "memory-scope: duckdb-process-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "full-read",
+        "time_s": 61.84363,
+        "peak_rss_bytes": 2821308416,
+        "size_bytes": 3866812416,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "full-read",
+        "time_s": 276.412749,
+        "peak_rss_bytes": 9583001600,
+        "size_bytes": 23104962560,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "count",
+        "time_s": 0.009556,
+        "peak_rss_bytes": 1594806272,
+        "size_bytes": 779701619,
+        "status": "ok",
+        "notes": "memory-scope: duckdb-process-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "count",
+        "time_s": 0.130478,
+        "peak_rss_bytes": 2821365760,
+        "size_bytes": 3866812416,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "count",
+        "time_s": 0.123979,
+        "peak_rss_bytes": 8854364160,
+        "size_bytes": 23104962560,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "bbox-1pct",
+        "time_s": 0.027653,
+        "peak_rss_bytes": 1593135104,
+        "size_bytes": 779701619,
+        "status": "mismatch",
+        "notes": "memory-scope: duckdb-process-rss bbox-1pct count-mismatch: 3dcitydb=4903 cjdb=4901 duckdb-cityparquet=4903"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "bbox-1pct",
+        "time_s": 0.00308,
+        "peak_rss_bytes": 2821476352,
+        "size_bytes": 3866812416,
+        "status": "mismatch",
+        "notes": "memory-scope: postgresql-backend-rss bbox-1pct count-mismatch: 3dcitydb=4903 cjdb=4901 duckdb-cityparquet=4903"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "bbox-1pct",
+        "time_s": 0.164715,
+        "peak_rss_bytes": 8892461056,
+        "size_bytes": 23104962560,
+        "status": "mismatch",
+        "notes": "memory-scope: postgresql-backend-rss bbox-1pct count-mismatch: 3dcitydb=4903 cjdb=4901 duckdb-cityparquet=4903"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "bbox-5pct",
+        "time_s": 0.027223,
+        "peak_rss_bytes": 1559818240,
+        "size_bytes": 779701619,
+        "status": "mismatch",
+        "notes": "memory-scope: duckdb-process-rss bbox-5pct count-mismatch: 3dcitydb=63745 cjdb=63729 duckdb-cityparquet=63745"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "bbox-5pct",
+        "time_s": 0.036917,
+        "peak_rss_bytes": 2821476352,
+        "size_bytes": 3866812416,
+        "status": "mismatch",
+        "notes": "memory-scope: postgresql-backend-rss bbox-5pct count-mismatch: 3dcitydb=63745 cjdb=63729 duckdb-cityparquet=63745"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "bbox-5pct",
+        "time_s": 0.209502,
+        "peak_rss_bytes": 8894164992,
+        "size_bytes": 23104962560,
+        "status": "mismatch",
+        "notes": "memory-scope: postgresql-backend-rss bbox-5pct count-mismatch: 3dcitydb=63745 cjdb=63729 duckdb-cityparquet=63745"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "bbox-25pct",
+        "time_s": 0.031362,
+        "peak_rss_bytes": 1532960768,
+        "size_bytes": 779701619,
+        "status": "mismatch",
+        "notes": "memory-scope: duckdb-process-rss bbox-25pct count-mismatch: 3dcitydb=221008 cjdb=220949 duckdb-cityparquet=221005"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "bbox-25pct",
+        "time_s": 0.156819,
+        "peak_rss_bytes": 2821541888,
+        "size_bytes": 3866812416,
+        "status": "mismatch",
+        "notes": "memory-scope: postgresql-backend-rss bbox-25pct count-mismatch: 3dcitydb=221008 cjdb=220949 duckdb-cityparquet=221005"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "bbox-25pct",
+        "time_s": 0.544006,
+        "peak_rss_bytes": 8859377664,
+        "size_bytes": 23104962560,
+        "status": "mismatch",
+        "notes": "memory-scope: postgresql-backend-rss bbox-25pct count-mismatch: 3dcitydb=221008 cjdb=220949 duckdb-cityparquet=221005"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "attr-filter",
+        "time_s": 0.014893,
+        "peak_rss_bytes": 1493094400,
+        "size_bytes": 779701619,
+        "status": "ok",
+        "notes": "memory-scope: duckdb-process-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "attr-filter",
+        "time_s": 0.068562,
+        "peak_rss_bytes": 2821644288,
+        "size_bytes": 3866812416,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "attr-filter",
+        "time_s": 0.061566,
+        "peak_rss_bytes": 8859217920,
+        "size_bytes": 23104962560,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "attr-stats",
+        "time_s": 0.015617,
+        "peak_rss_bytes": 1470689280,
+        "size_bytes": 779701619,
+        "status": "ok",
+        "notes": "memory-scope: duckdb-process-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "attr-stats",
+        "time_s": 7.51305,
+        "peak_rss_bytes": 2821840896,
+        "size_bytes": 3866812416,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "attr-stats",
+        "time_s": 3.093279,
+        "peak_rss_bytes": 9017737216,
+        "size_bytes": 23104962560,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "id-lookup",
+        "time_s": 0.272857,
+        "peak_rss_bytes": 1033732096,
+        "size_bytes": 779701619,
+        "status": "ok",
+        "notes": "memory-scope: duckdb-process-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "id-lookup",
+        "time_s": 0.001333,
+        "peak_rss_bytes": 2821857280,
+        "size_bytes": 3866812416,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "id-lookup",
+        "time_s": 0.001473,
+        "peak_rss_bytes": 8867155968,
+        "size_bytes": 23104962560,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "project",
+        "time_s": 0.008807,
+        "peak_rss_bytes": 470933504,
+        "size_bytes": 779701619,
+        "status": "ok",
+        "notes": "memory-scope: duckdb-process-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "project",
+        "time_s": 0.141401,
+        "peak_rss_bytes": 2821857280,
+        "size_bytes": 3866812416,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "project",
+        "time_s": 0.138523,
+        "peak_rss_bytes": 8867192832,
+        "size_bytes": 23104962560,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "lod-extract",
+        "time_s": 0.129565,
+        "peak_rss_bytes": 557084672,
+        "size_bytes": 779701619,
+        "status": "ok",
+        "notes": "memory-scope: duckdb-process-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "lod-extract",
+        "time_s": 7.16547,
+        "peak_rss_bytes": 2839109632,
+        "size_bytes": 3866812416,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "lod-extract",
+        "time_s": 8.593515,
+        "peak_rss_bytes": 9183121408,
+        "size_bytes": 23104962560,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "semantic-surface",
+        "time_s": 0.216787,
+        "peak_rss_bytes": 624963584,
+        "size_bytes": 779701619,
+        "status": "ok",
+        "notes": "memory-scope: duckdb-process-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "semantic-surface",
+        "time_s": 7.278312,
+        "peak_rss_bytes": 2848284672,
+        "size_bytes": 3866812416,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "semantic-surface",
+        "time_s": 7.263746,
+        "peak_rss_bytes": 9114210304,
+        "size_bytes": 23104962560,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "duckdb-cityparquet",
+        "scenario": "hierarchy",
+        "time_s": 0.024162,
+        "peak_rss_bytes": 591331328,
+        "size_bytes": 779701619,
+        "status": "ok",
+        "notes": "memory-scope: duckdb-process-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "cjdb",
+        "scenario": "hierarchy",
+        "time_s": 0.001823,
+        "peak_rss_bytes": 2848362496,
+        "size_bytes": 3866812416,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      },
+      {
+        "dataset": "3dbag_n1000000",
+        "objects": 1000001,
+        "format": "3dcitydb",
+        "scenario": "hierarchy",
+        "time_s": 0.002904,
+        "peak_rss_bytes": 8870244352,
+        "size_bytes": 23104962560,
+        "status": "ok",
+        "notes": "memory-scope: postgresql-backend-rss"
+      }
+    ],
+    "sizes": [
+      {
+        "format": "duckdb-cityparquet",
+        "size_bytes": 779701619
+      },
+      {
+        "format": "cjdb",
+        "size_bytes": 3866812416
+      },
+      {
+        "format": "3dcitydb",
+        "size_bytes": 23104962560
+      }
+    ],
+    "dataset": "3dbag_n1000000",
+    "objects": 1000001
   }
 }

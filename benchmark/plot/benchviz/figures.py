@@ -13,10 +13,54 @@ matplotlib.use("Agg")
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
+from matplotlib.cm import ScalarMappable
 
 from .paths import DEFAULT_DATA_PATH, DEFAULT_FIGURES_DIR
 
-BG, INK, MUTED, ACCENT = "#fffff8", "#111111", "#666666", "#c53b35"
+BG = "#fffff8"
+INK = "#111111"
+MUTED = "#666666"
+ACCENT = "#E4572E"
+
+# A modern, low-chroma palette for the bar sheets: one warm accent carries
+# "ours" (CityParquet) while the comparison formats run a single neutral
+# lightness ramp. Lightness, not a rainbow of hues, separates the others, so the
+# panel stays quiet and the subject stays unmistakable; the axis labels and the
+# printed values are the second identity channel.
+FORMAT_FILL = {
+    "cityparquet": "#E4572E",
+    "cityparquet-hilbert": "#E4572E",
+    "citygml": "#C2CAD0",
+    "cityjson": "#A3AEB7",
+    "cityjsonseq": "#83919C",
+    "flatcitybuf": "#5F6E7A",
+    "cityjsonseq-gz": "#D6DBDF",
+    "duckdb-parquet": "#D6DBDF",
+}
+DATABASE_FILL = {
+    "duckdb-cityparquet": "#E4572E",
+    "cjdb": "#83919C",
+    "3dcitydb": "#C2CAD0",
+}
+# The configuration axes' bars: the zstd sweep is one family in the accent hue
+# at four lightness steps; the other codecs split one teal accent and a neutral
+# ramp, so the sweep reads as the subject without a second rainbow. Row groups
+# are one sequential teal from small groups (light) to large (dark).
+CODEC_OTHER_COLOURS = ["#2A9D8F", "#5F6E7A", "#83919C", "#A3AEB7", "#C2CAD0"]
+ROWGROUP_HUE = "#2A9D8F"
+
+BAD_CELL = "#efeee6"
+# Cell separators. A black grid would fight the fills, which are the reading;
+# a pale warm rule only tells the eye where one cell ends.
+CELL_EDGE = "#e6e3d7"
+# Ratio cells share one vocabulary: teal beats the baseline, the page colour is
+# the baseline, the warm accent is worse. The write metrics are never cheaper
+# than the streaming baseline, so they use a one-sided version of the same ramp
+# rather than spending the teal half of a diverging map on values that never
+# occur.
+CMAP_DIVERGING = colors.LinearSegmentedColormap.from_list("cp_ratio", ["#2A9D8F", BG, ACCENT])
+CMAP_COST = colors.LinearSegmentedColormap.from_list("cp_cost", [BG, "#F3B199", ACCENT])
+
 LABELS = {
     "cityparquet-hilbert": "CityParquet",
     "cityparquet": "CityParquet (source order)",
@@ -29,8 +73,45 @@ LABELS = {
     "citylake": "CityParquet / DuckDB",
     "duckdb-cityparquet": "CityParquet / DuckDB",
 }
-FORMATS = ["cityparquet-hilbert", "citygml", "cityjson", "flatcitybuf", "cityjsonseq"]
-QUERIES = ["full-read", "bbox-1pct", "bbox-5pct", "bbox-25pct", "id-50pct", "id-lookup"]
+# Query keys read on the heatmap's row axis; a key without an entry falls back
+# to a title-cased key.
+SCENARIO_LABELS = {
+    "write": "Write",
+    "full-read": "Full read",
+    "count": "Count",
+    "project": "Project",
+    "id-lookup": "Id lookup",
+    "id-miss": "Id miss",
+    "attr-filter": "Attr filter",
+    "attr-stats": "Attr stats",
+    "bbox-1pct": "Spatial 1%",
+    "bbox-5pct": "Spatial 5%",
+    "bbox-25pct": "Spatial 25%",
+    "id-10pct": "Id 10%",
+    "id-50pct": "Id 50%",
+    "id-90pct": "Id 90%",
+}
+# Both the size and heatmap sheets read from the reference encodings to ours, so
+# CityParquet is the last bar/row and the eye lands on it.
+FIGURE_FORMATS = ["citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet-hilbert"]
+# Preferred scenario order for the heatmap rows: the whole-table read first,
+# then the spatial probes narrow-to-wide, the attribute probes, then the id
+# probes. A run that measured something else appends it after these.
+QUERIES = [
+    "full-read",
+    "count",
+    "bbox-1pct",
+    "bbox-5pct",
+    "bbox-25pct",
+    "attr-filter",
+    "attr-stats",
+    "project",
+    "id-10pct",
+    "id-50pct",
+    "id-90pct",
+    "id-lookup",
+    "id-miss",
+]
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -39,7 +120,7 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def _label(value: str) -> str:
-    return LABELS.get(value, value.replace("-", " ").title())
+    return LABELS.get(value) or SCENARIO_LABELS.get(value) or value.replace("-", " ").title()
 
 
 def _mib(value: Any) -> str:
@@ -59,6 +140,54 @@ def _ratio(value: Any, base: Any) -> float | None:
     return float(value) / float(base) if value is not None and base not in (None, 0) else None
 
 
+def _size_text(value: Any) -> str:
+    """A byte count in the unit a reader expects: GB once it is a GB."""
+    if value is None:
+        return "—"
+    value = float(value)
+    if value >= 1024**3:
+        return f"{value / 1024**3:.2f} GB"
+    return f"{value / 1024**2:.1f} MB"
+
+
+def _size_unit(values: list[Any]) -> str:
+    """The unit a whole panel is drawn in: GB when its largest bar needs one."""
+    known = [float(v) for v in values if v is not None]
+    return "GB" if known and max(known) >= 1024**3 else "MB"
+
+
+def _format_fill(fmt: str) -> str:
+    return FORMAT_FILL.get(fmt, MUTED)
+
+
+def _mix(colour: str, white: float) -> str:
+    r, g, b = colors.to_rgb(colour)
+    return colors.to_hex((r + (1 - r) * white, g + (1 - g) * white, b + (1 - b) * white))
+
+
+def _rowgroup_size(variant: str) -> int:
+    suffix = variant.removeprefix("cityparquet+")
+    if suffix.startswith("rg") and suffix[2:].isdigit():
+        return int(suffix[2:])
+    return 0
+
+
+def _axis_palette(key: str, variants: list[str]) -> dict[str, str]:
+    palette: dict[str, str] = {}
+    if key == "codec":
+        zstd = [v for v in variants if v.startswith("cityparquet+zstd")]
+        others = [v for v in variants if v not in zstd and v != "cityparquet"]
+        for i, v in enumerate(zstd):
+            palette[v] = _mix(ACCENT, 0.55 * (1 - i / max(len(zstd) - 1, 1)))
+        for i, v in enumerate(others):
+            palette[v] = CODEC_OTHER_COLOURS[i % len(CODEC_OTHER_COLOURS)]
+    else:
+        ordered = sorted((v for v in variants if v != "cityparquet"), key=_rowgroup_size)
+        for i, v in enumerate(ordered):
+            palette[v] = _mix(ROWGROUP_HUE, 0.6 * (1 - i / max(len(ordered) - 1, 1)))
+    return palette
+
+
 def _save(fig: plt.Figure, name: str, out: Path) -> list[Path]:
     out.mkdir(parents=True, exist_ok=True)
     files = [out / f"{name}.svg", out / f"{name}.png"]
@@ -75,20 +204,102 @@ def _title(dataset: dict[str, Any]) -> str:
     return f"{name}{suffix}"
 
 
+def _nice_vmax(value: float) -> float:
+    """The smallest comfortable log2 bound at or above `value`."""
+    value = max(1.0, value)
+    for step in (1, 2, 3, 4, 6, 8, 12, 16, 24, 32):
+        if value <= step:
+            return float(step)
+    return float(2 ** math.ceil(math.log2(value)))
+
+
+def _cell_bound(cells: list[list[tuple[float | None, str]]], scale: str) -> float:
+    """A comfortable colour bound for a set of ratio cells."""
+    exps = [
+        abs(math.log2(ratio))
+        for row in cells
+        for ratio, _text in row
+        if ratio and ratio > 0 and (scale == "diverging" or ratio >= 1)
+    ]
+    return _nice_vmax(max(exps) if exps else 1.0)
+
+
+def _ratio_from_log2(exp: float) -> str:
+    """A log2 ratio as a compact multiplier for a colourbar tick."""
+    ratio = 2.0**exp
+    if ratio >= 1e3 or ratio < 1e-2:
+        return f"{ratio:.0e}×"
+    if ratio >= 1:
+        return f"{ratio:g}×"
+    return f"{ratio:.3g}×"
+
+
+def _ratio_short(value: float | None) -> str:
+    """A ratio as it goes inside a heatmap cell."""
+    if value is None:
+        return "—"
+    if value >= 1e3 or value < 1e-2:
+        return f"{value:.0e}×"
+    if value >= 10:
+        return f"{value:.0f}×"
+    return f"{value:.2g}×"
+
+
+def _compact(value: float) -> str:
+    """An absolute value short enough to sit over a narrow bar."""
+    value = float(value)
+    if abs(value) >= 1e6:
+        return f"{value / 1e6:.2f}M"
+    if abs(value) >= 1e3:
+        return f"{value / 1e3:.2f}k"
+    return f"{value:.3g}"
+
+
+def _heat_ticks(vmax: float, scale: str) -> list[float]:
+    # Three ticks, always: a colourbar this narrow cannot carry more without
+    # the labels colliding, and the printed cells carry the precision.
+    if scale == "cost":
+        return [0.0, vmax / 2, vmax]
+    return [-vmax, 0.0, vmax]
+
+
+def _heat_colors(scale: str, vmax: float) -> tuple[colors.Colormap, colors.Normalize]:
+    if scale == "cost":
+        return CMAP_COST.with_extremes(bad=BAD_CELL), colors.Normalize(vmin=0, vmax=vmax)
+    return CMAP_DIVERGING.with_extremes(bad=BAD_CELL), colors.TwoSlopeNorm(
+        vmin=-vmax, vcenter=0, vmax=vmax
+    )
+
+
 def _heat(
     ax: Axes,
     cells: list[list[tuple[float | None, str]]],
     rows: list[str],
     columns: list[str],
     title: str,
+    *,
+    vmax: float = 3.0,
+    scale: str = "diverging",
+    x_rotation: int = 45,
 ) -> None:
-    cmap = plt.get_cmap("RdYlGn_r").with_extremes(bad="#e5e2d9")
+    cmap, norm = _heat_colors(scale, vmax)
     vals = [[math.log2(v) if v and v > 0 else math.nan for v, _ in row] for row in cells]
-    ax.imshow(vals, cmap=cmap, norm=colors.TwoSlopeNorm(vmin=-3, vcenter=0, vmax=3), aspect="auto")
+    ax.imshow(vals, cmap=cmap, norm=norm, aspect="auto")
+    for x in range(1, len(columns)):
+        ax.axvline(x - 0.5, color=CELL_EDGE, linewidth=0.6, zorder=2)
+    for y in range(1, len(rows)):
+        ax.axhline(y - 0.5, color=CELL_EDGE, linewidth=0.6, zorder=2)
     ax.set_title(title, fontsize=9, loc="left")
-    ax.set_xticks(
-        range(len(columns)), [_label(c) for c in columns], rotation=45, ha="right", fontsize=6
-    )
+    if x_rotation:
+        ax.set_xticks(
+            range(len(columns)),
+            [_label(c) for c in columns],
+            rotation=x_rotation,
+            ha="right",
+            fontsize=6,
+        )
+    else:
+        ax.set_xticks(range(len(columns)), [_label(c) for c in columns], fontsize=6)
     ax.set_yticks(range(len(rows)), [_label(r) for r in rows], fontsize=6)
     for y, row in enumerate(cells):
         for x, (_, text) in enumerate(row):
@@ -101,7 +312,7 @@ def sizes(data: dict[str, Any], out: Path) -> list[Path]:
     datasets = data.get("datasets", [])
     if not data.get("sizes"):
         return _missing("sizes", out)
-    formats = list(FORMATS)
+    formats = list(FIGURE_FORMATS)
     nrows = max(1, math.ceil(len(datasets) / 3))
     fig, axes = plt.subplots(
         nrows, 3, figsize=(8.5, 2.8 * nrows), squeeze=False, constrained_layout=True
@@ -112,16 +323,19 @@ def sizes(data: dict[str, Any], out: Path) -> list[Path]:
         }
         values = [by.get(f, {}).get("bytes") for f in formats]
         base = by.get("cityjsonseq", {}).get("bytes")
+        unit = _size_unit(values)
+        divisor = 1024**3 if unit == "GB" else 1024**2
         bars = ax.bar(
             range(len(formats)),
-            [float(v) / 1024**2 if v is not None else math.nan for v in values],
-            color=[ACCENT if f == "cityparquet-hilbert" else "#777777" for f in formats],
+            [float(v) / divisor if v is not None else math.nan for v in values],
+            color=[_format_fill(f) for f in formats],
         )
         ax.set_title(_title(dataset), fontsize=8)
-        ax.set_ylabel("MiB", fontsize=7)
+        ax.set_ylabel(unit, fontsize=7)
         ax.set_xticks(
             range(len(formats)), [_label(f) for f in formats], rotation=35, ha="right", fontsize=6
         )
+        ax.tick_params(axis="y", labelsize=5.5)
         for x, (bar, value) in enumerate(zip(bars, values, strict=False)):
             if value is None:
                 ax.text(x, 0, "missing", ha="center", va="bottom", fontsize=5)
@@ -130,7 +344,7 @@ def sizes(data: dict[str, Any], out: Path) -> list[Path]:
                 ax.text(
                     x,
                     bar.get_height(),
-                    f"{_mib(value)}\n{ratio:.2g}×" if ratio else _mib(value),
+                    f"{_size_text(value)}\n{ratio:.2g}×" if ratio else _size_text(value),
                     ha="center",
                     va="bottom",
                     fontsize=5,
@@ -142,85 +356,139 @@ def sizes(data: dict[str, Any], out: Path) -> list[Path]:
 
 
 def format_heatmap(data: dict[str, Any], out: Path) -> list[Path]:
-    """Stack the wide read matrices so every query retains a legible cell."""
+    """One ratio matrix per metric and dataset, each on its own colour scale."""
     datasets = data.get("datasets", [])
     if not datasets or not data.get("read"):
         return _missing("heatmap", out)
-    formats = list(FORMATS)
+    formats = list(FIGURE_FORMATS)
     records = data.get("read", [])
-    queries = sorted(
-        {
-            r.get("scenario_key")
-            for r in records
-            if r.get("scenario_key") and r.get("scenario_key") != "write"
-        }
-    )
+    present = {
+        r.get("scenario_key")
+        for r in records
+        if r.get("scenario_key") and r.get("scenario_key") != "write"
+    }
+    queries = [q for q in QUERIES if q in present]
+    queries += sorted(present - set(QUERIES))
     queries = queries or ["read"]
-    # A complete query matrix is deliberately a tall standalone sheet. Its
-    # width is fixed; adding datasets increases height, never shrinks labels.
-    fig = plt.figure(figsize=(8.5, 4.15 * len(datasets)), layout="constrained")
-    subfigures = fig.subfigures(nrows=len(datasets), ncols=1, squeeze=False)
-    for i, dataset in enumerate(datasets):
-        subfig = subfigures[i, 0]
-        subfig.suptitle(_title(dataset), fontsize=11, x=0.01, ha="left")
-        grid = subfig.add_gridspec(3, 2, height_ratios=[1, 1, 1])
-        axes = [
-            subfig.add_subplot(grid[0, 0]),
-            subfig.add_subplot(grid[0, 1]),
-            subfig.add_subplot(grid[1, :]),
-            subfig.add_subplot(grid[2, :]),
-        ]
+    metrics = (
+        ("time_s", "write", "Write time (s)", "cost"),
+        ("rss_b", "write", "Write peak RSS (MiB)", "cost"),
+        ("time_s", None, "Read time (s)", "diverging"),
+        ("rss_b", None, "Read peak RSS (MiB)", "diverging"),
+    )
+
+    def valid(record: dict) -> bool:
+        notes = str(record.get("notes", ""))
+        return record.get("status", "ok") in (None, "", "ok") and not (
+            notes.startswith(("error", "skipped")) or "mismatch" in notes
+        )
+
+    def matrix_for(dataset: dict[str, Any], field: str, scenario: str | None) -> list:
+        # Rows are queries, columns are formats: the format axis is short and
+        # fixed, so it reads across the top, and the query labels get the tall
+        # axis where they fit without turning.
+        row_labels = [scenario] if scenario else queries
         index = {
             (r.get("format"), r.get("scenario_key")): r
             for r in records
             if r.get("dataset") == dataset.get("id")
         }
-        for column, (field, scenario, title) in enumerate(
-            (
-                ("time_s", "write", "Write time (s)"),
-                ("rss_b", "write", "Write peak RSS (MiB)"),
-                ("time_s", None, "Read time (s)"),
-                ("rss_b", None, "Read peak RSS (MiB)"),
-            )
-        ):
-            ax = axes[column]
-            columns = [scenario] if scenario else queries
-            matrix = []
+        rows = []
+        for query in row_labels:
+            row = []
             for fmt in formats:
-                row = []
-                for query in columns:
-                    value = index.get((fmt, query), {})
-                    base = index.get(("cityjsonseq", query), {})
+                value, base = index.get((fmt, query), {}), index.get(("cityjsonseq", query), {})
+                measured = value.get(field) if valid(value) else None
+                baseline = base.get(field) if valid(base) else None
+                ratio = _ratio(measured, baseline)
+                if measured is None:
+                    label = "—"
+                else:
+                    number = float(measured) / (1024**2 if field == "rss_b" else 1)
+                    # The absolute value and its multiplier, stacked: the colour
+                    # gives the pattern, the numbers give the reading.
+                    label = f"{number:.3g}\n{_ratio_short(ratio)}" if ratio else f"{number:.3g}"
+                row.append((ratio, label))
+            rows.append(row)
+        return rows
 
-                    def valid(record: dict) -> bool:
-                        notes = str(record.get("notes", ""))
-                        return record.get("status", "ok") in (None, "", "ok") and not (
-                            notes.startswith(("error", "skipped")) or "mismatch" in notes
-                        )
+    # A single ratio scale cannot serve four metrics: a write time on a million
+    # objects is tens of thousands of times the streaming baseline and would
+    # saturate any bound a read metric sets, painting a whole column one colour.
+    # Each metric therefore gets its own bound, shared across the datasets.
+    metric_matrices = [
+        [matrix_for(dataset, field, scenario) for field, scenario, _t, _s in metrics]
+        for dataset in datasets
+    ]
+    bounds = [
+        _cell_bound([row for matrices in metric_matrices for row in matrices[mi]], scale)
+        for mi, (_field, _scenario, _name, scale) in enumerate(metrics)
+    ]
 
-                    measured = value.get(field) if valid(value) else None
-                    baseline = base.get(field) if valid(base) else None
-                    if measured is None:
-                        label = "—"
-                    else:
-                        number = float(measured) / (1024**2 if field == "rss_b" else 1)
-                        label = f"{number:.2g}"
-                    row.append((_ratio(measured, baseline), label))
-                matrix.append(row)
-            _heat(ax, matrix, formats, columns, title)
+    # A complete query matrix is deliberately a tall standalone sheet. Its
+    # width is fixed; adding datasets increases height, never shrinks labels.
+    n = len(datasets)
+    row_units = max(1, len(queries))
+    # Width and height are sized so a two-line cell keeps a margin inside its
+    # border: the numbers never touch the rule, at any column count.
+    fig = plt.figure(figsize=(10.0, 4.5 * n + 1.3), layout="constrained")
+    subfigures = fig.subfigures(
+        nrows=n + 1, ncols=1, squeeze=False, height_ratios=[*([4] * n), 1.2]
+    )
+    for i, dataset in enumerate(datasets):
+        subfig = subfigures[i, 0]
+        subfig.suptitle(_title(dataset), fontsize=11, x=0.01, ha="left")
+        # Write above idle write, read beside read: the two read metrics share
+        # the query rows, so they read across; the write metrics share the same
+        # format columns and sit directly above.
+        grid = subfig.add_gridspec(2, 2, height_ratios=[1.2, row_units], wspace=0.2)
+        axes = [
+            subfig.add_subplot(grid[0, 0]),
+            subfig.add_subplot(grid[0, 1]),
+            subfig.add_subplot(grid[1, 0]),
+            subfig.add_subplot(grid[1, 1]),
+        ]
+        for mi, (_field, scenario, title, scale) in enumerate(metrics):
+            ax = axes[mi]
+            row_labels = [scenario] if scenario else queries
+            _heat(
+                ax,
+                metric_matrices[i][mi],
+                row_labels,
+                formats,
+                title,
+                vmax=bounds[mi],
+                scale=scale,
+                x_rotation=0,
+            )
             for text in ax.texts:
-                text.set_fontsize(7)
+                text.set_fontsize(5.8)
             ax.tick_params(axis="y", labelsize=7)
             ax.tick_params(axis="x", labelsize=6.5)
-            if scenario or column == 2:
+            # Format labels live under the read row only; the write row shares
+            # its columns. Query labels live left of the read-time panel only.
+            if mi in (0, 1):
                 ax.set_xticks([])
-            if column == 1:
+            if mi in (1, 3):
                 ax.set_yticks([])
-        colourbar = subfig.colorbar(axes[-1].images[0], ax=axes, shrink=0.7, pad=0.02)
-        colourbar.set_ticks([-3, -2, -1, 0, 1, 2, 3])
-        colourbar.set_ticklabels(["≤0.125×", "0.25×", "0.5×", "1×", "2×", "4×", "≥8×"])
-        colourbar.ax.tick_params(labelsize=6)
-        colourbar.set_label("Ratio to CityJSONSeq; lower is better", fontsize=7)
+    key = subfigures[n, 0]
+    key.suptitle(
+        "Cell text: absolute value over ×ratio to CityJSONSeq; lower is better",
+        fontsize=8,
+        x=0.01,
+        ha="left",
+    )
+    key_grid = key.add_gridspec(1, len(metrics), wspace=0.55)
+    for mi, (_field, _scenario, title, scale) in enumerate(metrics):
+        cax = key.add_subplot(key_grid[0, mi])
+        cmap, norm = _heat_colors(scale, bounds[mi])
+        bar = key.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=cax, orientation="horizontal")
+        ticks = _heat_ticks(bounds[mi], scale)
+        bar.set_ticks(ticks)
+        bar.set_ticklabels([_ratio_from_log2(t) for t in ticks])
+        bar.ax.tick_params(labelsize=6, length=0)
+        bar.outline.set_visible(False)
+        bar.set_label(title, fontsize=7)
     fig.suptitle("Format comparison", fontsize=13, x=0.01, ha="left")
     return _save(fig, "heatmap", out)
 
@@ -246,6 +514,7 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     )
     selected = [r for r in records if r.get("dataset") == largest]
     queries = _axis_queries(selected)
+    palette = _axis_palette(key, variants)
     fig = plt.figure(figsize=(10, 7))
     grid = fig.add_gridspec(
         2,
@@ -279,7 +548,9 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
             for v in variants
         ]
         ax.bar(
-            range(len(variants)), [v if v is not None else float("nan") for v in vals], color=ACCENT
+            range(len(variants)),
+            [v if v is not None else float("nan") for v in vals],
+            color=[palette.get(v, MUTED) for v in variants],
         )
         baseline_value = vals[variants.index("cityparquet")] if "cityparquet" in variants else None
         if baseline_value is not None:
@@ -299,13 +570,14 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
                 actual = float(row[value])
                 if value in ("bytes", "rss_b"):
                     actual /= 1024**2
-                ax.text(x, v, f"{actual:.3g}", ha="center", va="bottom", fontsize=5)
-    image = None
+                ax.text(x, v, _compact(actual), ha="center", va="bottom", fontsize=4.5)
+    short_variants = [
+        v.replace("cityparquet+", "").replace("cityparquet", "default") for v in variants
+    ]
     lower = grid[1, :].subgridspec(1, 2)
-    for col, (field, title) in enumerate(
-        (("time_s", "read time (s)"), ("rss_b", "read peak RSS (MiB)"))
-    ):
-        ax = fig.add_subplot(lower[col])
+    heat_axes = [fig.add_subplot(lower[0]), fig.add_subplot(lower[1])]
+    cell_blocks = []
+    for field in ("time_s", "rss_b"):
         cells = []
         for variant in variants:
             row = []
@@ -321,27 +593,34 @@ def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
                 r = rows[0] if rows else None
                 b = base[0] if base else None
                 actual = r.get(field) if r else None
-                text = (
-                    (
-                        f"{float(actual) / (1024**2):.3g}"
-                        if field == "rss_b"
-                        else f"{float(actual):.3g}"
-                    )
-                    if actual is not None
-                    else "—"
-                )
-                row.append((_ratio(actual, b.get(field) if b else None), text))
+                ratio = _ratio(actual, b.get(field) if b else None)
+                if actual is None:
+                    text = "—"
+                else:
+                    number = float(actual) / (1024**2 if field == "rss_b" else 1)
+                    text = f"{number:.3g}\n{_ratio_short(ratio)}" if ratio else f"{number:.3g}"
+                row.append((ratio, text))
             cells.append(row)
-        short_variants = [
-            v.replace("cityparquet+", "").replace("cityparquet", "default") for v in variants
-        ]
-        _heat(ax, cells, short_variants, queries, title)
+        cell_blocks.append(cells)
+    # Both rows are read ratios against the default write, so one diverging
+    # bound can serve them; the cells carry the precision either way.
+    bound = _cell_bound([row for block in cell_blocks for row in block], "diverging")
+    for col, (ax, cells, title) in enumerate(
+        zip(heat_axes, cell_blocks, ("read time (s)", "read peak RSS (MiB)"), strict=True)
+    ):
+        _heat(ax, cells, short_variants, queries, title, vmax=bound, scale="diverging")
+        for text in ax.texts:
+            text.set_fontsize(5.5)
+        ax.tick_params(axis="y", labelsize=6)
+        ax.tick_params(axis="x", labelsize=6)
         if col == 1:
             ax.set_yticks([])
-        image = ax.images[0]
-    cbar = fig.colorbar(image, cax=fig.add_axes([0.90, 0.25, 0.02, 0.5]))
-    cbar.set_ticks([-3, -2, -1, 0, 1, 2, 3])
-    cbar.set_ticklabels(["≤0.125×", "0.25×", "0.5×", "1×", "2×", "4×", "≥8×"])
+    cbar = fig.colorbar(heat_axes[-1].images[0], cax=fig.add_axes([0.90, 0.25, 0.02, 0.5]))
+    ticks = _heat_ticks(bound, "diverging")
+    cbar.set_ticks(ticks)
+    cbar.set_ticklabels([_ratio_from_log2(t) for t in ticks])
+    cbar.ax.tick_params(labelsize=6, length=0)
+    cbar.outline.set_visible(False)
     cbar.set_label("Ratio to default; lower is better", fontsize=7)
     fig.suptitle(
         f"{key.replace('rowgroup', 'row group')} — "
@@ -359,7 +638,8 @@ def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
         return _missing(f"{key}-scaling", out)
     queries = _axis_queries(records)
     counts = sorted({r["objects"] for r in records if r.get("objects") is not None})
-    colours = {variant: plt.get_cmap("tab10")(i % 10) for i, variant in enumerate(variants)}
+    palette = _axis_palette(key, variants)
+    colours = {variant: palette.get(variant, MUTED) for variant in variants}
     markers = ["o", "s", "^", "D", "v", "P", "X", "<", ">"]
     fig = plt.figure(figsize=(max(8.5, 2.0 * len(queries)), 7.2), layout="constrained")
     outer = fig.add_gridspec(3, 1)
@@ -402,7 +682,7 @@ def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
                 color=colours[variant],
                 marker=markers[vi % len(markers)],
                 markersize=3,
-                linewidth=0.9,
+                linewidth=1.6 if variant == "cityparquet" else 0.9,
                 label=variant.replace("cityparquet+", "").replace("cityparquet", "default"),
             )
             if field == "time_s":
@@ -474,7 +754,7 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
     bars = storage.bar(
         range(len(systems)),
         [float(v) / 1024**2 if v is not None else math.nan for v in values],
-        color=[ACCENT if s == baseline else "#777777" for s in systems],
+        color=[DATABASE_FILL.get(s, MUTED) for s in systems],
     )
     storage.set_title("Storage including indexes", loc="left", fontsize=9)
     storage.set_ylabel("MiB", fontsize=7)
@@ -487,10 +767,12 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
             ratio = _ratio(value, base_size)
             detail = _mib(value) + (f" · {ratio:.2g}×" if ratio else "")
             storage.text(x, bar.get_height(), detail, ha="center", va="bottom", fontsize=6)
-    for ax, field, title, formatter in (
+    heat_specs = (
         (time_ax, "time_s", "Mean query time", _seconds),
         (rss_ax, "peak_rss_bytes", "Peak execution-process RSS", _mib),
-    ):
+    )
+    cell_blocks = []
+    for _ax, field, _title, formatter in heat_specs:
         cells = []
         for system in systems:
             row = []
@@ -503,11 +785,32 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
                 base_metric = base.get(field) if base else None
                 if valid and metric is not None and base_metric not in (None, 0):
                     ratio = _ratio(metric, base_metric)
-                    row.append((ratio, f"{formatter(metric)}\n{ratio:.2g}×"))
+                    row.append((ratio, f"{formatter(metric)}\n{_ratio_short(ratio)}"))
                 else:
                     row.append((None, (value or {}).get("status") or "missing"))
             cells.append(row)
-        _heat(ax, cells, systems, queries, title)
+        cell_blocks.append(cells)
+    bound = _cell_bound([row for block in cell_blocks for row in block], "diverging")
+    for (ax, _field, title, _formatter), cells in zip(heat_specs, cell_blocks, strict=True):
+        _heat(ax, cells, systems, queries, title, vmax=bound, scale="diverging")
+        for text in ax.texts:
+            text.set_fontsize(6)
+        ax.tick_params(axis="y", labelsize=6)
+        ax.tick_params(axis="x", labelsize=6)
+    cbar = fig.colorbar(
+        rss_ax.images[0],
+        ax=[time_ax, rss_ax],
+        orientation="vertical",
+        fraction=0.035,
+        pad=0.02,
+        aspect=28,
+    )
+    ticks = _heat_ticks(bound, "diverging")
+    cbar.set_ticks(ticks)
+    cbar.set_ticklabels([_ratio_from_log2(t) for t in ticks])
+    cbar.ax.tick_params(labelsize=6, length=0)
+    cbar.outline.set_visible(False)
+    cbar.set_label("Ratio to 3DCityDB; lower is better", fontsize=7)
     fig.text(
         0.01,
         0.01,
@@ -524,7 +827,14 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
     out = out_dir or DEFAULT_FIGURES_DIR
     plt.rcParams.update(
         {
-            "font.family": "DejaVu Sans",
+            "font.family": "sans-serif",
+            "font.sans-serif": [
+                "Avenir Next",
+                "Helvetica Neue",
+                "Helvetica",
+                "Arial",
+                "DejaVu Sans",
+            ],
             "figure.facecolor": BG,
             "axes.facecolor": BG,
             "savefig.facecolor": BG,
