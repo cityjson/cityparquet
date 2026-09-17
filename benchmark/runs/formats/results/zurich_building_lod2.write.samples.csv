@@ -1,0 +1,16 @@
+dataset,format,scenario,sample,time_s,peak_rss_bytes
+zurich_building_lod2,citygml,write,1,854.622669,9253081088
+zurich_building_lod2,citygml,write,2,850.657833,9354948608
+zurich_building_lod2,citygml,write,3,827.485388,10024439808
+zurich_building_lod2,cityjson,write,1,19.087568,3508723712
+zurich_building_lod2,cityjson,write,2,20.532289,3507752960
+zurich_building_lod2,cityjson,write,3,25.354634,3506798592
+zurich_building_lod2,cityjsonseq,write,1,0.003326,14680064
+zurich_building_lod2,cityjsonseq,write,2,0.002490,14680064
+zurich_building_lod2,cityjsonseq,write,3,0.002871,14680064
+zurich_building_lod2,flatcitybuf,write,1,8.758708,1538584576
+zurich_building_lod2,flatcitybuf,write,2,7.276958,1539477504
+zurich_building_lod2,flatcitybuf,write,3,7.981918,1537953792
+zurich_building_lod2,cityparquet-hilbert,write,1,31.295301,3838779392
+zurich_building_lod2,cityparquet-hilbert,write,2,32.771396,3840421888
+zurich_building_lod2,cityparquet-hilbert,write,3,29.580164,3840036864

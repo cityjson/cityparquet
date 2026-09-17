@@ -25,6 +25,9 @@ use serde_json::Value;
 use cityparquet_schema::{AttributeType, CityParquetError, Lod, Result, normalise_attribute_name};
 
 use crate::appearance::AppearanceInterner;
+use crate::appearance_columns::{
+    MaterialCell, MaterialCellBuilder, TextureCell, TextureCellBuilder,
+};
 use crate::geometry_properties::{GeometryProperties, GeometryPropertiesBuilder};
 use crate::scan::ScanResult;
 use crate::source::{FeatureIter, Source};
@@ -331,6 +334,51 @@ pub(crate) fn values_nesting_depth(thetype: &GeometryType) -> usize {
     solid_face_nesting_depth(thetype).unwrap_or(0)
 }
 
+/// Per face — in the same depth-first order [`count_boundary_faces`] counts
+/// and [`flatten_values`] flattens, so entry `i` describes the face at flat
+/// position `i` BEFORE the writer-dropped positions are filtered out — the
+/// per-ring STORED vertex count: `Some(n)` for a ring the writer keeps,
+/// `None` for one it drops (fewer than three source indices, the
+/// [`crate::wkb_write::normalise_ring`] rule). A face's STORED ring count is
+/// therefore the number of `Some` entries, and `n` is the number of `[u, v]`
+/// pairs a textured ring carries — the WKB ring's closing repeat takes none.
+pub(crate) fn face_ring_vertex_counts(boundaries: &Value, depth: usize) -> Vec<Vec<Option<usize>>> {
+    fn walk(b: &Value, depth: usize, out: &mut Vec<Vec<Option<usize>>>) {
+        match b {
+            Value::Array(arr) if depth == 0 => out.extend(arr.iter().map(face_ring_lengths)),
+            Value::Array(arr) => {
+                for child in arr {
+                    walk(child, depth - 1, out);
+                }
+            }
+            // Matches `count_boundary_faces`, which counts no face here.
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(boundaries, depth, &mut out);
+    out
+}
+
+/// One face's rings as stored vertex counts (see
+/// [`face_ring_vertex_counts`]). A malformed ring — not an array, or holding
+/// anything but non-negative integers — is `None`, the same answer a ring
+/// the writer drops gets: neither reaches the WKB.
+fn face_ring_lengths(face: &Value) -> Vec<Option<usize>> {
+    face.as_array()
+        .map(|rings| rings.iter().map(stored_ring_len).collect())
+        .unwrap_or_default()
+}
+
+fn stored_ring_len(ring: &Value) -> Option<usize> {
+    let indices: Vec<usize> = ring
+        .as_array()?
+        .iter()
+        .map(|v| v.as_u64().map(|n| n as usize))
+        .collect::<Option<_>>()?;
+    crate::wkb_write::distinct_ring_len(&indices)
+}
+
 /// Flatten `semantics.values` into a per-face `face_semantics` list (§8) in
 /// depth-first WKB face order, expanding CityJSON's null shorthand — a single
 /// `null` standing for a whole shell/solid — into one `null` per face of that
@@ -380,50 +428,11 @@ pub(crate) fn flatten_values(
     }
 }
 
-/// Remove the entries at `dropped` (original positions, ascending) from a
-/// per-surface JSON array, in place. Positions beyond the array are ignored
-/// (defensive: a malformed source array shorter than the boundaries).
-fn remove_dropped_entries(values: &mut Vec<Value>, dropped: &[usize]) {
-    for &pos in dropped.iter().rev() {
-        if pos < values.len() {
-            values.remove(pos);
-        }
-    }
-}
-
-/// True when the writer's per-surface drop positions index straight into
-/// this geometry type's per-surface appearance/semantics arrays, with no
-/// shell/solid nesting to walk first. Only the surface-list types qualify;
-/// the solid types nest their per-surface arrays per shell (and per solid),
-/// realigned separately by [`realign_nested_values`] /
-/// [`solid_face_nesting_depth`].
-fn drops_align_with_surface_arrays(thetype: &GeometryType) -> bool {
-    matches!(
-        thetype,
-        GeometryType::MultiSurface | GeometryType::CompositeSurface
-    )
-}
-
-/// Realign every material/texture theme's per-surface `values` array after
-/// the writer dropped `dropped` surface positions. Theme-level scalar
-/// `value` entries apply to all surfaces and need no realignment.
-fn realign_appearance_themes(appearance: &mut Value, dropped: &[usize]) {
-    let Some(themes) = appearance.as_object_mut() else {
-        return;
-    };
-    for theme in themes.values_mut() {
-        if let Some(values) = theme.get_mut("values").and_then(Value::as_array_mut) {
-            remove_dropped_entries(values, dropped);
-        }
-    }
-}
-
 /// Number of shell/solid nesting levels above the per-face entries in a
 /// Solid-family `semantics`/`material`/`texture` values array: `Solid`'s
 /// values nest one level (shells -> faces), `MultiSolid`/`CompositeSolid`'s
-/// nest two (solids -> shells -> faces). `None` for the non-solid types
-/// (whose per-surface arrays sit directly at the top level; see
-/// `drops_align_with_surface_arrays`).
+/// nest two (solids -> shells -> faces). `None` for the non-solid types,
+/// whose per-surface arrays sit directly at the top level.
 ///
 /// Derived from the geometry type rather than inferred from the values'
 /// own shape: a shape-only heuristic cannot tell "a shells array holding a
@@ -439,54 +448,6 @@ fn solid_face_nesting_depth(thetype: &GeometryType) -> Option<usize> {
         GeometryType::Solid => Some(1),
         GeometryType::MultiSolid | GeometryType::CompositeSolid => Some(2),
         _ => None,
-    }
-}
-
-/// Remove the per-face entries at flat positions `dropped` from a
-/// Solid-family nested values hierarchy (`semantics`/`material` scalars, or
-/// `texture` ring-arrays), walking exactly `depth` levels of shell/solid
-/// nesting before treating an array as the face list to filter by position.
-/// A face-level entry is removed wholesale regardless of its own shape
-/// (scalar, null, or an array of texture rings) — texture's extra ring
-/// level below the face never needs walking into, only removing as a unit.
-/// `dropped` are flat positions counted depth-first across shells (and
-/// solids), matching `wkb_write::normalise_shells`'s `pos` counter exactly.
-fn realign_nested_values(values: &mut Value, depth: usize, dropped: &[usize]) {
-    fn walk(v: &mut Value, depth: usize, flat: &mut usize, dropped: &[usize]) {
-        let Some(arr) = v.as_array_mut() else {
-            return;
-        };
-        if depth == 0 {
-            let mut kept = Vec::with_capacity(arr.len());
-            for e in arr.drain(..) {
-                if !dropped.contains(flat) {
-                    kept.push(e);
-                }
-                *flat += 1;
-            }
-            *arr = kept;
-        } else {
-            for e in arr.iter_mut() {
-                walk(e, depth - 1, flat, dropped);
-            }
-        }
-    }
-    let mut flat = 0usize;
-    walk(values, depth, &mut flat, dropped);
-}
-
-/// Realign every material/texture theme's `values` array nested `depth`
-/// shell/solid levels deep — the Solid-family counterpart of
-/// [`realign_appearance_themes`], which only handles the flat surface-list
-/// shape.
-fn realign_nested_appearance_themes(appearance: &mut Value, depth: usize, dropped: &[usize]) {
-    let Some(themes) = appearance.as_object_mut() else {
-        return;
-    };
-    for theme in themes.values_mut() {
-        if let Some(values) = theme.get_mut("values") {
-            realign_nested_values(values, depth, dropped);
-        }
     }
 }
 
@@ -725,9 +686,9 @@ fn build_address_rows(
 #[derive(Default)]
 struct GeometryAccumulator {
     /// Column slot key (LoD suffix, or `""` for the un-suffixed `geometry`
-    /// column) -> ([`GeometryPayload`] (WKB bytes),
-    /// bbox, geometry_properties JSON, material JSON, texture
-    /// JSON). Appearance is keyed by the SAME canonical slot key as
+    /// column) -> ([`GeometryPayload`] (WKB bytes), bbox, the
+    /// `geometry_properties` struct, the material cell, the texture cell).
+    /// Appearance is keyed by the SAME canonical slot key as
     /// the geometry it decorates (§11.1), so the raw-vs-canonical LoD-key
     /// mismatch that the old single-column layout had to guard against
     /// cannot arise: a LoD's geometry, semantics and appearance share one key.
@@ -742,13 +703,13 @@ enum GeometryPayload {
 }
 
 /// One geometry slot's per-object payload: its encoded geometry, typed
-/// `geometry_properties` struct value, and the `material`/`texture` JSON
-/// maps that decorate it.
+/// `geometry_properties` struct value, and the typed `material`/`texture`
+/// cells that decorate it.
 struct GeometrySlotData {
     payload: GeometryPayload,
     properties: GeometryProperties,
-    material: Option<Value>,
-    texture: Option<Value>,
+    material: Option<MaterialCell>,
+    texture: Option<TextureCell>,
 }
 
 /// This feature's local material definitions, from `feature.appearance`
@@ -790,16 +751,21 @@ pub(crate) struct LocalDefs<'a> {
     pub uvs: &'a [Vec<f64>],
 }
 
-/// Realign (if the writer dropped surfaces) and rewrite one geometry's
-/// `material`/`texture` maps to dataset-global ids via `interner`, and build
-/// its `geometry_properties` struct value. This is the exact per-geometry
+/// Flatten one geometry's `material`/`texture` maps into the typed cells the
+/// `material_lod*`/`texture_lod*` columns store — flat per WKB face, with
+/// dataset-global ids from `interner` and UV pairs inlined — and build its
+/// `geometry_properties` struct value. This is the exact per-geometry
 /// appearance pipeline [`accumulate_geometry`] runs for a feature's own
 /// geometries, factored out so the geometry-templates sidecar
 /// (`crate::package`) can run the identical rules over `Source::header`'s
 /// `geometry_templates` after the main encode pass, through the SAME
 /// interner — a template's `material`/`texture`/`semantics` follow the same
-/// CityJSON shapes as a regular geometry's, so the same realignment and
-/// rewrite rules apply verbatim.
+/// CityJSON shapes as a regular geometry's, so the same rules apply verbatim.
+///
+/// A cell is `None` when the geometry carries no map at all AND when the map
+/// it carries has no themes: the columns are nullable and the spec reserves
+/// the null cell for "no material (or texture) in any theme", so an empty
+/// map is written as a null cell rather than as an empty MAP.
 ///
 /// `context` names the geometry in any interner error surfaced (e.g.
 /// `"object abc123"` or `"geometry template 0"`).
@@ -813,49 +779,50 @@ pub(crate) fn rewrite_geometry_appearance(
     interner: &mut AppearanceInterner,
     defs: &LocalDefs,
     context: &str,
-) -> Result<(Option<Value>, Option<Value>, GeometryProperties)> {
-    let has_drops = !dropped_surfaces.is_empty();
-    let realign = drops_align_with_surface_arrays(&geom.thetype) && has_drops;
-    let solid_depth = has_drops
-        .then(|| solid_face_nesting_depth(&geom.thetype))
-        .flatten();
-
+) -> Result<(
+    Option<MaterialCell>,
+    Option<TextureCell>,
+    GeometryProperties,
+)> {
     let material = match &geom.material {
         Some(material) => {
-            let mut material = serde_json::to_value(material)?;
-            if realign {
-                realign_appearance_themes(&mut material, dropped_surfaces);
-            } else if let Some(depth) = solid_depth {
-                realign_nested_appearance_themes(&mut material, depth, dropped_surfaces);
-            }
-            let material = interner
-                .rewrite_material_map(&material, defs.materials)
+            let material = serde_json::to_value(material)?;
+            let cell = interner
+                .flatten_material_map(
+                    &material,
+                    &geom.boundaries,
+                    &geom.thetype,
+                    dropped_surfaces,
+                    defs.materials,
+                )
                 .map_err(|e| {
                     CityParquetError::Schema(format!(
                         "{context}: cannot resolve material map to global ids: {e}"
                     ))
                 })?;
-            Some(material)
+            (!cell.themes.is_empty()).then_some(cell)
         }
         None => None,
     };
 
     let texture = match &geom.texture {
         Some(texture) => {
-            let mut texture = serde_json::to_value(texture)?;
-            if realign {
-                realign_appearance_themes(&mut texture, dropped_surfaces);
-            } else if let Some(depth) = solid_depth {
-                realign_nested_appearance_themes(&mut texture, depth, dropped_surfaces);
-            }
-            let texture = interner
-                .rewrite_texture_map(&texture, defs.textures, defs.uvs)
+            let texture = serde_json::to_value(texture)?;
+            let cell = interner
+                .flatten_texture_map(
+                    &texture,
+                    &geom.boundaries,
+                    &geom.thetype,
+                    dropped_surfaces,
+                    defs.textures,
+                    defs.uvs,
+                )
                 .map_err(|e| {
                     CityParquetError::Schema(format!(
                         "{context}: cannot resolve texture map to global ids: {e}"
                     ))
                 })?;
-            Some(texture)
+            (!cell.themes.is_empty()).then_some(cell)
         }
         None => None,
     };
@@ -1196,8 +1163,8 @@ struct GeometrySlot {
     key: String,
     geometry: GeometryBuilder,
     properties: GeometryPropertiesBuilder,
-    material: StringBuilder,
-    texture: StringBuilder,
+    material: MaterialCellBuilder,
+    texture: TextureCellBuilder,
 }
 
 /// Owns one builder per rendered Arrow schema column; [`Self::finish_arrays`]
@@ -1242,8 +1209,8 @@ impl RowWriter {
             key,
             geometry: GeometryBuilder::Wkb(BinaryBuilder::new()),
             properties: GeometryPropertiesBuilder::new(),
-            material: StringBuilder::new(),
-            texture: StringBuilder::new(),
+            material: MaterialCellBuilder::new(),
+            texture: TextureCellBuilder::new(),
         };
         let geometry_slots = if per_lod {
             scan.lods
@@ -1577,11 +1544,11 @@ impl RowWriter {
                     }
                     slot.properties.append_value(&data.properties)?;
                     match &data.material {
-                        Some(m) => slot.material.append_value(serde_json::to_string(m)?),
+                        Some(m) => slot.material.append_value(m)?,
                         None => slot.material.append_null(),
                     }
                     match &data.texture {
-                        Some(t) => slot.texture.append_value(serde_json::to_string(t)?),
+                        Some(t) => slot.texture.append_value(t)?,
                         None => slot.texture.append_null(),
                     }
                 }
@@ -1670,8 +1637,8 @@ impl RowWriter {
                 GeometryBuilder::Wkb(b) => arrays.push(Arc::new(b.finish())),
             }
             arrays.push(slot.properties.finish());
-            arrays.push(Arc::new(slot.material.finish()));
-            arrays.push(Arc::new(slot.texture.finish()));
+            arrays.push(slot.material.finish());
+            arrays.push(slot.texture.finish());
         }
         arrays.push(self.finish_template());
         arrays.push(Arc::new(self.other.finish()));
@@ -1928,6 +1895,8 @@ pub fn encode_buffered<'a>(
 mod tests {
     use super::*;
 
+    use crate::appearance_columns::TextureRing;
+
     // G12/gap 14: a colliding attribute is collected for merging into
     // `other`, skipping nulls.
     #[test]
@@ -2074,7 +2043,7 @@ mod tests {
     /// theme's per-surface array, record the drop in geometry_properties,
     /// and count it in EncodeStats — downstream sees aligned data only.
     #[test]
-    fn dropped_surface_realigns_semantics_material_and_texture() {
+    fn dropped_surface_flattens_semantics_material_and_texture() {
         let co: CityObject = serde_json::from_value(serde_json::json!({
             "type": "Building",
             "geometry": [{
@@ -2160,23 +2129,27 @@ mod tests {
         // Surface 0 (material index 5, texture index 0) was dropped; only
         // surface 1's material index 7 / texture index 1 survive, now
         // rewritten to dataset-global ids with inlined UVs.
-        let gid_material_7 = interner.intern_material(&local_materials[7]);
-        let gid_texture_1 = interner.intern_texture(&local_textures[1]);
+        let gid_material_7 = interner.intern_material(&local_materials[7]) as i64;
+        let gid_texture_1 = interner.intern_texture(&local_textures[1]) as i64;
         assert_eq!(
             *slot.material.as_ref().unwrap(),
-            serde_json::json!({"visual": {"values": [gid_material_7]}}),
-            "material per-surface values must be realigned and globally rewritten"
+            MaterialCell {
+                themes: vec![("visual".to_string(), vec![Some(gid_material_7)])],
+            },
+            "the material cell must lose the dropped face and carry global ids"
         );
         assert_eq!(
             *slot.texture.as_ref().unwrap(),
-            serde_json::json!({"visual": {"values": [[[
-                gid_texture_1,
-                [0.0, 0.0],
-                [1.0, 0.0],
-                [1.0, 1.0],
-                [0.0, 1.0]
-            ]]]}}),
-            "texture per-surface values must be realigned, globally rewritten, and UV-inlined"
+            TextureCell {
+                themes: vec![(
+                    "visual".to_string(),
+                    vec![vec![TextureRing {
+                        id: Some(gid_texture_1),
+                        uv: Some(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+                    }]],
+                )],
+            },
+            "the texture cell must lose the dropped face, carry global ids, and inline UVs"
         );
     }
 
@@ -2196,7 +2169,7 @@ mod tests {
     /// level before filtering, regardless of what the face entries look
     /// like.
     #[test]
-    fn solid_single_shell_realigns_semantics_material_and_texture_when_face_dropped() {
+    fn solid_single_shell_flattens_semantics_material_and_texture_when_face_dropped() {
         let co: CityObject = serde_json::from_value(serde_json::json!({
             "type": "Building",
             "geometry": [{
@@ -2210,7 +2183,11 @@ mod tests {
                     "values": [[0, 1, 2]]
                 },
                 "material": {"visual": {"values": [[1, 2, 3]]}},
-                "texture": {"visual": {"values": [[[[0]], [[1]], [[2]]]]}}
+                // one UV index per distinct ring vertex, as the column
+                // requires: three for each of the three-vertex rings
+                "texture": {"visual": {"values": [[
+                    [[0, 0, 1, 2]], [[1, 0, 1, 2]], [[2, 0, 1, 2]]
+                ]]}}
             }]
         }))
         .unwrap();
@@ -2227,15 +2204,14 @@ mod tests {
         let pool = VertexPool::new(&vertices, &transform);
 
         // Local defs sized to cover the raw indices above (material 1..3,
-        // texture 0..2); the texture rings here are all `[t]` (no UVs), so
-        // no UV pool is needed.
+        // texture 0..2, UV 0..2).
         let local_materials: Vec<Value> = (0..4)
             .map(|i| serde_json::json!({"name": format!("m{i}")}))
             .collect();
         let local_textures: Vec<Value> = (0..3)
             .map(|i| serde_json::json!({"type": "PNG", "image": format!("t{i}.png")}))
             .collect();
-        let local_uvs: Vec<Vec<f64>> = Vec::new();
+        let local_uvs: Vec<Vec<f64>> = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![1.0, 1.0]];
 
         let mut acc = GeometryAccumulator::default();
         let mut stats = EncodeStats::default();
@@ -2279,20 +2255,41 @@ mod tests {
         );
 
         // Face 1 (material index 2, texture index 1) was dropped; faces 0
-        // and 2 survive, rewritten to dataset-global ids.
-        let gid_material_1 = interner.intern_material(&local_materials[1]);
-        let gid_material_3 = interner.intern_material(&local_materials[3]);
-        let gid_texture_0 = interner.intern_texture(&local_textures[0]);
-        let gid_texture_2 = interner.intern_texture(&local_textures[2]);
+        // and 2 survive, rewritten to dataset-global ids and flattened out
+        // of the shell nesting.
+        let gid_material_1 = interner.intern_material(&local_materials[1]) as i64;
+        let gid_material_3 = interner.intern_material(&local_materials[3]) as i64;
+        let gid_texture_0 = interner.intern_texture(&local_textures[0]) as i64;
+        let gid_texture_2 = interner.intern_texture(&local_textures[2]) as i64;
+        let uv = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
         assert_eq!(
             *slot.material.as_ref().unwrap(),
-            serde_json::json!({"visual": {"values": [[gid_material_1, gid_material_3]]}}),
-            "material values must be realigned within the shell nesting and globally rewritten"
+            MaterialCell {
+                themes: vec![(
+                    "visual".to_string(),
+                    vec![Some(gid_material_1), Some(gid_material_3)],
+                )],
+            },
+            "the material cell is flat per WKB face across the shell nesting"
         );
         assert_eq!(
             *slot.texture.as_ref().unwrap(),
-            serde_json::json!({"visual": {"values": [[[[gid_texture_0]], [[gid_texture_2]]]]}}),
-            "texture values must be realigned within the shell nesting and globally rewritten"
+            TextureCell {
+                themes: vec![(
+                    "visual".to_string(),
+                    vec![
+                        vec![TextureRing {
+                            id: Some(gid_texture_0),
+                            uv: Some(uv.clone()),
+                        }],
+                        vec![TextureRing {
+                            id: Some(gid_texture_2),
+                            uv: Some(uv),
+                        }],
+                    ],
+                )],
+            },
+            "the texture cell is flat per WKB face across the shell nesting"
         );
     }
 
@@ -2306,7 +2303,7 @@ mod tests {
     /// counter. Solid0's shell1 ends up with zero faces after its only face
     /// is dropped — a legal (if degenerate) empty shell.
     #[test]
-    fn multisolid_realigns_semantics_material_and_texture_across_solids_and_shells() {
+    fn multisolid_flattens_semantics_material_and_texture_across_solids_and_shells() {
         let co: CityObject = serde_json::from_value(serde_json::json!({
             "type": "Building",
             "geometry": [{
@@ -2326,11 +2323,13 @@ mod tests {
                     "values": [[[10, 11], [12]], [[13, 14]]]
                 },
                 "material": {"visual": {"values": [[[1, 2], [3]], [[4, 5]]]}},
+                // one UV index per distinct ring vertex, as the column
+                // requires
                 "texture": {
                     "visual": {
                         "values": [
-                            [[[[0]], [[1]]], [[[2]]]],
-                            [[[[3]], [[4]]]]
+                            [[[[0, 0, 1, 2]], [[1, 0, 1, 2]]], [[[2, 0, 1, 2]]]],
+                            [[[[3, 0, 1, 2]], [[4, 0, 1, 2]]]]
                         ]
                     }
                 }
@@ -2350,15 +2349,14 @@ mod tests {
         let pool = VertexPool::new(&vertices, &transform);
 
         // Local defs sized to cover the raw indices above (material 1..5,
-        // texture 0..4); all texture rings are `[t]` (no UVs), so no UV
-        // pool is needed.
+        // texture 0..4, UV 0..2).
         let local_materials: Vec<Value> = (0..6)
             .map(|i| serde_json::json!({"name": format!("m{i}")}))
             .collect();
         let local_textures: Vec<Value> = (0..5)
             .map(|i| serde_json::json!({"type": "PNG", "image": format!("t{i}.png")}))
             .collect();
-        let local_uvs: Vec<Vec<f64>> = Vec::new();
+        let local_uvs: Vec<Vec<f64>> = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![1.0, 1.0]];
 
         let mut acc = GeometryAccumulator::default();
         let mut stats = EncodeStats::default();
@@ -2398,29 +2396,47 @@ mod tests {
 
         // Flat positions 2 (material 3, texture 2) and 4 (material 5,
         // texture 4) were dropped; the survivors are rewritten to
-        // dataset-global ids.
-        let gid_material_1 = interner.intern_material(&local_materials[1]);
-        let gid_material_2 = interner.intern_material(&local_materials[2]);
-        let gid_material_4 = interner.intern_material(&local_materials[4]);
+        // dataset-global ids, flat across solids and shells.
+        let gid_material_1 = interner.intern_material(&local_materials[1]) as i64;
+        let gid_material_2 = interner.intern_material(&local_materials[2]) as i64;
+        let gid_material_4 = interner.intern_material(&local_materials[4]) as i64;
         assert_eq!(
             *slot.material.as_ref().unwrap(),
-            serde_json::json!({"visual": {"values": [[[gid_material_1, gid_material_2], []], [[gid_material_4]]]}}),
-            "material values must be realigned across solids and shells, and globally rewritten"
+            MaterialCell {
+                themes: vec![(
+                    "visual".to_string(),
+                    vec![
+                        Some(gid_material_1),
+                        Some(gid_material_2),
+                        Some(gid_material_4),
+                    ],
+                )],
+            },
+            "the material cell is flat per WKB face across solids and shells"
         );
-        let gid_texture_0 = interner.intern_texture(&local_textures[0]);
-        let gid_texture_1 = interner.intern_texture(&local_textures[1]);
-        let gid_texture_3 = interner.intern_texture(&local_textures[3]);
+        let gid_texture_0 = interner.intern_texture(&local_textures[0]) as i64;
+        let gid_texture_1 = interner.intern_texture(&local_textures[1]) as i64;
+        let gid_texture_3 = interner.intern_texture(&local_textures[3]) as i64;
+        let uv = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
+        let ring = |id: i64| {
+            vec![TextureRing {
+                id: Some(id),
+                uv: Some(uv.clone()),
+            }]
+        };
         assert_eq!(
             *slot.texture.as_ref().unwrap(),
-            serde_json::json!({
-                "visual": {
-                    "values": [
-                        [[[[gid_texture_0]], [[gid_texture_1]]], []],
-                        [[[[gid_texture_3]]]]
-                    ]
-                }
-            }),
-            "texture values must be realigned across solids and shells, and globally rewritten"
+            TextureCell {
+                themes: vec![(
+                    "visual".to_string(),
+                    vec![
+                        ring(gid_texture_0),
+                        ring(gid_texture_1),
+                        ring(gid_texture_3),
+                    ],
+                )],
+            },
+            "the texture cell is flat per WKB face across solids and shells"
         );
     }
 }

@@ -4,9 +4,9 @@
 //!
 //! `surfaces` is the CityJSON surface array (its `type` strings are taken here);
 //! `face_semantics` is already a FLAT per-face list (one entry per WKB face, in
-//! WKB order) — a surface index, or `null` for a face with no semantic surface.
-//! This module therefore only validates and, for a CompositeSolid, splits that
-//! flat list per member; the old nested-`values` walking is gone with G7.
+//! WKB order) — a surface index, or `null` for a face with no semantic surface,
+//! never CityJSON's nested `values` tree. This module therefore only validates
+//! and, for a CompositeSolid, splits that flat list per member.
 
 use std::io::Write;
 

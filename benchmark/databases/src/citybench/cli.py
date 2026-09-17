@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import os
+from contextlib import nullcontext
+from citybench.lifecycle import isolated_databases
 from pathlib import Path
 
 from citybench import manifest, params as params_mod
@@ -27,20 +30,17 @@ BENCHMARK_DIR = ROOT.parent
 READBENCH_BIN = BENCHMARK_DIR / "readbench" / "target" / "release" / "cityparquet-readbench"
 
 
-def _dataset(source: Path) -> Dataset:
+def _dataset(source: Path, prepared_dir: Path | None = None) -> Dataset:
     name = Dataset.name_from_path(source)
-    return Dataset(
-        name=name,
-        source=source,
-        cityparquet_dir=ROOT / "data" / "cityparquet" / name,
-        hilbert_dir=ROOT / "data" / "cityparquet-hilbert" / name,
-    )
+    prepared = prepared_dir or BENCHMARK_DIR / "formats" / "data" / "readbench"
+    return Dataset(name=name, source=source, cityparquet_dir=prepared / f"{name}.parquet", hilbert_dir=prepared / f"{name}-hilbert.parquet")
 
 
-def _build_systems(tags: list[str]) -> list:
+def _build_systems(tags: list[str], *, ports: dict[str, int] | None = None) -> list:
+    ports = ports or {}
     available = {
-        "cjdb": lambda: CjdbSystem(),
-        "3dcitydb": lambda: CityDbSystem(),
+        "cjdb": lambda: CjdbSystem(port=ports.get("cjdb", 55432)),
+        "3dcitydb": lambda: CityDbSystem(port=ports.get("3dcitydb", 55433)),
         "duckdb-cityparquet": lambda: DuckDBCityParquet(),
         "cityparquet": lambda: ReadbenchSystem(binary=READBENCH_BIN),
         "cityparquet-hilbert": lambda: ReadbenchSystem(
@@ -144,6 +144,21 @@ def _indexes_sql(systems: list) -> str:
     return "".join(sections)
 
 
+def cmd_prep(args) -> int:
+    """Build pinned local database tools; data preparation remains suite-owned."""
+    import subprocess
+    if getattr(args, "data_root", None):
+        root = Path(args.data_root).resolve()
+        allowed = (BENCHMARK_DIR / "runs").resolve()
+        if root != allowed and allowed not in root.parents:
+            raise ValueError(f"data root must be below {allowed}")
+        if getattr(args, "prepared_dir", None):
+            Path(args.prepared_dir).mkdir(parents=True, exist_ok=True)
+    subprocess.run(["just", "build-citydb"], cwd=ROOT, check=True)
+    subprocess.run(["just", "patch-cjdb"], cwd=ROOT, check=True)
+    return 0
+
+
 def cmd_derive_params(args) -> int:
     source = Path(args.dataset)
     p = params_mod.derive(source)
@@ -155,21 +170,26 @@ def cmd_derive_params(args) -> int:
 
 
 def cmd_bench(args) -> int:
+    # The public runner creates fresh, UUID-scoped databases when a data root
+    # is supplied. Recursive entry carries only discovered ports.
+    if getattr(args, "data_root", None) and not getattr(args, "ports", None):
+        with isolated_databases(Path(args.data_root), args.srid) as context:
+            args.ports = context["ports"]
+            os.environ["CITYBENCH_CJDB_CONTAINER"] = context["containers"]["cjdb"]
+            os.environ["CITYBENCH_CITYDB_CONTAINER"] = context["containers"]["3dcitydb"]
+            os.environ["CITYBENCH_CJDB_PORT"] = str(context["ports"]["cjdb"])
+            os.environ["CITYBENCH_CITYDB_PORT"] = str(context["ports"]["3dcitydb"])
+            return cmd_bench(args)
     source = Path(args.dataset)
-    dataset = _dataset(source)
+    dataset = _dataset(source, Path(args.prepared_dir) if getattr(args, "prepared_dir", None) else None)
     tags = args.systems.split(",") if args.systems else [
-        "cityparquet", "cityparquet-hilbert", "duckdb-cityparquet",
-        "cjdb", "3dcitydb",
+        "duckdb-cityparquet", "cjdb", "3dcitydb",
     ]
-    systems = _build_systems(tags)
+    systems = _build_systems(tags, ports=getattr(args, "ports", None))
 
-    params_file = ROOT / "params" / f"{dataset.name}.json"
-    if params_file.exists():
-        p = params_mod.from_json(params_file.read_text())
-    else:
-        p = params_mod.derive(source)
-        params_file.parent.mkdir(parents=True, exist_ok=True)
-        params_file.write_text(params_mod.to_json(p))
+    # Never reuse name-keyed parameters: scaling inputs can be regenerated at
+    # the same path. Derive from this run's source and persist beside output.
+    p = params_mod.derive(source)
 
     ingest_times: dict[str, float] = {}
     sizes: dict[str, tuple[int, int]] = {}
@@ -185,17 +205,25 @@ def cmd_bench(args) -> int:
 
     rows = _run_all_scenarios(systems, p, dataset.name, args.repeat, sizes)
 
-    results_dir = ROOT / "results"
+    results_dir = Path(args.output_dir) if args.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    (results_dir / f"{dataset.name}.params.json").write_text(params_mod.to_json(p))
     write_csv(results_dir / f"{dataset.name}.csv", rows)
+
+    pg_settings = _pg_settings(getattr(args, "ports", None))
+    for settings in pg_settings.values():
+        if isinstance(settings, dict):
+            settings["max_parallel_workers_per_gather"] = "0 (benchmark session)"
 
     (results_dir / f"{dataset.name}.manifest.json").write_text(
         json.dumps(
             manifest.collect(
                 dataset_name=dataset.name,
+                source=__import__("hashlib").sha256(source.read_bytes()).hexdigest(),
                 ingest=ingest_times,
                 sizes=sizes,
                 versions=_versions(systems),
-                pg_settings=_pg_settings(),
+                pg_settings=pg_settings,
                 patches=_patches(systems),
                 srid=_srids(systems),
             ),
@@ -219,19 +247,29 @@ def cmd_bench(args) -> int:
             file=sys.stderr,
         )
     print(f"wrote {results_dir / f'{dataset.name}.csv'} ({len(rows)} rows)")
+    if any(row["status"] in {"error", "mismatch"} for row in rows):
+        return 1
     return 0
 
 
 def cmd_smoke(args) -> int:
     """Full pipeline on the small fixture; fails on any count mismatch."""
     ns = argparse.Namespace(
-        dataset=str(ROOT / "data" / "delft.city.jsonl"),
+        dataset=args.dataset or str(ROOT / "data" / "delft.city.jsonl"),
         repeat=2,
         systems=None,
+        output_dir=getattr(args, "output_dir", None),
+        prepared_dir=getattr(args, "prepared_dir", None),
+        ports=None,
+        data_root=getattr(args, "data_root", None),
+        srid=getattr(args, "srid", 7415),
     )
-    cmd_bench(ns)
-    csv_path = ROOT / "results" / "delft.csv"
+    bench_status = cmd_bench(ns)
+    output_dir = Path(ns.output_dir) if ns.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
+    csv_path = output_dir / f"{Dataset.name_from_path(ns.dataset)}.csv"
     text = csv_path.read_text()
+    if bench_status:
+        return bench_status
     if "count-mismatch" in text:
         print(
             "SMOKE FAILED: systems disagree on a result count. "
@@ -294,7 +332,7 @@ def _srids(systems: list) -> dict[str, int]:
     }
 
 
-def _pg_settings() -> dict[str, str]:
+def _pg_settings(ports: dict[str, int] | None = None) -> dict[str, str]:
     """Human-readable values for the manifest's ``pg_settings`` block.
 
     M1 (final whole-branch review): this used to concatenate
@@ -314,7 +352,9 @@ def _pg_settings() -> dict[str, str]:
     from citybench.systems import pg
 
     settings = {}
-    for port, tag in ((55432, "cjdb"), (55433, "3dcitydb")):
+    ports = ports or {"cjdb": 55432, "3dcitydb": 55433}
+    for tag in ("cjdb", "3dcitydb"):
+        port = ports[tag]
         try:
             conn = pg.connect(port)
             with conn.cursor() as cur:
@@ -343,18 +383,35 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="citybench")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    p_prep = sub.add_parser("prep")
+    p_prep.add_argument("--data-root", default=None)
+    p_prep.add_argument("--prepared-dir", default=None)
+    p_prep.add_argument("--srid", type=int, default=None)
+    p_prep.set_defaults(func=cmd_prep)
+
     p_derive = sub.add_parser("derive-params")
     p_derive.add_argument("--dataset", required=True)
     p_derive.set_defaults(func=cmd_derive_params)
 
-    p_bench = sub.add_parser("bench")
+    p_bench = sub.add_parser("run")
     p_bench.add_argument("--dataset", required=True)
     p_bench.add_argument("--repeat", type=int, default=7)
     p_bench.add_argument("--systems", default=None,
-                         help="comma-separated tags; default is all five")
+                         help="comma-separated tags; default is DuckDB over CityParquet, cjdb, and 3DCityDB")
+    p_bench.add_argument("--prepared-dir", default=None)
+    p_bench.add_argument("--data-root", default=None)
+    p_bench.add_argument("--srid", type=int, default=7415)
+    p_bench.add_argument("--output-dir", default=None,
+                         help="directory for CSV, manifest, and index artefacts")
     p_bench.set_defaults(func=cmd_bench)
 
     p_smoke = sub.add_parser("smoke")
+    p_smoke.add_argument("--dataset", default=None,
+                         help="dataset for a smoke run; defaults to the tiny fixture")
+    p_smoke.add_argument("--output-dir", default=None)
+    p_smoke.add_argument("--prepared-dir", default=None)
+    p_smoke.add_argument("--data-root", default=None)
+    p_smoke.add_argument("--srid", type=int, default=7415)
     p_smoke.set_defaults(func=cmd_smoke)
 
     args = parser.parse_args(argv)

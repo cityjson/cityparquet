@@ -600,7 +600,7 @@ case_pinned_table_is_well_formed() {
     # incidental one. The read benchmark compares eight formats; an entry that
     # cannot serve a default-set run contributes seven rows and a hole, which
     # is precisely the defect the previous corpus was retired for (see
-    # benchmark/formats/archive/2026-08-17-catalogue-corpus/README.md). It would also
+    # the retired catalogue corpus/README.md). It would also
     # abort the run outright — `just bench` measures the whole directory under
     # `set -e`, so one unfit file takes every dataset sorting after it down
     # too. $CORPUS_MANIFEST remains the way to fetch such an entry knowingly.

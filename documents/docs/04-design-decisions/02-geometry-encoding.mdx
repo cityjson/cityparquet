@@ -5,7 +5,7 @@ sidebar:
   label: B · Geometry encoding
 ---
 
-How CityParquet stores geometry: as WKB blobs for interoperability today, with everything WKB cannot carry pushed into parallel JSON columns, one geometry column per level of detail, and CityJSON's quantised vertices expanded to world-coordinate doubles at encode time. Prior art weighed here: GeoParquet, Apache Iceberg, PostGIS EWKB, GeoArrow, and 3DCityDB.
+How CityParquet stores geometry: as WKB blobs for interoperability today, with everything WKB cannot carry pushed into parallel property columns, one geometry column per level of detail, and CityJSON's quantised vertices expanded to world-coordinate doubles at encode time. Prior art weighed here: GeoParquet, Apache Iceberg, PostGIS EWKB, GeoArrow, and 3DCityDB.
 
 ## WKB geometry (including 3D), not native geometry or EWKB
 
@@ -36,7 +36,7 @@ An index-based layout would also have to go a level deeper than GeoArrow's own n
 
 <Badge variant="success">decided</Badge>
 
-**Decision.** A `geometry_properties_lod*` **`STRUCT`** column (per LoD) holds what WKB cannot: the geometry type, the semantic-surface definitions (`surfaces`), the surface→face mapping, and the solid shell structure. The fixed-shape parts are typed struct fields (`type`, `face_semantics LIST<INT>`, `shells LIST<LIST<INT>>`); only `surfaces` — heterogeneous per surface — stays `JSON`. Appearance goes in separate `material_lod*` / `texture_lod*` columns (see [appearance and shared resources](/design-decisions/appearance-shared-resources)). Crucially, the surface→face mapping is stored **flattened and aligned to WKB face order** — a flat `face_semantics` array where `face_semantics[i]` is the surface index of WKB face `i` — rather than as a nested per-shell tree (the shape CityJSON's `values` uses). See the [specification](/specification/geometry-semantics) → *Geometry properties and semantics*.
+**Decision.** A `geometry_properties_lod*` **`STRUCT`** column (per LoD) holds what WKB cannot: the geometry type, the semantic-surface definitions (`surfaces`), the surface→face mapping, and the solid shell structure. The fixed-shape parts are typed struct fields (`type`, `face_semantics LIST<INT>`, `shells LIST<LIST<INT>>`); only `surfaces` — heterogeneous per surface — stays `JSON`. Appearance goes in separate `material_lod*` / `texture_lod*` columns — typed `MAP`s keyed by theme, aligned to the same WKB face order (see [appearance and shared resources](/design-decisions/appearance-shared-resources)). Crucially, the surface→face mapping is stored **flattened and aligned to WKB face order** — a flat `face_semantics` array where `face_semantics[i]` is the surface index of WKB face `i` — rather than as a nested per-shell tree (the shape CityJSON's `values` uses). See the [specification](/specification/geometry-semantics) → *Geometry properties and semantics*.
 
 **Alternatives considered.**
 
@@ -48,7 +48,7 @@ An index-based layout would also have to go a level deeper than GeoArrow's own n
 
 **Trade-off.** Semantics live *beside* geometry rather than inside it (the consumer zips the two columns by face index); and aligning `face_semantics` to the *emitted* faces means a strict 1:1 with the source's surfaces is not guaranteed where faces are dropped (a future consideration, noted under open questions).
 
-**Status.** Decided and implemented. A native `LIST<INT>` `face_semantics` column and a strict-1:1 guarantee are [future work](/open-questions).
+**Status.** Decided and implemented, `face_semantics` as a native `LIST<INT>` included; a strict-1:1 guarantee remains [open](/open-questions).
 
 ## One geometry column per LoD
 

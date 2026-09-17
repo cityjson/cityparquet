@@ -49,7 +49,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arrow_array::{Array, RecordBatch, StringArray};
+use arrow_array::{Array, MapArray, RecordBatch};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
@@ -60,6 +60,7 @@ use cjseq::{
     Metadata as CjMetadata, ReferenceSystem, Texture, Transform,
 };
 
+use crate::appearance_columns::{read_material_cell, read_texture_cell};
 use crate::decode::{DecodedObject, decode_batch};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use crate::sidecar::{TemplateRow, read_materials, read_templates, read_textures};
@@ -430,43 +431,44 @@ fn build_address_value(
     Ok(Value::Array(arr))
 }
 
-/// Split a flat `face_semantics` slice into consecutive groups of `counts`
-/// lengths — the inverse of the encoder's flatten. A count sum that does not
-/// match the slice length is a corrupt/hand-rolled package, an error.
-fn partition_face_semantics(face_semantics: &[Value], counts: &[usize]) -> Result<Vec<Value>> {
+/// Split a flat per-face list into consecutive groups of `counts` lengths —
+/// the inverse of the encoder's flatten. Shared by `face_semantics` and the
+/// appearance `values` cells (both stored one entry per WKB face, see
+/// [`nest_faces`]), so the error text names neither and speaks of "the flat
+/// per-face list" instead. A count sum that does not match the slice length
+/// is a corrupt/hand-rolled package, an error.
+fn partition_face_semantics(flat: &[Value], counts: &[usize]) -> Result<Vec<Value>> {
     let mut total: usize = 0;
     for &n in counts {
         total = total
             .checked_add(n)
             .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
     }
-    if total != face_semantics.len() {
+    if total != flat.len() {
         return Err(err(format!(
-            "shells counts sum to {total} but face_semantics has {} entries",
-            face_semantics.len()
+            "shells counts sum to {total} but the flat per-face list has {} entries",
+            flat.len()
         )));
     }
     let mut out = Vec::with_capacity(counts.len());
     let mut offset = 0;
     for &n in counts {
-        out.push(Value::Array(face_semantics[offset..offset + n].to_vec()));
+        out.push(Value::Array(flat[offset..offset + n].to_vec()));
         offset += n;
     }
     Ok(out)
 }
 
-/// Splits a flat `face_semantics` slice into ONE `Value::Array` per solid,
-/// each itself the per-shell partition of that solid's slice of faces (used
-/// by both `Solid` — always exactly one solid — and `MultiSolid`/
-/// `CompositeSolid` — one per member — since `shells` nests the same way for
-/// both, spec "Geometry properties and semantics"). Every entry of
-/// `face_semantics` must be consumed by exactly one solid; a shortfall or
-/// overrun means `shells` disagrees with `face_semantics`'s length, a
-/// corrupt/hand-rolled package.
-fn partition_face_semantics_by_solids(
-    face_semantics: &[Value],
-    nested: &[Vec<usize>],
-) -> Result<Vec<Value>> {
+/// Splits a flat per-face list into ONE `Value::Array` per solid, each itself
+/// the per-shell partition of that solid's slice of faces (used by both
+/// `Solid` — always exactly one solid — and `MultiSolid`/`CompositeSolid` —
+/// one per member — since `shells` nests the same way for both, spec
+/// "Geometry properties and semantics"). Shared by `face_semantics` and the
+/// appearance `values` cells, see [`partition_face_semantics`]. Every entry of
+/// `flat` must be consumed by exactly one solid; a shortfall or overrun means
+/// `shells` disagrees with the flat list's length, a corrupt/hand-rolled
+/// package.
+fn partition_face_semantics_by_solids(flat: &[Value], nested: &[Vec<usize>]) -> Result<Vec<Value>> {
     let mut solids = Vec::with_capacity(nested.len());
     let mut offset: usize = 0;
     for shell_counts in nested {
@@ -479,36 +481,96 @@ fn partition_face_semantics_by_solids(
         let end = offset
             .checked_add(n)
             .ok_or_else(|| err("shells counts overflow usize".to_string()))?;
-        let slice = face_semantics.get(offset..end).ok_or_else(|| {
+        let slice = flat.get(offset..end).ok_or_else(|| {
             err(format!(
-                "shells describes more faces than face_semantics has ({} entries)",
-                face_semantics.len()
+                "shells describes more faces than the flat per-face list has ({} entries)",
+                flat.len()
             ))
         })?;
         solids.push(Value::Array(partition_face_semantics(slice, shell_counts)?));
         offset = end;
     }
-    // Every face_semantics entry must be consumed — trailing entries mean
-    // `shells` under-counts the faces, a corrupt package.
-    if offset != face_semantics.len() {
+    // Every entry of `flat` must be consumed — trailing entries mean `shells`
+    // under-counts the faces, a corrupt package.
+    if offset != flat.len() {
         return Err(err(format!(
-            "shells account for {offset} faces but face_semantics has {} entries",
-            face_semantics.len()
+            "shells account for {offset} faces but the flat per-face list has {} entries",
+            flat.len()
         )));
     }
     Ok(solids)
 }
 
+/// Nests one flat, per-WKB-face list into the shape CityJSON expects for
+/// `gtype`, using the `shells` face partition in `geometry_properties` (§8).
+/// The single point of truth for that rule: both a geometry's `semantics`
+/// (`face_semantics`, [`rebuild_semantics`]) and its appearance index maps
+/// (the flat `material_lod*`/`texture_lod*` cells, [`nest_by_shells`]) are
+/// stored one entry per face and must come back nested identically, so they
+/// share this one match rather than each carrying its own copy of it.
+///
+/// - Point/line/surface types: flat, one entry per face, unchanged.
+/// - `Solid`: one per-shell partition. `shells` — always nested one inner
+///   list per solid, so exactly one entry here (see [`single_solid_shell`]).
+///   Without `shells`, every face goes in one shell, mirroring what
+///   [`reconstruct_boundaries`] does with the boundaries themselves; the
+///   flat list is still wrapped, because a `Solid`'s value list is nested.
+/// - `MultiSolid`/`CompositeSolid`: one per-shell partition per solid.
+///   `shells` is required — without it the split is ambiguous, so this
+///   rejects rather than silently dropping entries.
+///
+/// A `GeometryInstance` carries no per-face list of its own (its appearance
+/// and semantics live on the template it points at), so reaching here with
+/// one is a corrupt/hand-rolled package.
+fn nest_faces(flat: Vec<Value>, props: Option<&Value>, gtype: &GeometryType) -> Result<Value> {
+    match gtype {
+        GeometryType::MultiPoint
+        | GeometryType::MultiLineString
+        | GeometryType::MultiSurface
+        | GeometryType::CompositeSurface => Ok(Value::Array(flat)),
+        GeometryType::Solid => match shell_faces(props)? {
+            Some(nested) => {
+                // `nested` must hold exactly this Solid's own shell-count
+                // list (see `single_solid_shell`); wrap it back into a
+                // one-entry slice so `partition_face_semantics_by_solids`'s
+                // per-solid split still applies, then take that sole entry.
+                let shell_counts = single_solid_shell(nested)?;
+                let mut solids = partition_face_semantics_by_solids(&flat, &[shell_counts])?;
+                Ok(solids
+                    .pop()
+                    .expect("partition_face_semantics_by_solids returns one entry per input"))
+            }
+            None => Ok(Value::Array(vec![Value::Array(flat)])),
+        },
+        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
+            let nested = shell_faces(props)?.ok_or_else(|| {
+                err("MultiSolid/CompositeSolid geometry_properties is missing `shells`".to_string())
+            })?;
+            Ok(Value::Array(partition_face_semantics_by_solids(
+                &flat, &nested,
+            )?))
+        }
+        GeometryType::GeometryInstance => Err(err(
+            "a GeometryInstance geometry has no per-face list to nest".to_string(),
+        )),
+    }
+}
+
 /// Rebuild a geometry's CityJSON `semantics` (`{surfaces, values}`) from the
 /// flattened `geometry_properties` (§8): `surfaces` verbatim, and the nested
-/// `values` re-derived from the flat `face_semantics` using `shells` (which
-/// gives the per-shell face partition). The exporter emits the expanded
-/// per-face form; a source that used the null shorthand round-trips up to that
-/// canonicalisation (§17). `None` when the geometry carried no semantics.
+/// `values` re-derived from the flat `face_semantics` by [`nest_faces`]. The
+/// exporter emits the expanded per-face form; a source that used the null
+/// shorthand round-trips up to that canonicalisation (§17). `None` when the
+/// geometry carried no semantics.
 fn rebuild_semantics(props: Option<&Value>, gtype: &GeometryType) -> Result<Option<Value>> {
     let Some(props) = props else {
         return Ok(None);
     };
+    // A GeometryInstance's semantics live on its template, not on the
+    // instance — nothing to rebuild here.
+    if matches!(gtype, GeometryType::GeometryInstance) {
+        return Ok(None);
+    }
     // No `surfaces` key ⇒ the geometry had no semantics at all.
     let Some(surfaces) = props.get("surfaces") else {
         return Ok(None);
@@ -519,42 +581,7 @@ fn rebuild_semantics(props: Option<&Value>, gtype: &GeometryType) -> Result<Opti
         .cloned()
         .unwrap_or_default();
 
-    let values = match gtype {
-        GeometryType::MultiPoint
-        | GeometryType::MultiLineString
-        | GeometryType::MultiSurface
-        | GeometryType::CompositeSurface => Value::Array(face_semantics),
-        GeometryType::Solid => match shell_faces(Some(props))? {
-            Some(nested) => {
-                // `nested` must hold exactly this Solid's own shell-count
-                // list (see `single_solid_shell`); wrap it back into a
-                // one-entry slice so `partition_face_semantics_by_solids`'s
-                // per-solid split still applies, then take that sole entry.
-                let shell_counts = single_solid_shell(nested)?;
-                let mut solids =
-                    partition_face_semantics_by_solids(&face_semantics, &[shell_counts])?;
-                solids
-                    .pop()
-                    .expect("partition_face_semantics_by_solids returns one entry per input")
-            }
-            // No `shells`: mirror `reconstruct_boundaries`, which puts every
-            // face in one shell (§8). A Solid's `values` must be nested, so
-            // wrap the flat list in a single shell rather than emit it flat.
-            None => Value::Array(vec![Value::Array(face_semantics)]),
-        },
-        GeometryType::MultiSolid | GeometryType::CompositeSolid => {
-            // `shells` is required to split the flat list per solid; without it
-            // the partition is ambiguous, so reject rather than silently drop.
-            let nested = shell_faces(Some(props))?.ok_or_else(|| {
-                err("MultiSolid/CompositeSolid geometry_properties is missing `shells`".to_string())
-            })?;
-            Value::Array(partition_face_semantics_by_solids(
-                &face_semantics,
-                &nested,
-            )?)
-        }
-        GeometryType::GeometryInstance => return Ok(None),
-    };
+    let values = nest_faces(face_semantics, Some(props), gtype)?;
     Ok(Some(
         serde_json::json!({ "surfaces": surfaces, "values": values }),
     ))
@@ -751,8 +778,8 @@ fn build_header(meta: &CityMetadata, tables: &PackageTables) -> Result<CityJSON>
     Ok(header)
 }
 
-/// The reserved appearance columns for one theme prefix (`"material"` /
-/// `"texture"`) in a batch, resolved ONCE per batch so the per-row reader need
+/// The reserved appearance columns for one [`AppearanceKind`] (`material` /
+/// `texture`) in a batch, resolved ONCE per batch so the per-row reader need
 /// not rescan the schema. Each entry pairs the column's array index with the
 /// canonical LoD key it maps to — taken from the field's `cityparquet:lod`
 /// metadata, or `""` for the transitional bare lod-less column.
@@ -763,7 +790,11 @@ fn build_header(meta: &CityMetadata, tables: &PackageTables) -> Result<CityJSON>
 /// be named `material`, or `material_lod03` (which canonicalises to LoD 3 and
 /// would otherwise collide with the real `material_lod3`). Classifying by the
 /// reserved-role metadata rather than the name alone keeps such attributes out.
-pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usize, String)> {
+pub(crate) fn appearance_columns(
+    batch: &RecordBatch,
+    kind: AppearanceKind,
+) -> Vec<(usize, String)> {
+    let prefix = kind.prefix();
     batch
         .schema()
         .fields()
@@ -800,11 +831,36 @@ pub(crate) fn appearance_columns(batch: &RecordBatch, prefix: &str) -> Vec<(usiz
         .collect()
 }
 
+/// Which of the two appearance families a per-LoD column belongs to: the
+/// `material_lod*` columns or the `texture_lod*` ones. The two carry
+/// different cell types (`MaterialCell` / `TextureCell`) and so need
+/// different readers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AppearanceKind {
+    Material,
+    Texture,
+}
+
+impl AppearanceKind {
+    /// The column-name prefix this kind's per-LoD columns share
+    /// (`material_lod*` / `texture_lod*`).
+    fn prefix(self) -> &'static str {
+        match self {
+            AppearanceKind::Material => "material",
+            AppearanceKind::Texture => "texture",
+        }
+    }
+}
+
 /// Rebuild an object row's appearance into an in-memory `{"<lod>": <theme
 /// map>}` object from the pre-resolved appearance `columns` (see
-/// [`appearance_columns`]), keyed by each column's canonical LoD. This is the
-/// inverse of the encoder's per-LoD column layout: the downstream restore loop
-/// looks appearance up by a geometry's canonical LoD (`lod.to_string()`), and
+/// [`appearance_columns`]), keyed by each column's canonical LoD. `kind`
+/// picks which cell reader decodes the MAP column; each cell is handed on in
+/// its flat, one-entry-per-WKB-face form
+/// ([`crate::appearance_columns::MaterialCell::to_flat_value`]), which
+/// [`nest_by_shells`] re-nests before it is localised. This is the inverse of
+/// the encoder's per-LoD column layout: the downstream restore loop looks
+/// appearance up by a geometry's canonical LoD (`lod.to_string()`), and
 /// because both sides now derive that key from the same §9 column suffix, the
 /// raw-vs-canonical key mismatch the single-column layout had to detect (the
 /// former `appearance_lod_misses`) cannot arise. Returns `None` when the row
@@ -813,6 +869,7 @@ pub(crate) fn read_lod_keyed_appearance(
     batch: &RecordBatch,
     columns: &[(usize, String)],
     row: usize,
+    kind: AppearanceKind,
 ) -> Result<Option<Value>> {
     let mut map = serde_json::Map::new();
     for (index, lod_key) in columns {
@@ -820,14 +877,57 @@ pub(crate) fn read_lod_keyed_appearance(
         if col.is_null(row) {
             continue;
         }
-        let arr = col.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+        let arr = col.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
             err(format!(
-                "appearance column at index {index} is not a Utf8 array"
+                "appearance column at index {index} is not a MAP array"
             ))
         })?;
-        map.insert(lod_key.clone(), serde_json::from_str(arr.value(row))?);
+        let cell = match kind {
+            AppearanceKind::Material => read_material_cell(arr, row)?.map(|c| c.to_flat_value()),
+            AppearanceKind::Texture => read_texture_cell(arr, row)?.map(|c| c.to_flat_value()),
+        };
+        if let Some(cell) = cell {
+            map.insert(lod_key.clone(), cell);
+        }
     }
     Ok((!map.is_empty()).then_some(Value::Object(map)))
+}
+
+/// Re-nest one geometry's flat appearance map — `{"<theme>": {"values":
+/// [<per-face entry>, …]}}`, as the MAP cells store it — into the nesting
+/// CityJSON expects for `gtype`, by exactly the [`nest_faces`] rule the
+/// geometry's own `face_semantics` follows. Nesting applies at the FACE level
+/// only: a material entry is one index (or `null`), a texture entry is that
+/// face's whole ring list (`[[id, [u, v], …] | [null], …]`), and either way
+/// it travels through the partition as one opaque unit. The result is what
+/// [`LocalAppearance::localise_material_map`] /
+/// [`LocalAppearance::localise_texture_map`] consume, so this must run before
+/// the feature-local re-interning, not after it.
+pub(crate) fn nest_by_shells(
+    flat_theme_map: &Value,
+    props: Option<&Value>,
+    gtype: &GeometryType,
+) -> Result<Value> {
+    let obj = flat_theme_map.as_object().ok_or_else(|| {
+        err("appearance map must be a JSON object of theme -> {values}".to_string())
+    })?;
+    let mut out = serde_json::Map::with_capacity(obj.len());
+    for (theme, inner) in obj {
+        let values = inner
+            .as_object()
+            .and_then(|o| o.get("values"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                err(format!(
+                    "appearance theme '{theme}' must be an object with a 'values' array"
+                ))
+            })?;
+        let nested = nest_faces(values.clone(), props, gtype)?;
+        let mut new_inner = serde_json::Map::with_capacity(1);
+        new_inner.insert("values".to_string(), nested);
+        out.insert(theme.clone(), Value::Object(new_inner));
+    }
+    Ok(Value::Object(out))
 }
 
 /// Whether the rebuilt `{"<lod>": {...}}` appearance map (see
@@ -958,25 +1058,28 @@ impl<'a> LocalAppearance<'a> {
     }
 
     /// Localise one geometry's `material` member (the per-LoD map entry —
-    /// `{"<theme>": {"values": <nested global-ids|null>} | {"value":
-    /// <global-id>}}`, dataset-global indices) into the same shape with
-    /// feature-local indices.
+    /// `{"<theme>": {"values": <nested global-ids|null>}}`, dataset-global
+    /// indices, already re-nested by [`nest_by_shells`]) into the same shape
+    /// with feature-local indices. Every theme carries `values`: the columns
+    /// store one index per WKB face, so a source's whole-geometry `value`
+    /// broadcast is expanded on the way in and cannot come back out.
     fn localise_material_map(&mut self, map: &Value) -> Result<Value> {
         let obj = map.as_object().ok_or_else(|| {
-            err("material map must be a JSON object of theme -> {value|values}".to_string())
+            err("material map must be a JSON object of theme -> {values}".to_string())
         })?;
         let mut out = serde_json::Map::with_capacity(obj.len());
         for (theme, inner) in obj {
-            let inner_obj = inner
+            let values = inner
                 .as_object()
-                .ok_or_else(|| err(format!("material theme '{theme}' must be an object")))?;
-            let mut new_inner = serde_json::Map::with_capacity(inner_obj.len());
-            if let Some(v) = inner_obj.get("value") {
-                new_inner.insert("value".to_string(), self.localise_material_index(v, theme)?);
-            }
-            if let Some(v) = inner_obj.get("values") {
-                new_inner.insert("values".to_string(), self.localise_material_tree(v, theme)?);
-            }
+                .and_then(|o| o.get("values"))
+                .ok_or_else(|| {
+                    err(format!(
+                        "material theme '{theme}' must be an object with a 'values' entry"
+                    ))
+                })?;
+            let localised = self.localise_material_tree(values, theme)?;
+            let mut new_inner = serde_json::Map::with_capacity(1);
+            new_inner.insert("values".to_string(), localised);
             out.insert(theme.clone(), Value::Object(new_inner));
         }
         Ok(Value::Object(out))
@@ -1205,10 +1308,16 @@ fn rebuild_templates(
         let boundaries = reconstruct_boundaries(&decoded.kind, &gtype, props, &vmap)?;
         let semantics = rebuild_semantics(props, &gtype)?;
 
+        // A template's cells are flat per WKB face exactly like an object
+        // row's, so they are re-nested from the template's OWN
+        // `geometry_properties` before the header-scope localisation runs.
         let material = row
             .material
             .as_ref()
-            .map(|m| local_appearance.localise_material_map(m))
+            .map(|m| {
+                nest_by_shells(&m.to_flat_value(), props, &gtype)
+                    .and_then(|nested| local_appearance.localise_material_map(&nested))
+            })
             .transpose()
             .map_err(|e| {
                 err(format!(
@@ -1220,7 +1329,10 @@ fn rebuild_templates(
         let texture = row
             .texture
             .as_ref()
-            .map(|t| local_appearance.localise_texture_map(t))
+            .map(|t| {
+                nest_by_shells(&t.to_flat_value(), props, &gtype)
+                    .and_then(|nested| local_appearance.localise_texture_map(&nested))
+            })
             .transpose()
             .map_err(|e| {
                 err(format!(
@@ -1433,12 +1545,18 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
         };
         for batch in reader {
             let batch = batch?;
-            let material_cols = appearance_columns(&batch, "material");
-            let texture_cols = appearance_columns(&batch, "texture");
+            let material_cols = appearance_columns(&batch, AppearanceKind::Material);
+            let texture_cols = appearance_columns(&batch, AppearanceKind::Texture);
             let objects = decode_batch(&batch, &table_meta)?;
             for (row, obj) in objects.into_iter().enumerate() {
-                let material = read_lod_keyed_appearance(&batch, &material_cols, row)?;
-                let texture = read_lod_keyed_appearance(&batch, &texture_cols, row)?;
+                let material = read_lod_keyed_appearance(
+                    &batch,
+                    &material_cols,
+                    row,
+                    AppearanceKind::Material,
+                )?;
+                let texture =
+                    read_lod_keyed_appearance(&batch, &texture_cols, row, AppearanceKind::Texture)?;
                 let key = obj.feature_id.clone().unwrap_or_else(|| obj.id.clone());
                 object_count += 1;
                 groups.push(key, (obj, material, texture));
@@ -1490,22 +1608,30 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                     Some(local) => {
                         let material_hit = material.as_ref().and_then(|m| m.get(lod_key.as_str()));
                         let texture_hit = texture.as_ref().and_then(|t| t.get(lod_key.as_str()));
+                        // The cells are flat, one entry per WKB face; re-nest
+                        // them from `shells` exactly as `semantics.values`
+                        // above, THEN localise — `LocalAppearance` walks the
+                        // nested tree and preserves its shape.
                         if let Some(m) = material_hit {
-                            let localised = local.localise_material_map(m).map_err(|e| {
-                                err(format!(
-                                    "object {}: cannot restore material appearance: {e}",
-                                    obj.id
-                                ))
-                            })?;
+                            let localised = nest_by_shells(m, props.as_ref(), &gtype)
+                                .and_then(|nested| local.localise_material_map(&nested))
+                                .map_err(|e| {
+                                    err(format!(
+                                        "object {}: cannot restore material appearance: {e}",
+                                        obj.id
+                                    ))
+                                })?;
                             geom_material = Some(serde_json::from_value(localised)?);
                         }
                         if let Some(t) = texture_hit {
-                            let localised = local.localise_texture_map(t).map_err(|e| {
-                                err(format!(
-                                    "object {}: cannot restore texture appearance: {e}",
-                                    obj.id
-                                ))
-                            })?;
+                            let localised = nest_by_shells(t, props.as_ref(), &gtype)
+                                .and_then(|nested| local.localise_texture_map(&nested))
+                                .map_err(|e| {
+                                    err(format!(
+                                        "object {}: cannot restore texture appearance: {e}",
+                                        obj.id
+                                    ))
+                                })?;
                             geom_texture = Some(serde_json::from_value(localised)?);
                         }
                     }
@@ -1670,7 +1796,7 @@ mod tests {
         }
         let field = Field::new("material", DataType::Utf8, true).with_metadata(meta);
         let schema = Arc::new(Schema::new(vec![field]));
-        let col: ArrayRef = Arc::new(StringArray::from(vec![None::<&str>]));
+        let col: ArrayRef = Arc::new(arrow_array::StringArray::from(vec![None::<&str>]));
         RecordBatch::try_new(schema, vec![col]).unwrap()
     }
 
@@ -1681,7 +1807,7 @@ mod tests {
         // which would silently drop LoD0 appearance on export.
         let batch = bare_material_schema(Some("0"));
         assert_eq!(
-            appearance_columns(&batch, "material"),
+            appearance_columns(&batch, AppearanceKind::Material),
             vec![(0, "0".to_string())]
         );
     }
@@ -1691,7 +1817,7 @@ mod tests {
         // The zero-analysis-geometry fallback bare column carries no lod tag.
         let batch = bare_material_schema(None);
         assert_eq!(
-            appearance_columns(&batch, "material"),
+            appearance_columns(&batch, AppearanceKind::Material),
             vec![(0, String::new())]
         );
     }
@@ -1997,5 +2123,35 @@ mod tests {
         let empty = HashMap::new();
         let local = LocalAppearance::new(&empty, &empty);
         assert!(local.into_appearance(None).is_none());
+    }
+
+    /// The appearance columns store one entry per WKB face, exactly as
+    /// `face_semantics` does, so export must re-nest them from `shells` by
+    /// the same rule: a `Solid`'s per-shell partition, a surface type left
+    /// flat.
+    #[test]
+    fn nest_by_shells_mirrors_face_semantics_nesting() {
+        let props = serde_json::json!({"type": "Solid", "shells": [[2, 1]]});
+        let flat = serde_json::json!({"": {"values": [3, null, 4]}});
+        let nested = nest_by_shells(&flat, Some(&props), &GeometryType::Solid).unwrap();
+        assert_eq!(
+            nested,
+            serde_json::json!({"": {"values": [[3, null], [4]]}})
+        );
+        let flat_ms = serde_json::json!({"": {"values": [3, null]}});
+        assert_eq!(
+            nest_by_shells(&flat_ms, None, &GeometryType::MultiSurface).unwrap(),
+            flat_ms
+        );
+    }
+
+    /// A cell whose face count disagrees with `shells` is a corrupt package:
+    /// it must be an error, never a silent mis-partition that drops or
+    /// duplicates a face's appearance.
+    #[test]
+    fn nest_by_shells_rejects_a_length_that_disagrees_with_shells() {
+        let props = serde_json::json!({"type": "Solid", "shells": [[2, 1]]});
+        let flat = serde_json::json!({"": {"values": [3, null]}});
+        assert!(nest_by_shells(&flat, Some(&props), &GeometryType::Solid).is_err());
     }
 }

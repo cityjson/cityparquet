@@ -27,6 +27,8 @@ with the reasoning in `04-design-decisions/` and the genuinely unsettled parts i
 | `lib/duckdb-cityjson/` | DuckDB CityJSON extension — SQL-native CityJSON I/O and an executable prototype of the encoding. **Submodule** | its `CLAUDE.md`                             |
 | `lib/duckdb-3d/`       | DuckDB 3D extension — 3D solid processing (`SOLID_3D`). Strict TDD. **Submodule**                              | its `CLAUDE.md`                             |
 | `benchmark/`           | Three benchmark families: `formats/` (cross-format), `databases/` (vs cjdb / 3DCityDB v5), `plot/` (renderers) | `benchmark/README.md`                       |
+
+Generated benchmark inputs, evidence and summaries belong in the ignored `benchmark/runs/` directory. Do not place new benchmark outputs in a sibling checkout.
 | `test/`                | `TESTING.md`, the cross-module manual walkthrough, and `run-all.sh`                                            | —                                           |
 | `ai/design-notes/`     | Dated, unmaintained plans and specs — the record of decisions, not a description of the code                   | `ai/design-notes/README.md`                 |
 | `ai/mcp/`              | The **MCP server** — the specification, the function references, dataset description and sandboxed SQL, for agents | its `CLAUDE.md`                             |
@@ -53,16 +55,18 @@ with the reasoning in `04-design-decisions/` and the genuinely unsettled parts i
 - Recurring design principle: **separation of geometry from appearance**
   (material/texture), following OBJ/COLLADA/glTF precedent.
 
-## Two Cargo workspaces, and why
+## Three Cargo workspaces, and why
 
 `lib/cityparquet-rs` is the library. `benchmark/readbench` is the read
 benchmark's harness — **its own workspace**, living with the corpora, results,
 scripts and renderers it belongs to. `lib/citylake` is a third. Consequences:
 
 - `cd lib/cityparquet-rs && just check` gates the **library alone** and is
-  self-contained: no `uv`, no `jq`, no corpus. That is the point of the split.
-  The root `just check` runs both workspaces, the two harness suites, and the
-  MCP server's gate.
+  self-contained: no `uv`, no `jq`, no corpus, no local extension build. That
+  is the point of the split. The root `just check` runs all three workspaces
+  — the library's own gate, `benchmark/readbench`'s own gate, the two harness
+  suites (`plot-test` for `benchmark/plot`, `scripts-test` for
+  `benchmark/scripts`) and `citylake-check` — plus the MCP server's gate.
 - `benchmark/readbench` path-depends on `../../lib/cityparquet-rs/crates/core`
   and **must repeat the `[patch.crates-io] cjseq` line** — `[patch]` is honoured
   only in the workspace root being built, and without it the benchmark would
@@ -71,7 +75,7 @@ scripts and renderers it belongs to. `lib/citylake` is a third. Consequences:
   measured format's reader; a caret range would let a later release change what
   the published figures mean.
 - Recipes that reach both the library and the benchmark — `bench`,
-  `convert-all`, `write-bench`, `compression-bench`, the fetchers, the
+  `convert-all`, `write-bench`, `variant-bench`, the fetchers, the
   renderers, `plot-test`, `scripts-test`, `catalog-*` — are in the **root
   `justfile`** and run from the repository root.
 - The four per-dataset recipes live in ONE file because
@@ -97,7 +101,8 @@ cd lib/cityparquet-rs && just check  # the Rust gate
 just plot-test                       # benchmark plotting suite   (needs uv)
 just scripts-test                    # benchmark shell suites     (needs jq)
 just mcp-check                       # the MCP server's gate      (needs pnpm)
-just check                           # all four, from the root
+just citylake-check                  # CityLake's gate            (needs a local duckdb-cityjson build)
+just check                           # all five, from the root
 just docs-build                      # the specification site     (needs pnpm)
 ```
 
@@ -111,6 +116,14 @@ to compare it against the committed one — so `just check` (and `just
 mcp-check` and `just mcp-corpus` on their own) fail with an ENOENT deep inside
 the corpus build on a fresh clone that has not run `just setup` or `just
 setup-shallow` first.
+
+**`citylake-check` needs a local `duckdb-cityjson` build.** CityLake's
+integration tests exercise the `cityparquet_*` package pragmas, which the
+published community extension does not carry — so `just citylake-check` looks
+for `lib/duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension`
+and points `CITYLAKE_CITYJSON_EXTENSION` at it when found. Run `just -f
+lib/duckdb-cityjson/justfile build` first, or export
+`CITYLAKE_CITYJSON_EXTENSION` yourself to point at a build elsewhere.
 
 ## Submodules
 

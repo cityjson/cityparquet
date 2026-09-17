@@ -84,8 +84,8 @@ inferred from the data, it produces:
 | --- | --- | --- |
 | `geometry_lodX_Y` | BLOB | WKB-encoded geometry for that LoD (NULL if absent) |
 | `geometry_properties_lodX_Y` | STRUCT | Geometry metadata in CityParquet's [geometry-and-semantics](/specification/geometry-semantics) form: `STRUCT("type" VARCHAR, surfaces VARCHAR, face_semantics INTEGER[], shells INTEGER[][])` |
-| `material_lodX_Y` | VARCHAR | Per-surface material map for that LoD as JSON text (see [appearance](/specification/appearance-templates)); NULL if none |
-| `texture_lodX_Y` | VARCHAR | Per-surface texture map for that LoD as JSON text; NULL if none |
+| `material_lodX_Y` | `MAP(VARCHAR, BIGINT[])` | Theme → one id (or NULL) per WKB face for that LoD (see [appearance](/specification/appearance-templates)); NULL if none |
+| `texture_lodX_Y` | `MAP(VARCHAR, STRUCT(id BIGINT, uv DOUBLE[][])[][])` | Theme → per WKB face → per ring → the id and its inlined `[u, v]` pairs; NULL if none |
 
 The WKB cannot carry semantics or a solid's shell structure, so those live in
 `geometry_properties` as a flattened, WKB-face-aligned STRUCT — `type` always,

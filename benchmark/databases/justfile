@@ -1,5 +1,29 @@
 compose := "podman-compose -f docker/compose.yml"
 
+# All mutable database state is an explicit bind mount below the shared
+# benchmark data root, never a named Podman volume.
+[private]
+isolated-up DATA_ROOT SRID:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{DATA_ROOT}}"
+    allowed="$(cd .. && pwd)/runs"
+    case "$root" in "$allowed"|"$allowed"/*) ;; *) echo "DATA_ROOT must be below $allowed" >&2; exit 2;; esac
+    db_root="$root/databases"
+    mkdir -p "$db_root"
+    rm -rf "$db_root/cjdb" "$db_root/citydb"
+    mkdir -p "$db_root/cjdb" "$db_root/citydb"
+    CITYBENCH_DB_ROOT="$db_root" CITYDB_SRID="{{SRID}}" {{compose}} up -d
+
+[private]
+isolated-down DATA_ROOT:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{DATA_ROOT}}"
+    allowed="$(cd .. && pwd)/runs"
+    case "$root" in "$allowed"|"$allowed"/*) ;; *) echo "DATA_ROOT must be below $allowed" >&2; exit 2;; esac
+    CITYBENCH_DB_ROOT="$root/databases" {{compose}} down
+
 # Start both benchmark databases and wait for REAL readiness.
 #
 # I6 (final whole-branch review): `podman-compose up -d --wait` does not
@@ -54,7 +78,7 @@ derive-params DATASET:
     uv run python -m citybench.cli derive-params --dataset {{DATASET}}
 
 bench DATASET REPEAT='7':
-    uv run python -m citybench.cli bench --dataset {{DATASET}} --repeat {{REPEAT}}
+    uv run python -m citybench.cli run --dataset {{DATASET}} --repeat {{REPEAT}}
 
 # Full pipeline on the small fixture. Must pass before any long run.
 smoke:

@@ -1,0 +1,16 @@
+dataset,format,scenario,sample,time_s,peak_rss_bytes
+vienna_102081,citygml,write,1,4.073970,670310400
+vienna_102081,citygml,write,2,4.303459,669192192
+vienna_102081,citygml,write,3,4.582402,622227456
+vienna_102081,cityjson,write,1,0.400712,58085376
+vienna_102081,cityjson,write,2,0.389589,58093568
+vienna_102081,cityjson,write,3,0.403849,58466304
+vienna_102081,cityjsonseq,write,1,0.003623,14680064
+vienna_102081,cityjsonseq,write,2,0.002272,14680064
+vienna_102081,cityjsonseq,write,3,0.002703,14680064
+vienna_102081,flatcitybuf,write,1,0.311966,41943040
+vienna_102081,flatcitybuf,write,2,0.292529,41943040
+vienna_102081,flatcitybuf,write,3,0.298235,41943040
+vienna_102081,cityparquet-hilbert,write,1,0.622934,91029504
+vienna_102081,cityparquet-hilbert,write,2,0.622607,95199232
+vienna_102081,cityparquet-hilbert,write,3,0.605211,95203328

@@ -9,7 +9,7 @@
 # benchmark's claim is a comparison BETWEEN formats, so a dataset that cannot
 # produce every format contributes a row with a hole in it — and the previous
 # corpus had holes in exactly the datasets a reader recognises. See
-# benchmark/formats/archive/2026-08-17-catalogue-corpus/README.md for what was retired and
+# the retired catalogue corpus/README.md for what was retired and
 # why. Depth over breadth: six datasets that are fully comparable beat thirty
 # that are partly comparable.
 #

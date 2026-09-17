@@ -173,6 +173,20 @@ fn run_produces_the_exact_csv_contract_with_medians_and_selectivity_derived_from
     );
 
     let rows: Vec<Row> = lines.map(Row::parse).collect();
+    let samples: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("out.csv.samples.json")).unwrap(),
+    )
+    .unwrap();
+    let samples = samples.as_array().unwrap();
+    assert_eq!(samples.len(), 24, "8 measurements x warmup + 2 samples");
+    assert_eq!(
+        samples
+            .iter()
+            .filter(|sample| sample["warmup"] == true)
+            .count(),
+        8
+    );
+
     // 2 formats x (1 count row + 3 bbox-selectivity rows) = 8 data rows.
     assert_eq!(
         rows.len(),

@@ -36,6 +36,19 @@
 //! was not reachable), and [`Scenario::IdLookup`] one per probe
 //! (`id-10pct`, `id-50pct`, `id-90pct`, `id-miss`).
 //!
+//! **`--variants`: the configuration run.** Given variant ids rather than
+//! formats, this module measures ONE format's writer axes instead of
+//! comparing formats: per variant it spawns `--child --write` (a warmup plus
+//! `write_repeat` warm repeats, each converting the prepared CityJSONSeq
+//! artefact into a scratch directory inside `prepared_dir`), keeps the last
+//! repeat's package as `<prepared_dir>/<base>.<id>.parquet`, and then runs
+//! the ordinary read children against it. The CSV keeps its shape — the
+//! variant id goes in the `format` column, and the conversion is a `write`
+//! row — and the packages' sizes go to `sizes.csv` beside it (see
+//! [`write_sizes`]). Every write runs before any read, so the two kinds of
+//! load never interleave; the rows are sorted back into per-variant groups
+//! before they are written.
+//!
 //! **Self-consistency (disclosed, never a hard failure).** After the
 //! `AttrFilter` scenario has run for every resolved format, this module
 //! compares their `result_count`s: `object_type` equality is CityObject-level
@@ -57,6 +70,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use cityparquet::variant::Variant;
 use cityparquet_readbench::format::{Artefact, Format};
 use cityparquet_readbench::naming::strip_known_extension;
 
@@ -75,7 +89,7 @@ pub struct RunOptions {
     /// artefact `benchmark/scripts/readbench_prepare.sh` built there.
     pub input: PathBuf,
     /// Directory `just readbench-prepare` wrote the per-format artefacts
-    /// into (default `benchmark/formats/data/readbench`).
+    /// into (default `benchmark/runs/data/readbench`).
     pub prepared_dir: PathBuf,
     /// Result CSV path; this run OWNS the file (fresh truncate + write).
     pub out: PathBuf,
@@ -85,9 +99,21 @@ pub struct RunOptions {
     /// Requested formats; `None`/empty selects [`Format::DEFAULT_SET`], the
     /// format-comparison set.
     pub formats: Option<Vec<Format>>,
+    /// Requested variant ids (`cityparquet::variant`'s grammar). When set,
+    /// this is a CONFIGURATION run rather than a format comparison: every id
+    /// is converted by a write child into
+    /// `<prepared_dir>/<base>.<id>.parquet` and then read by the CityParquet
+    /// runner. Exclusive with `formats`; local transport only.
+    pub variants: Option<Vec<String>>,
+    /// Warm write repeats per variant (a discarded warmup precedes them);
+    /// read only on a `variants` run, where it must be >= 1.
+    pub write_repeat: usize,
     /// Requested scenario names (canonical [`Scenario::as_str`] spelling,
     /// case-insensitive); `None`/empty selects every [`Scenario::ALL`].
     pub scenarios: Option<Vec<String>>,
+    /// Optional subset of resolved `id-lookup` probe tags. Configuration runs
+    /// use this to hold lookup position at 50%; format comparisons retain all.
+    pub id_probes: Option<Vec<String>>,
     /// After the warm matrix, run one additional `FullRead` per format,
     /// tagged `cold` in `notes` (see [`run`]'s own doc comment on the
     /// `sudo purge` protocol this does NOT automate).
@@ -125,6 +151,41 @@ pub fn params_sidecar_path(out: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Raw child-process samples beside the aggregate CSV. Warmups are retained
+/// and labelled, so a published aggregate can always be recomputed.
+#[derive(Debug, serde::Serialize)]
+struct Sample {
+    dataset: String,
+    format: String,
+    scenario: String,
+    query_tag: String,
+    sample_index: usize,
+    warmup: bool,
+    time_s: f64,
+    peak_rss_bytes: u64,
+    peak_heap_bytes: u64,
+    result_count: u64,
+}
+
+fn samples_sidecar_path(out: &Path) -> PathBuf {
+    let mut name = out.as_os_str().to_os_string();
+    name.push(".samples.json");
+    PathBuf::from(name)
+}
+
+fn write_samples(out: &Path, samples: &[Sample]) -> Result<()> {
+    let target = samples_sidecar_path(out);
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating sample sidecar beside {}", target.display()))?;
+    serde_json::to_writer_pretty(&mut temporary, samples).context("serialising raw samples")?;
+    temporary
+        .persist(&target)
+        .map_err(|error| error.error)
+        .with_context(|| format!("atomically writing {}", target.display()))?;
+    Ok(())
+}
+
 /// Runs `opts`'s whole (format x scenario) matrix, writing `opts.out` fresh.
 pub fn run(opts: &RunOptions) -> Result<()> {
     if opts.repeat == 0 {
@@ -132,6 +193,22 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     }
     if opts.transport == Transport::Http && opts.base_url.is_none() {
         bail!("--transport http requires --base-url");
+    }
+    // A CSV is either a format comparison or a configuration run; the two
+    // answer different questions and share one `format` column.
+    let variants = match (&opts.formats, &opts.variants) {
+        (Some(f), Some(v)) if !f.is_empty() && !v.is_empty() => bail!(
+            "--formats and --variants are exclusive: a CSV is either a format comparison or a \
+             configuration run, never both"
+        ),
+        (_, Some(v)) if !v.is_empty() => Some(parse_variant_list(v)?),
+        _ => None,
+    };
+    if variants.is_some() && opts.transport == Transport::Http {
+        bail!("--variants runs on --transport local only: there is no server-side write");
+    }
+    if variants.is_some() && opts.write_repeat == 0 {
+        bail!("--write-repeat must be >= 1");
     }
 
     let dataset = opts
@@ -152,83 +229,94 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // comment).
     let cp_table = locate_cityparquet_table(&opts.prepared_dir, base)?;
 
-    // Who chose the format list matters to how a skip below is reported: an
-    // operator who NAMED a format is told about it once, in passing; a
-    // default-set run that quietly measured a subset would otherwise be
-    // published as "the format comparison" (see the summary after this loop).
-    let (requested_formats, chosen_by_default): (Vec<Format>, bool) = match &opts.formats {
-        Some(v) if !v.is_empty() => (v.clone(), false),
-        _ => (Format::DEFAULT_SET.to_vec(), true),
-    };
+    // The measured sources, each with the LABEL its `format` column carries
+    // (a format name here; a variant id on a `--variants` run). A
+    // configuration run resolves nothing in this block: its sources are the
+    // packages its own write children have yet to produce, so it is filled
+    // in after the CSV header is written, below.
+    let mut resolved_formats: Vec<(Format, Source, String)> = Vec::new();
+    if variants.is_none() {
+        // Who chose the format list matters to how a skip below is reported: an
+        // operator who NAMED a format is told about it once, in passing; a
+        // default-set run that quietly measured a subset would otherwise be
+        // published as "the format comparison" (see the summary after this loop).
+        let (requested_formats, chosen_by_default): (Vec<Format>, bool) = match &opts.formats {
+            Some(v) if !v.is_empty() => (v.clone(), false),
+            _ => (Format::DEFAULT_SET.to_vec(), true),
+        };
 
-    let mut skipped_formats: Vec<Format> = Vec::new();
-    let mut resolved_formats: Vec<(Format, Source)> = Vec::new();
-    for &format in &requested_formats {
-        match resolve_format_artefact(
-            format,
-            &opts.prepared_dir,
-            base,
-            opts.transport,
-            opts.base_url.as_deref(),
-        ) {
-            ArtefactResolution::Source(Source::Local(path)) if path.exists() => {
-                resolved_formats.push((format, Source::Local(path)));
-            }
-            ArtefactResolution::Source(Source::Local(path)) => {
-                skipped_formats.push(format);
-                eprintln!(
-                    "cityparquet-readbench: skipping format '{format}': missing artefact {} \
-                     (run `just readbench-prepare {}` first)",
-                    path.display(),
-                    opts.input.display()
-                )
-            }
-            // Optimistic, no existence check: a missing remote object
-            // surfaces as a natural child-process error, not a preflight
-            // HEAD request this coordinator would otherwise need to make.
-            ArtefactResolution::Source(source @ Source::Http { .. }) => {
-                resolved_formats.push((format, source));
-            }
-            ArtefactResolution::NotCoordinated => {
-                skipped_formats.push(format);
-                eprintln!(
-                    "cityparquet-readbench: skipping format '{format}': driven by \
-                     benchmark/scripts/readbench_duckdb.sh, not this coordinator"
-                )
-            }
-            ArtefactResolution::NonUtf8Key => {
-                skipped_formats.push(format);
-                eprintln!(
-                    "cityparquet-readbench: skipping format '{format}': its artefact path is not \
-                     valid UTF-8, so no HTTP key can be derived from it"
-                )
+        let mut skipped_formats: Vec<Format> = Vec::new();
+        for &format in &requested_formats {
+            match resolve_format_artefact(
+                format,
+                &opts.prepared_dir,
+                base,
+                opts.transport,
+                opts.base_url.as_deref(),
+            ) {
+                ArtefactResolution::Source(Source::Local(path)) if path.exists() => {
+                    resolved_formats.push((
+                        format,
+                        Source::Local(path),
+                        format.as_str().to_string(),
+                    ));
+                }
+                ArtefactResolution::Source(Source::Local(path)) => {
+                    skipped_formats.push(format);
+                    eprintln!(
+                        "cityparquet-readbench: skipping format '{format}': missing artefact {} \
+                         (run `just readbench-prepare {}` first)",
+                        path.display(),
+                        opts.input.display()
+                    )
+                }
+                // Optimistic, no existence check: a missing remote object
+                // surfaces as a natural child-process error, not a preflight
+                // HEAD request this coordinator would otherwise need to make.
+                ArtefactResolution::Source(source @ Source::Http { .. }) => {
+                    resolved_formats.push((format, source, format.as_str().to_string()));
+                }
+                ArtefactResolution::NotCoordinated => {
+                    skipped_formats.push(format);
+                    eprintln!(
+                        "cityparquet-readbench: skipping format '{format}': driven by \
+                         benchmark/scripts/readbench_duckdb.sh, not this coordinator"
+                    )
+                }
+                ArtefactResolution::NonUtf8Key => {
+                    skipped_formats.push(format);
+                    eprintln!(
+                        "cityparquet-readbench: skipping format '{format}': its artefact path is \
+                         not valid UTF-8, so no HTTP key can be derived from it"
+                    )
+                }
             }
         }
-    }
-    if resolved_formats.is_empty() {
-        bail!(
-            "no requested format has a present artefact for dataset '{dataset}'; nothing to run \
-             (run `just readbench-prepare {}` first)",
-            opts.input.display()
-        );
-    }
-    // A skip is one line of noise when the operator NAMED the format — they
-    // know what they asked for. When the coordinator itself chose the
-    // format-comparison set, an incomplete run produces a CSV that LOOKS like
-    // the comparison but silently omits formats, so it is reported as the
-    // spoiled result it is (loudly, and only for the default set).
-    if chosen_by_default && !skipped_formats.is_empty() {
-        let missing: Vec<&str> = skipped_formats.iter().map(|f| f.as_str()).collect();
-        eprintln!(
-            "cityparquet-readbench: WARNING: this run measured {} of the {} formats in the \
-             default format-comparison set, so its results are not a complete format \
-             comparison; missing: {}. Run `just readbench-prepare {}` to build every artefact, \
-             or pass an explicit --formats to measure a subset deliberately.",
-            resolved_formats.len(),
-            requested_formats.len(),
-            missing.join(", "),
-            opts.input.display()
-        );
+        if resolved_formats.is_empty() {
+            bail!(
+                "no requested format has a present artefact for dataset '{dataset}'; nothing to \
+                 run (run `just readbench-prepare {}` first)",
+                opts.input.display()
+            );
+        }
+        // A skip is one line of noise when the operator NAMED the format — they
+        // know what they asked for. When the coordinator itself chose the
+        // format-comparison set, an incomplete run produces a CSV that LOOKS like
+        // the comparison but silently omits formats, so it is reported as the
+        // spoiled result it is (loudly, and only for the default set).
+        if chosen_by_default && !skipped_formats.is_empty() {
+            let missing: Vec<&str> = skipped_formats.iter().map(|f| f.as_str()).collect();
+            eprintln!(
+                "cityparquet-readbench: WARNING: this run measured {} of the {} formats in the \
+                 default format-comparison set, so its results are not a complete format \
+                 comparison; missing: {}. Run `just readbench-prepare {}` to build every \
+                 artefact, or pass an explicit --formats to measure a subset deliberately.",
+                resolved_formats.len(),
+                requested_formats.len(),
+                missing.join(", "),
+                opts.input.display()
+            );
+        }
     }
 
     let scenarios: Vec<Scenario> = match &opts.scenarios {
@@ -262,12 +350,41 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         }
         Artefact::NotCoordinated => None,
     };
-    let resolved = params::resolve(
+    let mut resolved = params::resolve(
         &dataset,
         &cp_table,
         seq_path.as_deref(),
         gml_path.as_deref(),
     )?;
+
+    if let Some(requested) = &opts.id_probes {
+        if requested.is_empty() {
+            bail!("--id-probes must name at least one resolved probe tag");
+        }
+        let available: Vec<&str> = resolved
+            .id_probes
+            .iter()
+            .map(|probe| probe.tag.as_str())
+            .collect();
+        let unknown: Vec<&String> = requested
+            .iter()
+            .filter(|tag| !available.iter().any(|available| available == &tag.as_str()))
+            .collect();
+        if !unknown.is_empty() {
+            bail!(
+                "--id-probes requested unavailable tag(s) {}; available: {}",
+                unknown
+                    .iter()
+                    .map(|tag| tag.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                available.join(", ")
+            );
+        }
+        resolved
+            .id_probes
+            .retain(|probe| requested.iter().any(|tag| tag == &probe.tag));
+    }
 
     eprintln!(
         "cityparquet-readbench: derived params for '{dataset}': windows={:?}, object_type \
@@ -322,12 +439,63 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // concerns instead of living only on stderr, where a spoiled run looks
     // exactly like a clean one to anyone reading the artefact.
     let mut rows: Vec<Row> = Vec::new();
+    let mut samples: Vec<Sample> = Vec::new();
 
-    // AttrFilter's result_count per format, collected for the
-    // self-consistency check below.
-    let mut attr_filter_counts: HashMap<Format, u64> = HashMap::new();
+    // A configuration run's own sources: one write child per variant, timed
+    // into `rows` and measured into `sizes`, each leaving the package the
+    // read children below then run against. It happens here, after the
+    // sidecar and the header, so a run that dies in a write still leaves a
+    // clean, empty CSV and the parameters it was going to measure with.
+    //
+    // Order: every write first, then every read. Writing and reading one
+    // variant at a time would interleave two different kinds of load on the
+    // page cache; the CSV is sorted back into per-variant groups at the end
+    // (see the sort before the rows are written).
+    let mut sizes: Vec<SizeRow> = Vec::new();
+    let variant_seq: Option<PathBuf> = match &variants {
+        None => None,
+        Some(_) => Some(seq_path.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--variants needs the prepared CityJSONSeq artefact {}.city.jsonl to convert \
+                 from (run `just readbench-prepare {}` first)",
+                base,
+                opts.input.display()
+            )
+        })?),
+    };
+    if let Some(list) = &variants {
+        let seq = variant_seq
+            .as_deref()
+            .expect("set together with `variants`");
+        for (id, _) in list {
+            let package = run_write(
+                &mut rows,
+                &mut samples,
+                &dataset,
+                base,
+                id,
+                &opts.prepared_dir,
+                seq,
+                opts.write_repeat,
+            )?;
+            sizes.push(SizeRow {
+                dataset: base.to_string(),
+                label: id.clone(),
+                bytes: dir_bytes(&package)?,
+            });
+            resolved_formats.push((Format::CityParquet, Source::Local(package), id.clone()));
+        }
+    }
 
-    for &(format, ref source) in &resolved_formats {
+    // AttrFilter's result_count per measured label, collected for the
+    // self-consistency check below. Keyed by the LABEL rather than the
+    // format so a configuration run compares its variants against each other
+    // — on a format run every label is that format's own name, so nothing
+    // changes there.
+    let mut attr_filter_counts: HashMap<String, u64> = HashMap::new();
+
+    for (format, source, label) in &resolved_formats {
+        let format = *format;
         let total = total_count_for(format, source)
             .with_context(|| format!("deriving total count for format '{format}'"))?;
 
@@ -336,8 +504,10 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 Scenario::Count | Scenario::FullRead => {
                     run_measurement(
                         &mut rows,
+                        &mut samples,
                         &dataset,
                         format,
+                        label,
                         source,
                         *scenario,
                         &QueryParams::default(),
@@ -363,8 +533,10 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         };
                         run_measurement(
                             &mut rows,
+                            &mut samples,
                             &dataset,
                             format,
+                            label,
                             source,
                             *scenario,
                             &params,
@@ -385,8 +557,10 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                     let notes = format!("object_type={}", resolved.object_type);
                     let count = run_measurement(
                         &mut rows,
+                        &mut samples,
                         &dataset,
                         format,
+                        label,
                         source,
                         *scenario,
                         &params,
@@ -394,7 +568,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         Some(resolved.cp_object_total),
                         &notes,
                     )?;
-                    attr_filter_counts.insert(format, count);
+                    attr_filter_counts.insert(label.clone(), count);
                 }
                 Scenario::AttrStats | Scenario::Project => match &resolved.numeric_attr {
                     Some(column) => {
@@ -405,8 +579,10 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         let notes = format!("attr={column}");
                         run_measurement(
                             &mut rows,
+                            &mut samples,
                             &dataset,
                             format,
+                            label,
                             source,
                             *scenario,
                             &params,
@@ -442,8 +618,10 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         }
                         run_measurement(
                             &mut rows,
+                            &mut samples,
                             &dataset,
                             format,
+                            label,
                             source,
                             *scenario,
                             &params,
@@ -465,8 +643,8 @@ pub fn run(opts: &RunOptions) -> Result<()> {
             let line = spawn_child(format, Scenario::FullRead, source, &QueryParams::default())?;
             let row = Row {
                 dataset: dataset.clone(),
-                format,
-                scenario: Scenario::FullRead,
+                label: label.clone(),
+                measure: Measure::Read(Scenario::FullRead),
                 selectivity: None,
                 result_count: line.result_count,
                 time_s: line.time_s,
@@ -475,7 +653,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 peak_rss_bytes: line.ru_maxrss_bytes,
                 repeat: 1,
                 // Exactly `cold`, and nothing else ever appended:
-                // `benchmark/plot/readbench_plot/plot.py` drops a cold row with
+                // `the benchmark renderer` drops a cold row with
                 // an EXACT `notes == "cold"` test, so a tag alongside it
                 // would put the purged-cache measurement into the warm
                 // charts. Nothing is lost by it — the only disclosures a
@@ -514,12 +692,62 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         }
     }
 
+    // A configuration run groups its rows per variant, write first, so a CSV
+    // reads top to bottom the way the recipe listed the variants (the writes
+    // all happened before the reads; see the variants block above).
+    // `sort_by_key` is stable, so the read rows keep their scenario order
+    // within each group.
+    if let Some(list) = &variants {
+        let position = |label: &str| {
+            list.iter()
+                .position(|(id, _)| id == label)
+                .unwrap_or(usize::MAX)
+        };
+        rows.sort_by_key(|r| (position(&r.label), r.measure != Measure::Write));
+    }
+
     for row in &rows {
         writeln!(csv, "{}", row.render()).context("writing a CSV row")?;
     }
 
+    write_samples(&opts.out, &samples)?;
+
+    if variants.is_some() {
+        let seq = variant_seq
+            .as_deref()
+            .expect("set together with `variants`");
+        write_sizes(&opts.out, base, seq, &sizes)?;
+    }
+
     Ok(())
 }
+
+/// The variant list, parsed, de-duplicated by canonical id, and required to
+/// carry the bare `cityparquet` baseline every ratio is taken against.
+fn parse_variant_list(ids: &[String]) -> Result<Vec<(String, Variant)>> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::with_capacity(ids.len());
+    for raw in ids {
+        let variant = Variant::parse(raw).map_err(|e| anyhow::anyhow!("--variants: {e}"))?;
+        let id = variant.id();
+        if seen.contains(&id) {
+            bail!("--variants: duplicate variant '{id}'");
+        }
+        seen.push(id.clone());
+        out.push((id, variant));
+    }
+    if !seen.iter().any(|id| id == VARIANT_BASELINE) {
+        bail!(
+            "--variants must include the bare '{VARIANT_BASELINE}' baseline: every ratio on a \
+             configuration axis is taken against it"
+        );
+    }
+    Ok(out)
+}
+
+/// The variant every configuration axis is measured against — the recipe
+/// CityParquet ships with, spelled bare.
+const VARIANT_BASELINE: &str = "cityparquet";
 
 /// The `notes` tag a spoiled cross-format comparison carries into the CSV.
 ///
@@ -535,7 +763,7 @@ const ATTR_FILTER_MISMATCH: &str = "attr-filter-count-mismatch";
 fn tag_attr_filter_mismatch(rows: &mut [Row]) {
     for row in rows
         .iter_mut()
-        .filter(|r| r.scenario == Scenario::AttrFilter)
+        .filter(|r| r.measure == Measure::Read(Scenario::AttrFilter))
     {
         row.notes.push(ATTR_FILTER_MISMATCH.to_string());
     }
@@ -830,8 +1058,10 @@ fn total_count_for(format: Format, source: &Source) -> Result<u64> {
 #[allow(clippy::too_many_arguments)]
 fn run_measurement(
     rows: &mut Vec<Row>,
+    samples: &mut Vec<Sample>,
     dataset: &str,
     format: Format,
+    label: &str,
     source: &Source,
     scenario: Scenario,
     params: &QueryParams,
@@ -855,6 +1085,18 @@ fn run_measurement(
 
     for i in 0..=repeat {
         let line = spawn_child(format, scenario, source, params)?;
+        samples.push(Sample {
+            dataset: dataset.to_string(),
+            format: label.to_string(),
+            scenario: scenario.to_string(),
+            query_tag: notes.to_string(),
+            sample_index: i,
+            warmup: i == 0,
+            time_s: line.time_s,
+            peak_rss_bytes: line.ru_maxrss_bytes,
+            peak_heap_bytes: line.peak_heap_bytes,
+            result_count: line.result_count,
+        });
         if i == 0 {
             // Warmup: discarded entirely (never contributes to the median,
             // the MAX peak metrics, or `result_count`).
@@ -888,8 +1130,8 @@ fn run_measurement(
 
     rows.push(Row {
         dataset: dataset.to_string(),
-        format,
-        scenario,
+        label: label.to_string(),
+        measure: Measure::Read(scenario),
         selectivity,
         result_count,
         time_s,
@@ -902,6 +1144,126 @@ fn run_measurement(
     });
 
     Ok(result_count)
+}
+
+/// One variant's write: a discarded warmup and `write_repeat` warm repeats,
+/// each a child process converting into a fresh directory INSIDE
+/// `prepared_dir` (a rename across filesystems would fail, and a 1M-object
+/// package does not belong in /tmp). The last repeat's package is kept as
+/// `<prepared_dir>/<base>.<id>.parquet`; returns that path.
+fn run_write(
+    rows: &mut Vec<Row>,
+    samples: &mut Vec<Sample>,
+    dataset: &str,
+    base: &str,
+    id: &str,
+    prepared_dir: &Path,
+    seq: &Path,
+    write_repeat: usize,
+) -> Result<PathBuf> {
+    let self_exe = std::env::current_exe().context("cannot determine own executable path")?;
+    let mut times = Vec::with_capacity(write_repeat);
+    let mut peak_heap_max = 0u64;
+    let mut peak_rss_max = 0u64;
+    let mut object_count: Option<u64> = None;
+    let mut kept: Option<tempfile::TempDir> = None;
+
+    for i in 0..=write_repeat {
+        let scratch = tempfile::Builder::new()
+            .prefix(&format!(".{base}.{id}.repeat."))
+            .tempdir_in(prepared_dir)
+            .with_context(|| {
+                format!("creating a scratch directory in {}", prepared_dir.display())
+            })?;
+        let out = scratch.path().join("pkg");
+        let output = Command::new(&self_exe)
+            .arg("--child")
+            .arg("--write")
+            .arg("--variant")
+            .arg(id)
+            .arg("--input")
+            .arg(seq)
+            .arg("--out")
+            .arg(&out)
+            .output()
+            .with_context(|| format!("spawning the write child (variant={id})"))?;
+        if !output.status.success() {
+            bail!(
+                "write child failed (variant={id}); stderr:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let stdout =
+            String::from_utf8(output.stdout).context("write child stdout was not valid UTF-8")?;
+        let fields: Vec<&str> = stdout.split_whitespace().collect();
+        if fields.len() != 4 {
+            bail!(
+                "expected 4 fields from the write child, got {} in '{}'",
+                fields.len(),
+                stdout.trim()
+            );
+        }
+        let time_s: f64 = fields[0]
+            .parse()
+            .with_context(|| format!("parsing time_s from '{}'", fields[0]))?;
+        let heap: u64 = fields[1]
+            .parse()
+            .with_context(|| format!("parsing peak_heap_bytes from '{}'", fields[1]))?;
+        let rss: u64 = fields[2]
+            .parse()
+            .with_context(|| format!("parsing ru_maxrss_bytes from '{}'", fields[2]))?;
+        let count: u64 = fields[3]
+            .parse()
+            .with_context(|| format!("parsing object_count from '{}'", fields[3]))?;
+        samples.push(Sample {
+            dataset: dataset.to_string(),
+            format: id.to_string(),
+            scenario: "write".to_string(),
+            query_tag: String::new(),
+            sample_index: i,
+            warmup: i == 0,
+            time_s,
+            peak_rss_bytes: rss,
+            peak_heap_bytes: heap,
+            result_count: count,
+        });
+        if i == 0 {
+            continue; // warmup: the directory drops here and is deleted
+        }
+        times.push(time_s);
+        peak_heap_max = peak_heap_max.max(heap);
+        peak_rss_max = peak_rss_max.max(rss);
+        object_count = Some(count);
+        kept = Some(scratch); // an earlier warm repeat's TempDir drops and is deleted
+    }
+
+    let kept = kept.expect("write_repeat >= 1 guarantees a kept repeat");
+    let target = prepared_dir.join(format!("{base}.{id}.parquet"));
+    if target.exists() {
+        fs::remove_dir_all(&target)
+            .with_context(|| format!("removing the previous {}", target.display()))?;
+    }
+    let scratch = kept.keep();
+    fs::rename(scratch.join("pkg"), &target)
+        .with_context(|| format!("moving the kept package to {}", target.display()))?;
+    fs::remove_dir(&scratch).with_context(|| format!("removing {}", scratch.display()))?;
+
+    let time_s = median(&times);
+    rows.push(Row {
+        dataset: dataset.to_string(),
+        label: id.to_string(),
+        measure: Measure::Write,
+        selectivity: None,
+        result_count: object_count.expect("at least one warm repeat"),
+        time_s,
+        time_mad_s: mad(&times, time_s),
+        peak_heap_bytes: peak_heap_max,
+        peak_rss_bytes: peak_rss_max,
+        repeat: write_repeat,
+        notes: Vec::new(),
+        io: None,
+    });
+    Ok(target)
 }
 
 /// The median of `values` (must be non-empty).
@@ -923,6 +1285,24 @@ fn mad(values: &[f64], med: f64) -> f64 {
     median(&deviations)
 }
 
+/// What one CSV row measured: a conversion or one read scenario. `write`
+/// never enters [`Scenario::ALL`], so `--scenarios write` is rejected by the
+/// scenario parser and a write row can only come from the `--variants` path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Measure {
+    Write,
+    Read(Scenario),
+}
+
+impl std::fmt::Display for Measure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Measure::Write => f.write_str("write"),
+            Measure::Read(s) => f.write_str(s.as_str()),
+        }
+    }
+}
+
 /// One results-CSV row, held until the whole matrix has run.
 ///
 /// Everything but `notes` is fixed the moment its measurement finishes;
@@ -933,8 +1313,10 @@ fn mad(values: &[f64], med: f64) -> f64 {
 /// [`ATTR_FILTER_MISMATCH`]).
 struct Row {
     dataset: String,
-    format: Format,
-    scenario: Scenario,
+    /// What the `format` column prints: `format.as_str()` on a format run,
+    /// the variant id on a `--variants` run.
+    label: String,
+    measure: Measure,
     selectivity: Option<f64>,
     result_count: u64,
     time_s: f64,
@@ -963,8 +1345,8 @@ impl Row {
         let notes = self.notes.join(";");
         let (dataset, format, scenario, result_count, time_s, time_mad_s) = (
             &self.dataset,
-            self.format,
-            self.scenario,
+            &self.label,
+            self.measure,
             self.result_count,
             self.time_s,
             self.time_mad_s,
@@ -979,6 +1361,86 @@ impl Row {
     }
 }
 
+/// One `sizes.csv` row: what one variant's package weighs.
+struct SizeRow {
+    dataset: String,
+    label: String,
+    bytes: u64,
+}
+
+/// Bytes of every regular file directly inside a package directory — the
+/// rule `cityparquet bench` uses for `total_bytes`.
+fn dir_bytes(dir: &Path) -> Result<u64> {
+    let mut total = 0u64;
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let meta = entry?.metadata()?;
+        if meta.is_file() {
+            total += meta.len();
+        }
+    }
+    Ok(total)
+}
+
+/// The size table's own header, in the read run's columns.
+const SIZES_HEADER: &str =
+    "dataset,format,bytes,mb,ratio_vs_cityjsonseq,baseline_format,ratio_vs_baseline";
+
+/// `sizes.csv` beside `out`, in the read run's columns. Rows for THIS dataset
+/// are replaced; other datasets' rows are kept, so one recipe walking many
+/// slices builds up one file and a re-run of one slice never duplicates.
+fn write_sizes(out: &Path, base: &str, seq: &Path, sizes: &[SizeRow]) -> Result<()> {
+    let path = out
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("sizes.csv");
+    let mut kept: Vec<String> = Vec::new();
+    if path.exists() {
+        let existing =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let mut lines = existing.lines();
+        match lines.next() {
+            Some(header) if header == SIZES_HEADER => {}
+            Some(header) => bail!(
+                "{} has a foreign header; expected `{SIZES_HEADER}`, found `{header}`",
+                path.display()
+            ),
+            None => {}
+        }
+        kept.extend(
+            lines
+                .filter(|l| l.split(',').next() != Some(base))
+                .map(str::to_string),
+        );
+    }
+    let seq_bytes = fs::metadata(seq)
+        .with_context(|| format!("stat {}", seq.display()))?
+        .len() as f64;
+    let baseline_bytes = sizes
+        .iter()
+        .find(|s| s.label == VARIANT_BASELINE)
+        .map(|s| s.bytes as f64)
+        .expect("parse_variant_list guarantees the baseline");
+    for s in sizes {
+        let bytes = s.bytes as f64;
+        kept.push(format!(
+            "{},{},{},{:.6},{:.6},{VARIANT_BASELINE},{:.6}",
+            s.dataset,
+            s.label,
+            s.bytes,
+            bytes / (1024.0 * 1024.0),
+            seq_bytes / bytes,
+            baseline_bytes / bytes,
+        ));
+    }
+    let mut text = String::from(SIZES_HEADER);
+    text.push('\n');
+    for line in kept {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -986,8 +1448,8 @@ mod tests {
     fn row(scenario: Scenario, notes: &[&str]) -> Row {
         Row {
             dataset: "delft.city.jsonl".to_string(),
-            format: Format::FlatCityBuf,
-            scenario,
+            label: Format::FlatCityBuf.as_str().to_string(),
+            measure: Measure::Read(scenario),
             selectivity: None,
             result_count: 1116,
             time_s: 0.5,
@@ -1046,7 +1508,7 @@ mod tests {
     }
 
     /// A `cold` row is excluded from the charts by an EXACT `notes == "cold"`
-    /// test in `benchmark/plot/readbench_plot/plot.py`, so its `notes` field must
+    /// test in `the benchmark renderer`, so its `notes` field must
     /// render as exactly that — a purged-cache measurement plotted among the
     /// warm ones would be read as a warm number.
     #[test]

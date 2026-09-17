@@ -2,6 +2,7 @@
 
 mod address;
 pub mod appearance;
+pub mod appearance_columns;
 mod arrow_compat;
 pub mod citygml;
 pub mod compare;
@@ -28,6 +29,7 @@ pub mod scan;
 pub mod sidecar;
 pub mod source;
 pub mod stac;
+pub mod variant;
 pub mod wkb_read;
 pub mod wkb_write;
 

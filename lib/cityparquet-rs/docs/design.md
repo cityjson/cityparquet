@@ -91,21 +91,21 @@ appearance/template references, then the inferred attribute columns.
 
 ### Reserved columns
 
-| Column                                                  | Arrow type                                                     | Notes                                                                    |
-| ------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `id`                                                    | `Utf8` (non-null)                                              | CityObject id, preserved verbatim end-to-end                             |
-| `feature_id`                                            | `Utf8`                                                         | CityJSONSeq feature grouping id                                          |
-| `object_type`                                           | `Dictionary<Int32, Utf8>` (non-null)                           | dictionary-encoded — few distinct values over many rows                  |
-| `parents`                                               | `List<Utf8>`                                                   | parent ids                                                               |
-| `children`                                              | `List<Utf8>`                                                   | child ids                                                                |
-| `children_roles`                                        | `List<Utf8>`                                                   | one role per child, from CityJSON `children_roles`                       |
-| `bbox`                                                  | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>`               | see below                                                                |
-| `geometry` _or_ `geometry_lod<k>`                       | `Binary` (WKB)                                                 | one column per LoD                                                       |
-| `geometry_properties` _or_ `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>`               | semantics WKB can't carry                                                |
-| `material`                                              | JSON                                                           | surface→material map into `materials.parquet`                            |
-| `texture`                                               | JSON                                                           | surface→texture map into `textures.parquet`                              |
-| `template`                                              | `Struct<id: Int64, point: Binary, transformationMatrix: JSON>` | geometry-instance data; `id` matches `geometry_templates.parquet`'s `id` |
-| `other`                                                 | JSON                                                           | source fields not otherwise mapped                                       |
+| Column                                                  | Arrow type                                                              | Notes                                                                                                         |
+| ------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `id`                                                    | `Utf8` (non-null)                                                       | CityObject id, preserved verbatim end-to-end                                                                  |
+| `feature_id`                                            | `Utf8`                                                                  | CityJSONSeq feature grouping id                                                                               |
+| `object_type`                                           | `Dictionary<Int32, Utf8>` (non-null)                                    | dictionary-encoded — few distinct values over many rows                                                       |
+| `parents`                                               | `List<Utf8>`                                                            | parent ids                                                                                                    |
+| `children`                                              | `List<Utf8>`                                                            | child ids                                                                                                     |
+| `children_roles`                                        | `List<Utf8>`                                                            | one role per child, from CityJSON `children_roles`                                                            |
+| `bbox`                                                  | `Struct<xmin,ymin,zmin,xmax,ymax,zmax: Float64>`                        | see below                                                                                                     |
+| `geometry` _or_ `geometry_lod<k>`                       | `Binary` (WKB)                                                          | one column per LoD                                                                                            |
+| `geometry_properties` _or_ `geometry_properties_lod<k>` | `Struct<type, surfaces, face_semantics, shells>`                        | semantics WKB can't carry                                                                                     |
+| `material` _or_ `material_lod<k>`                       | `Map<Utf8, List<Int64>>`                                                | theme → one sidecar id (or null) per WKB face, into `materials.parquet`                                       |
+| `texture` _or_ `texture_lod<k>`                         | `Map<Utf8, List<List<Struct<id: Int64, uv: List<List<Float64>>>>>>`     | theme → per WKB face → per ring → `{id, uv}`, into `textures.parquet`                                         |
+| `template`                                              | `Struct<id: Int64, point: Binary, transformationMatrix: List<Float64>>` | geometry-instance data; `id` matches `geometry_templates.parquet`'s `id`; the matrix is a flat, row-major 4x4 |
+| `other`                                                 | JSON                                                                    | source fields not otherwise mapped                                                                            |
 
 Every field carries self-describing metadata: a `cityparquet:role` key
 (`reserved` / `attribute` / `extension`) and, on geometry columns, a
@@ -204,16 +204,30 @@ opt-in.
 
 ### Appearance
 
-Appearance is stored separately from geometry. The main table's `material`
-and `texture` columns keep the CityJSON theme shape
-(`{"<theme>": {"values": ...}}` or `{"value": n}`) with two normalisations:
+Appearance is stored separately from geometry. The main table's per-LoD
+`material_lod*`/`texture_lod*` columns are typed Arrow `MAP` columns, one
+entry per WKB face in WKB face order, keyed by theme — no CityJSON-shaped
+JSON cell and no geometry-type-specific nesting to walk:
+
+```text
+material  MAP<VARCHAR, LIST<BIGINT>>
+          -- theme -> one sidecar id (or null) per WKB face
+texture   MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>
+          -- theme -> per WKB face -> per ring -> {sidecar id, one [u, v]
+          --   per distinct ring vertex}
+```
+
+Two normalisations carry the CityJSON theme maps into that flat, typed shape:
 
 - integer indices are **dataset-global sidecar row ids** — definitions are
   deduplicated across every feature by canonical JSON content — not the
   feature-local indices CityJSONSeq uses;
-- texture UV indices are replaced **inline** by the actual `[u, v]` pair
-  (`[t, [u,v], [u,v], ...]`), so the main table is self-contained and no
-  stored UV pool is needed.
+- texture UV indices are replaced **inline** by the actual `[u, v]` pair, so
+  the main table is self-contained and no stored UV pool is needed.
+
+A consumer that needs CityJSON's per-shell nesting re-nests a cell from the
+same geometry's `geometry_properties_lod*.shells`, exactly as
+`face_semantics` does.
 
 On export under Compatibility, the global ids are sliced back to a
 feature-local subset and the inlined UV pairs are re-interned into a
