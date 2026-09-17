@@ -60,7 +60,7 @@ to `compose.yml` was needed. `nproc` reporting 128 (rather than 16) inside
 the container remains true and is worth knowing about separately: it is
 the reason `citydb-tool import cityjson`'s default thread count (which
 reads `nproc`) had to be capped explicitly with `--threads=4` (see
-"Counting granularity" section's import notes and the fix report) — that
+the "Counting granularity" section's import notes) — that
 default reads CPU *affinity*, not the bandwidth quota, so it is unaffected
 by whether the `--cpus` limit binds.
 
@@ -307,16 +307,14 @@ restricts `citydb.feature` to CityJSON **CityObject** granularity, so that
 truth. Derived empirically against `data/delft.city.jsonl`
 (1115 top-level features / 2231 CityObjects) after import via
 `citydb-tool import cityjson --threads=4` into the `citydb` schema (SRID
-7415), and re-validated after pinning the image to
-`3dcitydb-pg:16-3.4-5.1.2-alpine` for engine parity with cjdb (see "Engine
-version" above) — table/column layout, class breakdown and all counts
-below are unchanged from the original capture against `5-alpine`
-(3DCityDB 5.1.3 / PostgreSQL 18 / PostGIS 3.6), confirming the predicate
-does not depend on the engine version.
+7415). The table/column layout, class breakdown and all counts below are
+identical on the pinned `3dcitydb-pg:16-3.4-5.1.2-alpine` image (see
+"Engine version" above) and on `5-alpine` (3DCityDB 5.1.3 / PostgreSQL 18 /
+PostGIS 3.6), so the predicate does not depend on the engine version.
 
 ### Recommended predicate — use this one
 
-**Every later `count` and `full-read` query for 3DCityDB in this harness
+**Every `count` and `full-read` query for 3DCityDB in this harness
 must use this predicate:**
 
 ```sql
@@ -394,14 +392,12 @@ Two candidate single-column predicates were ruled out first:
 - **`objectclass.is_toplevel = 1`**: 1115 — correctly excludes the
   semantic surfaces, but *also* incorrectly excludes `BuildingPart`
   (`is_toplevel = 0`), which nonetheless is a real CityJSON CityObject (a
-  child of `Building`). This is exactly the trap the brief warned about.
+  child of `Building`).
 
-**Correction to the brief's stated facts:** the brief's list of confirmed
-`objectclass` ids (`901` Building, `902` BuildingPart, `709` WallSurface,
-`712` RoofSurface) omits **`710` GroundSurface**, which is also present in
-this fixture (2232 rows) and is *also* a semantic surface that must be
-excluded. Filtering out only 709 and 712 leaves 10045 − 3350 − 2232 = 4463
-— not 2231. GroundSurface must be excluded too.
+**GroundSurface is a semantic surface too.** Besides `901` Building, `902`
+BuildingPart, `709` WallSurface and `712` RoofSurface, this fixture contains
+**`710` GroundSurface** (2232 rows), which must also be excluded.
+Filtering out only 709 and 712 leaves 10045 − 3350 − 2232 = 4463, not 2231.
 
 ### Deriving the rule: the class hierarchy
 
@@ -498,7 +494,7 @@ content, re-run the three-count comparison in this section against that
 dataset's own ground truth** (`citybench.params.derive(...).total_city_objects`)
 rather than assuming the Delft-derived predicate transfers unchanged.
 
-## LoD value format (Task 9 finding)
+## LoD value format
 
 `property.val_lod` does not preserve CityJSON's fractional LoD notation.
 `data/delft.city.jsonl` uses `"0"`, `"1.2"`, `"1.3"`, `"2.2"` as `lod`
@@ -515,9 +511,8 @@ SELECT val_lod, count(*) FROM citydb.property WHERE val_lod IS NOT NULL GROUP BY
 --  2       |  5117
 ```
 
-A query for `val_lod = '1.2'` (the brief's literal placeholder, copying
-CityJSON's own notation) therefore matches **zero rows** — not an error,
-just silently the wrong answer. `citydb-tool`'s CityJSON importer
+A query for `val_lod = '1.2'` (CityJSON's own notation) therefore matches
+**zero rows** — not an error, just silently the wrong answer. `citydb-tool`'s CityJSON importer
 collapses `"1.2"`/`"1.3"` into `"1"` and (presumably, unconfirmed for this
 buildings-only fixture, which has no LoD3/LoD2.3 geometry) `"2.2"`/`"2.3"`
 into `"2"`. `sql_citydb.py`'s `lod-extract` therefore targets `val_lod =
@@ -536,7 +531,7 @@ across `BuildingPart`/`WallSurface`/`GroundSurface`/`RoofSurface`); with
 it, exactly 1116 — one `lod1Solid` row per `BuildingPart`, the object-level
 answer comparable to cjdb's per-CityObject LoD-presence count.
 
-## Index coverage (Task 9 finding)
+## Index coverage
 
 `citydb-tool import cityjson` creates 3DCityDB's own fixed set of 16
 "content indexes" (`citydb index status`'s term) automatically as part of
@@ -544,7 +539,7 @@ import — confirmed by `SELECT count(*) FROM pg_indexes WHERE
 schemaname='citydb'` reading **59** immediately after import, before
 `citydb index create` is ever invoked, and reading **59** again
 (unchanged) after running it — `citydb index create` is a verified no-op
-against a freshly-imported schema, not a step this task's `ingest()`
+against a freshly-imported schema, not a step this harness's `ingest()`
 needs to call. Every column this benchmark's scenario queries filter, join
 or aggregate on is already covered by one of the 59: `feature_objectid_inx`
 (id-lookup, the parent lookup half of hierarchy), `feature_objectclass_inx`
@@ -553,8 +548,8 @@ predicate itself), `feature_envelope_spx` (bbox-query, GIST), `property_
 name_inx` (attr-stats), `property_val_geometry_fkx` (lod-extract),
 `property_feature_fkx` + `feature_pk` (the rest of hierarchy's join
 chain). Confirmed by `EXPLAIN` under default planner settings for every
-scenario — see the Task 9 report for the captured plans.
+scenario.
 `sql_citydb.index_ddl()` therefore returns an empty list: there is nothing
 genuinely missing to add, and adding a same-shape index under a new name
-would be a redundant index object inflating `size_bytes`, the class of
-error Task 8 warned about for cjdb.
+would be a redundant index object inflating `size_bytes`, the error
+`sql_cjdb.index_ddl` also avoids for cjdb.
