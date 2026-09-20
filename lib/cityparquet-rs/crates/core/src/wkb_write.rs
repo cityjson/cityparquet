@@ -1,6 +1,7 @@
 //! Minimal ISO-WKB writer for the CityJSON → CityParquet geometry mapping.
 //! Little-endian only. Container types wrap complete nested WKB geometries.
 
+use cityparquet_schema::crs::AxisOrder;
 use cityparquet_schema::{CityParquetError, Result};
 use cjseq::{Geometry, GeometryType, Transform};
 
@@ -40,10 +41,19 @@ enum VertexStorage<'a> {
     },
 }
 
-pub struct VertexPool<'a>(VertexStorage<'a>);
+/// A dataset's vertices, looked up as WKB-order world coordinates.
+///
+/// The pool is the single place a CityJSON vertex becomes a `[f64; 3]` bound
+/// for WKB — every polygon, solid, template and `bbox` this module writes goes
+/// through [`VertexPool::coord`] — so it is also the single place the
+/// dataset's axis order is reconciled with WKB's. See [`AxisOrder`].
+pub struct VertexPool<'a> {
+    storage: VertexStorage<'a>,
+    axis_order: AxisOrder,
+}
 
 impl<'a> VertexPool<'a> {
-    pub fn new(vertices: &'a [Vec<i64>], transform: &Transform) -> Self {
+    pub fn new(vertices: &'a [Vec<i64>], transform: &Transform, axis_order: AxisOrder) -> Self {
         let take3 = |v: &[f64], d: f64| {
             [
                 *v.first().unwrap_or(&d),
@@ -51,11 +61,14 @@ impl<'a> VertexPool<'a> {
                 *v.get(2).unwrap_or(&d),
             ]
         };
-        Self(VertexStorage::Quantised {
-            vertices,
-            scale: take3(&transform.scale, 1.0),
-            translate: take3(&transform.translate, 0.0),
-        })
+        Self {
+            storage: VertexStorage::Quantised {
+                vertices,
+                scale: take3(&transform.scale, 1.0),
+                translate: take3(&transform.translate, 0.0),
+            },
+            axis_order,
+        }
     }
 
     /// Template-local vertex pool: coordinates are looked up verbatim, no
@@ -65,12 +78,24 @@ impl<'a> VertexPool<'a> {
     /// too-large `f64` loses precision regardless of where it came from);
     /// the quantised-*component* guard from [`Self::new`] does not apply
     /// here, since there is no quantised integer component to check.
-    pub fn raw(vertices: &'a [Vec<f64>]) -> VertexPool<'a> {
-        VertexPool(VertexStorage::Raw { vertices })
+    pub fn raw(vertices: &'a [Vec<f64>], axis_order: AxisOrder) -> VertexPool<'a> {
+        VertexPool {
+            storage: VertexStorage::Raw { vertices },
+            axis_order,
+        }
     }
 
+    /// The world coordinate at `idx`, **in WKB axis order** — longitude/easting
+    /// in `x` — whatever order the dataset's own CRS declares.
     pub fn coord(&self, idx: usize) -> Result<[f64; 3]> {
-        match &self.0 {
+        Ok(self.axis_order.apply(self.dataset_coord(idx)?))
+    }
+
+    /// The world coordinate at `idx` in the DATASET's axis order, before the
+    /// WKB reordering. Split out so the magnitude guards below read against
+    /// the components the source actually declared.
+    fn dataset_coord(&self, idx: usize) -> Result<[f64; 3]> {
+        match &self.storage {
             VertexStorage::Quantised {
                 vertices,
                 scale,
@@ -569,7 +594,7 @@ mod tests {
     #[test]
     fn dequantises_with_transform() {
         let (v, t) = pool_and(0.001);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         assert_eq!(pool.coord(1).unwrap(), [11.0, 20.0, 30.0]);
         let err = pool.coord(99).unwrap_err();
         assert!(
@@ -581,7 +606,7 @@ mod tests {
     #[test]
     fn multisurface_becomes_multipolygon_z_with_closed_rings() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiSurface,
             lod: Some("2".into()),
@@ -613,7 +638,7 @@ mod tests {
         // is dropped rather than failing the whole geometry. Here it is the
         // only surface's exterior ring, so nothing is left to write.
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiSurface,
             lod: Some("2".into()),
@@ -636,7 +661,7 @@ mod tests {
         // but seen in the wild): the writer must not append a duplicate
         // closing point on top of it.
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiSurface,
             lod: Some("2".into()),
@@ -669,7 +694,7 @@ mod tests {
     #[test]
     fn solid_becomes_polyhedral_surface_z() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::Solid,
             lod: Some("2".into()),
@@ -689,7 +714,7 @@ mod tests {
     #[test]
     fn empty_multipoint_boundaries_yield_no_wkb() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiPoint,
             lod: Some("2".into()),
@@ -709,7 +734,7 @@ mod tests {
     #[test]
     fn empty_multisurface_boundaries_yield_no_wkb() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiSurface,
             lod: Some("2".into()),
@@ -729,7 +754,7 @@ mod tests {
     #[test]
     fn geometry_instance_is_none() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::GeometryInstance,
             lod: None,
@@ -750,7 +775,7 @@ mod tests {
         // dropped, and with it the whole surface. Surface 1 is fine and
         // must survive as the ONLY polygon.
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiSurface,
             lod: Some("2".into()),
@@ -814,7 +839,7 @@ mod tests {
         // through even if it is geometrically degenerate — data quality is
         // not the format's business.
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiSurface,
             lod: Some("2".into()),
@@ -840,7 +865,7 @@ mod tests {
         // way as empty boundaries (None). Drop info is not carried in this
         // corner (there is no WKB value to attach it to).
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiSurface,
             lod: Some("2".into()),
@@ -894,7 +919,7 @@ mod tests {
             "scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]
         }))
         .unwrap();
-        let pool = VertexPool::new(&vertices, &transform);
+        let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
         assert!(matches!(pool.coord(0), Err(CityParquetError::Geometry(_))));
     }
 
@@ -913,7 +938,7 @@ mod tests {
             "scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]
         }))
         .unwrap();
-        let pool = VertexPool::new(&vertices, &transform);
+        let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
         let coord = pool
             .coord(0)
             .expect("2^53 is exactly representable in f64 and must be accepted");
@@ -921,7 +946,7 @@ mod tests {
 
         // Raw (template) path: same boundary, no scale/translate involved.
         let raw_verts = vec![vec![MAX as f64, 0.0, 0.0]];
-        let raw_pool = VertexPool::raw(&raw_verts);
+        let raw_pool = VertexPool::raw(&raw_verts, AxisOrder::LonLat);
         let raw_coord = raw_pool
             .coord(0)
             .expect("raw path must accept exactly 2^53 too");
@@ -939,7 +964,7 @@ mod tests {
             "scale": [1.0, 1.0, 1.0], "translate": [9_007_199_254_741_000.0, 0.0, 0.0]
         }))
         .unwrap();
-        let pool = VertexPool::new(&vertices, &transform);
+        let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
         assert!(matches!(pool.coord(0), Err(CityParquetError::Geometry(_))));
     }
 
@@ -971,7 +996,7 @@ mod tests {
             "first template vertex, straight from the fixture"
         );
 
-        let pool = VertexPool::raw(&verts);
+        let pool = VertexPool::raw(&verts, AxisOrder::LonLat);
         assert_eq!(
             pool.coord(0).unwrap(),
             [0.112, 0.121, 0.502],
@@ -1004,7 +1029,7 @@ mod tests {
     #[test]
     fn geometry_bbox_matches_wkb_bbox_for_representative_geometries() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let cases: Vec<(cjseq::GeometryType, serde_json::Value)> = vec![
             // MultiSurface with an interior ring (hole) AND a too-short-ring
             // surface that geometry_to_wkb drops — the walker must drop it
@@ -1060,7 +1085,7 @@ mod tests {
     #[test]
     fn geometry_bbox_errors_where_the_encoder_errors() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, AxisOrder::LonLat);
         let geom = cjseq::Geometry {
             thetype: cjseq::GeometryType::MultiPoint,
             lod: Some("1".into()),

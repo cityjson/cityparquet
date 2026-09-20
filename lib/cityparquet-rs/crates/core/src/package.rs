@@ -20,6 +20,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
+use cityparquet_schema::crs::AxisOrder;
 use cityparquet_schema::{
     AttributeType, CityMetadata, CityParquetError, CityParquetSchema, ExtensionRegistry, Lod,
     ModuleKey, ModuleKeyResolver, Result, geometry_column_name,
@@ -373,7 +374,12 @@ pub(crate) fn build_template_rows(
                 "invalid geometry-templates vertices-templates: {e}"
             ))
         })?;
-    let pool = VertexPool::raw(&verts);
+    // Templates are in **local** coordinates and are exempt from the file CRS
+    // (spec "appearance & templates": `geometry_templates.parquet` carries no
+    // `city.crs` key at all). There is no axis order to reconcile, so no
+    // reordering is applied — an instance's `transformationMatrix` and its
+    // reference `point`, which IS in the file CRS, do the placing.
+    let pool = VertexPool::raw(&verts, AxisOrder::LonLat);
 
     // See `Source::doc_appearance`'s doc comment: the header's
     // `geometry_templates` still carry the RAW DOCUMENT's global
@@ -500,7 +506,12 @@ fn hilbert_ordered_features(
     let mut keyed: Vec<(u32, CityJSONFeature)> = features
         .into_iter()
         .map(|f| {
-            let key = feature_hilbert_key(&f.vertices, transform, &dataset_bbox);
+            let key = feature_hilbert_key(
+                &f.vertices,
+                transform,
+                &dataset_bbox,
+                scan_result.axis_order,
+            );
             (key, f)
         })
         .collect();
@@ -953,16 +964,13 @@ fn extension_registry(_source: &Source) -> ExtensionRegistry {
 /// any of it reaches the writer.
 ///
 /// Accepted spellings are `EPSG:25832` and the bare `25832`; anything else is
-/// refused rather than guessed at. A code naming a known **geographic**
-/// (degree-valued) CRS is refused too: nothing in this pipeline reprojects,
-/// and the CityGML reader quantises at a fixed 1 mm, so a degree-valued
-/// override would silently destroy the coordinates. The known-geographic list
-/// ([`cityparquet_schema::crs::is_geographic_epsg`], shared with the CityGML
-/// `srsName` resolver) is common-but-not-exhaustive, the residual limitation
-/// documented there. Refusing loudly is the same
-/// stance the spec's CRS rules take on a source with no CRS at all — the
-/// override exists to make a CRS resolvable, never to make a bad one
-/// tolerable.
+/// refused rather than guessed at. A **geographic** (degree-valued) override is
+/// accepted: the quantisation step is derived per axis from the CRS's own
+/// declared units ([`cityparquet_schema::crs::axis_scale`]), so degrees are
+/// quantised at a degree-sized step. A CRS whose units the encoder has no step
+/// for is refused, which is the same stance the spec's CRS rules take on a
+/// source with no CRS at all — the override exists to make a CRS resolvable,
+/// never to make an unencodable one tolerable.
 pub(crate) fn validate_crs_override(spec: &str) -> Result<()> {
     let code = spec.trim().trim_start_matches("EPSG:").trim();
     if code.is_empty() || !code.chars().all(|c| c.is_ascii_digit()) {
@@ -971,17 +979,10 @@ pub(crate) fn validate_crs_override(spec: &str) -> Result<()> {
              (expected \"EPSG:25832\" or \"25832\")"
         )));
     }
-    if cityparquet_schema::crs::is_geographic_epsg(code) {
-        return Err(CityParquetError::Schema(format!(
-            "operator-supplied CRS {spec:?} is a geographic (degree-valued) CRS; this \
-             writer never reprojects and quantises at millimetre scale, so a degree \
-             coordinate would be destroyed — supply the projected CRS the coordinates \
-             are actually in"
-        )));
-    }
     // Fail here rather than deep in the scan: an operator typo is worth a
     // message that names the flag.
-    cityparquet_schema::crs::resolve_to_projjson(code)?;
+    let projjson = cityparquet_schema::crs::resolve_to_projjson(code)?;
+    cityparquet_schema::crs::axis_scale(&projjson)?;
     Ok(())
 }
 

@@ -53,6 +53,7 @@ use arrow_array::{Array, MapArray, RecordBatch};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 
+use cityparquet_schema::crs::AxisOrder;
 use cityparquet_schema::model::{LOD_KEY, ROLE_KEY, ROLE_RESERVED};
 use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 use cjseq::{
@@ -201,15 +202,21 @@ impl RawVertexInterner {
 /// Requantise every local coordinate of a decoded geometry and intern it into
 /// the feature's shared vertex pool, returning the local-index -> feature
 /// vertex-index map (`vmap[local] = feature_index`).
+///
+/// `axis_order` reverses the reordering the writer applied: WKB is always
+/// `(x, y) = (longitude, latitude)`, while the CityJSON being rebuilt carries
+/// the coordinates in its own CRS's declared order. The swap is its own
+/// inverse, so this is the same call the writer made.
 fn vertex_map(
     coords: &[[f64; 3]],
     scale: [f64; 3],
     translate: [f64; 3],
+    axis_order: AxisOrder,
     interner: &mut VertexInterner,
 ) -> Vec<usize> {
     coords
         .iter()
-        .map(|&c| interner.intern(quantise(c, scale, translate)))
+        .map(|&c| interner.intern(quantise(axis_order.apply(c), scale, translate)))
         .collect()
 }
 
@@ -402,6 +409,7 @@ fn build_address_value(
     interner: &mut VertexInterner,
     scale: [f64; 3],
     translate: [f64; 3],
+    axis_order: AxisOrder,
 ) -> Result<Value> {
     let mut arr = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -418,7 +426,7 @@ fn build_address_value(
         let mut map = crate::address::postal_to_members(&postal);
         if let Some(wkb) = &entry.location {
             let decoded = wkb_to_geometry(wkb)?;
-            let vmap = vertex_map(&decoded.coords, scale, translate, interner);
+            let vmap = vertex_map(&decoded.coords, scale, translate, axis_order, interner);
             let boundaries =
                 reconstruct_boundaries(&decoded.kind, &GeometryType::MultiPoint, None, &vmap)?;
             map.insert(
@@ -728,10 +736,12 @@ fn reference_system(meta: &CityMetadata) -> Result<Option<ReferenceSystem>> {
 
 /// Synthesises a quantisation `transform` for export, from the package's OWN
 /// data rather than `city.other.transform` (spec "Informational only": a
-/// reader/writer MUST NOT need `other` to decode the file). Fixed
-/// millimetre-precision scale (`0.001`, the convention every real fixture in
-/// this repo already uses), translated to the package's own spatial extent's
-/// minimum corner — read back from the `bbox` column's Parquet row-group
+/// reader/writer MUST NOT need `other` to decode the file). The scale is
+/// **per axis, from the package CRS's own declared units**
+/// ([`cityparquet_schema::crs::axis_scale`]) — a package in a degree-valued
+/// CRS re-quantised at a millimetre step would be destroyed on the way out
+/// exactly as it would on the way in. Translated to the package's own spatial
+/// extent's minimum corner — read back from the `bbox` column's Parquet row-group
 /// statistics via [`crate::stac::package_bbox`], the SAME mechanism the STAC
 /// derivation already uses, never `other`. A package with no geometry at all
 /// (`package_bbox` returns `None`) has nothing to quantise, so `translate`
@@ -742,13 +752,29 @@ fn reference_system(meta: &CityMetadata) -> Result<Option<ReferenceSystem>> {
 /// each side's own `transform.scale` (`max(scale_a, scale_b)`), so re-
 /// quantising at a different, self-consistent precision never fails a
 /// round-trip comparison; only genuinely lossy rounding would.
-fn synthesize_transform(tables: &PackageTables) -> Result<Transform> {
-    let scale = vec![0.001, 0.001, 0.001];
+fn synthesize_transform(meta: &CityMetadata, tables: &PackageTables) -> Result<Transform> {
+    let axis_order = export_axis_order(meta);
+    let scale = match meta.crs.known() {
+        Some(crs) => cityparquet_schema::crs::axis_scale(crs)?,
+        None => [cityparquet_schema::crs::MM; 3],
+    };
     let translate = match crate::stac::package_bbox(tables)? {
-        Some(bbox) => vec![bbox.xmin, bbox.ymin, bbox.zmin],
+        // The `bbox` column is stored in WKB order like the geometry, while a
+        // CityJSON `transform` is in the dataset's own order.
+        Some(bbox) => axis_order.apply([bbox.xmin, bbox.ymin, bbox.zmin]).to_vec(),
         None => vec![0.0, 0.0, 0.0],
     };
-    Ok(Transform { scale, translate })
+    Ok(Transform {
+        scale: scale.to_vec(),
+        translate,
+    })
+}
+
+/// The axis order the package's geometry is stored in, from its own `city.crs`.
+/// A package with no resolvable CRS carries no georeferenced coordinates to
+/// reorder, so the identity is right for it.
+fn export_axis_order(meta: &CityMetadata) -> AxisOrder {
+    meta.crs.known().map(AxisOrder::of).unwrap_or_default()
 }
 
 /// Reconstructs the header `CityJSON` (empty `CityObjects`/`vertices`) from
@@ -757,7 +783,7 @@ fn synthesize_transform(tables: &PackageTables) -> Result<Transform> {
 fn build_header(meta: &CityMetadata, tables: &PackageTables) -> Result<CityJSON> {
     let mut header = CityJSON::new();
     header.version = "2.0".to_string();
-    header.transform = synthesize_transform(tables)?;
+    header.transform = synthesize_transform(meta, tables)?;
     if let Some(source_metadata) = source_metadata_from_other(meta) {
         // The stored source metadata already carries referenceSystem (and
         // everything else cjseq::Metadata can represent), so it supersedes
@@ -1287,6 +1313,8 @@ fn rebuild_templates(
         id_to_pos.insert(row.id, pos);
 
         let decoded = wkb_to_geometry(&row.wkb)?;
+        // Local coordinates, exempt from the file CRS (spec "appearance &
+        // templates"), so no axis reordering applies on the way out either.
         let vmap: Vec<usize> = decoded.coords.iter().map(|&c| interner.intern(c)).collect();
 
         let props = row.geometry_properties.as_ref();
@@ -1420,6 +1448,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
 
     let mut header = build_header(&meta, &tables)?;
     let (scale, translate) = transform_axes(&header.transform);
+    let axis_order = export_axis_order(&meta);
 
     // Whether this package carries the appearance-DEFINITION sidecars: when
     // it does (the Compatibility profile), the per-feature loop below
@@ -1576,6 +1605,14 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
 
         for (obj, material, texture) in entries {
             let mut co = obj.object;
+            // `bbox` is stored in WKB order and decoded verbatim; a CityJSON
+            // `geographicalExtent` is in the dataset's own order.
+            if let Some(extent) = co.geographical_extent.as_ref()
+                && let Ok(extent) = <[f64; 6]>::try_from(extent.as_slice())
+            {
+                co.geographical_extent =
+                    Some(crate::encode::reorder_extent(extent, axis_order).to_vec());
+            }
             let mut geoms = Vec::with_capacity(obj.geometries.len());
             for (lod, decoded, props) in &obj.geometries {
                 let gtype: GeometryType = props
@@ -1591,7 +1628,7 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                         serde_json::from_value(v.clone()).map_err(CityParquetError::from)
                     })?;
 
-                let vmap = vertex_map(&decoded.coords, scale, translate, &mut interner);
+                let vmap = vertex_map(&decoded.coords, scale, translate, axis_order, &mut interner);
                 let boundaries =
                     reconstruct_boundaries(&decoded.kind, &gtype, props.as_ref(), &vmap)?;
                 let semantics = rebuild_semantics(props.as_ref(), &gtype)?;
@@ -1671,7 +1708,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
                             obj.id, tpl.id
                         ))
                     })?;
-                    let point_idx = interner.intern(quantise(tpl.point, scale, translate));
+                    let point_idx =
+                        interner.intern(quantise(axis_order.apply(tpl.point), scale, translate));
                     geoms.push(Geometry {
                         thetype: GeometryType::GeometryInstance,
                         lod: None,
@@ -1692,7 +1730,8 @@ pub fn export(opts: &ExportOptions) -> Result<ExportReport> {
             // Absent entirely when the row's `address` cell was null; a
             // present (even empty) list always gets a real `"address"` key.
             if let Some(entries) = &obj.address {
-                let address_value = build_address_value(entries, &mut interner, scale, translate)?;
+                let address_value =
+                    build_address_value(entries, &mut interner, scale, translate, axis_order)?;
                 let mut co_value = serde_json::to_value(&co)?;
                 if let Value::Object(map) = &mut co_value {
                     map.insert("address".to_string(), address_value);
@@ -1909,7 +1948,7 @@ mod tests {
             scale: vec![1.0; 3],
             translate: vec![0.0; 3],
         };
-        let pool = VertexPool::new(&vertices, &transform);
+        let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
         let boundaries = serde_json::json!([[[[[0, 1, 2, 3]]], [[[0, 1, 4]]]], [[[[1, 2, 4]]]]]);
         let geom = Geometry {
             thetype: GeometryType::MultiSolid,
@@ -1925,7 +1964,13 @@ mod tests {
         let decoded = wkb_to_geometry(&bytes).unwrap();
 
         let mut interner = VertexInterner::default();
-        let vmap = vertex_map(&decoded.coords, [1.0; 3], [0.0; 3], &mut interner);
+        let vmap = vertex_map(
+            &decoded.coords,
+            [1.0; 3],
+            [0.0; 3],
+            AxisOrder::LonLat,
+            &mut interner,
+        );
         let props = serde_json::json!({
             "type": "MultiSolid",
             "shells": [[1, 1], [1]],

@@ -1,3 +1,4 @@
+use cityparquet_schema::crs::AxisOrder;
 use std::path::{Path, PathBuf};
 
 use cityparquet::source::Source;
@@ -27,7 +28,7 @@ fn process_all(path: &Path) -> usize {
 
     for feature in src.features().unwrap() {
         let feature = feature.unwrap();
-        let pool = VertexPool::new(&feature.vertices, &header.transform);
+        let pool = VertexPool::new(&feature.vertices, &header.transform, AxisOrder::LonLat);
 
         for co in feature.city_objects.values() {
             let Some(geoms) = &co.geometry else {
@@ -146,7 +147,7 @@ fn compare_walker_against_encoder(path: &Path) -> usize {
     if let Some(templates) = header.geometry_templates.as_ref() {
         let verts: Vec<Vec<f64>> =
             serde_json::from_value(templates.vertices_templates.clone()).unwrap();
-        let pool = VertexPool::raw(&verts);
+        let pool = VertexPool::raw(&verts, AxisOrder::LonLat);
         for (i, tpl) in templates.templates.iter().enumerate() {
             assert_walker_agrees(tpl, &pool, &format!("template {i}"));
             compared += 1;
@@ -155,7 +156,7 @@ fn compare_walker_against_encoder(path: &Path) -> usize {
 
     for feature in src.features().unwrap() {
         let feature = feature.unwrap();
-        let pool = VertexPool::new(&feature.vertices, &header.transform);
+        let pool = VertexPool::new(&feature.vertices, &header.transform, AxisOrder::LonLat);
         for (id, co) in &feature.city_objects {
             let Some(geoms) = &co.geometry else {
                 continue;
@@ -211,7 +212,7 @@ fn scan_dataset_bbox_is_bitwise_the_wkb_encoder_union() {
     let mut oracle: Option<[f64; 6]> = None;
     for feature in src.features().unwrap() {
         let feature = feature.unwrap();
-        let pool = VertexPool::new(&feature.vertices, &header.transform);
+        let pool = VertexPool::new(&feature.vertices, &header.transform, AxisOrder::LonLat);
         for co in feature.city_objects.values() {
             let Some(geoms) = &co.geometry else {
                 continue;

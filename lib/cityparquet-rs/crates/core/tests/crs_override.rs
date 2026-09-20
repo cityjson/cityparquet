@@ -280,14 +280,18 @@ fn an_override_never_relabels_a_source_that_declares_its_own_crs() {
 }
 
 #[test]
-fn a_geographic_or_unparseable_override_is_refused() {
-    // The pipeline never reprojects, and the CityGML reader quantises at 1 mm:
-    // an operator-supplied degree-valued CRS would silently destroy the
-    // coordinates. Refuse it — and anything that is not an EPSG code at all —
-    // rather than write a wrong package.
+fn an_unencodable_or_unparseable_override_is_refused() {
+    // The pipeline never reprojects, and the quantisation step comes from the
+    // CRS's own declared axis units. A degree-valued override is therefore
+    // fine (it gets a degree-sized step); a CRS in units the encoder defines
+    // no step for is not. A foot- or chain-valued CRS is fine too — its
+    // conversion factor is exact. What is refused is a unit that is not on a
+    // linear scale at all: EPSG:4035 is in "degree minute second hemisphere",
+    // a packed sexagesimal spelling. Refuse that — and anything that is not an
+    // EPSG code at all — rather than write a wrong package.
     let tmp = tempfile::tempdir().unwrap();
     let input = crs_less_fixture(tmp.path());
-    for (spec, needle) in [("EPSG:4326", "geographic"), ("banana", "EPSG")] {
+    for (spec, needle) in [("EPSG:4035", "minute second"), ("banana", "EPSG")] {
         let mut source = Source::open(&input).unwrap();
         let mut opts = ConvertOptions::new(input.clone(), tmp.path().join("out"));
         opts.crs_override = Some(spec.to_string());
@@ -535,9 +539,9 @@ fn a_bad_override_fails_before_the_stale_partitions_are_purged() {
 
     // Rerun with an unusable override over the good output.
     let mut source = Source::open(&input).unwrap();
-    assert!(source.set_reference_system("EPSG:4326"));
+    assert!(source.set_reference_system("EPSG:4035"));
     let mut opts = ConvertOptions::new(input, out.clone());
-    opts.crs_override = Some("EPSG:4326".to_string());
+    opts.crs_override = Some("EPSG:4035".to_string());
     opts.overwrite = true;
     convert_partitioned(
         std::slice::from_ref(&source),

@@ -220,6 +220,24 @@ impl Source {
         }
         metadata.reference_system = Some(rs);
         self.crs_is_operator_supplied = true;
+        // A CityGML source has not been quantised yet — `parse_header` only
+        // chose a transform, and `features()` applies it when the document is
+        // streamed — so an operator-supplied CRS must re-derive the step from
+        // the units it declares, or a degree-valued override would be read at
+        // a metre-sized one. A CityJSON/Seq source is the opposite case: its
+        // vertices are ALREADY integers against its own `transform`, and
+        // changing the scale would silently reinterpret every one of them.
+        if self.format == SourceFormat::CityGml
+            && let Some(rs) = self.header.metadata.as_ref().and_then(|m| {
+                m.reference_system
+                    .as_ref()
+                    .map(cjseq::ReferenceSystem::to_url)
+            })
+            && let Ok(projjson) = cityparquet_schema::crs::resolve_to_projjson(&rs)
+            && let Ok(scale) = cityparquet_schema::crs::axis_scale(&projjson)
+        {
+            self.header.transform.scale = scale.to_vec();
+        }
         true
     }
 

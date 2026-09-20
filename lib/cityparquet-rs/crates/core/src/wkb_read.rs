@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn multisurface_round_trips_with_closing_vertex_stripped() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
         let src = geom(
             cjseq::GeometryType::MultiSurface,
             serde_json::json!([[[0, 1, 2, 3]]]),
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn solid_round_trips_as_polyhedral_surface() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
         // one shell, two faces: a 4-vertex ring and a 3-vertex ring sharing
         // vertices 0 and 1.
         let src = geom(
@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn multipoint_and_multilinestring_round_trip() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
 
         let mp = geom(
             cjseq::GeometryType::MultiPoint,
@@ -442,7 +442,7 @@ mod tests {
         // wkb_real_data.rs), so this is hand-built to exercise the
         // GeometryCollection branch: 2 solids, each 1 shell / 1 face.
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
         let src = geom(
             cjseq::GeometryType::MultiSolid,
             serde_json::json!([[[[[0, 1, 2, 3]]]], [[[[0, 1, 4]]]]]),
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn truncated_buffer_errors() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
         let src = geom(
             cjseq::GeometryType::MultiSurface,
             serde_json::json!([[[0, 1, 2, 3]]]),
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn big_endian_marker_errors() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
         let src = geom(
             cjseq::GeometryType::MultiSurface,
             serde_json::json!([[[0, 1, 2, 3]]]),
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn unknown_type_code_errors() {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
         let src = geom(
             cjseq::GeometryType::MultiSurface,
             serde_json::json!([[[0, 1, 2, 3]]]),
@@ -527,7 +527,7 @@ mod tests {
     /// A valid single-ring MultiSurface WKB buffer from the shared pool.
     fn valid_multisurface_bytes() -> Vec<u8> {
         let (v, t) = pool_and(1.0);
-        let pool = VertexPool::new(&v, &t);
+        let pool = VertexPool::new(&v, &t, cityparquet_schema::crs::AxisOrder::LonLat);
         let src = geom(
             cjseq::GeometryType::MultiSurface,
             serde_json::json!([[[0, 1, 2, 3]]]),

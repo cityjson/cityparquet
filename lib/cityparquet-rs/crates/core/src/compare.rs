@@ -91,6 +91,7 @@ use chrono::{DateTime, NaiveDate};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
+use cityparquet_schema::crs::AxisOrder;
 use cityparquet_schema::{CityParquetError, Lod, Result};
 use cjseq::{CityJSON, Geometry, GeometryType, Transform};
 
@@ -1648,7 +1649,10 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
             }
             None => (&[], Vec::new()),
         };
-    let template_pool = VertexPool::raw(&template_vertices);
+    // The comparator works in each side's own DATASET coordinates — no WKB is
+    // written or read here — so no axis reordering applies, and `LonLat` (the
+    // identity) is used identically on both sides.
+    let template_pool = VertexPool::raw(&template_vertices, AxisOrder::LonLat);
     // This side's own RAW DOCUMENT appearance arrays: a template's
     // `material`/`texture` indices reference these directly (never
     // `header.appearance`, and never a feature-local pool — see
@@ -1660,7 +1664,7 @@ fn load_side(path: &Path, opts: &CompareOptions) -> Result<Side> {
     let mut excluded = Vec::new();
     for feature in source.features()? {
         let feature = feature?;
-        let pool = VertexPool::new(&feature.vertices, &header.transform);
+        let pool = VertexPool::new(&feature.vertices, &header.transform, AxisOrder::LonLat);
         let defs = AppearanceDefs::from_feature(&feature);
         for (id, co) in &feature.city_objects {
             let attributes = canonicalise_attrs(co.attributes.as_ref());
@@ -2888,7 +2892,7 @@ mod tests {
             scale: vec![1.0; 3],
             translate: vec![0.0; 3],
         };
-        let pool = VertexPool::new(&vertices, &transform);
+        let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
         let normalised = normalise_geometry(&geom, &pool, Some(&AppearanceDefs::empty())).unwrap();
         assert_eq!(normalised.dropped_rings, 2);
@@ -3027,7 +3031,7 @@ mod tests {
             scale: vec![1.0; 3],
             translate: vec![0.0; 3],
         };
-        let pool = VertexPool::new(&vertices, &transform);
+        let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
         let a = normalise_geometry(&side_a, &pool, Some(&AppearanceDefs::empty())).unwrap();
         let b = normalise_geometry(&side_b, &pool, Some(&AppearanceDefs::empty())).unwrap();
@@ -3073,7 +3077,7 @@ mod tests {
             scale: vec![1.0; 3],
             translate: vec![0.0; 3],
         };
-        let pool = VertexPool::new(&vertices, &transform);
+        let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
         let a = normalise_geometry(&side_a, &pool, Some(&AppearanceDefs::empty())).unwrap();
         let b = normalise_geometry(&side_b, &pool, Some(&AppearanceDefs::empty())).unwrap();
@@ -3116,7 +3120,7 @@ mod tests {
             let Some(vertices_texture) = &appearance.vertices_texture else {
                 continue;
             };
-            let pool = VertexPool::new(&feature.vertices, &header.transform);
+            let pool = VertexPool::new(&feature.vertices, &header.transform, AxisOrder::LonLat);
             for co in feature.city_objects.values() {
                 let Some(geoms) = &co.geometry else { continue };
                 for geom in geoms {

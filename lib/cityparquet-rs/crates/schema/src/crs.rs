@@ -16,42 +16,176 @@ use serde_json::Value;
 
 use crate::error::{CityParquetError, Result};
 
-/// Known geographic (degree-valued) EPSG codes. Nothing in this stack
-/// reprojects, and coordinates are quantised at millimetre scale (the CityGML
-/// reader at a fixed 1 mm), so a degree coordinate would be destroyed —
-/// declaring one of these is refused rather than silently mis-encoded. Common
-/// 2D/3D geographic CRS (WGS 84, ETRS89, NAD27/83, DHDN, ...); not exhaustive,
-/// so an unlisted geographic code is a documented residual limitation (no
-/// coordinate-magnitude sniffing: guessing is exactly what the spec's CRS
-/// rules forbid).
-const GEOGRAPHIC_EPSG: &[&str] = &[
-    "4326", "4258", "4269", "4267", "4283", "4171", "4173", "4207", "4230", "4312", "4314", "4619",
-    "4674", "4759", "4979", "4937", "4936", "4896", "4327", "4329",
-];
+/// The quantisation step for a **linear** (metre-valued) axis: one millimetre.
+pub const MM: f64 = 1e-3;
 
-/// Whether `code` (a bare EPSG code, e.g. `"4326"`) names a known geographic
-/// CRS — see [`GEOGRAPHIC_EPSG`]. Used by the CityGML `srsName` resolver and by
-/// the operator-supplied `--crs` override alike, which is why it lives here
-/// beside the EPSG table rather than in either consumer.
-pub fn is_geographic_epsg(code: &str) -> bool {
-    GEOGRAPHIC_EPSG.contains(&code)
+/// The quantisation step for an **angular** (degree-valued) axis: 1e-9 degree,
+/// ~0.11 mm of latitude and never coarser than that in longitude. The angular
+/// counterpart of [`MM`], and a format constant per unit rather than a value
+/// tuned to any one corpus: deriving it from how many decimals a source
+/// happens to write would make a package's precision depend on its input.
+pub const NANO_DEGREE: f64 = 1e-9;
+
+/// Every axis of a PROJJSON CRS, in order, flattening a `CompoundCRS` into its
+/// components and following a `BoundCRS` to the CRS it wraps.
+fn axes(crs: &Value) -> Vec<&Value> {
+    if let Some(components) = crs.get("components").and_then(Value::as_array) {
+        return components.iter().flat_map(|c| axes(c)).collect();
+    }
+    if let Some(source) = crs.get("source_crs") {
+        return axes(source);
+    }
+    crs.get("coordinate_system")
+        .and_then(|cs| cs.get("axis"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().collect())
+        .unwrap_or_default()
 }
 
-/// Whether `source` — a CRS identifier in any spelling [`lookup_key`] accepts
-/// (`4326`, `EPSG:4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC CRS URL,
-/// `OGC:CRS84`) — names a known geographic CRS.
+/// Radians per degree — the scale PROJJSON's `AngularUnit` conversion factors
+/// are expressed in, so a non-degree angular unit converts exactly.
+const RADIANS_PER_DEGREE: f64 = std::f64::consts::PI / 180.0;
+
+/// EPSG's packed sexagesimal pseudo-unit. It carries a `conversion_factor`
+/// like any other `AngularUnit`, but a value in it reads `DDDMMSS.sss` —
+/// digits at different magnitudes meaning different things — not a number on a
+/// linear scale. Quantising one would be arithmetic on a string, so it is
+/// refused by name rather than run through the angular rule.
+const SEXAGESIMAL: &str = "degree minute second hemisphere";
+
+/// The quantisation step for one PROJJSON axis, from its **declared unit**.
 ///
-/// The identifier-level companion to [`is_geographic_epsg`], for the consumers
-/// that hold a CRS *string* rather than a bare code: a CityJSON
-/// `referenceSystem` is an OGC EPSG URL, not a code. `OGC:CRS84` is included
-/// because it is lon/lat degrees expressed as a name and so carries no EPSG
-/// code to test. An identifier we cannot parse at all is not claimed to be
-/// geographic — [`resolve_to_projjson`] refuses it separately, which is the
-/// right error for it.
-pub fn is_geographic_crs(source: &str) -> bool {
-    match lookup_key(source) {
-        Some(key) => key.starts_with("OGC:CRS84") || is_geographic_epsg(&key),
-        None => false,
+/// `metre` and `degree` — the two units PROJ writes as bare strings, and the
+/// only two any real city model uses — map straight to [`MM`] and
+/// [`NANO_DEGREE`]. Every other unit arrives as an object carrying an exact
+/// `conversion_factor`, so its step is *converted* rather than guessed: a
+/// linear unit gets whatever length equals one millimetre (a US survey foot's
+/// step is `0.001 / 0.3048006… = 0.00328…` ft), an angular one whatever angle
+/// equals [`NANO_DEGREE`]. That keeps the ~2 300 foot-, link- and chain-valued
+/// national CRS in the vendored table convertible, at exactly the precision a
+/// metre-valued one gets, rather than refusing them over the unit they happen
+/// to be written in.
+fn axis_step(axis: &Value, i: usize) -> Result<f64> {
+    let refuse = |what: String| {
+        CityParquetError::Schema(format!(
+            "PROJJSON axis {i} is in {what}; this writer quantises metre- and \
+             degree-valued axes, and any unit carrying an exact conversion factor to \
+             one of them — reproject the source into a CRS it can encode"
+        ))
+    };
+    let unit = axis
+        .get("unit")
+        .ok_or_else(|| CityParquetError::Schema(format!("PROJJSON axis {i} declares no unit")))?;
+
+    if let Value::String(name) = unit {
+        return match name.as_str() {
+            "metre" => Ok(MM),
+            "degree" => Ok(NANO_DEGREE),
+            other => Err(refuse(format!("{other:?}"))),
+        };
+    }
+
+    let name = unit.get("name").and_then(Value::as_str).unwrap_or("?");
+    let factor = unit
+        .get("conversion_factor")
+        .and_then(Value::as_f64)
+        .filter(|f| f.is_finite() && *f > 0.0)
+        .ok_or_else(|| refuse(format!("{name:?} (no usable conversion factor)")))?;
+
+    match unit.get("type").and_then(Value::as_str) {
+        Some("LinearUnit") => Ok(MM / factor),
+        Some("AngularUnit") if name != SEXAGESIMAL => Ok(NANO_DEGREE * RADIANS_PER_DEGREE / factor),
+        _ => Err(refuse(format!("{name:?}"))),
+    }
+}
+
+/// The per-axis quantisation scale for a resolved PROJJSON CRS.
+///
+/// The CityJSON `transform` carries no CRS of its own, so both ends of the
+/// pipeline — the CityGML reader building a header, and the exporter
+/// synthesising one — must derive the same scale from the CRS they are
+/// encoding against, or a degree-valued coordinate is quantised at a
+/// metre-sized step and destroyed. Each axis's step comes from its own
+/// declared unit ([`axis_step`]), never from the magnitude of the coordinates
+/// — sniffing is what the spec's CRS rules forbid.
+///
+/// A CRS with fewer than three axes — a 2D geographic or projected CRS —
+/// extends with [`MM`] for z rather than erroring: a CityGML document may
+/// declare a 2D `srsName` and still carry `srsDimension="3"` coordinates, and
+/// a height is metres in every CRS that pairs with one. A CRS with **no**
+/// readable axes at all is an error, not a silent millimetre default: that
+/// default is right only where there is no CRS to derive from, and applying it
+/// to a resolved-but-unreadable one is how a degree axis would get a
+/// metre-sized step again.
+pub fn axis_scale(crs: &Value) -> Result<[f64; 3]> {
+    let axes = axes(crs);
+    if axes.is_empty() {
+        return Err(CityParquetError::Schema(format!(
+            "PROJJSON CRS declares no coordinate system axes, so no quantisation step \
+             can be derived from it: {crs}"
+        )));
+    }
+    let mut scale = [MM; 3];
+    for (i, axis) in axes.iter().take(3).enumerate() {
+        scale[i] = axis_step(axis, i)?;
+    }
+    Ok(scale)
+}
+
+/// Whether the CRS declares **latitude (northing) before longitude
+/// (easting)**, as EPSG does for `4326`, `6697` and every other geographic
+/// code a national export is likely to carry.
+///
+/// GeoParquet stores WKB coordinates as `(x, y) = (longitude, latitude)`
+/// whatever the authority's axis order says, so a writer must swap for these.
+/// Read from the declared axis `direction`s — not guessed from coordinate
+/// magnitudes, which is unreliable wherever |longitude| <= 90.
+pub fn is_latitude_first(crs: &Value) -> bool {
+    let axes = axes(crs);
+    let direction = |i: usize| {
+        axes.get(i)
+            .and_then(|a| a.get("direction"))
+            .and_then(Value::as_str)
+    };
+    direction(0) == Some("north") && direction(1) == Some("east")
+}
+
+/// Whether a dataset's coordinates are stored **latitude first**, and the swap
+/// that reconciles that with WKB.
+///
+/// GeoParquet stores WKB as `(x, y) = (longitude, latitude)` whatever axis
+/// order the CRS authority declares, while CityJSON coordinates keep the
+/// source's own order. [`AxisOrder`] is the one thing that has to be known at
+/// every crossing between the two, in either direction — the swap is its own
+/// inverse, so [`AxisOrder::apply`] serves the write and the read alike.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AxisOrder {
+    /// Longitude/easting first — WKB's order already, so nothing to do. Every
+    /// projected CRS a city model is normally in lands here.
+    #[default]
+    LonLat,
+    /// Latitude/northing first, as EPSG declares for `4326`, `6697` and the
+    /// other geographic codes a national export carries.
+    LatLon,
+}
+
+impl AxisOrder {
+    /// The axis order a resolved PROJJSON CRS declares.
+    pub fn of(crs: &Value) -> Self {
+        if is_latitude_first(crs) {
+            Self::LatLon
+        } else {
+            Self::LonLat
+        }
+    }
+
+    /// Reorder one coordinate between the dataset's order and WKB's. The
+    /// vertical axis never moves.
+    pub fn apply(self, c: [f64; 3]) -> [f64; 3] {
+        match self {
+            Self::LonLat => c,
+            Self::LatLon => [c[1], c[0], c[2]],
+        }
     }
 }
 
@@ -189,41 +323,99 @@ mod tests {
     }
 
     #[test]
-    fn known_geographic_codes_are_recognised_as_such() {
-        // Degree-valued: WGS 84, ETRS89, NAD27 — refused by every consumer,
-        // since nothing here reprojects and the quantiser is sized for metres.
-        assert!(is_geographic_epsg("4326"));
-        assert!(is_geographic_epsg("4258"));
-        assert!(is_geographic_epsg("4267"));
-        // Projected/compound national CRS must NOT be caught by it.
-        assert!(!is_geographic_epsg("28992"));
-        assert!(!is_geographic_epsg("7415"));
-        assert!(!is_geographic_epsg("31256"));
+    fn axis_scale_is_per_axis_and_follows_the_declared_units() {
+        // EPSG:7415 = Amersfoort/RD New + NAP height: metre, metre, metre.
+        let projected = resolve_to_projjson("EPSG:7415").unwrap();
+        assert_eq!(axis_scale(&projected).unwrap(), [MM, MM, MM]);
+
+        // EPSG:6697 = JGD2011 + JGD2011 (vertical) height, the CRS every
+        // PLATEAU export declares: degree, degree, metre. A uniform millimetre
+        // scale would quantise 0.001 DEGREE (~90-111 m) and destroy the data.
+        let plateau = resolve_to_projjson("https://www.opengis.net/def/crs/EPSG/0/6697").unwrap();
+        assert_eq!(
+            axis_scale(&plateau).unwrap(),
+            [NANO_DEGREE, NANO_DEGREE, MM]
+        );
+
+        // A 2D geographic CRS carries no vertical axis; z falls back to the
+        // linear step rather than erroring, because a CityGML document may
+        // declare a 2D `srsName` and still carry `srsDimension="3"` posLists.
+        let two_d = resolve_to_projjson("EPSG:4326").unwrap();
+        assert_eq!(axis_scale(&two_d).unwrap(), [NANO_DEGREE, NANO_DEGREE, MM]);
+
+        // CRS84 is lon/lat degrees under a name rather than an EPSG code.
+        let crs84 = resolve_to_projjson("OGC:CRS84").unwrap();
+        assert_eq!(axis_scale(&crs84).unwrap(), [NANO_DEGREE, NANO_DEGREE, MM]);
     }
 
     #[test]
-    fn geographic_identifiers_are_recognised_in_every_accepted_spelling() {
-        // What a CityJSON `referenceSystem` actually looks like, plus the
-        // shorthands the same resolver accepts.
-        assert!(is_geographic_crs(
-            "https://www.opengis.net/def/crs/EPSG/0/4326"
+    fn a_linear_unit_is_converted_to_the_length_that_equals_one_millimetre() {
+        // EPSG:2225 (NAD83 / California zone 1, US survey foot) — one of ~2 300
+        // foot-, link- and chain-valued codes in the vendored table. Refusing
+        // them over their unit would be refusing real national CRS for no
+        // reason; the conversion factor is exact, so the step is too.
+        let feet = resolve_to_projjson("EPSG:2225").unwrap();
+        let scale = axis_scale(&feet).unwrap();
+        let us_foot = 0.304_800_609_601_219;
+        assert!((scale[0] - MM / us_foot).abs() < f64::EPSILON);
+        assert!(
+            (scale[0] * us_foot - MM).abs() < 1e-18,
+            "one step must be 1 mm"
+        );
+        // No vertical axis: z keeps the linear default.
+        assert_eq!(scale[2], MM);
+    }
+
+    #[test]
+    fn axis_scale_refuses_a_unit_it_has_no_step_for() {
+        // EPSG:4035 is in "degree minute second hemisphere" — a packed
+        // sexagesimal spelling, not a linear scale, so it carries a
+        // conversion factor that must NOT be applied.
+        let sexagesimal = resolve_to_projjson("EPSG:4035").unwrap();
+        let err = axis_scale(&sexagesimal).unwrap_err().to_string();
+        assert!(err.contains("minute second"), "unexpected message: {err}");
+
+        // A CRS object with no coordinate system at all is an error, never a
+        // silent millimetre default.
+        let axis_less = serde_json::json!({"type": "GeographicCRS", "name": "nonsense"});
+        assert!(axis_scale(&axis_less).is_err());
+    }
+
+    #[test]
+    fn latitude_first_is_read_from_the_declared_axis_directions() {
+        // EPSG:6697 is (north, east) — latitude first. GeoParquet WKB is
+        // always (longitude, latitude), so the writer must swap for it.
+        let plateau = resolve_to_projjson("EPSG:6697").unwrap();
+        assert!(is_latitude_first(&plateau));
+        assert!(is_latitude_first(
+            &resolve_to_projjson("EPSG:4326").unwrap()
         ));
-        assert!(is_geographic_crs("urn:ogc:def:crs:EPSG::4979"));
-        assert!(is_geographic_crs("EPSG:4258"));
-        assert!(is_geographic_crs("4267"));
-        // CRS84 is lon/lat degrees under a name, with no EPSG code to test.
-        assert!(is_geographic_crs("OGC:CRS84"));
-        assert!(is_geographic_crs(
-            "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+
+        // CRS84 exists precisely to spell WGS 84 in lon/lat order.
+        assert!(!is_latitude_first(
+            &resolve_to_projjson("OGC:CRS84").unwrap()
         ));
-        // Projected/compound national CRS must pass through untouched.
-        assert!(!is_geographic_crs(
-            "https://www.opengis.net/def/crs/EPSG/0/7415"
+        // A projected national CRS in (east, north) order.
+        assert!(!is_latitude_first(
+            &resolve_to_projjson("EPSG:7415").unwrap()
         ));
-        assert!(!is_geographic_crs("EPSG:28992"));
-        // An identifier we cannot parse is not claimed to be geographic;
-        // `resolve_to_projjson` refuses it with the right error instead.
-        assert!(!is_geographic_crs("some-local-engineering-crs"));
+        assert!(!is_latitude_first(
+            &resolve_to_projjson("EPSG:28992").unwrap()
+        ));
+    }
+
+    #[test]
+    fn axis_order_swap_is_its_own_inverse() {
+        let plateau = resolve_to_projjson("EPSG:6697").unwrap();
+        let order = AxisOrder::of(&plateau);
+        assert_eq!(order, AxisOrder::LatLon);
+        let source = [35.4, 139.6, 12.0];
+        assert_eq!(order.apply(source), [139.6, 35.4, 12.0]);
+        assert_eq!(order.apply(order.apply(source)), source);
+
+        let dutch = AxisOrder::of(&resolve_to_projjson("EPSG:7415").unwrap());
+        assert_eq!(dutch, AxisOrder::LonLat);
+        assert_eq!(dutch.apply(source), source);
     }
 
     #[test]

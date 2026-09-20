@@ -820,7 +820,7 @@ mod tests {
             template: None,
             transformation_matrix: None,
         };
-        let pool = VertexPool::raw(&verts);
+        let pool = VertexPool::raw(&verts, cityparquet_schema::crs::AxisOrder::LonLat);
         let (faces, _mask) = faces_from_geometry(&geom, &pool).unwrap();
         assert_eq!(faces.len(), 12);
         let ground: Vec<usize> = select_ground_faces(&faces, &Lod0Options::default());
@@ -860,7 +860,7 @@ mod tests {
             template: None,
             transformation_matrix: None,
         };
-        let pool = VertexPool::raw(&verts);
+        let pool = VertexPool::raw(&verts, cityparquet_schema::crs::AxisOrder::LonLat);
         let (_faces, mask) = faces_from_geometry(&geom, &pool).unwrap();
         assert_eq!(mask, Some(vec![false, false, true]));
     }

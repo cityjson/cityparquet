@@ -22,6 +22,7 @@ use arrow_schema::{DataType, Field, Schema};
 use cjseq::{CityJSON, CityJSONFeature, CityObject, Geometry, GeometryType, Transform};
 use serde_json::Value;
 
+use cityparquet_schema::crs::AxisOrder;
 use cityparquet_schema::{AttributeType, CityParquetError, Lod, Result, normalise_attribute_name};
 
 use crate::appearance::AppearanceInterner;
@@ -174,6 +175,14 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 /// is well-formed — exactly six finite numbers (CityJSON 2.0.1 §2). A
 /// malformed extent is ignored rather than fatal: it is an optional,
 /// derivable source member, and `bbox` is fully recoverable from geometry.
+/// Reorder a `[minx, miny, minz, maxx, maxy, maxz]` extent between the
+/// dataset's axis order and WKB's. Its own inverse, like [`AxisOrder::apply`].
+pub(crate) fn reorder_extent(extent: [f64; 6], axis_order: AxisOrder) -> [f64; 6] {
+    let lo = axis_order.apply([extent[0], extent[1], extent[2]]);
+    let hi = axis_order.apply([extent[3], extent[4], extent[5]]);
+    [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]
+}
+
 fn source_extent(co: &CityObject) -> Option<[f64; 6]> {
     let extent: [f64; 6] = co
         .geographical_extent
@@ -993,7 +1002,9 @@ fn synthesize_footprint(
         return Ok(None);
     };
     let (verts, ms) = footprint_to_geometry(&fp);
-    let raw = VertexPool::raw(&verts);
+    // `verts` were produced from `pool` — already in WKB axis order — so this
+    // pool must NOT reorder them a second time.
+    let raw = VertexPool::raw(&verts, AxisOrder::LonLat);
 
     let Some(outcome) = geometry_to_wkb(&ms, &raw)? else {
         return Ok(None);
@@ -1199,6 +1210,9 @@ struct RowWriter {
     /// slot for any object lacking a source LoD0 (spec "LoD0 synthesis").
     /// Carries the thresholds.
     synthesize_lod0: Option<crate::lod0::Lod0Options>,
+    /// The dataset's axis order ([`ScanResult::axis_order`]), applied to every
+    /// vertex this writer turns into WKB or a `bbox`.
+    axis_order: AxisOrder,
     len: usize,
 }
 
@@ -1254,6 +1268,7 @@ impl RowWriter {
             attributes,
             diverted_attributes: scan.diverted_attribute_names.iter().cloned().collect(),
             synthesize_lod0: scan.synthesize_lod0,
+            axis_order: scan.axis_order,
             len: 0,
         }
     }
@@ -1418,7 +1433,7 @@ impl RowWriter {
             .city_objects
             .get(id)
             .expect("id came from this feature's own city_objects keys");
-        let pool = VertexPool::new(&feature.vertices, transform);
+        let pool = VertexPool::new(&feature.vertices, transform, self.axis_order);
         // The ONE whole-object serialisation this row performs (review P5b);
         // children_roles / address / other all read from this map.
         let co_json = object_json(co)?;
@@ -1570,7 +1585,11 @@ impl RowWriter {
         // silently prunes the row out of spatial queries.
         let mut bbox = resolve_bbox(acc.own_bbox, id, co, feature, &pool)?;
         if let Some(extent) = source_extent(co) {
-            union_bbox(&mut bbox, extent);
+            // A declared `geographicalExtent` is in the SOURCE's axis order,
+            // while `bbox` — like every geometry column — is stored in WKB's.
+            // Unioning the two unreordered would inflate the box across half
+            // the globe for a latitude-first CRS.
+            union_bbox(&mut bbox, reorder_extent(extent, self.axis_order));
         }
         self.push_bbox(bbox);
         self.push_template(acc.template);
@@ -1941,7 +1960,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let pool = VertexPool::raw(&[]);
+        let pool = VertexPool::raw(&[], AxisOrder::LonLat);
         let rows = build_address_rows(&object_json(&co).unwrap(), &pool)
             .unwrap()
             .unwrap();
@@ -1958,7 +1977,7 @@ mod tests {
     fn build_address_rows_is_none_without_an_address_member() {
         let co: CityObject =
             serde_json::from_value(serde_json::json!({"type": "Building"})).unwrap();
-        let pool = VertexPool::raw(&[]);
+        let pool = VertexPool::raw(&[], AxisOrder::LonLat);
         assert!(
             build_address_rows(&object_json(&co).unwrap(), &pool)
                 .unwrap()
@@ -2071,7 +2090,7 @@ mod tests {
             scale: vec![1.0; 3],
             translate: vec![0.0; 3],
         };
-        let pool = VertexPool::new(&vertices, &transform);
+        let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
         // Local defs sized to cover every raw index the fixture geometry
         // above references (material indices up to 7, texture index up to
@@ -2201,7 +2220,7 @@ mod tests {
             scale: vec![1.0; 3],
             translate: vec![0.0; 3],
         };
-        let pool = VertexPool::new(&vertices, &transform);
+        let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
         // Local defs sized to cover the raw indices above (material 1..3,
         // texture 0..2, UV 0..2).
@@ -2346,7 +2365,7 @@ mod tests {
             scale: vec![1.0; 3],
             translate: vec![0.0; 3],
         };
-        let pool = VertexPool::new(&vertices, &transform);
+        let pool = VertexPool::new(&vertices, &transform, AxisOrder::LonLat);
 
         // Local defs sized to cover the raw indices above (material 1..5,
         // texture 0..4, UV 0..2).

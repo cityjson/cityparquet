@@ -1068,7 +1068,10 @@ fn an_unusable_crs_is_reported_even_when_the_source_declares_its_own() {
     let binary = env!("CARGO_BIN_EXE_cityparquet");
     for (spec, needle) in [
         ("banana", "EPSG"),
-        ("EPSG:4326", "geographic"),
+        // EPSG:4035 is in "degree minute second hemisphere" — a packed
+        // sexagesimal spelling with no quantisation step. (A degree-valued
+        // CRS is usable: its step comes from its declared units.)
+        ("EPSG:4035", "minute second"),
         ("", "EPSG"),
     ] {
         let out = tempfile::tempdir().unwrap();
