@@ -262,6 +262,8 @@ fn read_abstract_building<R: BufRead>(
         parts: Vec::new(),
         appearance: ReadAppearance::default(),
     };
+    // A `lod0RoofEdge`, kept aside until the whole subtree has been read.
+    let mut roof_edge: Option<(String, Vec<Polygon>)> = None;
 
     loop {
         buf.clear();
@@ -277,6 +279,35 @@ fn read_abstract_building<R: BufRead>(
                     // first geometry per object+LoD anyway).
                     if !b.solids.iter().any(|(l, _)| *l == lod) {
                         b.solids.push((lod, geom));
+                    }
+                } else if bldg && let Some(lod) = lod_suffix(&name, b"FootPrint") {
+                    // CityGML 2.0 §10.3.1 spells a building's LoD0 with two
+                    // dedicated elements rather than `lod0MultiSurface`:
+                    // `lod0FootPrint` (the ground outline) and `lod0RoofEdge` (the
+                    // roof outline), each holding a `gml:MultiSurface`. Every
+                    // building in a Japanese national (PLATEAU) export carries a
+                    // footprint, so matching only the `lodN*` spellings drops a
+                    // whole LoD level of such a dataset.
+                    //
+                    // The two outlines are different geometry, and CityJSON has no
+                    // way to say which a LoD0 MultiSurface is, so they are never
+                    // merged: the footprint is the LoD0 geometry, and a roof edge
+                    // is emitted only for a building that has no footprint (held
+                    // back until the subtree is read, since element order is not
+                    // guaranteed).
+                    let polys: Vec<Polygon> = geometry::collect_polygons(reader, buf)?
+                        .into_iter()
+                        .map(|(_, p)| p)
+                        .collect();
+                    b.add_plain_surfaces(lod, polys);
+                } else if bldg && let Some(lod) = lod_suffix(&name, b"RoofEdge") {
+                    // Held back — see `lod0FootPrint` above.
+                    let polys: Vec<Polygon> = geometry::collect_polygons(reader, buf)?
+                        .into_iter()
+                        .map(|(_, p)| p)
+                        .collect();
+                    if roof_edge.is_none() {
+                        roof_edge = Some((lod, polys));
                     }
                 } else if bldg && lod_suffix(&name, b"MultiSurface").is_some() {
                     // A standalone lodNMultiSurface under the Building: harvest
@@ -326,6 +357,11 @@ fn read_abstract_building<R: BufRead>(
             }
             _ => {}
         }
+    }
+    if let Some((lod, polys)) = roof_edge
+        && !b.plain_surfaces.iter().any(|(l, _)| *l == lod)
+    {
+        b.add_plain_surfaces(lod, polys);
     }
     Ok(b)
 }
