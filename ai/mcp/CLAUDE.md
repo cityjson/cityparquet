@@ -219,7 +219,11 @@ Four things keep the proxy the only way out:
 - **Node's own fetches.** `describe` fetches `metadata.json` from Node, not
   through DuckDB, so it applies the proxy's rules itself: HTTPS on the default
   port, an allowlisted host that does not resolve to an internal address,
-  redirects not followed.
+  redirects not followed. One gap remains, known and accepted: `fetch` resolves
+  the name again after the check, so whoever controls an allowlisted host's
+  DNS could rebind it to an internal address between the two. That is only
+  ourselves (`open3d.city`), and the result is an HTTPS request with no
+  metadata header. Routing this fetch through the egress proxy would close it.
 - **The runtime account.** The service runs as `cityparquet-mcp-runtime`,
   which holds no roles, so even a leaked metadata token opens nothing.
 
