@@ -13,8 +13,7 @@ name: mcp-deploy
 
 on:
   push:
-    # develop for now, until the first deploy has gone through; then main.
-    branches: [develop]
+    branches: [main]
     paths: ["ai/mcp/**", ".github/workflows/mcp-deploy.yml"]
   workflow_dispatch:
     inputs:
