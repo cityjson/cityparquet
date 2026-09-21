@@ -101,7 +101,7 @@ Then let the deploy reach them:
 - Grant the repository's WIF principal `roles/artifactregistry.writer` on the
   `cityparquet` repository, `roles/run.admin` on the project, and
   `roles/iam.serviceAccountUser` on `cityparquet-mcp-runtime`.
-- Add the secrets `WIF_PROVIDER` and `PROJECT_ID` to `cityjson/cityparquet`,
+- Add the secrets `WIF_PROVIDER` and `GCP_PROJECT_ID` to `cityjson/cityparquet`,
   with the same values as on `cityjson/flatcitybuf`.
 
 ## Environment variables

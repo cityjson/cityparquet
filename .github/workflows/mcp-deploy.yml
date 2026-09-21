@@ -8,7 +8,7 @@ name: mcp-deploy
 # the default branch.
 #
 # Authenticates as flatcitybuf's deploy does: Workload Identity Federation,
-# through the WIF_PROVIDER and PROJECT_ID secrets. One-off setup, including
+# through the WIF_PROVIDER and GCP_PROJECT_ID secrets. One-off setup, including
 # the runtime service account with no roles, is in ai/mcp/README.md.
 
 on:
@@ -66,14 +66,14 @@ jobs:
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          project_id: ${{ secrets.PROJECT_ID }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: Build and push the image
         id: image
         run: |-
-          image="${GAR_LOCATION}-docker.pkg.dev/${{ secrets.PROJECT_ID }}/${GAR_REPOSITORY}/${SERVICE_NAME}:$(git rev-parse HEAD)"
+          image="${GAR_LOCATION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${GAR_REPOSITORY}/${SERVICE_NAME}:$(git rev-parse HEAD)"
           gcloud auth configure-docker "${GAR_LOCATION}-docker.pkg.dev" --quiet
           docker build --platform linux/amd64 -t "$image" ai/mcp
           docker push "$image"
@@ -116,7 +116,7 @@ jobs:
             --max-instances=3
             --timeout=120
             --cpu-boost
-            --service-account=${{ env.RUNTIME_SERVICE_ACCOUNT }}@${{ secrets.PROJECT_ID }}.iam.gserviceaccount.com
+            --service-account=${{ env.RUNTIME_SERVICE_ACCOUNT }}@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com
             --allow-unauthenticated
 
       # The egress allowlist, the secret refusal and the sandbox, checked from
