@@ -1,0 +1,210 @@
+---
+title: Buildings and places — PLATEAU with Overture Maps
+description: Join 3D buildings from CityParquet to points of interest from Overture Maps, two GeoParquet datasets on two object stores, in one DuckDB session.
+sidebar:
+  label: Buildings and places
+  icon: store
+---
+
+A city model says what a building is shaped like; it rarely says what is inside it.
+[Overture Maps](https://overturemaps.org) publishes tens of millions of places —
+shops, restaurants, offices — as GeoParquet on Amazon S3. CityParquet's footprints
+are GeoParquet too, so the two join directly, each read in place from its own bucket.
+
+This tutorial counts the places inside every building in Shibuya, Tokyo, and relates
+them to the building's height. Along the way it meets the one thing that makes two
+spatial datasets from different publishers hard to combine: their coordinate
+reference systems.
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+INSTALL spatial; LOAD spatial;
+SET s3_region = 'us-west-2';
+SET geometry_always_xy = true;
+```
+
+The last setting tells `spatial` that geometry is stored longitude first, as both
+datasets store it; the [PLATEAU Tokyo tutorial](/tutorials/plateau-tokyo#2d-land-use-is-plain-geoparquet)
+explains why it matters.
+
+## Take the places for the area
+
+Overture's places are partitioned GeoParquet, and every row carries a `bbox` struct,
+so a window over Shibuya reads only the matching row groups. The window here is the
+extent of Shibuya's buildings. Copy the result into a local table, since the queries
+below use it several times:
+
+```sql
+CREATE TABLE places AS
+SELECT id, names.primary AS name, categories.primary AS category, geometry
+FROM read_parquet('s3://overturemaps-us-west-2/release/2026-08-19.0/theme=places/type=place/*',
+                  hive_partitioning = true)
+WHERE bbox.xmin BETWEEN 139.6614 AND 139.7238
+  AND bbox.ymin BETWEEN 35.6416 AND 35.6921;
+
+SELECT count(*) AS places, count(DISTINCT category) AS categories FROM places;
+```
+
+```text
+┌────────┬────────────┐
+│ places │ categories │
+├────────┼────────────┤
+│ 56398  │ 863        │   -- ~30 s from S3
+└────────┴────────────┘
+```
+
+Overture publishes a new release every month. Substitute the current one: its
+[release calendar](https://docs.overturemaps.org/release-calendar/) lists them, and
+the `latest` field of its STAC catalogue at `https://stac.overturemaps.org/catalog.json`
+names the newest.
+
+## Take the buildings
+
+From the Shibuya package, keep the buildings that are in Shibuya — the package also
+holds its neighbours', as the [PLATEAU Tokyo tutorial](/tutorials/plateau-tokyo#a-package-is-tiles-not-a-ward)
+explains — with their LoD0 footprint, height and storey count:
+
+```sql
+CREATE TABLE buildings AS
+SELECT id, NULLIF(measuredHeight, -9999) AS height, storeysAboveGround AS storeys,
+       geometry_lod0_0 AS footprint
+FROM 'https://cityparquet.open3d.city/data/plateau/shibuya-ku/building.parquet'
+WHERE left("13+区市町村コード+大字・町コード+町・丁目コード", 5) = '13113';
+```
+
+## Two datasets, two CRSs
+
+The obvious join fails:
+
+```sql
+SELECT count(*) FROM places p JOIN buildings b ON ST_Within(p.geometry, b.footprint);
+```
+
+```text
+Binder Error: Cannot call function 'ST_Within' with geometries of different coordinate
+reference systems (CRS).
+First geometry type is in 'OGC:CRS84' which is not compatible with 'EPSG:6697'.
+```
+
+Both columns are typed `GEOMETRY` with their CRS attached — Overture's in WGS 84
+(`OGC:CRS84`), CityParquet's in the CRS the PLATEAU source declared, JGD2011
+(`EPSG:6697`) — and DuckDB will not compare the two silently. That is the right
+refusal: joining across datums without saying so is how offsets creep into an
+analysis. Reproject the places into the buildings' CRS:
+
+```sql
+CREATE TABLE matched AS
+SELECT p.id AS place, p.name, p.category, b.id AS building
+FROM places p JOIN buildings b
+  ON ST_Within(ST_Transform(p.geometry, 'EPSG:6697'), b.footprint);
+
+SELECT count(*) AS places_in_buildings, count(DISTINCT building) AS buildings_with_places
+FROM matched;
+```
+
+```text
+┌─────────────────────┬───────────────────────┐
+│ places_in_buildings │ buildings_with_places │
+├─────────────────────┼───────────────────────┤
+│ 23128               │ 8112                  │
+└─────────────────────┴───────────────────────┘
+```
+
+Here the transform moves nothing: PROJ treats WGS 84 and JGD2011 as coincident for
+this conversion, and a place's coordinates come out unchanged to eight decimal
+places. What the transform changes is the declared CRS, so that the comparison is
+between like and like and says so. Against another dataset, the same step would move
+the points as well.
+
+The rest of the 56 398 places lie outside any Shibuya building: on the street, in
+buildings of neighbouring wards inside the rectangular window, or placed where no
+footprint is.
+
+## What is inside
+
+The commonest kinds of place inside buildings:
+
+```sql
+SELECT category, count(*) AS places
+FROM matched GROUP BY ALL ORDER BY places DESC LIMIT 6;
+```
+
+```text
+┌─────────────────────┬────────┐
+│      category       │ places │
+├─────────────────────┼────────┤
+│ japanese_restaurant │ 2088   │
+│ bar                 │ 950    │
+│ restaurant          │ 838    │
+│ hair_salon          │ 803    │
+│ clothing_store      │ 744    │
+│ cafe                │ 722    │
+└─────────────────────┴────────┘
+```
+
+## Height against activity
+
+The city model supplies what Overture cannot — how tall each building is. Grouping
+buildings by height shows where the places concentrate:
+
+```sql
+SELECT CASE WHEN height < 10 THEN '1: under 10 m'
+            WHEN height < 30 THEN '2: 10–30 m'
+            WHEN height < 60 THEN '3: 30–60 m'
+            ELSE '4: 60 m and over' END AS height_band,
+       count(DISTINCT b.id) AS buildings,
+       count(m.place) AS places,
+       round(count(m.place) / count(DISTINCT b.id), 2) AS places_per_building
+FROM buildings b LEFT JOIN matched m ON m.building = b.id
+WHERE b.height > 0
+GROUP BY ALL ORDER BY height_band;
+```
+
+```text
+┌──────────────────┬───────────┬────────┬─────────────────────┐
+│   height_band    │ buildings │ places │ places_per_building │
+├──────────────────┼───────────┼────────┼─────────────────────┤
+│ 1: under 10 m    │ 16949     │ 1696   │ 0.1                 │
+│ 2: 10–30 m       │ 18961     │ 13342  │ 0.7                 │
+│ 3: 30–60 m       │ 1856      │ 6373   │ 3.43                │
+│ 4: 60 m and over │ 90        │ 1673   │ 18.59               │
+└──────────────────┴───────────┴────────┴─────────────────────┘
+```
+
+The 90 buildings of 60 m and more average 18.6 places each; the 17 000 under 10 m
+average one place for every ten buildings. And the busiest individual
+buildings:
+
+```sql
+SELECT m.building, b.height, b.storeys, count(*) AS places, mode(m.category) AS commonest_category
+FROM matched m JOIN buildings b ON b.id = m.building
+GROUP BY ALL ORDER BY places DESC LIMIT 5;
+```
+
+```text
+┌───────────────────────────────────────────┬────────┬─────────┬────────┬─────────────────────┐
+│                 building                  │ height │ storeys │ places │ commonest_category  │
+├───────────────────────────────────────────┼────────┼─────────┼────────┼─────────────────────┤
+│ bldg_c2144cb0-0e0e-4208-84a9-83059ece20a3 │ 68.6   │ 14      │ 198    │ japanese_restaurant │
+│ bldg_9ad5b600-360f-4627-8a89-fca39aad5576 │ 173.6  │ 34      │ 182    │ japanese_restaurant │
+│ bldg_e199100f-cb89-4a81-8e38-0abee12cb1d4 │ 80.4   │ 5       │ 145    │ clothing_store      │
+│ bldg_6a5be1be-eea6-45ce-80cb-5a228581b362 │ 133.7  │ 4       │ 123    │ clothing_store      │
+│ bldg_884b7aea-8fa7-4447-8d45-d691cfec7237 │ 98.0   │ 23      │ 118    │ japanese_restaurant │
+└───────────────────────────────────────────┴────────┴─────────┴────────┴─────────────────────┘
+```
+
+Height and storey count are as PLATEAU records them, and they do not always agree:
+an 80 m building listed with five storeys is a record to check before it is a result
+to report.
+
+## What to take away
+
+- **GeoParquet meets GeoParquet.** CityParquet's LoD0 footprint is ordinary
+  GeoParquet, so any GeoParquet dataset — Overture, a national register, your own —
+  joins it with no conversion step.
+- **Reconcile CRSs explicitly.** DuckDB carries each column's CRS and refuses to
+  compare different ones; `ST_Transform` into one of them is the fix, even when, as
+  here, it moves no coordinate.
+- **The city model adds the third dimension.** Overture knows what is in a building;
+  the city model knows its height, volume and form — together they answer questions
+  neither can alone.

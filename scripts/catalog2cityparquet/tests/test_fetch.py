@@ -12,9 +12,7 @@ from catalog2cityparquet.discover import Item
 # scripts/catalog2cityparquet/tests/ -> the repository root. The real city
 # models these tests stuff into archives belong to the library's own fixture
 # set, fetched by `just fixtures` there.
-FIXTURES = (
-    Path(__file__).resolve().parents[3] / "lib" / "cityparquet-rs" / "tests" / "fixtures"
-)
+FIXTURES = Path(__file__).resolve().parents[3] / "lib" / "cityparquet-rs" / "tests" / "fixtures"
 
 
 def test_sniff_recognises_zip_gzip_and_plain():
@@ -414,3 +412,84 @@ def test_only_city_models_are_convertible(tmp_path):
         )
     found = fetch.normalise(archive, tmp_path / "work")
     assert sorted(p.name for p in found) == ["a.gml", "model.city.json", "model.city.jsonl"]
+
+
+def test_a_city_model_whose_marker_is_past_the_sniff_window_is_kept(tmp_path):
+    # JSON member order is free: `"type": "CityJSON"` may follow megabytes of
+    # vertices. Running out of window is "unknown", not "not a city model" —
+    # the converter then decides, loudly, rather than the file vanishing.
+    big = tmp_path / "late.city.json"
+    big.write_text('{"vertices": [' + ",".join(["[1,2,3]"] * 300_000) + '], "type": "CityJSON"}')
+    small = tmp_path / "small.json"
+    small.write_text('{"name": "not a city model"}')
+    assert fetch.is_city_model(big)
+    assert not fetch.is_city_model(small)
+
+
+def test_a_large_xml_document_is_judged_by_its_root_element(tmp_path):
+    # PLATEAU's `WaterBodyDetailAttribute_riverCode.xml` code list is 7.6 MB:
+    # past any sniff window, yet its root element says what it is.
+    codelist = tmp_path / "riverCode.xml"
+    codelist.write_text(
+        '<?xml version="1.0"?>\n<!-- a code list -->\n'
+        '<gml:Dictionary xmlns:gml="http://www.opengis.net/gml">'
+        + "<gml:dictionaryEntry/>" * 200_000
+        + "</gml:Dictionary>"
+    )
+    model = tmp_path / "a.gml"
+    model.write_text(
+        '<?xml version="1.0"?>\n<!-- a <CityModel> in a comment is not a root -->\n'
+        '<core:CityModel xmlns:core="http://www.opengis.net/citygml/2.0">'
+        + "<x/>" * 400_000
+        + "</core:CityModel>"
+    )
+    assert not fetch.is_city_model(codelist)
+    assert fetch.is_city_model(model)
+
+
+def test_an_internal_doctype_subset_does_not_hide_the_root(tmp_path):
+    doc = tmp_path / "a.gml"
+    doc.write_text(
+        '<?xml version="1.0"?><!DOCTYPE CityModel [<!ELEMENT CityModel ANY>'
+        '<!ENTITY x "a > b">]><CityModel/>'
+    )
+    assert fetch.is_city_model(doc)
+
+
+def test_a_prolog_longer_than_the_window_is_unknown_and_kept(tmp_path):
+    doc = tmp_path / "a.gml"
+    doc.write_text("<!-- a -->" * 8 + "<!--" + "x" * (2 << 20) + "--><CityModel/>")
+    assert fetch.is_city_model(doc)
+
+
+def test_many_comments_before_an_unfinished_one_scan_in_linear_time(tmp_path):
+    import time
+
+    doc = tmp_path / "a.gml"
+    doc.write_text("<!-- c -->" * 5000 + "<!--" + "x" * (2 << 20))
+    started = time.monotonic()
+    fetch.is_city_model(doc)
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_comment_inside_an_internal_subset_is_not_a_quote(tmp_path):
+    doc = tmp_path / "a.gml"
+    doc.write_text(
+        "<!DOCTYPE CityModel [<!-- it's a comment --><!ELEMENT CityModel ANY>]><CityModel/>"
+    )
+    assert fetch.is_city_model(doc)
+
+
+def test_a_root_name_cut_by_the_window_is_unknown(tmp_path):
+    doc = tmp_path / "a.gml"
+    doc.write_bytes(b" " * ((1 << 20) - 5) + b"<core:CityModel/>")
+    assert fetch.is_city_model(doc)
+    long_prefix = tmp_path / "b.gml"
+    long_prefix.write_text("<" + "p" * 250 + ":CityModel/>")
+    assert fetch.is_city_model(long_prefix)
+
+
+def test_a_processing_instruction_inside_a_subset_is_skipped(tmp_path):
+    doc = tmp_path / "a.gml"
+    doc.write_text("<!DOCTYPE CityModel [<?note it's ]><foo fine?>]><CityModel/>")
+    assert fetch.is_city_model(doc)

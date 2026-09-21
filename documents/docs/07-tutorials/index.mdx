@@ -9,18 +9,46 @@ sidebar:
 Explained, task-oriented walkthroughs. For the bare copy-paste path, see
 [Getting started](/getting-started).
 
-The first three take one tool and one local file each. The capstone puts them
-together on a real, national-scale dataset **on object storage** — start there for
-the full picture, or use the focused three as reference.
+Three take one tool and one local file each. The rest work on the
+[published datasets](/resources/datasets) **on object storage**: 3DBAG at national
+scale; PLATEAU's Tokyo, in geographic coordinates, with its land use; finding
+packages in the STAC catalogue and querying many at once; joining city models to
+Overture Maps; and LoD3 façade semantics.
 
 If you would rather not install anything first, the [SQL playground](/playground)
 runs DuckDB and both extensions in your browser, against a 16.4 GB 3DBAG package on
 object storage.
 
 <CardGroup cols={2}>
-  <Card title="Working with 3DBAG at cloud scale" href="/tutorials/cloud-scale-3dbag" icon="cloud">
-    End-to-end: bounding-box search over 21.5 million objects, 3D measurement, semantic roof
-    analysis, and format conversion — straight off object storage.
+  <Card
+    title="Working with 3DBAG at cloud scale"
+    href="/tutorials/cloud-scale-3dbag"
+    icon="cloud"
+  >
+    End-to-end: bounding-box search over 21.5 million objects, 3D measurement,
+    semantic roof analysis, and format conversion — straight off object storage.
+  </Card>
+  <Card title="PLATEAU Tokyo" href="/tutorials/plateau-tokyo" icon="map">
+    Reproject buildings stored in latitude and longitude before measuring them,
+    and join them to 2D land-use parcels.
+  </Card>
+  <Card
+    title="Catalogue and many packages"
+    href="/tutorials/plateau-catalogue"
+    icon="layers"
+  >
+    Find packages through STAC and Parquet footers, then compare Tokyo's 23
+    wards in one query.
+  </Card>
+  <Card
+    title="Buildings and places"
+    href="/tutorials/plateau-overture"
+    icon="store"
+  >
+    Join 3D buildings to Overture Maps places, reconciling two CRSs.
+  </Card>
+  <Card title="LoD3 façades" href="/tutorials/lod3-openings" icon="building">
+    Measure window and wall area from per-face semantics.
   </Card>
   <Card title="DuckDB" href="/tutorials/duckdb" icon="database">
     Query and convert CityParquet with plain DuckDB.
@@ -28,7 +56,11 @@ object storage.
   <Card title="DuckDB 3D extension" href="/tutorials/duckdb-3d" icon="box">
     Validate and measure 3D solids.
   </Card>
-  <Card title="DuckDB CityJSON extension" href="/tutorials/duckdb-cityjson" icon="arrow-right-left">
+  <Card
+    title="DuckDB CityJSON extension"
+    href="/tutorials/duckdb-cityjson"
+    icon="arrow-right-left"
+  >
     Read and write CityJSON / CityJSONSeq.
   </Card>
 </CardGroup>

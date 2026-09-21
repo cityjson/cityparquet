@@ -59,6 +59,8 @@ class CollectionSpec:
 class Spec:
     catalog: dict
     collections: list[CollectionSpec]
+    #: Where the tree is served, for absolute `self` links; none without it.
+    public_url: str | None = None
 
 
 def load_spec(path: Path) -> Spec:
@@ -66,6 +68,7 @@ def load_spec(path: Path) -> Spec:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     return Spec(
         catalog=raw.get("catalog") or {},
+        public_url=raw.get("public_url"),
         collections=[CollectionSpec(**c) for c in raw.get("collections") or []],
     )
 
@@ -144,11 +147,57 @@ def lay_out(spec: CollectionSpec, out: Path, data_root: Path | None = None) -> l
             seen[slug] = pkg
             placements.append((pkg, root / slug, slug, title_from_slug(slug)))
 
+    _refuse_overlap([spec.name], [src for src, *_ in placements], out)
     if root.exists():
         shutil.rmtree(root)
     for src, dest, item_id, title in placements:
         _place(src, dest, item_id=item_id, title=title, collection=spec.name, flat=flat)
     return [dest for _, dest, _, _ in placements]
+
+
+def _refuse_overlap(names: list[str], sources: list[Path], out: Path) -> None:
+    for name in names:
+        target = (out / name).resolve()
+        for src in sources:
+            source = src.resolve()
+            if source.is_relative_to(target) or target.is_relative_to(source):
+                raise ValueError(
+                    f"{src} and the published {out / name} overlap; publishing would "
+                    "delete a package it publishes"
+                )
+
+
+def check_no_overlap(spec: Spec, out: Path, data_root: Path | None = None) -> None:
+    """Refuse a publish whose output overlaps any collection's sources.
+
+    Checked across every collection before any is laid out: collections are
+    replaced one at a time, and one's output may hold another's packages.
+    """
+    sources = [pkg for c in spec.collections for pkg in _packages(c, data_root)]
+    _refuse_overlap([c.name for c in spec.collections], sources, out)
+
+
+def absolutise_self_links(out: Path, public_url: str | None) -> None:
+    """Make every catalogue and collection `self` link absolute, or drop it.
+
+    STAC defines `self` as the document's absolute online location, and the
+    aggregation writes `./collection.json`. Where the tree will be served is
+    known only to the spec; without it, no `self` is better than a wrong one.
+    """
+    for path in [out / "catalog.json", *sorted(out.glob("*/collection.json"))]:
+        if not path.is_file():
+            continue
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        links = []
+        for link in doc.get("links", []):
+            if link.get("rel") == "self":
+                if public_url is None:
+                    continue
+                href = public_url.rstrip("/") + "/" + path.relative_to(out).as_posix()
+                link = {**link, "href": href}
+            links.append(link)
+        doc["links"] = links
+        path.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def aggregate_tree(spec: Spec, out: Path, *, tool: Path, base_url: str, client) -> None:
@@ -169,3 +218,4 @@ def aggregate_tree(spec: Spec, out: Path, *, tool: Path, base_url: str, client) 
         written.append(target)
     catalog = aggregate.write_config(spec.catalog, configs / "catalog.yaml")
     aggregate.update_catalog(tool, written, out, catalog)
+    absolutise_self_links(out, spec.public_url)

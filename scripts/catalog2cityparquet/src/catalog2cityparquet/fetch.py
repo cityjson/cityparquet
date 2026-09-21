@@ -316,18 +316,98 @@ def normalise(
 #: prolog and comments, or a CityJSON header whose `type` is not written first.
 _MODEL_SNIFF_BYTES = 1 << 20
 
+#: An XML element's qualified name (ASCII names; CityGML uses nothing else).
+_XML_NAME = re.compile(rb"[A-Za-z_][\w.:-]*")
+
+
+def _skip_declaration(head: bytes, pos: int) -> int:
+    """The index just past a `<!DOCTYPE …>` starting at `pos`, or -1.
+
+    Quoted literals, comments, processing instructions and an internal subset
+    (`[ … ]`) may contain `>`, so the declaration ends at the first `>`
+    outside all of them.
+    """
+    depth = 0
+    k = pos + 2
+    while k < len(head):
+        if head.startswith(b"<!--", k) or head.startswith(b"<?", k):
+            close = b"-->" if head.startswith(b"<!--", k) else b"?>"
+            end = head.find(close, k + 2)
+            if end < 0:
+                return -1
+            k = end + len(close)
+            continue
+        c = head[k : k + 1]
+        if c in (b'"', b"'"):
+            end = head.find(c, k + 1)
+            if end < 0:
+                return -1
+            k = end + 1
+            continue
+        if c == b"[":
+            depth += 1
+        elif c == b"]":
+            depth -= 1
+        elif c == b">" and depth <= 0:
+            return k + 1
+        k += 1
+    return -1
+
+
+def xml_root_name(head: bytes) -> bytes | None:
+    """The qualified name of an XML document's root element, or None.
+
+    A single forward scan over the prolog — XML declaration, processing
+    instructions, comments, a doctype — so its cost is linear in the head.
+    None means the prolog did not end within `head`, or it is not XML.
+    """
+    pos = 3 if head.startswith(b"\xef\xbb\xbf") else 0
+    while True:
+        while pos < len(head) and head[pos : pos + 1].isspace():
+            pos += 1
+        if head.startswith(b"<?", pos):
+            end = head.find(b"?>", pos + 2)
+            pos = -1 if end < 0 else end + 2
+        elif head.startswith(b"<!--", pos):
+            end = head.find(b"-->", pos + 4)
+            pos = -1 if end < 0 else end + 3
+        elif head.startswith(b"<!", pos):
+            pos = _skip_declaration(head, pos)
+        elif head.startswith(b"<", pos):
+            name = _XML_NAME.match(head, pos + 1)
+            # A name running into the end of the window may be cut short.
+            if not name or name.end() >= len(head):
+                return None
+            return name.group(0)
+        else:
+            return None
+        if pos < 0:
+            return None
+
 
 def is_city_model(path: Path) -> bool:
     """Whether a file with a convertible suffix actually holds a city model.
 
     The suffix is not enough: a whole-city PLATEAU archive ships ~500
     `codelists/*.xml` GML dictionaries and schema files beside its CityGML, and
-    any one of them handed to the converter fails the whole city. A CityGML
-    document's root is a `CityModel`; a CityJSON (or CityJSONSeq) document's
-    first object has `"type": "CityJSON"`.
+    any one of them handed to the converter fails the whole city.
+
+    An XML document is judged by its root element, which follows only the
+    prolog, comments and a doctype: a CityGML document's root is `CityModel`.
+    A prolog that outruns the window leaves the root unknown.
+    A JSON document's `"type": "CityJSON"` may come after any amount of
+    vertices, since members are unordered; not finding it in a file longer
+    than the window is unknown, not absent, and such a file goes to the
+    converter, which refuses a non-model loudly — a silent drop would report a
+    partial conversion as complete.
     """
     with path.open("rb") as fh:
         head = fh.read(_MODEL_SNIFF_BYTES)
+        truncated = bool(fh.read(1))
     if path.suffix.lower() in (".json", ".jsonl"):
-        return re.search(rb'"type"\s*:\s*"CityJSON"', head) is not None
-    return re.search(rb"<(?:[A-Za-z_][\w.-]*:)?CityModel[\s>/]", head) is not None
+        return re.search(rb'"type"\s*:\s*"CityJSON"', head) is not None or truncated
+    root = xml_root_name(head)
+    if root is None:
+        # The prolog outran the window: unknown, so the converter decides.
+        return truncated
+    return root.split(b":")[-1] == b"CityModel"

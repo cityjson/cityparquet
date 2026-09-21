@@ -355,8 +355,8 @@ its STAC:
 ```bash
 uv run --project scripts/catalog2cityparquet python -m catalog2cityparquet \
     publish scripts/catalog2cityparquet/showcase/datasets.yaml \
-    --data-root /data2/hideba/cityparquet_data --out /data2/hideba/cityparquet_data/publish
-rclone copy /data2/hideba/cityparquet_data/publish r2:cityparquet/data/
+    --data-root DATA_ROOT --out DATA_ROOT/publish
+rclone copy DATA_ROOT/publish r2:cityparquet/data/
 ```
 
 The spec names each published collection, the source collection whose
@@ -383,7 +383,10 @@ things the layout changes — its id (the slug), a `title` (the slug, capitalise
 unless the spec gives one), and its `collection`/`parent`/`root` links;
 footer-derived properties and provenance links are carried untouched. A
 collection's directory is replaced wholesale on every publish, a directory
-without an Item is not published, and two packages sharing a slug are refused.
+without an Item is not published, and two packages sharing a slug are refused. A publish whose output overlaps a package it
+publishes is refused before anything is deleted. The spec's `public_url` makes
+the catalogue's and collections' `self` links absolute, as STAC requires; without
+it they are dropped.
 
 ## Locking
 

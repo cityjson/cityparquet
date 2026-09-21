@@ -191,3 +191,78 @@ def test_each_collection_carries_its_sources_identity_under_its_own_id(tmp_path,
     )
     assert calls[1][2]["id"] == "3dbag" and calls[1][2]["title"] == "T netherlands-3d-bag"
     assert calls[2] == ("catalog", ["plateau", "3dbag"])
+
+
+def test_publishing_over_its_own_sources_is_refused_before_anything_is_deleted(tmp_path):
+    # `out/<name>` replaced wholesale would take the source packages with it.
+    src = tmp_path / "out" / "plateau" / "items"
+    pkg = _package(src, "1_a_")
+    spec = publish.CollectionSpec(
+        name="plateau", source="jp", packages=str(src / "*"), slug=r"^\d+_(?P<slug>a)_"
+    )
+    with pytest.raises(ValueError, match="overlap"):
+        publish.lay_out(spec, tmp_path / "out")
+    assert (pkg / "metadata.json").exists()
+
+
+def test_self_links_are_made_absolute_under_the_public_base(tmp_path):
+    root = tmp_path / "out"
+
+    def write(path, doc):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(doc))
+
+    write(root / "catalog.json", {"links": [{"rel": "self", "href": "./catalog.json"}]})
+    write(
+        root / "plateau" / "collection.json",
+        {
+            "links": [
+                {"rel": "self", "href": "./collection.json"},
+                {"rel": "item", "href": "./a/metadata.json"},
+            ]
+        },
+    )
+    publish.absolutise_self_links(root, "https://example.test/data/")
+    cat = json.loads((root / "catalog.json").read_text())
+    col = json.loads((root / "plateau" / "collection.json").read_text())
+    assert cat["links"] == [{"rel": "self", "href": "https://example.test/data/catalog.json"}]
+    assert col["links"][0] == {
+        "rel": "self",
+        "href": "https://example.test/data/plateau/collection.json",
+    }
+    assert col["links"][1]["href"] == "./a/metadata.json"
+
+
+def test_without_a_public_base_self_links_are_dropped(tmp_path):
+    root = tmp_path / "out"
+    root.mkdir()
+    (root / "catalog.json").write_text(
+        json.dumps({"links": [{"rel": "self", "href": "./catalog.json"}]})
+    )
+    publish.absolutise_self_links(root, None)
+    assert json.loads((root / "catalog.json").read_text())["links"] == []
+
+
+def test_one_collection_cannot_delete_anothers_sources(tmp_path):
+    # Collection `a` publishes into out/a; collection `b` reads its packages
+    # from under out/a. Checking each collection alone lets `a` delete them.
+    src_b = tmp_path / "out" / "a" / "items"
+    pkg_b = _package(src_b, "1_b_")
+    _package(tmp_path / "src_a", "1_a_")
+    spec = publish.Spec(
+        catalog={},
+        collections=[
+            publish.CollectionSpec(
+                name="a",
+                source="s",
+                packages=str(tmp_path / "src_a" / "*"),
+                slug=r"^\d+_(?P<slug>a)_",
+            ),
+            publish.CollectionSpec(
+                name="b", source="s", packages=str(src_b / "*"), slug=r"^\d+_(?P<slug>b)_"
+            ),
+        ],
+    )
+    with pytest.raises(ValueError, match="overlap"):
+        publish.check_no_overlap(spec, tmp_path / "out")
+    assert (pkg_b / "metadata.json").exists()

@@ -1,0 +1,108 @@
+/* Tokens resolved from the site's theme, so the catalogue follows light/dark
+   and the accent without redefining them. */
+.cp-stac {
+  --cp-border: var(--blume-border);
+  --cp-dim: var(--blume-muted-foreground);
+  --cp-hover: color-mix(in srgb, currentColor 6%, transparent);
+  --cp-mono: var(--blume-font-mono, ui-monospace, SFMono-Regular, monospace);
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.cp-stac-map {
+  height: 26rem;
+  border: 1px solid var(--cp-border);
+  border-radius: 4px;
+  /* Leaflet's panes stack above the page's sticky header otherwise. */
+  z-index: 0;
+}
+
+.cp-stac-collection h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.25rem;
+}
+
+.cp-stac-swatch {
+  display: inline-block;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 2px;
+  flex: none;
+}
+
+.cp-stac-description,
+.cp-stac-meta,
+.cp-stac-source {
+  margin: 0.25rem 0;
+  color: var(--cp-dim);
+  font-size: 0.875rem;
+}
+
+.cp-stac-scroll {
+  overflow-x: auto;
+  max-height: 28rem;
+  overflow-y: auto;
+  border: 1px solid var(--cp-border);
+  border-radius: 4px;
+  margin-top: 0.5rem;
+}
+
+.cp-stac table {
+  /* Wider than the column when it must be: the wrapper scrolls, the cells
+     never collapse to one character. */
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  margin: 0;
+}
+
+.cp-stac th,
+.cp-stac td {
+  padding: 0.35rem 0.6rem;
+  white-space: nowrap;
+  text-align: left;
+  border-bottom: 1px solid var(--cp-border);
+  vertical-align: top;
+}
+
+.cp-stac thead th {
+  position: sticky;
+  top: 0;
+  background: var(--blume-background, Canvas);
+  font-weight: 600;
+}
+
+.cp-stac tbody tr {
+  cursor: pointer;
+}
+
+.cp-stac tbody tr:hover,
+.cp-stac tr.cp-stac-selected {
+  background: var(--cp-hover);
+}
+
+.cp-stac .cp-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cp-stac-bbox {
+  font-family: var(--cp-mono);
+  white-space: nowrap;
+}
+
+.cp-stac td.cp-stac-types {
+  white-space: normal;
+  min-width: 14rem;
+  max-width: 24rem;
+}
+
+.cp-stac-error {
+  color: #c92a2a;
+}

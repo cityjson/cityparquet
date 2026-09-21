@@ -1,0 +1,235 @@
+---
+title: LoD3 façades — windows and walls in Auvergne-Rhône-Alpes
+description: Read CityParquet's per-face semantics to measure window and wall area on LoD3 buildings, with a few SQL macros and no 3D library.
+sidebar:
+  label: LoD3 façades
+  icon: building
+---
+
+At LoD3 a building model carries its façade detail: walls, roofs, and the windows set
+into them, each labelled with its semantic type. CityParquet stores the geometry as
+WKB and the labels beside it, one per face, so a query can pick the window faces out
+of a building and measure them.
+
+This tutorial does that for the LoD3 buildings of the Auvergne-Rhône-Alpes economic
+activity zones, in France:
+
+1. **See the semantics** a package carries.
+2. **Line faces up with their labels** — `ST_Dump` for the faces, `face_semantics` for
+   what each one is.
+3. **Measure face area in 3D** with a small SQL macro.
+4. **Compare** window and wall area per building, then across all 21 zone packages.
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+INSTALL spatial; LOAD spatial;
+```
+
+The source CRS here is RGF93 / CC46 (EPSG:3946), a projected CRS in metres, so —
+unlike the [PLATEAU tutorial](/tutorials/plateau-tokyo) — there is nothing to
+reproject before measuring.
+
+## The semantics in a package
+
+Each geometry column has a companion `geometry_properties_*` struct holding what WKB
+cannot: the CityJSON `surfaces` array, and `face_semantics`, which gives each face
+its entry in `surfaces`. Unnesting `surfaces` profiles the package:
+
+```sql
+SELECT s ->> 'type' AS surface_type, count(*) AS surfaces
+FROM (SELECT unnest(geometry_properties_lod3_0.surfaces::JSON[]) AS s
+      FROM 'https://cityparquet.open3d.city/data/aura-zae/01_Roannais_LOD3/building.parquet'
+      WHERE object_type = 'Building')
+GROUP BY ALL ORDER BY surfaces DESC;
+```
+
+```text
+┌───────────────┬──────────┐
+│ surface_type  │ surfaces │
+├───────────────┼──────────┤
+│ WallSurface   │ 18243    │
+│ RoofSurface   │ 8321     │
+│ Window        │ 7847     │
+│ GroundSurface │ 1583     │
+└───────────────┴──────────┘
+```
+
+These buildings are `MultiSurface`s — a set of faces, not closed solids — so
+`three_d`'s volume and solid functions do not apply. Everything below uses `spatial`
+and plain SQL.
+
+## One row per face, with its label
+
+`ST_Dump` splits a multi-surface into its polygons in WKB order, and numbers each
+one in `path`, counting from one. `face_semantics` lists each face's `surfaces` index
+in the same order, counting from zero. Put the two together and every face knows what
+it is:
+
+```sql
+CREATE TABLE faces AS
+SELECT b.id AS building,
+       f.path[1] AS face,
+       f.geom AS polygon,
+       (b.geometry_properties_lod3_0.surfaces::JSON[])[
+           b.geometry_properties_lod3_0.face_semantics[f.path[1]] + 1] ->> 'type' AS surface
+FROM 'https://cityparquet.open3d.city/data/aura-zae/01_Roannais_LOD3/building.parquet' b,
+     unnest(ST_Dump(b.geometry_lod3_0)) AS t(f)
+WHERE b.object_type = 'Building';
+```
+
+The `+ 1` converts `face_semantics`' 0-based index to SQL's 1-based lists. A
+`surfaces` entry can cover several faces, which is why there are more window faces
+than window surfaces.
+
+## Face area in three dimensions
+
+`ST_Area` measures in the x–y plane, which is right for a footprint and returns zero
+for a wall. A planar polygon's true area is given by Newell's method: half the length
+of the sum of the cross products of consecutive vertices. As DuckDB macros:
+
+```sql
+-- Newell: the area of a planar ring in 3D is half the length of the sum of
+-- cross products of its consecutive vertices.
+CREATE MACRO newell_area(x, y, z) AS 0.5 * sqrt(
+    pow(list_sum(list_transform(range(1, len(x)), lambda i: (y[i] - y[i + 1]) * (z[i] + z[i + 1]))), 2)
+  + pow(list_sum(list_transform(range(1, len(x)), lambda i: (z[i] - z[i + 1]) * (x[i] + x[i + 1]))), 2)
+  + pow(list_sum(list_transform(range(1, len(x)), lambda i: (x[i] - x[i + 1]) * (y[i] + y[i + 1]))), 2));
+
+CREATE MACRO ring_area(r) AS newell_area(
+    list_transform(ST_Dump(ST_Points(r)), lambda d: ST_X(d.geom)),
+    list_transform(ST_Dump(ST_Points(r)), lambda d: ST_Y(d.geom)),
+    list_transform(ST_Dump(ST_Points(r)), lambda d: ST_Z(d.geom)));
+
+-- A face is its outer ring less its holes.
+CREATE MACRO face_area(p) AS
+  ring_area(ST_ExteriorRing(p))
+  - coalesce(list_sum(list_transform(range(1, ST_NInteriorRings(p) + 1),
+                                     lambda k: ring_area(ST_InteriorRingN(p, k::INTEGER)))), 0);
+```
+
+Check them on shapes whose areas are known — a vertical 4 × 3 wall, a flat 4 × 3 face
+with a 1 × 1 hole, and a 3 m wide slope rising 4 m over 4 m:
+
+```sql
+SELECT round(face_area('POLYGON Z ((0 0 0, 4 0 0, 4 0 3, 0 0 3, 0 0 0))'::GEOMETRY), 3) AS wall_4x3,
+       round(face_area('POLYGON Z ((0 0 0, 4 0 0, 4 3 0, 0 3 0, 0 0 0),
+                                   (1 1 0, 2 1 0, 2 2 0, 1 2 0, 1 1 0))'::GEOMETRY), 3) AS floor_4x3_minus_1x1,
+       round(face_area('POLYGON Z ((0 0 0, 3 0 0, 3 4 4, 0 4 4, 0 0 0))'::GEOMETRY), 3) AS slope_3x_sqrt32;
+```
+
+```text
+┌──────────┬─────────────────────┬─────────────────┐
+│ wall_4x3 │ floor_4x3_minus_1x1 │ slope_3x_sqrt32 │
+├──────────┼─────────────────────┼─────────────────┤
+│ 12.0     │ 11.0                │ 16.971          │
+└──────────┴─────────────────────┴─────────────────┘
+```
+
+## Windows against walls
+
+With an area per face and a label per face, window and wall area per building is a
+grouped sum:
+
+```sql
+SELECT building,
+       count(*) FILTER (surface = 'Window') AS window_faces,
+       round(sum(face_area(polygon)) FILTER (surface = 'Window'), 1) AS window_m2,
+       round(sum(face_area(polygon)) FILTER (surface = 'WallSurface'), 1) AS wall_m2,
+       round(100 * window_m2 / wall_m2, 1) AS window_pct_of_wall
+FROM faces
+GROUP BY building
+ORDER BY window_m2 DESC NULLS LAST
+LIMIT 5;
+```
+
+```text
+┌────────────────────┬──────────────┬───────────┬─────────┬────────────────────┐
+│      building      │ window_faces │ window_m2 │ wall_m2 │ window_pct_of_wall │
+├────────────────────┼──────────────┼───────────┼─────────┼────────────────────┤
+│ 42187000BO0103_000 │ 138          │ 5402.8    │ 10923.6 │ 49.5               │
+│ 42187000BS0264_000 │ 76           │ 2250.1    │ 5938.3  │ 37.9               │
+│ 42187000BS0132_000 │ 196          │ 1234.0    │ 6720.3  │ 18.4               │
+│ 42187000BH0198_000 │ 19           │ 1056.1    │ 3465.6  │ 30.5               │
+│ 42184000AD0342_000 │ 100          │ 694.1     │ 5714.7  │ 12.1               │
+└────────────────────┴──────────────┴───────────┴─────────┴────────────────────┘
+```
+
+And for the zone as a whole:
+
+```sql
+SELECT count(*) AS buildings,
+       count(*) FILTER (window_m2 > 0) AS with_windows,
+       round(median(100 * window_m2 / wall_m2) FILTER (window_m2 > 0), 1) AS median_window_pct
+FROM (
+  SELECT building,
+         coalesce(sum(face_area(polygon)) FILTER (surface = 'Window'), 0) AS window_m2,
+         sum(face_area(polygon)) FILTER (surface = 'WallSurface') AS wall_m2
+  FROM faces GROUP BY building);
+```
+
+```text
+┌───────────┬──────────────┬───────────────────┐
+│ buildings │ with_windows │ median_window_pct │
+├───────────┼──────────────┼───────────────────┤
+│ 1577      │ 599          │ 1.5               │   -- ~20 s, faces included
+└───────────┴──────────────┴───────────────────┘
+```
+
+Read these as the model's figures, not the buildings'. Windows are modelled on 599
+of the 1 577 buildings, so a building without any is not necessarily windowless. And
+almost none of the walls here has a hole — 2 of 18 858 wall faces — so the ratio
+compares window area with wall area as modelled; it does not say whether a wall face
+also spans the window set into it.
+
+## Across all 21 packages
+
+The collection lists every zone, so the same catalogue pattern as the
+[catalogue tutorial](/tutorials/plateau-catalogue) reads them all. Which buildings
+have any window at all needs only the semantics, not the geometry:
+
+```sql
+SET VARIABLE zones = (
+  SELECT list('https://cityparquet.open3d.city/data/aura-zae/'
+              || replace(l.href[3:], 'metadata.json', 'building.parquet'))
+  FROM (SELECT unnest(links) AS l
+        FROM read_json('https://cityparquet.open3d.city/data/aura-zae/collection.json'))
+  WHERE l.rel = 'item');
+
+SELECT regexp_extract(filename, 'aura-zae/([^/]+)/', 1) AS zone,
+       count(*) AS buildings,
+       count(*) FILTER (list_contains(
+           list_transform(geometry_properties_lod3_0.surfaces::JSON[], lambda s: s ->> 'type'),
+           'Window')) AS with_windows
+FROM read_parquet(getvariable('zones'), union_by_name := true, filename := true)
+WHERE object_type = 'Building'
+GROUP BY ALL
+ORDER BY buildings DESC
+LIMIT 8;
+```
+
+```text
+┌───────────────────────────────────┬───────────┬──────────────┐
+│               zone                │ buildings │ with_windows │
+├───────────────────────────────────┼───────────┼──────────────┤
+│ 02_Valence_LOD3_6                 │ 2020      │ 224          │
+│ 05_Loire_forez                    │ 1683      │ 201          │
+│ 01_Roannais_LOD3                  │ 1577      │ 599          │
+│ 03_Clermont_LOD3_2                │ 1515      │ 172          │
+│ 03_Clermont_LOD3_3                │ 1328      │ 146          │
+│ 02_Valence_LOD3_2                 │ 1319      │ 221          │
+│ 13_riom_limagne_volcans_2018_LOD3 │ 1306      │ 154          │
+│ 03_Clermont_LOD3_1                │ 1115      │ 185          │
+└───────────────────────────────────┴───────────┴──────────────┘
+```
+
+The share of buildings with modelled windows varies from zone to zone — worth
+knowing before comparing window ratios between them.
+
+## What to take away
+
+- **Semantics travel beside the WKB.** `face_semantics` is a native integer list
+  aligned with the WKB faces, so a face's label is an index, not a parse.
+- **Measure what the geometry is.** A `MultiSurface` is not a solid; its faces can
+  still be measured, one by one, in any SQL engine that can read their vertices.
+- **Know what the model records.** LoD3 detail is modelled selectively; check how
+  much of it exists before reading an absence as a fact about the buildings.

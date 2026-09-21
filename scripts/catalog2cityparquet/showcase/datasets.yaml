@@ -1,6 +1,8 @@
 # The public datasets served from `https://cityparquet.open3d.city/data/`,
 # listed on the documentation site's "Available datasets" page. Package globs
 # are relative to `--data-root`; see "Publishing" in the README.
+public_url: https://cityparquet.open3d.city/data
+
 catalog:
   id: cityparquet-datasets
   title: CityParquet datasets
