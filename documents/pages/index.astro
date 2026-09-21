@@ -420,7 +420,10 @@ const queryTokens = tokeniseSql(query);
           {
             measurements.map((measurement) => (
               <div class="cp-stat">
-                <span class="cp-stat-value">{measurement.figure}</span>
+                <span class="cp-stat-value">
+                  <span class="cp-stat-final">{measurement.figure}</span>
+                  <span data-cp-count aria-hidden="true">{measurement.figure}</span>
+                </span>
                 <span class="cp-stat-label">{measurement.label}</span>
                 <span class="cp-key">{measurement.detail}</span>
               </div>
@@ -1115,11 +1118,22 @@ const queryTokens = tokeniseSql(query);
   }
 
   .cp-stat-value {
+    display: grid;
+    font-variant-numeric: tabular-nums;
     font-size: clamp(2rem, 5vw, 2.5rem);
     line-height: 1;
     font-weight: 500;
     letter-spacing: -0.02em;
     color: var(--cp-accent);
+  }
+
+  .cp-stat-value > span {
+    grid-area: 1 / 1;
+  }
+
+  /* Reserve the final width and expose a stable value to assistive technology. */
+  .cp-stat-final {
+    clip-path: inset(50%);
   }
 
   .cp-stat-label {
@@ -1612,6 +1626,39 @@ const queryTokens = tokeniseSql(query);
   // reduced-motion, leaving the first phrase rendered from the server.
   const target = document.querySelector<HTMLElement>("[data-cp-typed]");
   const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Each figure starts only when visible, including the stacked mobile layout.
+  // Server-rendered values remain the fallback if motion or observers are unavailable.
+  if (!still && "IntersectionObserver" in window) {
+    const motion = matchMedia("(prefers-reduced-motion: reduce)");
+    const counters = new IntersectionObserver((entries) => {
+      entries.filter((entry) => entry.isIntersecting).forEach((entry, index) => {
+        const element = entry.target as HTMLElement;
+        counters.unobserve(element);
+        const final = element.textContent ?? "";
+        const number = final.match(/^[\d.]+/);
+        if (!number) return;
+        const value = Number(number[0]);
+        const decimals = number[0].split(".")[1]?.length ?? 0;
+        const suffix = final.slice(number[0].length);
+        const start = performance.now() + index * 90;
+        const frame = (now: number) => {
+          const progress = Math.min(1, Math.max(0, (now - start) / 1000));
+          if (motion.matches || progress === 1) {
+            element.textContent = final;
+            return;
+          }
+          const eased = 1 - Math.pow(1 - progress, 4);
+          element.textContent = (value * eased).toFixed(decimals) + suffix;
+          requestAnimationFrame(frame);
+        };
+        requestAnimationFrame(frame);
+      });
+    }, { threshold: 0.7 });
+    document.querySelectorAll<HTMLElement>("[data-cp-count]").forEach((element) => {
+      counters.observe(element);
+    });
+  }
 
   if (target && !still) {
     const phrases = [
