@@ -18,7 +18,7 @@ and round-trips back to CityJSON / CityJSONSeq with **semantic** losslessness.
 - **The catalogue driver is not here either**: `../../scripts/catalog2cityparquet`.
 - **`just check` here gates the library alone**, and is self-contained: no `uv`,
   no `jq`, no corpus. Recipes that reach both the library and the benchmark —
-  `bench`, `convert-all`, `write-bench`, `compression-bench`, the fetchers, the
+  `bench`, `convert-all`, `write-bench`, `variant-bench`, the fetchers, the
   renderers, `plot-test`, `scripts-test`, `catalog-*` — are in the **root**
   `justfile` and run from the repository root.
 - **Directory names under `crates/` are short** (`core`, `schema`, `cli`); the

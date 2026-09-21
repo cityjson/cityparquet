@@ -1,54 +1,61 @@
-use async_trait::async_trait;
-use duckdb::Connection;
+//! The DuckDB connection and the rules for using it.
+//!
+//! DuckDB's Connection is not Send, so it lives behind Arc<Mutex<_>>. Every
+//! operation borrows it through [`DuckLakeService::with_connection`] or
+//! [`DuckLakeService::scoped`], which is what keeps the search-path discipline
+//! in one place instead of spread across nine operation modules.
+
+use duckdb::{Config, Connection};
 use std::sync::{Arc, Mutex};
 
-use crate::core::interface::repository::{CityLakeRepository, RepositoryResult};
-use crate::core::interface::types::{
-    CityJsonMetadata, CityLakeConfig, CompactionStats, ExportFormat, LodKey, QueryParams,
-    TableInfo,
-};
+use crate::core::db::sql;
+use crate::core::interface::types::{CityLakeConfig, CityLakeError, RepositoryResult};
 
-/// DuckLake-backed implementation of [CityLakeRepository].
-///
-/// Wraps a DuckDB connection with the cityjson and ducklake extensions loaded.
-/// DuckDB's Connection is not Send, so it is wrapped in Arc<Mutex<>>.
 pub struct DuckLakeService {
     connection: Arc<Mutex<Connection>>,
     config: CityLakeConfig,
 }
 
 impl DuckLakeService {
-    /// Create a new DuckLakeService, initializing DuckDB with required extensions.
     pub fn new(config: CityLakeConfig) -> RepositoryResult<Self> {
-        // Create storage directory if it doesn't exist
-        std::fs::create_dir_all(&config.storage_path)
-            .map_err(|e| format!("Failed to create storage directory: {e}"))?;
+        std::fs::create_dir_all(&config.storage_path)?;
 
-        let conn = Connection::open_in_memory()
-            .map_err(|e| format!("Failed to open DuckDB connection: {e}"))?;
+        // A locally built extension is loaded by path; otherwise the community
+        // build. The extension is a hard dependency — nothing in this crate
+        // works without it, so a failure here is fatal rather than deferred.
+        //
+        // `allow_unsigned_extensions` is a startup-only option: it goes on the
+        // Config the connection is opened with, because `SET` on a running
+        // database is refused.
+        let conn = match std::env::var("CITYLAKE_CITYJSON_EXTENSION") {
+            Ok(path) => {
+                let config = Config::default().allow_unsigned_extensions()?;
+                let conn = Connection::open_in_memory_with_flags(config)?;
+                conn.execute_batch(&format!("LOAD {};", sql::literal(&path)))?;
+                conn
+            }
+            Err(_) => {
+                let conn = Connection::open_in_memory()?;
+                conn.execute_batch("INSTALL cityjson FROM community; LOAD cityjson;")?;
+                conn
+            }
+        };
+        conn.execute_batch("INSTALL ducklake; LOAD ducklake;")?;
+        // `json` backs to_json() on the query path and json_object() when the
+        // CRS footer is minted.
+        conn.execute_batch("INSTALL json; LOAD json;")?;
 
-        // Install and load the cityjson extension
-        conn.execute_batch(
-            "INSTALL cityjson FROM community; LOAD cityjson;",
-        )
-        .map_err(|e| format!("Failed to load cityjson extension: {e}"))?;
-
-        // Install and load the ducklake extension
-        conn.execute_batch("INSTALL ducklake; LOAD ducklake;")
-            .map_err(|e| format!("Failed to load ducklake extension: {e}"))?;
-
-        // Attach the DuckLake catalog
-        let attach_sql = format!(
-            "ATTACH 'ducklake:{}' AS citylake (DATA_PATH '{}')",
-            config.catalog_path, config.storage_path,
-        );
-        conn.execute_batch(&attach_sql)
-            .map_err(|e| format!("Failed to attach DuckLake catalog: {e}"))?;
+        conn.execute_batch(&format!(
+            "ATTACH {} AS {} (DATA_PATH {})",
+            sql::literal(&format!("ducklake:{}", config.catalog_path)),
+            sql::ident(&config.catalog_name),
+            sql::literal(&config.storage_path),
+        ))?;
 
         tracing::info!(
-            "DuckLakeService initialized (catalog={}, storage={})",
-            config.catalog_path,
-            config.storage_path
+            catalog = %config.catalog_path,
+            storage = %config.storage_path,
+            "CityLake ready"
         );
 
         Ok(Self {
@@ -57,145 +64,107 @@ impl DuckLakeService {
         })
     }
 
-    /// Get a reference to the config
     pub fn config(&self) -> &CityLakeConfig {
         &self.config
     }
 
-    /// Create a DuckLakeService for testing without requiring external extensions.
+    pub fn catalog(&self) -> &str {
+        &self.config.catalog_name
+    }
+
+    pub fn with_connection<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> RepositoryResult<T>,
+    ) -> RepositoryResult<T> {
+        let guard = self
+            .connection
+            .lock()
+            .map_err(|e| CityLakeError::Internal(format!("connection mutex poisoned: {e}")))?;
+        f(&guard)
+    }
+
+    /// Run `f` with the search path set to `path`, on a connection the caller
+    /// already holds — which is what lets it nest inside a transaction, where
+    /// [`scoped`] cannot go because that takes a connection of its own.
     ///
-    /// Uses a plain in-memory DuckDB with a `citylake` schema instead of
-    /// the ducklake extension. Does not load cityjson or ducklake extensions.
-    #[cfg(test)]
-    pub fn new_for_testing() -> RepositoryResult<Self> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| format!("Failed to open DuckDB connection: {e}"))?;
-
-        // Disable auto-install/load of extensions to prevent network timeouts in tests.
-        // Then explicitly load the bundled json extension (needed for to_json()).
-        conn.execute_batch(
-            "SET autoinstall_known_extensions=false; SET autoload_known_extensions=false; LOAD json;",
-        )
-        .map_err(|e| format!("Failed to configure extensions: {e}"))?;
-
-        // Attach a second in-memory database as "citylake" to mimic the
-        // DuckLake catalog attachment used in production.
-        conn.execute_batch("ATTACH ':memory:' AS citylake;")
-            .map_err(|e| format!("Failed to attach citylake catalog: {e}"))?;
-
-        let config = CityLakeConfig {
-            storage_path: String::new(),
-            catalog_path: String::new(),
-            auto_compact: false,
-            ..Default::default()
-        };
-
-        Ok(Self {
-            connection: Arc::new(Mutex::new(conn)),
-            config,
-        })
-    }
-
-    /// Get a reference to the underlying connection (for test setup).
-    #[cfg(test)]
-    pub fn connection(&self) -> &Arc<Mutex<Connection>> {
-        &self.connection
-    }
-}
-
-#[async_trait]
-impl CityLakeRepository for DuckLakeService {
-    async fn create_table(
+    /// The path is reset whether `f` succeeds or fails: leaving it set would
+    /// silently resolve the next operation against this dataset. A reset
+    /// failure never masks the body's error.
+    pub fn with_search_path<T>(
         &self,
-        base_name: Option<&str>,
-        source_path: &str,
-        lod: Option<&LodKey>,
-    ) -> RepositoryResult<Vec<String>> {
-        super::table::create_table(&self.connection, base_name, source_path, lod).await
+        conn: &Connection,
+        path: &str,
+        f: impl FnOnce(&Connection) -> RepositoryResult<T>,
+    ) -> RepositoryResult<T> {
+        conn.execute_batch(&sql::set_search_path(path))?;
+        let result = f(conn);
+        let reset = conn.execute_batch("RESET search_path");
+        match (result, reset) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Ok(_), Err(e)) => Err(e.into()),
+            (Err(e), Ok(())) => Err(e),
+            (Err(e), Err(reset_err)) => {
+                // The reset failure never masks the body's error, but it must
+                // not vanish silently either — a dying connection is harder
+                // to diagnose without a trace of both failures.
+                tracing::error!(%reset_err, "search_path reset failed after {e}");
+                Err(e)
+            }
+        }
     }
 
-    async fn insert_objects(
+    /// Point the search path at one dataset, so the package pragmas resolve
+    /// their bare schema argument inside the attached catalog.
+    pub fn scoped<T>(
         &self,
-        base_name: &str,
-        file_path: &str,
-        lod: Option<&LodKey>,
-    ) -> RepositoryResult<usize> {
-        super::insert::insert_objects(&self.connection, base_name, file_path, lod, &self.config)
-            .await
+        dataset: &str,
+        f: impl FnOnce(&Connection) -> RepositoryResult<T>,
+    ) -> RepositoryResult<T> {
+        let path = format!("{}.{dataset}", self.catalog());
+        self.with_connection(|conn| self.with_search_path(conn, &path, f))
     }
 
-    async fn update_object(
+    /// Run `f` inside a transaction, committing on success and rolling back on
+    /// failure. Pragma effects roll back with everything else — a delete's
+    /// cascade, survivor cleanup and re-derivation are one unit.
+    pub fn in_transaction<T>(
         &self,
-        table_name: &str,
-        id: &str,
-        cityjson_data: &str,
-    ) -> RepositoryResult<()> {
-        super::update::update_object(&self.connection, table_name, id, cityjson_data).await
+        conn: &Connection,
+        f: impl FnOnce(&Connection) -> RepositoryResult<T>,
+    ) -> RepositoryResult<T> {
+        conn.execute_batch("BEGIN")?;
+        match f(conn) {
+            Ok(value) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(value)
+            }
+            Err(e) => {
+                // A rollback failure must not hide why we are rolling back.
+                if let Err(rollback) = conn.execute_batch("ROLLBACK") {
+                    tracing::error!(%rollback, "rollback failed after {e}");
+                }
+                Err(e)
+            }
+        }
     }
 
-    async fn delete_object(&self, table_name: &str, id: &str) -> RepositoryResult<()> {
-        super::delete::delete_object(&self.connection, table_name, id).await
+    pub fn schema_exists(&self, conn: &Connection, dataset: &str) -> RepositoryResult<bool> {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM information_schema.schemata
+             WHERE catalog_name = ? AND schema_name = ?",
+            [self.catalog(), dataset],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
-    async fn table_exists(&self, table_name: &str) -> RepositoryResult<bool> {
-        super::table::table_exists(&self.connection, table_name).await
-    }
-
-    async fn list_tables(&self) -> RepositoryResult<Vec<TableInfo>> {
-        super::list::list_tables(&self.connection).await
-    }
-
-    async fn compact_table(&self, table_name: &str) -> RepositoryResult<CompactionStats> {
-        super::compaction::compact_table(&self.connection, table_name).await
-    }
-
-    async fn get_metadata(&self, file_path: &str) -> RepositoryResult<CityJsonMetadata> {
-        super::metadata::get_metadata(&self.connection, file_path).await
-    }
-
-    async fn export_table(
-        &self,
-        table_name: &str,
-        output_path: &str,
-        format: ExportFormat,
-    ) -> RepositoryResult<()> {
-        super::export::export_table(&self.connection, table_name, output_path, format).await
-    }
-
-    async fn query_objects(
-        &self,
-        table_name: &str,
-        params: &QueryParams,
-    ) -> RepositoryResult<Vec<serde_json::Value>> {
-        super::query::query_objects(&self.connection, table_name, params).await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::tests::helpers;
-
-    #[test]
-    fn test_new_service_success() {
-        let service = helpers::setup();
-        // Service created with empty storage_path in test mode
-        assert_eq!(service.config().storage_path, "");
-    }
-
-    #[test]
-    fn test_new_for_testing_creates_schema() {
-        let service = helpers::setup();
-        let conn = service.connection().lock().unwrap();
-        // Verify citylake schema exists by creating a table in it
-        conn.execute_batch("CREATE TABLE citylake.test_schema_check (id INTEGER);")
-            .expect("citylake schema should exist");
-    }
-
-    #[test]
-    fn test_config_accessor() {
-        let service = helpers::setup();
-        let config = service.config();
-        assert!(!config.auto_compact);
-        assert_eq!(config.host, "127.0.0.1");
+    /// A handle sharing this service's connection, for moving into a blocking
+    /// task. The connection is already behind `Arc<Mutex<_>>`; this shares it
+    /// rather than opening a second one, so DuckLake sees one writer.
+    pub(crate) fn handle(&self) -> Self {
+        Self {
+            connection: Arc::clone(&self.connection),
+            config: self.config.clone(),
+        }
     }
 }

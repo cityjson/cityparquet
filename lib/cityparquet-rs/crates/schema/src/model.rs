@@ -167,6 +167,66 @@ pub fn geometry_properties_data_type() -> DataType {
     ]))
 }
 
+/// Parquet's canonical MAP group names (`key_value` / `key` / `value`), so
+/// the column reads as a standard map in every Parquet reader.
+fn map_of(value: DataType) -> DataType {
+    let key = Field::new("key", DataType::Utf8, false);
+    let value = Field::new("value", value, false);
+    let entries = Field::new(
+        "key_value",
+        DataType::Struct(Fields::from(vec![key, value])),
+        false,
+    );
+    DataType::Map(Arc::new(entries), false)
+}
+
+/// The `material_lod*` Arrow type (spec "Appearance & templates" — "material
+/// / texture columns"):
+///
+/// ```text
+/// MAP<VARCHAR, LIST<BIGINT>>   -- theme -> one sidecar id (or null) per WKB face
+/// ```
+///
+/// Map values are non-null (a theme is present with a full-length list or
+/// absent); list items are nullable (a face with no material in that theme).
+pub fn material_data_type() -> DataType {
+    map_of(DataType::List(Arc::new(Field::new(
+        "item",
+        DataType::Int64,
+        true,
+    ))))
+}
+
+/// The `texture_lod*` Arrow type (spec "Appearance & templates" — "material
+/// / texture columns"):
+///
+/// ```text
+/// MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>
+///   -- theme -> per WKB face -> per ring -> {sidecar id, one [u, v] per distinct vertex}
+/// ```
+///
+/// Face entries and ring structs are non-null; `id` and `uv` are null
+/// together for an untextured ring; every `[u, v]` and its two values are
+/// non-null.
+pub fn texture_data_type() -> DataType {
+    let coord = Field::new("item", DataType::Float64, false);
+    let pair = Field::new("item", DataType::List(Arc::new(coord)), false);
+    let uv = Field::new("uv", DataType::List(Arc::new(pair)), true);
+    let id = Field::new("id", DataType::Int64, true);
+    let ring = Field::new("item", DataType::Struct(Fields::from(vec![id, uv])), false);
+    let face = Field::new("item", DataType::List(Arc::new(ring)), false);
+    map_of(DataType::List(Arc::new(face)))
+}
+
+/// The Arrow type for the `material`/`texture` reserved-column prefix.
+fn appearance_data_type(prefix: &str) -> DataType {
+    match prefix {
+        "material" => material_data_type(),
+        "texture" => texture_data_type(),
+        other => unreachable!("appearance prefix {other}"),
+    }
+}
+
 /// The PROJJSON text for the `crs` parameter of the Parquet `GEOMETRY` logical
 /// type.
 ///
@@ -352,7 +412,7 @@ impl CityParquetSchema {
             // it (§9, G3).
             for name in ["material", "texture"] {
                 fields.push(with_meta(
-                    json_field(name, true).as_ref().clone(),
+                    Field::new(name, appearance_data_type(name), true),
                     &[(ROLE_KEY, ROLE_RESERVED)],
                 ));
             }
@@ -375,9 +435,11 @@ impl CityParquetSchema {
                 ));
                 for prefix in ["material", "texture"] {
                     fields.push(with_meta(
-                        json_field(&geometry_column_name(prefix, lod), true)
-                            .as_ref()
-                            .clone(),
+                        Field::new(
+                            geometry_column_name(prefix, lod),
+                            appearance_data_type(prefix),
+                            true,
+                        ),
                         &[(ROLE_KEY, ROLE_RESERVED), (LOD_KEY, &lod.to_string())],
                     ));
                 }
@@ -738,18 +800,68 @@ mod tests {
     #[test]
     fn json_columns_carry_arrow_json_extension() {
         let schema = sample().to_arrow_schema().unwrap();
-        for name in ["material_lod1_0", "texture_lod2_2", "other"] {
-            let field = schema.field_with_name(name).unwrap();
-            assert_eq!(
-                field
-                    .metadata()
-                    .get("ARROW:extension:name")
-                    .map(String::as_str),
-                Some("arrow.json"),
-                "{name} should be arrow.json"
-            );
-            assert_eq!(field.data_type(), &DataType::Utf8);
+        let name = "other";
+        let field = schema.field_with_name(name).unwrap();
+        assert_eq!(
+            field
+                .metadata()
+                .get("ARROW:extension:name")
+                .map(String::as_str),
+            Some("arrow.json"),
+            "{name} should be arrow.json"
+        );
+        assert_eq!(field.data_type(), &DataType::Utf8);
+    }
+
+    /// spec "Appearance & templates" — "material / texture columns":
+    /// `material_lod*` is `MAP<VARCHAR, LIST<BIGINT>>` and `texture_lod*` is
+    /// `MAP<VARCHAR, LIST<LIST<STRUCT<id BIGINT, uv LIST<LIST<DOUBLE>>>>>>`,
+    /// genuine typed Arrow MAP columns rather than an `arrow.json` blob.
+    #[test]
+    fn appearance_columns_are_typed_maps() {
+        use arrow_schema::DataType;
+        let schema = CityParquetSchema {
+            lods: vec![Lod::parse("1.0").unwrap(), Lod::parse("2.2").unwrap()],
+            geoparquet_lods: vec![],
+            attributes: vec![],
+            crs: None,
         }
+        .to_arrow_schema()
+        .unwrap();
+        for (name, expected) in [
+            ("material_lod1_0", material_data_type()),
+            ("texture_lod2_2", texture_data_type()),
+        ] {
+            let f = schema.field_with_name(name).unwrap();
+            assert_eq!(f.data_type(), &expected, "{name}");
+            assert!(f.is_nullable(), "{name} cell is nullable");
+            assert!(
+                f.metadata().get("ARROW:extension:name").is_none(),
+                "{name} carries no arrow.json tag"
+            );
+            assert_eq!(
+                f.metadata().get(ROLE_KEY).map(String::as_str),
+                Some(ROLE_RESERVED)
+            );
+        }
+        // The MAP entries use Parquet's canonical names so any reader sees
+        // the standard groups.
+        let DataType::Map(entries, false) = material_data_type() else {
+            panic!("material is a Map")
+        };
+        assert_eq!(entries.name(), "key_value");
+        let DataType::Struct(kv) = entries.data_type() else {
+            panic!("entries are a Struct")
+        };
+        assert_eq!((kv[0].name().as_str(), kv[0].is_nullable()), ("key", false));
+        assert_eq!(
+            (kv[1].name().as_str(), kv[1].is_nullable()),
+            ("value", false)
+        );
+        assert_eq!(
+            kv[1].data_type(),
+            &DataType::List(Arc::new(Field::new("item", DataType::Int64, true)))
+        );
     }
 
     /// spec "Geometry properties and semantics": `geometry_properties_lod*`

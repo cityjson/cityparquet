@@ -1,0 +1,16 @@
+{
+  "attr_column": "object_type",
+  "attr_eq": "BuildingPart",
+  "bbox_full": {
+    "maxx": 196791.084,
+    "maxy": 526311.881,
+    "maxz": 148.19400000000002,
+    "minx": 174638.897,
+    "miny": 426189.756,
+    "minz": -8.165000000000001
+  },
+  "numeric_column": "b3_extrusie",
+  "parent_id": "NL.IMBAG.Pand.0166100000000002",
+  "target_id": "NL.IMBAG.Pand.0166100000000002",
+  "total_city_objects": 1000001
+}

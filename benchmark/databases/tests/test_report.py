@@ -10,6 +10,7 @@ def test_columns_match_the_inherited_contract_exactly():
         "time_s", "time_mad_s", "peak_heap_bytes", "peak_rss_bytes",
         "repeat", "notes", "bytes_read", "http_requests",
         "server_time_s", "size_bytes", "size_bytes_no_index",
+        "status", "raw_time_samples_s", "raw_server_time_samples_s",
     )
 
 

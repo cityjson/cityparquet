@@ -175,7 +175,7 @@ usage() {
 usage: $0 [--formats a,b,c] INPUT [OUTDIR]
   INPUT      CityGML (.gml/.citygml), CityJSON (.city.json) or CityJSONSeq
              (.city.jsonl) file
-  OUTDIR     default: benchmark/formats/data/readbench
+  OUTDIR     default: benchmark/runs/data/readbench
   --formats  comma-separated formats to build, from: ${VALID_FORMATS[*]}
              (default: ${DEFAULT_BUILD_FORMATS[*]})
 EOF
@@ -223,7 +223,7 @@ MONO_ROOT="$(cd "$BENCHMARK_DIR/.." && pwd)"
 BENCH_ROOT="${BENCH_ROOT:-$BENCHMARK_DIR/formats}"
 
 INPUT=${POSITIONAL[0]}
-OUTDIR=${POSITIONAL[1]:-$BENCH_ROOT/data/readbench}
+OUTDIR=${POSITIONAL[1]:-$BENCH_ROOT/runs/data/readbench}
 
 if [[ ! -f "$INPUT" ]]; then
   echo "error: input file not found: $INPUT" >&2
@@ -568,7 +568,7 @@ same_file() {
 # WHY A STAMP AND NOT A SENTENCE IN THE DOCS.
 #
 # This script skips an artefact that already exists and passes its validity
-# check, and OUTDIR (benchmark/formats/data/readbench by default) persists across runs and
+# check, and OUTDIR (benchmark/runs/data/readbench by default) persists across runs and
 # across checkouts. So a directory prepared before the derivation chain
 # changed keeps serving artefacts derived from a stage that no longer exists —
 # silently, under the same names, with nothing to look at. The sharp case is
@@ -648,7 +648,7 @@ printf '%s\n' "$CHAIN_VERSION" >"$CHAIN_STAMP"
 # preflight, because it also decides whether this input is fit to prepare
 # at all.
 #
-# `fcb info`'s feature count is deliberately NOT folded into the comparison:
+# `fcb inspect`'s feature count is deliberately NOT folded into the comparison:
 # it is checked separately below, and CityParquet's own object_count counts
 # descendants (BuildingParts) too, so neither is the same quantity.
 
@@ -914,7 +914,7 @@ if want flatcitybuf; then
     echo "skip $FCB_OUT (already present)"
   else
     echo "-- fcb ser $SEQ_INPUT -> $FCB_OUT"
-    fcb ser -i "$SEQ_INPUT" -o "$FCB_OUT" -A
+    fcb ser -A "$SEQ_INPUT" "$FCB_OUT"
   fi
   BUILT+=("$FCB_OUT")
 fi
@@ -936,7 +936,7 @@ fi
 
 # Sanity checks: every artefact this run was responsible for exists and is
 # non-empty, and — when FlatCityBuf was built — the FCB file reports a
-# positive feature count via `fcb info` (fcb prints a "Features: N" line
+# positive feature count via `fcb inspect` (fcb prints a "Features: N" line
 # under "Dataset"; N need not equal cityparquet's object_count, since FCB
 # counts top-level features while cityparquet's object_count includes
 # descendant CityObjects such as BuildingParts).
@@ -1023,7 +1023,7 @@ fi
 if want flatcitybuf; then
   file_is_valid "$FCB_OUT" || { echo "error: missing/empty file: $FCB_OUT" >&2; exit 1; }
 
-  FCB_INFO="$(fcb info -i "$FCB_OUT")"
+  FCB_INFO="$(fcb inspect --static "$FCB_OUT")"
   # `[[:space:]]`, not `\s`: `\s` is a GNU extension that POSIX ERE does not
   # define, so BSD/macOS `grep -E` matches nothing with it — and the
   # measurement machine (benchmark/formats/READ_BENCHMARK.md's own record) is Darwin
@@ -1043,10 +1043,10 @@ if want flatcitybuf; then
     exit 1
   fi
   if [[ "$FEATURES" -le 0 ]]; then
-    echo "error: fcb info reports $FEATURES features for $FCB_OUT (expected > 0)" >&2
+    echo "error: fcb inspect reports $FEATURES features for $FCB_OUT (expected > 0)" >&2
     exit 1
   fi
-  echo "  fcb info: $FEATURES features in $FCB_OUT"
+  echo "  fcb inspect: $FEATURES features in $FCB_OUT"
 fi
 
 if [[ ${#INTERMEDIATES[@]} -gt 0 ]]; then

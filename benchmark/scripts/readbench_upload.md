@@ -10,11 +10,11 @@ why): do it once, by hand, per dataset you want to benchmark over HTTP.
 ## What to upload
 
 Exactly the directory `just readbench-prepare <input>` (or
-`readbench_prepare.sh`) produces — `benchmark/formats/data/readbench/` by default —
+`readbench_prepare.sh`) produces — `benchmark/runs/data/readbench/` by default —
 preserving its structure:
 
 ```
-benchmark/formats/data/readbench/
+benchmark/runs/data/readbench/
   <name>.parquet/           # CityParquet package directory
     metadata.json           # STAC manifest — CityParquet's HTTP reader
     building.parquet        #   range-fetches this first to find the
@@ -54,7 +54,7 @@ custom domain / `r2.dev` public URL — see R2's own dashboard: Settings →
 Public access):
 
 ```sh
-rclone copy benchmark/formats/data/readbench/ r2:<BUCKET_NAME>/readbench/ --progress
+rclone copy benchmark/runs/data/readbench/ r2:<BUCKET_NAME>/readbench/ --progress
 ```
 
 Your `--base-url` is the bucket's public root plus the `readbench/` prefix.
@@ -69,7 +69,7 @@ slash needed, `cityparquet-readbench` joins `base_url/key` itself.
 ## AWS S3 (`aws s3`)
 
 ```sh
-aws s3 sync benchmark/formats/data/readbench/ s3://<BUCKET_NAME>/readbench/
+aws s3 sync benchmark/runs/data/readbench/ s3://<BUCKET_NAME>/readbench/
 ```
 
 Make the objects publicly readable — either a bucket policy allowing
@@ -77,7 +77,7 @@ Make the objects publicly readable — either a bucket policy allowing
 `--acl public-read` (only if the bucket doesn't block public ACLs):
 
 ```sh
-aws s3 sync benchmark/formats/data/readbench/ s3://<BUCKET_NAME>/readbench/ --acl public-read
+aws s3 sync benchmark/runs/data/readbench/ s3://<BUCKET_NAME>/readbench/ --acl public-read
 ```
 
 `--base-url` is then the bucket's public HTTPS endpoint plus the prefix,
@@ -113,7 +113,7 @@ directly, regardless of transport; see `benchmark/formats/READ_BENCHMARK.md`):
 ```sh
 cargo run --release -p cityparquet-readbench -- run \
     --input tests/fixtures/delft.city.jsonl \
-    --prepared-dir benchmark/formats/data/readbench \
+    --prepared-dir benchmark/runs/data/readbench \
     --out benchmark/formats/read_results/delft-http.csv \
     --transport http --base-url "<BASE_URL>" \
     --repeat 7

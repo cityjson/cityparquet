@@ -25,3 +25,43 @@
 .prose :where(h3) {
   font-size: 1.2rem; /* was 1.25rem */
 }
+
+/* Shared reading and keyboard affordances, including custom pages. */
+:root {
+  --cp-focus: var(--blume-accent, #7253ed);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--cp-focus) 24%, transparent);
+  color: var(--blume-foreground);
+}
+
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--cp-focus);
+  outline-offset: 3px;
+}
+
+.prose {
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.prose :where(h1, h2, h3) {
+  text-wrap: balance;
+  scroll-margin-top: 6rem;
+}
+
+.prose :where(a) {
+  text-underline-offset: 0.2em;
+}
+
+.prose :where(pre, table) {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 40rem) {
+  .prose :where(h1) {
+    font-size: 1.875rem;
+    line-height: 1.2;
+  }
+}

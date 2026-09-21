@@ -14,6 +14,7 @@ import subprocess
 import time
 
 from citybench.config import Dataset, IngestResult, Measurement, Params, SizeReport
+from citybench.lifecycle import citydb_tool_temp_directory
 from citybench.scenarios import registry, sql_citydb
 from citybench.systems import pg
 from citybench.systems.base import register
@@ -54,7 +55,9 @@ class CityDbSystem:
         subprocess.run(
             [
                 "podman", "run", "--rm", "--network", "host",
-                "-v", f"{self._mount}:/work", _IMAGE, *args,
+                "-v", f"{self._mount}:/work",
+                "-v", f"{citydb_tool_temp_directory()}:/tmp",
+                _IMAGE, *args,
                 "-H", "localhost", "-P", str(self._port),
                 "-d", "bench", "-u", "bench", "-p", "bench",
                 "-S", self._schema,
@@ -64,6 +67,7 @@ class CityDbSystem:
 
     def prepare(self) -> None:
         self._conn = pg.connect(self._port)
+        pg.disable_parallel_query(self._conn)
 
     def ingest(self, dataset: Dataset) -> IngestResult:
         self._mount = str(dataset.source.parent.resolve())
@@ -115,8 +119,9 @@ class CityDbSystem:
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
             server_times_s=[s[2] for s in samples],
-            peak_rss_bytes=None,
+            peak_rss_bytes=max((s[3] for s in samples if len(s) > 3 and s[3] is not None), default=None),
             peak_heap_bytes=None,
+            notes="memory-scope: postgresql-backend-rss",
         )
 
     def size(self) -> SizeReport:

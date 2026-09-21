@@ -1,0 +1,52 @@
+{
+  "code": {
+    "git_head": "454928f0e0984f163511bcfc44aa67ccf1f7fa3c",
+    "tracked_diff_sha256": "9854d9c4efe777879c2a51827710351e652c2201e23bb85b1da128def66ac408",
+    "untracked_sources_sha256": {
+      "benchmark/databases/src/citybench/lifecycle.py": "67a5114f9764b271ca7ed4b65b028abd71ad898e218005fe643c1efc1b07eabe",
+      "benchmark/databases/tests/test_lifecycle.py": "5bcad544fa6fe3a114b1a9a0720168d6bedad097f8b9cdfc91ddb43c7974c413",
+      "benchmark/manifest.toml": "01b317ff729aabeac203fc90382f2d0a45cbbe13c5d92d992ca5e985def2a550",
+      "benchmark/plot/tests/test_axis_validity.py": "610d186ee53151e464ed21358493593fa28fcc09650284716f464716a4fc9cf1",
+      "benchmark/plot/tests/test_cli_selection.py": "3d1cec6f9dcb9542ecdcc8a8556a8fa41f5d337a82862c6002900a1b94f97fb3",
+      "benchmark/scripts/bench_suite.py": "739709c28cdd7c85474f7e1008445e84eef8384c121f4196e890aba39d95c950",
+      "benchmark/scripts/format_write.py": "81d032753f0043095dc1821703a79dbd4e196b9ac63f978c89c10dbabae94bdf",
+      "benchmark/scripts/measure_sizes.py": "afb88c3ee1bb6afc46ffa21e5927490f7f8f3f76f4c2a6b1e7bc1dcdc3819cc6",
+      "benchmark/scripts/tests/test_bench_suite.py": "d571d4fe83b1a6a4cefdfe7c7c88a3b9f7f64adc22119dc21d6d476bb2c5bfd2"
+    }
+  },
+  "family": "formats",
+  "machine": {
+    "machine": "x86_64",
+    "processor": "x86_64",
+    "python": "3.12.3",
+    "release": "6.8.0-136-generic",
+    "system": "Linux"
+  },
+  "measurement": {
+    "fixed_configuration": "CityParquet=Hilbert; direct writers from canonical CityJSONSeq",
+    "read_repeat": 7,
+    "write_repeat": 3
+  },
+  "result": {
+    "csv": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/formats/results/rotterdam_delfshaven.csv",
+    "files_sha256": {
+      "rotterdam_delfshaven.csv": "3bc533689f0b06c8f7bf058d3116359e5d83ec60161a17a55bfe5ecffb11af65",
+      "rotterdam_delfshaven.csv.params.json": "2b4b7c1b444e6173f5c51501fefe7817518c7b5526a7c9ad302f2cb88334a036",
+      "rotterdam_delfshaven.csv.samples.json": "c7324ead74a1aabcd0a9cac71ab9146d79e66dbe8a70c0e6315dd6a576c9e445",
+      "rotterdam_delfshaven.write.samples.csv": "6adc6853406031579a4a4669d59f05faf6a2f0955e2b13e4a9e321ffd15285e5"
+    },
+    "params_sha256": "2b4b7c1b444e6173f5c51501fefe7817518c7b5526a7c9ad302f2cb88334a036"
+  },
+  "schema": 1,
+  "smoke": false,
+  "source": {
+    "path": "/data2/hideba/cityparquet-paper/cityparquet/benchmark/runs/data/benchmark/rotterdam_delfshaven.city.json",
+    "sha256": "958460c670b4cb85a9159d1e5e566905fba8812864f64b554ecad38333badcf6"
+  },
+  "tools": {
+    "cityparquet": "unavailable",
+    "cjseq": "cjseq 0.3.1",
+    "fcb": "fcb 0.7.8",
+    "rust": "rustc 1.93.1 (01f6ddf75 2026-02-11)"
+  }
+}

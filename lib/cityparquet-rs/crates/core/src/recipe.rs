@@ -70,9 +70,16 @@ impl Codec {
 /// union rule and [`cityparquet_schema::model::bbox_data_type`] both use.
 const BBOX_LEAVES: [&str; 6] = ["xmin", "ymin", "zmin", "xmax", "ymax", "zmax"];
 
-/// Extension type name tagging every column whose values are JSON text
-/// (`geometry_properties*`, `material`, `texture`, `other`, `Json`-typed
-/// attributes) — see [`cityparquet_schema::model`]'s `json_field` helper.
+/// Extension type name tagging every field whose values are JSON text: the
+/// top-level `other` and `Json`-typed attribute columns, plus
+/// `geometry_properties*`'s nested `surfaces` leaf — see
+/// [`cityparquet_schema::model`]'s `json_field` helper.
+///
+/// `material_lod*` and `texture_lod*` are NOT tagged. They are typed Arrow
+/// MAP columns (spec "material / texture columns"), not JSON text, so they
+/// match neither [`is_json_column`] nor [`is_geometry_properties_column`] and
+/// fall through the per-column loop in
+/// [`WriterRecipe::writer_properties`] untouched.
 const ARROW_JSON_EXTENSION: &str = "arrow.json";
 
 /// A named writer-property preset — the paper's benchmark variable.
@@ -155,10 +162,20 @@ pub struct WriterRecipe {
     /// Ignored when `preset` is [`RecipePreset::Snappy`], which always
     /// compresses with Snappy regardless of this value.
     pub zstd_level: i32,
-    /// Whether JSON-typed columns (geometry properties, material, texture,
-    /// `other`, `Json`-typed attributes) still get column statistics.
+    /// Whether the JSON-text columns (`other`, `Json`-typed attributes) and
+    /// every leaf of `geometry_properties*` still get column statistics.
     /// Off by default: statistics on serialised JSON blobs are not useful for
     /// predicate pushdown and only cost write time.
+    ///
+    /// It does not reach `material_lod*` / `texture_lod*`. Those are typed
+    /// Arrow MAP columns, carry no `arrow.json` tag, and are not
+    /// `geometry_properties*`, so no per-column rule in
+    /// [`WriterRecipe::writer_properties`] names them: every one of their
+    /// leaves — the theme key, the sidecar ids, the uv coordinates — takes
+    /// the writer's global settings, which are parquet-rs's own defaults
+    /// (dictionary encoding on, `EnabledStatistics::Page`) under every
+    /// preset but [`RecipePreset::NoDictionary`], whose global
+    /// dictionary-off reaches them like any other unnamed column.
     pub statistics_for_json: bool,
     /// Which named preset's per-column rules to render. Defaults to
     /// [`RecipePreset::CityParquet`], preserving this struct's pre-M5

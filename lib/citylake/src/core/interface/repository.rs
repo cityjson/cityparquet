@@ -1,95 +1,81 @@
+//! The repository trait: every database operation CityLake exposes, keyed on
+//! validated dataset and module names. Handlers hold `Arc<dyn
+//! CityLakeRepository>`, so the trait must stay object-safe.
+
 use async_trait::async_trait;
 
 use super::types::{
-    CityJsonMetadata, CompactionStats, ExportFormat, LodKey, QueryParams, TableInfo,
+    CompactionStats, DatasetInfo, DatasetName, ExportFormat, ModuleName, PackageFile, QueryParams,
+    RepositoryResult, ValidationFinding,
 };
 
-/// Result type for repository operations
-pub type RepositoryResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-/// Repository trait defining all database operations for CityLake.
-///
-/// This is the core abstraction layer. All database access goes through this trait,
-/// allowing the implementation to be swapped (e.g., for testing).
 #[async_trait]
 pub trait CityLakeRepository: Send + Sync {
-    /// Create LOD-suffixed table(s) from a CityJSON source file.
-    ///
-    /// - `base_name` defaults to `"city_objects"` when `None`. Each created table is
-    ///   named `{base}_lod_X_Y` (e.g. `buildings_lod_2_2`).
-    /// - When `lod` is `Some(...)` only that LOD is loaded. When `None`, every LOD
-    ///   present in the source is discovered and a table is created for each.
-    /// - Source-level metadata is persisted into the shared `cityjson_metadata`
-    ///   table.
-    ///
-    /// Returns the names of the data tables that were created (in creation order).
-    async fn create_table(
+    /// Create a dataset from a source. A CityJSON / CityJSONSeq / FlatCityBuf
+    /// file is bootstrapped and ingested; a CityParquet package directory is
+    /// loaded through `cityparquet_read`, footers and all.
+    async fn create_dataset(
         &self,
-        base_name: Option<&str>,
+        dataset: &DatasetName,
         source_path: &str,
-        lod: Option<&LodKey>,
-    ) -> RepositoryResult<Vec<String>>;
+    ) -> RepositoryResult<DatasetInfo>;
 
-    /// Insert CityJSON objects into existing per-LOD table(s).
-    ///
-    /// - When `lod` is `Some(...)`, only that LOD is read from the source and
-    ///   inserted into `{base_name}_lod_X_Y`.
-    /// - When `lod` is `None`, every LOD found in the source is inserted into its
-    ///   matching `{base_name}_lod_X_Y` table. All target tables must already
-    ///   exist.
-    ///
-    /// Returns the total number of rows inserted across all targeted tables.
-    async fn insert_objects(
+    async fn list_datasets(&self) -> RepositoryResult<Vec<String>>;
+
+    async fn describe_dataset(&self, dataset: &DatasetName) -> RepositoryResult<DatasetInfo>;
+
+    async fn drop_dataset(&self, dataset: &DatasetName) -> RepositoryResult<()>;
+
+    /// Ingest a further source into an existing dataset. Routing, sidecar
+    /// renumbering and re-derivation are the extension's.
+    async fn ingest(&self, dataset: &DatasetName, source_path: &str) -> RepositoryResult<usize>;
+
+    async fn query_objects(
         &self,
-        base_name: &str,
-        source_path: &str,
-        lod: Option<&LodKey>,
-    ) -> RepositoryResult<usize>;
+        dataset: &DatasetName,
+        module: &ModuleName,
+        params: &QueryParams,
+    ) -> RepositoryResult<Vec<serde_json::Value>>;
 
-    /// Update a CityJSON object by its ID in a specific LOD-suffixed table.
-    ///
-    /// The `table_name` must end with a `_lod_X_Y` suffix; the LOD is recovered
-    /// from the suffix and used when re-reading the new CityJSON data through the
-    /// extension.
+    /// Update attributes of one object, then re-derive what the edit
+    /// invalidated. `attributes` is a JSON object of column name to value.
     async fn update_object(
         &self,
-        table_name: &str,
+        dataset: &DatasetName,
         id: &str,
-        cityjson_data: &str,
+        attributes: &serde_json::Map<String, serde_json::Value>,
     ) -> RepositoryResult<()>;
 
-    /// Delete a CityJSON object by its ID.
-    async fn delete_object(&self, table_name: &str, id: &str) -> RepositoryResult<()>;
+    /// Delete by id, cascading transitively through `children`.
+    async fn delete_object(&self, dataset: &DatasetName, id: &str) -> RepositoryResult<usize>;
 
-    /// Check if a table exists in the DuckLake catalog.
-    async fn table_exists(&self, table_name: &str) -> RepositoryResult<bool>;
+    /// Delete by predicate, cascading transitively through `children`.
+    async fn delete_where(&self, dataset: &DatasetName, predicate: &str)
+        -> RepositoryResult<usize>;
 
-    /// List every table currently in the citylake catalog. The `base` and `lod`
-    /// fields on each [`TableInfo`] are populated for tables whose name ends
-    /// with a `_lod_X_Y` suffix; otherwise both are `None`.
-    async fn list_tables(&self) -> RepositoryResult<Vec<TableInfo>>;
+    async fn reconcile(&self, dataset: &DatasetName) -> RepositoryResult<()>;
 
-    /// Compact a table to optimize storage (merge small Parquet files).
-    async fn compact_table(&self, table_name: &str) -> RepositoryResult<CompactionStats>;
+    async fn validate(&self, dataset: &DatasetName) -> RepositoryResult<Vec<ValidationFinding>>;
 
-    /// Get metadata from a CityJSON source file.
-    async fn get_metadata(&self, file_path: &str) -> RepositoryResult<CityJsonMetadata>;
+    async fn vacuum(&self, dataset: &DatasetName) -> RepositoryResult<usize>;
 
-    /// Export a single LOD-suffixed table to a CityJSON format file.
-    ///
-    /// Multi-LOD round-trip export (rejoining LOD tables back into a unified
-    /// CityJSON) is not supported. See `tasks.md` for the deferred follow-up.
-    async fn export_table(
+    async fn merge(&self, destination: &DatasetName, source: &DatasetName) -> RepositoryResult<()>;
+
+    /// Write the dataset out as a CityParquet package directory.
+    async fn write_package(
         &self,
-        table_name: &str,
+        dataset: &DatasetName,
+        output_dir: &str,
+    ) -> RepositoryResult<Vec<PackageFile>>;
+
+    /// Export one module to a single CityJSON-family file.
+    async fn export_module(
+        &self,
+        dataset: &DatasetName,
+        module: &ModuleName,
         output_path: &str,
         format: ExportFormat,
     ) -> RepositoryResult<()>;
 
-    /// Query objects from a table with optional filters and pagination.
-    async fn query_objects(
-        &self,
-        table_name: &str,
-        params: &QueryParams,
-    ) -> RepositoryResult<Vec<serde_json::Value>>;
+    async fn compact(&self, dataset: &DatasetName) -> RepositoryResult<CompactionStats>;
 }

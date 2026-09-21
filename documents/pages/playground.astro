@@ -40,14 +40,14 @@ const { config } = data;
      playground follows light/dark and the accent without redefining them. */
   .cp-playground {
     --cp-mono: var(--blume-font-mono, ui-monospace, SFMono-Regular, monospace);
-    --cp-border: var(--blume-color-border, color-mix(in srgb, currentColor 14%, transparent));
-    --cp-surface: var(--blume-color-surface, color-mix(in srgb, currentColor 3%, transparent));
+    --cp-border: var(--blume-border);
+    --cp-surface: var(--blume-muted);
     /* The page's own ground. Needed wherever something has to be opaque over
        scrolling content — `--cp-surface` is a 3% tint, not a background. */
     --cp-page: var(--blume-background, Canvas);
     --cp-hover: color-mix(in srgb, currentColor 6%, transparent);
-    --cp-dim: color-mix(in srgb, currentColor 55%, transparent);
-    --cp-accent: var(--blume-color-primary, #7253ed);
+    --cp-dim: var(--blume-muted-foreground);
+    --cp-accent: var(--blume-accent, #7253ed);
 
     /* The editor's syntax colours. These are the GitHub Light values the site's
        own Shiki blocks use, named rather than repeated per token, so a SELECT
@@ -100,6 +100,27 @@ const { config } = data;
   .cp-subtitle code {
     font-family: var(--cp-mono);
     font-size: 0.85em;
+  }
+
+  .cp-performance-notice {
+    padding: 1rem 1.25rem;
+    border: 1px solid color-mix(in srgb, var(--cp-accent) 45%, var(--cp-border));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--cp-accent) 8%, var(--cp-page));
+  }
+
+  .cp-performance-notice h2 {
+    margin: 0 0 0.4rem;
+    font-size: 1rem;
+    font-weight: 650;
+    line-height: 1.4;
+  }
+
+  .cp-performance-notice p {
+    margin: 0;
+    max-width: 90ch;
+    font-size: 0.9rem;
+    line-height: 1.6;
   }
 
   .cp-run {
@@ -538,7 +559,7 @@ const { config } = data;
     margin: 0;
     padding: 0.55rem 0.7rem;
     border: 1px solid var(--cp-border);
-    border-left: 2px solid var(--cp-accent);
+    border-left: 1px solid var(--cp-accent);
     border-radius: 4px;
     background: var(--cp-surface);
     font-size: 0.78rem;

@@ -89,9 +89,3 @@ available at `benchmark/databases/vendor/cjdb/ground-surfaces-tie.patch` in the
 CityParquet monorepo, along with a minimal regression test
 (`benchmark/databases/tests/test_cjdb_patch.py`).
 
----
-
-## Fix report (round 4): correcting an overclaim about 3DCityDB's LoD scoping
-
-Round 3's `semantic-surface` any-LoD justification claimed 3DCityDB v5's
-schema offers **no** queryable way to scope a RoofSurface link to one
