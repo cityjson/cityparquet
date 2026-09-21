@@ -1151,6 +1151,7 @@ fn run_measurement(
 /// `prepared_dir` (a rename across filesystems would fail, and a 1M-object
 /// package does not belong in /tmp). The last repeat's package is kept as
 /// `<prepared_dir>/<base>.<id>.parquet`; returns that path.
+#[allow(clippy::too_many_arguments)]
 fn run_write(
     rows: &mut Vec<Row>,
     samples: &mut Vec<Sample>,

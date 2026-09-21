@@ -653,17 +653,25 @@ mod tests {
                 .iter()
                 .map(|v| Arc::new(Float64Array::from(vec![*v])) as ArrayRef)
                 .collect();
-            let bbox = StructArray::new(fields.clone(), leaves, Some(NullBuffer::from(vec![valid])));
+            let bbox =
+                StructArray::new(fields.clone(), leaves, Some(NullBuffer::from(vec![valid])));
             RecordBatch::try_new(schema.clone(), vec![Arc::new(bbox)]).unwrap()
         };
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("building.parquet");
-        let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
-        let mut writer =
-            ArrowWriter::try_new(std::fs::File::create(&path).unwrap(), schema.clone(), Some(props))
-                .unwrap();
-        writer.write(&batch([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], true)).unwrap();
+        let props = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(1))
+            .build();
+        let mut writer = ArrowWriter::try_new(
+            std::fs::File::create(&path).unwrap(),
+            schema.clone(),
+            Some(props),
+        )
+        .unwrap();
+        writer
+            .write(&batch([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], true))
+            .unwrap();
         writer.write(&batch([0.0; 6], false)).unwrap();
         writer.close().unwrap();
 
@@ -676,7 +684,9 @@ mod tests {
             .unwrap()
             .expect("the null row group must be skipped, not void the extent");
         assert_eq!(
-            [bbox.xmin, bbox.ymin, bbox.zmin, bbox.xmax, bbox.ymax, bbox.zmax],
+            [
+                bbox.xmin, bbox.ymin, bbox.zmin, bbox.xmax, bbox.ymax, bbox.zmax
+            ],
             [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
         );
     }

@@ -122,7 +122,7 @@ ls lib/cityparquet-rs/tests/fixtures/
 ```
 
 `freiburg_no_preamble_srs.gml` is fetched as a **400 kB HTTP range request**
-against a 1.86 GiB source — a full download is neither needed nor attempted.
+against a 1.5 GiB source — a full download is neither needed nor attempted.
 
 ### 0.3 Put vcpkg on the pinned baseline commit — **BROKEN** out of the box
 
