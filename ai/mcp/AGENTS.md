@@ -120,21 +120,34 @@ that file's prose for `cityparquet_docs_search` and `cityparquet_docs_read` —
 an agent can legitimately read about a function it cannot yet call — but tool
 *implementations* must not assume it is callable.
 
-## `describe()` cannot read a local package directory
+## `describe()` reads local files through Node, outside DuckDB's sandbox
 
-`cityparquet_describe` given a package **directory** always takes the STAC
-probe path, never the local one, even when that directory is on the same
-machine and holds a `metadata.json`. `describe()`'s package branch
-(`src/tools/describe.ts`) always calls `fetch(`${url}/metadata.json`)`, and
-`fetch()` throws immediately on a base that is not a URL — a plain filesystem
-path fails there before any attempt to read the file. The `catch` around that
-call absorbs the throw and falls back to probing the normative module
-basenames with `summariseFile`, exactly as it would for a genuinely
-unreachable remote host — so the tool degrades silently rather than reading
-the local `metadata.json` it could otherwise see, and the result's `notes`
-attribute the fallback to a fetch failure rather than to "this is a local
-path". A single `.parquet` file path is unaffected: that branch never calls
-`fetch()`. This is a known gap, not yet fixed.
+`cityparquet_describe` accepts a local package directory, a local `.parquet`
+file or a `file://` URL as well as an `http(s)` URL. For a local package it
+reads `metadata.json` with Node's `fs`, not with DuckDB — and DuckDB's
+`disabled_filesystems` does not govern Node. So `describe()` checks
+`engine.sandbox` itself and refuses every local path on a sandboxed engine
+**before** any `readFile`. Without that check the hosted server would read
+`<any directory>/metadata.json` for anyone who asked, which is exactly the
+local-file read the sandbox exists to prevent. Any new tool that touches the
+disk from Node carries the same obligation; `test/describe.test.ts` has the
+case that pins it.
+
+## `describe()`'s notes name the actual failure
+
+"Unreachable" means a request failed. A missing `metadata.json`, an HTTP
+error status, a body that is not JSON, an asset `href` that does not resolve
+and a listed asset that is not readable Parquet each get their own note. The
+package `crs` is reported only when every table that states one agrees;
+otherwise it is null and each table's own `crs` stands. A malformed `city`
+footer falls back to `geo` rather than failing the whole CRS read. Tables are
+named after their file, not their STAC asset key — Items produced by this
+stack list `building.parquet` under a generic `data` key as well.
+
+One DuckDB behaviour matters to fixtures: its Parquet reader **refuses** a
+file whose `geo` footer lacks `version` ("Geoparquet metadata does not have a
+version") before `describe()` sees it. A test fixture with a `geo` key must be
+well-formed GeoParquet metadata.
 
 ## The `cityparquet_` tool prefix is provisional
 

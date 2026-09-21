@@ -1,5 +1,9 @@
 // Answering "what is in this dataset" in one call.
 
+import { readFile } from "node:fs/promises";
+import { join as joinPath, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import type { Engine } from "../duckdb.js";
 
 /** Normative, from the specification's dataset-package chapter. */
@@ -16,6 +20,8 @@ export interface TableSummary {
   readonly row_count: number | null;
   readonly geometry_columns: string[];
   readonly lods: string[];
+  /** This table's own footer CRS. Tables in one package can disagree. */
+  readonly crs: string | null;
 }
 
 export interface DescribeResult {
@@ -23,6 +29,7 @@ export interface DescribeResult {
   readonly kind: "file" | "package";
   /** Where the file list came from — the STAC Item, or a probe of the normative basenames. */
   readonly inventory: "stac" | "probe";
+  /** The package's CRS when every table that states one agrees; null otherwise — see `notes`. */
   readonly crs: string | null;
   readonly stac: Record<string, unknown> | null;
   readonly tables: TableSummary[];
@@ -45,35 +52,14 @@ function sqlLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-async function summariseFile(engine: Engine, url: string, name: string): Promise<TableSummary | null> {
-  try {
-    const schema = await engine.connection.runAndReadAll(
-      `SELECT name FROM parquet_schema(${sqlLiteral(url)})`,
-    );
-    const columns = schema.getRowsJson().map((row) => String(row[0]));
-    const geometryColumns = geometryColumnsOf(columns);
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
-    let rowCount: number | null = null;
-    try {
-      const meta = await engine.connection.runAndReadAll(
-        `SELECT sum(num_rows)::BIGINT FROM parquet_file_metadata(${sqlLiteral(url)})`,
-      );
-      const value = meta.getRowsJson()[0]?.[0];
-      rowCount = value === null || value === undefined ? null : Number(value);
-    } catch {
-      rowCount = null;
-    }
-
-    return {
-      name,
-      file: url,
-      row_count: rowCount,
-      geometry_columns: geometryColumns,
-      lods: lodsOf(geometryColumns),
-    };
-  } catch {
-    return null;
-  }
+/** A table is named after its file: `building.parquet` is `building`. */
+function tableName(file: string): string {
+  const last = file.split(/[\\/]/).pop() ?? file;
+  return last.replace(/\.parquet$/i, "");
 }
 
 interface ProjJsonId {
@@ -109,10 +95,18 @@ function renderCrs(crs: unknown): string | null {
   return typeof candidate.name === "string" && candidate.name.length > 0 ? candidate.name : null;
 }
 
+interface FooterCrs {
+  readonly crs: string | null;
+  /** What was wrong with the footer, if anything — for `notes`. */
+  readonly problems: string[];
+}
+
 /**
  * The `city` footer key is authoritative for decoding; `geo`'s primary
  * column carries the same information in GeoParquet's own vocabulary and is
- * the fallback when `city` is absent or states no CRS. Both are PROJJSON.
+ * the fallback when `city` is absent, states no CRS, or does not parse. Both
+ * are PROJJSON. Each key is parsed on its own, so a malformed `city` cannot
+ * take the `geo` fallback down with it.
  *
  * Reads the raw footer key-value pairs rather than a decoding function: the
  * `cityjson`/`three_d` extensions this server loads do not expose one (the
@@ -120,54 +114,180 @@ function renderCrs(crs: unknown): string | null {
  * published community build) — `parquet_kv_metadata`, and the `decode()` a
  * BLOB value needs before it parses as JSON, are both DuckDB core.
  */
-async function footerCrs(engine: Engine, url: string): Promise<string | null> {
+async function footerCrs(engine: Engine, file: string): Promise<FooterCrs> {
+  const problems: string[] = [];
+  const byKey = new Map<string, string>();
   try {
     const reader = await engine.connection.runAndReadAll(
-      `SELECT key, decode(value) FROM parquet_kv_metadata(${sqlLiteral(url)}) WHERE key IN ('city', 'geo')`,
+      `SELECT key, decode(value) FROM parquet_kv_metadata(${sqlLiteral(file)}) WHERE key IN ('city', 'geo')`,
     );
-    const byKey = new Map<string, string>();
-    for (const row of reader.getRowsJson()) {
-      byKey.set(String(row[0]), String(row[1]));
-    }
+    for (const row of reader.getRowsJson()) byKey.set(String(row[0]), String(row[1]));
+  } catch (error) {
+    return { crs: null, problems: [`footer key-value metadata unreadable (${messageOf(error)})`] };
+  }
 
-    const cityRaw = byKey.get("city");
-    if (cityRaw) {
-      const city = JSON.parse(cityRaw) as CityFooter;
-      const rendered = renderCrs(city.crs);
-      if (rendered) return rendered;
+  const cityRaw = byKey.get("city");
+  if (cityRaw !== undefined) {
+    try {
+      const rendered = renderCrs((JSON.parse(cityRaw) as CityFooter | null)?.crs);
+      if (rendered) return { crs: rendered, problems };
+    } catch {
+      problems.push("the city footer is not valid JSON");
     }
+  }
 
-    const geoRaw = byKey.get("geo");
-    if (geoRaw) {
-      const geo = JSON.parse(geoRaw) as GeoFooter;
-      const primary = geo.primary_column ? geo.columns?.[geo.primary_column] : undefined;
+  const geoRaw = byKey.get("geo");
+  if (geoRaw !== undefined) {
+    try {
+      const geo = JSON.parse(geoRaw) as GeoFooter | null;
+      const primary = geo?.primary_column ? geo.columns?.[geo.primary_column] : undefined;
       const rendered = primary ? renderCrs(primary.crs) : null;
-      if (rendered) return rendered;
+      if (rendered) {
+        if (problems.length > 0) problems.push("the CRS was read from the geo footer instead");
+        return { crs: rendered, problems };
+      }
+    } catch {
+      problems.push("the geo footer is not valid JSON");
     }
+  }
 
-    return null;
+  return { crs: null, problems };
+}
+
+async function summariseFile(
+  engine: Engine,
+  file: string,
+  name: string,
+): Promise<{ table: TableSummary; problems: string[] } | null> {
+  let columns: string[];
+  try {
+    const schema = await engine.connection.runAndReadAll(`SELECT name FROM parquet_schema(${sqlLiteral(file)})`);
+    columns = schema.getRowsJson().map((row) => String(row[0]));
   } catch {
     return null;
   }
+  const geometryColumns = geometryColumnsOf(columns);
+
+  let rowCount: number | null = null;
+  try {
+    const meta = await engine.connection.runAndReadAll(
+      `SELECT sum(num_rows)::BIGINT FROM parquet_file_metadata(${sqlLiteral(file)})`,
+    );
+    const value = meta.getRowsJson()[0]?.[0];
+    rowCount = value === null || value === undefined ? null : Number(value);
+  } catch {
+    rowCount = null;
+  }
+
+  const { crs, problems } = await footerCrs(engine, file);
+  return {
+    table: { name, file, row_count: rowCount, geometry_columns: geometryColumns, lods: lodsOf(geometryColumns), crs },
+    problems,
+  };
+}
+
+/** A scheme followed by `//`: `https://`, `s3://`, `file://`. A bare path has none. */
+const REMOTE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+
+type Location = { readonly local: true; readonly path: string } | { readonly local: false; readonly url: string };
+
+function locate(input: string): Location {
+  const trimmed = input.length > 1 ? input.replace(/\/+$/, "") : input;
+  if (/^file:/i.test(trimmed)) return { local: true, path: fileURLToPath(trimmed) };
+  if (REMOTE.test(trimmed)) return { local: false, url: trimmed };
+  return { local: true, path: resolvePath(trimmed) };
+}
+
+const PROBING = "probing the normative basenames instead.";
+
+/**
+ * The package's STAC Item, if there is one, and a note saying precisely why
+ * not if there is not. "Unreachable" is reserved for a request that failed —
+ * a missing file, an HTTP error and a malformed body are each named as what
+ * they are.
+ */
+async function readItem(location: Location): Promise<{ item: unknown; note?: string }> {
+  let text: string;
+  if (location.local) {
+    const path = joinPath(location.path, "metadata.json");
+    try {
+      text = await readFile(path, "utf8");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return code === "ENOENT"
+        ? { item: null, note: `no metadata.json in ${location.path}; ${PROBING}` }
+        : { item: null, note: `metadata.json unreadable (${messageOf(error)}); ${PROBING}` };
+    }
+  } else {
+    let response: Response;
+    try {
+      // A hung host must not stall the tool for undici's multi-minute
+      // default. Ten seconds is generous for a `metadata.json` fetch and
+      // short enough that a caller notices; the probe fallback absorbs it.
+      response = await fetch(`${location.url}/metadata.json`, { signal: AbortSignal.timeout(10_000) });
+    } catch (error) {
+      return { item: null, note: `metadata.json unreachable (${messageOf(error)}); ${PROBING}` };
+    }
+    if (!response.ok) {
+      return { item: null, note: `no metadata.json (HTTP ${response.status}); ${PROBING}` };
+    }
+    try {
+      return { item: await response.json() };
+    } catch (error) {
+      // The timeout covers the body too, and a body cut off mid-read is a
+      // network failure, not a malformed document.
+      const name = error instanceof Error ? error.name : "";
+      return name === "TimeoutError" || name === "AbortError"
+        ? { item: null, note: `metadata.json unreachable (${messageOf(error)}); ${PROBING}` }
+        : { item: null, note: `metadata.json is not valid JSON (${messageOf(error)}); ${PROBING}` };
+    }
+  }
+
+  try {
+    return { item: JSON.parse(text) };
+  } catch (error) {
+    return { item: null, note: `metadata.json is not valid JSON (${messageOf(error)}); ${PROBING}` };
+  }
+}
+
+/** An asset href, resolved against the package: a URL for a remote package, a path for a local one. */
+function resolveHref(location: Location, href: string): string {
+  if (location.local) {
+    if (/^file:/i.test(href)) return fileURLToPath(href);
+    if (REMOTE.test(href)) return href;
+    return resolvePath(location.path, href);
+  }
+  return new URL(href, `${location.url}/`).toString();
 }
 
 export async function describe(engine: Engine, url: string): Promise<DescribeResult> {
   const notes: string[] = [];
-  const trimmed = url.replace(/\/+$/, "");
+  const location = locate(url);
+  const shown = location.local ? location.path : location.url;
 
-  if (/\.parquet$/i.test(trimmed)) {
-    // One critical section for both queries this path issues, not one each —
+  // Node's `fs` is not governed by DuckDB's `disabled_filesystems`, so a
+  // sandboxed engine must refuse a local path here, before `readFile` — or
+  // this tool becomes the local-file read the sandbox exists to prevent.
+  if (location.local && engine.sandbox) {
+    throw new Error(
+      `${shown} is a local path, and this server's engine is sandboxed with no local filesystem — pass an http(s) URL`,
+    );
+  }
+
+  if (/\.parquet$/i.test(shown)) {
+    // One critical section for every query this path issues, not one each —
     // see the package path below for why.
     return engine.exclusive(async () => {
-      const table = await summariseFile(engine, trimmed, trimmed.split("/").pop() ?? trimmed);
-      if (!table) throw new Error(`could not read a Parquet footer at ${trimmed}`);
+      const summary = await summariseFile(engine, shown, tableName(shown));
+      if (!summary) throw new Error(`could not read a Parquet footer at ${shown}`);
+      notes.push(...summary.problems.map((p) => `${summary.table.name}: ${p}.`));
       return {
-        url: trimmed,
+        url: shown,
         kind: "file",
         inventory: "probe",
-        crs: await footerCrs(engine, trimmed),
+        crs: summary.table.crs,
         stac: null,
-        tables: [table],
+        tables: [summary.table],
         notes,
       };
     });
@@ -177,69 +297,90 @@ export async function describe(engine: Engine, url: string): Promise<DescribeRes
   // specification makes that a SHOULD, and the Item may be absent entirely, so
   // the normative basenames are the fallback.
   let stac: Record<string, unknown> | null = null;
-  let files: { name: string; url: string }[] = [];
+  let files: { name: string; file: string }[] = [];
   let inventory: "stac" | "probe" = "probe";
 
-  try {
-    // A hung host must not stall the tool for undici's multi-minute default.
-    // Ten seconds is generous for a `metadata.json` fetch and short enough
-    // that a caller notices; the probe fallback below absorbs the failure.
-    const response = await fetch(`${trimmed}/metadata.json`, { signal: AbortSignal.timeout(10_000) });
-    if (response.ok) {
-      stac = (await response.json()) as Record<string, unknown>;
-      const assets = stac.assets as Record<string, { href?: string }> | undefined;
-      if (assets) {
-        // No package legitimately contains the same file twice — but an
-        // Item's assets map can list one file under more than one role (a
-        // generic "data" role alongside a module-named one), so dedupe by
-        // the resolved URL and keep the first occurrence.
-        const seen = new Set<string>();
-        for (const [name, asset] of Object.entries(assets)) {
-          if (!asset.href?.endsWith(".parquet")) continue;
-          const resolved = new URL(asset.href, `${trimmed}/`).toString();
-          if (seen.has(resolved)) continue;
-          seen.add(resolved);
-          files.push({ name, url: resolved });
+  const { item, note } = await readItem(location);
+  if (note) notes.push(note);
+  if (item !== null && typeof item === "object" && !Array.isArray(item)) {
+    stac = item as Record<string, unknown>;
+    const assets = stac.assets;
+    if (assets !== null && typeof assets === "object") {
+      // An Item's assets map can list one file under more than one key — a
+      // generic "data" role alongside a module-named one — so dedupe by the
+      // resolved location and name each table after its file, not its key.
+      const seen = new Set<string>();
+      for (const [key, asset] of Object.entries(assets as Record<string, { href?: unknown } | null>)) {
+        const href = asset?.href;
+        if (typeof href !== "string" || !/\.parquet$/i.test(href)) continue;
+        let file: string;
+        try {
+          file = resolveHref(location, href);
+        } catch {
+          notes.push(`asset '${key}' has an href that does not resolve (${href}); skipped.`);
+          continue;
         }
-        if (files.length > 0) inventory = "stac";
+        if (seen.has(file)) continue;
+        seen.add(file);
+        files.push({ name: tableName(file), file });
       }
-      if (files.length === 0) {
-        notes.push("metadata.json carries no Parquet assets; probing the normative basenames instead.");
-      }
-    } else {
-      notes.push(`no metadata.json (HTTP ${response.status}); probing the normative basenames instead.`);
+      if (files.length > 0) inventory = "stac";
     }
-  } catch (error) {
-    notes.push(
-      `metadata.json unreachable (${error instanceof Error ? error.message : String(error)}); probing the normative basenames instead.`,
-    );
+    if (files.length === 0) notes.push(`metadata.json carries no Parquet assets; ${PROBING}`);
+  } else if (item !== null) {
+    notes.push(`metadata.json is not a STAC Item (not a JSON object); ${PROBING}`);
   }
 
   if (files.length === 0) {
     files = [...MODULE_TABLES, ...SIDECAR_TABLES].map((name) => ({
       name,
-      url: `${trimmed}/${name}.parquet`,
+      file: location.local ? joinPath(location.path, `${name}.parquet`) : `${location.url}/${name}.parquet`,
     }));
   }
 
-  // One critical section for the whole batch — up to fourteen statements
-  // (eleven module tables, three sidecars) plus the footer read — not one
-  // per statement. All five tools share this connection; contending for it
-  // statement by statement would let another tool's query interleave between
-  // this batch's own statements just as readily as between two different
-  // tools' calls, and it would also make this describe() far slower under
-  // concurrent load for no benefit, since the batch has no use for partial
-  // interleaving with itself.
+  // One critical section for the whole batch — up to fourteen files, three
+  // statements each — not one per statement. All five tools share this
+  // connection; contending for it statement by statement would let another
+  // tool's query interleave between this batch's own statements, and would
+  // make describe() far slower under concurrent load for no benefit.
   return engine.exclusive(async () => {
-    const summaries = await Promise.all(files.map((f) => summariseFile(engine, f.url, f.name)));
-    const tables = summaries.filter((t): t is TableSummary => t !== null);
-    if (tables.length === 0) throw new Error(`no readable Parquet files under ${trimmed}`);
+    const summaries = await Promise.all(files.map((f) => summariseFile(engine, f.file, f.name)));
+    const tables: TableSummary[] = [];
+    summaries.forEach((summary, index) => {
+      if (summary) {
+        tables.push(summary.table);
+        notes.push(...summary.problems.map((p) => `${summary.table.name}: ${p}.`));
+      } else if (inventory === "stac") {
+        // A probed basename that is absent is expected; a file the Item
+        // lists and that cannot be read is not.
+        notes.push(`${files[index]!.name}: listed in metadata.json but not readable as Parquet; omitted.`);
+      }
+    });
+    if (tables.length === 0) throw new Error(`no readable Parquet files under ${shown}`);
 
-    const crs = await footerCrs(engine, tables[0]!.file);
-    if (crs === null) {
-      notes.push("no CRS in the footer — the package states nothing about its coordinate system.");
-    }
-
-    return { url: trimmed, kind: "package", inventory, crs, stac, tables, notes };
+    return { url: shown, kind: "package", inventory, crs: packageCrs(tables, notes), stac, tables, notes };
   });
+}
+
+/**
+ * One CRS for the package when the tables that state one agree. When they
+ * do not, there is no honest single answer: report null and let each
+ * table's own `crs` speak, rather than whichever table happened to be first.
+ */
+function packageCrs(tables: readonly TableSummary[], notes: string[]): string | null {
+  const distinct = [...new Set(tables.map((t) => t.crs).filter((c): c is string => c !== null))];
+  if (distinct.length === 0) {
+    notes.push("no CRS in any table's footer — the package states nothing about its coordinate system.");
+    return null;
+  }
+  if (distinct.length > 1) {
+    const listed = tables.map((t) => `${t.name}: ${t.crs ?? "none"}`).join("; ");
+    notes.push(`the tables disagree on CRS (${listed}), so no package CRS is reported — see each table's crs.`);
+    return null;
+  }
+  const silent = tables.filter((t) => t.crs === null).map((t) => t.name);
+  if (silent.length > 0) {
+    notes.push(`${silent.join(", ")} ${silent.length === 1 ? "states" : "state"} no CRS in the footer; the other tables state ${distinct[0]}.`);
+  }
+  return distinct[0]!;
 }

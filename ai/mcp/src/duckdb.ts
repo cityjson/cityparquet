@@ -17,6 +17,16 @@ import { serialiser } from "./serialise.js";
  */
 export const DEFAULT_EXTENSIONS = ["httpfs", "cityjson", "three_d"] as const;
 
+/**
+ * `CITYPARQUET_MCP_EXTENSIONS`, parsed. Unset, empty or all-blank means the
+ * defaults — never a list holding one empty name, which DuckDB would reject
+ * as `INSTALL ` with nothing after it.
+ */
+export function extensionsFromEnv(value: string | undefined): readonly string[] {
+  const names = (value ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  return names.length > 0 ? names : DEFAULT_EXTENSIONS;
+}
+
 const COMMUNITY_EXTENSIONS = new Set(["cityjson", "three_d"]);
 
 export interface EngineOptions {
@@ -34,6 +44,13 @@ export interface EngineOptions {
 }
 
 export interface Engine {
+  /**
+   * Whether the engine was brought up locked down. Tools that reach the local
+   * filesystem from Node rather than through DuckDB — `describe` reading a
+   * local `metadata.json` — must check this themselves, since DuckDB's own
+   * `disabled_filesystems` does not govern Node's `fs`.
+   */
+  readonly sandbox: boolean;
   readonly connection: DuckDBConnection;
   readonly extensions: readonly { name: string; version: string }[];
   /**
@@ -80,14 +97,18 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
   //    the extension directory on disk), so this must run before the sandbox
   //    disables LocalFileSystem below — not after, as a query issued once the
   //    engine is locked down.
-  const reader = await connection.runAndReadAll(
-    `SELECT extension_name, extension_version FROM duckdb_extensions()
-     WHERE loaded AND extension_name IN (${wanted.map((n) => `'${n}'`).join(", ")})`,
-  );
-  const extensions = reader.getRowsJson().map((row) => ({
-    name: String(row[0]),
-    version: String(row[1]),
-  }));
+  // An empty list would make the `IN ()` below a syntax error.
+  let extensions: { name: string; version: string }[] = [];
+  if (wanted.length > 0) {
+    const reader = await connection.runAndReadAll(
+      `SELECT extension_name, extension_version FROM duckdb_extensions()
+       WHERE loaded AND extension_name IN (${wanted.map((n) => `'${n}'`).join(", ")})`,
+    );
+    extensions = reader.getRowsJson().map((row) => ({
+      name: String(row[0]),
+      version: String(row[1]),
+    }));
+  }
 
   const missing = wanted.filter((n) => !extensions.some((e) => e.name === n));
   if (missing.length > 0) {
@@ -128,6 +149,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
   const exclusive = serialiser();
 
   return {
+    sandbox: options.sandbox,
     connection,
     extensions,
     exclusive,

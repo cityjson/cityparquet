@@ -78,8 +78,8 @@ export function createServer({ corpus, engine }: ServerDeps): McpServer {
     "cityparquet_describe",
     {
       description:
-        "Describe a CityParquet dataset: its module tables, row counts, LoDs, geometry columns and CRS. Accepts a package directory URL or a single .parquet URL. Call this before querying an unfamiliar dataset.",
-      inputSchema: z.object({ url: z.string().describe("Package directory URL or .parquet URL") }),
+        "Describe a CityParquet dataset: its module tables, row counts, LoDs, geometry columns and CRS. Accepts a package directory or a single .parquet file, as an http(s) URL — or, unless the server is sandboxed, a local path or file:// URL. Read `notes`: they say where the file list came from and flag tables whose CRSs disagree. Call this before querying an unfamiliar dataset.",
+      inputSchema: z.object({ url: z.string().describe("Package directory or .parquet file: URL or local path") }),
     },
     async ({ url }) => {
       try {

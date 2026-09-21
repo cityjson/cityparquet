@@ -12,7 +12,7 @@ stdio, for a local MCP client.
 | `cityparquet_docs_outline` | Lists the chapters of one or all three documentation corpora: `spec` (the normative specification and its design decisions), `duckdb-cityjson` and `duckdb-3d` (the DuckDB extension function references). Call this first to see what can be read. |
 | `cityparquet_docs_search` | Searches the documentation for a term and returns matching sections with snippets — faster than reading whole chapters when looking for a specific column, function or rule. |
 | `cityparquet_docs_read` | Reads one chapter, or one section of a chapter. Takes chapter ids from `cityparquet_docs_outline` or `cityparquet_docs_search`. |
-| `cityparquet_describe` | Describes a CityParquet dataset from a package directory URL or a single `.parquet` URL: its module tables, row counts, LoDs, geometry columns and CRS. Call this before querying an unfamiliar dataset. |
+| `cityparquet_describe` | Describes a CityParquet dataset from a package directory or a single `.parquet` file — an `http(s)` URL, or a local path or `file://` URL when the engine is not sandboxed: its module tables, row counts, LoDs, geometry columns and CRS, per table and for the package. Call this before querying an unfamiliar dataset. |
 | `cityparquet_query` | Runs one or more SQL statements against DuckDB with the `cityjson` and `three_d` extensions loaded. Results are capped by row count and cell size; BLOB and oversized values are elided, so `SELECT *` on an object table is a poor idea — select the columns you need. |
 
 The `cityparquet_` prefix is provisional: it may be replaced by one neutral
@@ -50,7 +50,7 @@ Point a client at the built entry point:
 | --- | --- | --- |
 | `CITYPARQUET_MCP_SANDBOX` | off (`sandbox: false`) | Set to `1` to lock the DuckDB engine down: no local filesystem, no installing further extensions, resource limits that cannot be raised again. Off by default for the stdio entry point, because a local client's own machine is already the trust boundary; a hosted deployment should set it. |
 | `CITYPARQUET_MCP_EXTENSION_DIR` | `~/.cityparquet-mcp/extensions` | Where DuckDB installs and loads its extensions from. Always explicit, never DuckDB's own default — a shared default directory can hold artefacts built for a different DuckDB version, and the failure is an opaque error at `LOAD` time. |
-| `CITYPARQUET_MCP_EXTENSIONS` | `httpfs,cityjson,three_d` | Comma-separated list overriding the default extension set. `spatial` cannot be added here alongside `three_d` — see below. |
+| `CITYPARQUET_MCP_EXTENSIONS` | `httpfs,cityjson,three_d` | Comma-separated list overriding the default extension set. Blank entries are ignored, and an empty value means the default. `spatial` cannot be added here alongside `three_d` — see below. |
 | `CITYPARQUET_MCP_MEMORY_LIMIT` | DuckDB's own default | DuckDB's `memory_limit` setting, e.g. `2GB`. Worth raising under `CITYPARQUET_MCP_SANDBOX=1`, since a sandboxed engine cannot spill a large query to disk. |
 
 ## Why `spatial` is unavailable

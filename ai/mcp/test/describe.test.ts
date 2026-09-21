@@ -1,8 +1,9 @@
 import { afterAll, afterEach, beforeAll, describe as suite, expect, it, vi } from "vitest";
-import { DuckDBInstance } from "@duckdb/node-api";
-import { mkdtempSync } from "node:fs";
+import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { Engine } from "../src/duckdb.js";
 import { serialiser } from "../src/serialise.js";
@@ -51,6 +52,7 @@ function fakeEngine(
   kvRows: [string, string][] = [["city", JSON.stringify({ crs: { id: { authority: "EPSG", code: 7415 } } })]],
 ): Engine {
   return {
+    sandbox: false,
     extensions: [],
     async close() {},
     // A pass-through. These fixtures never have two calls in flight at
@@ -138,7 +140,54 @@ suite("describe, package inventory", () => {
       "https://example.test/pkg",
     );
     expect(result.tables).toHaveLength(1);
-    expect(result.tables.map((t) => t.name)).toEqual(["data"]); // first occurrence wins
+    // Named after the file, not the asset key: "data" is a STAC role, and an
+    // agent reading it as a table name would go looking for a data.parquet.
+    expect(result.tables.map((t) => t.name)).toEqual(["building"]);
+  });
+
+  it("attributes a malformed metadata.json to its content, not to the network", async () => {
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      status: 200,
+      json: async () => { throw new SyntaxError("Unexpected token < in JSON"); },
+    }));
+    const result = await describe(
+      fakeEngine({ "https://example.test/pkg/building.parquet": ["id"] }),
+      "https://example.test/pkg",
+    );
+    expect(result.inventory).toBe("probe");
+    const notes = result.notes.join(" ");
+    expect(notes).toMatch(/not valid JSON/);
+    expect(notes).not.toMatch(/unreachable/);
+  });
+
+  it("reports a failed fetch as unreachable", async () => {
+    vi.stubGlobal("fetch", async () => { throw new TypeError("fetch failed"); });
+    const result = await describe(
+      fakeEngine({ "https://example.test/pkg/building.parquet": ["id"] }),
+      "https://example.test/pkg",
+    );
+    expect(result.notes.join(" ")).toMatch(/unreachable \(fetch failed\)/);
+  });
+
+  it("skips an asset whose href does not resolve, and says so", async () => {
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        assets: {
+          bad: { href: "http://[not a host/relief.parquet" },
+          building: { href: "building.parquet" },
+        },
+      }),
+    }));
+    const result = await describe(
+      fakeEngine({ "https://example.test/pkg/building.parquet": ["id"] }),
+      "https://example.test/pkg",
+    );
+    expect(result.inventory).toBe("stac");
+    expect(result.tables.map((t) => t.name)).toEqual(["building"]);
+    expect(result.notes.join(" ")).toMatch(/asset 'bad'/);
   });
 });
 
@@ -194,10 +243,6 @@ suite("describe, CRS rendering from the footer", () => {
 // proves the SQL describe() actually issues (parquet_schema,
 // parquet_file_metadata, parquet_kv_metadata, decode()) still parses and
 // still means what this module assumes it means.
-//
-// `describe()` given a local directory path throws inside `fetch()` on a
-// non-URL base, so this exercises the single-file `.parquet` path rather
-// than the package path — see the CLAUDE.md note on that gap.
 suite("describe, against a real engine and a real fixture file", () => {
   let engine: Engine;
   let file: string;
@@ -210,6 +255,7 @@ suite("describe, against a real engine and a real fixture file", () => {
     const instance = await DuckDBInstance.create(":memory:");
     const connection = await instance.connect();
     engine = {
+      sandbox: false,
       connection,
       extensions: [],
       exclusive: serialiser(),
@@ -242,5 +288,139 @@ suite("describe, against a real engine and a real fixture file", () => {
   it("decodes the CRS from the real KV metadata", async () => {
     const result = await describe(engine, file);
     expect(result.crs).toBe("Amersfoort / RD New + NAP height (EPSG:7415)");
+  });
+});
+
+// Local packages, mixed CRSs and malformed footers, all against real Parquet
+// files written by a real engine. The mocked suites above missed three real
+// defects between them; these are the cases they could not see.
+suite("describe, local packages and footer edge cases", () => {
+  let connection: DuckDBConnection;
+  let engine: Engine;
+
+  const rd = { name: "Amersfoort / RD New + NAP height", id: { authority: "EPSG", code: 7415 } };
+  const wgs = { name: "WGS 84", id: { authority: "EPSG", code: 4326 } };
+
+  function quote(value: string): string {
+    return value.replace(/'/g, "''");
+  }
+
+  async function writeTable(file: string, kv: Record<string, string>): Promise<void> {
+    const pairs = Object.entries(kv).map(([k, v]) => `${k}: '${quote(v)}'`).join(", ");
+    const metadata = pairs ? `, KV_METADATA {${pairs}}` : "";
+    await connection.run(
+      `COPY (SELECT 1 AS id, encode('geom')::BLOB AS geometry_lod2_2) TO '${quote(file)}' (FORMAT PARQUET${metadata})`,
+    );
+  }
+
+  function fixtureDir(): string {
+    return mkdtempSync(join(tmpdir(), "cityparquet-mcp-package-"));
+  }
+
+  beforeAll(async () => {
+    const instance = await DuckDBInstance.create(":memory:");
+    connection = await instance.connect();
+    engine = {
+      sandbox: false,
+      connection,
+      extensions: [],
+      exclusive: serialiser(),
+      async close() {
+        connection.closeSync();
+      },
+    };
+  });
+  afterAll(async () => { await engine?.close(); });
+
+  it("reads a local package's metadata.json from disk", async () => {
+    const dir = fixtureDir();
+    await writeTable(join(dir, "building.parquet"), { city: JSON.stringify({ crs: rd }) });
+    writeFileSync(
+      join(dir, "metadata.json"),
+      JSON.stringify({ assets: { data: { href: "./building.parquet" }, "building.parquet": { href: "./building.parquet" } } }),
+    );
+
+    const result = await describe(engine, dir);
+    expect(result.kind).toBe("package");
+    expect(result.inventory).toBe("stac");
+    expect(result.stac).not.toBeNull();
+    expect(result.tables.map((t) => t.name)).toEqual(["building"]);
+    expect(result.tables[0]!.file).toBe(join(dir, "building.parquet"));
+    expect(result.crs).toBe("Amersfoort / RD New + NAP height (EPSG:7415)");
+    expect(result.notes).toEqual([]);
+  });
+
+  it("accepts a file:// URL for a local package", async () => {
+    const dir = fixtureDir();
+    await writeTable(join(dir, "building.parquet"), { city: JSON.stringify({ crs: rd }) });
+    writeFileSync(join(dir, "metadata.json"), JSON.stringify({ assets: { b: { href: "building.parquet" } } }));
+
+    const result = await describe(engine, pathToFileURL(dir).href);
+    expect(result.inventory).toBe("stac");
+    expect(result.tables[0]!.file).toBe(join(dir, "building.parquet"));
+  });
+
+  it("probes a local package with no metadata.json, and says it was absent rather than unreachable", async () => {
+    const dir = fixtureDir();
+    await writeTable(join(dir, "relief.parquet"), { city: JSON.stringify({ crs: rd }) });
+
+    const result = await describe(engine, dir);
+    expect(result.inventory).toBe("probe");
+    expect(result.tables.map((t) => t.name)).toEqual(["relief"]);
+    const notes = result.notes.join(" ");
+    expect(notes).toMatch(/no metadata\.json/);
+    expect(notes).not.toMatch(/unreachable/);
+  });
+
+  it("refuses a local path on a sandboxed engine without touching the disk", async () => {
+    const dir = fixtureDir();
+    writeFileSync(join(dir, "metadata.json"), JSON.stringify({ assets: {} }));
+    await expect(describe({ ...engine, sandbox: true }, dir)).rejects.toThrow(/sandbox/);
+    await expect(describe({ ...engine, sandbox: true }, pathToFileURL(dir).href)).rejects.toThrow(/sandbox/);
+    await expect(describe({ ...engine, sandbox: true }, join(dir, "building.parquet"))).rejects.toThrow(/sandbox/);
+  });
+
+  it("reports each table's CRS, and no package CRS, when the tables disagree", async () => {
+    const dir = fixtureDir();
+    await writeTable(join(dir, "building.parquet"), { city: JSON.stringify({ crs: rd }) });
+    await writeTable(join(dir, "relief.parquet"), { city: JSON.stringify({ crs: wgs }) });
+
+    const result = await describe(engine, dir);
+    expect(result.crs).toBeNull();
+    const byName = Object.fromEntries(result.tables.map((t) => [t.name, t.crs]));
+    expect(byName).toEqual({
+      building: "Amersfoort / RD New + NAP height (EPSG:7415)",
+      relief: "WGS 84 (EPSG:4326)",
+    });
+    expect(result.notes.join(" ")).toMatch(/disagree/);
+  });
+
+  it("names the tables that state no CRS when the others agree", async () => {
+    const dir = fixtureDir();
+    await writeTable(join(dir, "building.parquet"), { city: JSON.stringify({ crs: rd }) });
+    await writeTable(join(dir, "relief.parquet"), {});
+
+    const result = await describe(engine, dir);
+    expect(result.crs).toBe("Amersfoort / RD New + NAP height (EPSG:7415)");
+    expect(result.notes.join(" ")).toMatch(/relief.*no CRS/);
+  });
+
+  it("falls back to the geo footer when the city footer is not valid JSON", async () => {
+    const dir = fixtureDir();
+    const file = join(dir, "building.parquet");
+    await writeTable(file, {
+      city: "{not json",
+      // A well-formed GeoParquet `geo` key: DuckDB's own Parquet reader
+      // refuses a file whose `geo` lacks `version`, before describe() sees it.
+      geo: JSON.stringify({
+        version: "1.1.0",
+        primary_column: "geometry_lod2_2",
+        columns: { geometry_lod2_2: { encoding: "WKB", geometry_types: [], crs: wgs } },
+      }),
+    });
+
+    const result = await describe(engine, file);
+    expect(result.crs).toBe("WGS 84 (EPSG:4326)");
+    expect(result.notes.join(" ")).toMatch(/city footer.*not valid JSON/);
   });
 });

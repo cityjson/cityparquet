@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createEngine, DEFAULT_EXTENSIONS, type Engine } from "../src/duckdb.js";
+import { createEngine, DEFAULT_EXTENSIONS, extensionsFromEnv, type Engine } from "../src/duckdb.js";
 
 const extensionDirectory = join(mkdtempSync(join(tmpdir(), "cityparquet-mcp-")), "extensions");
 
@@ -63,5 +63,29 @@ describe("createEngine without the sandbox", () => {
     const engine = await createEngine({ sandbox: false, extensionDirectory });
     await expect(engine.connection.run("SELECT * FROM read_csv('/etc/hostname')")).resolves.toBeDefined();
     await engine.close();
+  });
+});
+
+describe("createEngine with no extensions", () => {
+  it("comes up with none loaded rather than failing on an empty list", async () => {
+    const engine = await createEngine({ sandbox: false, extensionDirectory, extensions: [] });
+    expect(engine.extensions).toEqual([]);
+    await expect(engine.connection.run("SELECT 1")).resolves.toBeDefined();
+    await engine.close();
+  });
+});
+
+describe("extensionsFromEnv", () => {
+  it("falls back to the defaults when unset", () => {
+    expect(extensionsFromEnv(undefined)).toEqual(DEFAULT_EXTENSIONS);
+  });
+
+  it("falls back to the defaults when empty or blank, never to an empty name", () => {
+    expect(extensionsFromEnv("")).toEqual(DEFAULT_EXTENSIONS);
+    expect(extensionsFromEnv(" , ")).toEqual(DEFAULT_EXTENSIONS);
+  });
+
+  it("trims names and drops empty entries", () => {
+    expect(extensionsFromEnv(" httpfs, ,cityjson ,")).toEqual(["httpfs", "cityjson"]);
   });
 });
