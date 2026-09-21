@@ -1,0 +1,60 @@
+---
+title: AI and agents
+description: An MCP server and a set of skills that let an AI agent read the CityParquet specification, inspect a dataset and query it with DuckDB.
+sidebar:
+  badge: WIP
+  label: Overview
+---
+
+A CityParquet package is static files queried with SQL, which an agent can
+work with unaided. What an agent lacks is knowledge. It does not know what
+the format guarantees. It does not know which DuckDB functions exist: without
+help it reaches for `ST_Volume` and `LOAD spatial`, and a query built from
+those fails. Two pieces close that gap. Both live in the
+[`cityjson/cityparquet`](https://github.com/cityjson/cityparquet) repository,
+under `ai/`.
+
+<CardGroup cols={2}>
+  <Card title="MCP server" href="/ai/mcp-server" icon="server">
+    Five tools: the specification and both extension function references in
+    chapters, a one-call dataset description, and SQL against DuckDB with
+    `cityjson` and `three_d` loaded.
+  </Card>
+  <Card title="Skills" href="/ai/skills" icon="book-open">
+    Four Markdown skills that turn those tools into workflows: querying,
+    writing and converting, and 3D measurement, each with the traps that
+    produce silent errors.
+  </Card>
+</CardGroup>
+
+The two work separately. The server alone gives an agent the documentation
+and an engine. The skills alone give it correct SQL to run in any DuckDB
+v1.5.5. Together, the skills tell the agent which server tool to call and
+when.
+
+## What an agent can then do
+
+- Answer questions about the specification by quoting it, not by
+  recalling it: which columns are reserved, how semantic surfaces are stored,
+  what a package must contain.
+- Describe an unfamiliar dataset in one call: its module tables, row counts,
+  LoDs, geometry columns and coordinate reference system.
+- Query a package over HTTPS without downloading it, and measure it: volumes
+  gated on solid validity, footprints counted once per building, heights per
+  building rather than per part.
+- Build, edit and write packages, and convert them to CityJSON, CityJSONSeq
+  and FlatCityBuf, keeping the coordinate reference system on the way out.
+
+## Status
+
+:::note[Local only for now]
+The server speaks **stdio** and runs from a clone of the repository. It is
+not published as a package, and there is no hosted endpoint yet. The skills
+install as a Claude Code plugin or through APM, but they do not start the
+server; you register it yourself, as [MCP server](/ai/mcp-server) describes.
+:::
+
+Everything here targets **DuckDB v1.5.5** and the `cityjson` and `three_d`
+builds published for it in the DuckDB community repository. Older DuckDB
+versions install older builds of both extensions, which lack most of what the
+function references describe.

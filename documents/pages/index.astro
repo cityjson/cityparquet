@@ -34,6 +34,7 @@ const sections = [
   { label: "Tutorials", href: url("tutorials") },
   { label: "Playground", href: url("playground") },
   { label: "Benchmark", href: url("benchmark") },
+  { label: "AI", href: url("ai") },
 ];
 
 // The four properties that decide whether CityParquet fits a reader's problem.
@@ -580,15 +581,25 @@ const queryTokens = tokeniseSql(query);
           *</code> over an object table cannot flood the context it was meant
           to inform.
         </p>
+        <p class="cp-lede">
+          Four skills carry what a tool cannot: which function to call, and
+          the mistakes that return a wrong answer rather than an error. A
+          footprint total counted twice, a conversion that drops its
+          coordinate reference system, a validity filter that filters
+          nothing. Every SQL example in them runs in the server's test suite.
+        </p>
         <div class="cp-card cp-note">
           <span class="cp-tag">Status</span>
           <p>
             The server speaks stdio and runs from a clone: there is no
-            published package and no hosted endpoint. It lives at{" "}
-            <a href={`${repo}/tree/main/ai/mcp`} rel="noopener">
+            published package and no hosted endpoint yet. The skills install
+            as a Claude Code plugin or through APM, for Claude Code and Codex.
+            Both live at{" "}
+            <a href={`${repo}/tree/main/ai`} rel="noopener">
               cityjson/cityparquet
             </a>{" "}
-            under <code>ai/mcp</code>, alongside the specification it serves.
+            under <code>ai/</code>, alongside the specification they serve;{" "}
+            <a href={url("ai")}>AI and agents</a> has the setup.
           </p>
         </div>
       </div>

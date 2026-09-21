@@ -763,3 +763,69 @@ of the "verified"/"not verified" ledger above.
   server actually loads. `describe()` reads the footer directly with
   `parquet_kv_metadata` and `decode()` rather than calling either function, for
   exactly this reason.
+
+## Addendum, 2026-09-21: the pin moved, and what phase 2 settled
+
+Appended, like the addendum above; nothing earlier in this note is edited.
+
+- **The DuckDB pin moved to v1.5.5, under §6.1's own condition.** `three_d`
+  is now published for v1.5.5, and the v1.5.5 builds (`cityjson` `a1455e1`,
+  `three_d` `679ee09`) are the current ones. The v1.5.4 builds the server had
+  been loading (`d511bdb`, `a08f240`) were far older than the first addendum
+  recorded: not two missing functions but no `cityparquet_*` pragma at all, no
+  `insert_cityjson`, no `read_flatcitybuf` or `FORMAT flatcitybuf`, no
+  `ST_3DFootprintArea` or `ST_3DTransform`, and no `(BLOB, STRUCT)` overload
+  of `ST_3DFromWKB`. §9.2 and §9.3 could not have been exercised against the
+  server at all. `@duckdb/node-api` is now pinned exactly at `1.5.5-r.5`. At
+  v1.5.5 the pinned submodule commits document exactly the published refs, so
+  the committed corpus already matched.
+- **§6.4 no longer holds at the published builds.** `spatial` and `three_d`
+  load together in either order at v1.5.5, and give the same footprint total
+  on Delft (643 626 m², `ST_Area` against `ST_3DFootprintArea`). `spatial`
+  stays out of the defaults, now as a choice rather than a constraint. It is
+  an operator opt-in through `CITYPARQUET_MCP_EXTENSIONS`, and a test checks,
+  with a positive control, that the sandbox blocks GDAL's local reads when it
+  is loaded. §12's "`three_d` absent at v1.5.5" is superseded.
+- **The two upstream items in the phase-1 handoff dissolve.** `lib/duckdb-3d`'s
+  README claim that it coexists with `spatial` is true of the published build,
+  and `lib/duckdb-cityjson`'s `FUNCTIONS.md` matches the published build,
+  `cityjson_geoparquet_geo` and `cityparquet_city_field` included.
+- **One §12 question is answered: `PRAGMA cityparquet_read` does not accept a
+  remote directory.** It fails with `HTTPFileSystem: DirectoryExists is not
+  implemented`. §5.2's footer-and-STAC design for `describe` was the right
+  call, and the skills say to download a package byte for byte before editing
+  it.
+- **`describe` goes further than §5.2 in one direction.** It reads a local
+  package directory, a local file or a `file://` URL, refusing all three on a
+  sandboxed engine before Node's `fs` is touched. It reports each table's CRS,
+  compared by identity, and a null package CRS when they disagree. It still
+  does not compare the footer against the STAC Item, as the first addendum
+  recorded.
+- **Phase 2 is built** (§9): four skills in `ai/plugin/skills`, a plugin
+  manifest, and a root `.claude-plugin/marketplace.json` pointing at
+  `./ai/plugin`. Two departures from §9.5:
+  - **The plugin has no `.mcp.json`.** Claude Code copies a plugin into its
+    own cache, and rejects paths that leave the plugin directory. The server
+    under `../mcp` is therefore unreachable from an installed plugin, and it is
+    not published as a package that `npx` could fetch. The skills say how to
+    register the server by hand and what to do without it. A `.mcp.json`
+    waits on a published package or on the phase-3 HTTP endpoint.
+  - **APM needs no `apm.yml` in `ai/plugin`.** APM classifies a directory with
+    `.claude-plugin/` as a plugin package and deploys every
+    `skills/*/SKILL.md`, to `.claude/skills` and to `.agents/skills` for Codex.
+    That was established from APM's source; the APM CLI could not be run where
+    this was built, so `apm install` itself is untested.
+- **§2's phase-2 gate is a test.** `ai/mcp/test/skills.test.ts` runs every
+  SQL block in the skills through `runQuery` against the live Delft package,
+  then checks what the blocks leave behind: the CRS of a converted file and a
+  written package, and the valid-solid count. Several traps in the skills
+  were found only by running SQL and are not in the function references.
+  `COPY … TO (FORMAT cityjsonseq)` from Parquet writes no CRS unless it is
+  given. An aggregate's `FILTER` does not stop `ST_3DVolume` raising on an
+  invalid solid. `three_d` has no `ST_ZMax`. On 3DBAG data LoD0 is on both
+  `Building` and `BuildingPart` rows. `cityparquet_init` needs an object table
+  to exist first.
+- **Open, not changed here.** The corpus rewrites site links to
+  `https://cityparquet.open3d.city/…`, which serves the data but not the
+  documentation; the site is at `https://cityjson.github.io/cityparquet/`.
+  Phase 3 (§7, §8) has not started.

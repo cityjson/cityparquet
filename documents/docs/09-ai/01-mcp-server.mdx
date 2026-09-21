@@ -1,0 +1,132 @@
+---
+title: MCP server
+description: Build the CityParquet MCP server from a clone, register it with Claude Code, Codex or any MCP client, and use its five tools.
+sidebar:
+  badge: WIP
+---
+
+The server lives in the repository under
+[`ai/mcp`](https://github.com/cityjson/cityparquet/tree/main/ai/mcp). It
+runs on your machine and talks to your MCP client over stdio, so it can read
+your own files as well as packages on the web.
+
+## Install
+
+You need **Node.js 24** or newer and **pnpm**.
+
+<Steps>
+  <Step title="Clone and build">
+    ```sh
+    git clone https://github.com/cityjson/cityparquet.git
+    cd cityparquet/ai/mcp
+    pnpm install
+    pnpm build
+    ```
+
+    The documentation the server serves is prebuilt and committed
+    (`corpus/corpus.json`), so the submodules are not needed.
+  </Step>
+  <Step title="Register it with your client">
+    Use the absolute path to `dist/stdio.js`.
+
+    **Claude Code**:
+
+    ```sh
+    claude mcp add --scope user cityparquet -- node /absolute/path/to/cityparquet/ai/mcp/dist/stdio.js
+    ```
+
+    **Codex**:
+
+    ```sh
+    codex mcp add cityparquet -- node /absolute/path/to/cityparquet/ai/mcp/dist/stdio.js
+    ```
+
+    **Any other client**: add the server to the client's configuration file.
+
+    ```json
+    {
+      "mcpServers": {
+        "cityparquet": {
+          "command": "node",
+          "args": ["/absolute/path/to/cityparquet/ai/mcp/dist/stdio.js"]
+        }
+      }
+    }
+    ```
+  </Step>
+  <Step title="Let the first start finish">
+    On its first start the server installs `httpfs`, `cityjson` and `three_d`
+    into `~/.cityparquet-mcp/extensions`, which takes a few seconds. Later
+    starts load them from there.
+  </Step>
+</Steps>
+
+Then ask your agent something like _"Describe
+https://cityparquet.open3d.city/data/delft and tell me the total LoD 2.2
+volume of its buildings."_
+
+## The tools
+
+| Tool | What it does |
+| --- | --- |
+| `cityparquet_docs_outline` | Lists the chapters of the three corpora: `spec` (the specification and its design decisions), `duckdb-cityjson` and `duckdb-3d` (the extensions' function references). |
+| `cityparquet_docs_search` | Finds the sections that mention a term and returns a snippet of each, for example a column name, a function or a rule. |
+| `cityparquet_docs_read` | Reads one chapter, or one section of it. |
+| `cityparquet_describe` | Describes a package directory or one `.parquet` file, by URL or local path: its tables, row counts, LoDs, geometry columns and CRS, with notes on anything unusual. |
+| `cityparquet_query` | Runs SQL against DuckDB with `cityjson` and `three_d` loaded. |
+
+`cityparquet_query` is built to keep results small enough for a model's
+context:
+
+- **A script runs one statement at a time.** DuckDB expands every `PRAGMA` in
+  a batch before running any of it, so a `CREATE SCHEMA` followed by a package
+  pragma would fail if sent together. The tool splits the script, returns one
+  result per statement, and stops at the first error.
+- **Results are bounded.** It returns 100 rows by default, and says
+  `truncated: true` when there were more. Geometry appears as
+  `<BLOB 4213 bytes>`, and any other value over 256 bytes is replaced by its
+  type and length. So select the columns you need rather than `SELECT *`.
+- **Each statement has a deadline**, 120 seconds by default. A statement that
+  times out is cancelled, and the server keeps running.
+
+`cityparquet_describe` reads each file's footer and the package's
+`metadata.json`. When the tables of one package state different coordinate
+reference systems, it reports each table's CRS and no package CRS, rather
+than taking the first table's.
+
+The tool names begin with `cityparquet_` for now. They may change if this
+server is merged with the CityJSON one.
+
+## Configuration
+
+Set these as environment variables on the server, for example with
+`claude mcp add … -e CITYPARQUET_MCP_MEMORY_LIMIT=4GB -- node …`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CITYPARQUET_MCP_SANDBOX` | off | `1` locks the engine down: no local files, no further extensions, and limits that cannot be raised again. Local paths in `cityparquet_describe` are refused too. |
+| `CITYPARQUET_MCP_EXTENSIONS` | `httpfs,cityjson,three_d` | The extensions to load. Add `spatial` for DuckDB's 2D vocabulary (`ST_Area`, `ST_Transform`); it loads alongside `three_d`. |
+| `CITYPARQUET_MCP_EXTENSION_DIR` | `~/.cityparquet-mcp/extensions` | Where the extensions are installed. Keep it separate from DuckDB's own `~/.duckdb`, which may hold builds for another DuckDB version. |
+| `CITYPARQUET_MCP_MEMORY_LIMIT` | DuckDB's default | DuckDB's `memory_limit`, for example `4GB`. A sandboxed engine cannot spill to disk, so raise this when sandboxed. |
+
+## What to expect
+
+:::caution[`spatial` is not loaded by default]
+`ST_Area`, `ST_Transform` and `ST_GeomFromWKB` are unavailable unless you add
+`spatial`. `three_d` has the 3D equivalents: `ST_3DFootprintArea`,
+`ST_3DTransform` and `ST_3DVolume`. `spatial` could not read the solids
+anyway. It rejects `PolyhedralSurface Z`.
+:::
+
+- **Writing needs the sandbox off.** `COPY … TO` and `cityparquet_write` write
+  local files, which a sandboxed engine refuses.
+- **Package pragmas take local directories.** `PRAGMA cityparquet_read` fails
+  on a URL. Query a remote package with `read_parquet` on its files, or
+  download it first.
+- **Invalid solids raise.** `ST_3DVolume` raises on a solid that is not
+  closed, manifold and oriented, and real data has some. The
+  [skills](/ai/skills) teach the gated pattern.
+
+For development of the server itself, see
+[`ai/mcp/README.md`](https://github.com/cityjson/cityparquet/blob/main/ai/mcp/README.md)
+and the design note it links.
