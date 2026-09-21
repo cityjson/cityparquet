@@ -1,8 +1,7 @@
 # The SQL playground
 
 A DuckDB-Wasm console at `/playground`, querying CityParquet on object storage
-from the reader's own browser. The design note behind it is
-[`ai/design-notes/specs/2026-08-24-sql-playground-design.md`](../../ai/design-notes/specs/2026-08-24-sql-playground-design.md).
+from the reader's own browser.
 
 It is a React island mounted by [`../pages/playground.astro`](../pages/playground.astro).
 Blume enables `@astrojs/react` as soon as the project contains a `.tsx`, so there

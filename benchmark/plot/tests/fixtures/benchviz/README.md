@@ -26,9 +26,7 @@ the contrast the configuration figure is built to show.
 
 `scaling_codec_results/` and `scaling_rowgroup_results/` each hold one
 `--variants` run of the coordinator over the `delft.city.jsonl` fixture
-(`--repeat 2 --write-repeat 2 --scenarios full-read,bbox-query`), produced
-by the command in `ai/design-notes/plans/2026-09-05-configuration-axes-benchmark.md`,
-Task 5. Three variants each (`cityparquet` plus `+zstd1`/`+lz4`, and
+(`--repeat 2 --write-repeat 2 --scenarios full-read,bbox-query`). Three variants each (`cityparquet` plus `+zstd1`/`+lz4`, and
 `cityparquet` plus `+rg512`/`+rg2048`), so the loader's baseline, ratio
 direction, variant order and `sizes.csv` join are all exercised on measured
 rows. One slice only: the trend strip is drawn from one point, which is a

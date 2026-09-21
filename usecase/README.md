@@ -25,7 +25,3 @@ Each tool starts from a candidate written up in the paper repository's
 use-case survey — `references/2026-08-28-cityparquet-duckdb-usecase-candidates.md`
 — which screens candidate problems against what the kernel can already do
 versus what it would need. `energy/` is candidate 4 in that note.
-
-The design spec each tool is built from lives under
-`ai/design-notes/specs/` in this repository, one Markdown file per tool,
-written and approved before implementation starts.
