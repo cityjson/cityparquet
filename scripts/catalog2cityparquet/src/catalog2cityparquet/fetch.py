@@ -316,21 +316,26 @@ def normalise(
 #: prolog and comments, or a CityJSON header whose `type` is not written first.
 _MODEL_SNIFF_BYTES = 1 << 20
 
+#: An XML element's qualified name (ASCII names; CityGML uses nothing else).
+_XML_NAME = re.compile(rb"[A-Za-z_][\w.:-]*")
+
 
 def _skip_declaration(head: bytes, pos: int) -> int:
     """The index just past a `<!DOCTYPE …>` starting at `pos`, or -1.
 
-    Quoted literals, comments and an internal subset (`[ … ]`) may contain
-    `>`, so the declaration ends at the first `>` outside all three.
+    Quoted literals, comments, processing instructions and an internal subset
+    (`[ … ]`) may contain `>`, so the declaration ends at the first `>`
+    outside all of them.
     """
     depth = 0
     k = pos + 2
     while k < len(head):
-        if head.startswith(b"<!--", k):
-            end = head.find(b"-->", k + 4)
+        if head.startswith(b"<!--", k) or head.startswith(b"<?", k):
+            close = b"-->" if head.startswith(b"<!--", k) else b"?>"
+            end = head.find(close, k + 2)
             if end < 0:
                 return -1
-            k = end + 3
+            k = end + len(close)
             continue
         c = head[k : k + 1]
         if c in (b'"', b"'"):
@@ -369,8 +374,11 @@ def xml_root_name(head: bytes) -> bytes | None:
         elif head.startswith(b"<!", pos):
             pos = _skip_declaration(head, pos)
         elif head.startswith(b"<", pos):
-            name = re.match(rb"[A-Za-z_][\w.:-]*", head[pos + 1 : pos + 257])
-            return name.group(0) if name else None
+            name = _XML_NAME.match(head, pos + 1)
+            # A name running into the end of the window may be cut short.
+            if not name or name.end() >= len(head):
+                return None
+            return name.group(0)
         else:
             return None
         if pos < 0:

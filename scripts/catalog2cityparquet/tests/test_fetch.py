@@ -478,3 +478,18 @@ def test_a_comment_inside_an_internal_subset_is_not_a_quote(tmp_path):
         "<!DOCTYPE CityModel [<!-- it's a comment --><!ELEMENT CityModel ANY>]><CityModel/>"
     )
     assert fetch.is_city_model(doc)
+
+
+def test_a_root_name_cut_by_the_window_is_unknown(tmp_path):
+    doc = tmp_path / "a.gml"
+    doc.write_bytes(b" " * ((1 << 20) - 5) + b"<core:CityModel/>")
+    assert fetch.is_city_model(doc)
+    long_prefix = tmp_path / "b.gml"
+    long_prefix.write_text("<" + "p" * 250 + ":CityModel/>")
+    assert fetch.is_city_model(long_prefix)
+
+
+def test_a_processing_instruction_inside_a_subset_is_skipped(tmp_path):
+    doc = tmp_path / "a.gml"
+    doc.write_text("<!DOCTYPE CityModel [<?note it's ]><foo fine?>]><CityModel/>")
+    assert fetch.is_city_model(doc)
