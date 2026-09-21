@@ -99,23 +99,26 @@ jobs:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ env.REGION }}
           image: ${{ steps.image.outputs.image }}
-          # Two engines of 1200 MB each, one DuckDB thread apiece, per
-          # instance; requests beyond two queue in the server, and beyond ten
-          # Cloud Run sends them to another instance.
+          # Sized for cost: one instance of 1 vCPU and 2 GiB, which scales to
+          # zero when idle and is billed only while serving. Two engines of
+          # 700 MB each, one DuckDB thread apiece; two concurrent bounding-box
+          # queries against the 16 GB 3DBAG file were checked to fit under a
+          # hard 2 GB limit. Requests beyond four at once wait in Cloud Run's
+          # queue, and the server answers 503 once its own queue is full.
           env_vars: |
             CITYPARQUET_MCP_POOL_SIZE=2
-            CITYPARQUET_MCP_MEMORY_LIMIT=1200MB
+            CITYPARQUET_MCP_MEMORY_LIMIT=700MB
             CITYPARQUET_MCP_THREADS=1
             CITYPARQUET_MCP_EGRESS_HOSTS=cityparquet.open3d.city,cityjson.open3d.city,flatcitybuf.open3d.city
           flags: |
             --port=8080
-            --cpu=2
-            --memory=4Gi
-            --concurrency=10
+            --cpu=1
+            --memory=2Gi
+            --concurrency=4
             --min-instances=0
-            --max-instances=3
-            --timeout=120
-            --cpu-boost
+            --max-instances=1
+            --timeout=90
+            --no-cpu-boost
             --service-account=${{ env.RUNTIME_SERVICE_ACCOUNT }}@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com
             --allow-unauthenticated
 
