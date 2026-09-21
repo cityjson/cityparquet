@@ -1,14 +1,18 @@
 ---
 title: MCP server
-description: Build the CityParquet MCP server from a clone, register it with Claude Code, Codex or any MCP client, and use its five tools.
+description: Run the CityParquet MCP server locally from a clone or use the hosted endpoint, register it with Claude Code, Codex or any MCP client, and use its five tools.
 sidebar:
   badge: WIP
 ---
 
 The server lives in the repository under
-[`ai/mcp`](https://github.com/cityjson/cityparquet/tree/main/ai/mcp). It
-runs on your machine and talks to your MCP client over stdio, so it can read
-your own files as well as packages on the web.
+[`ai/mcp`](https://github.com/cityjson/cityparquet/tree/main/ai/mcp). It runs
+in two ways:
+
+- **Locally, over stdio.** It runs on your machine, so it can read and write
+  your own files as well as packages on the web. Set it up as below.
+- **Hosted, over streamable HTTP.** It runs on Cloudflare, read-only and
+  sandboxed; see [The hosted endpoint](#the-hosted-endpoint).
 
 ## Install
 
@@ -100,9 +104,42 @@ than taking the first table's.
 The tool names begin with `cityparquet_` for now. They may change if this
 server is merged with the CityJSON one.
 
+## The hosted endpoint
+
+The same five tools are served over streamable HTTP, deployed from the
+repository's `main` branch to Cloudflare Containers. Register it with the
+endpoint's URL, ending in `/mcp`:
+
+```sh
+claude mcp add --transport http cityparquet https://<hosted endpoint>/mcp
+```
+
+It differs from a local server in what it may touch:
+
+- **Read-only, and no local files.** Every engine is sandboxed. `COPY … TO`,
+  `cityparquet_write` and local paths in `cityparquet_describe` are refused.
+- **Project data hosts only.** The container can reach
+  `cityparquet.open3d.city`, `cityjson.open3d.city` and
+  `flatcitybuf.open3d.city` and nothing else, so `read_parquet` on any other
+  URL fails. That limit is enforced by the platform, below DuckDB. For other
+  data, run the server locally.
+- **Nothing persists between calls.** Each call that runs SQL gets a freshly
+  built engine, discarded afterwards, so a table created in one call does not
+  exist in the next. Write a whole workflow as one `cityparquet_query`
+  script.
+- **Bounded.** A statement returns at most 1000 rows and runs for at most 60
+  seconds. When every engine is busy, the endpoint answers 503 with
+  `Retry-After`.
+- **Cold starts.** An instance stops after ten idle minutes, and the first
+  request after that waits a few seconds for it to start.
+
+To run the HTTP server yourself, see
+[`ai/mcp/README.md`](https://github.com/cityjson/cityparquet/blob/main/ai/mcp/README.md).
+
 ## Configuration
 
-Set these as environment variables on the server, for example with
+These apply to the local server. Set them as environment variables, for
+example with
 `claude mcp add … -e CITYPARQUET_MCP_MEMORY_LIMIT=4GB -- node …`.
 
 | Variable | Default | Meaning |

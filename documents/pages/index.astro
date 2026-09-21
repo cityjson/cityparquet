@@ -589,9 +589,12 @@ const queryTokens = tokeniseSql(query);
         <div class="cp-card cp-note">
           <span class="cp-tag">Status</span>
           <p>
-            The server speaks stdio and runs from a clone: there is no
-            published package and no hosted endpoint yet. The skills install
-            as a Claude Code plugin or through APM, for Claude Code and Codex.
+            The server runs locally over stdio from a clone, or hosted over
+            streamable HTTP on Cloudflare: read-only, sandboxed, one engine
+            per request, and limited to the project's own data hosts. The
+            hosted instances sleep when idle, so a first call can take a few
+            seconds. The skills install as a Claude Code plugin or through
+            APM, for Claude Code and Codex.
             Both live at{" "}
             <a href={`${repo}/tree/main/ai`} rel="noopener">
               cityjson/cityparquet

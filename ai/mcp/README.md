@@ -3,7 +3,7 @@
 An [MCP](https://modelcontextprotocol.io) server that gives an agent the
 CityParquet specification, the two DuckDB extensions' function references, and
 a sandboxed DuckDB engine to describe and query CityParquet datasets — over
-stdio, for a local MCP client.
+stdio for a local MCP client, or over streamable HTTP as a hosted service.
 
 ## Tools
 
@@ -44,6 +44,30 @@ Point a client at the built entry point:
 }
 ```
 
+## Running as an HTTP server
+
+`dist/http.js` serves the same five tools over streamable HTTP at `/mcp`,
+statelessly, with a health check at `/health`. It is the hosted entry point,
+so it is **always sandboxed**, and every request that runs SQL gets its own
+freshly built engine, discarded afterwards:
+
+```sh
+pnpm build
+PORT=8080 node dist/http.js
+claude mcp add --transport http cityparquet http://localhost:8080/mcp
+```
+
+The container image is built from this directory alone, with the extensions
+baked in:
+
+```sh
+docker build --platform linux/amd64 -t cityparquet-mcp .
+docker run -p 8080:8080 cityparquet-mcp
+```
+
+[`deploy/`](deploy) is the Cloudflare Worker that runs that image as a
+Container, and `.github/workflows/mcp-deploy.yml` deploys it.
+
 ## Environment variables
 
 | Variable | Default | Meaning |
@@ -51,7 +75,21 @@ Point a client at the built entry point:
 | `CITYPARQUET_MCP_SANDBOX` | off (`sandbox: false`) | Set to `1` to lock the DuckDB engine down: no local filesystem, no installing further extensions, resource limits that cannot be raised again. Off by default for the stdio entry point, because a local client's own machine is already the trust boundary; a hosted deployment should set it. |
 | `CITYPARQUET_MCP_EXTENSION_DIR` | `~/.cityparquet-mcp/extensions` | Where DuckDB installs and loads its extensions from. Always explicit, never DuckDB's own default — a shared default directory can hold artefacts built for a different DuckDB version, and the failure is an opaque error at `LOAD` time. |
 | `CITYPARQUET_MCP_EXTENSIONS` | `httpfs,cityjson,three_d,spatial` | Comma-separated list overriding the default extension set. Blank entries are ignored, and an empty value means the default. |
-| `CITYPARQUET_MCP_MEMORY_LIMIT` | DuckDB's own default | DuckDB's `memory_limit` setting, e.g. `2GB`. Worth raising under `CITYPARQUET_MCP_SANDBOX=1`, since a sandboxed engine cannot spill a large query to disk. |
+| `CITYPARQUET_MCP_MEMORY_LIMIT` | DuckDB's own default; `1GB` over HTTP | DuckDB's `memory_limit` setting, e.g. `2GB`, per engine. Worth raising under the sandbox, since a sandboxed engine cannot spill a large query to disk. |
+
+The HTTP entry point also reads these; `CITYPARQUET_MCP_SANDBOX` does not
+apply to it, since it is always sandboxed:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PORT` | `8080` | The port to listen on. |
+| `CITYPARQUET_MCP_POOL_SIZE` | `2` | Engines at once, and so requests running SQL at once. |
+| `CITYPARQUET_MCP_MAX_WAITING` | `8` | Requests allowed to queue for an engine; beyond it the answer is 503. |
+| `CITYPARQUET_MCP_MAX_WAIT_MS` | `30000` | How long a queued request waits before a 503. |
+| `CITYPARQUET_MCP_THREADS` | `1` | DuckDB `threads` per engine. |
+| `CITYPARQUET_MCP_MAX_ROWS` | `1000` | The most rows one `cityparquet_query` statement may return, whatever it asks for. |
+| `CITYPARQUET_MCP_MAX_TIMEOUT_MS` | `60000` | The longest deadline a statement may ask for. |
+| `CITYPARQUET_MCP_MAX_BODY_BYTES` | `262144` | Larger request bodies are refused with 413. |
 
 ## `spatial` and `three_d` together
 

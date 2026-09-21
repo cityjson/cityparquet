@@ -112,16 +112,14 @@ it passes or fails — nobody has to remember not to commit a churned stamp.
 
 ## Check what the loaded build provides
 
-At v1.5.5 the published builds and the submodules' `FUNCTIONS.md` agree —
-the pinned submodule commits document exactly the community refs. That was
-not true at v1.5.4, and it will stop being true whenever a submodule moves
-ahead of its published build. When writing or changing a tool that calls
+The corpus is built from the submodules' `FUNCTIONS.md`, and the submodules
+move ahead of what the community repository publishes: `lib/duckdb-cityjson`
+is well past the published `a1455e1`. So the corpus can describe functions
+the loaded build does not have. When writing or changing a tool that calls
 into `cityjson` or `three_d`, confirm the function exists in the loaded
 build: `SELECT function_name FROM duckdb_functions() WHERE function_name
 ILIKE '…'`. Use `ILIKE`, not `=` or `IN`: `spatial` registers mixed-case
-names such as `ST_Area`, and an exact lowercase match misses them. The
-corpus indexes `FUNCTIONS.md` whatever the build holds, so an agent can read
-about a function it cannot call.
+names such as `ST_Area`, and an exact lowercase match misses them.
 
 ## `describe()` reads local files through Node, outside DuckDB's sandbox
 
@@ -151,6 +149,51 @@ One DuckDB behaviour matters to fixtures: its Parquet reader **refuses** a
 file whose `geo` footer lacks `version` ("Geoparquet metadata does not have a
 version") before `describe()` sees it. A test fixture with a `geo` key must be
 well-formed GeoParquet metadata.
+
+## The hosted server: one engine per request
+
+`src/http.ts` is the public entry point (streamable HTTP, stateless, always
+sandboxed; there is no option to turn the sandbox off there). Three things in
+it are load-bearing:
+
+- **Every request that calls `describe` or `query` gets its own engine**, from
+  `src/pool.ts`, and the engine is closed afterwards. A shared instance does
+  not isolate callers: DuckDB's catalogs, attached ones included, are
+  instance-wide, so a table one caller creates is readable by the next, and
+  `duckdb_databases()` lists every attached catalog. A per-request `ATTACH
+  ':memory:'` on a shared instance was tried and leaks exactly this way. The
+  pool builds each slot's next engine as soon as the last is released (a few
+  hundred milliseconds with the extensions on disk), and its size is the
+  server's concurrency; beyond `maxWaiting` queued requests it answers 503.
+- **Requests that do not touch DuckDB get no engine** (`NO_ENGINE` in
+  `src/http-app.ts`): `initialize`, `tools/list`, the documentation tools.
+  A new tool that uses the engine must be added to `ENGINE_TOOLS`, or it
+  fails loudly on the stand-in.
+- **The whole response body is read before the engine is released.** 2025-era
+  requests are answered through the SDK's stateless fallback as a short SSE
+  stream; streaming it straight through would let the engine close under it.
+
+The image (`Dockerfile`) **bakes the extensions in** at build time
+(`src/bake.ts`), because the deployed container has no route to the
+extension repository, and it installs `ca-certificates`, without which
+httpfs fails every `https://` read with an SSL CA error. `INSTALL` of an
+extension already on disk is a no-op, so the startup sequence above runs
+unchanged in the image; `podman run --network none` proves it starts.
+
+## The Worker sets the network policy, and only Cloudflare can test it
+
+`deploy/src/index.ts` runs the image as a Cloudflare Container with
+`enableInternet = false` and `allowedHosts` set to the three `open3d.city`
+data hosts. That allowlist is the SSRF control: DuckDB's httpfs will fetch any
+URL a query names, and blocking below it, at the platform, is what no
+redirect or DNS trick inside a query can get round. `deniedHosts` lists the
+private ranges as defence in depth only. `deploy/smoke.mjs` runs after every
+deploy and checks, from outside, that an allowlisted host is readable and
+that another host and `169.254.169.254` are not. Run locally against the
+image, the "off the allowlist" check fails — as it should, since there is no
+policy there. Two details of `@cloudflare/containers` that are easy to get
+wrong: `ContainerProxy` must be exported for the host lists to take effect,
+and `pingEndpoint` is a host and path (`localhost/health`), not a path.
 
 ## The `cityparquet_` tool prefix is provisional
 

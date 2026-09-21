@@ -1,0 +1,63 @@
+name: mcp-deploy
+
+# Deploys the hosted MCP server (ai/mcp) to Cloudflare Containers: the image
+# built from ai/mcp/Dockerfile, fronted by the Worker in ai/mcp/deploy. From
+# main, as the documentation site is; run it by hand to deploy another branch.
+#
+# Needs the Workers Paid plan (Containers are not on the Free plan, and a
+# deploy there fails with a misleading 403), and an API token with Workers
+# Scripts: Edit and Containers: Edit.
+
+on:
+  push:
+    branches: [main]
+    paths: ["ai/mcp/**", ".github/workflows/mcp-deploy.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: mcp-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: |
+            ai/mcp/pnpm-lock.yaml
+            ai/mcp/deploy/pnpm-lock.yaml
+
+      # The same gate as mcp.yml, so nothing reaches the public endpoint that
+      # would not pass it — the sandbox's negative tests above all.
+      - run: pnpm install --frozen-lockfile
+        working-directory: ai/mcp
+      - run: pnpm typecheck && pnpm test
+        working-directory: ai/mcp
+
+      - run: pnpm install --frozen-lockfile && pnpm typecheck
+        working-directory: ai/mcp/deploy
+
+      # wrangler builds ai/mcp/Dockerfile with the runner's Docker and pushes
+      # it to Cloudflare's registry, then deploys the Worker.
+      - id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ai/mcp/deploy
+          packageManager: pnpm
+          wranglerVersion: "4.135.0"
+          command: deploy
+
+      # The container's egress policy exists only on Cloudflare, so this is
+      # where it is tested: an allowlisted host readable, anything else not.
+      - name: smoke test the deployment
+        run: node ai/mcp/deploy/smoke.mjs "${{ steps.deploy.outputs.deployment-url }}"

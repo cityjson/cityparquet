@@ -837,3 +837,57 @@ Appended, like the addendum above; nothing earlier in this note is edited.
   site, and all sixteen distinct links return 200. If the site moves to its
   own domain, `SITE_BASE_URL` in `src/build-corpus.ts` moves with it.
 - **Phase 3 (§7, §8) has not started.**
+
+## Addendum, 2026-09-21 (later): what phase 3 settled
+
+Appended; nothing earlier in this note is edited.
+
+- **`spatial` is now a default**, at the maintainer's request, beside
+  `httpfs`, `cityjson` and `three_d`. It serves the GeoParquet LoD0 column;
+  solids still go through `three_d`, since `spatial`'s WKB reader rejects
+  `PolyhedralSurface Z`. The sandbox tests now cover GDAL, with a positive
+  control. One trap found while checking the skills against it: `spatial`'s
+  `ST_Transform` returns EPSG:4326 as (lat, lon) unless `always_xy := true`,
+  where `ST_3DTransform` returns (lon, lat).
+- **§7.3's isolation design does not isolate.** A catalog attached with
+  `ATTACH ':memory:'` on one connection is readable from every other
+  connection on the instance, and `duckdb_databases()` lists it; this was
+  probed directly. The hosted server instead gives each request that runs SQL
+  its own sandboxed engine from a warm pool (`src/pool.ts`), closed after the
+  request. With the extensions on disk an engine takes roughly 170–470 ms to
+  build, and each slot builds its next one as soon as the last is released.
+  The pool's size is the server's concurrency; a full queue answers 503.
+  Requests that do not touch DuckDB — `initialize`, `tools/list`, the
+  documentation tools — get no engine at all.
+- **§12's open egress question is answered, by avoidance.** Cloudflare
+  Containers document no block on private or link-local ranges while internet
+  access is on, and do not say whether a `deniedHosts` CIDR is matched against
+  a hostname's resolved address. They do document `enableInternet = false`
+  with an `allowedHosts` allowlist, deny by default. The deployment uses that:
+  the container reaches `cityparquet.open3d.city`, `cityjson.open3d.city` and
+  `flatcitybuf.open3d.city` and nothing else, so the hosted `query` cannot read
+  other public data either. The private ranges are also in `deniedHosts`, as
+  defence in depth. `deploy/smoke.mjs` checks the policy from outside after
+  every deploy.
+- **Extensions are baked into the image, as §8 planned — now of necessity,**
+  since the container has no route to the extension repository. The image
+  also needs `ca-certificates`, which `node:24-slim` lacks: without it httpfs
+  fails every `https://` read. Run with `--network none`, the image starts
+  and loads all four extensions.
+- **§6.3 step 7 (warming the HTTP path) is not done.** Engines are built per
+  request, so there is no long-lived connection to warm.
+- **Streamable HTTP is served by the SDK's `createMcpHandler`**, one handler
+  and one `McpServer` per request, with a hand-written `node:http` adapter.
+  2025-era clients go through its stateless fallback, which answers with a
+  short SSE stream; the whole body is read before the engine is released. A
+  real client (Claude Code, `--transport http`) was run against it end to end.
+- **The hosted `query` has ceilings**: 1000 rows and 60 seconds per
+  statement, whatever a caller asks for, and a 256 KiB request body.
+- **Deployment** is `.github/workflows/mcp-deploy.yml`, from `main` or by
+  hand, through `cloudflare/wrangler-action`, which builds the image with the
+  runner's Docker. Two `standard-1` instances, chosen at random per request,
+  since Containers do not autoscale; `sleepAfter` is ten minutes, so a cold
+  start of a few seconds is stated on the landing page rather than hidden.
+  Not verified here, because no deploy was run from this machine: the first
+  deploy itself, the token's scopes, and the account's plan (Containers need
+  Workers Paid).

@@ -68,6 +68,14 @@ DuckDB's `GEOMETRY` type. They do **not** work on solids: `spatial` cannot
 read `PolyhedralSurface Z`, so LoD1 and above go through `three_d`, covered
 in `cityparquet-3d-analysis`.
 
+## On the hosted server
+
+The hosted endpoint is read-only and sandboxed. It can read only
+`cityparquet.open3d.city`, `cityjson.open3d.city` and
+`flatcitybuf.open3d.city`. Each tool call gets a fresh engine, so a table
+created in one call is gone by the next: put a whole workflow in one
+`cityparquet_query` script. For other data, or to write, use a local server.
+
 ## Without the MCP server
 
 Run the same SQL in the `duckdb` CLI, **version 1.5.5**, after
