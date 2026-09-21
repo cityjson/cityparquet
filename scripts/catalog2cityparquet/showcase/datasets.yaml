@@ -1,0 +1,25 @@
+# The public datasets served from `https://cityparquet.open3d.city/data/`,
+# listed on the documentation site's "Available datasets" page. Package globs
+# are relative to `--data-root`; see "Publishing" in the README.
+catalog:
+  id: cityparquet-datasets
+  title: CityParquet datasets
+  description: Open 3D city models encoded as CityParquet, one package per city or country.
+
+collections:
+  - name: plateau
+    source: japan-plateau-3d
+    # `13101_chiyoda-ku_pref_2025_citygml_1_op` → `chiyoda-ku`. The suffix
+    # stays: `toshima-ku` and `toshima-mura` are different municipalities.
+    packages: showcase-catalog/japan-plateau-3d/items/*
+    slug: '^\d+_(?P<slug>[^_]+)_'
+
+  - name: 3dbag
+    source: netherlands-3d-bag
+    packages: 3dbag
+    title: 3DBAG
+
+  - name: aura-zae
+    source: craig-aura-zae-2024
+    packages: showcase-aura/craig-aura-zae-2024/items/*
+    slug: '^(?P<slug>.+)$'

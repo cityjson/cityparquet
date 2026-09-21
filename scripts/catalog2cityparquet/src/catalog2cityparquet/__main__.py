@@ -33,7 +33,7 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 
-from . import aggregate, convert, discover, fetch
+from . import aggregate, convert, discover, fetch, publish
 from .discover import Item
 
 # `COLLECTION_LEVEL` is read here as `driver.COLLECTION_LEVEL` but lives in
@@ -1314,8 +1314,8 @@ def config_from_args(args: argparse.Namespace) -> Config:
     )
 
 
-#: The one subcommand. Everything else is the default conversion run, whose
-#: flag-only invocation predates it and must keep working unchanged.
+#: The subcommands. Everything else is the default conversion run, whose
+#: flag-only invocation predates them and must keep working unchanged.
 HISTOGRAM = "histogram"
 
 
@@ -1371,12 +1371,47 @@ def histogram_main(argv: list[str]) -> int:
     return 0
 
 
+PUBLISH = "publish"
+
+
+def publish_main(argv: list[str]) -> int:
+    """Lay converted packages out for a public bucket, and aggregate their STAC."""
+    parser = argparse.ArgumentParser(
+        prog=f"catalog2cityparquet {PUBLISH}",
+        description="Lay converted packages out as a published tree, per a spec file.",
+    )
+    parser.add_argument("spec", type=Path, help="the publish spec (YAML)")
+    parser.add_argument("--out", type=Path, required=True, help="the tree to write")
+    parser.add_argument(
+        "--data-root", type=Path, help="what relative package globs resolve against"
+    )
+    parser.add_argument(
+        "--tool",
+        type=Path,
+        default=Path("lib/cityparquet-rs/vendor/city3d-stac-tool/target/release/city3dstac"),
+    )
+    parser.add_argument("--base-url", default=BASE_URL)
+    args = parser.parse_args(argv)
+    spec = publish.load_spec(args.spec)
+    for collection in spec.collections:
+        written = publish.lay_out(collection, args.out, data_root=args.data_root)
+        _say(f"==> {collection.name}: {len(written)} package(s)")
+    with httpx.Client(timeout=METADATA_TIMEOUT, follow_redirects=True) as client:
+        publish.aggregate_tree(
+            spec, args.out, tool=args.tool, base_url=args.base_url, client=client
+        )
+    _say(f"catalogue: {args.out / 'catalog.json'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """The process entry point: a run, and streams that cannot outlive it."""
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
         if argv and argv[0] == HISTOGRAM:
             return histogram_main(argv[1:])
+        if argv and argv[0] == PUBLISH:
+            return publish_main(argv[1:])
         args = parse_args(argv)
         return run(
             config_from_args(args),

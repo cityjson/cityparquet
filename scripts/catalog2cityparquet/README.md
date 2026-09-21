@@ -345,6 +345,46 @@ reasons (what the data did):
         1  convert_failed
 ```
 
+## Publishing
+
+A run's tree is named after the source catalogue
+(`<collection>/items/<item-id>/`). The `publish` subcommand lays converted
+packages out as the shorter, stable tree a public bucket serves, and aggregates
+its STAC:
+
+```bash
+uv run --project scripts/catalog2cityparquet python -m catalog2cityparquet \
+    publish scripts/catalog2cityparquet/showcase/datasets.yaml \
+    --data-root /data2/hideba/cityparquet_data --out /data2/hideba/cityparquet_data/publish
+rclone copy /data2/hideba/cityparquet_data/publish r2:cityparquet/data/
+```
+
+The spec names each published collection, the source collection whose
+title, description, licence and providers it carries, a glob of package
+directories, and a regular expression whose `slug` group names each package.
+A collection of one package needs no slug and is published flat:
+
+```
+OUT/
+  catalog.json
+  plateau/
+    collection.json
+    chiyoda-ku/            metadata.json + the package's Parquet files
+    …
+  3dbag/
+    collection.json
+    metadata.json          a collection of one package, published flat
+    building.parquet
+```
+
+The payload is hard-linked, not copied, so `--out` must be on the same
+filesystem as the packages. Each package's Item is rewritten for the three
+things the layout changes — its id (the slug), a `title` (the slug, capitalised,
+unless the spec gives one), and its `collection`/`parent`/`root` links;
+footer-derived properties and provenance links are carried untouched. A
+collection's directory is replaced wholesale on every publish, a directory
+without an Item is not published, and two packages sharing a slug are refused.
+
 ## Locking
 
 A run claims **both** the output directory and the working directory with a `.c2cp-lock`
