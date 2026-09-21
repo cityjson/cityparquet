@@ -11,7 +11,7 @@ in two ways:
 
 - **Locally, over stdio.** It runs on your machine, so it can read and write
   your own files as well as packages on the web. Set it up as below.
-- **Hosted, over streamable HTTP.** It runs on Cloudflare, read-only and
+- **Hosted, over streamable HTTP.** It runs on Google Cloud Run, read-only and
   sandboxed; see [The hosted endpoint](#the-hosted-endpoint).
 
 ## Install
@@ -107,7 +107,7 @@ server is merged with the CityJSON one.
 ## The hosted endpoint
 
 The same five tools are served over streamable HTTP, deployed from the
-repository's `main` branch to Cloudflare Containers. Register it with the
+repository to Google Cloud Run. Register it with the
 endpoint's URL, ending in `/mcp`:
 
 ```sh
@@ -118,11 +118,13 @@ It differs from a local server in what it may touch:
 
 - **Read-only, and no local files.** Every engine is sandboxed. `COPY … TO`,
   `cityparquet_write` and local paths in `cityparquet_describe` are refused.
-- **Project data hosts only.** The container can reach
+- **Project data hosts only.** A query can read
   `cityparquet.open3d.city`, `cityjson.open3d.city` and
-  `flatcitybuf.open3d.city` and nothing else, so `read_parquet` on any other
-  URL fails. That limit is enforced by the platform, below DuckDB. For other
-  data, run the server locally.
+  `flatcitybuf.open3d.city` over HTTPS and nothing else, so `read_parquet` on
+  any other URL fails. DuckDB's network goes through a proxy it is locked to,
+  which admits those hosts only. For other data, run the server locally.
+- **No secrets.** A statement that mentions `SECRET` is refused, because a
+  DuckDB secret could route around that proxy.
 - **Nothing persists between calls.** Each call that runs SQL gets a freshly
   built engine, discarded afterwards, so a table created in one call does not
   exist in the next. Write a whole workflow as one `cityparquet_query`
@@ -130,8 +132,8 @@ It differs from a local server in what it may touch:
 - **Bounded.** A statement returns at most 1000 rows and runs for at most 60
   seconds. When every engine is busy, the endpoint answers 503 with
   `Retry-After`.
-- **Cold starts.** An instance stops after ten idle minutes, and the first
-  request after that waits a few seconds for it to start.
+- **Cold starts.** Instances stop when idle, and the first request after that
+  waits a few seconds for one to start.
 
 To run the HTTP server yourself, see
 [`ai/mcp/README.md`](https://github.com/cityjson/cityparquet/blob/main/ai/mcp/README.md).

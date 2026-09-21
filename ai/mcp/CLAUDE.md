@@ -174,26 +174,44 @@ it are load-bearing:
   stream; streaming it straight through would let the engine close under it.
 
 The image (`Dockerfile`) **bakes the extensions in** at build time
-(`src/bake.ts`), because the deployed container has no route to the
-extension repository, and it installs `ca-certificates`, without which
+(`src/bake.ts`), because a sandboxed engine's network goes through the
+egress proxy, which does not admit the extension repository, and it installs `ca-certificates`, without which
 httpfs fails every `https://` read with an SSL CA error. `INSTALL` of an
 extension already on disk is a no-op, so the startup sequence above runs
 unchanged in the image; `podman run --network none` proves it starts.
 
-## The Worker sets the network policy, and only Cloudflare can test it
+## The egress proxy is the hosted server's network boundary
 
-`deploy/src/index.ts` runs the image as a Cloudflare Container with
-`enableInternet = false` and `allowedHosts` set to the three `open3d.city`
-data hosts. That allowlist is the SSRF control: DuckDB's httpfs will fetch any
-URL a query names, and blocking below it, at the platform, is what no
-redirect or DNS trick inside a query can get round. `deniedHosts` lists the
-private ranges as defence in depth only. `deploy/smoke.mjs` runs after every
-deploy and checks, from outside, that an allowlisted host is readable and
-that another host and `169.254.169.254` are not. Run locally against the
-image, the "off the allowlist" check fails — as it should, since there is no
-policy there. Two details of `@cloudflare/containers` that are easy to get
-wrong: `ContainerProxy` must be exported for the host lists to take effect,
-and `pingEndpoint` is a host and path (`localhost/health`), not a path.
+The hosted engine can reach the data hosts and nothing else, and the
+platform does not enforce that: Cloud Run has no host allowlist, and its
+metadata server, which hands out the runtime service account's token, is
+reachable from every container. `src/egress-proxy.ts` runs in the server
+process, admits `CONNECT` to the allowlisted hosts on port 443 (after
+resolving them and refusing internal addresses), and refuses everything
+else, plain HTTP included. Every sandboxed engine's `http_proxy` is set to it
+before `lock_configuration`, so a query cannot unset it. Every reader was
+checked to go through it: `read_parquet`, `read_json`, `read_text`, the
+`cityjson` and FlatCityBuf readers, and GDAL's `ST_Read` and `/vsicurl/`.
+`test/egress-proxy.test.ts` pins this; treat it like the blocked table.
+
+Three things keep the proxy the only way out:
+
+- **Secrets.** A DuckDB secret created by a query can carry its own
+  `HTTP_PROXY`, which **overrides** the locked `http_proxy` (probed: reads went
+  through the secret's proxy), and its `EXTRA_HTTP_HEADERS` can carry the
+  `Metadata-Flavor` header the metadata server wants. `lock_configuration`
+  does not stop `CREATE SECRET`: secrets are catalog objects, not settings.
+  So `runQuery` on a sandboxed engine refuses any statement containing
+  "secret", literals included, and before every statement drops any secret
+  that exists by some other route and stops.
+- **Node's own fetches.** `describe` fetches `metadata.json` from Node, not
+  through DuckDB, so it applies `engine.allowedHosts` itself: HTTPS, an
+  allowlisted host, redirects not followed.
+- **The runtime account.** The service runs as `cityparquet-mcp-runtime`,
+  which holds no roles, so even a leaked metadata token opens nothing.
+
+`scripts/smoke.mjs` checks all of this from outside after every deploy, and
+passes against a local container too, since the proxy is part of the server.
 
 ## The `cityparquet_` tool prefix is provisional
 

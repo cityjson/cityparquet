@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { loadCorpus } from "../src/corpus.js";
 import { createEngine, type Engine } from "../src/duckdb.js";
+import { startEgressProxy, type EgressProxy } from "../src/egress-proxy.js";
 import { createHttpApp } from "../src/http-app.js";
 import { createEnginePool, type EnginePool } from "../src/pool.js";
 
@@ -44,13 +45,25 @@ async function call(app: (r: Request) => Promise<Response>, name: string, args: 
 
 describe("the hosted HTTP app", () => {
   let pool: EnginePool;
+  let egress: EgressProxy;
   let created = 0;
   let app: (request: Request) => Promise<Response>;
 
   beforeAll(async () => {
+    // Configured as src/http.ts configures it: every engine locked to an
+    // in-process egress proxy that admits the data hosts only.
+    const allowedHosts = ["cityparquet.open3d.city"];
+    egress = await startEgressProxy({ allowedHosts });
     const create = async (): Promise<Engine> => {
       created += 1;
-      return createEngine({ sandbox: true, extensionDirectory, memoryLimit: "1GB", threads: 2 });
+      return createEngine({
+        sandbox: true,
+        extensionDirectory,
+        memoryLimit: "1GB",
+        threads: 2,
+        httpProxy: egress.address,
+        allowedHosts,
+      });
     };
     // Warm the extension directory once, so the pool's builds are disk loads.
     await (await create()).close();
@@ -62,7 +75,10 @@ describe("the hosted HTTP app", () => {
       maxBodyBytes: 64 * 1024,
     });
   });
-  afterAll(async () => { await pool?.close(); });
+  afterAll(async () => {
+    await pool?.close();
+    await egress?.close();
+  });
 
   it("answers the health check", async () => {
     const response = await app(new Request(`${ORIGIN}/health`));
@@ -121,6 +137,18 @@ describe("the hosted HTTP app", () => {
   it("describes a remote package", async () => {
     const { text } = await call(app, "cityparquet_describe", { url: "https://cityparquet.open3d.city/data/delft" });
     expect(JSON.parse(text).crs).toMatch(/EPSG:7415/);
+  });
+
+  it("cannot read a host off the egress allowlist", async () => {
+    const { text } = await call(app, "cityparquet_query", { sql: "SELECT * FROM read_text('https://example.com/')" });
+    expect(JSON.parse(text)[0].error).toBeDefined();
+  });
+
+  it("refuses to create a secret, which could override the egress proxy", async () => {
+    const { text } = await call(app, "cityparquet_query", {
+      sql: "CREATE SECRET s (TYPE http, EXTRA_HTTP_HEADERS MAP {'Metadata-Flavor': 'Google'})",
+    });
+    expect(JSON.parse(text)[0].error).toMatch(/secret/i);
   });
 
   it("refuses an oversized body", async () => {

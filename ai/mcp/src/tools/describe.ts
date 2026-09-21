@@ -223,7 +223,25 @@ const PROBING = "probing the normative basenames instead.";
  * a missing file, an HTTP error and a malformed body are each named as what
  * they are.
  */
-async function readItem(location: Location): Promise<{ item: unknown; note?: string }> {
+/**
+ * Whether Node may fetch `url` itself. DuckDB's reads go through the egress
+ * proxy; this fetch does not, so on an engine with an allowlist it applies
+ * the same rule: HTTPS, to an allowlisted host.
+ */
+function mayFetch(url: string, allowedHosts: readonly string[] | undefined): boolean {
+  if (!allowedHosts) return true;
+  try {
+    const { protocol, hostname } = new URL(url);
+    return protocol === "https:" && allowedHosts.some((host) => host.toLowerCase() === hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+async function readItem(
+  location: Location,
+  allowedHosts?: readonly string[],
+): Promise<{ item: unknown; note?: string }> {
   let text: string;
   if (location.local) {
     const path = joinPath(location.path, "metadata.json");
@@ -236,12 +254,24 @@ async function readItem(location: Location): Promise<{ item: unknown; note?: str
         : { item: null, note: `metadata.json unreadable (${messageOf(error)}); ${PROBING}` };
     }
   } else {
+    const itemUrl = `${location.url}/metadata.json`;
+    if (!mayFetch(itemUrl, allowedHosts)) {
+      return {
+        item: null,
+        note: `metadata.json not fetched: ${new URL(itemUrl).host} is not on this server's allowlist (HTTPS to ${allowedHosts!.join(", ")}); ${PROBING}`,
+      };
+    }
     let response: Response;
     try {
       // A hung host must not stall the tool for undici's multi-minute
       // default. Ten seconds is generous for a `metadata.json` fetch and
       // short enough that a caller notices; the probe fallback absorbs it.
-      response = await fetch(`${location.url}/metadata.json`, { signal: AbortSignal.timeout(10_000) });
+      // With an allowlist, a redirect is not followed: it could lead off it.
+      // It arrives as a 3xx and is reported like any other non-OK status.
+      response = await fetch(itemUrl, {
+        signal: AbortSignal.timeout(10_000),
+        ...(allowedHosts ? { redirect: "manual" as const } : {}),
+      });
     } catch (error) {
       return { item: null, note: `metadata.json unreachable (${messageOf(error)}); ${PROBING}` };
     }
@@ -316,7 +346,7 @@ export async function describe(engine: Engine, url: string): Promise<DescribeRes
   let files: { name: string; file: string }[] = [];
   let inventory: "stac" | "probe" = "probe";
 
-  const { item, note } = await readItem(location);
+  const { item, note } = await readItem(location, engine.allowedHosts);
   if (note) notes.push(note);
   if (item !== null && typeof item === "object" && !Array.isArray(item)) {
     stac = item as Record<string, unknown>;

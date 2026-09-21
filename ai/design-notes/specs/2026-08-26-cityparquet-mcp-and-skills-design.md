@@ -891,3 +891,38 @@ Appended; nothing earlier in this note is edited.
   Not verified here, because no deploy was run from this machine: the first
   deploy itself, the token's scopes, and the account's plan (Containers need
   Workers Paid).
+
+## Addendum, 2026-09-21 (latest): Cloud Run, and egress moved into the process
+
+Appended; nothing earlier in this note is edited.
+
+- **Cloudflare Containers were dropped for Google Cloud Run.** Containers need
+  the Workers Paid plan. The deploy follows `cityjson/flatcitybuf`'s: Workload
+  Identity Federation, Artifact Registry and Cloud Run in `europe-west4`.
+- **Egress is now enforced inside the server process, not by the platform.**
+  Cloud Run has no host allowlist, and its metadata server — which hands the
+  runtime service account's token to any request carrying `Metadata-Flavor:
+  Google` — is reachable from every container. Routing all egress through a
+  VPC with no NAT would cut the data hosts off too. Instead `src/egress-proxy.ts`
+  runs in the server, admits `CONNECT` to the allowlisted hosts on port 443
+  (resolving them and refusing internal addresses), and refuses everything
+  else, plain HTTP included. Each sandboxed engine's `http_proxy` is set to it
+  before `lock_configuration`. Every reader was probed against a proxy that
+  refuses all: `read_parquet`, `read_json`, `read_text`, `read_cityjson[seq]`,
+  the metadata functions, `read_flatcitybuf`, `ST_Read` and `/vsicurl/` all
+  went through it, with no bypass.
+- **Secrets were the hole in that, and are refused.** A query can create a
+  DuckDB secret under `lock_configuration` — secrets are catalog objects, not
+  settings — and a secret's `HTTP_PROXY` **overrides** the locked
+  `http_proxy` (probed: reads went through the secret's proxy); its
+  `EXTRA_HTTP_HEADERS` can carry the metadata header. On a sandboxed engine,
+  `runQuery` refuses any statement containing "secret" and drops any secret
+  found before each statement. This held on Cloudflare too: the platform
+  allowlist blocked other hosts, but not a secret's header to an allowlisted
+  one.
+- **Defence in depth**: the service runs as a dedicated account with no IAM
+  roles, so a leaked metadata token opens nothing; `describe`'s own Node fetch
+  applies the allowlist and does not follow redirects.
+- **Not verified here**: the first Cloud Run deploy, the WIF provider admitting
+  this repository, and the IAM grants the deploy needs; `ai/mcp/README.md`
+  lists the one-off setup.

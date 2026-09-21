@@ -8,6 +8,7 @@ import { join } from "node:path";
 
 import { loadCorpus } from "./corpus.js";
 import { createEngine, extensionsFromEnv } from "./duckdb.js";
+import { startEgressProxy } from "./egress-proxy.js";
 import { createHttpApp } from "./http-app.js";
 import { createEnginePool } from "./pool.js";
 
@@ -26,17 +27,41 @@ const extensions = extensionsFromEnv(process.env.CITYPARQUET_MCP_EXTENSIONS);
 const memoryLimit = process.env.CITYPARQUET_MCP_MEMORY_LIMIT ?? "1GB";
 const threads = integer("CITYPARQUET_MCP_THREADS", 1);
 
+/**
+ * The only hosts a query can read. HTTPS only, exact names. The proxy that
+ * enforces this runs in this process, and every engine's `http_proxy` is
+ * locked to it; see src/egress-proxy.ts for why it is not the platform's job.
+ */
+const egressHosts = (process.env.CITYPARQUET_MCP_EGRESS_HOSTS ?? "cityparquet.open3d.city,cityjson.open3d.city,flatcitybuf.open3d.city")
+  .split(",")
+  .map((host) => host.trim().toLowerCase())
+  .filter((host) => host.length > 0);
+
 const log = (event: string, detail: Record<string, unknown> = {}) =>
   console.log(JSON.stringify({ time: new Date().toISOString(), event, ...detail }));
 const logError = (error: unknown) =>
   log("error", { message: error instanceof Error ? error.message : String(error) });
+
+const egress = await startEgressProxy({
+  allowedHosts: egressHosts,
+  onRefused: (target, reason) => log("egress refused", { target, reason }),
+});
 
 const pool = createEnginePool({
   size: integer("CITYPARQUET_MCP_POOL_SIZE", 2),
   maxWaiting: integer("CITYPARQUET_MCP_MAX_WAITING", 8),
   maxWaitMs: integer("CITYPARQUET_MCP_MAX_WAIT_MS", 30_000),
   // `sandbox: true` is not configurable here: this entry point is the public one.
-  create: () => createEngine({ sandbox: true, extensionDirectory, extensions, memoryLimit, threads }),
+  create: () =>
+    createEngine({
+      sandbox: true,
+      extensionDirectory,
+      extensions,
+      memoryLimit,
+      threads,
+      httpProxy: egress.address,
+      allowedHosts: egressHosts,
+    }),
   onError: logError,
 });
 
@@ -131,13 +156,13 @@ const server = createHttpServer((req, res) => {
     });
 });
 
-server.listen(port, () => log("listening", { port, extensions }));
+server.listen(port, () => log("listening", { port, extensions, egressHosts }));
 
 // Cloudflare sends SIGTERM before stopping a container: finish what is in
 // flight, then free the engines.
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
     log("shutdown", { signal });
-    server.close(() => void pool.close().finally(() => process.exit(0)));
+    server.close(() => void pool.close().then(() => egress.close()).finally(() => process.exit(0)));
   });
 }

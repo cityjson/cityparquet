@@ -1,6 +1,6 @@
 # The hosted CityParquet MCP server. Built from ai/mcp alone: the corpus is
-# committed, so no submodule is needed. See ai/mcp/deploy/ for the Worker that
-# fronts it on Cloudflare Containers.
+# committed, so no submodule is needed. .github/workflows/mcp-deploy.yml
+# deploys it to Cloud Run.
 
 FROM node:24-slim AS build
 WORKDIR /app
@@ -25,8 +25,9 @@ COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY corpus ./corpus
-# The extensions are part of the image, never fetched at run time: the
-# container's egress allows the data hosts and nothing else.
+# The extensions are part of the image, never fetched at run time: a
+# sandboxed engine's network goes through the egress proxy, which admits the
+# data hosts and nothing else.
 RUN node dist/bake.js && chmod -R a+rX /opt/duckdb-extensions
 USER node
 EXPOSE 8080

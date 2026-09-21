@@ -39,6 +39,19 @@ export interface EngineOptions {
   readonly extensions?: readonly string[];
   readonly memoryLimit?: string;
   readonly threads?: number;
+  /**
+   * `host:port` of the egress proxy every httpfs request must go through,
+   * locked in with the rest of the sandbox. Only honoured with `sandbox`.
+   * A query-created secret's `HTTP_PROXY` overrides this setting, which is
+   * why `runQuery` refuses secrets on a sandboxed engine.
+   */
+  readonly httpProxy?: string;
+  /**
+   * The hosts the engine may reach, for code that fetches from Node rather
+   * than through DuckDB (`describe` reading `metadata.json`). Absent means
+   * no restriction. It must agree with what the proxy above allows.
+   */
+  readonly allowedHosts?: readonly string[];
 }
 
 export interface Engine {
@@ -49,6 +62,8 @@ export interface Engine {
    * `disabled_filesystems` does not govern Node's `fs`.
    */
   readonly sandbox: boolean;
+  /** See `EngineOptions.allowedHosts`: absent means Node-side fetches are unrestricted. */
+  readonly allowedHosts?: readonly string[];
   readonly connection: DuckDBConnection;
   readonly extensions: readonly { name: string; version: string }[];
   /**
@@ -132,6 +147,13 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     //    and the reason memory_limit should be generous.
     await connection.run("SET disabled_filesystems = 'LocalFileSystem'");
 
+    // 7b. Every httpfs request through the egress proxy, so what the engine
+    //     can reach is decided outside DuckDB. After the loads (which may
+    //     download) and before the lock (after which it cannot be undone).
+    if (options.httpProxy) {
+      await connection.run(`SET http_proxy = '${options.httpProxy.replace(/'/g, "''")}'`);
+    }
+
     // 8. And none of the above can be undone by a query.
     await connection.run("SET lock_configuration = true");
   }
@@ -148,6 +170,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
 
   return {
     sandbox: options.sandbox,
+    allowedHosts: options.allowedHosts,
     connection,
     extensions,
     exclusive,

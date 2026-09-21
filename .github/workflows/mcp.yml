@@ -46,9 +46,6 @@ jobs:
         working-directory: ai/mcp
       - run: pnpm test
         working-directory: ai/mcp
-      - name: the deployment Worker typechecks
-        run: pnpm install --frozen-lockfile && pnpm typecheck
-        working-directory: ai/mcp/deploy
       - name: corpus is fresh
         # Compares corpus content only, never the `generatedFrom` provenance
         # stamp — see ai/mcp/src/check-corpus-fresh.ts for why a byte-for-byte

@@ -49,7 +49,10 @@ Point a client at the built entry point:
 `dist/http.js` serves the same five tools over streamable HTTP at `/mcp`,
 statelessly, with a health check at `/health`. It is the hosted entry point,
 so it is **always sandboxed**, and every request that runs SQL gets its own
-freshly built engine, discarded afterwards:
+freshly built engine, discarded afterwards. Its network is an allowlist: every
+engine's `http_proxy` is locked to a proxy in the same process that admits
+HTTPS to `CITYPARQUET_MCP_EGRESS_HOSTS` and nothing else, and statements that
+mention `SECRET` are refused, because a DuckDB secret can override the proxy.
 
 ```sh
 pnpm build
@@ -65,8 +68,38 @@ docker build --platform linux/amd64 -t cityparquet-mcp .
 docker run -p 8080:8080 cityparquet-mcp
 ```
 
-[`deploy/`](deploy) is the Cloudflare Worker that runs that image as a
-Container, and `.github/workflows/mcp-deploy.yml` deploys it.
+`scripts/smoke.mjs <url>` checks a running server from outside: the tools
+answer, an allowlisted host is readable, and another host, the metadata
+address, a secret and the local filesystem are all refused.
+
+## Deploying to Cloud Run
+
+`.github/workflows/mcp-deploy.yml` builds the image, pushes it to Artifact
+Registry, deploys it to Cloud Run in `europe-west4`, and smoke-tests the
+result, sending traffic back to the previous revision if that fails. It
+authenticates like `cityjson/flatcitybuf`'s deploy, through Workload Identity
+Federation. One-off setup, in the same GCP project:
+
+```sh
+PROJECT=<project id>
+# The image repository.
+gcloud artifacts repositories create cityparquet \
+  --project "$PROJECT" --location europe-west4 --repository-format docker
+# The account the service runs as. It gets no roles: the metadata server
+# hands its token to anything in the container, so it must open nothing.
+gcloud iam service-accounts create cityparquet-mcp-runtime \
+  --project "$PROJECT" --display-name "cityparquet MCP runtime (no roles)"
+```
+
+Then let the deploy reach them:
+
+- Admit `cityjson/cityparquet` in the WIF provider's attribute condition
+  (it probably admits only `cityjson/flatcitybuf` today).
+- Grant the repository's WIF principal `roles/artifactregistry.writer` on the
+  `cityparquet` repository, `roles/run.admin` on the project, and
+  `roles/iam.serviceAccountUser` on `cityparquet-mcp-runtime`.
+- Add the secrets `WIF_PROVIDER` and `PROJECT_ID` to `cityjson/cityparquet`,
+  with the same values as on `cityjson/flatcitybuf`.
 
 ## Environment variables
 
@@ -90,6 +123,7 @@ apply to it, since it is always sandboxed:
 | `CITYPARQUET_MCP_MAX_ROWS` | `1000` | The most rows one `cityparquet_query` statement may return, whatever it asks for. |
 | `CITYPARQUET_MCP_MAX_TIMEOUT_MS` | `60000` | The longest deadline a statement may ask for. |
 | `CITYPARQUET_MCP_MAX_BODY_BYTES` | `262144` | Larger request bodies are refused with 413. |
+| `CITYPARQUET_MCP_EGRESS_HOSTS` | the three `open3d.city` data hosts | Comma-separated hostnames a query may read, over HTTPS only. |
 
 ## `spatial` and `three_d` together
 

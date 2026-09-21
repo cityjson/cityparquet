@@ -207,6 +207,54 @@ suite("describe, package inventory", () => {
   });
 });
 
+// On the hosted server, Node's fetch of metadata.json is outside DuckDB's
+// egress proxy, so describe applies the same allowlist itself.
+suite("describe, on an engine with an egress allowlist", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  function allowlisted(known: Record<string, string[]>): Engine {
+    return { ...fakeEngine(known), sandbox: true, allowedHosts: ["data.example.test"] } as Engine;
+  }
+
+  it("does not fetch from a host off the allowlist", async () => {
+    const fetched: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => { fetched.push(String(url)); return { ok: true, status: 200, text: async () => "{}" }; });
+    const result = await describe(allowlisted({ "https://other.test/pkg/building.parquet": ["id"] }), "https://other.test/pkg");
+    expect(fetched).toEqual([]);
+    expect(result.notes.join(" ")).toMatch(/not on this server's allowlist/);
+  });
+
+  it("does not fetch over plain HTTP, even from an allowlisted host", async () => {
+    const fetched: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => { fetched.push(String(url)); return { ok: true, status: 200, text: async () => "{}" }; });
+    await describe(allowlisted({ "http://data.example.test/pkg/building.parquet": ["id"] }), "http://data.example.test/pkg").catch(() => undefined);
+    expect(fetched).toEqual([]);
+  });
+
+  it("fetches from an allowlisted host without following redirects", async () => {
+    const calls: { url: string; redirect?: string }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init?: { redirect?: string }) => {
+      calls.push({ url: String(url), redirect: init?.redirect });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ assets: { b: { href: "building.parquet" } } }) };
+    });
+    const result = await describe(
+      allowlisted({ "https://data.example.test/pkg/building.parquet": ["id"] }),
+      "https://data.example.test/pkg",
+    );
+    expect(calls).toEqual([{ url: "https://data.example.test/pkg/metadata.json", redirect: "manual" }]);
+    expect(result.inventory).toBe("stac");
+  });
+
+  it("reports a redirect rather than following it", async () => {
+    vi.stubGlobal("fetch", async () => ({ ok: false, status: 302, text: async () => "" }));
+    const result = await describe(
+      allowlisted({ "https://data.example.test/pkg/building.parquet": ["id"] }),
+      "https://data.example.test/pkg",
+    );
+    expect(result.notes.join(" ")).toMatch(/HTTP 302/);
+  });
+});
+
 suite("describe, CRS rendering from the footer", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 

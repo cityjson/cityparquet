@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-// Checks a deployed endpoint: node smoke.mjs https://cityparquet-mcp.<subdomain>.workers.dev
+// Checks a deployed endpoint: node scripts/smoke.mjs https://<service URL>
 //
-// The egress cases are the point. The container's network policy is set in
-// src/index.ts and cannot be exercised anywhere but on Cloudflare, so this is
-// where the sandbox's last control — no route to private ranges or to hosts
-// off the allowlist — is shown to hold, from outside, after every deploy.
+// The egress cases are the point. The hosted engine can reach the data
+// hosts and nothing else — no other host, not the cloud metadata server —
+// because every engine's http_proxy is locked to an allowlisting proxy in the
+// server process (src/egress-proxy.ts). This checks it from outside, on the
+// deployment itself, after every deploy. It passes against a local container
+// too, since the proxy is part of the server, not of the platform.
 
 const base = process.argv[2]?.replace(/\/+$/, "");
 if (!base) {
@@ -65,6 +67,10 @@ const checks = [
   ["cannot reach the cloud metadata address", async () => {
     const result = await query("SELECT * FROM read_csv('http://169.254.169.254/latest/meta-data/')");
     if (!result.error) throw new Error("169.254.169.254 was readable");
+  }],
+  ["cannot create a secret, which could override the egress proxy", async () => {
+    const result = await query("CREATE SECRET s (TYPE http, EXTRA_HTTP_HEADERS MAP {'Metadata-Flavor': 'Google'})");
+    if (!result.error) throw new Error("a secret was created");
   }],
   ["cannot read the local filesystem", async () => {
     const result = await query("SELECT * FROM read_csv('/etc/passwd')");

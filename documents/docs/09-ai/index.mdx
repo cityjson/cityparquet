@@ -50,9 +50,9 @@ the skills tell the agent which server tool to call and when.
 :::note[Local, or hosted and read-only]
 The server runs on your machine over **stdio**, from a clone of the
 repository, where it can read and write your own files. It also runs as a
-**hosted, read-only endpoint** over streamable HTTP on Cloudflare, sandboxed
-and limited to the project's own data hosts; [MCP server](/ai/mcp-server)
-describes both. The skills install as a Claude Code plugin or through APM,
+**hosted, read-only endpoint** over streamable HTTP on Google Cloud Run,
+sandboxed and limited to the project's own data hosts;
+[MCP server](/ai/mcp-server) describes both. The skills install as a Claude Code plugin or through APM,
 but they do not start the server; you register it yourself.
 :::
 
