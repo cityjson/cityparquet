@@ -77,6 +77,9 @@ MAX_ENVIRONMENT_NOTES = 20
 #: the working directory.
 WORK_PREFIX = "c2cp-"
 
+#: See `fetch.DEFAULT_MAX_BYTES`; `--max-unpack-gib` raises it per run.
+DEFAULT_MAX_UNPACK_BYTES = fetch.DEFAULT_MAX_BYTES
+
 #: Name of the file by which a run claims a directory it must not share.
 LOCK_NAME = ".c2cp-lock"
 
@@ -245,6 +248,11 @@ class Config:
     work_dir: Path | None = None
     download_timeout: float = 1800.0
     convert_timeout: float = 3600.0
+    #: Items to convert, by id, in place of the whole collection. Naming an
+    #: item is asking for it, so a named whole-city bundle is converted.
+    item_ids: tuple[str, ...] | None = None
+    #: How many bytes one item may unpack to, across every nested archive.
+    max_unpack_bytes: int = DEFAULT_MAX_UNPACK_BYTES
 
 
 @dataclass
@@ -570,7 +578,7 @@ def process_item(
         downloaded = fetch.download(item.href, source, client, timeout=config.download_timeout)
         if stats is not None:
             stats.downloaded = downloaded
-        inputs = fetch.normalise(source, workdir / "extract")
+        inputs = fetch.normalise(source, workdir / "extract", max_bytes=config.max_unpack_bytes)
         if not inputs:
             raise convert.ConvertError("unsupported_archive", "no convertible file in the asset")
         out_dir = package_dir(config, item)
@@ -615,7 +623,7 @@ def convert_items(
         started = time.monotonic()
         stats = ItemStats()
         try:
-            if fetch.is_duplicate_bundle(item):
+            if config.item_ids is None and fetch.is_duplicate_bundle(item):
                 # Skipped before the download, which is the whole point: these
                 # are hundreds of gigabytes of data we convert from its tiles.
                 _record_safely(
@@ -777,9 +785,16 @@ def convert_collection(
     # item that reaches no record at all shrinks the histogram's denominator
     # with nothing to show for it.
     dropped: list[str] = []
-    items, note = discover.enumerate_items(
-        config.base_url, config.bucket_api, cid, collection, client, dropped=dropped
-    )
+    if config.item_ids is not None:
+        # Nothing was enumerated, so there is no index to disagree with.
+        items, note = (
+            discover.items_by_id(config.base_url, cid, config.item_ids, client, dropped=dropped),
+            None,
+        )
+    else:
+        items, note = discover.enumerate_items(
+            config.base_url, config.bucket_api, cid, collection, client, dropped=dropped
+        )
     ledger.note_discovered(cid, len(items) + len(dropped))
     for name in dropped:
         # The origin listed this document and then would not serve it (or served
@@ -1178,9 +1193,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--tool",
         type=Path,
-        default=Path(
-            "lib/cityparquet-rs/vendor/city3d-stac-tool/target/release/city3dstac"
-        ),
+        default=Path("lib/cityparquet-rs/vendor/city3d-stac-tool/target/release/city3dstac"),
     )
     parser.add_argument(
         "--collection",
@@ -1213,6 +1226,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=[],
         metavar="COLLECTION=EPSG:xxxx",
         help="fallback CRS for a collection whose sources declare none; repeatable",
+    )
+    parser.add_argument(
+        "--item",
+        action="append",
+        dest="items",
+        metavar="ITEM_ID",
+        help="convert only this item of the one --collection; repeatable. A named "
+        "whole-city bundle is converted rather than skipped",
+    )
+    parser.add_argument(
+        "--max-unpack-gib",
+        type=_positive_int,
+        default=DEFAULT_MAX_UNPACK_BYTES // 2**30,
+        help=f"how much one item may unpack to, in GiB (default "
+        f"{DEFAULT_MAX_UNPACK_BYTES // 2**30})",
     )
     parser.add_argument("--base-url", default=BASE_URL)
     parser.add_argument("--bucket-api", default=BUCKET_API)
@@ -1257,7 +1285,21 @@ def config_from_args(args: argparse.Namespace) -> Config:
             validate_collection_id(cid)
         except ValueError as exc:
             raise SystemExit(f"--collection: {exc}") from exc
+    if args.items is not None:
+        if len(args.collections or []) != 1:
+            raise SystemExit(
+                "--item needs exactly one --collection: an item id is unique only there"
+            )
+        for item_id in args.items:
+            try:
+                usable = safe_item_id(item_id) == item_id
+            except ValueError:
+                usable = False
+            if not usable:
+                raise SystemExit(f"--item: {item_id!r} is not a usable item id")
     return Config(
+        item_ids=tuple(args.items) if args.items is not None else None,
+        max_unpack_bytes=args.max_unpack_gib * 2**30,
         out=args.out,
         binary=args.binary,
         tool=args.tool,

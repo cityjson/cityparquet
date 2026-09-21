@@ -222,6 +222,25 @@ def items_from_listing(
     return items
 
 
+def items_by_id(
+    base_url: str,
+    cid: str,
+    item_ids: list[str],
+    client,
+    dropped: list[str] | None = None,
+) -> list[Item]:
+    """Resolve named items straight from their documents, with no enumeration.
+
+    The catalogue publishes each item at `<cid>/items/<id>_item.json`, so a
+    run that names its items reads exactly those documents. Listing
+    `japan-plateau-3d` to pick out 62 of its 60,471 items would cost 61 page
+    requests before the first download. A name that resolves to nothing lands
+    in `dropped`, like any other unreadable document.
+    """
+    names = [f"{cid}/items/{item_id}_item.json" for item_id in item_ids]
+    return items_from_listing(base_url, "", cid, client, names=names, dropped=dropped)
+
+
 def items_from_collection_links(
     base_url: str,
     cid: str,

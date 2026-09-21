@@ -124,6 +124,11 @@ def download(url: str, dest: Path, client, timeout: float = 900.0) -> int:
     return written
 
 
+#: How many bytes one payload may unpack to by default, across every nested
+#: archive. Enough for all but the largest whole-city PLATEAU archives.
+DEFAULT_MAX_BYTES = 20 * 2**30
+
+
 def is_duplicate_bundle(item: Item) -> bool:
     """True for Japan's whole-city ZIPs, which repackage tiles we convert.
 
@@ -232,7 +237,7 @@ def _could_contribute(archive: Path) -> bool:
 
 
 def normalise(
-    path: Path, workdir: Path, max_depth: int = 3, max_bytes: int = 20 * 2**30
+    path: Path, workdir: Path, max_depth: int = 3, max_bytes: int = DEFAULT_MAX_BYTES
 ) -> list[Path]:
     """Decompress/extract `path` and return the convertible files inside.
 
