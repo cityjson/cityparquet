@@ -40,7 +40,7 @@ const sections = [
 const facts = [
   { key: "Storage", value: "Static files", note: "No database server" },
   { key: "Layout", value: "One object per row", note: "No joins on read" },
-  { key: "Geometry", value: "WKB, multi-LoD", note: "GeoParquet at LoD0" },
+  { key: "Interoperability", value: "Parquet · WKB · SQL", note: "GeoParquet at LoD0" },
   { key: "Metadata", value: "STAC Item", note: "Catalogue-ready" },
 ];
 
@@ -70,24 +70,12 @@ const family = [
   },
 ];
 
-// Every figure is the one published on the benchmark page; the caveat box below
-// carries the same warning that page opens with.
+// Snapshot exported from benchmark/runs/summary/full/bench_data.json.
+// Scope: 3DBAG slice, 1,000,001 CityObjects; details on /benchmark.
 const measurements = [
-  {
-    figure: "34%",
-    label: "row groups pruned by a window query",
-    detail: "NYC scale, 512-row groups",
-  },
-  {
-    figure: "~2×",
-    label: "faster spatial window query",
-    detail: "median of 5 repeats",
-  },
-  {
-    figure: "zstd 3",
-    label: "default writer recipe",
-    detail: "6 presets compared",
-  },
+  { figure: "93%", label: "smaller than CityGML", detail: "0.78 GB versus 10.80 GB" },
+  { figure: "77%", label: "smaller than CityJSON", detail: "0.78 GB versus 3.37 GB" },
+  { figure: "0.016 s", label: "for an attribute aggregate", detail: "CityJSONSeq: 46.14 s · warm cache" },
 ];
 
 // `slug` is the repository the card links to, shown as its own label — a reader
@@ -314,6 +302,8 @@ const queryTokens = tokeniseSql(query);
           <h2>The problem</h2>
           <span class="cp-heading-note">Today's workflow</span>
         </div>
+        <p class="cp-section-intro">Before you can ask a question, you have to download,
+          parse, or load the city model into a database.</p>
         <div class="cp-cards cp-cards-3">
           {
             problems.map((problem) => (
@@ -324,14 +314,10 @@ const queryTokens = tokeniseSql(query);
             ))
           }
         </div>
-        <div class="cp-card cp-note">
-          <span class="cp-tag">Aim</span>
-          <p>
-            Infinite scalability, fast delivery, and low cost from static files
-            on commodity object storage; interoperability with the tools and
-            data that already exist; and ultra-fast analytical queries from the
-            columnar encoding.
-          </p>
+        <div class="cp-aim">
+          <h3>Our aim: national-scale 3D analysis in seconds, rather than hours.</h3>
+          <p>Read only the data a question needs, directly from static files —
+            using familiar tools, without running a database server.</p>
         </div>
       </div>
     </section>
@@ -343,14 +329,30 @@ const queryTokens = tokeniseSql(query);
           <h2>How it works</h2>
           <span class="cp-heading-note">Read path</span>
         </div>
-        <p class="cp-lede">
-          A package is a directory of Parquet files sitting on object storage.
-          A query prunes it twice before a byte moves — column projection drops
-          the LoDs and attributes it does not need, row-group statistics drop
-          the rows outside the window — and fetches what is left over plain
-          HTTP range requests. What comes back is still a semantic 3D model,
-          not a flattened table.
-        </p>
+        <p class="cp-section-intro">Read the columns you need. Skip places you do not.
+          Fetch only the matching parts of the file.</p>
+        <div class="cp-cards cp-cards-3 cp-mechanisms">
+          <article class="cp-card">
+            <h3>Columnar encoding</h3>
+            <p>Attributes and levels of detail live in separate columns. A query
+              about building height can read that column without decoding every
+              building's geometry or parsing a whole text file.</p>
+          </article>
+          <article class="cp-card">
+            <h3>Spatial filtering without a server</h3>
+            <p>Nearby objects are stored together. Bounding-box statistics let a
+              reader skip groups outside the query area — an index-like benefit
+              stored in the file itself, without a database service.</p>
+          </article>
+          <article class="cp-card">
+            <h3>Partial retrieval over HTTP</h3>
+            <p>HTTP range requests fetch the required byte ranges from object
+              storage. You can query a published package without downloading
+              the entire dataset first.</p>
+          </article>
+        </div>
+        <p class="cp-lede">The result retains the CityGML semantics: object types,
+          relationships, levels of detail, and semantic surfaces travel with the geometry.</p>
         <figure class="cp-figure">
           <div class="cp-figure-scroll">
             <Fragment set:html={howItWorks} />
@@ -382,7 +384,6 @@ const queryTokens = tokeniseSql(query);
             ))
           }
           <div class="cp-format cp-format-self">
-            <span class="cp-badge">New</span>
             <img src={url("brand/cityparquet-mark.svg")} alt="CityParquet" />
             <span class="cp-key">Columnar</span>
           </div>
@@ -413,11 +414,13 @@ const queryTokens = tokeniseSql(query);
           <h2>Measured behaviour</h2>
           <span class="cp-heading-note">Benchmark</span>
         </div>
+        <p class="cp-lede">Measured on a 3DBAG slice of <strong>1,000,001 CityObjects</strong>,
+          using Hilbert-ordered CityParquet. These are local native reads, not browser timings.</p>
         <div class="cp-stats">
           {
             measurements.map((measurement) => (
               <div class="cp-stat">
-                <span class="cp-figure">{measurement.figure}</span>
+                <span class="cp-stat-value">{measurement.figure}</span>
                 <span class="cp-stat-label">{measurement.label}</span>
                 <span class="cp-key">{measurement.detail}</span>
               </div>
@@ -440,16 +443,10 @@ const queryTokens = tokeniseSql(query);
             </p>
           </article>
         </div>
-        <div class="cp-caveat">
-          <span class="cp-tag cp-tag-warn">Caveat</span>
-          <p>
-            The reference implementation is experimental and the codec
-            comparison uses defaults at mismatched levels, so no “smallest
-            codec” claim is supportable. Treat every figure as indicative, and
-            read the <a href={url("benchmark")}>benchmark page</a> before quoting
-            one.
-          </p>
-        </div>
+        <p class="cp-lede cp-benchmark-summary">CityParquet combines compact storage with fast
+          selective reads. FlatCityBuf leads the measured spatial and full-read
+          scenarios; CityParquet does not win every workload.</p>
+        <p class="cp-benchmark-link"><a href={url("benchmark")}>For more detail, see the benchmark page →</a></p>
       </div>
     </section>
 
@@ -460,14 +457,12 @@ const queryTokens = tokeniseSql(query);
           <h2>Tooling</h2>
           <span class="cp-heading-note">Ecosystem</span>
         </div>
-        {/* Nominative use, deliberately: CityParquet's own name stays primary
-            and the claim is a factual one about how the format is read. The
-            DuckDB logo is not used — DuckDB's trademark guidelines require
-            written permission for it, and forbid pairing it with another
-            project's mark. */}
         <div class="cp-duckdb">
           <div>
-            <p class="cp-duckdb-eyebrow">Works with DuckDB</p>
+            <a class="cp-duckdb-brand" href="https://duckdb.org/" aria-label="DuckDB">
+              <img class="cp-duckdb-logo cp-duckdb-logo-light" src={url("brand/duckdb.svg")} alt="DuckDB" width="180" height="48" loading="lazy" />
+              <img class="cp-duckdb-logo cp-duckdb-logo-dark" src={url("brand/duckdb-dark.svg")} alt="DuckDB" width="180" height="48" loading="lazy" />
+            </a>
             <p class="cp-duckdb-lead">
               SQL on a 3D city model, with nothing in between.
             </p>
@@ -653,11 +648,6 @@ const queryTokens = tokeniseSql(query);
       var(--blume-background)
     );
     --cp-radius: var(--blume-radius, 4px);
-    --cp-warn-bg: #fffbf2;
-    --cp-warn-line: #f0dfc0;
-    --cp-warn-ink: #5c4a24;
-    --cp-warn-tag-bg: #f9edd6;
-    --cp-warn-tag-ink: #8a6410;
     --cp-shell: 1180px;
     --cp-pad: clamp(1.25rem, 4vw, 2.5rem);
 
@@ -669,11 +659,6 @@ const queryTokens = tokeniseSql(query);
   :root[data-theme="dark"] .cp {
     --cp-ground: var(--blume-background);
     --cp-surface: var(--blume-muted);
-    --cp-warn-bg: color-mix(in srgb, #f0b429 8%, var(--blume-muted));
-    --cp-warn-line: color-mix(in srgb, #f0b429 28%, var(--blume-muted));
-    --cp-warn-ink: #e8d3a8;
-    --cp-warn-tag-bg: color-mix(in srgb, #f0b429 18%, var(--blume-muted));
-    --cp-warn-tag-ink: #f0c76a;
   }
 
   .cp-shell {
@@ -721,7 +706,10 @@ const queryTokens = tokeniseSql(query);
     text-decoration: none;
     border: 1px solid var(--cp-line);
     border-radius: var(--cp-radius);
-    padding: 0.375rem 0.625rem;
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+    padding: 0.5rem 0.75rem;
     transition: color 0.15s, border-color 0.15s;
   }
 
@@ -767,13 +755,13 @@ const queryTokens = tokeniseSql(query);
 
   .cp-title {
     margin: 0;
-    max-width: 54ch;
+    max-width: 30ch;
     font-size: clamp(1.75rem, 4.5vw, 2.75rem);
     line-height: 1.22;
     font-weight: 500;
     letter-spacing: -0.02em;
     color: var(--cp-ink);
-    text-wrap: pretty;
+    text-wrap: balance;
   }
 
   /* Reserves its own line height so the typing loop never reflows the CTAs. */
@@ -829,11 +817,11 @@ const queryTokens = tokeniseSql(query);
     padding: 0.75rem 1.375rem;
     border: 1px solid transparent;
     border-radius: var(--cp-radius);
-    transition: filter 0.15s;
+    transition: background-color 0.15s, border-color 0.15s;
   }
 
   .cp-button:hover {
-    filter: brightness(1.12);
+    background: color-mix(in srgb, var(--cp-accent) 88%, #000);
   }
 
   .cp-button-quiet {
@@ -843,7 +831,7 @@ const queryTokens = tokeniseSql(query);
   }
 
   .cp-button-quiet:hover {
-    filter: none;
+    background: var(--cp-accent-wash);
     border-color: var(--cp-accent);
     color: var(--cp-accent);
   }
@@ -969,10 +957,7 @@ const queryTokens = tokeniseSql(query);
 
   .cp-figure {
     margin: 0;
-    background: var(--cp-surface);
-    border: 1px solid var(--cp-line);
-    border-radius: var(--cp-radius);
-    padding: clamp(1rem, 3vw, 1.75rem);
+    padding-block: 1.5rem;
   }
 
   /* The figure needs ~900px to stay legible, so it scrolls rather than
@@ -1015,7 +1000,7 @@ const queryTokens = tokeniseSql(query);
 
   .cp-cards {
     display: grid;
-    gap: 1.25rem;
+    gap: 2rem 3rem;
   }
 
   .cp-cards-3 {
@@ -1028,22 +1013,19 @@ const queryTokens = tokeniseSql(query);
   }
 
   .cp-card {
-    background: var(--cp-surface);
-    border: 1px solid var(--cp-line);
-    border-radius: var(--cp-radius);
-    padding: 1.5rem;
+    padding-block: 0.5rem;
   }
 
   .cp-card h3 {
-    margin: 0 0 0.5rem;
-    font-size: 0.9375rem;
+    margin: 0 0 0.75rem;
+    font-size: 1.125rem;
     font-weight: 500;
     color: var(--cp-ink);
   }
 
   .cp-card p {
     margin: 0;
-    font-size: 0.875rem;
+    font-size: 1rem;
     line-height: 1.65;
     color: var(--cp-ink-2);
   }
@@ -1084,16 +1066,12 @@ const queryTokens = tokeniseSql(query);
   .cp-family {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
-    gap: 1px;
-    background: var(--cp-line);
-    border: 1px solid var(--cp-line);
-    border-radius: var(--cp-radius);
-    overflow: hidden;
+    gap: 2rem 3rem;
   }
 
   .cp-format {
-    background: var(--cp-surface);
-    padding: 1.25rem;
+    min-width: 0;
+    padding-block: 1.5rem;
     display: flex;
     flex-direction: column;
     gap: 0.875rem;
@@ -1116,43 +1094,9 @@ const queryTokens = tokeniseSql(query);
     padding: 4px;
   }
 
-  /* The pulse is drawn with an inset ring rather than an outer glow: the grid
-     clips to its rounded corners, so an outward shadow would be amputated. */
-  .cp-format-self {
-    position: relative;
-    background: var(--cp-accent-wash);
-    animation: cp-glow 2.6s ease-in-out infinite;
-  }
-
-  @keyframes cp-glow {
-    0%,
-    100% {
-      box-shadow: inset 0 0 0 1px var(--cp-accent);
-    }
-    50% {
-      box-shadow: inset 0 0 0 3px
-        color-mix(in srgb, var(--cp-accent) 25%, transparent);
-    }
-  }
-
   .cp-format-self .cp-key {
     color: var(--cp-accent);
     font-weight: 500;
-  }
-
-  .cp-badge {
-    position: absolute;
-    top: 0.75rem;
-    right: 0.75rem;
-    font-family: var(--blume-font-mono);
-    font-size: 0.625rem;
-    font-weight: 500;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--blume-accent-foreground, #fff);
-    background: var(--cp-accent);
-    border-radius: 3px;
-    padding: 0.25rem 0.4375rem;
   }
 
   /* --- measurements --------------------------------------------------- */
@@ -1160,22 +1104,17 @@ const queryTokens = tokeniseSql(query);
   .cp-stats {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 1px;
-    background: var(--cp-line);
-    border: 1px solid var(--cp-line);
-    border-radius: var(--cp-radius);
-    overflow: hidden;
+    gap: 2rem 3rem;
   }
 
   .cp-stat {
-    background: var(--cp-surface);
-    padding: 1.75rem 1.5rem;
+    padding-block: 1rem;
     display: flex;
     flex-direction: column;
     gap: 0.375rem;
   }
 
-  .cp-figure {
+  .cp-stat-value {
     font-size: clamp(2rem, 5vw, 2.5rem);
     line-height: 1;
     font-weight: 500;
@@ -1188,46 +1127,12 @@ const queryTokens = tokeniseSql(query);
     color: var(--cp-ink);
   }
 
-  .cp-caveat {
-    display: flex;
-    gap: 0.875rem;
-    align-items: flex-start;
-    margin-top: 1.25rem;
-    background: var(--cp-warn-bg);
-    border: 1px solid var(--cp-warn-line);
-    border-radius: var(--cp-radius);
-    padding: 1.125rem 1.25rem;
-  }
-
-  .cp-caveat p {
-    margin: 0;
-    font-size: 0.875rem;
-    line-height: 1.65;
-    color: var(--cp-warn-ink);
-  }
-
-  .cp-caveat a {
-    color: inherit;
-    text-underline-offset: 0.2em;
-  }
-
-  .cp-tag-warn {
-    color: var(--cp-warn-tag-ink);
-    background: var(--cp-warn-tag-bg);
-  }
-
   /* --- tooling -------------------------------------------------------- */
 
-  /* The DuckDB note leads the section: it is the answer to "what do I read this
-     with", and it wants to be read before the grid of names. An accent rule
-     rather than a heading, so the page's number/h2 hierarchy is untouched. */
+  /* The DuckDB introduction leads the tool list with its recognisable mark. */
   .cp-duckdb {
     margin: 0 0 1.625rem;
-    padding: 1.5rem 1.5rem 1.5rem 1.75rem;
-    border: 1px solid var(--cp-line);
-    border-left: 2px solid var(--cp-accent);
-    border-radius: var(--cp-radius);
-    background: var(--cp-surface);
+    padding-block: 1.5rem;
     display: grid;
     gap: 0.875rem;
   }
@@ -1241,15 +1146,6 @@ const queryTokens = tokeniseSql(query);
       column-gap: 2.75rem;
       align-items: start;
     }
-  }
-
-  .cp-duckdb-eyebrow {
-    margin: 0;
-    font-family: var(--blume-font-mono);
-    font-size: 0.6875rem;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--cp-accent);
   }
 
   .cp-duckdb-lead {
@@ -1276,16 +1172,11 @@ const queryTokens = tokeniseSql(query);
   .cp-tools {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 1px;
-    background: var(--cp-line);
-    border: 1px solid var(--cp-line);
-    border-radius: var(--cp-radius);
-    overflow: hidden;
+    gap: 2rem 3rem;
   }
 
   .cp-tool {
-    background: var(--cp-surface);
-    padding: 1.5rem;
+    padding-block: 1rem;
     display: flex;
     flex-direction: column;
     gap: 0.5625rem;
@@ -1575,6 +1466,46 @@ const queryTokens = tokeniseSql(query);
     color: var(--cp-accent);
   }
 
+  .cp-section-intro {
+    max-width: 46ch;
+    margin: 0 0 2.25rem;
+    font-size: clamp(1.35rem, 2.8vw, 1.875rem);
+    line-height: 1.4;
+    text-wrap: balance;
+  }
+
+  .cp-aim {
+    margin-top: clamp(2.5rem, 6vw, 4rem);
+    max-width: 58rem;
+  }
+
+  .cp-aim h3 {
+    margin: 0 0 1rem;
+    max-width: 35ch;
+    font-size: clamp(1.65rem, 3.5vw, 2.5rem);
+    line-height: 1.25;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+    color: var(--cp-accent);
+  }
+
+  .cp-aim p {
+    margin: 0;
+    max-width: 65ch;
+    font-size: 1.125rem;
+    line-height: 1.65;
+  }
+
+  .cp-mechanisms { margin-bottom: 2rem; }
+  .cp-benchmark-summary { margin-top: 2rem; }
+  .cp-benchmark-link a { color: var(--cp-accent); text-underline-offset: 0.25em; }
+  .cp-duckdb-brand { display: inline-block; margin-bottom: 0.75rem; }
+  .cp-duckdb-logo { width: 11.25rem; height: 3rem; object-fit: contain; object-position: left; }
+  .cp-duckdb-logo-dark { display: none; }
+  :root[data-theme="dark"] .cp-duckdb-logo-light { display: none; }
+  :root[data-theme="dark"] .cp-duckdb-logo-dark { display: block; }
+
   /* --- responsive ------------------------------------------------------ */
 
   @media (max-width: 60rem) {
@@ -1591,6 +1522,52 @@ const queryTokens = tokeniseSql(query);
   }
 
   @media (max-width: 44rem) {
+    .cp-sections-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .cp-pill {
+      justify-content: center;
+      padding-inline: 0.375rem;
+      font-size: 0.6875rem;
+      letter-spacing: 0;
+    }
+
+    .cp-hero-inner {
+      padding-block: 2rem 2.5rem;
+    }
+    .cp-eyebrow {
+      margin-bottom: 1.5rem;
+      letter-spacing: 0.06em;
+    }
+    .cp-hero-actions {
+      width: 100%;
+      gap: 0.625rem;
+      margin-top: 1.5rem;
+    }
+    .cp-hero-actions .cp-button {
+      flex: 1 1 12rem;
+    }
+    .cp-hero-actions .cp-chip {
+      flex-basis: 100%;
+    }
+    .cp-heading {
+      gap: 0.75rem;
+    }
+    .cp-heading-note {
+      flex-basis: 100%;
+      margin-left: 0;
+      line-height: 1.5;
+    }
+    .cp-footer nav {
+      gap: 0.5rem 1.25rem;
+    }
+    .cp-footer a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 2.75rem;
+    }
+
     .cp-cards-2,
     .cp-tools {
       grid-template-columns: 1fr;
@@ -1616,12 +1593,8 @@ const queryTokens = tokeniseSql(query);
      no spinner, and the query result shown outright rather than replayed. */
   @media (prefers-reduced-motion: reduce) {
     .cp-caret,
-    .cp-format-self,
     .cp-spinner {
       animation: none;
-    }
-    .cp-format-self {
-      box-shadow: inset 0 0 0 1px var(--cp-accent);
     }
     .cp-button,
     .cp-terminal-result {

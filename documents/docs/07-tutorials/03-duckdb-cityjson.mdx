@@ -21,23 +21,16 @@ including ones affecting data correctness — are expected. Verify results again
 trusted source before use.
 :::
 
-Build it from source and load it by path:
-
-```sh
-git clone https://github.com/cityjson/duckdb-cityjson.git
-cd duckdb-cityjson && GEN=ninja make release
-```
+Install [`cityjson`](https://duckdb.org/community_extensions/extensions/cityjson)
+from DuckDB's community registry and load it into the current session:
 
 ```sql
-LOAD './build/release/extension/cityjson/cityjson.duckdb_extension';
+INSTALL cityjson FROM community;
+LOAD cityjson;
 ```
 
-:::caution[Not the community build]
-`INSTALL cityjson FROM community` still serves an older build with a different
-schema — a flat `geometry` BLOB, a `geometry_properties` VARCHAR, and a `bbox`
-whose fields are `min_x` / `max_x` rather than `xmin` / `xmax`. Nothing on this
-page binds against it. Build from source until the registry catches up.
-:::
+To replace an older installation, run `FORCE INSTALL cityjson FROM community;`,
+then restart DuckDB and run `LOAD cityjson;`.
 
 :::note[Run it at cloud scale]
 For `COPY`-based conversion of a CityParquet package that lives on a public bucket —

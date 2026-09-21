@@ -7,7 +7,7 @@ sidebar:
 ---
 
 DuckDB's built-in geometry surface is 2D / simple-features centric — it treats a
-building solid as an opaque blob. The [`three_d`](https://github.com/HideBa/duckdb-3d)
+building solid as an opaque blob. The [`three_d`](https://github.com/cityjson/duckdb-3d)
 extension (`duckdb-3d`) adds the solid-aware `SOLID_3D` type and a curated
 PostGIS-style `ST_*` / `ST_3D*` function family, so the polyhedral solids a
 CityParquet model carries become first-class, queryable values: measure enclosed
@@ -29,44 +29,21 @@ national 3DBAG package on object storage — and cross-check every volume agains
 
 ## Install the extension
 
-`three_d` targets DuckDB `v1.5.x` and is built from source with the standard
-DuckDB extension toolchain. Clone with submodules (DuckDB is a submodule) and
-build; installing [ccache](https://ccache.dev) and [ninja](https://ninja-build.org)
-makes incremental builds much faster:
-
-```sh
-git clone --recurse-submodules https://github.com/HideBa/duckdb-3d.git
-cd duckdb-3d
-GEN=ninja make          # first build compiles DuckDB too; later builds are incremental
-```
-
-Inside a checkout of the [`cityjson/cityparquet`](https://github.com/cityjson/cityparquet)
-monorepo it is already present as a submodule: run `just setup`, then
-`cd lib/duckdb-3d` and build the same way.
-
-That produces `build/release/duckdb` — a DuckDB shell with `three_d` preloaded. To
-read real CityJSON you also need the [`cityjson`](/tutorials/duckdb-cityjson)
-extension, **built from source as a sibling checkout** — build it once and load it
-by path:
-
-```sh
-cd ../duckdb-cityjson && GEN=ninja make release
-```
-
-Every session then loads both. Note the internal extension name is `three_d`, even
-though the repository is called `duckdb-3d`:
+Install [`three_d`](https://duckdb.org/community_extensions/extensions/three_d)
+and [`cityjson`](https://duckdb.org/community_extensions/extensions/cityjson)
+from DuckDB's community registry:
 
 ```sql
-LOAD '../duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
+INSTALL cityjson FROM community;
+LOAD cityjson;
+INSTALL three_d FROM community;
 LOAD three_d;
 ```
 
-:::caution[Not the community build]
-`INSTALL cityjson FROM community` still serves an older build whose columns are
-named differently — a flat `geometry` BLOB and a `geometry_properties` VARCHAR
-instead of the LoD-suffixed pairs below. `ST_3DFromWKB` accepts either sidecar
-form, but the *column names* differ, so nothing on this page binds against it.
-:::
+The extension is named `three_d`; its source repository is
+[`duckdb-3d`](https://github.com/cityjson/duckdb-3d). No local build is required.
+For an existing installation, use `FORCE INSTALL three_d FROM community;` and
+`FORCE INSTALL cityjson FROM community;`, then restart DuckDB before loading them.
 
 ## How the two extensions compose
 

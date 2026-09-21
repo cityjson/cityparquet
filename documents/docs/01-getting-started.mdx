@@ -20,31 +20,22 @@ try the queries below before installing anything locally.
 
 <Steps>
   <Step title="Install DuckDB and the extensions">
-    Grab a [DuckDB](https://duckdb.org/) binary from duckdb.org (or your package
-    manager), then add the `cityjson` extension so DuckDB can read CityJSON /
-    CityJSONSeq directly and produce the CityParquet wide layout. Build it from
-    the [`duckdb-cityjson`](https://github.com/cityjson/duckdb-cityjson) source
-    and load it by path:
+    Install [DuckDB](https://duckdb.org/docs/installation/), then install both
+    extensions from the community registry. `cityjson` reads CityJSON and
+    CityJSONSeq; `three_d` measures and validates the resulting 3D geometry.
 
     ```sql
-    LOAD './duckdb-cityjson/build/release/extension/cityjson/cityjson.duckdb_extension';
-    ```
-
-    :::caution[Not the community build]
-    `INSTALL cityjson FROM community` still serves an older build that emits a
-    single un-suffixed `geometry` column and a `geometry_properties` VARCHAR. The
-    queries on this page use the LoD-suffixed layout the specification defines, so
-    they do not bind against it. Build from source until the registry catches up.
-    :::
-
-    For the 3D step below you also need the `three_d` extension, which turns the
-    stored WKB geometry into measurable solids (volume, height, validation). It is
-    not yet on the community registry — see the
-    [duckdb-3d tutorial](/tutorials/duckdb-3d) to build and load it — after which:
-
-    ```sql
+    INSTALL cityjson FROM community;
+    LOAD cityjson;
+    INSTALL three_d FROM community;
     LOAD three_d;
     ```
+
+    The registry lists [`cityjson`](https://duckdb.org/community_extensions/extensions/cityjson)
+    and [`three_d`](https://duckdb.org/community_extensions/extensions/three_d).
+    If an older version is already installed, refresh it with
+    `FORCE INSTALL cityjson FROM community;` and
+    `FORCE INSTALL three_d FROM community;`, then restart DuckDB and load them.
 
     A plain DuckDB build already reads Parquet, so no extra extension is needed to
     open a converted CityParquet package.

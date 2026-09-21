@@ -216,8 +216,7 @@ next section measures.
 ## Measure the 3D solids with `three_d`
 
 To turn the `Solid` columns into measurable values, use the
-[`three_d`](/tutorials/duckdb-3d) extension. It is built from source (see that
-tutorial for the build), producing a DuckDB shell with `three_d` preloaded.
+[`three_d`](/tutorials/duckdb-3d) extension, available from the DuckDB community registry.
 
 :::note[`three_d` loads alongside `spatial`]
 `three_d` exposes its 3D operations under `ST_3D*` names, so it shares a session with
@@ -230,6 +229,7 @@ whole country would download gigabytes; the same window as above brings the
 neighbourhood into memory in a few seconds, and everything after it is local:
 
 ```sql
+INSTALL three_d FROM community;
 LOAD three_d;
 INSTALL httpfs; LOAD httpfs;
 
@@ -401,9 +401,8 @@ projection, no `to_json`. Keep the window on, so the extract is a neighbourhood
 rather than a country:
 
 ```sql
--- Built from source; see the cityjson tutorial. The community registry still
--- serves an older build whose column names differ.
-LOAD './build/release/extension/cityjson/cityjson.duckdb_extension';
+INSTALL cityjson FROM community;
+LOAD cityjson;
 
 COPY (
   SELECT * FROM read_parquet('https://cityparquet.open3d.city/data/3dbag/building.parquet')

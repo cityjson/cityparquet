@@ -412,6 +412,16 @@ export default function Playground() {
         </button>
       </header>
 
+      <aside className="cp-performance-notice" aria-labelledby="cp-performance-title">
+        <h2 id="cp-performance-title">Browser performance: queries can be slow</h2>
+        <p>
+          DuckDB runs here as WebAssembly, which fetches HTTPS ranges one at a time on a single
+          thread; native DuckDB fetches them in parallel. <strong>A query over the 16.4 GB package
+          takes tens of seconds in a tab</strong> where the same query takes a few seconds natively.
+          It reads the same bytes either way — the difference is the browser, not the encoding.
+        </p>
+      </aside>
+
       {boot.status === "starting" && (
         <div className="cp-boot">
           <span className="cp-spinner" aria-hidden="true" />
@@ -564,12 +574,6 @@ export default function Playground() {
             </>
           )}
           . Queries run against public data over HTTPS range requests.
-        </p>
-        <p>
-          DuckDB runs here as WebAssembly, which fetches those ranges one at a time on a single
-          thread; native DuckDB fetches them in parallel. A query over the 16.4 GB package takes
-          tens of seconds in a tab where the same query takes a few seconds natively. It reads the
-          same bytes either way — the difference is the browser, not the encoding.
         </p>
       </footer>
     </div>

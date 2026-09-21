@@ -1,108 +1,168 @@
 ---
 title: Benchmark
-description: How CityParquet performs on read, size, and compression — and how it was measured.
+description: File size, format read performance, and database comparisons — measured results and their limits.
 sidebar:
-  badge: WIP
   icon: gauge
 ---
 
-This page describes how CityParquet is measured and what the measurements
-**indicate**. Everything here comes from the benchmark tree of the
-[`cityjson/cityparquet`](https://github.com/cityjson/cityparquet) monorepo and its
-committed reports; the raw per-dataset CSVs are not republished. Treat every
-figure as indicative of an experimental implementation, not as an authoritative
-result — and read the [caveats](#caveats) before quoting any number.
+CityParquet is designed for compact storage and analytical reads. These results
+show where that design pays off, and where an indexed format or a database is a
+better fit.
 
-## Where the numbers come from
+**The main result:** CityParquet has the smallest measured files and strong
+selective-read performance. FlatCityBuf leads some spatial and full-read
+workloads; databases retain advantages for indexed lookups and transactions.
 
-The repository's `benchmark/` tree holds three families, each answering a
-different question. Its
-[`README`](https://github.com/cityjson/cityparquet/blob/main/benchmark/README.md)
-is the index; the per-family methodology documents beside it are the authority,
-and they carry caveats this page only summarises.
+## File size: less data to store and transfer
 
-| Family                | Question                                                                  |
-| --------------------- | ------------------------------------------------------------------------- |
-| `benchmark/formats/`  | CityParquet against the other file formats — read, write, size, codec, row order |
-| `benchmark/databases/`| CityParquet against 3D city model **databases** — cjdb and 3DCityDB v5    |
-| `benchmark/plot/`     | The renderers; measures nothing                                           |
+This benchmark measures the files needed to represent each dataset in CityGML,
+CityJSON, CityJSONSeq, FlatCityBuf, and Hilbert-ordered CityParquet. Smaller files
+reduce storage and transfer requirements; they do not, by themselves, guarantee
+faster queries.
 
-## Methodology
+**CityParquet is the smallest of the five representations measured on all six
+datasets.** Its size is 21–31% of uncompressed CityJSONSeq. That is a result for
+these encodings and writer settings, not a claim about every format or compression
+configuration.
 
-Write-side measurements are produced by the `bench` subcommand of the
-[`cityparquet-rs`](/resources/software) CLI, which appends one CSV row per variant:
+![File size across six city-model datasets, with CityParquet the smallest measured representation.](/benchmarks/sizes.png)
 
-```bash
-cargo run --release -p cityparquet-cli -- bench --input INPUT --out results.csv
+For the **3DBAG slice of 1,000,001 CityObjects**, the stored sizes are:
+
+| Format | Size, decimal GB |
+| --- | ---: |
+| CityGML | 10.80 |
+| CityJSON | 3.37 |
+| CityJSONSeq | 2.89 |
+| FlatCityBuf | 2.21 |
+| CityParquet, Hilbert-ordered | **0.78** |
+
+CityParquet uses approximately **93% less space than CityGML**, **77% less than
+CityJSON**, and **65% less than FlatCityBuf** on this slice. Columnar encoding
+and compression provide compact storage while keeping individual columns
+accessible. The PNG's MB/GB labels use binary divisors; the table above uses
+explicit decimal GB (one billion bytes).
+
+## Format comparison: choose by the query
+
+The format benchmark exercises counting, attribute filtering and aggregation,
+column projection, spatial windows, ID lookups, and full reads. It measures the
+cost of opening and reading each representation with its own reader. The
+heatmap reports time and memory relative to CityJSONSeq; lower ratios are better.
+
+![Format comparison across datasets and queries: CityParquet is strong on selective attribute reads; FlatCityBuf is strong on spatial and full reads.](/benchmarks/heatmap.png)
+
+**CityParquet balances compact files with fast analytical access.** On the
+million-object 3DBAG slice, reading one attribute takes **0.011 s**, compared
+with **45.47 s** for CityJSONSeq, **71.42 s** for CityJSON, and **142.51 s** for
+CityGML. Aggregating that attribute takes **0.016 s**, versus **46.14 s** for
+CityJSONSeq. Reading selected columns avoids parsing the rest of the model.
+
+**FlatCityBuf, the FlatBuffers-based format, is particularly effective for
+spatial access and full reads.** Its measured 1% spatial-window query takes
+about **0.0018 s**, versus **0.103 s** for CityParquet. These spatial timings are
+not an exact like-for-like comparison: FlatCityBuf's index is 2D and the readers
+use different feature/object counting conventions. Treat the sub-10 ms figure
+as indicative rather than a precise speedup factor.
+
+Full-read times on that same slice are **23.26 s** for FlatCityBuf, **45.24 s**
+for CityJSONSeq, **51.89 s** for CityParquet, **79.46 s** for CityJSON, and
+**149.00 s** for CityGML. CityParquet therefore does **not** beat every text
+format on a complete read. Full reads also decode different native
+representations; they are useful workload costs, not identical operations.
+
+The practical distinction is the amount of the model a query needs: CityParquet
+is well suited to selecting and aggregating attributes, while FlatCityBuf's
+spatial index and full-read performance make it a strong alternative for those
+access patterns.
+
+## Database comparison: analytical delivery, without a database service
+
+This benchmark compares **DuckDB reading CityParquet files**, **cjdb**, and
+**3DCityDB**, using the million-object 3DBAG slice. It measures stored size
+including indexes, query time, and execution-process memory. It compares whole
+systems, so its timings must not be mixed with the native-reader format
+benchmark above.
+
+![Database comparison: CityParquet with DuckDB uses less storage and is faster on many analytical queries, while indexed databases lead ID and hierarchy lookups; spatial results are marked mismatch.](/benchmarks/databases.png)
+
+**The CityParquet package needs substantially less storage:** approximately
+**0.78 GB**, compared with **3.87 GB** for cjdb and **23.10 GB** for 3DCityDB,
+including their indexes. The database suite uses a separately prepared
+CityParquet package, so its byte size differs slightly from the format suite.
+That is about **80% less than cjdb** and **97% less
+than 3DCityDB**. These are stored dataset sizes, not complete server footprints.
+
+DuckDB over CityParquet performs well on the measured scans, attribute
+aggregation, projection, LoD extraction, and semantic-surface queries. For
+example, the database suite's full-read scenario reports **1.20 s**, compared
+with **61.84 s** for cjdb and **276.41 s** for 3DCityDB. Each system forces
+materialisation differently: DuckDB hashes columns, whereas the PostgreSQL
+systems use representation-specific expressions. This is not the WKB-decoding
+full read in the format benchmark.
+
+**Indexed databases remain better for some access patterns.** The measured ID
+lookup takes about **1.3–1.5 ms** in cjdb and 3DCityDB, versus **273 ms** with
+DuckDB over CityParquet; hierarchy lookups favour the databases too. The spatial
+query results are marked **mismatch** in the report and are excluded from
+performance conclusions because the systems returned different results.
+
+CityParquet is primarily a **read-oriented delivery format**, not a transactional
+database. It does not provide in-place row updates, concurrent transactions, or
+the operational services needed for a frequently edited city database. Use the
+storage and read results to assess published analytical datasets, not to claim
+that CityParquet replaces a transactional system.
+
+## How to interpret the results
+
+- **Dataset scope:** the headline 3DBAG results concern a slice of 1,000,001
+  CityObjects, not the entire national dataset used by the playground.
+- **Cache and execution:** the format reads use warm-cache, single-threaded
+  measurements. The database suite has its own execution settings, including
+  a multithreaded DuckDB configuration. These are local native measurements,
+  not HTTP delivery or browser WebAssembly timings.
+- **Aggregation:** the format timings are medians of seven measured runs after
+  warm-up. The database timings are arithmetic means of seven measured runs,
+  as recorded in the exported CSV and shown by the figure's “Mean query time”
+  label. The two summaries use different statistics.
+- **Counting and geometry:** feature-level and CityObject-level operations are
+  not interchangeable. Attribute filtering, aggregation, projection, and ID
+  queries use CityObject granularity; full-read and spatial comparisons require
+  the additional qualifications above.
+- **Memory:** execution-process RSS is not total server memory, filesystem
+  cache, or a complete deployment footprint.
+- **Coverage:** the completeness file records family/metric presence, not a
+  blanket correctness certificate. Failed or mismatched results remain visible.
+- **Compression:** size rankings apply to the tested settings. The separate
+  codec experiments use different default compression levels, so they do not
+  establish a universally best codec.
+
+The implementation is experimental. See the
+[format methodology](https://github.com/cityjson/cityparquet/tree/develop/benchmark/formats)
+and [database methodology](https://github.com/cityjson/cityparquet/tree/develop/benchmark/databases)
+for reader behaviour, query definitions, and limitations.
+
+## Reproduce the report
+
+The figures below are PNG exports from the repository's **`just bench-summary`**
+report, published here with its [underlying data](/benchmarks/bench_data.json),
+[completeness record](/benchmarks/completeness.json), and
+[export provenance](/benchmarks/provenance.json). They reuse the saved full-run
+summary, exported to this site on **21 September 2026**; no measurements were
+rerun for this page. [Open the complete benchmark report](/benchmarks/summary.html)
+for the configuration experiments and detailed caveats as well.
+
+
+From the CityParquet repository, with benchmark inputs and results in the
+configured data root:
+
+```sh
+just bench-prep
+just bench-run
+just bench-summary
 ```
 
-Read-side measurements come from a separate coordinator
-(`cityparquet-readbench`), which runs the same scenario matrix across every
-compared format. Both are driven from the repository root:
-
-```bash
-just fetch-tools                              # pinned citygml-tools + cjseq
-just fetch-data                               # the read corpus
-just bench benchmark/formats/data/benchmark   # cross-format read comparison
-just compression-bench FOLDER                 # codec and row-group axes
-```
-
-**Corpus.** Two pinned corpora, so runs are reproducible. The **read** corpus is
-six real published CityJSON 2.0 city models from cityjson.org (423 MB on the
-wire, 853 to 198,699 objects), chosen because every one of them yields *all*
-compared formats — a dataset producing seven of eight contributes a comparison
-with a hole in it. The **configuration** corpus is one 3DBAG slice cut at four
-cardinalities, so the codec, row-group and ordering axes vary size with the data
-held constant. Every entry pins its byte size and is verified after fetching.
-
-**Variant matrix.** `--variants` takes a comma-separated list in the grammar
-`<preset>[+hilbert][+rg<N>][+<codec>]` — a writer preset optionally combined with
-Hilbert spatial ordering, a row-group-size override, and a codec override. There is
-no layout axis: the by-module object-table split is the only layout CityParquet
-defines. Omitting it runs the default set. Each variant is timed `--repeat` times
-(default 5) and the **median** is reported; `--window-frac` (default 0.05) sizes the
-spatial window query.
-
-**Baseline and round-trip.** The harness compares against a DuckDB `COPY` Parquet
-baseline, and unless `--skip-roundtrip` is passed it also runs the
-`convert → export → compare` round-trip check, so a size/speed number is only
-reported for a variant that reproduced its input semantically.
-
-## Read performance
-
-The columnar layout buys two kinds of read savings.
-
-**Projection pushdown, per LoD.** A model carries one geometry column per LoD. A
-query that projects `geometry_lod2_2` never reads the `geometry_lod1_2` bytes — the
-reader touches only the columns and LoDs a query names. This is the columnar win
-argued in the [spatial-access design decision](/design-decisions/spatial-access) and the object-table design.
-
-**Spatial row-group pruning.** The `bbox` column feeds Parquet's per-row-group
-min/max statistics, and a smaller row-group size means each group covers a tighter
-spatial extent, so a bounding-box window prunes more groups without downloading
-them. Hilbert ordering reinforces this by clustering spatially-near rows into the
-same group. At NYC scale, shrinking the row-group size to 512 rows was measured to
-prune roughly **34 %** of row groups and give an approximately **2×** faster window
-query. The trade-off is real and disclosed in the reports: smaller row groups cost
-compression ratio and full-scan time, so pruning gains are bought with overhead —
-which variant wins depends on the query.
-
-## File size and compression
-
-The default writer recipe uses **zstd at level 3**; the `--recipe` presets
-(`cityparquet`, `parquet-defaults`, `no-dictionary`, `no-bss`, `no-delta`, `snappy`)
-vary the encoding and codec so the size/scan trade-offs can be compared, and
-`--zstd-level` tunes the level directly. Because Parquet's dictionary and run-length
-encodings make sparse NULLs nearly free, the wide per-module object tables stay
-compact even where objects share few attributes — part of why the schema is laid
-out the way the [schema strategy](/design-decisions/schema-strategy) describes. Hard size figures are
-deferred to the committed benchmark reports rather than reproduced here.
-
-## Caveats
-
-:::warning[Read these before quoting any number]
-The compression comparison uses codec **defaults at mismatched levels**
-(zstd@3 vs gzip@6 vs brotli@1). Because the levels differ, a "smallest codec"
-claim is **not supportable** from these results. The reference implementation is
-experimental; treat all figures as indicative, not authoritative.
-:::
+`bench-prep` prepares inputs; `bench-run` performs measurements; `bench-summary`
+only renders existing results. To update this website, export the rendered PNGs
+and matching report data together into `documents/public/benchmarks/`, retaining
+any incomplete or invalid results and updating the provenance record.
