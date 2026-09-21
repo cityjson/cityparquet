@@ -2390,7 +2390,7 @@ def test_named_items_are_resolved_directly_not_enumerated(tmp_path, monkeypatch)
 
     def fake_items_by_id(base, cid, ids, client, dropped=None):
         seen["ids"] = list(ids)
-        dropped.append(f"{cid}/items/missing_item.json")
+        dropped.append("missing")
         return [Item(cid, i, "u", None, None) for i in ids]
 
     monkeypatch.setattr(driver.discover, "enumerate_items", no_enumeration)
@@ -2472,3 +2472,33 @@ def test_naming_items_needs_exactly_one_collection():
 def test_an_unusable_item_id_is_rejected_before_any_work(bad):
     with pytest.raises(SystemExit):
         driver.config_from_args(driver.parse_args(["--collection", "jp", "--item", bad]))
+
+
+def test_a_converted_bundle_is_not_later_recorded_as_a_duplicate(tmp_path, monkeypatch):
+    # Converted with --item, then a whole-collection run over the same output:
+    # the package exists, so the item is skipped with no record — not ledgered
+    # as a `duplicate_bundle` that would replace its success in the roll-up.
+    processed = []
+    monkeypatch.setattr(driver, "process_item", lambda item, **k: processed.append(item.item_id))
+    config = _config(tmp_path, jobs=1)
+    item = Item("japan-plateau-3d", "x_citygml_1_op", "u", None, None)
+    _write_package(config, item)
+    ledger = Ledger(tmp_path / "_reports")
+    driver.convert_items([item], ledger=ledger, config=config)
+    assert processed == []
+    assert ledger.histogram() == {}
+
+
+def test_a_limit_cannot_truncate_named_items():
+    with pytest.raises(SystemExit):
+        driver.config_from_args(
+            driver.parse_args(["--collection", "jp", "--item", "a", "--limit-per-collection", "1"])
+        )
+
+
+def test_a_repeated_item_id_is_rejected():
+    # Two workers converting into one package directory race each other.
+    with pytest.raises(SystemExit):
+        driver.config_from_args(
+            driver.parse_args(["--collection", "jp", "--item", "a", "--item", "a"])
+        )

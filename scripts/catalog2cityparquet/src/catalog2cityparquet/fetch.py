@@ -20,6 +20,7 @@ here" — a fact about the payload rather than a failure to read it.
 from __future__ import annotations
 
 import gzip
+import re
 import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, urlsplit
@@ -244,7 +245,8 @@ def normalise(
     Recurses into nested archives. The result may hold many files:
     `cityparquet convert` accepts several inputs and merges them, which is what
     a multi-tile archive needs — Japan's whole-city ZIPs hold 136 GMLs under
-    `udx/`, beside codelists and a spec PDF that are dropped here. Documents
+    `udx/`, beside codelists, schemas and a spec PDF that are dropped here —
+    by content (`is_city_model`), not merely by suffix. Documents
     that merely happen to be ZIPs (`.xlsx`, `.docx`, …) are left shut.
 
     `max_depth` counts unpacking rounds, not directory levels: the downloaded
@@ -303,7 +305,29 @@ def normalise(
             pending.append((target, depth + 1))
             continue
 
-        if current.suffix.lower() in CONVERTIBLE_SUFFIXES:
+        if current.suffix.lower() in CONVERTIBLE_SUFFIXES and is_city_model(current):
             found.append(current)
 
     return sorted(found)
+
+
+#: How much of a file `is_city_model` reads. The marker sits in the first
+#: element or key of any real city model; the window only has to clear an XML
+#: prolog and comments, or a CityJSON header whose `type` is not written first.
+_MODEL_SNIFF_BYTES = 1 << 20
+
+
+def is_city_model(path: Path) -> bool:
+    """Whether a file with a convertible suffix actually holds a city model.
+
+    The suffix is not enough: a whole-city PLATEAU archive ships ~500
+    `codelists/*.xml` GML dictionaries and schema files beside its CityGML, and
+    any one of them handed to the converter fails the whole city. A CityGML
+    document's root is a `CityModel`; a CityJSON (or CityJSONSeq) document's
+    first object has `"type": "CityJSON"`.
+    """
+    with path.open("rb") as fh:
+        head = fh.read(_MODEL_SNIFF_BYTES)
+    if path.suffix.lower() in (".json", ".jsonl"):
+        return re.search(rb'"type"\s*:\s*"CityJSON"', head) is not None
+    return re.search(rb"<(?:[A-Za-z_][\w.-]*:)?CityModel[\s>/]", head) is not None

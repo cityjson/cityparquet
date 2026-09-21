@@ -389,3 +389,28 @@ def test_local_name_reads_a_nextcloud_share_files_parameter():
         "?path=%2F3d%2Fbati3d%2F02_CIM&files=01_Roannais_LOD3.gml"
     )
     assert fetch.local_name(url) == "01_Roannais_LOD3.gml"
+
+
+def test_only_city_models_are_convertible(tmp_path):
+    # A whole-city PLATEAU archive ships ~500 `codelists/*.xml` (GML
+    # dictionaries) and schema files beside its CityGML; passed to the
+    # converter by suffix alone, one of them fails the whole city.
+    archive = tmp_path / "city.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "udx/bldg/a.gml",
+            '<?xml version="1.0"?>\n'
+            '<core:CityModel xmlns:core="http://www.opengis.net/citygml/2.0"/>',
+        )
+        zf.writestr(
+            "codelists/Building_usage.xml",
+            '<?xml version="1.0"?>\n<gml:Dictionary xmlns:gml="http://www.opengis.net/gml"/>',
+        )
+        zf.writestr("meta/info.json", '{"name": "not a city model"}')
+        zf.writestr("model.city.json", '{"type": "CityJSON", "version": "2.0"}')
+        zf.writestr(
+            "model.city.jsonl",
+            '{"type":"CityJSON","version":"2.0"}\n{"type":"CityJSONFeature"}\n',
+        )
+    found = fetch.normalise(archive, tmp_path / "work")
+    assert sorted(p.name for p in found) == ["a.gml", "model.city.json", "model.city.jsonl"]

@@ -623,6 +623,13 @@ def convert_items(
         started = time.monotonic()
         stats = ItemStats()
         try:
+            if config.skip_existing and already_converted(config, item):
+                # No record at all: this is not an outcome of *this* run, and
+                # counting it would make a resumed run look like a fresh
+                # success. Ahead of the duplicate-bundle rule, so a bundle an
+                # earlier run converted by name is not later ledgered as a
+                # skip that replaces its success in the roll-up.
+                return
             if config.item_ids is None and fetch.is_duplicate_bundle(item):
                 # Skipped before the download, which is the whole point: these
                 # are hundreds of gigabytes of data we convert from its tiles.
@@ -631,11 +638,6 @@ def convert_items(
                     Record(item.collection, item.item_id, "skipped", reason="duplicate_bundle"),
                     state,
                 )
-                return
-            if config.skip_existing and already_converted(config, item):
-                # No record at all: this is not an outcome of *this* run, and
-                # counting it would make a resumed run look like a fresh
-                # success.
                 return
             process_item(item, config=config, client=client, stats=stats)
         except convert.ConvertError as exc:
@@ -1290,6 +1292,12 @@ def config_from_args(args: argparse.Namespace) -> Config:
             raise SystemExit(
                 "--item needs exactly one --collection: an item id is unique only there"
             )
+        if args.limit_per_collection is not None:
+            raise SystemExit(
+                "--item and --limit-per-collection conflict: a limit would drop named items"
+            )
+        if len(set(args.items)) != len(args.items):
+            raise SystemExit("--item: an id is named twice; two workers would share one package")
         for item_id in args.items:
             try:
                 usable = safe_item_id(item_id) == item_id

@@ -234,11 +234,29 @@ def items_by_id(
     The catalogue publishes each item at `<cid>/items/<id>_item.json`, so a
     run that names its items reads exactly those documents. Listing
     `japan-plateau-3d` to pick out 62 of its 60,471 items would cost 61 page
-    requests before the first download. A name that resolves to nothing lands
-    in `dropped`, like any other unreadable document.
+    requests before the first download.
+
+    Every item keeps the id it was asked for, and every one that cannot be
+    used — unreadable, malformed, carrying no `data` asset, or declaring some
+    other id — lands in `dropped` under that id. A failed lookup and a later
+    successful retry must share one ledger identity, or the roll-up counts the
+    item twice.
     """
-    names = [f"{cid}/items/{item_id}_item.json" for item_id in item_ids]
-    return items_from_listing(base_url, "", cid, client, names=names, dropped=dropped)
+    items: list[Item] = []
+    for item_id in item_ids:
+        url = f"{base_url}/{cid}/items/{quote(item_id, safe='')}_item.json"
+        try:
+            doc = _get_json(client, url)
+            href = doc["assets"]["data"]["href"]
+            if doc.get("id") != item_id or not href:
+                raise ValueError(f"{url} does not describe item {item_id!r}")
+            media_type = doc["assets"]["data"].get("type")
+        except Exception:
+            if dropped is not None:
+                dropped.append(item_id)
+            continue
+        items.append(Item(cid, item_id, href, media_type, url))
+    return items
 
 
 def items_from_collection_links(

@@ -598,4 +598,23 @@ def test_a_named_item_that_does_not_exist_is_handed_back(served_dir, client):
     dropped: list[str] = []
     items = discover.items_by_id(base, "jp", ["a", "nope"], client, dropped=dropped)
     assert [i.item_id for i in items] == ["a"]
-    assert dropped == ["jp/items/nope_item.json"]
+    assert dropped == ["nope"]
+
+
+def test_a_named_item_is_recorded_under_the_id_that_was_asked_for(served_dir, client):
+    # A failed lookup and a later successful retry must share one ledger
+    # identity, and a document declaring some other id must not stand in for
+    # the one requested.
+    root, base = served_dir
+    write_json(root / "jp" / "items" / "a_item.json", stac_item("b", f"{base}/data/a.zip"))
+    write_json(root / "jp" / "items" / "c_item.json", [])
+    dropped: list[str] = []
+    assert discover.items_by_id(base, "jp", ["a", "c"], client, dropped=dropped) == []
+    assert dropped == ["a", "c"]
+
+
+def test_a_named_item_id_is_quoted_into_its_url(served_dir, client):
+    root, base = served_dir
+    write_json(root / "jp" / "items" / "a#x_item.json", stac_item("a#x", f"{base}/data/a.zip"))
+    items = discover.items_by_id(base, "jp", ["a#x"], client)
+    assert [i.item_id for i in items] == ["a#x"]
