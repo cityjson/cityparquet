@@ -378,3 +378,14 @@ def test_local_name_uses_the_path_when_there_is_one():
 def test_local_name_never_escapes_its_directory():
     assert fetch.local_name("https://example.invalid/x?f=../../etc/passwd") == "passwd"
     assert fetch.local_name("https://example.invalid/") == "download"
+
+
+def test_local_name_reads_a_nextcloud_share_files_parameter():
+    # craig-aura-zae-2024 serves each GML from a Nextcloud share, whose
+    # download endpoint names the file in `files`; saved as `download`, every
+    # item was discarded as unconvertible.
+    url = (
+        "https://drive.opendata.craig.fr/s/opendata/download"
+        "?path=%2F3d%2Fbati3d%2F02_CIM&files=01_Roannais_LOD3.gml"
+    )
+    assert fetch.local_name(url) == "01_Roannais_LOD3.gml"

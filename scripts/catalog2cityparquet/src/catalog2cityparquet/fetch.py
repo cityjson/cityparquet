@@ -39,7 +39,7 @@ USER_AGENT = (
 _CHUNK = 1 << 20
 
 #: Query parameters that carry a filename when the URL path does not.
-_FILENAME_PARAMS = ("f", "filename", "file", "name")
+_FILENAME_PARAMS = ("f", "filename", "file", "files", "name")
 
 #: Wrappers a payload may legitimately arrive in.
 _ARCHIVE_SUFFIXES = frozenset({".zip", ".gz"})

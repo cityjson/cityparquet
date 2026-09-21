@@ -96,7 +96,8 @@ throughout, because the catalogue's hosts are not:
 
 - **Media types are wrong.** One collection advertises `application/gml+xml` and serves
   a 468 MB ZIP. Format is decided by **magic bytes** and nothing else.
-- **Filenames hide in query strings.** Estonia publishes hrefs such as `dl.ashx?f=x.gml`.
+- **Filenames hide in query strings.** Estonia publishes hrefs such as `dl.ashx?f=x.gml`,
+  and the Auvergne-Rhône-Alpes Nextcloud share `download?path=…&files=x.gml`.
   The saved name matters, because the next stage decides convertibility from the suffix —
   a payload saved as `dl.ashx` would be discarded as unconvertible.
 - **One origin 403s** without a browser `User-Agent`, so one is sent.
