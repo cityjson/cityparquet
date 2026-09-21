@@ -206,15 +206,15 @@ pub fn read_generic_object<R: BufRead>(
                     {
                         attributes::accumulate(&mut b.attributes, k, v);
                     }
-                } else if !ns_is(&rr, NS_GML) && name == b"boundedBy" {
-                    // The object's own boundary surfaces: read with their
-                    // semantic types, in the object's own module namespace
-                    // (the one `boundedBy` itself is in).
+                } else if !ns_is(&rr, NS_GML) && is_semantic_surface_property(&name) {
+                    // The object's own semantic surfaces: read with their
+                    // types, in the object's own module namespace (the one the
+                    // property itself is in).
                     let Some(ns) = ns_of(&rr) else {
                         skip_element(reader, buf)?;
                         continue;
                     };
-                    read_bounded_by(reader, buf, &mut b, &ns)?;
+                    read_bounded_by(reader, buf, &mut b, &ns, &name)?;
                 } else if !ns_is(&rr, NS_GML) && is_nesting_property(&name) {
                     // A CityGML nesting property: `outerBridgeConstruction`,
                     // `consistsOfBridgePart`, … Its child is a 2nd-level
@@ -338,7 +338,7 @@ fn read_abstract_building<R: BufRead>(
                         }
                     }
                 } else if bldg && name == b"boundedBy" {
-                    read_bounded_by(reader, buf, &mut b, NS_BLDG.as_bytes())?;
+                    read_bounded_by(reader, buf, &mut b, NS_BLDG.as_bytes(), b"boundedBy")?;
                 } else if bldg && name == b"consistsOfBuildingPart" {
                     read_consists_of_part(reader, buf, &mut b, depth)?;
                 } else if bldg
@@ -505,6 +505,26 @@ fn lod_suffix(local: &[u8], suffix: &[u8]) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Whether a module-namespace property holds the object's **semantic
+/// surfaces**.
+///
+/// `boundedBy` for the modules whose features have boundary surfaces
+/// (Building, Bridge, Tunnel, WaterBody). A transportation feature has none;
+/// CityGML 2.0 gives `Road`, `Railway`, `Track` and `Square` two dedicated
+/// properties instead, `trafficArea` and `auxiliaryTrafficArea`, each wrapping
+/// a `TrafficArea` / `AuxiliaryTrafficArea` feature with its own
+/// `lodNMultiSurface`. CityJSON models both as semantic surfaces of the
+/// transportation object's own geometry — the identical shape — so they are
+/// read by the same reader. The wrapped feature's own attributes (`function`,
+/// `usage`, `surfaceMaterial`) are not carried onto the surface, exactly as a
+/// `WallSurface`'s are not.
+fn is_semantic_surface_property(local: &[u8]) -> bool {
+    matches!(
+        local,
+        b"boundedBy" | b"trafficArea" | b"auxiliaryTrafficArea"
+    )
 }
 
 /// The CityJSON type of a CityGML 2.0 **2nd-level** feature, by element local
@@ -691,10 +711,13 @@ fn boundary_lod(local: &[u8]) -> Option<String> {
         .or_else(|| lod_suffix(local, b"Surface"))
 }
 
-/// A `boundedBy`: each semantic surface child (`WallSurface`,
-/// `OuterFloorSurface`, ...) contributes one entry to `surfaces` and its
-/// polygons are read from its `lodN` geometry (registered for xlink resolution
-/// AND recorded in `boundary_polys` for the no-solid MultiSurface path).
+/// A semantic-surface property — `boundedBy`, or a Road's `trafficArea` /
+/// `auxiliaryTrafficArea` (see [`is_semantic_surface_property`]), ending at
+/// `End(prop_name)`: each semantic surface child (`WallSurface`,
+/// `OuterFloorSurface`, `TrafficArea`, ...) contributes one entry to `surfaces`
+/// and its polygons are read from its `lodN` geometry (registered for xlink
+/// resolution AND recorded in `boundary_polys` for the no-solid MultiSurface
+/// path).
 ///
 /// `ns` is the **owning feature's own module namespace** — taken from the
 /// `boundedBy` element itself, which the schema puts in that same module. A
@@ -708,6 +731,7 @@ fn read_bounded_by<R: BufRead>(
     buf: &mut Vec<u8>,
     b: &mut RawBuilding,
     ns: &[u8],
+    prop_name: &[u8],
 ) -> Result<()> {
     loop {
         buf.clear();
@@ -727,7 +751,7 @@ fn read_bounded_by<R: BufRead>(
                     skip_element(reader, buf)?;
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == b"boundedBy" => break,
+            Event::End(e) if e.local_name().as_ref() == prop_name => break,
             Event::Eof => {
                 return Err(CityParquetError::Schema(
                     "unexpected end of document inside <boundedBy>".to_string(),
@@ -889,10 +913,11 @@ impl RawBuilding {
         }
         // A non-building object's own lodN{MultiSurface,Geometry} geometry
         // (CG-7): one CityJSON MultiSurface per LoD, no semantics. A LoD whose
-        // `boundedBy` surfaces carry geometry is skipped here: that geometry is
-        // emitted below WITH its semantics, and the same faces twice would be
-        // two geometries at one LoD — of which the encoder keeps the first,
-        // silently discarding the semantic one.
+        // semantic surfaces carry geometry is skipped here: that geometry is
+        // emitted below WITH its semantics and absorbs any standalone face it
+        // does not already hold (`build_multisurface_geometry`). Two
+        // geometries at one LoD would instead let the encoder keep the first
+        // and silently discard the other.
         let semantic_lods: std::collections::HashSet<&String> = self
             .boundary_polys
             .iter()
@@ -1228,6 +1253,30 @@ impl RawBuilding {
             face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
             ring_ids.push(ring_ids_value(poly));
             reverse.push(reverse_leaf(poly, false));
+        }
+        // The object's standalone `lodNMultiSurface` at this same LoD is not
+        // emitted as a geometry of its own — one LoD yields one geometry, and
+        // the encoder keeps only the first — so any face of it that no
+        // semantic surface already contributed joins here, untyped (a `null`
+        // semantic value). Usually there is none: PLATEAU's standalone LoD3
+        // road surface is 33 299 xlinks into its own traffic areas. But a face
+        // no traffic area covers would otherwise simply vanish.
+        for (plain_lod, polys) in &self.plain_surfaces {
+            if plain_lod != lod {
+                continue;
+            }
+            for poly in polys {
+                if let Some(id) = poly.id.as_deref()
+                    && !emitted.insert(id)
+                {
+                    continue;
+                }
+                boundaries.push(surface_rings(poly, false, vb)?);
+                values.push(Value::Null);
+                face_ids.push(poly.id.clone().map(Value::from).unwrap_or(Value::Null));
+                ring_ids.push(ring_ids_value(poly));
+                reverse.push(reverse_leaf(poly, false));
+            }
         }
         let mut g = json!({
             "type": "MultiSurface",
