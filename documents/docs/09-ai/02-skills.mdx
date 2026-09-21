@@ -53,8 +53,9 @@ it, because they name the same SQL for the `duckdb` command line.
 
 Each trap in the skills comes from running SQL against the Delft package on
 DuckDB v1.5.5, not from the documentation alone. Every SQL block in the skills
-runs as part of the MCP server's test suite. Three of the traps give a wrong
-answer rather than an error:
+runs as part of the MCP server's test suite. Two of the traps give a wrong
+answer rather than an error, and a third fails in a way that looks like a
+data problem:
 
 - **A footprint total twice too large.** On 3DBAG data both a `Building` and
   its `BuildingPart`s carry the LoD0 footprint. Summing LoD0 over every row
@@ -62,13 +63,13 @@ answer rather than an error:
 - **A conversion with no coordinate reference system.**
   `COPY (SELECT * FROM read_parquet(…)) TO 'out.city.jsonl' (FORMAT cityjsonseq)`
   writes a valid file that states no CRS, unless the `crs` option is given.
-- **A validity filter that filters nothing.**
-  `sum(ST_3DVolume(s)) FILTER (WHERE ST_3DValidationReport(s).is_valid)` still
-  calls `ST_3DVolume` on every row, and the first invalid solid raises. The
-  filter belongs in the `WHERE` clause.
+- **A validity filter that does not filter.**
+  `sum(ST_3DVolume(s)) FILTER (WHERE ST_3DValidationReport(s).is_valid)` looks
+  gated but still calls `ST_3DVolume` on every row, so the first invalid solid
+  raises `solid is not manifold`. The filter belongs in the `WHERE` clause.
 
-When the skills were tested, a model without them asked for the total volume
-of Delft's buildings wrote `ST_Volume(ST_GeomFromWKB(geometry_lod2_2))` after
+In one test run, a model without the skills, asked for the total volume of
+Delft's buildings, wrote `ST_Volume(ST_GeomFromWKB(geometry_lod2_2))` after
 `LOAD spatial`, and `ST_Volume` does not exist. With the skills, the same
 model wrote the gated `ST_3DVolume` query, which returns 1 915 861 m³ over the
 1098 valid solids of the 1116 building parts.

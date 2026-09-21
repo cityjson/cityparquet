@@ -41,7 +41,10 @@ You need **Node.js 24** or newer and **pnpm**.
     codex mcp add cityparquet -- node /absolute/path/to/cityparquet/ai/mcp/dist/stdio.js
     ```
 
-    **Any other client**: add the server to the client's configuration file.
+    **Clients configured with an `mcpServers` JSON file**: add the server to
+    that file. Other clients have their own way to register a stdio server:
+    give it the command `node` and the argument
+    `/absolute/path/to/cityparquet/ai/mcp/dist/stdio.js`.
 
     ```json
     {
@@ -112,10 +115,12 @@ Set these as environment variables on the server, for example with
 ## What to expect
 
 :::caution[`spatial` is not loaded by default]
-`ST_Area`, `ST_Transform` and `ST_GeomFromWKB` are unavailable unless you add
-`spatial`. `three_d` has the 3D equivalents: `ST_3DFootprintArea`,
-`ST_3DTransform` and `ST_3DVolume`. `spatial` could not read the solids
-anyway. It rejects `PolyhedralSurface Z`.
+`ST_Area` and `ST_Transform` are unavailable unless you add `spatial`. Use
+`three_d` instead: `ST_3DFootprintArea` for `ST_Area`, `ST_3DTransform` for
+`ST_Transform`, and `ST_3DFromWKB` or `ST_Geom3DFromWKB` to build geometry
+from WKB. Volume has no `spatial` equivalent at all; it is `ST_3DVolume`.
+`spatial` could not read the solids anyway, because its WKB reader rejects
+`PolyhedralSurface Z`.
 :::
 
 - **Writing needs the sandbox off.** `COPY … TO` and `cityparquet_write` write
@@ -129,4 +134,5 @@ anyway. It rejects `PolyhedralSurface Z`.
 
 For development of the server itself, see
 [`ai/mcp/README.md`](https://github.com/cityjson/cityparquet/blob/main/ai/mcp/README.md)
-and the design note it links.
+and the
+[design note](https://github.com/cityjson/cityparquet/blob/main/ai/design-notes/specs/2026-08-26-cityparquet-mcp-and-skills-design.md).

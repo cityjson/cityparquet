@@ -814,7 +814,10 @@ Appended, like the addendum above; nothing earlier in this note is edited.
     `.claude-plugin/` as a plugin package and deploys every
     `skills/*/SKILL.md`, to `.claude/skills` and to `.agents/skills` for Codex.
     That was established from APM's source; the APM CLI could not be run where
-    this was built, so `apm install` itself is untested.
+    this was built, so `apm install` itself is untested. The Claude Code
+    route was run end to end in an isolated configuration: `claude plugin
+    marketplace add` on a checkout, then `claude plugin install
+    cityparquet@cityparquet`, puts all four skills in the plugin cache.
 - **§2's phase-2 gate is a test.** `ai/mcp/test/skills.test.ts` runs every
   SQL block in the skills through `runQuery` against the live Delft package,
   then checks what the blocks leave behind: the CRS of a converted file and a
@@ -824,8 +827,13 @@ Appended, like the addendum above; nothing earlier in this note is edited.
   given. An aggregate's `FILTER` does not stop `ST_3DVolume` raising on an
   invalid solid. `three_d` has no `ST_ZMax`. On 3DBAG data LoD0 is on both
   `Building` and `BuildingPart` rows. `cityparquet_init` needs an object table
-  to exist first.
-- **Open, not changed here.** The corpus rewrites site links to
-  `https://cityparquet.open3d.city/…`, which serves the data but not the
-  documentation; the site is at `https://cityjson.github.io/cityparquet/`.
-  Phase 3 (§7, §8) has not started.
+  to exist first. The test fetches the Delft package, so the gate depends on
+  `https://cityparquet.open3d.city/data/delft` staying published, as
+  `test/duckdb.test.ts` already depends on the CityJSONSeq host.
+- **The corpus links now resolve.** §4.4's link rewriting used
+  `https://cityparquet.open3d.city`, which serves the data but not the
+  documentation, so every rewritten link returned 404. It now uses
+  `https://cityjson.github.io/cityparquet`, where `docs.yml` publishes the
+  site, and all sixteen distinct links return 200. If the site moves to its
+  own domain, `SITE_BASE_URL` in `src/build-corpus.ts` moves with it.
+- **Phase 3 (§7, §8) has not started.**
