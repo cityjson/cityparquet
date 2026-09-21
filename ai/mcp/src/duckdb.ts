@@ -6,14 +6,13 @@ import { DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 import { serialiser } from "./serialise.js";
 
 /**
- * `spatial` is deliberately absent. It cannot be loaded alongside `three_d` in
- * either order — `spatial` first breaks `three_d` with "Cannot AlterEntry
- * without client context", `three_d` first breaks `spatial` with "Scalar
- * Function with name …". The playground's extension list has never included it
- * either, so this is existing practice made explicit.
- *
- * The cost, which the skills must state: no ST_Area, no ST_GeomFromWKB, none of
- * the 2D vocabulary. ST_3DFootprintArea is the substitute.
+ * `spatial` is not a default. Since the v1.5.5 community builds it loads
+ * alongside `three_d` in either order (at v1.5.4 it could not), and an
+ * operator can add it through `CITYPARQUET_MCP_EXTENSIONS`. It is left out
+ * because nothing CityParquet needs requires it — `three_d` measures solids,
+ * footprints included, and reprojects with `ST_3DTransform` — and because it
+ * brings GDAL, a second file reader; `test/duckdb.test.ts` checks that the
+ * sandbox still blocks GDAL's local reads when it is opted in.
  */
 export const DEFAULT_EXTENSIONS = ["httpfs", "cityjson", "three_d"] as const;
 

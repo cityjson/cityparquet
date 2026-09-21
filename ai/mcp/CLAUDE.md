@@ -9,28 +9,34 @@ would break.
 
 ## The exact pins, and why
 
-`package.json` pins `@duckdb/node-api` at `1.5.4-r.1` (DuckDB v1.5.4) and
-`@modelcontextprotocol/server` at `2.0.0`, both **exact**, no caret. v1.5.4 is
-the newest DuckDB version for which *both* `cityjson` and `three_d` exist in
-the community extension repository — `three_d` is absent at v1.5.5. A caret
-range on `@duckdb/node-api` would let `pnpm install` silently bring up a newer
-DuckDB that has no `three_d` build, and the server would fail at `LOAD` time
-with no code change to explain why. Do not loosen this pin without first
-checking the community repository for the target DuckDB version.
+`package.json` pins `@duckdb/node-api` at `1.5.5-r.5` (DuckDB v1.5.5) and
+`@modelcontextprotocol/server` at `2.0.0`, both **exact**, no caret. A
+community extension is built against one DuckDB version, and the community
+repository only carries builds for the versions it was built for: `cityjson`
+and `three_d` both exist at v1.5.5, and at v1.5.4 they exist only as older
+builds that lack most of what `FUNCTIONS.md` documents — every
+`cityparquet_*` pragma, `ST_3DFootprintArea`, `ST_3DTransform`, the
+`(BLOB, STRUCT)` overload of `ST_3DFromWKB`. A caret range would let
+`pnpm install` bring up a DuckDB for which one of them has no build, and the
+server would fail at `LOAD` time with no code change to explain why. Before
+moving this pin, check that **both** extensions answer at the target version
+(`https://community-extensions.duckdb.org/<version>/linux_amd64/<name>.duckdb_extension.gz`)
+and that `test/duckdb.test.ts`'s blocked table still passes.
 
-## `spatial` is never loaded, and cannot be
+## `spatial` is not loaded by default
 
-`spatial` and `three_d` cannot both be loaded into one DuckDB connection, in
-either order: `spatial` first breaks `three_d` with "Cannot AlterEntry without
-client context"; `three_d` first breaks `spatial` with "Scalar Function with
-name …". This is a defect in `three_d` / DuckDB's extension loading, not
-something fixable here — see `lib/duckdb-3d`'s own repository for whether it
-has been reported. `DEFAULT_EXTENSIONS` in `src/duckdb.ts` loads `three_d`
-(CityParquet's 3D solid geometry needs it) and so never loads `spatial`. The
-consequence for tool authors and for `cityparquet_query` callers: `ST_Area`
-and `ST_GeomFromWKB` are unavailable, and there is no 2D PostGIS-style
-vocabulary at all. `ST_3DFootprintArea` and `ST_3DTryFromWKB` are the
-substitutes — see the table in `README.md`.
+`DEFAULT_EXTENSIONS` in `src/duckdb.ts` is `httpfs`, `cityjson`, `three_d`.
+`spatial` is left out because nothing CityParquet needs requires it —
+`three_d` measures solids and footprints (`ST_3DFootprintArea`) and
+reprojects (`ST_3DTransform`) — not because it cannot load: since the v1.5.5
+builds it loads alongside `three_d` in either order. (At v1.5.4 it could not:
+`spatial` first broke `three_d` with "Cannot AlterEntry without client
+context", and the reverse broke `spatial`. Older notes, including the design
+spec's body, describe that.) An operator may add it with
+`CITYPARQUET_MCP_EXTENSIONS`. It brings GDAL, a second file reader; the
+"spatial opted in" suite in `test/duckdb.test.ts` checks, with a positive
+control, that the sandbox blocks GDAL's local reads too. Anything that makes
+`spatial` a default must keep that suite green.
 
 ## The startup sequence in `src/duckdb.ts` is load-bearing
 
@@ -107,18 +113,18 @@ ordinary case. The check builds its comparison in memory and never writes to
 `corpus/corpus.json`, so it leaves the working tree exactly as found whether
 it passes or fails — nobody has to remember not to commit a churned stamp.
 
-## The published community extension builds lag their own documentation
+## Check what the loaded build provides
 
-`lib/duckdb-cityjson/docs/FUNCTIONS.md` documents `cityjson_geoparquet_geo`
-and `cityparquet_city_field`. Neither function exists in the extension build
-currently published to the DuckDB community repository — the submodule's docs
-describe work that has not shipped yet. When writing or changing a tool that
-calls into `cityjson` or `three_d`, verify what the loaded build actually
-provides with `SELECT * FROM duckdb_functions() WHERE function_name = '…'`
-rather than trusting the submodule's `FUNCTIONS.md`. The corpus still indexes
-that file's prose for `cityparquet_docs_search` and `cityparquet_docs_read` —
-an agent can legitimately read about a function it cannot yet call — but tool
-*implementations* must not assume it is callable.
+At v1.5.5 the published builds and the submodules' `FUNCTIONS.md` agree —
+the pinned submodule commits document exactly the community refs. That was
+not true at v1.5.4, and it will stop being true whenever a submodule moves
+ahead of its published build. When writing or changing a tool that calls
+into `cityjson` or `three_d`, confirm the function exists in the loaded
+build: `SELECT function_name FROM duckdb_functions() WHERE function_name
+ILIKE '…'`. Use `ILIKE`, not `=` or `IN`: `spatial` registers mixed-case
+names such as `ST_Area`, and an exact lowercase match misses them. The
+corpus indexes `FUNCTIONS.md` whatever the build holds, so an agent can read
+about a function it cannot call.
 
 ## `describe()` reads local files through Node, outside DuckDB's sandbox
 

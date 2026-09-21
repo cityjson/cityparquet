@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,9 +19,9 @@ describe("createEngine", () => {
     expect(engine.extensions.map((e) => e.name)).not.toContain("spatial");
   });
 
-  it("runs DuckDB v1.5.4", async () => {
+  it("runs DuckDB v1.5.5", async () => {
     const reader = await engine.connection.runAndReadAll("SELECT version() AS v");
-    expect(reader.getRowsJson()[0]![0]).toBe("v1.5.4");
+    expect(reader.getRowsJson()[0]![0]).toBe("v1.5.5");
   });
 
   // The security contract. A change that makes one of these pass is a
@@ -87,5 +87,37 @@ describe("extensionsFromEnv", () => {
 
   it("trims names and drops empty entries", () => {
     expect(extensionsFromEnv(" httpfs, ,cityjson ,")).toEqual(["httpfs", "cityjson"]);
+  });
+});
+
+// `spatial` is not a default, but an operator may opt into it, and it brings
+// GDAL — a second file reader with its own path grammar. The positive control
+// matters: GDAL reports an unreadable path and an unparseable one with the
+// same "Could not open GDAL dataset", so a refusal proves nothing unless the
+// same read succeeds with the sandbox off.
+describe("createEngine with spatial opted in", () => {
+  const extensions = [...DEFAULT_EXTENSIONS, "spatial"];
+  const dir = mkdtempSync(join(tmpdir(), "cityparquet-mcp-gdal-"));
+  const file = join(dir, "probe.geojson");
+  const read = `SELECT secret FROM ST_Read('${file}')`;
+
+  beforeAll(() => {
+    writeFileSync(file, JSON.stringify({
+      type: "FeatureCollection",
+      features: [{ type: "Feature", properties: { secret: "s3cr3t" }, geometry: { type: "Point", coordinates: [1, 2] } }],
+    }));
+  });
+
+  it("reads a local file through GDAL without the sandbox", async () => {
+    const engine = await createEngine({ sandbox: false, extensionDirectory, extensions });
+    const reader = await engine.connection.runAndReadAll(read);
+    expect(reader.getRowsJson()).toEqual([["s3cr3t"]]);
+    await engine.close();
+  });
+
+  it("blocks the same GDAL read with the sandbox", async () => {
+    const engine = await createEngine({ sandbox: true, extensionDirectory, extensions });
+    await expect(engine.connection.run(read)).rejects.toThrow();
+    await engine.close();
   });
 });

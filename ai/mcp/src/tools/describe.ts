@@ -124,11 +124,10 @@ interface FooterCrs {
  * are PROJJSON. Each key is parsed on its own, so a malformed `city` cannot
  * take the `geo` fallback down with it.
  *
- * Reads the raw footer key-value pairs rather than a decoding function: the
- * `cityjson`/`three_d` extensions this server loads do not expose one (the
- * function the specification's own source documents describe is not in the
- * published community build) — `parquet_kv_metadata`, and the `decode()` a
- * BLOB value needs before it parses as JSON, are both DuckDB core.
+ * Reads the raw footer key-value pairs with DuckDB core alone —
+ * `parquet_kv_metadata`, and the `decode()` a BLOB value needs before it
+ * parses as JSON — rather than `cityjson`'s own footer helpers, so describe
+ * works on any engine, whichever extensions it was brought up with.
  */
 async function footerCrs(engine: Engine, file: string): Promise<FooterCrs> {
   const problems: string[] = [];
