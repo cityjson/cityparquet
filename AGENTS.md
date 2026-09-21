@@ -30,6 +30,7 @@ with the reasoning in `04-design-decisions/` and the genuinely unsettled parts i
 | `test/`                | `TESTING.md`, the cross-module manual walkthrough, and `run-all.sh`                                            | —                                           |
 | `ai/design-notes/`     | Dated, unmaintained plans and specs — the record of decisions, not a description of the code                   | `ai/design-notes/README.md`                 |
 | `ai/mcp/`              | The **MCP server** — the specification, the function references, dataset description and sandboxed SQL, for agents | its `CLAUDE.md`                             |
+| `ai/plugin/`           | The **agent skills** — four Markdown skills, shipped as a Claude Code plugin (`.claude-plugin/marketplace.json` at the root) and as an APM package | its `README.md`                             |
 | `example/`             | Small inputs; anything worth measuring is fetch-scripted                                                       | —                                           |
 
 ## How the pieces fit together

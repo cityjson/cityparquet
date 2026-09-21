@@ -1,0 +1,15 @@
+{
+  "name": "cityparquet",
+  "description": "The CityParquet Claude Code plugin: skills for 3D city models stored as Parquet.",
+  "owner": {
+    "name": "CityJSON",
+    "url": "https://github.com/cityjson"
+  },
+  "plugins": [
+    {
+      "name": "cityparquet",
+      "source": "./ai/plugin",
+      "description": "Skills for reading, writing and measuring CityParquet 3D city models with DuckDB and the cityparquet MCP server."
+    }
+  ]
+}
