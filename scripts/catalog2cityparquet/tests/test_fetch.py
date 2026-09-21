@@ -12,9 +12,7 @@ from catalog2cityparquet.discover import Item
 # scripts/catalog2cityparquet/tests/ -> the repository root. The real city
 # models these tests stuff into archives belong to the library's own fixture
 # set, fetched by `just fixtures` there.
-FIXTURES = (
-    Path(__file__).resolve().parents[3] / "lib" / "cityparquet-rs" / "tests" / "fixtures"
-)
+FIXTURES = Path(__file__).resolve().parents[3] / "lib" / "cityparquet-rs" / "tests" / "fixtures"
 
 
 def test_sniff_recognises_zip_gzip_and_plain():
@@ -414,3 +412,15 @@ def test_only_city_models_are_convertible(tmp_path):
         )
     found = fetch.normalise(archive, tmp_path / "work")
     assert sorted(p.name for p in found) == ["a.gml", "model.city.json", "model.city.jsonl"]
+
+
+def test_a_city_model_whose_marker_is_past_the_sniff_window_is_kept(tmp_path):
+    # JSON member order is free: `"type": "CityJSON"` may follow megabytes of
+    # vertices. Running out of window is "unknown", not "not a city model" —
+    # the converter then decides, loudly, rather than the file vanishing.
+    big = tmp_path / "late.city.json"
+    big.write_text('{"vertices": [' + ",".join(["[1,2,3]"] * 300_000) + '], "type": "CityJSON"}')
+    small = tmp_path / "small.json"
+    small.write_text('{"name": "not a city model"}')
+    assert fetch.is_city_model(big)
+    assert not fetch.is_city_model(small)

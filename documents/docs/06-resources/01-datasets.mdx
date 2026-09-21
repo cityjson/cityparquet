@@ -62,10 +62,11 @@ The catalogue itself is plain STAC, so any STAC client can browse it, for exampl
 
 ## What the conversion keeps
 
-Each collection is converted from its publisher's own files, and cites them: every
-Item links its source archive (`rel=via`) and the published STAC Item it derives from
-(`rel=derived_from`). The licence and provider shown for a collection are the
-source's.
+Each collection is converted from its publisher's own files. A package converted
+from the City3D STAC catalogue links its source archive (`rel=via`) and the published
+STAC Item it derives from (`rel=derived_from`); the 3DBAG package, converted from the
+3DBAG tiles directly, carries neither. The licence and provider shown for a
+collection are the source's.
 
 - **PLATEAU** (Japan, CityGML 2.0). The 62 municipalities of Tokyo and the city of
   Yokohama, one package each. Coordinates stay in the source CRS, JGD2011

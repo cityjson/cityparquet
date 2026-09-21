@@ -659,7 +659,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("building.parquet");
-        let props = WriterProperties::builder().set_max_row_group_size(1).build();
+        let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
         let mut writer =
             ArrowWriter::try_new(std::fs::File::create(&path).unwrap(), schema.clone(), Some(props))
                 .unwrap();

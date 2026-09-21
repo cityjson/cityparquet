@@ -78,6 +78,13 @@ export default function StacCatalog({ href }: Props) {
 
 const key = (c: CollectionSummary, item: ItemSummary) => `${c.id}/${item.id}`;
 
+/** Catalogue text as a DOM node: Leaflet parses a tooltip string as HTML. */
+function plainText(text: string): HTMLElement {
+  const el = document.createElement("span");
+  el.textContent = text;
+  return el;
+}
+
 function ExtentMap({
   catalog,
   selected,
@@ -114,7 +121,7 @@ function ExtentMap({
           weight: 1.5,
           fillOpacity: 0.15,
         })
-          .bindTooltip(`${item.title} — ${c.title}`)
+          .bindTooltip(plainText(`${item.title} — ${c.title}`))
           .on("click", () => onSelect(key(c, item)))
           .addTo(m);
         layers.current.set(key(c, item), rect);

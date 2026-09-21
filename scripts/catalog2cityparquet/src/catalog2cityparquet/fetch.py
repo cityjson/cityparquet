@@ -328,6 +328,13 @@ def is_city_model(path: Path) -> bool:
     """
     with path.open("rb") as fh:
         head = fh.read(_MODEL_SNIFF_BYTES)
+        truncated = bool(fh.read(1))
     if path.suffix.lower() in (".json", ".jsonl"):
-        return re.search(rb'"type"\s*:\s*"CityJSON"', head) is not None
-    return re.search(rb"<(?:[A-Za-z_][\w.-]*:)?CityModel[\s>/]", head) is not None
+        found = re.search(rb'"type"\s*:\s*"CityJSON"', head) is not None
+    else:
+        found = re.search(rb"<(?:[A-Za-z_][\w.-]*:)?CityModel[\s>/]", head) is not None
+    # A marker not found in a file longer than the window is unknown, not
+    # absent: JSON members come in any order. Such a file goes to the
+    # converter, which refuses a non-model loudly — a silent drop would
+    # report a partial conversion as complete.
+    return found or truncated
