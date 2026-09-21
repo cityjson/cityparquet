@@ -5,7 +5,6 @@
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Readable } from "node:stream";
 
 import { loadCorpus } from "./corpus.js";
 import { createEngine, extensionsFromEnv } from "./duckdb.js";
@@ -41,6 +40,8 @@ const pool = createEnginePool({
   onError: logError,
 });
 
+const maxBodyBytes = integer("CITYPARQUET_MCP_MAX_BODY_BYTES", 256 * 1024);
+
 const app = createHttpApp({
   corpus: loadCorpus(),
   pool,
@@ -48,11 +49,29 @@ const app = createHttpApp({
     maxRows: integer("CITYPARQUET_MCP_MAX_ROWS", 1000),
     timeoutMs: integer("CITYPARQUET_MCP_MAX_TIMEOUT_MS", 60_000),
   },
-  maxBodyBytes: integer("CITYPARQUET_MCP_MAX_BODY_BYTES", 256 * 1024),
+  maxBodyBytes,
   onError: logError,
 });
 
-function toRequest(req: IncomingMessage): Request {
+class BodyTooLarge extends Error {}
+
+/**
+ * The whole body, read before any engine is leased — so a slow upload holds a
+ * socket, never an engine — and refused past the cap as it arrives, whatever
+ * `content-length` claimed.
+ */
+async function readBody(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req as AsyncIterable<Buffer>) {
+    total += chunk.byteLength;
+    if (total > maxBodyBytes) throw new BodyTooLarge();
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function toRequest(req: IncomingMessage): Promise<Request> {
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
     if (Array.isArray(value)) for (const item of value) headers.append(name, item);
@@ -62,9 +81,8 @@ function toRequest(req: IncomingMessage): Request {
   return new Request(`http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`, {
     method: req.method,
     headers,
-    body: hasBody ? (Readable.toWeb(req) as ReadableStream<Uint8Array>) : undefined,
-    duplex: "half",
-  } as RequestInit);
+    body: hasBody ? new Uint8Array(await readBody(req)) : undefined,
+  });
 }
 
 async function send(response: Response, res: ServerResponse): Promise<void> {
@@ -78,17 +96,38 @@ async function send(response: Response, res: ServerResponse): Promise<void> {
   res.end();
 }
 
+function fail(res: ServerResponse, status: number, text: string): void {
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
+  // Closing the connection after a refusal: the rest of an oversized body is
+  // not worth reading, and the response must be flushed before the socket goes.
+  res.writeHead(status, { "content-type": "text/plain; charset=utf-8", connection: "close" });
+  res.end(text);
+}
+
 const server = createHttpServer((req, res) => {
   const started = performance.now();
-  app(toRequest(req))
-    .then((response) => {
-      log("request", { method: req.method, path: req.url, status: response.status, ms: Math.round(performance.now() - started) });
-      return send(response, res);
-    })
+  // Everything inside the promise chain: a method or URL the Request
+  // constructor rejects (TRACE, a malformed Host) must be a 400, not an
+  // exception that takes the process down.
+  Promise.resolve()
+    .then(() => toRequest(req))
+    .then(
+      (request) =>
+        app(request).then((response) => {
+          log("request", { method: req.method, path: req.url, status: response.status, ms: Math.round(performance.now() - started) });
+          return send(response, res);
+        }),
+      (error: unknown) => {
+        if (error instanceof BodyTooLarge) fail(res, 413, `request body over ${maxBodyBytes} bytes`);
+        else fail(res, 400, "bad request");
+      },
+    )
     .catch((error: unknown) => {
       logError(error);
-      if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-      res.end("internal error");
+      fail(res, 500, "internal error");
     });
 });
 

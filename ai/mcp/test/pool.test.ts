@@ -115,4 +115,44 @@ describe("createEnginePool", () => {
     await expect(pool.use(async () => "next")).resolves.toBe("next");
     await pool.close();
   });
+
+  it("keeps a closing engine counted against the size until it has closed", async () => {
+    let live = 0;
+    let peak = 0;
+    const pool = createEnginePool({
+      size: 1,
+      maxWaiting: 10,
+      maxWaitMs: 5000,
+      create: async () => {
+        live += 1;
+        peak = Math.max(peak, live);
+        return {
+          sandbox: true,
+          extensions: [],
+          connection: {},
+          exclusive: <T>(task: () => Promise<T>) => task(),
+          async close() {
+            await sleep(40); // a slow close: DuckDB freeing a large instance
+            live -= 1;
+          },
+        } as unknown as Engine;
+      },
+    });
+    // The second request arrives while the first engine is still closing:
+    // its wait must not start a second build until the close is done.
+    const first = pool.use(async () => {});
+    await sleep(20);
+    await Promise.all([first, pool.use(async () => {}), pool.use(async () => {})]);
+    expect(peak).toBe(1);
+    await pool.close();
+  });
+
+  it("closes an engine that finishes building after the pool closed, and waits for it", async () => {
+    const { made, create } = factory(40);
+    const pool = createEnginePool({ size: 1, maxWaiting: 1, maxWaitMs: 5000, create });
+    await pool.close(); // the first build is still in flight
+    expect(made).toHaveLength(1);
+    expect(made[0]!.closed).toBe(true);
+    await expect(pool.close()).resolves.toBeUndefined(); // idempotent
+  });
 });

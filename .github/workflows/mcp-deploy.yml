@@ -61,3 +61,18 @@ jobs:
       # where it is tested: an allowlisted host readable, anything else not.
       - name: smoke test the deployment
         run: node ai/mcp/deploy/smoke.mjs "${{ steps.deploy.outputs.deployment-url }}"
+
+      # A failed smoke test must not leave that deployment serving: roll the
+      # Worker back to the version before it. On a first deploy there is none
+      # to go back to, and this step fails too — then take the Worker down by
+      # hand. Either way the job stays red.
+      - name: roll back a deployment that failed the smoke test
+        if: failure() && steps.deploy.outcome == 'success'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ai/mcp/deploy
+          packageManager: pnpm
+          wranglerVersion: "4.135.0"
+          command: rollback --yes --message "smoke test failed after deploy"
