@@ -50,26 +50,23 @@ Point a client at the built entry point:
 | --- | --- | --- |
 | `CITYPARQUET_MCP_SANDBOX` | off (`sandbox: false`) | Set to `1` to lock the DuckDB engine down: no local filesystem, no installing further extensions, resource limits that cannot be raised again. Off by default for the stdio entry point, because a local client's own machine is already the trust boundary; a hosted deployment should set it. |
 | `CITYPARQUET_MCP_EXTENSION_DIR` | `~/.cityparquet-mcp/extensions` | Where DuckDB installs and loads its extensions from. Always explicit, never DuckDB's own default — a shared default directory can hold artefacts built for a different DuckDB version, and the failure is an opaque error at `LOAD` time. |
-| `CITYPARQUET_MCP_EXTENSIONS` | `httpfs,cityjson,three_d` | Comma-separated list overriding the default extension set. Blank entries are ignored, and an empty value means the default. Add `spatial` here if you want its 2D vocabulary — see below. |
+| `CITYPARQUET_MCP_EXTENSIONS` | `httpfs,cityjson,three_d,spatial` | Comma-separated list overriding the default extension set. Blank entries are ignored, and an empty value means the default. |
 | `CITYPARQUET_MCP_MEMORY_LIMIT` | DuckDB's own default | DuckDB's `memory_limit` setting, e.g. `2GB`. Worth raising under `CITYPARQUET_MCP_SANDBOX=1`, since a sandboxed engine cannot spill a large query to disk. |
 
-## `spatial` is not loaded by default
+## `spatial` and `three_d` together
 
-Nothing CityParquet needs requires it: `three_d` measures solids and
-footprints and reprojects, so the default set is `httpfs`, `cityjson` and
-`three_d`. `spatial` loads alongside them since the v1.5.5 community builds —
-set `CITYPARQUET_MCP_EXTENSIONS=httpfs,cityjson,three_d,spatial` to have
-`ST_Area`, `ST_Transform` and the rest of the 2D vocabulary too. (At DuckDB
-v1.5.4 the two could not be loaded into one connection in either order, which
-is why older notes say `spatial` is unavailable.)
+The default set loads both. `spatial` gives DuckDB's 2D vocabulary —
+`ST_Area`, `ST_Transform`, `ST_AsText` — for a package's LoD0 column, which
+arrives as DuckDB's `GEOMETRY` type because it is GeoParquet. It cannot read
+the solids: its WKB reader rejects `PolyhedralSurface Z`, so LoD1 and above
+go through `three_d`. (At DuckDB v1.5.4 the two could not be loaded into one
+connection, which is why older notes say `spatial` is unavailable.)
 
-Without it, `three_d` provides the substitutes:
+| Task | LoD0 footprint (`GEOMETRY`) | Solid (`BLOB`) |
+| --- | --- | --- |
+| Area | `ST_Area(geometry_lod0_0)` | `ST_3DFootprintArea(ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2))` |
+| Reproject | `ST_Transform(geometry_lod0_0, 'EPSG:7415', 'EPSG:4326', always_xy := true)` | `ST_3DTransform(solid, 'EPSG:7415', 'EPSG:4326')` |
+| Volume | — | `ST_3DVolume(solid)`, gated on validity |
 
-| With `spatial` | With `three_d` alone |
-| --- | --- |
-| `ST_Area(geometry_lod0_0)` | `ST_3DFootprintArea(ST_Geom3DFromWKB(geometry_lod0_0))` |
-| `ST_Transform(geom, 'EPSG:28992', 'EPSG:4326')` | `ST_3DTransform(solid, 'EPSG:28992', 'EPSG:4326')` |
-
-A package's LoD0 column arrives as DuckDB's `GEOMETRY` type (it is
-GeoParquet), which the single-argument `three_d` constructors accept directly;
-solid columns arrive as `BLOB`.
+Without `always_xy := true`, `spatial`'s `ST_Transform` returns EPSG:4326 in
+the authority's (lat, lon) order; `ST_3DTransform` always returns (lon, lat).

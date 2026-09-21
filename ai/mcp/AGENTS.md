@@ -23,20 +23,17 @@ moving this pin, check that **both** extensions answer at the target version
 (`https://community-extensions.duckdb.org/<version>/linux_amd64/<name>.duckdb_extension.gz`)
 and that `test/duckdb.test.ts`'s blocked table still passes.
 
-## `spatial` is not loaded by default
+## `spatial` is loaded, and so is GDAL
 
-`DEFAULT_EXTENSIONS` in `src/duckdb.ts` is `httpfs`, `cityjson`, `three_d`.
-`spatial` is left out because nothing CityParquet needs requires it —
-`three_d` measures solids and footprints (`ST_3DFootprintArea`) and
-reprojects (`ST_3DTransform`) — not because it cannot load: since the v1.5.5
-builds it loads alongside `three_d` in either order. (At v1.5.4 it could not:
-`spatial` first broke `three_d` with "Cannot AlterEntry without client
-context", and the reverse broke `spatial`. Older notes, including the design
-spec's body, describe that.) An operator may add it with
-`CITYPARQUET_MCP_EXTENSIONS`. It brings GDAL, a second file reader; the
-"spatial opted in" suite in `test/duckdb.test.ts` checks, with a positive
-control, that the sandbox blocks GDAL's local reads too. Anything that makes
-`spatial` a default must keep that suite green.
+`DEFAULT_EXTENSIONS` in `src/duckdb.ts` is `httpfs`, `cityjson`, `three_d`,
+`spatial`. `spatial` and `three_d` load together in either order since the
+v1.5.5 community builds. (At v1.5.4 they could not: `spatial` first broke
+`three_d` with "Cannot AlterEntry without client context", and the reverse
+broke `spatial`. The design spec's body describes that.) `spatial` brings
+GDAL, a second file reader with its own path grammar; the "GDAL, through
+spatial" suite in `test/duckdb.test.ts` checks, with a positive control, that
+the sandbox blocks GDAL's local reads as well as DuckDB's. Keep it green: a
+GDAL read that succeeds under the sandbox is a hole.
 
 ## The startup sequence in `src/duckdb.ts` is load-bearing
 

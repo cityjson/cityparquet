@@ -6,15 +6,14 @@ import { DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 import { serialiser } from "./serialise.js";
 
 /**
- * `spatial` is not a default. Since the v1.5.5 community builds it loads
- * alongside `three_d` in either order (at v1.5.4 it could not), and an
- * operator can add it through `CITYPARQUET_MCP_EXTENSIONS`. It is left out
- * because nothing CityParquet needs requires it — `three_d` measures solids,
- * footprints included, and reprojects with `ST_3DTransform` — and because it
- * brings GDAL, a second file reader; `test/duckdb.test.ts` checks that the
- * sandbox still blocks GDAL's local reads when it is opted in.
+ * `spatial` for DuckDB's 2D vocabulary (`ST_Area`, `ST_Transform`, …) on the
+ * GeoParquet LoD0 column; `three_d` for the solids, which `spatial` cannot
+ * read. The two load together in either order since the v1.5.5 community
+ * builds (at v1.5.4 they could not). `spatial` brings GDAL, a second file
+ * reader, so `test/duckdb.test.ts` checks that the sandbox blocks GDAL's
+ * local reads as well as DuckDB's.
  */
-export const DEFAULT_EXTENSIONS = ["httpfs", "cityjson", "three_d"] as const;
+export const DEFAULT_EXTENSIONS = ["httpfs", "cityjson", "three_d", "spatial"] as const;
 
 /**
  * `CITYPARQUET_MCP_EXTENSIONS`, parsed. Unset, empty or all-blank means the

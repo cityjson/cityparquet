@@ -58,8 +58,8 @@ You need **Node.js 24** or newer and **pnpm**.
     ```
   </Step>
   <Step title="Let the first start finish">
-    On its first start the server installs `httpfs`, `cityjson` and `three_d`
-    into `~/.cityparquet-mcp/extensions`, which takes a few seconds. Later
+    On its first start the server installs `httpfs`, `cityjson`, `three_d`
+    and `spatial` into `~/.cityparquet-mcp/extensions`, which takes a few seconds. Later
     starts load them from there.
   </Step>
 </Steps>
@@ -76,7 +76,7 @@ volume of its buildings."_
 | `cityparquet_docs_search` | Finds the sections that mention a term and returns a snippet of each, for example a column name, a function or a rule. |
 | `cityparquet_docs_read` | Reads one chapter, or one section of it. |
 | `cityparquet_describe` | Describes a package directory or one `.parquet` file, by URL or local path: its tables, row counts, LoDs, geometry columns and CRS, with notes on anything unusual. |
-| `cityparquet_query` | Runs SQL against DuckDB with `cityjson` and `three_d` loaded. |
+| `cityparquet_query` | Runs SQL against DuckDB with `cityjson`, `three_d` and `spatial` loaded. |
 
 `cityparquet_query` is built to keep results small enough for a model's
 context:
@@ -108,19 +108,17 @@ Set these as environment variables on the server, for example with
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CITYPARQUET_MCP_SANDBOX` | off | `1` locks the engine down: no local files, no further extensions, and limits that cannot be raised again. Local paths in `cityparquet_describe` are refused too. |
-| `CITYPARQUET_MCP_EXTENSIONS` | `httpfs,cityjson,three_d` | The extensions to load. Add `spatial` for DuckDB's 2D vocabulary (`ST_Area`, `ST_Transform`); it loads alongside `three_d`. |
+| `CITYPARQUET_MCP_EXTENSIONS` | `httpfs,cityjson,three_d,spatial` | The extensions to load. |
 | `CITYPARQUET_MCP_EXTENSION_DIR` | `~/.cityparquet-mcp/extensions` | Where the extensions are installed. Keep it separate from DuckDB's own `~/.duckdb`, which may hold builds for another DuckDB version. |
 | `CITYPARQUET_MCP_MEMORY_LIMIT` | DuckDB's default | DuckDB's `memory_limit`, for example `4GB`. A sandboxed engine cannot spill to disk, so raise this when sandboxed. |
 
 ## What to expect
 
-:::caution[`spatial` is not loaded by default]
-`ST_Area` and `ST_Transform` are unavailable unless you add `spatial`. Use
-`three_d` instead: `ST_3DFootprintArea` for `ST_Area`, `ST_3DTransform` for
-`ST_Transform`, and `ST_3DFromWKB` or `ST_Geom3DFromWKB` to build geometry
-from WKB. Volume has no `spatial` equivalent at all; it is `ST_3DVolume`.
-`spatial` could not read the solids anyway, because its WKB reader rejects
-`PolyhedralSurface Z`.
+:::caution[`spatial` cannot read solids]
+`spatial` is loaded, and its `ST_Area`, `ST_Transform` and `ST_AsText` work on
+the LoD0 footprint column. Solids are `PolyhedralSurface Z`, which `spatial`'s
+WKB reader rejects, so LoD1 and above go through `three_d`:
+`ST_3DFootprintArea`, `ST_3DTransform`, `ST_3DVolume`.
 :::
 
 - **Writing needs the sandbox off.** `COPY … TO` and `cityparquet_write` write

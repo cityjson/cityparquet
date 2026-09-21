@@ -5,9 +5,10 @@ description: Use when measuring or checking 3D city-model geometry in DuckDB —
 
 # 3D analysis with `three_d`
 
-Solids come from the `three_d` extension. `spatial` is not loaded by the
-server, and in any case it cannot read solids: `ST_GeomFromWKB` rejects
-`PolyhedralSurface Z`. No function named `ST_Volume` exists; the function is
+Solids go through the `three_d` extension. `spatial` is loaded too, but it
+cannot read solids: `ST_GeomFromWKB` rejects `PolyhedralSurface Z`, and
+`ST_Area` or `ST_Transform` on a solid column fails. Use `spatial` only on the
+LoD0 column. No function named `ST_Volume` exists; the function is
 `ST_3DVolume`.
 
 ## The gated measurement pattern
@@ -46,11 +47,11 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;
 | --- | --- | --- |
 | Volume | `ST_3DVolume(solid)` | yes, raises otherwise |
 | Surface area | `ST_3DSurfaceArea(solid)` | no degenerate faces, raises otherwise |
-| Footprint (XY ground area) | `ST_3DFootprintArea(solid)`, or `ST_3DFootprintArea(ST_Geom3DFromWKB(geometry_lod0_0))` for LoD0 | no |
+| Footprint (XY ground area) | `ST_3DFootprintArea(solid)`; for LoD0, `ST_Area(geometry_lod0_0)` | no |
 | Height | `ST_3DBounds(solid).max_z - ST_3DBounds(solid).min_z` | no |
 | Extent | `ST_3DBounds(solid)`, or the `bbox` column without parsing anything | no |
 | Validity | `ST_3DValidationReport(solid)`, a STRUCT with `is_valid`, `code` and `message` | no |
-| Reproject | `ST_3DTransform(g, 'EPSG:7415', 'EPSG:4326')` | no |
+| Reproject | `ST_3DTransform(solid, 'EPSG:7415', 'EPSG:4326')`; for LoD0, `ST_Transform` | no |
 
 - **`SOLID_3D` and `GEOM_3D` are different types.** `ST_3DTryFromWKB` builds
   solids, which volume, validity and surface area need. `ST_Geom3DFromWKB`
@@ -72,19 +73,20 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;
   m³. Geographic coordinates in degrees give meaningless numbers, so reproject
   them to a projected CRS first. `ST_3DTransform` reprojects X and Y only:
   **Z is left unchanged**, and `EPSG:4326` comes out as (lon, lat).
+  `spatial`'s `ST_Transform` follows the authority's axis order instead, so
+  `EPSG:4326` comes out as **(lat, lon)** unless you pass `always_xy := true`.
 
 ## Common mistakes
 
 | Symptom | Cause and fix |
 | --- | --- |
 | `ST_3DVolume: solid is not manifold` | No validity gate, or a `FILTER` gate. Filter in an outer `WHERE` |
-| `ST_Volume` / `ST_Area` / `ST_Transform` / `ST_ZMax` does not exist | `ST_3DVolume` / `ST_3DFootprintArea` / `ST_3DTransform` / `ST_3DBounds(s).max_z` |
+| `ST_Volume` does not exist; `ST_Area`, `ST_Transform` or `ST_ZMax` rejects a solid | `ST_3DVolume` / `ST_3DFootprintArea` / `ST_3DTransform` / `ST_3DBounds(s).max_z` |
 | Volume sum far too small or zero | Filtered to an object type that carries no solids. On 3DBAG data they are on `BuildingPart` rows |
 | Footprint total twice too large | LoD0 summed over both buildings and parts; sum the `Building` rows |
 | Cavity volumes counted as solid | The properties argument was left out |
 | A function from the docs is missing | Check `duckdb_functions()` with `ILIKE`. The loaded build may be older |
 
 Without the server, use `duckdb` v1.5.5 after
-`INSTALL three_d FROM community; LOAD three_d;`. If `spatial` is also loaded
-there, its `ST_Area(geometry_lod0_0)` gives the same footprint as
-`ST_3DFootprintArea`.
+`INSTALL three_d FROM community; LOAD three_d; LOAD spatial;`.
+`ST_Area(geometry_lod0_0)` and `ST_3DFootprintArea` give the same footprint.

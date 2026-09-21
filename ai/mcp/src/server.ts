@@ -94,7 +94,7 @@ export function createServer({ corpus, engine }: ServerDeps): McpServer {
     "cityparquet_query",
     {
       description:
-        `Run SQL against DuckDB with the cityjson and three_d extensions loaded. The spatial extension is not loaded by default: measure with three_d (ST_3DFootprintArea, ST_3DVolume, ST_3DTransform) rather than ST_Area or ST_Transform, and check that a function exists with duckdb_functions() before relying on it. A script is split and its statements run one at a time. BLOB columns and oversized values are elided, so SELECT * on an object table is a poor idea — select the columns you need instead. Results are capped at ${QUERY_DEFAULTS.maxRows} rows by default.`,
+        `Run SQL against DuckDB with the cityjson, three_d and spatial extensions loaded. Solids (LoD1 and up) need three_d — ST_3DVolume, ST_3DFootprintArea, ST_3DTransform — because spatial cannot read them; spatial's ST_Area and ST_Transform work on the LoD0 column. Check that a function exists with duckdb_functions() before relying on it. A script is split and its statements run one at a time. BLOB columns and oversized values are elided, so SELECT * on an object table is a poor idea — select the columns you need instead. Results are capped at ${QUERY_DEFAULTS.maxRows} rows by default.`,
       inputSchema: z.object({
         sql: z.string().describe("One or more SQL statements, separated by semicolons"),
         max_rows: z.number().int().min(1).max(5000).optional(),

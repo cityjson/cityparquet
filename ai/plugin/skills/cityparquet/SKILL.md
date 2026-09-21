@@ -60,17 +60,18 @@ against it, and quote the specification rather than recalling it.
 | Write or edit a package, or convert to or from CityJSON | `cityparquet-write` |
 | Volume, footprint, height, validity, reprojection | `cityparquet-3d-analysis` |
 
-## `spatial` is not loaded
+## Two geometry extensions
 
-The server loads `httpfs`, `cityjson` and `three_d`, not `spatial`. `ST_Area`,
-`ST_Transform` and `ST_GeomFromWKB` are therefore missing unless the operator
-added `spatial`. The `three_d` substitutes are covered in
-`cityparquet-3d-analysis`.
+The server loads `httpfs`, `cityjson`, `three_d` and `spatial`. `spatial`'s
+`ST_Area`, `ST_Transform` and `ST_AsText` work on LoD0, which arrives as
+DuckDB's `GEOMETRY` type. They do **not** work on solids: `spatial` cannot
+read `PolyhedralSurface Z`, so LoD1 and above go through `three_d`, covered
+in `cityparquet-3d-analysis`.
 
 ## Without the MCP server
 
 Run the same SQL in the `duckdb` CLI, **version 1.5.5**, after
-`INSTALL cityjson FROM community; INSTALL three_d FROM community; LOAD cityjson; LOAD three_d;`.
+`INSTALL cityjson FROM community; INSTALL three_d FROM community; LOAD cityjson; LOAD three_d; LOAD spatial;`.
 Older DuckDB versions install older builds of both extensions, which lack most
 of what the documentation describes. The specification is published at
 <https://cityjson.github.io/cityparquet/>.

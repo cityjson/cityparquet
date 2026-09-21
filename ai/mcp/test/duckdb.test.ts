@@ -14,9 +14,9 @@ describe("createEngine", () => {
   });
   afterAll(async () => { await engine?.close(); });
 
-  it("loads exactly the default extensions, and never spatial", () => {
+  it("loads exactly the default extensions, spatial and three_d together", () => {
     expect(engine.extensions.map((e) => e.name).sort()).toEqual([...DEFAULT_EXTENSIONS].sort());
-    expect(engine.extensions.map((e) => e.name)).not.toContain("spatial");
+    expect(engine.extensions.map((e) => e.name)).toEqual(expect.arrayContaining(["spatial", "three_d"]));
   });
 
   it("runs DuckDB v1.5.5", async () => {
@@ -90,13 +90,13 @@ describe("extensionsFromEnv", () => {
   });
 });
 
-// `spatial` is not a default, but an operator may opt into it, and it brings
-// GDAL — a second file reader with its own path grammar. The positive control
-// matters: GDAL reports an unreadable path and an unparseable one with the
-// same "Could not open GDAL dataset", so a refusal proves nothing unless the
-// same read succeeds with the sandbox off.
-describe("createEngine with spatial opted in", () => {
-  const extensions = [...DEFAULT_EXTENSIONS, "spatial"];
+// `spatial` brings GDAL — a second file reader with its own path grammar —
+// so the sandbox must be shown to cover it too. The positive control matters:
+// GDAL reports an unreadable path and an unparseable one with the same "Could
+// not open GDAL dataset", so a refusal proves nothing unless the same read
+// succeeds with the sandbox off.
+describe("GDAL, through spatial", () => {
+  const extensions = DEFAULT_EXTENSIONS;
   const dir = mkdtempSync(join(tmpdir(), "cityparquet-mcp-gdal-"));
   const file = join(dir, "probe.geojson");
   const read = `SELECT secret FROM ST_Read('${file}')`;
