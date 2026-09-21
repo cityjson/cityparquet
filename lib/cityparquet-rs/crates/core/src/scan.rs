@@ -47,6 +47,10 @@ pub struct ScanResult {
     /// export declares) still yields GeoParquet-conformant
     /// `(x, y) = (longitude, latitude)` geometry.
     pub axis_order: AxisOrder,
+    /// Whether the dataset's horizontal axes are angular (degrees), from the
+    /// resolved CRS's declared units. Read by LoD0 synthesis, whose thresholds
+    /// and geometric predicates are metre-valued throughout.
+    pub horizontal_is_angular: bool,
     /// The dataset CRS as the footer's **tri-state** `crs`
     /// ([`CrsState`], spec §metadata "CRS rules"): the resolved PROJJSON when
     /// the source declared a CRS this writer could resolve, an explicit
@@ -232,15 +236,18 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
     // "an unresolvable CRS is declared, not fatal" rule writes such a package
     // with an explicit `city.crs: null` further down. Only a CRS that DOES
     // resolve and then turns out to be unencodable is refused.
-    let axis_order = match crs_url
+    let (axis_order, horizontal_is_angular) = match crs_url
         .as_deref()
         .and_then(|url| cityparquet_schema::crs::resolve_to_projjson(url).ok())
     {
         Some(projjson) => {
-            cityparquet_schema::crs::axis_scale(&projjson)?;
-            AxisOrder::of(&projjson)
+            let scale = cityparquet_schema::crs::axis_scale(&projjson)?;
+            (
+                AxisOrder::of(&projjson),
+                scale[0] == cityparquet_schema::crs::NANO_DEGREE,
+            )
         }
-        None => AxisOrder::default(),
+        None => (AxisOrder::default(), false),
     };
 
     for feature in source.features()? {
@@ -502,6 +509,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         dataset_bbox,
         crs_url,
         axis_order,
+        horizontal_is_angular,
         crs,
         crs_diagnostic,
         transform,

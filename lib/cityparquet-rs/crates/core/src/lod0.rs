@@ -16,7 +16,9 @@ use cjseq::{Geometry, GeometryType};
 
 use crate::wkb_write::VertexPool;
 
-/// A 3D point `[x, y, z]` in world coordinates (metres, projected CRS).
+/// A 3D point `[x, y, z]` in world coordinates. Metres in a projected CRS; in
+/// a geographic one, degrees of longitude and latitude over a height in
+/// metres, which is what [`MetricFrame`] exists to reconcile.
 pub type Point = [f64; 3];
 
 /// One planar polygonal face: `rings[0]` is the exterior ring, `rings[1..]` are
@@ -96,6 +98,12 @@ pub struct Lod0Options {
     pub flatten: Option<FlattenMode>,
     /// Optional last-resort fallback; `None` means return `None` when no ground.
     pub fallback: Option<Fallback>,
+    /// Whether the dataset's horizontal axes are **angular** (degrees), taken
+    /// from the CRS's declared units — never from the magnitude of the
+    /// coordinates, which is the guess the spec's CRS rules forbid. When set,
+    /// synthesis runs in a local metric frame about each object's own centroid
+    /// (see [`MetricFrame`]); every threshold below keeps meaning metres.
+    pub angular: bool,
 }
 
 impl Default for Lod0Options {
@@ -108,6 +116,93 @@ impl Default for Lod0Options {
             snap: 0.001,
             flatten: None,
             fallback: None,
+            angular: false,
+        }
+    }
+}
+
+/// The GRS80/WGS84 semi-major axis, in metres. The two differ by 0.1 mm over
+/// the whole ellipsoid, and the frame below is a linearisation whose own error
+/// dwarfs that, so one constant serves every geographic CRS a city model is
+/// published in.
+const WGS84_SEMI_MAJOR_AXIS: f64 = 6_378_137.0;
+
+/// A local metric frame for a patch of a geographic CRS: an equirectangular
+/// map about one origin, in which a degree of longitude and a degree of
+/// latitude are both metres.
+///
+/// Every threshold in [`Lod0Options`] is a length, and every predicate behind
+/// them — Newell normals, the downward-face angle, planarity deviation —
+/// assumes the axes share one unit. Degrees satisfy neither: at Yokohama's
+/// 35.5°N a degree of longitude is ~19% shorter than a degree of latitude, so
+/// rescaling the thresholds one by one could not make the angle and planarity
+/// tests right in x and y at once. Mapping into metres makes all of them right
+/// at once, and is exact enough to be invisible: over a building-sized extent
+/// the equirectangular error is far below the millimetre `snap` grid.
+///
+/// This is not a reprojection of the dataset. Nothing stored changes CRS — the
+/// frame is internal to one computation whose input and output are both in the
+/// file CRS, the way a bbox is computed in doubles and stored as coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MetricFrame {
+    lon0: f64,
+    lat0: f64,
+    /// Metres per degree of longitude at `lat0`.
+    mx: f64,
+    /// Metres per degree of latitude.
+    my: f64,
+}
+
+impl MetricFrame {
+    /// A frame centred on the mean of `faces`' exterior vertices.
+    ///
+    /// The origin only has to be *near* the object for the linearisation to
+    /// hold, so the cheap mean is used rather than a true centroid. `None`
+    /// when there is no vertex to centre on, or when the latitude is polar
+    /// enough that a degree of longitude collapses (`cos` at or below zero) —
+    /// a city model at the pole is not a case this frame can serve.
+    pub fn about(faces: &[Face], semi_major_axis: f64) -> Option<Self> {
+        let (mut sx, mut sy, mut n) = (0.0f64, 0.0f64, 0usize);
+        for face in faces {
+            for ring in &face.rings {
+                for p in ring {
+                    sx += p[0];
+                    sy += p[1];
+                    n += 1;
+                }
+            }
+        }
+        if n == 0 {
+            return None;
+        }
+        let lon0 = sx / n as f64;
+        let lat0 = sy / n as f64;
+        let my = semi_major_axis * std::f64::consts::PI / 180.0;
+        let mx = my * lat0.to_radians().cos();
+        (mx > 0.0).then_some(MetricFrame { lon0, lat0, mx, my })
+    }
+
+    /// Degrees -> metres.
+    pub fn to_metres(&self, p: Point) -> Point {
+        [
+            (p[0] - self.lon0) * self.mx,
+            (p[1] - self.lat0) * self.my,
+            p[2],
+        ]
+    }
+
+    /// Metres -> degrees; the exact inverse of [`Self::to_metres`].
+    pub fn to_degrees(&self, p: Point) -> Point {
+        [p[0] / self.mx + self.lon0, p[1] / self.my + self.lat0, p[2]]
+    }
+
+    fn map_faces(&self, faces: &mut [Face], f: impl Fn(&Self, Point) -> Point) {
+        for face in faces {
+            for ring in &mut face.rings {
+                for p in ring {
+                    *p = f(self, *p);
+                }
+            }
         }
     }
 }
@@ -355,6 +450,22 @@ pub fn synthesize_lod0(
     semantic_ground: Option<&[bool]>,
     opts: &Lod0Options,
 ) -> Option<Footprint> {
+    // A degree-valued CRS is mapped into a local metric frame first and the
+    // footprint mapped back, so every threshold and predicate below keeps
+    // working in the unit it is written in. See [`MetricFrame`].
+    if opts.angular {
+        let frame = MetricFrame::about(faces, WGS84_SEMI_MAJOR_AXIS)?;
+        let mut projected = faces.to_vec();
+        frame.map_faces(&mut projected, MetricFrame::to_metres);
+        let metric_opts = Lod0Options {
+            angular: false,
+            ..*opts
+        };
+        let mut fp = synthesize_lod0(&projected, semantic_ground, &metric_opts)?;
+        frame.map_faces(&mut fp.surfaces, MetricFrame::to_degrees);
+        return Some(fp);
+    }
+
     // Semantics-first.
     if let Some(mask) = semantic_ground {
         let ground: Vec<&Face> = faces
@@ -758,6 +869,36 @@ pub(crate) fn assemble_footprint(ground: &[&Face], opts: &Lod0Options) -> Option
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_metric_frame_is_an_exact_round_trip() {
+        // A Yokohama-sized patch: EPSG:6697 coordinates, a few hundred metres
+        // across. The inverse must return the input to well under the
+        // millimetre `snap` grid, or synthesis would move geometry it only
+        // meant to measure.
+        let face = Face::from_exterior(vec![
+            [139.612_348_630_2, 35.465_501_054_4, 2.094],
+            [139.613_348_630_2, 35.466_501_054_4, 2.094],
+            [139.611_348_630_2, 35.464_501_054_4, 9.0],
+        ]);
+        let frame = MetricFrame::about(std::slice::from_ref(&face), WGS84_SEMI_MAJOR_AXIS).unwrap();
+        for &p in face.exterior() {
+            let back = frame.to_degrees(frame.to_metres(p));
+            // 1e-12 degree is ~0.1 micrometre — five orders below `snap`.
+            assert!((back[0] - p[0]).abs() < 1e-12, "{back:?} vs {p:?}");
+            assert!((back[1] - p[1]).abs() < 1e-12, "{back:?} vs {p:?}");
+            assert_eq!(back[2], p[2], "height is never touched");
+        }
+
+        // A degree of longitude at 35.5 N is materially shorter than a degree
+        // of latitude — the anisotropy no per-threshold rescaling could fix.
+        assert!(frame.mx < frame.my * 0.85);
+    }
+
+    #[test]
+    fn a_frame_needs_something_to_centre_on() {
+        assert!(MetricFrame::about(&[], WGS84_SEMI_MAJOR_AXIS).is_none());
+    }
+
     use super::*;
 
     // ---- sol-review regression tests ----

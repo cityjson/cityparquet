@@ -1369,7 +1369,12 @@ pub(crate) fn convert_source_impl(
         scan_result.add_synthesized_lod0_column();
     }
     if opts.generate_lod0 {
-        scan_result.synthesize_lod0 = Some(opts.lod0);
+        // The thresholds are metre-valued; the CRS decides whether synthesis
+        // has to run in a metric frame to honour them (`lod0::MetricFrame`).
+        scan_result.synthesize_lod0 = Some(Lod0Options {
+            angular: scan_result.horizontal_is_angular,
+            ..opts.lod0
+        });
     }
 
     // The exact schema the writer is told to expect must be the exact schema
