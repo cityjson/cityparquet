@@ -44,6 +44,7 @@ The package is a directory holding one object table and its STAC Item:
 https://cityparquet.open3d.city/data/3dbag/
   building.parquet      -- 21 555 522 rows: every Building and BuildingPart in NL, 16.4 GB
   metadata.json         -- STAC Item (city3d extension)
+  collection.json       -- the STAC collection holding that one Item
 ```
 
 `building.parquet` carries the full CityParquet shape: typed attribute columns
@@ -58,7 +59,8 @@ extension, so the package is discoverable without opening the Parquet at all:
 
 ```json
 {
-  "type": "Feature", "stac_version": "1.1.0",
+  "type": "Feature",
+  "stac_version": "1.1.0",
   "id": "3dbag",
   "properties": {
     "city3d:version": "2.0",
@@ -138,7 +140,7 @@ WHERE object_type = 'Building'
 └──────────┘
 ```
 
-The window is *more* selective than the national scan even though it reads a wider
+The window is _more_ selective than the national scan even though it reads a wider
 `bbox` STRUCT, because the statistics eliminate most row groups before any of their
 bytes are fetched. That matters far more once geometry is involved: the queries
 below read `geometry_lod2_2`, and without the window they would pull gigabytes.

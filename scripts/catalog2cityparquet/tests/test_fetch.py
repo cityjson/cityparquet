@@ -470,3 +470,11 @@ def test_many_comments_before_an_unfinished_one_scan_in_linear_time(tmp_path):
     started = time.monotonic()
     fetch.is_city_model(doc)
     assert time.monotonic() - started < 1.0
+
+
+def test_a_comment_inside_an_internal_subset_is_not_a_quote(tmp_path):
+    doc = tmp_path / "a.gml"
+    doc.write_text(
+        "<!DOCTYPE CityModel [<!-- it's a comment --><!ELEMENT CityModel ANY>]><CityModel/>"
+    )
+    assert fetch.is_city_model(doc)

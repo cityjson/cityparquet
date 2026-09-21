@@ -320,24 +320,32 @@ _MODEL_SNIFF_BYTES = 1 << 20
 def _skip_declaration(head: bytes, pos: int) -> int:
     """The index just past a `<!DOCTYPE …>` starting at `pos`, or -1.
 
-    Quoted literals and an internal subset (`[ … ]`) may contain `>`, so the
-    declaration ends at the first `>` outside both.
+    Quoted literals, comments and an internal subset (`[ … ]`) may contain
+    `>`, so the declaration ends at the first `>` outside all three.
     """
     depth = 0
-    quote = None
-    for k in range(pos + 2, len(head)):
+    k = pos + 2
+    while k < len(head):
+        if head.startswith(b"<!--", k):
+            end = head.find(b"-->", k + 4)
+            if end < 0:
+                return -1
+            k = end + 3
+            continue
         c = head[k : k + 1]
-        if quote:
-            if c == quote:
-                quote = None
-        elif c in (b'"', b"'"):
-            quote = c
-        elif c == b"[":
+        if c in (b'"', b"'"):
+            end = head.find(c, k + 1)
+            if end < 0:
+                return -1
+            k = end + 1
+            continue
+        if c == b"[":
             depth += 1
         elif c == b"]":
             depth -= 1
         elif c == b">" and depth <= 0:
             return k + 1
+        k += 1
     return -1
 
 

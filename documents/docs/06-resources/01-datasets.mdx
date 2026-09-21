@@ -78,7 +78,10 @@ collection are the source's.
 - **Auvergne-Rhône-Alpes economic activity zones** (France, CityGML 2.0). LoD3
   buildings of the region's economic activity zones, one package per source file,
   in RGF93 / CC46 (EPSG:3946). The source covers the zones only, not whole
-  municipalities.
+  municipalities. One file, `2024_BC1_Vichy_ZAE_2021_LoD3`, declares only a
+  vertical CRS (NGF-IGN69 height, EPSG:5720) over Lambert-93 coordinates; its
+  package keeps the declared CRS, so it has no geographic extent and is absent
+  from the map.
 
 Where a source has no LoD0 footprint, the converter derives one from the object's
 ground surfaces — its `GroundSurface` faces, or failing those its downward-facing

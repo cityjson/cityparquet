@@ -355,8 +355,8 @@ its STAC:
 ```bash
 uv run --project scripts/catalog2cityparquet python -m catalog2cityparquet \
     publish scripts/catalog2cityparquet/showcase/datasets.yaml \
-    --data-root /data2/hideba/cityparquet_data --out /data2/hideba/cityparquet_data/publish
-rclone copy /data2/hideba/cityparquet_data/publish r2:cityparquet/data/
+    --data-root DATA_ROOT --out DATA_ROOT/publish
+rclone copy DATA_ROOT/publish r2:cityparquet/data/
 ```
 
 The spec names each published collection, the source collection whose
