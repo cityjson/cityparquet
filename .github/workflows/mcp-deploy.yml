@@ -2,7 +2,10 @@ name: mcp-deploy
 
 # Deploys the hosted MCP server (ai/mcp) to Cloudflare Containers: the image
 # built from ai/mcp/Dockerfile, fronted by the Worker in ai/mcp/deploy. From
-# main, as the documentation site is; run it by hand to deploy another branch.
+# main on push, as the documentation site is. Run it by hand (Actions → mcp-deploy
+# → Run workflow) to deploy another branch: pick it in "Use workflow from", or
+# name any branch, tag or commit in the `ref` input, which takes precedence.
+# GitHub offers Run workflow only once this file is on the default branch.
 #
 # Needs the Workers Paid plan (Containers are not on the Free plan, and a
 # deploy there fails with a misleading 403), and an API token with Workers
@@ -13,6 +16,11 @@ on:
     branches: [main]
     paths: ["ai/mcp/**", ".github/workflows/mcp-deploy.yml"]
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or commit to deploy (default: the branch picked above)"
+        required: false
+        type: string
 
 concurrency:
   group: mcp-deploy
@@ -23,7 +31,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { submodules: true }
+        with:
+          submodules: true
+          ref: ${{ inputs.ref || github.ref }}
+      - name: what is being deployed
+        run: echo "Deploying $(git rev-parse --short HEAD) (${{ inputs.ref || github.ref_name }})" >> "$GITHUB_STEP_SUMMARY"
       - uses: pnpm/action-setup@v4
         with:
           version: 10
