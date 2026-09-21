@@ -16,6 +16,17 @@ import { serialiser } from "./serialise.js";
 export const DEFAULT_EXTENSIONS = ["httpfs", "cityjson", "three_d", "spatial"] as const;
 
 /**
+ * The hosted server's set: no `spatial`. GDAL has its own HTTP client —
+ * `/vsicurl/`, `/vsicurl_streaming/`, and a `proxy=` override carried in the
+ * filename — which reaches the network directly, outside both
+ * `disabled_filesystems` and the locked `http_proxy`. On a public endpoint
+ * with no platform egress control under it that is an SSRF primitive, and
+ * `spatial` exposes no setting to turn it off. `test/egress-proxy.test.ts`
+ * pins the bypass, so it fails when that stops being true.
+ */
+export const HOSTED_EXTENSIONS = ["httpfs", "cityjson", "three_d"] as const;
+
+/**
  * `CITYPARQUET_MCP_EXTENSIONS`, parsed. Unset, empty or all-blank means the
  * defaults — never a list holding one empty name, which DuckDB would reject
  * as `INSTALL ` with nothing after it.

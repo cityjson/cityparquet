@@ -123,8 +123,10 @@ It differs from a local server in what it may touch:
   `flatcitybuf.open3d.city` over HTTPS and nothing else, so `read_parquet` on
   any other URL fails. DuckDB's network goes through a proxy it is locked to,
   which admits those hosts only. For other data, run the server locally.
-- **No secrets.** A statement that mentions `SECRET` is refused, because a
-  DuckDB secret could route around that proxy.
+- **No secrets, and no `spatial`.** A statement that mentions `SECRET` is
+  refused, because a DuckDB secret could route around that proxy, and
+  `spatial` is not loaded, because its GDAL has an HTTP client of its own.
+  Use `three_d` instead: `ST_3DFootprintArea`, `ST_3DTransform`.
 - **Nothing persists between calls.** Each call that runs SQL gets a freshly
   built engine, discarded afterwards, so a table created in one call does not
   exist in the next. Write a whole workflow as one `cityparquet_query`

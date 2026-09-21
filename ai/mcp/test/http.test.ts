@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { loadCorpus } from "../src/corpus.js";
-import { createEngine, type Engine } from "../src/duckdb.js";
+import { createEngine, HOSTED_EXTENSIONS, type Engine } from "../src/duckdb.js";
 import { startEgressProxy, type EgressProxy } from "../src/egress-proxy.js";
 import { createHttpApp } from "../src/http-app.js";
 import { createEnginePool, type EnginePool } from "../src/pool.js";
@@ -61,6 +61,7 @@ describe("the hosted HTTP app", () => {
         extensionDirectory,
         memoryLimit: "1GB",
         threads: 2,
+        extensions: HOSTED_EXTENSIONS,
         httpProxy: egress.address,
         allowedHosts,
       });
@@ -105,12 +106,12 @@ describe("the hosted HTTP app", () => {
 
   // One function from each extension. Not duckdb_extensions(): it reads the
   // extension directory on disk, which the sandbox has closed.
-  it("runs SQL with cityjson, three_d and spatial loaded", async () => {
+  it("runs SQL with cityjson and three_d loaded, and no spatial", async () => {
     const { text } = await call(app, "cityparquet_query", {
-      sql: `SELECT count(DISTINCT lower(function_name))::INTEGER AS n FROM duckdb_functions()
-            WHERE lower(function_name) IN ('read_cityjsonseq', 'st_3dvolume', 'st_area')`,
+      sql: `SELECT list(DISTINCT lower(function_name) ORDER BY lower(function_name)) FROM duckdb_functions()
+            WHERE lower(function_name) IN ('read_cityjsonseq', 'st_3dvolume', 'st_read')`,
     });
-    expect(JSON.parse(text)[0].rows).toEqual([[3]]);
+    expect(JSON.parse(text)[0].rows).toEqual([[["read_cityjsonseq", "st_3dvolume"]]]);
   });
 
   it("does not let one request see what another created", async () => {

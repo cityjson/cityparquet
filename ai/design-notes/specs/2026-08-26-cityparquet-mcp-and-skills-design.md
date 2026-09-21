@@ -926,3 +926,16 @@ Appended; nothing earlier in this note is edited.
 - **Not verified here**: the first Cloud Run deploy, the WIF provider admitting
   this repository, and the IAM grants the deploy needs; `ai/mcp/README.md`
   lists the one-off setup.
+- **Review found a second hole, and the hosted server no longer loads
+  `spatial`.** GDAL, which `spatial` brings, has its own HTTP client:
+  `/vsicurl/`, `/vsicurl_streaming/`, and a `proxy=` override in the
+  filename. Against a recording server, a sandboxed engine locked to the
+  proxy made direct requests through all three, and `/vsicurl_streaming/`
+  returned rows. The earlier probe that reported GDAL "blocked" was reading a
+  format error. `spatial` has no setting to disable it, and on Cloud Run
+  nothing under the process stops it, so `HOSTED_EXTENSIONS` omits `spatial`
+  and the HTTP entry point refuses to load it. The local stdio server keeps
+  it. On Cloudflare the platform allowlist would have caught the direct
+  requests — but not the secret-header one above. `ST_Read_Meta` on a
+  `/vsicurl` path also crashed the process with a segmentation fault, which
+  is another reason to keep GDAL off a public endpoint.

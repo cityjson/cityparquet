@@ -25,8 +25,9 @@ and that `test/duckdb.test.ts`'s blocked table still passes.
 
 ## `spatial` is loaded, and so is GDAL
 
-`DEFAULT_EXTENSIONS` in `src/duckdb.ts` is `httpfs`, `cityjson`, `three_d`,
-`spatial`. `spatial` and `three_d` load together in either order since the
+`DEFAULT_EXTENSIONS` in `src/duckdb.ts` — the local server's set — is
+`httpfs`, `cityjson`, `three_d`, `spatial`; the hosted server uses
+`HOSTED_EXTENSIONS`, without `spatial` (see the egress section below). `spatial` and `three_d` load together in either order since the
 v1.5.5 community builds. (At v1.5.4 they could not: `spatial` first broke
 `three_d` with "Cannot AlterEntry without client context", and the reverse
 broke `spatial`. The design spec's body describes that.) `spatial` brings
@@ -194,7 +195,18 @@ checked to go through it: `read_parquet`, `read_json`, `read_text`, the
 `cityjson` and FlatCityBuf readers, and GDAL's `ST_Read` and `/vsicurl/`.
 `test/egress-proxy.test.ts` pins this; treat it like the blocked table.
 
-Three things keep the proxy the only way out:
+Four things keep the proxy the only way out:
+
+- **No `spatial`.** GDAL, which `spatial` brings, has its own HTTP client:
+  `/vsicurl/`, `/vsicurl_streaming/` and a `proxy=` override carried in the
+  filename reach the network directly, outside both `disabled_filesystems` and
+  the locked `http_proxy` (probed: a sandboxed engine locked to the proxy
+  fetched from a local server, and `/vsicurl_streaming/` returned rows).
+  `spatial` has no setting to turn it off. So `HOSTED_EXTENSIONS` omits it and
+  `src/http.ts` refuses to start if asked to load it; a test in
+  `test/egress-proxy.test.ts` pins the bypass. Earlier probes that saw GDAL
+  "blocked" were reading a format error, not a refused request — a GDAL
+  refusal proves nothing without a server that records the hit.
 
 - **Secrets.** A DuckDB secret created by a query can carry its own
   `HTTP_PROXY`, which **overrides** the locked `http_proxy` (probed: reads went
@@ -205,8 +217,9 @@ Three things keep the proxy the only way out:
   "secret", literals included, and before every statement drops any secret
   that exists by some other route and stops.
 - **Node's own fetches.** `describe` fetches `metadata.json` from Node, not
-  through DuckDB, so it applies `engine.allowedHosts` itself: HTTPS, an
-  allowlisted host, redirects not followed.
+  through DuckDB, so it applies the proxy's rules itself: HTTPS on the default
+  port, an allowlisted host that does not resolve to an internal address,
+  redirects not followed.
 - **The runtime account.** The service runs as `cityparquet-mcp-runtime`,
   which holds no roles, so even a leaked metadata token opens nothing.
 

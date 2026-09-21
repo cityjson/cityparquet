@@ -72,8 +72,8 @@ in `cityparquet-3d-analysis`.
 
 The hosted endpoint is read-only and sandboxed. It can read only
 `cityparquet.open3d.city`, `cityjson.open3d.city` and
-`flatcitybuf.open3d.city`, over HTTPS, and refuses any statement that
-mentions `SECRET`. Each tool call gets a fresh engine, so a table
+`flatcitybuf.open3d.city`, over HTTPS, refuses any statement that
+mentions `SECRET`, and does not load `spatial` — use the `three_d` functions. Each tool call gets a fresh engine, so a table
 created in one call is gone by the next: put a whole workflow in one
 `cityparquet_query` script. For other data, or to write, use a local server.
 

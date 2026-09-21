@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { loadCorpus } from "./corpus.js";
-import { createEngine, extensionsFromEnv } from "./duckdb.js";
+import { createEngine, HOSTED_EXTENSIONS } from "./duckdb.js";
 import { startEgressProxy } from "./egress-proxy.js";
 import { createHttpApp } from "./http-app.js";
 import { createEnginePool } from "./pool.js";
@@ -23,7 +23,12 @@ function integer(name: string, fallback: number): number {
 const port = integer("PORT", 8080);
 const extensionDirectory =
   process.env.CITYPARQUET_MCP_EXTENSION_DIR ?? join(homedir(), ".cityparquet-mcp", "extensions");
-const extensions = extensionsFromEnv(process.env.CITYPARQUET_MCP_EXTENSIONS);
+// No spatial here, whatever is asked for: see HOSTED_EXTENSIONS for why.
+const requested = (process.env.CITYPARQUET_MCP_EXTENSIONS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+if (requested.some((name) => name.toLowerCase() === "spatial")) {
+  throw new Error("spatial cannot be loaded on the hosted server: GDAL's own HTTP client bypasses the egress proxy");
+}
+const extensions = requested.length > 0 ? requested : HOSTED_EXTENSIONS;
 const memoryLimit = process.env.CITYPARQUET_MCP_MEMORY_LIMIT ?? "1GB";
 const threads = integer("CITYPARQUET_MCP_THREADS", 1);
 

@@ -53,6 +53,9 @@ freshly built engine, discarded afterwards. Its network is an allowlist: every
 engine's `http_proxy` is locked to a proxy in the same process that admits
 HTTPS to `CITYPARQUET_MCP_EGRESS_HOSTS` and nothing else, and statements that
 mention `SECRET` are refused, because a DuckDB secret can override the proxy.
+It loads `httpfs`, `cityjson` and `three_d` but **not `spatial`**, and refuses
+to start if asked to: GDAL, which `spatial` brings, has its own HTTP client
+(`/vsicurl/`, `/vsicurl_streaming/`) that goes round the proxy.
 
 ```sh
 pnpm build

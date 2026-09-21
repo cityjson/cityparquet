@@ -56,9 +56,9 @@ const checks = [
     const result = await query("SELECT count(*)::INTEGER AS n FROM read_parquet('https://cityparquet.open3d.city/data/delft/building.parquet')");
     if (result.error || result.rows[0][0] !== 2231) throw new Error(JSON.stringify(result));
   }],
-  ["has cityjson, three_d and spatial", async () => {
-    const result = await query("SELECT count(DISTINCT lower(function_name))::INTEGER FROM duckdb_functions() WHERE lower(function_name) IN ('read_cityjsonseq', 'st_3dvolume', 'st_area')");
-    if (result.error || result.rows[0][0] !== 3) throw new Error(JSON.stringify(result));
+  ["has cityjson and three_d, and no spatial (whose GDAL would bypass the proxy)", async () => {
+    const result = await query("SELECT list(DISTINCT lower(function_name) ORDER BY lower(function_name))::VARCHAR FROM duckdb_functions() WHERE lower(function_name) IN ('read_cityjsonseq', 'st_3dvolume', 'st_read')");
+    if (result.error || result.rows[0][0] !== "[read_cityjsonseq, st_3dvolume]") throw new Error(JSON.stringify(result));
   }],
   ["cannot read a host off the allowlist", async () => {
     const result = await query("SELECT * FROM read_csv('https://example.com/')");

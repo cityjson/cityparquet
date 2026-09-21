@@ -84,9 +84,13 @@ jobs:
       - name: Note the revision now serving
         id: previous
         run: |-
-          revision=$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" \
-            --format='value(status.traffic[0].revisionName)' 2>/dev/null || true)
-          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          # Only "the service does not exist yet" means no previous revision;
+          # any other failure stops the deploy rather than losing the way back.
+          if ! out=$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" \
+                       --format='value(status.traffic[0].revisionName)' 2>&1); then
+            if grep -qi "could not be found\|not found" <<<"$out"; then out=""; else echo "$out"; exit 1; fi
+          fi
+          echo "revision=$out" >> "$GITHUB_OUTPUT"
 
       - name: Deploy to Cloud Run
         id: deploy
@@ -125,3 +129,11 @@ jobs:
         run: |-
           gcloud run services update-traffic "$SERVICE_NAME" --region "$REGION" \
             --to-revisions "${{ steps.previous.outputs.revision }}=100"
+
+      # A first deployment has nothing to roll back to: take it private
+      # instead, so a server that failed its security checks is not public.
+      - name: Take a failed first deployment private
+        if: failure() && steps.deploy.outcome == 'success' && steps.previous.outputs.revision == ''
+        run: |-
+          gcloud run services remove-iam-policy-binding "$SERVICE_NAME" --region "$REGION" \
+            --member allUsers --role roles/run.invoker

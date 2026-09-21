@@ -216,6 +216,12 @@ suite("describe, on an engine with an egress allowlist", () => {
     return { ...fakeEngine(known), sandbox: true, allowedHosts: ["data.example.test"] } as Engine;
   }
 
+  // A real, public, allowlisted name: describe resolves it before fetching,
+  // and refuses one that does not resolve. fetch itself is still stubbed.
+  function resolvable(known: Record<string, string[]>): Engine {
+    return { ...fakeEngine(known), sandbox: true, allowedHosts: ["cityparquet.open3d.city"] } as Engine;
+  }
+
   it("does not fetch from a host off the allowlist", async () => {
     const fetched: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => { fetched.push(String(url)); return { ok: true, status: 200, text: async () => "{}" }; });
@@ -238,18 +244,34 @@ suite("describe, on an engine with an egress allowlist", () => {
       return { ok: true, status: 200, text: async () => JSON.stringify({ assets: { b: { href: "building.parquet" } } }) };
     });
     const result = await describe(
-      allowlisted({ "https://data.example.test/pkg/building.parquet": ["id"] }),
-      "https://data.example.test/pkg",
+      resolvable({ "https://cityparquet.open3d.city/pkg/building.parquet": ["id"] }),
+      "https://cityparquet.open3d.city/pkg",
     );
-    expect(calls).toEqual([{ url: "https://data.example.test/pkg/metadata.json", redirect: "manual" }]);
+    expect(calls).toEqual([{ url: "https://cityparquet.open3d.city/pkg/metadata.json", redirect: "manual" }]);
     expect(result.inventory).toBe("stac");
+  });
+
+  it("does not fetch from an allowlisted host on another port", async () => {
+    const fetched: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => { fetched.push(String(url)); return { ok: true, status: 200, text: async () => "{}" }; });
+    await describe(allowlisted({}), "https://data.example.test:8443/pkg").catch(() => undefined);
+    expect(fetched).toEqual([]);
+  });
+
+  it("does not fetch from an allowlisted name that resolves to an internal address", async () => {
+    const fetched: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => { fetched.push(String(url)); return { ok: true, status: 200, text: async () => "{}" }; });
+    const engine = { ...fakeEngine({}), sandbox: true, allowedHosts: ["localhost"] } as Engine;
+    const result = await describe(engine, "https://localhost/pkg").catch((error: Error) => error);
+    expect(fetched).toEqual([]);
+    if (!(result instanceof Error)) expect(result.notes.join(" ")).toMatch(/internal address/);
   });
 
   it("reports a redirect rather than following it", async () => {
     vi.stubGlobal("fetch", async () => ({ ok: false, status: 302, text: async () => "" }));
     const result = await describe(
-      allowlisted({ "https://data.example.test/pkg/building.parquet": ["id"] }),
-      "https://data.example.test/pkg",
+      resolvable({ "https://cityparquet.open3d.city/pkg/building.parquet": ["id"] }),
+      "https://cityparquet.open3d.city/pkg",
     );
     expect(result.notes.join(" ")).toMatch(/HTTP 302/);
   });

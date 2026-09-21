@@ -1,10 +1,12 @@
 // Answering "what is in this dataset" in one call.
 
+import { lookup } from "node:dns/promises";
 import { readFile } from "node:fs/promises";
 import { join as joinPath, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Engine } from "../duckdb.js";
+import { isInternalAddress } from "../egress-proxy.js";
 
 /** Normative, from the specification's dataset-package chapter. */
 export const MODULE_TABLES = [
@@ -224,18 +226,31 @@ const PROBING = "probing the normative basenames instead.";
  * they are.
  */
 /**
- * Whether Node may fetch `url` itself. DuckDB's reads go through the egress
- * proxy; this fetch does not, so on an engine with an allowlist it applies
- * the same rule: HTTPS, to an allowlisted host.
+ * Why Node may not fetch `url` itself, or null if it may. DuckDB's reads go
+ * through the egress proxy; this fetch does not, so on an engine with an
+ * allowlist it applies the proxy's rules: HTTPS on the default port, to an
+ * allowlisted host, which does not resolve to an internal address.
  */
-function mayFetch(url: string, allowedHosts: readonly string[] | undefined): boolean {
-  if (!allowedHosts) return true;
+async function fetchRefusal(url: string, allowedHosts: readonly string[] | undefined): Promise<string | null> {
+  if (!allowedHosts) return null;
+  let parsed: URL;
   try {
-    const { protocol, hostname } = new URL(url);
-    return protocol === "https:" && allowedHosts.some((host) => host.toLowerCase() === hostname.toLowerCase());
+    parsed = new URL(url);
   } catch {
-    return false;
+    return "not a URL";
   }
+  const { protocol, hostname, port } = parsed;
+  if (protocol !== "https:" || port !== "") return `only HTTPS on the default port is allowed`;
+  if (!allowedHosts.some((host) => host.toLowerCase() === hostname.toLowerCase())) {
+    return `${hostname} is not on this server's allowlist (HTTPS to ${allowedHosts.join(", ")})`;
+  }
+  try {
+    const addresses = await lookup(hostname, { all: true });
+    if (addresses.some((address) => isInternalAddress(address.address))) return `${hostname} resolves to an internal address`;
+  } catch {
+    return `${hostname} does not resolve`;
+  }
+  return null;
 }
 
 async function readItem(
@@ -255,12 +270,8 @@ async function readItem(
     }
   } else {
     const itemUrl = `${location.url}/metadata.json`;
-    if (!mayFetch(itemUrl, allowedHosts)) {
-      return {
-        item: null,
-        note: `metadata.json not fetched: ${new URL(itemUrl).host} is not on this server's allowlist (HTTPS to ${allowedHosts!.join(", ")}); ${PROBING}`,
-      };
-    }
+    const refusal = await fetchRefusal(itemUrl, allowedHosts);
+    if (refusal) return { item: null, note: `metadata.json not fetched: ${refusal}; ${PROBING}` };
     let response: Response;
     try {
       // A hung host must not stall the tool for undici's multi-minute
