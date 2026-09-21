@@ -1,0 +1,237 @@
+---
+title: Find packages in the catalogue, then query across them
+description: Use the STAC catalogue and Parquet footers to find the CityParquet packages covering a place, then compare Tokyo's 23 special wards in one query.
+sidebar:
+  label: Catalogue and many packages
+  icon: layers
+---
+
+The published datasets are not one file but many packages: 63 for PLATEAU alone, one
+per municipality. Before you can query a place, you have to find the packages that
+cover it — and when a question spans several of them, read them together.
+
+This tutorial does both, with nothing but DuckDB:
+
+1. **Discover** — read the [STAC catalogue](/resources/datasets) as plain JSON, and
+   narrow it with the Parquet footers when the catalogue is too coarse.
+2. **Query across packages** — compare building heights in Tokyo's 23 special wards
+   in one query, without counting any building twice.
+
+It assumes the [PLATEAU Tokyo tutorial](/tutorials/plateau-tokyo), which explains why
+a PLATEAU package reaches beyond its own municipality.
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+```
+
+## The catalogue is JSON
+
+The catalogue's root lists one child per collection:
+
+```sql
+SELECT l.href AS collection
+FROM (SELECT unnest(links) AS l FROM read_json('https://cityparquet.open3d.city/data/catalog.json'))
+WHERE l.rel = 'child';
+```
+
+```text
+┌────────────────────────────┐
+│         collection         │
+├────────────────────────────┤
+│ ./plateau/collection.json  │
+│ ./3dbag/collection.json    │
+│ ./aura-zae/collection.json │
+└────────────────────────────┘
+```
+
+Each collection carries its source's title and licence, and one `item` link per
+package:
+
+```sql
+SELECT title, license, len(list_filter(links, lambda l: l.rel = 'item')) AS packages
+FROM read_json('https://cityparquet.open3d.city/data/plateau/collection.json');
+```
+
+```text
+┌──────────────────────────────┬───────────┬──────────┐
+│            title             │  license  │ packages │
+├──────────────────────────────┼───────────┼──────────┤
+│ Japan PLATEAU 3D City Models │ CC-BY-4.0 │ 63       │
+└──────────────────────────────┴───────────┴──────────┘
+```
+
+A table function will not take a subquery as its argument, so collect the item URLs
+into a variable once, and hand that to every query that follows:
+
+```sql
+SET VARIABLE items = (
+  SELECT list('https://cityparquet.open3d.city/data/plateau/' || l.href[3:])
+  FROM (SELECT unnest(links) AS l
+        FROM read_json('https://cityparquet.open3d.city/data/plateau/collection.json'))
+  WHERE l.rel = 'item');
+```
+
+`l.href[3:]` drops the leading `./` of the relative link. Reading all 63 Items is one
+`read_json` over the list, and takes a second or two.
+
+## Find the packages that cover a place
+
+Every Item has a `bbox` — `[west, south, bottom, east, north, top]` in WGS 84 — so the
+first question is which packages cover Shibuya Station:
+
+```sql
+SELECT count(*) AS packages, list(id ORDER BY id)[:4] AS first_few
+FROM read_json(getvariable('items'))
+WHERE bbox[1] <= 139.7016 AND bbox[4] >= 139.7016     -- Shibuya Station
+  AND bbox[2] <= 35.6580  AND bbox[5] >= 35.6580;
+```
+
+```text
+┌──────────┬────────────────────────────────────────────────────┐
+│ packages │                     first_few                      │
+├──────────┼────────────────────────────────────────────────────┤
+│ 33       │ [adachi-ku, akiruno-shi, akishima-shi, arakawa-ku] │
+└──────────┴────────────────────────────────────────────────────┘
+```
+
+Thirty-three — including Akiruno, 40 km to the west. An Item's `bbox` is the union
+of every table in its package, and PLATEAU's land-use tiles are far larger than the
+municipality they ship with, so for PLATEAU the Item extent is a coarse first filter
+and no more.
+
+### Narrow it with the footers
+
+The finer extent is already in each table's Parquet footer: every row carries a
+`bbox` struct, and its column statistics bound the table. Reading only the footers of
+the 63 building tables — no rows at all — gives each package's building extent:
+
+```sql
+SET VARIABLE buildings = (
+  SELECT list(replace(u, 'metadata.json', 'building.parquet'))
+  FROM (SELECT unnest(getvariable('items')) AS u));
+
+WITH leaves AS (
+  SELECT regexp_extract(file_name, 'plateau/([^/]+)/', 1) AS package,
+         path_in_schema AS leaf,
+         min(stats_min_value::DOUBLE) AS lo,
+         max(stats_max_value::DOUBLE) AS hi
+  FROM parquet_metadata(getvariable('buildings'))
+  WHERE path_in_schema IN ('bbox, xmin', 'bbox, ymin', 'bbox, xmax', 'bbox, ymax')
+  GROUP BY ALL
+)
+SELECT package
+FROM leaves
+GROUP BY package
+HAVING min(lo) FILTER (leaf = 'bbox, xmin') <= 139.7016
+   AND max(hi) FILTER (leaf = 'bbox, xmax') >= 139.7016
+   AND min(lo) FILTER (leaf = 'bbox, ymin') <= 35.6580
+   AND max(hi) FILTER (leaf = 'bbox, ymax') >= 35.6580
+ORDER BY package;
+```
+
+```text
+┌────────────┐
+│  package   │
+├────────────┤
+│ meguro-ku  │
+│ minato-ku  │
+│ shibuya-ku │
+└────────────┘
+```
+
+Three packages, in a few seconds: Shibuya itself, and the two neighbours whose
+tiles overlap it. The PLATEAU packages here are written as one row group each, so the
+statistics describe the whole table; a package written with smaller row groups lets
+the same query skip parts of a table as well as whole packages.
+
+## Query across packages
+
+`read_parquet` takes a list of files, so the 23 special wards are one query. Two
+details make it correct:
+
+- **`union_by_name := true`.** Packages converted from different sources carry
+  different attribute columns — PLATEAU's Japanese attribute names vary from ward to
+  ward — so the files are matched by column name, not position.
+- **`DISTINCT ON (id)`.** Neighbouring packages overlap, so the same building
+  appears in more than one. Counting rows would count it twice.
+
+How much the overlap matters:
+
+```sql
+SET VARIABLE wards = (
+  SELECT list(replace(u, 'metadata.json', 'building.parquet'))
+  FROM (SELECT unnest(getvariable('items')) AS u)
+  WHERE u LIKE '%-ku/metadata.json');
+
+SELECT count(*) AS rows, count(DISTINCT id) AS buildings
+FROM read_parquet(getvariable('wards'), union_by_name := true)
+WHERE object_type = 'Building';
+```
+
+```text
+┌─────────┬───────────┐
+│  rows   │ buildings │
+├─────────┼───────────┤
+│ 2980839 │ 2005294   │
+└─────────┴───────────┘
+```
+
+A third of the rows are duplicates. With them removed, and each building assigned to
+its ward by its municipality code, the wards compare directly:
+
+```sql
+WITH ward(code, ward) AS (VALUES
+    ('13101', 'Chiyoda'), ('13102', 'Chūō'), ('13103', 'Minato'), ('13104', 'Shinjuku'),
+    ('13105', 'Bunkyō'), ('13106', 'Taitō'), ('13107', 'Sumida'), ('13108', 'Kōtō'),
+    ('13109', 'Shinagawa'), ('13110', 'Meguro'), ('13111', 'Ōta'), ('13112', 'Setagaya'),
+    ('13113', 'Shibuya'), ('13114', 'Nakano'), ('13115', 'Suginami'), ('13116', 'Toshima'),
+    ('13117', 'Kita'), ('13118', 'Arakawa'), ('13119', 'Itabashi'), ('13120', 'Nerima'),
+    ('13121', 'Adachi'), ('13122', 'Katsushika'), ('13123', 'Edogawa')),
+buildings AS (
+  SELECT DISTINCT ON (id)
+         id,
+         left("13+区市町村コード+大字・町コード+町・丁目コード", 5) AS code,
+         NULLIF(measuredHeight, -9999) AS height
+  FROM read_parquet(getvariable('wards'), union_by_name := true)
+  WHERE object_type = 'Building'
+)
+SELECT ward,
+       count(*) AS buildings,
+       round(median(height), 1) AS median_height_m,
+       round(100 * avg((height >= 60)::INT), 2) AS pct_60m_plus,
+       max(height) AS tallest_m
+FROM buildings JOIN ward USING (code)
+GROUP BY ward
+ORDER BY median_height_m DESC
+LIMIT 8;
+```
+
+```text
+┌──────────┬───────────┬─────────────────┬──────────────┬───────────┐
+│   ward   │ buildings │ median_height_m │ pct_60m_plus │ tallest_m │
+├──────────┼───────────┼─────────────────┼──────────────┼───────────┤
+│ Chiyoda  │ 10798     │ 19.2            │ 2.19         │ 209.5     │
+│ Chūō     │ 15054     │ 16.1            │ 1.2          │ 211.6     │
+│ Minato   │ 27066     │ 11.9            │ 1.35         │ 332.1     │
+│ Taitō    │ 38010     │ 11.1            │ 0.08         │ 136.1     │
+│ Shibuya  │ 38211     │ 10.3            │ 0.24         │ 240.6     │
+│ Shinjuku │ 52788     │ 9.7             │ 0.22         │ 243.3     │
+│ Kōtō     │ 56591     │ 9.7             │ 0.24         │ 182.7     │
+│ Toshima  │ 53321     │ 9.4             │ 0.08         │ 234.1     │   -- ~2–4 s
+└──────────┴───────────┴─────────────────┴──────────────┴───────────┘
+```
+
+Two million buildings from 23 packages, in seconds: the query reads four columns of
+each building table and none of the geometry. Buildings whose `usage` is unknown carry
+no municipality code, so the join drops them; the
+[PLATEAU Tokyo tutorial](/tutorials/plateau-tokyo#place-the-buildings-that-have-no-code)
+shows how to place them by a spatial join instead.
+
+## What to take away
+
+- **The catalogue is data.** STAC collections and Items are JSON, so DuckDB reads them
+  like any other source; `SET VARIABLE` turns a query's result into a file list.
+- **Discover coarse, then fine.** The Item `bbox` rules packages out cheaply; the
+  Parquet footers of one table rule out more, still without reading a single row.
+- **Read many packages as one**, by name rather than position, and deduplicate
+  wherever packages overlap.

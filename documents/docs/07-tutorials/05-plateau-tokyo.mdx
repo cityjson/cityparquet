@@ -1,0 +1,363 @@
+---
+title: PLATEAU Tokyo — geographic coordinates, buildings and land use
+description: Measure 3D buildings stored in latitude and longitude by reprojecting them first, then join them to 2D land-use parcels — all on object storage, in DuckDB.
+sidebar:
+  label: PLATEAU Tokyo
+  icon: map
+---
+
+Japan's [PLATEAU](https://www.mlit.go.jp/plateau/) city models are published in
+**geographic coordinates**: JGD2011 latitude and longitude in degrees, with heights
+in metres (EPSG:6697). CityParquet keeps them that way — it converts the encoding, not
+the coordinates. That is right for storage and for maps, and wrong for measurement:
+a volume computed in degrees is a number with no meaning.
+
+This tutorial works on one Tokyo ward, Setagaya, in two halves:
+
+1. **3D, with `three_d`** — see the wrong answer, then reproject each building into a
+   metric CRS and measure it properly.
+2. **2D, with `spatial`** — read the ward's land-use parcels as plain GeoParquet, and
+   join every building to the parcel it stands on, combining 3D volume with 2D area.
+
+Everything runs against the public package on object storage; nothing is downloaded
+whole. The timings quoted are from one machine over the network.
+
+## The dataset
+
+The [PLATEAU collection](/resources/datasets) holds one package per municipality.
+Setagaya's is a directory of one table per CityGML module:
+
+```text
+https://cityparquet.open3d.city/data/plateau/setagaya-ku/
+  building.parquet        -- 124.5 MB  buildings: LoD0 footprint, LoD1 and LoD2 solids
+  land_use.parquet        -- 117.0 MB  land-use parcels
+  transportation.parquet  --  11.9 MB  roads
+  water_body.parquet      --  66.0 MB
+  bridge.parquet, textures.parquet, materials.parquet
+  metadata.json           -- STAC Item (city3d extension)
+```
+
+Load the three extensions once:
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+INSTALL spatial; LOAD spatial;
+INSTALL three_d FROM community; LOAD three_d;
+```
+
+## Coordinates in degrees
+
+The per-object `bbox` shows what the geometry holds — longitude and latitude, stored
+**longitude first** as GeoParquet requires, whatever order EPSG declares:
+
+```sql
+SELECT id, round(bbox.xmin, 6) AS xmin, round(bbox.ymin, 6) AS ymin
+FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/building.parquet'
+WHERE object_type = 'Building'
+LIMIT 3;
+```
+
+```text
+┌───────────────────────────────────────────┬────────────┬───────────┐
+│                    id                     │    xmin    │   ymin    │
+├───────────────────────────────────────────┼────────────┼───────────┤
+│ bldg_0af285b7-edf4-48d3-acb8-9691092ff232 │ 139.610953 │ 35.616335 │
+│ bldg_a76d9206-13e1-44de-9997-270ed6455a7d │ 139.609761 │ 35.616594 │
+│ bldg_ea2d1613-e331-4fc2-a470-dc7aa5f0d7ea │ 139.609777 │ 35.616591 │
+└───────────────────────────────────────────┴────────────┴───────────┘
+```
+
+## A package is tiles, not a ward
+
+PLATEAU publishes each municipality as map-mesh tiles, and a tile does not stop at
+the ward boundary. The package therefore holds buildings from its neighbours too. The
+ward is an attribute: PLATEAU's town code starts with the municipality code, and
+Setagaya's is `13112`:
+
+```sql
+SELECT left("13+区市町村コード+大字・町コード+町・丁目コード", 5) AS municipality_code,
+       count(*) AS buildings
+FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/building.parquet'
+GROUP BY ALL
+ORDER BY buildings DESC
+LIMIT 5;
+```
+
+```text
+┌───────────────────┬───────────┐
+│ municipality_code │ buildings │
+├───────────────────┼───────────┤
+│ 13112             │ 182453    │
+│ NULL              │ 31779     │
+│ 13110             │ 19421     │   -- Meguro
+│ 13115             │ 14079     │   -- Suginami
+│ 13111             │ 8421      │   -- Ōta
+└───────────────────┴───────────┘
+```
+
+The 31 779 buildings with no code are exactly the ones whose `usage` is `461`
+(unknown); [the last section](#place-the-buildings-that-have-no-code) places them
+from the land-use layer. Every query below filters to Setagaya first.
+
+:::note[Codes, not labels]
+PLATEAU attributes such as `usage` and land-use `class` are codes from PLATEAU's
+code lists (`411` is 住宅, a house). CityParquet stores the code; the converter does
+not carry `codeSpace`, so the mapping from code to label is the reader's to supply.
+The queries below supply English glosses of the few they need as a `VALUES` table.
+:::
+
+## 3D: measure in metres, not degrees
+
+`three_d` measures in whatever units the coordinates are in — it stores no CRS. Fed
+PLATEAU's solids directly, it returns volumes in "cubic degrees":
+
+```sql
+SELECT id, ST_3DVolume(ST_3DFromWKB(geometry_lod2_0)) AS volume
+FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/building.parquet'
+WHERE geometry_lod2_0 IS NOT NULL
+LIMIT 3;
+```
+
+```text
+┌───────────────────────────────────────────┬───────────────────────┐
+│                    id                     │        volume         │
+├───────────────────────────────────────────┼───────────────────────┤
+│ bldg_c34ee739-faf0-4da2-a9a8-4f3bdbc5471d │ 6.570047911722917e-10 │
+│ bldg_d6250f5e-27ce-4864-8fa3-3be389d14c60 │ 7.492772268741232e-08 │
+│ bldg_f67d70c9-65a9-446b-9ac2-607b66a49bc9 │ 9.223661830708302e-08 │
+└───────────────────────────────────────────┴───────────────────────┘
+```
+
+A degree of longitude and a metre of height are not the same unit, so these numbers
+mean nothing. Reproject first. `ST_3DTransform` takes the source and target CRS on
+every call; the target here is **JGD2011 / Japan Plane Rectangular CS IX**
+(EPSG:6677), the metric zone that covers Tokyo:
+
+```sql
+SELECT id,
+       round(ST_3DVolume(s), 1)        AS volume_m3,
+       round(ST_3DFootprintArea(s), 1) AS footprint_m2,
+       round(ST_3DZMax(s), 2)          AS roof_top_m
+FROM (
+  SELECT id, ST_3DTransform(ST_3DFromWKB(geometry_lod2_0), 'EPSG:6697', 'EPSG:6677') AS s
+  FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/building.parquet'
+  WHERE geometry_lod2_0 IS NOT NULL
+  LIMIT 3
+);
+```
+
+```text
+┌───────────────────────────────────────────┬───────────┬──────────────┬────────────┐
+│                    id                     │ volume_m3 │ footprint_m2 │ roof_top_m │
+├───────────────────────────────────────────┼───────────┼──────────────┼────────────┤
+│ bldg_c34ee739-faf0-4da2-a9a8-4f3bdbc5471d │ 6.6       │ 10.7         │ 14.15      │
+│ bldg_d6250f5e-27ce-4864-8fa3-3be389d14c60 │ 753.1     │ 100.7        │ 21.29      │
+│ bldg_f67d70c9-65a9-446b-9ac2-607b66a49bc9 │ 927.0     │ 116.4        │ 21.49      │
+└───────────────────────────────────────────┴───────────┴──────────────┴────────────┘
+```
+
+Three things make this work:
+
+- **The source CRS is the one the package declares.** EPSG:6697 is a compound CRS —
+  JGD2011 horizontal plus JGD2011 height — and `ST_3DTransform` accepts it as it
+  stands.
+- **Only x and y are reprojected.** Heights pass through unchanged, which is what
+  you want here: they were metres already, so the result is metres in all three axes.
+- **Axis order is handled for you.** `three_d` treats a geographic CRS as longitude
+  first, which is how the geometry is stored.
+
+Pick the target zone for the area you work on: EPSG:6677 suits mainland Tokyo, and
+Tokyo's Ogasawara islands, about 1 000 km to the south, fall outside it.
+
+### Check the result against the data
+
+PLATEAU's LoD1 buildings are prisms, so after reprojection a volume divided by its
+footprint must equal the prism's height. Run it over every Setagaya building:
+
+```sql
+WITH b AS (
+  SELECT NULLIF(measuredHeight, -9999) AS measured,
+         ST_3DTransform(ST_3DFromWKB(geometry_lod1_0), 'EPSG:6697', 'EPSG:6677') AS s
+  FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/building.parquet'
+  WHERE left("13+区市町村コード+大字・町コード+町・丁目コード", 5) = '13112'
+)
+SELECT count(*) AS buildings,
+       round(median(abs(ST_3DVolume(s) / ST_3DFootprintArea(s)
+                        - (ST_3DZMax(s) - ST_3DZMin(s)))), 3) AS volume_vs_prism_m,
+       round(median((ST_3DZMax(s) - ST_3DZMin(s)) - measured), 2) AS prism_minus_measured_m
+FROM b
+WHERE measured > 0;
+```
+
+```text
+┌───────────┬───────────────────┬────────────────────────┐
+│ buildings │ volume_vs_prism_m │ prism_minus_measured_m │
+├───────────┼───────────────────┼────────────────────────┤
+│ 182001    │ 0.0               │ -0.9                   │   -- ~3.5 s
+└───────────┴───────────────────┴────────────────────────┘
+```
+
+Volume over footprint matches the prism height exactly, for 182 001 buildings. The
+second column is a fact about the source rather than the reprojection: PLATEAU's LoD1
+prisms are a median 0.9 m lower than the building's recorded `measuredHeight`, so the
+two are not interchangeable. `-9999` is PLATEAU's value for an unknown height, hence
+the `NULLIF`.
+
+## 2D: land use is plain GeoParquet
+
+Land-use parcels are flat polygons, so their column is typed `GEOMETRY` and carries
+its CRS — the `spatial` extension reads it with no help. Before reprojecting, tell
+`spatial` that geometry is stored longitude first:
+
+```sql
+SET geometry_always_xy = true;
+```
+
+Without it, `spatial` follows EPSG's declared latitude-first order for JGD2011, reads
+the coordinates the wrong way round, and every area comes back `NaN`. With it, the
+one-argument `ST_Transform` takes the source CRS from the column itself:
+
+```sql
+WITH land_use_class(class, land_use) AS (VALUES
+    ('211', 'residential'), ('212', 'commercial'), ('213', 'industrial'),
+    ('214', 'public facilities'), ('215', 'roads'), ('216', 'transport facilities'),
+    ('217', 'parks and open space'), ('222', 'surface parking'),
+    ('224', 'vacant or unused'), ('202', 'fields'))
+SELECT class, land_use,
+       count(*) AS parcels,
+       round(sum(ST_Area(ST_Transform(geometry_lod1_0, 'EPSG:6677'))) / 1e4, 1) AS hectares
+FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/land_use.parquet'
+LEFT JOIN land_use_class USING (class)
+WHERE 区市町村名称 = '世田谷区'
+GROUP BY ALL
+ORDER BY hectares DESC
+LIMIT 8;
+```
+
+```text
+┌───────┬──────────────────────┬─────────┬──────────┐
+│ class │       land_use       │ parcels │ hectares │
+├───────┼──────────────────────┼─────────┼──────────┤
+│ 211   │ residential          │ 49024   │ 3159.8   │
+│ 215   │ roads                │ 1388    │ 1006.1   │
+│ 214   │ public facilities    │ 2268    │ 604.9    │
+│ 217   │ parks and open space │ 1429    │ 325.7    │
+│ 212   │ commercial           │ 3073    │ 161.4    │
+│ 222   │ surface parking      │ 5730    │ 154.9    │
+│ 202   │ fields               │ 840     │ 93.9     │
+│ 224   │ vacant or unused     │ 3048    │ 85.0     │
+└───────┴──────────────────────┴─────────┴──────────┘
+```
+
+Summed over every class, Setagaya's parcels cover 5 808 ha — the ward's area of
+58.05 km². Land-use parcels spill across ward boundaries just as buildings do; here
+the municipality is the parcel's `区市町村名称` attribute.
+
+## Join buildings to the land they stand on
+
+Now the two halves meet. Each building's LoD0 footprint is also plain GeoParquet, so
+its centroid can be tested against the parcels directly — containment does not need
+metres. The 3D volume, which does, is reprojected as before. The result is how much
+building volume each kind of land carries per hectare:
+
+```sql
+WITH land_use_class(class, land_use) AS (VALUES
+    ('211', 'residential'), ('212', 'commercial'), ('213', 'industrial'),
+    ('214', 'public facilities'), ('215', 'roads'), ('216', 'transport facilities'),
+    ('217', 'parks and open space'), ('222', 'surface parking'),
+    ('224', 'vacant or unused'), ('202', 'fields')),
+parcels AS (
+  SELECT class, geometry_lod1_0 AS parcel,
+         ST_Area(ST_Transform(geometry_lod1_0, 'EPSG:6677')) AS area_m2
+  FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/land_use.parquet'
+  WHERE 区市町村名称 = '世田谷区'
+),
+buildings AS (
+  SELECT ST_Centroid(geometry_lod0_0) AS centre,
+         ST_3DVolume(ST_3DTransform(ST_3DFromWKB(geometry_lod1_0),
+                                    'EPSG:6697', 'EPSG:6677')) AS volume_m3
+  FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/building.parquet'
+  WHERE left("13+区市町村コード+大字・町コード+町・丁目コード", 5) = '13112'
+),
+built AS (
+  SELECT p.class, count(*) AS buildings, sum(b.volume_m3) AS volume_m3
+  FROM buildings b JOIN parcels p ON ST_Within(b.centre, p.parcel)
+  GROUP BY ALL
+),
+land AS (SELECT class, sum(area_m2) / 1e4 AS hectares FROM parcels GROUP BY ALL)
+SELECT class, land_use, buildings,
+       round(hectares, 1) AS hectares,
+       round(volume_m3 / hectares) AS built_m3_per_ha
+FROM built JOIN land USING (class) LEFT JOIN land_use_class USING (class)
+ORDER BY buildings DESC
+LIMIT 6;
+```
+
+```text
+┌───────┬──────────────────────┬───────────┬──────────┬─────────────────┐
+│ class │       land_use       │ buildings │ hectares │ built_m3_per_ha │
+├───────┼──────────────────────┼───────────┼──────────┼─────────────────┤
+│ 211   │ residential          │ 172164    │ 3159.8   │ 43978.0         │
+│ 214   │ public facilities    │ 4779      │ 604.9    │ 37662.0         │
+│ 212   │ commercial           │ 3879      │ 161.4    │ 69584.0         │
+│ 216   │ transport facilities │ 629       │ 68.7     │ 20127.0         │
+│ 213   │ industrial           │ 341       │ 11.2     │ 32321.0         │
+│ 217   │ parks and open space │ 251       │ 325.7    │ 285.0           │   -- ~8 s
+└───────┴──────────────────────┴───────────┴──────────┴─────────────────┘
+```
+
+182 448 of Setagaya's 182 453 buildings land in a parcel; five centroids fall
+between parcels. Commercial land is the most densely built, carrying about 1.6 times
+the volume per hectare of residential land.
+
+## Place the buildings that have no code
+
+The 31 779 buildings without a town code cannot be assigned to a ward by attribute —
+but the land-use parcels carry their municipality, so a spatial join assigns them:
+
+```sql
+WITH unknown AS (
+  SELECT id, ST_Centroid(geometry_lod0_0) AS centre
+  FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/building.parquet'
+  WHERE "13+区市町村コード+大字・町コード+町・丁目コード" IS NULL
+),
+parcels AS (
+  SELECT 区市町村名称 AS municipality, geometry_lod1_0 AS parcel
+  FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/land_use.parquet'
+)
+SELECT municipality, count(DISTINCT id) AS buildings
+FROM unknown u JOIN parcels p ON ST_Within(u.centre, p.parcel)
+GROUP BY ALL
+ORDER BY buildings DESC
+LIMIT 5;
+```
+
+```text
+┌──────────────┬───────────┐
+│ municipality │ buildings │
+├──────────────┼───────────┤
+│ 世田谷区     │ 24033     │
+│ 杉並区       │ 2013      │
+│ 狛江市       │ 1504      │
+│ 調布市       │ 1208      │
+│ 三鷹市       │ 1084      │
+└──────────────┴───────────┘
+```
+
+24 033 of them are in Setagaya itself — buildings an attribute filter alone would
+have missed.
+
+## What to take away
+
+- **Store in the source CRS, measure in a metric one.** CityParquet keeps PLATEAU's
+  degrees; `ST_3DTransform(geom, 'EPSG:6697', <metric zone>)` makes 3D measurement
+  meaningful, and a prism check confirms it.
+- **Tell `spatial` the axis order.** `SET geometry_always_xy = true` matches how
+  CityParquet stores geographic coordinates; then `ST_Transform` reads the CRS from
+  the column.
+- **A package's extent is its tiles'.** Filter to the area you mean by attribute, or
+  by a spatial join against a layer that knows its boundaries.
+
+The [catalogue tutorial](/tutorials/plateau-catalogue) builds on this to compare
+wards, and [Buildings and places](/tutorials/plateau-overture) joins PLATEAU to a
+dataset from outside it.
