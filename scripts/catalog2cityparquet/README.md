@@ -243,19 +243,19 @@ and re-run; resumption means you only pay for what is missing.
 Closed set. A reason outside it is a programming error, not a new category — silently
 admitting typos would make the histogram meaningless.
 
-| Reason                         | Kind            | What it means                                                                                                                                                                                           |
-| ------------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `download_failed`              | conformance     | The origin would not serve the bytes: a transport error, an HTTP error status, or a timeout. The publisher's availability, not the converter's competence.                                              |
-| `unsupported_archive`          | conformance     | The payload unpacked cleanly and held nothing the converter reads.                                                                                                                                      |
-| `unsupported_citygml_version`  | conformance     | CityGML the reader does not support (it implements 2.0).                                                                                                                                                |
-| `unsupported_cityjson_version` | conformance     | CityJSON the reader rejects as invalid or out of version range.                                                                                                                                         |
-| `no_crs`                       | conformance     | The source carries CRS-bearing coordinates but declares no CRS a writer can resolve. Fixable per collection with `--crs`.                                                                               |
-| `geographic_crs`               | conformance     | The source declares a geographic (degrees) CRS, which CityParquet does not accept for 3D city geometry.                                                                                                 |
-| `convert_failed`               | conformance     | The converter refused for a reason the classifier does not recognise, or it timed out. The catch-all: a large count here means the classifier needs another rule, not that the data is uniquely broken. |
-| `empty_collection`             | conformance     | The collection publishes no items at all — 20 of the 53 hold only a `collection.json`.                                                                                                                  |
-| `duplicate_bundle`             | conformance     | Skipped before downloading: Japan's 381 whole-city ZIPs repackage the same data as the 60,090 per-module tiles, and converting both would encode Japan twice.                                           |
-| `stale_item_index`             | conformance     | The collection's published `items.parquet` disagreed with the object listing; the listing was used. A fact about the catalogue, recorded rather than merely logged.                                     |
-| `environment`                  | **environment** | This machine failed here. Excluded from the histogram; see above.                                                                                                                                       |
+| Reason                         | Kind            | What it means                                                                                                                                                                                                                                                                  |
+| ------------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `download_failed`              | conformance     | The origin would not serve the bytes: a transport error, an HTTP error status, or a timeout. The publisher's availability, not the converter's competence.                                                                                                                     |
+| `unsupported_archive`          | conformance     | The payload unpacked cleanly and held nothing the converter reads.                                                                                                                                                                                                             |
+| `unsupported_citygml_version`  | conformance     | CityGML the reader does not support (it implements 2.0).                                                                                                                                                                                                                       |
+| `unsupported_cityjson_version` | conformance     | CityJSON the reader rejects as invalid or out of version range.                                                                                                                                                                                                                |
+| `no_crs`                       | conformance     | The source carries CRS-bearing coordinates but declares no CRS a writer can resolve. Fixable per collection with `--crs`.                                                                                                                                                      |
+| `unencodable_crs_units`        | conformance     | The source declares a CRS whose axis units the converter defines no quantisation step for — a packed sexagesimal spelling such as EPSG:4035. A geographic (degrees) CRS is **not** in this class: its step comes from its declared units, as a foot- or chain-valued one does. |
+| `convert_failed`               | conformance     | The converter refused for a reason the classifier does not recognise, or it timed out. The catch-all: a large count here means the classifier needs another rule, not that the data is uniquely broken.                                                                        |
+| `empty_collection`             | conformance     | The collection publishes no items at all — 20 of the 53 hold only a `collection.json`.                                                                                                                                                                                         |
+| `duplicate_bundle`             | conformance     | Skipped before downloading: Japan's 381 whole-city ZIPs repackage the same data as the 60,090 per-module tiles, and converting both would encode Japan twice.                                                                                                                  |
+| `stale_item_index`             | conformance     | The collection's published `items.parquet` disagreed with the object listing; the listing was used. A fact about the catalogue, recorded rather than merely logged.                                                                                                            |
+| `environment`                  | **environment** | This machine failed here. Excluded from the histogram; see above.                                                                                                                                                                                                              |
 
 ### Where the records live
 
@@ -338,8 +338,8 @@ denominator the published number is a fraction of.
       failed  2
 
 reasons (what the data did):
-        1  geographic_crs
-        1  no_crs
+        1  unsupported_citygml_version
+        1  convert_failed
 ```
 
 ## Locking

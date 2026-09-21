@@ -37,7 +37,7 @@ MAX_DETAIL_CHARS = 2000
 #: the message drifting back.
 _CLASSIFIERS: tuple[tuple[str, str], ...] = (
     ("unsupported citygml version", "unsupported_citygml_version"),
-    ("geographic crs", "geographic_crs"),
+    ("this writer quantises metre- and degree-valued axes", "unencodable_crs_units"),
     ("declares no crs", "no_crs"),
     ("invalid cityjson", "unsupported_cityjson_version"),
 )

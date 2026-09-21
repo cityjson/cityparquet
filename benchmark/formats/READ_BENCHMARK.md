@@ -710,7 +710,11 @@ AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
     property it was selected for and what `scripts/tests/fetch_benchmark_test.sh`
     asserts about the pinned table. The retired corpus had two entries that did
     not — Riga (Caveat 15) and PLATEAU's `brid` tile, on which this reader
-    hard-errors over cross-building shared geometry — and both had to be
+    hard-errors: a `brid:Bridge`'s `lod2Solid` composes surfaces by
+    `xlink:href` from polygons defined inside its own
+    `brid:BridgeConstructionElement` children, and the reader harvests xlink
+    targets only from the object's own immediate subtree, so the reference
+    dangles — and both had to be
     fetched by `--only no-citygml`, because either would **abort a default-set
     run rather than merely lose a row** (`just bench`'s folder loop runs under
     `set -e`). That escape hatch still exists for `$CORPUS_MANIFEST` inputs.
