@@ -125,23 +125,9 @@ interface FooterCrs {
  * the fallback when `city` is absent, states no CRS, or does not parse. Both
  * are PROJJSON. Each key is parsed on its own, so a malformed `city` cannot
  * take the `geo` fallback down with it.
- *
- * Reads the raw footer key-value pairs with DuckDB core alone —
- * `parquet_kv_metadata`, and the `decode()` a BLOB value needs before it
- * parses as JSON — rather than `cityjson`'s own footer helpers, so describe
- * works on any engine, whichever extensions it was brought up with.
  */
-async function footerCrs(engine: Engine, file: string): Promise<FooterCrs> {
+function footerCrs(byKey: ReadonlyMap<string, string>): FooterCrs {
   const problems: string[] = [];
-  const byKey = new Map<string, string>();
-  try {
-    const reader = await engine.connection.runAndReadAll(
-      `SELECT key, decode(value) FROM parquet_kv_metadata(${sqlLiteral(file)}) WHERE key IN ('city', 'geo')`,
-    );
-    for (const row of reader.getRowsJson()) byKey.set(String(row[0]), String(row[1]));
-  } catch (error) {
-    return { crs: null, key: null, problems: [`footer key-value metadata unreadable (${messageOf(error)})`] };
-  }
 
   const cityRaw = byKey.get("city");
   if (cityRaw !== undefined) {
@@ -172,32 +158,49 @@ async function footerCrs(engine: Engine, file: string): Promise<FooterCrs> {
   return { crs: null, key: null, problems };
 }
 
+/**
+ * Everything describe needs from one file, from one read of its footer. The
+ * row count comes from the footer's own metadata, never from counting rows,
+ * so no data page is fetched; over HTTP that is a range read of the end of
+ * the file and nothing else. One `parquet_full_metadata` call rather than
+ * `parquet_schema`, `parquet_file_metadata` and `parquet_kv_metadata`
+ * separately: the footer is downloaded once either way, but three calls are
+ * three round trips. Only the three columns used are selected; the fourth,
+ * `parquet_metadata`, is one row per column per row group, and large.
+ *
+ * DuckDB core alone — the `decode()` a BLOB needs before it parses as JSON
+ * included — rather than `cityjson`'s own footer helpers, so describe works
+ * on any engine, whichever extensions it was brought up with.
+ */
 async function summariseFile(
   engine: Engine,
   file: string,
   name: string,
 ): Promise<{ table: TableSummary; crsKey: string | null; problems: string[] } | null> {
   let columns: string[];
+  let rowCount: number | null;
+  const byKey = new Map<string, string>();
   try {
-    const schema = await engine.connection.runAndReadAll(`SELECT name FROM parquet_schema(${sqlLiteral(file)})`);
-    columns = schema.getRowsJson().map((row) => String(row[0]));
+    const reader = await engine.connection.runAndReadAll(
+      `SELECT to_json([s.name FOR s IN parquet_schema]),
+              parquet_file_metadata[1].num_rows,
+              to_json([{'key': decode(k.key), 'value': decode(k.value)}
+                       FOR k IN parquet_kv_metadata IF decode(k.key) IN ('city', 'geo')])
+       FROM parquet_full_metadata(${sqlLiteral(file)})`,
+    );
+    const row = reader.getRowsJson()[0];
+    if (!row) return null;
+    columns = (JSON.parse(String(row[0])) as unknown[]).map(String);
+    rowCount = row[1] === null || row[1] === undefined ? null : Number(row[1]);
+    for (const { key, value } of JSON.parse(String(row[2] ?? "[]")) as { key: string; value: string }[]) {
+      byKey.set(key, value);
+    }
   } catch {
     return null;
   }
+
   const geometryColumns = geometryColumnsOf(columns);
-
-  let rowCount: number | null = null;
-  try {
-    const meta = await engine.connection.runAndReadAll(
-      `SELECT sum(num_rows)::BIGINT FROM parquet_file_metadata(${sqlLiteral(file)})`,
-    );
-    const value = meta.getRowsJson()[0]?.[0];
-    rowCount = value === null || value === undefined ? null : Number(value);
-  } catch {
-    rowCount = null;
-  }
-
-  const { crs, key, problems } = await footerCrs(engine, file);
+  const { crs, key, problems } = footerCrs(byKey);
   return {
     table: { name, file, row_count: rowCount, geometry_columns: geometryColumns, lods: lodsOf(geometryColumns), crs },
     crsKey: key,

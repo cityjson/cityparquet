@@ -43,7 +43,7 @@ suite("lodsOf", () => {
 // assets map is a SHOULD, so the probe fallback is a designed path and gets the
 // same coverage as the happy one.
 //
-// `kvRows` stands in for `parquet_kv_metadata`'s `(key, decode(value))` rows.
+// `kvRows` stands in for the footer's `(key, decoded value)` pairs.
 // The default carries a `city` entry whose crs has no name, just an id — so
 // `footerCrs` renders it as "EPSG:7415", matching what earlier fixtures in
 // this file expect.
@@ -60,16 +60,15 @@ function fakeEngine(
     // it exists only so `describe()`'s call to it type-checks and runs.
     exclusive: <T>(task: () => Promise<T>) => task(),
     connection: {
+      // Answers describe's one footer query, parquet_full_metadata, in the
+      // shape it selects: column names, row count, and the city/geo pairs.
       async runAndReadAll(sql: string) {
-        const url = /'([^']+)'/.exec(sql)?.[1] ?? "";
-        if (sql.includes("parquet_schema")) {
-          const columns = known[url];
-          if (!columns) throw new Error(`no such file: ${url}`);
-          return { getRowsJson: () => columns.map((c) => [c]) };
-        }
-        if (sql.includes("parquet_file_metadata")) return { getRowsJson: () => [[7]] };
-        if (sql.includes("parquet_kv_metadata")) return { getRowsJson: () => kvRows };
-        throw new Error(`fakeEngine: unexpected query: ${sql}`);
+        if (!sql.includes("parquet_full_metadata")) throw new Error(`fakeEngine: unexpected query: ${sql}`);
+        const url = /parquet_full_metadata\('([^']+)'\)/.exec(sql)?.[1] ?? "";
+        const columns = known[url];
+        if (!columns) throw new Error(`no such file: ${url}`);
+        const kv = kvRows.filter(([key]) => key === "city" || key === "geo").map(([key, value]) => ({ key, value }));
+        return { getRowsJson: () => [[JSON.stringify(columns), 7, JSON.stringify(kv)]] };
       },
     },
   } as unknown as Engine;
