@@ -1,13 +1,85 @@
 ---
 title: Available datasets
-description: Public CityParquet datasets for testing and evaluation.
+description: Open 3D city models published as CityParquet on object storage, listed from their STAC catalogue.
 sidebar:
   label: Datasets
-  badge: WIP
+  icon: database
 ---
 
-:::note[Coming soon]
-We will encode a range of open city models as CityParquet and host them for public
-access. This page will list them with sizes, source, CRS, and download links once
-they are available.
-:::
+Open 3D city models, converted to CityParquet and served over HTTPS from
+Cloudflare R2. Every package is public and needs no credentials: DuckDB, GDAL or any
+Parquet reader can query it in place, fetching only the columns and row groups a
+query touches.
+
+The list below is not maintained by hand. Every package carries its own STAC Item
+(`metadata.json`, with the [city3d extension](/specification/metadata)), the Items
+are gathered into one collection per source, and the collections into one
+catalogue:
+
+```text
+https://cityparquet.open3d.city/data/
+  catalog.json                 -- the catalogue: one child link per collection
+  plateau/
+    collection.json            -- one Item per municipality
+    chiyoda-ku/
+      metadata.json            -- the package's STAC Item
+      building.parquet         -- … one object table per CityGML module
+      transportation.parquet
+      …
+  3dbag/
+    collection.json            -- a collection of one package
+    metadata.json
+    building.parquet
+  aura-zae/
+    collection.json
+    …
+```
+
+The page reads that catalogue in your browser and renders what it finds: the city
+objects, Levels of Detail, city object types and extent of each package, straight
+from its Item. A collection added to the catalogue appears here without a change to
+this page.
+
+<StacCatalog href="https://cityparquet.open3d.city/data/catalog.json" />
+
+## Querying a package
+
+A package is a directory. Point a reader at one of its tables:
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+
+SELECT object_type, count(*)
+FROM read_parquet('https://cityparquet.open3d.city/data/plateau/chiyoda-ku/building.parquet')
+GROUP BY ALL;
+```
+
+Or at the whole package, one table per module, with the `cityjson` extension —
+see [the DuckDB tutorials](/tutorials).
+
+The catalogue itself is plain STAC, so any STAC client can browse it, for example
+[STAC Browser](https://radiantearth.github.io/stac-browser/#/external/cityparquet.open3d.city/data/catalog.json).
+
+## What the conversion keeps
+
+Each collection is converted from its publisher's own files, and cites them: every
+Item links its source archive (`rel=via`) and the published STAC Item it derives from
+(`rel=derived_from`). The licence and provider shown for a collection are the
+source's.
+
+- **PLATEAU** (Japan, CityGML 2.0). The 62 municipalities of Tokyo and the city of
+  Yokohama, one package each. Coordinates stay in the source CRS, JGD2011
+  (EPSG:6697), stored longitude-first as GeoParquet requires. The `uro` Application
+  Domain Extension (PLATEAU's own attributes), the `urf` urban-planning features and
+  the `dem` relief features are not encoded.
+- **3DBAG** (the Netherlands, CityJSON). Every building in the country as one
+  package of 21.5 million rows, in Amersfoort / RD New + NAP (EPSG:7415).
+- **Auvergne-Rhône-Alpes economic activity zones** (France, CityGML 2.0). LoD3
+  buildings of the region's economic activity zones, one package per source file,
+  in RGF93 / CC46 (EPSG:3946). The source covers the zones only, not whole
+  municipalities.
+
+Where a source has no LoD0 footprint, the converter derives one from the object's
+ground surfaces — its `GroundSurface` faces, or failing those its downward-facing
+ones — and leaves LoD0 empty when it finds no acceptable ground. The LoD0 column is
+plain GeoParquet, so a GIS can read those footprints as ordinary 2D layers.
