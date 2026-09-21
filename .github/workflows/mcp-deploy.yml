@@ -13,7 +13,8 @@ name: mcp-deploy
 
 on:
   push:
-    branches: [main]
+    # develop for now, until the first deploy has gone through; then main.
+    branches: [develop]
     paths: ["ai/mcp/**", ".github/workflows/mcp-deploy.yml"]
   workflow_dispatch:
     inputs:
@@ -68,6 +69,12 @@ jobs:
           packageManager: pnpm
           wranglerVersion: "4.135.0"
           command: deploy
+
+      # wrangler reports a failed API call without the response that explains
+      # it; the full exchange is in its log. Secret values are masked.
+      - name: show wrangler's log if the deploy failed
+        if: failure() && steps.deploy.outcome == 'failure'
+        run: tail -n 200 ~/.config/.wrangler/logs/*.log
 
       # The container's egress policy exists only on Cloudflare, so this is
       # where it is tested: an allowlisted host readable, anything else not.
