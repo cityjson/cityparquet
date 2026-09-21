@@ -1401,6 +1401,7 @@ def publish_main(argv: list[str]) -> int:
     parser.add_argument("--base-url", default=BASE_URL)
     args = parser.parse_args(argv)
     spec = publish.load_spec(args.spec)
+    publish.check_no_overlap(spec, args.out, data_root=args.data_root)
     for collection in spec.collections:
         written = publish.lay_out(collection, args.out, data_root=args.data_root)
         _say(f"==> {collection.name}: {len(written)} package(s)")

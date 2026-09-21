@@ -316,12 +316,57 @@ def normalise(
 #: prolog and comments, or a CityJSON header whose `type` is not written first.
 _MODEL_SNIFF_BYTES = 1 << 20
 
-#: An XML document's root element: the first start tag after any XML
-#: declaration, processing instructions, comments and doctype.
-_XML_ROOT = re.compile(
-    rb"\A(?:\xef\xbb\xbf)?(?:\s|<\?.*?\?>|<!--.*?-->|<!DOCTYPE[^>]*>)*<([A-Za-z_][\w.:-]*)",
-    re.DOTALL,
-)
+
+def _skip_declaration(head: bytes, pos: int) -> int:
+    """The index just past a `<!DOCTYPE …>` starting at `pos`, or -1.
+
+    Quoted literals and an internal subset (`[ … ]`) may contain `>`, so the
+    declaration ends at the first `>` outside both.
+    """
+    depth = 0
+    quote = None
+    for k in range(pos + 2, len(head)):
+        c = head[k : k + 1]
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in (b'"', b"'"):
+            quote = c
+        elif c == b"[":
+            depth += 1
+        elif c == b"]":
+            depth -= 1
+        elif c == b">" and depth <= 0:
+            return k + 1
+    return -1
+
+
+def xml_root_name(head: bytes) -> bytes | None:
+    """The qualified name of an XML document's root element, or None.
+
+    A single forward scan over the prolog — XML declaration, processing
+    instructions, comments, a doctype — so its cost is linear in the head.
+    None means the prolog did not end within `head`, or it is not XML.
+    """
+    pos = 3 if head.startswith(b"\xef\xbb\xbf") else 0
+    while True:
+        while pos < len(head) and head[pos : pos + 1].isspace():
+            pos += 1
+        if head.startswith(b"<?", pos):
+            end = head.find(b"?>", pos + 2)
+            pos = -1 if end < 0 else end + 2
+        elif head.startswith(b"<!--", pos):
+            end = head.find(b"-->", pos + 4)
+            pos = -1 if end < 0 else end + 3
+        elif head.startswith(b"<!", pos):
+            pos = _skip_declaration(head, pos)
+        elif head.startswith(b"<", pos):
+            name = re.match(rb"[A-Za-z_][\w.:-]*", head[pos + 1 : pos + 257])
+            return name.group(0) if name else None
+        else:
+            return None
+        if pos < 0:
+            return None
 
 
 def is_city_model(path: Path) -> bool:
@@ -333,6 +378,7 @@ def is_city_model(path: Path) -> bool:
 
     An XML document is judged by its root element, which follows only the
     prolog, comments and a doctype: a CityGML document's root is `CityModel`.
+    A prolog that outruns the window leaves the root unknown.
     A JSON document's `"type": "CityJSON"` may come after any amount of
     vertices, since members are unordered; not finding it in a file longer
     than the window is unknown, not absent, and such a file goes to the
@@ -344,5 +390,8 @@ def is_city_model(path: Path) -> bool:
         truncated = bool(fh.read(1))
     if path.suffix.lower() in (".json", ".jsonl"):
         return re.search(rb'"type"\s*:\s*"CityJSON"', head) is not None or truncated
-    root = _XML_ROOT.search(head)
-    return root is not None and root.group(1).split(b":")[-1] == b"CityModel"
+    root = xml_root_name(head)
+    if root is None:
+        # The prolog outran the window: unknown, so the converter decides.
+        return truncated
+    return root.split(b":")[-1] == b"CityModel"

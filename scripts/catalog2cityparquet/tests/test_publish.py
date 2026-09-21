@@ -241,3 +241,28 @@ def test_without_a_public_base_self_links_are_dropped(tmp_path):
     )
     publish.absolutise_self_links(root, None)
     assert json.loads((root / "catalog.json").read_text())["links"] == []
+
+
+def test_one_collection_cannot_delete_anothers_sources(tmp_path):
+    # Collection `a` publishes into out/a; collection `b` reads its packages
+    # from under out/a. Checking each collection alone lets `a` delete them.
+    src_b = tmp_path / "out" / "a" / "items"
+    pkg_b = _package(src_b, "1_b_")
+    _package(tmp_path / "src_a", "1_a_")
+    spec = publish.Spec(
+        catalog={},
+        collections=[
+            publish.CollectionSpec(
+                name="a",
+                source="s",
+                packages=str(tmp_path / "src_a" / "*"),
+                slug=r"^\d+_(?P<slug>a)_",
+            ),
+            publish.CollectionSpec(
+                name="b", source="s", packages=str(src_b / "*"), slug=r"^\d+_(?P<slug>b)_"
+            ),
+        ],
+    )
+    with pytest.raises(ValueError, match="overlap"):
+        publish.check_no_overlap(spec, tmp_path / "out")
+    assert (pkg_b / "metadata.json").exists()

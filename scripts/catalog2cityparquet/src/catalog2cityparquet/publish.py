@@ -147,19 +147,34 @@ def lay_out(spec: CollectionSpec, out: Path, data_root: Path | None = None) -> l
             seen[slug] = pkg
             placements.append((pkg, root / slug, slug, title_from_slug(slug)))
 
-    target = root.resolve()
-    for src, *_ in placements:
-        source = src.resolve()
-        if source.is_relative_to(target) or target.is_relative_to(source):
-            raise ValueError(
-                f"{spec.name}: {src} and the published {root} overlap; publishing would "
-                "delete the package it publishes"
-            )
+    _refuse_overlap([spec.name], [src for src, *_ in placements], out)
     if root.exists():
         shutil.rmtree(root)
     for src, dest, item_id, title in placements:
         _place(src, dest, item_id=item_id, title=title, collection=spec.name, flat=flat)
     return [dest for _, dest, _, _ in placements]
+
+
+def _refuse_overlap(names: list[str], sources: list[Path], out: Path) -> None:
+    for name in names:
+        target = (out / name).resolve()
+        for src in sources:
+            source = src.resolve()
+            if source.is_relative_to(target) or target.is_relative_to(source):
+                raise ValueError(
+                    f"{src} and the published {out / name} overlap; publishing would "
+                    "delete a package it publishes"
+                )
+
+
+def check_no_overlap(spec: Spec, out: Path, data_root: Path | None = None) -> None:
+    """Refuse a publish whose output overlaps any collection's sources.
+
+    Checked across every collection before any is laid out: collections are
+    replaced one at a time, and one's output may hold another's packages.
+    """
+    sources = [pkg for c in spec.collections for pkg in _packages(c, data_root)]
+    _refuse_overlap([c.name for c in spec.collections], sources, out)
 
 
 def absolutise_self_links(out: Path, public_url: str | None) -> None:

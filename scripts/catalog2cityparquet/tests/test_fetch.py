@@ -445,3 +445,28 @@ def test_a_large_xml_document_is_judged_by_its_root_element(tmp_path):
     )
     assert not fetch.is_city_model(codelist)
     assert fetch.is_city_model(model)
+
+
+def test_an_internal_doctype_subset_does_not_hide_the_root(tmp_path):
+    doc = tmp_path / "a.gml"
+    doc.write_text(
+        '<?xml version="1.0"?><!DOCTYPE CityModel [<!ELEMENT CityModel ANY>'
+        '<!ENTITY x "a > b">]><CityModel/>'
+    )
+    assert fetch.is_city_model(doc)
+
+
+def test_a_prolog_longer_than_the_window_is_unknown_and_kept(tmp_path):
+    doc = tmp_path / "a.gml"
+    doc.write_text("<!-- a -->" * 8 + "<!--" + "x" * (2 << 20) + "--><CityModel/>")
+    assert fetch.is_city_model(doc)
+
+
+def test_many_comments_before_an_unfinished_one_scan_in_linear_time(tmp_path):
+    import time
+
+    doc = tmp_path / "a.gml"
+    doc.write_text("<!-- c -->" * 5000 + "<!--" + "x" * (2 << 20))
+    started = time.monotonic()
+    fetch.is_city_model(doc)
+    assert time.monotonic() - started < 1.0
