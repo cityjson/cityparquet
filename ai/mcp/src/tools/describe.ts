@@ -81,6 +81,15 @@ interface GeoFooter {
   readonly columns?: Record<string, { readonly crs?: unknown }>;
 }
 
+function crsKey(crs: unknown): string | null {
+  if (crs === null || typeof crs !== "object") return null;
+  const id = (crs as ProjJsonCrs).id;
+  if (id && id.authority !== undefined && id.code !== undefined) {
+    return `${String(id.authority).toUpperCase()}:${String(id.code)}`;
+  }
+  return JSON.stringify(crs);
+}
+
 /**
  * Renders a PROJJSON CRS object to something an agent can act on: enough to
  * tell whether coordinates are metres or degrees, not the full definition.
@@ -97,6 +106,13 @@ function renderCrs(crs: unknown): string | null {
 
 interface FooterCrs {
   readonly crs: string | null;
+  /**
+   * What makes two CRSs the same one: `authority:code` when the PROJJSON
+   * carries an id, else the whole definition. Never the rendered string —
+   * an id with and without a `name` is one CRS, and two unidentified
+   * definitions sharing a name are not.
+   */
+  readonly key: string | null;
   /** What was wrong with the footer, if anything — for `notes`. */
   readonly problems: string[];
 }
@@ -123,14 +139,15 @@ async function footerCrs(engine: Engine, file: string): Promise<FooterCrs> {
     );
     for (const row of reader.getRowsJson()) byKey.set(String(row[0]), String(row[1]));
   } catch (error) {
-    return { crs: null, problems: [`footer key-value metadata unreadable (${messageOf(error)})`] };
+    return { crs: null, key: null, problems: [`footer key-value metadata unreadable (${messageOf(error)})`] };
   }
 
   const cityRaw = byKey.get("city");
   if (cityRaw !== undefined) {
     try {
-      const rendered = renderCrs((JSON.parse(cityRaw) as CityFooter | null)?.crs);
-      if (rendered) return { crs: rendered, problems };
+      const crs = (JSON.parse(cityRaw) as CityFooter | null)?.crs;
+      const rendered = renderCrs(crs);
+      if (rendered) return { crs: rendered, key: crsKey(crs), problems };
     } catch {
       problems.push("the city footer is not valid JSON");
     }
@@ -144,21 +161,21 @@ async function footerCrs(engine: Engine, file: string): Promise<FooterCrs> {
       const rendered = primary ? renderCrs(primary.crs) : null;
       if (rendered) {
         if (problems.length > 0) problems.push("the CRS was read from the geo footer instead");
-        return { crs: rendered, problems };
+        return { crs: rendered, key: crsKey(primary!.crs), problems };
       }
     } catch {
       problems.push("the geo footer is not valid JSON");
     }
   }
 
-  return { crs: null, problems };
+  return { crs: null, key: null, problems };
 }
 
 async function summariseFile(
   engine: Engine,
   file: string,
   name: string,
-): Promise<{ table: TableSummary; problems: string[] } | null> {
+): Promise<{ table: TableSummary; crsKey: string | null; problems: string[] } | null> {
   let columns: string[];
   try {
     const schema = await engine.connection.runAndReadAll(`SELECT name FROM parquet_schema(${sqlLiteral(file)})`);
@@ -179,9 +196,10 @@ async function summariseFile(
     rowCount = null;
   }
 
-  const { crs, problems } = await footerCrs(engine, file);
+  const { crs, key, problems } = await footerCrs(engine, file);
   return {
     table: { name, file, row_count: rowCount, geometry_columns: geometryColumns, lods: lodsOf(geometryColumns), crs },
+    crsKey: key,
     problems,
   };
 }
@@ -231,15 +249,14 @@ async function readItem(location: Location): Promise<{ item: unknown; note?: str
     if (!response.ok) {
       return { item: null, note: `no metadata.json (HTTP ${response.status}); ${PROBING}` };
     }
+    // Reading the body and parsing it are separate steps, because they fail
+    // for different reasons: a body cut off mid-read (a reset, the timeout)
+    // is a network failure, and only a body that arrived whole can be
+    // malformed.
     try {
-      return { item: await response.json() };
+      text = await response.text();
     } catch (error) {
-      // The timeout covers the body too, and a body cut off mid-read is a
-      // network failure, not a malformed document.
-      const name = error instanceof Error ? error.name : "";
-      return name === "TimeoutError" || name === "AbortError"
-        ? { item: null, note: `metadata.json unreachable (${messageOf(error)}); ${PROBING}` }
-        : { item: null, note: `metadata.json is not valid JSON (${messageOf(error)}); ${PROBING}` };
+      return { item: null, note: `metadata.json unreachable (${messageOf(error)}); ${PROBING}` };
     }
   }
 
@@ -346,9 +363,11 @@ export async function describe(engine: Engine, url: string): Promise<DescribeRes
   return engine.exclusive(async () => {
     const summaries = await Promise.all(files.map((f) => summariseFile(engine, f.file, f.name)));
     const tables: TableSummary[] = [];
+    const keys = new Map<TableSummary, string | null>();
     summaries.forEach((summary, index) => {
       if (summary) {
         tables.push(summary.table);
+        keys.set(summary.table, summary.crsKey);
         notes.push(...summary.problems.map((p) => `${summary.table.name}: ${p}.`));
       } else if (inventory === "stac") {
         // A probed basename that is absent is expected; a file the Item
@@ -358,7 +377,7 @@ export async function describe(engine: Engine, url: string): Promise<DescribeRes
     });
     if (tables.length === 0) throw new Error(`no readable Parquet files under ${shown}`);
 
-    return { url: shown, kind: "package", inventory, crs: packageCrs(tables, notes), stac, tables, notes };
+    return { url: shown, kind: "package", inventory, crs: packageCrs(tables, keys, notes), stac, tables, notes };
   });
 }
 
@@ -367,20 +386,28 @@ export async function describe(engine: Engine, url: string): Promise<DescribeRes
  * do not, there is no honest single answer: report null and let each
  * table's own `crs` speak, rather than whichever table happened to be first.
  */
-function packageCrs(tables: readonly TableSummary[], notes: string[]): string | null {
-  const distinct = [...new Set(tables.map((t) => t.crs).filter((c): c is string => c !== null))];
-  if (distinct.length === 0) {
+function packageCrs(
+  tables: readonly TableSummary[],
+  keys: ReadonlyMap<TableSummary, string | null>,
+  notes: string[],
+): string | null {
+  const stated = tables.filter((t) => t.crs !== null);
+  const distinct = new Set(stated.map((t) => keys.get(t) ?? t.crs));
+  if (distinct.size === 0) {
     notes.push("no CRS in any table's footer — the package states nothing about its coordinate system.");
     return null;
   }
-  if (distinct.length > 1) {
+  if (distinct.size > 1) {
     const listed = tables.map((t) => `${t.name}: ${t.crs ?? "none"}`).join("; ");
     notes.push(`the tables disagree on CRS (${listed}), so no package CRS is reported — see each table's crs.`);
     return null;
   }
   const silent = tables.filter((t) => t.crs === null).map((t) => t.name);
+  // The most informative rendering of the one CRS: a table that names it
+  // over one that gives only the id.
+  const shown = stated.map((t) => t.crs!).sort((a, b) => b.length - a.length)[0]!;
   if (silent.length > 0) {
-    notes.push(`${silent.join(", ")} ${silent.length === 1 ? "states" : "state"} no CRS in the footer; the other tables state ${distinct[0]}.`);
+    notes.push(`${silent.join(", ")} ${silent.length === 1 ? "states" : "state"} no CRS in the footer; the other tables state ${shown}.`);
   }
-  return distinct[0]!;
+  return shown;
 }

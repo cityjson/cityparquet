@@ -42,6 +42,14 @@ describe("splitStatements", () => {
     expect(splitStatements("SELECT $t1$a;b$t1$; SELECT 2")).toEqual(["SELECT $t1$a;b$t1$", "SELECT 2"]);
   });
 
+  it("does not take a dollar sign inside an identifier for a dollar tag", () => {
+    expect(splitStatements("CREATE TABLE x$t1$(id INTEGER); CREATE SCHEMA d; PRAGMA p('d')")).toEqual([
+      "CREATE TABLE x$t1$(id INTEGER)",
+      "CREATE SCHEMA d",
+      "PRAGMA p('d')",
+    ]);
+  });
+
   it("does not take a positional parameter for a dollar tag", () => {
     expect(splitStatements("SELECT $1; SELECT $2")).toEqual(["SELECT $1", "SELECT $2"]);
   });

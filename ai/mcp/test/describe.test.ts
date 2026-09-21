@@ -82,7 +82,7 @@ suite("describe, package inventory", () => {
     vi.stubGlobal("fetch", async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ assets: { building: { href: "building.parquet" } } }),
+      text: async () => JSON.stringify({ assets: { building: { href: "building.parquet" } } }),
     }));
     const result = await describe(
       fakeEngine({ "https://example.test/pkg/building.parquet": ["id", "geometry_lod2_2", "bbox"] }),
@@ -95,7 +95,7 @@ suite("describe, package inventory", () => {
   });
 
   it("falls back to probing the normative basenames when there is no metadata.json", async () => {
-    vi.stubGlobal("fetch", async () => ({ ok: false, status: 404, json: async () => ({}) }));
+    vi.stubGlobal("fetch", async () => ({ ok: false, status: 404, text: async () => JSON.stringify({}) }));
     const result = await describe(
       fakeEngine({ "https://example.test/pkg/building.parquet": ["id", "geometry_lod0_0"] }),
       "https://example.test/pkg",
@@ -106,7 +106,7 @@ suite("describe, package inventory", () => {
   });
 
   it("probes too when the Item carries no Parquet assets", async () => {
-    vi.stubGlobal("fetch", async () => ({ ok: true, status: 200, json: async () => ({ assets: {} }) }));
+    vi.stubGlobal("fetch", async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ assets: {} }) }));
     const result = await describe(
       fakeEngine({ "https://example.test/pkg/relief.parquet": ["id"] }),
       "https://example.test/pkg",
@@ -116,7 +116,7 @@ suite("describe, package inventory", () => {
   });
 
   it("throws when nothing under the URL is readable", async () => {
-    vi.stubGlobal("fetch", async () => ({ ok: false, status: 404, json: async () => ({}) }));
+    vi.stubGlobal("fetch", async () => ({ ok: false, status: 404, text: async () => JSON.stringify({}) }));
     await expect(describe(fakeEngine({}), "https://example.test/empty")).rejects.toThrow(/no readable Parquet/);
   });
 
@@ -128,7 +128,7 @@ suite("describe, package inventory", () => {
     vi.stubGlobal("fetch", async () => ({
       ok: true,
       status: 200,
-      json: async () => ({
+      text: async () => JSON.stringify({
         assets: {
           data: { href: "building.parquet" },
           "building.parquet": { href: "building.parquet" },
@@ -149,7 +149,7 @@ suite("describe, package inventory", () => {
     vi.stubGlobal("fetch", async () => ({
       ok: true,
       status: 200,
-      json: async () => { throw new SyntaxError("Unexpected token < in JSON"); },
+      text: async () => "<html>not json</html>",
     }));
     const result = await describe(
       fakeEngine({ "https://example.test/pkg/building.parquet": ["id"] }),
@@ -159,6 +159,22 @@ suite("describe, package inventory", () => {
     const notes = result.notes.join(" ");
     expect(notes).toMatch(/not valid JSON/);
     expect(notes).not.toMatch(/unreachable/);
+  });
+
+  it("reports a body cut off mid-read as unreachable, not as malformed", async () => {
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      status: 200,
+      text: async () => { throw new TypeError("terminated"); },
+      json: async () => { throw new TypeError("terminated"); },
+    }));
+    const result = await describe(
+      fakeEngine({ "https://example.test/pkg/building.parquet": ["id"] }),
+      "https://example.test/pkg",
+    );
+    const notes = result.notes.join(" ");
+    expect(notes).toMatch(/unreachable \(terminated\)/);
+    expect(notes).not.toMatch(/not valid JSON/);
   });
 
   it("reports a failed fetch as unreachable", async () => {
@@ -174,7 +190,7 @@ suite("describe, package inventory", () => {
     vi.stubGlobal("fetch", async () => ({
       ok: true,
       status: 200,
-      json: async () => ({
+      text: async () => JSON.stringify({
         assets: {
           bad: { href: "http://[not a host/relief.parquet" },
           building: { href: "building.parquet" },
@@ -392,6 +408,26 @@ suite("describe, local packages and footer edge cases", () => {
       building: "Amersfoort / RD New + NAP height (EPSG:7415)",
       relief: "WGS 84 (EPSG:4326)",
     });
+    expect(result.notes.join(" ")).toMatch(/disagree/);
+  });
+
+  it("treats the same CRS id as one CRS, whether or not a table names it", async () => {
+    const dir = fixtureDir();
+    await writeTable(join(dir, "building.parquet"), { city: JSON.stringify({ crs: rd }) });
+    await writeTable(join(dir, "relief.parquet"), { city: JSON.stringify({ crs: { id: rd.id } }) });
+
+    const result = await describe(engine, dir);
+    expect(result.crs).toBe("Amersfoort / RD New + NAP height (EPSG:7415)");
+    expect(result.notes.join(" ")).not.toMatch(/disagree/);
+  });
+
+  it("does not take two different unidentified CRSs sharing a name for one", async () => {
+    const dir = fixtureDir();
+    await writeTable(join(dir, "building.parquet"), { city: JSON.stringify({ crs: { name: "Local grid", datum: "a" } }) });
+    await writeTable(join(dir, "relief.parquet"), { city: JSON.stringify({ crs: { name: "Local grid", datum: "b" } }) });
+
+    const result = await describe(engine, dir);
+    expect(result.crs).toBeNull();
     expect(result.notes.join(" ")).toMatch(/disagree/);
   });
 

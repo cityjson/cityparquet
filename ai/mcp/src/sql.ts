@@ -52,8 +52,10 @@ export function splitStatements(sql: string): string[] {
     }
 
     // A tag may carry digits after its first character (`$t1$`), but may not
-    // start with one: `$1` is a positional parameter, not a quote.
-    if (ch === "$") {
+    // start with one: `$1` is a positional parameter, not a quote. And it
+    // must start a token — `$` is legal inside an identifier, so `x$t1$` is a
+    // table name, not the opening of a string.
+    if (ch === "$" && !/[A-Za-z0-9_$]/.test(sql[i - 1] ?? "")) {
       const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
       if (tag) {
         const marker = tag[0];
