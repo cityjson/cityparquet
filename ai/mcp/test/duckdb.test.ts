@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createEngine, DEFAULT_EXTENSIONS, type Engine } from "../src/duckdb.js";
+import { createEngine, DEFAULT_EXTENSIONS, extensionsFromEnv, type Engine } from "../src/duckdb.js";
 
 const extensionDirectory = join(mkdtempSync(join(tmpdir(), "cityparquet-mcp-")), "extensions");
 
@@ -14,14 +14,14 @@ describe("createEngine", () => {
   });
   afterAll(async () => { await engine?.close(); });
 
-  it("loads exactly the default extensions, and never spatial", () => {
+  it("loads exactly the default extensions, spatial and three_d together", () => {
     expect(engine.extensions.map((e) => e.name).sort()).toEqual([...DEFAULT_EXTENSIONS].sort());
-    expect(engine.extensions.map((e) => e.name)).not.toContain("spatial");
+    expect(engine.extensions.map((e) => e.name)).toEqual(expect.arrayContaining(["spatial", "three_d"]));
   });
 
-  it("runs DuckDB v1.5.4", async () => {
+  it("runs DuckDB v1.5.5", async () => {
     const reader = await engine.connection.runAndReadAll("SELECT version() AS v");
-    expect(reader.getRowsJson()[0]![0]).toBe("v1.5.4");
+    expect(reader.getRowsJson()[0]![0]).toBe("v1.5.5");
   });
 
   // The security contract. A change that makes one of these pass is a
@@ -62,6 +62,62 @@ describe("createEngine without the sandbox", () => {
   it("leaves the local filesystem reachable", async () => {
     const engine = await createEngine({ sandbox: false, extensionDirectory });
     await expect(engine.connection.run("SELECT * FROM read_csv('/etc/hostname')")).resolves.toBeDefined();
+    await engine.close();
+  });
+});
+
+describe("createEngine with no extensions", () => {
+  it("comes up with none loaded rather than failing on an empty list", async () => {
+    const engine = await createEngine({ sandbox: false, extensionDirectory, extensions: [] });
+    expect(engine.extensions).toEqual([]);
+    await expect(engine.connection.run("SELECT 1")).resolves.toBeDefined();
+    await engine.close();
+  });
+});
+
+describe("extensionsFromEnv", () => {
+  it("falls back to the defaults when unset", () => {
+    expect(extensionsFromEnv(undefined)).toEqual(DEFAULT_EXTENSIONS);
+  });
+
+  it("falls back to the defaults when empty or blank, never to an empty name", () => {
+    expect(extensionsFromEnv("")).toEqual(DEFAULT_EXTENSIONS);
+    expect(extensionsFromEnv(" , ")).toEqual(DEFAULT_EXTENSIONS);
+  });
+
+  it("trims names and drops empty entries", () => {
+    expect(extensionsFromEnv(" httpfs, ,cityjson ,")).toEqual(["httpfs", "cityjson"]);
+  });
+});
+
+// `spatial` brings GDAL — a second file reader with its own path grammar —
+// so the sandbox must be shown to cover it too. The positive control matters:
+// GDAL reports an unreadable path and an unparseable one with the same "Could
+// not open GDAL dataset", so a refusal proves nothing unless the same read
+// succeeds with the sandbox off.
+describe("GDAL, through spatial", () => {
+  const extensions = DEFAULT_EXTENSIONS;
+  const dir = mkdtempSync(join(tmpdir(), "cityparquet-mcp-gdal-"));
+  const file = join(dir, "probe.geojson");
+  const read = `SELECT secret FROM ST_Read('${file}')`;
+
+  beforeAll(() => {
+    writeFileSync(file, JSON.stringify({
+      type: "FeatureCollection",
+      features: [{ type: "Feature", properties: { secret: "s3cr3t" }, geometry: { type: "Point", coordinates: [1, 2] } }],
+    }));
+  });
+
+  it("reads a local file through GDAL without the sandbox", async () => {
+    const engine = await createEngine({ sandbox: false, extensionDirectory, extensions });
+    const reader = await engine.connection.runAndReadAll(read);
+    expect(reader.getRowsJson()).toEqual([["s3cr3t"]]);
+    await engine.close();
+  });
+
+  it("blocks the same GDAL read with the sandbox", async () => {
+    const engine = await createEngine({ sandbox: true, extensionDirectory, extensions });
+    await expect(engine.connection.run(read)).rejects.toThrow();
     await engine.close();
   });
 });

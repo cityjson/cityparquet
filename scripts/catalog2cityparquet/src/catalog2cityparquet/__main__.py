@@ -33,7 +33,7 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 
-from . import aggregate, convert, discover, fetch
+from . import aggregate, convert, discover, fetch, publish
 from .discover import Item
 
 # `COLLECTION_LEVEL` is read here as `driver.COLLECTION_LEVEL` but lives in
@@ -76,6 +76,9 @@ MAX_ENVIRONMENT_NOTES = 20
 #: start-of-run sweep can tell its own leftovers from anything else that shares
 #: the working directory.
 WORK_PREFIX = "c2cp-"
+
+#: See `fetch.DEFAULT_MAX_BYTES`; `--max-unpack-gib` raises it per run.
+DEFAULT_MAX_UNPACK_BYTES = fetch.DEFAULT_MAX_BYTES
 
 #: Name of the file by which a run claims a directory it must not share.
 LOCK_NAME = ".c2cp-lock"
@@ -245,6 +248,11 @@ class Config:
     work_dir: Path | None = None
     download_timeout: float = 1800.0
     convert_timeout: float = 3600.0
+    #: Items to convert, by id, in place of the whole collection. Naming an
+    #: item is asking for it, so a named whole-city bundle is converted.
+    item_ids: tuple[str, ...] | None = None
+    #: How many bytes one item may unpack to, across every nested archive.
+    max_unpack_bytes: int = DEFAULT_MAX_UNPACK_BYTES
 
 
 @dataclass
@@ -570,7 +578,7 @@ def process_item(
         downloaded = fetch.download(item.href, source, client, timeout=config.download_timeout)
         if stats is not None:
             stats.downloaded = downloaded
-        inputs = fetch.normalise(source, workdir / "extract")
+        inputs = fetch.normalise(source, workdir / "extract", max_bytes=config.max_unpack_bytes)
         if not inputs:
             raise convert.ConvertError("unsupported_archive", "no convertible file in the asset")
         out_dir = package_dir(config, item)
@@ -615,7 +623,14 @@ def convert_items(
         started = time.monotonic()
         stats = ItemStats()
         try:
-            if fetch.is_duplicate_bundle(item):
+            if config.skip_existing and already_converted(config, item):
+                # No record at all: this is not an outcome of *this* run, and
+                # counting it would make a resumed run look like a fresh
+                # success. Ahead of the duplicate-bundle rule, so a bundle an
+                # earlier run converted by name is not later ledgered as a
+                # skip that replaces its success in the roll-up.
+                return
+            if config.item_ids is None and fetch.is_duplicate_bundle(item):
                 # Skipped before the download, which is the whole point: these
                 # are hundreds of gigabytes of data we convert from its tiles.
                 _record_safely(
@@ -623,11 +638,6 @@ def convert_items(
                     Record(item.collection, item.item_id, "skipped", reason="duplicate_bundle"),
                     state,
                 )
-                return
-            if config.skip_existing and already_converted(config, item):
-                # No record at all: this is not an outcome of *this* run, and
-                # counting it would make a resumed run look like a fresh
-                # success.
                 return
             process_item(item, config=config, client=client, stats=stats)
         except convert.ConvertError as exc:
@@ -777,9 +787,16 @@ def convert_collection(
     # item that reaches no record at all shrinks the histogram's denominator
     # with nothing to show for it.
     dropped: list[str] = []
-    items, note = discover.enumerate_items(
-        config.base_url, config.bucket_api, cid, collection, client, dropped=dropped
-    )
+    if config.item_ids is not None:
+        # Nothing was enumerated, so there is no index to disagree with.
+        items, note = (
+            discover.items_by_id(config.base_url, cid, config.item_ids, client, dropped=dropped),
+            None,
+        )
+    else:
+        items, note = discover.enumerate_items(
+            config.base_url, config.bucket_api, cid, collection, client, dropped=dropped
+        )
     ledger.note_discovered(cid, len(items) + len(dropped))
     for name in dropped:
         # The origin listed this document and then would not serve it (or served
@@ -1178,9 +1195,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--tool",
         type=Path,
-        default=Path(
-            "lib/cityparquet-rs/vendor/city3d-stac-tool/target/release/city3dstac"
-        ),
+        default=Path("lib/cityparquet-rs/vendor/city3d-stac-tool/target/release/city3dstac"),
     )
     parser.add_argument(
         "--collection",
@@ -1213,6 +1228,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=[],
         metavar="COLLECTION=EPSG:xxxx",
         help="fallback CRS for a collection whose sources declare none; repeatable",
+    )
+    parser.add_argument(
+        "--item",
+        action="append",
+        dest="items",
+        metavar="ITEM_ID",
+        help="convert only this item of the one --collection; repeatable. A named "
+        "whole-city bundle is converted rather than skipped",
+    )
+    parser.add_argument(
+        "--max-unpack-gib",
+        type=_positive_int,
+        default=DEFAULT_MAX_UNPACK_BYTES // 2**30,
+        help=f"how much one item may unpack to, in GiB (default "
+        f"{DEFAULT_MAX_UNPACK_BYTES // 2**30})",
     )
     parser.add_argument("--base-url", default=BASE_URL)
     parser.add_argument("--bucket-api", default=BUCKET_API)
@@ -1257,7 +1287,27 @@ def config_from_args(args: argparse.Namespace) -> Config:
             validate_collection_id(cid)
         except ValueError as exc:
             raise SystemExit(f"--collection: {exc}") from exc
+    if args.items is not None:
+        if len(args.collections or []) != 1:
+            raise SystemExit(
+                "--item needs exactly one --collection: an item id is unique only there"
+            )
+        if args.limit_per_collection is not None:
+            raise SystemExit(
+                "--item and --limit-per-collection conflict: a limit would drop named items"
+            )
+        if len(set(args.items)) != len(args.items):
+            raise SystemExit("--item: an id is named twice; two workers would share one package")
+        for item_id in args.items:
+            try:
+                usable = safe_item_id(item_id) == item_id
+            except ValueError:
+                usable = False
+            if not usable:
+                raise SystemExit(f"--item: {item_id!r} is not a usable item id")
     return Config(
+        item_ids=tuple(args.items) if args.items is not None else None,
+        max_unpack_bytes=args.max_unpack_gib * 2**30,
         out=args.out,
         binary=args.binary,
         tool=args.tool,
@@ -1272,8 +1322,8 @@ def config_from_args(args: argparse.Namespace) -> Config:
     )
 
 
-#: The one subcommand. Everything else is the default conversion run, whose
-#: flag-only invocation predates it and must keep working unchanged.
+#: The subcommands. Everything else is the default conversion run, whose
+#: flag-only invocation predates them and must keep working unchanged.
 HISTOGRAM = "histogram"
 
 
@@ -1329,12 +1379,47 @@ def histogram_main(argv: list[str]) -> int:
     return 0
 
 
+PUBLISH = "publish"
+
+
+def publish_main(argv: list[str]) -> int:
+    """Lay converted packages out for a public bucket, and aggregate their STAC."""
+    parser = argparse.ArgumentParser(
+        prog=f"catalog2cityparquet {PUBLISH}",
+        description="Lay converted packages out as a published tree, per a spec file.",
+    )
+    parser.add_argument("spec", type=Path, help="the publish spec (YAML)")
+    parser.add_argument("--out", type=Path, required=True, help="the tree to write")
+    parser.add_argument(
+        "--data-root", type=Path, help="what relative package globs resolve against"
+    )
+    parser.add_argument(
+        "--tool",
+        type=Path,
+        default=Path("lib/cityparquet-rs/vendor/city3d-stac-tool/target/release/city3dstac"),
+    )
+    parser.add_argument("--base-url", default=BASE_URL)
+    args = parser.parse_args(argv)
+    spec = publish.load_spec(args.spec)
+    for collection in spec.collections:
+        written = publish.lay_out(collection, args.out, data_root=args.data_root)
+        _say(f"==> {collection.name}: {len(written)} package(s)")
+    with httpx.Client(timeout=METADATA_TIMEOUT, follow_redirects=True) as client:
+        publish.aggregate_tree(
+            spec, args.out, tool=args.tool, base_url=args.base_url, client=client
+        )
+    _say(f"catalogue: {args.out / 'catalog.json'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """The process entry point: a run, and streams that cannot outlive it."""
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
         if argv and argv[0] == HISTOGRAM:
             return histogram_main(argv[1:])
+        if argv and argv[0] == PUBLISH:
+            return publish_main(argv[1:])
         args = parse_args(argv)
         return run(
             config_from_args(args),

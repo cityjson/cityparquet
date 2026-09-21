@@ -13,9 +13,32 @@ import type { Engine } from "./duckdb.js";
 import { describe } from "./tools/describe.js";
 import { QUERY_DEFAULTS, runQuery } from "./tools/query.js";
 
+/**
+ * Upper bounds on what one `cityparquet_query` call may ask for. A local
+ * server leaves them at the schema's own maxima; the hosted one lowers them,
+ * because its engines are shared out one request at a time.
+ */
+export interface QueryCeilings {
+  readonly maxRows: number;
+  readonly timeoutMs: number;
+}
+
 export interface ServerDeps {
   readonly corpus: Corpus;
   readonly engine: Engine;
+  readonly ceilings?: QueryCeilings;
+}
+
+/**
+ * An optional integer that tolerates how forms send one: some MCP clients
+ * send "" for a field left blank, and a typed number as a string. Blank means
+ * unset; a numeric string is read as its number; anything else still fails.
+ */
+function optionalInt(min: number, max: number) {
+  return z.preprocess(
+    (value) => (value === "" || value === null ? undefined : typeof value === "string" ? Number(value) : value),
+    z.number().int().min(min).max(max).optional(),
+  );
 }
 
 const corpusEnum = z.enum(CORPUS_IDS as unknown as [CorpusId, ...CorpusId[]]);
@@ -27,7 +50,7 @@ const failure = (error: unknown) => ({
   isError: true,
 });
 
-export function createServer({ corpus, engine }: ServerDeps): McpServer {
+export function createServer({ corpus, engine, ceilings }: ServerDeps): McpServer {
   const server = new McpServer({ name: "cityparquet", version: "0.1.0" });
 
   server.registerTool(
@@ -48,7 +71,7 @@ export function createServer({ corpus, engine }: ServerDeps): McpServer {
       inputSchema: z.object({
         query: z.string().describe("Term to look for, e.g. 'semantic surfaces' or 'ST_3DVolume'"),
         corpus: corpusEnum.optional(),
-        limit: z.number().int().min(1).max(50).optional(),
+        limit: optionalInt(1, 50),
       }),
     },
     async ({ query, corpus: id, limit }) => json(search(corpus, query, { corpus: id, limit })),
@@ -78,8 +101,8 @@ export function createServer({ corpus, engine }: ServerDeps): McpServer {
     "cityparquet_describe",
     {
       description:
-        "Describe a CityParquet dataset: its module tables, row counts, LoDs, geometry columns and CRS. Accepts a package directory URL or a single .parquet URL. Call this before querying an unfamiliar dataset.",
-      inputSchema: z.object({ url: z.string().describe("Package directory URL or .parquet URL") }),
+        "Describe a CityParquet dataset: its module tables, row counts, LoDs, geometry columns and CRS. Accepts a package directory or a single .parquet file, as an http(s) URL — or, unless the server is sandboxed, a local path or file:// URL. Read `notes`: they say where the file list came from and flag tables whose CRSs disagree. Call this before querying an unfamiliar dataset.",
+      inputSchema: z.object({ url: z.string().describe("Package directory or .parquet file: URL or local path") }),
     },
     async ({ url }) => {
       try {
@@ -94,21 +117,21 @@ export function createServer({ corpus, engine }: ServerDeps): McpServer {
     "cityparquet_query",
     {
       description:
-        `Run SQL against DuckDB with the cityjson and three_d extensions loaded (note: the spatial extension is NOT available, so use ST_3DFootprintArea rather than ST_Area — no ST_Area, no ST_GeomFromWKB, none of the 2D PostGIS-style vocabulary). A script is split and its statements run one at a time. BLOB columns and oversized values are elided, so SELECT * on an object table is a poor idea — select the columns you need instead. Results are capped at ${QUERY_DEFAULTS.maxRows} rows by default.`,
+        `Run SQL against DuckDB with the cityjson and three_d extensions loaded, and spatial on a local server (the hosted one does not load it). Solids (LoD1 and up) need three_d — ST_3DVolume, ST_3DFootprintArea, ST_3DTransform — because spatial cannot read them; where spatial is loaded, its ST_Area and ST_Transform work on the LoD0 column. Check that a function exists with duckdb_functions() before relying on it. A script is split and its statements run one at a time. BLOB columns and oversized values are elided, so SELECT * on an object table is a poor idea — select the columns you need instead. Results are capped at ${QUERY_DEFAULTS.maxRows} rows by default.`,
       inputSchema: z.object({
         sql: z.string().describe("One or more SQL statements, separated by semicolons"),
-        max_rows: z.number().int().min(1).max(5000).optional(),
-        max_cell_bytes: z.number().int().min(16).max(65536).optional(),
-        timeout_ms: z.number().int().min(1000).max(600_000).optional(),
+        max_rows: optionalInt(1, 5000),
+        max_cell_bytes: optionalInt(16, 65536),
+        timeout_ms: optionalInt(1000, 600_000),
       }),
     },
     async ({ sql, max_rows, max_cell_bytes, timeout_ms }) => {
       try {
         return json(
           await runQuery(engine, sql, {
-            maxRows: max_rows ?? QUERY_DEFAULTS.maxRows,
+            maxRows: Math.min(max_rows ?? QUERY_DEFAULTS.maxRows, ceilings?.maxRows ?? Infinity),
             maxCellBytes: max_cell_bytes ?? QUERY_DEFAULTS.maxCellBytes,
-            timeoutMs: timeout_ms ?? QUERY_DEFAULTS.timeoutMs,
+            timeoutMs: Math.min(timeout_ms ?? QUERY_DEFAULTS.timeoutMs, ceilings?.timeoutMs ?? Infinity),
           }),
         );
       } catch (error) {

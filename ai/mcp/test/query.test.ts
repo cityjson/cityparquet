@@ -95,3 +95,50 @@ describe("runQuery", () => {
     expect(fast!.rows).toEqual([[42]]);
   });
 });
+
+// A query-created secret's HTTP_PROXY overrides the engine's locked
+// http_proxy, and its EXTRA_HTTP_HEADERS can carry the header the cloud
+// metadata server wants — so a sandboxed engine allows no secrets at all.
+describe("runQuery on a sandboxed engine, and secrets", () => {
+  let engine: Engine;
+  beforeAll(async () => {
+    engine = await createEngine({ sandbox: true, extensionDirectory });
+  });
+  afterAll(async () => { await engine?.close(); });
+
+  it.each([
+    ["a proxy override", "CREATE SECRET s (TYPE http, HTTP_PROXY '127.0.0.1:9')"],
+    ["a metadata header", "CREATE SECRET s (TYPE http, EXTRA_HTTP_HEADERS MAP {'Metadata-Flavor': 'Google'})"],
+    ["a temporary secret in lower case", "create temporary secret s (type http)"],
+    ["the word inside a string", "SELECT 'secret' AS x"],
+  ])("refuses %s before running it", async (_name, sql) => {
+    const results = await runQuery(engine, `SELECT 1; ${sql}; SELECT 3`);
+    expect(results).toHaveLength(2);
+    expect(results[1]!.error).toMatch(/secret/i);
+    // Checked on the raw connection: runQuery itself refuses the word.
+    const reader = await engine.connection.runAndReadAll("SELECT count(*)::INTEGER FROM duckdb_secrets()");
+    expect(reader.getRowsJson()).toEqual([[0]]);
+  });
+
+  it("stops, and drops the secret, if one exists by any route", async () => {
+    // Created behind runQuery's back: the check after each statement is the
+    // backstop for a route the statement filter has not thought of.
+    await engine.connection.run("CREATE SECRET planted (TYPE http, HTTP_PROXY '127.0.0.1:9')");
+    const results = await runQuery(engine, "SELECT 1; SELECT 2");
+    expect(results).toHaveLength(1);
+    expect(results[0]!.error).toMatch(/secret/i);
+    const [next] = await runQuery(engine, "SELECT 1");
+    expect(next!.error).toBeUndefined(); // the engine is usable once the secret is gone
+    const reader = await engine.connection.runAndReadAll("SELECT count(*)::INTEGER FROM duckdb_secrets()");
+    expect(reader.getRowsJson()).toEqual([[0]]);
+  });
+});
+
+describe("runQuery on an unsandboxed engine, and secrets", () => {
+  it("allows them: a local user's own credentials are theirs to use", async () => {
+    const engine = await createEngine({ sandbox: false, extensionDirectory });
+    const [result] = await runQuery(engine, "CREATE SECRET mine (TYPE http, BEARER_TOKEN 'x')");
+    expect(result!.error).toBeUndefined();
+    await engine.close();
+  });
+});

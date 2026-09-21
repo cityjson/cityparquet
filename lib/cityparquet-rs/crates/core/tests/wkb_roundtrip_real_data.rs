@@ -1,3 +1,4 @@
+use cityparquet_schema::crs::AxisOrder;
 use std::path::{Path, PathBuf};
 
 use cityparquet::source::Source;
@@ -208,7 +209,7 @@ fn process_all(path: &Path) -> Totals {
 
     for feature in src.features().unwrap() {
         let feature = feature.unwrap();
-        let pool = VertexPool::new(&feature.vertices, &header.transform);
+        let pool = VertexPool::new(&feature.vertices, &header.transform, AxisOrder::LonLat);
 
         for co in feature.city_objects.values() {
             let Some(geoms) = &co.geometry else {
@@ -332,7 +333,7 @@ fn delft_derived_double_baked_closure_ring_converges_to_3_vertices_and_round_tri
     let src = Source::open(&path).unwrap();
     let header = src.header();
     let feature = src.features().unwrap().next().unwrap().unwrap();
-    let pool = VertexPool::new(&feature.vertices, &header.transform);
+    let pool = VertexPool::new(&feature.vertices, &header.transform, AxisOrder::LonLat);
 
     let co = feature
         .city_objects

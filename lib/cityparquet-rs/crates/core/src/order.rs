@@ -10,6 +10,7 @@
 //! curve resolution on an axis with comparatively little spread for typical
 //! city-scale datasets.
 
+use cityparquet_schema::crs::AxisOrder;
 use cjseq::Transform;
 
 /// Hilbert curve order: `2^ORDER` cells per axis. 16 gives 65,536 cells per
@@ -150,13 +151,18 @@ pub(crate) fn feature_hilbert_key(
     vertices: &[Vec<i64>],
     transform: &Transform,
     dataset_bbox: &[f64; 6],
+    axis_order: AxisOrder,
 ) -> u32 {
     let Some((min, max)) = vertices_minmax(vertices, transform) else {
         return 0;
     };
-    let cx = (min[0] + max[0]) / 2.0;
-    let cy = (min[1] + max[1]) / 2.0;
-    hilbert_index(cx, cy, dataset_bbox)
+    // `dataset_bbox` comes from the scan, which accumulates it through a
+    // `VertexPool` and so holds it in WKB order; the centroid here is computed
+    // from the feature's own dataset-order vertices. Normalising a centroid
+    // against a bbox in the other order clamps every feature to one corner,
+    // silently turning a Hilbert ordering back into source order.
+    let centroid = axis_order.apply([(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0, 0.0]);
+    hilbert_index(centroid[0], centroid[1], dataset_bbox)
 }
 
 #[cfg(test)]
@@ -239,7 +245,10 @@ mod tests {
             translate: vec![0.0, 0.0, 0.0],
         };
         let bbox: [f64; 6] = [0.0, 0.0, 0.0, 10.0, 10.0, 10.0];
-        assert_eq!(feature_hilbert_key(&[], &transform, &bbox), 0);
+        assert_eq!(
+            feature_hilbert_key(&[], &transform, &bbox, AxisOrder::LonLat),
+            0
+        );
     }
 
     #[test]
@@ -252,7 +261,7 @@ mod tests {
         // after the 0.001 scale; centroid (5, 5).
         let vertices = vec![vec![0, 0, 0], vec![10_000, 10_000, 0]];
         let bbox: [f64; 6] = [0.0, 0.0, 0.0, 10.0, 10.0, 10.0];
-        let key = feature_hilbert_key(&vertices, &transform, &bbox);
+        let key = feature_hilbert_key(&vertices, &transform, &bbox, AxisOrder::LonLat);
         let expected = hilbert_index(5.0, 5.0, &bbox);
         assert_eq!(key, expected);
     }

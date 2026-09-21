@@ -1,0 +1,75 @@
+---
+title: Skills
+description: Install the four CityParquet agent skills in Claude Code or Codex, and what each one teaches.
+sidebar:
+  badge: WIP
+---
+
+A skill is a short Markdown file of instructions. The agent loads it when a
+task matches the skill's description. The CityParquet skills live in
+[`ai/plugin/skills`](https://github.com/cityjson/cityparquet/tree/main/ai/plugin/skills).
+They carry what the MCP tools cannot: which function to use, in what order,
+and the mistakes that produce a wrong answer instead of an error.
+
+## Install
+
+**Claude Code**, as a plugin:
+
+```text
+/plugin marketplace add cityjson/cityparquet
+/plugin install cityparquet@cityparquet
+```
+
+The skills then appear as `cityparquet:cityparquet`,
+`cityparquet:cityparquet-query` and so on.
+
+**Claude Code and Codex**, through [APM](https://github.com/microsoft/apm):
+
+```sh
+apm install cityjson/cityparquet/ai/plugin
+```
+
+APM puts the skills where each tool looks for them: `.claude/skills/` for
+Claude Code and `.agents/skills/` for Codex.
+
+:::note[The plugin does not start the server]
+Installing the skills does not register the [MCP server](/ai/mcp-server).
+Claude Code copies a plugin into its own cache, so the plugin cannot reach a
+server built elsewhere in the repository, and the server is not published as
+a package yet. Register the server yourself. The skills also work without
+it, because they name the same SQL for the `duckdb` command line.
+:::
+
+## The four skills
+
+| Skill | Loaded when | What it carries |
+| --- | --- | --- |
+| `cityparquet` | A task mentions CityParquet or its specification | The format in brief. Describe a dataset before querying it. Quote the specification rather than recalling it. Which skill to use next. |
+| `cityparquet-query` | Reading, filtering or aggregating | `cityparquet_read` keeps each file's footer and its CRS, and `read_parquet` does not. Package pragmas need a local directory. `Building` and `BuildingPart` rows both carry LoD0. Filter on `bbox`. |
+| `cityparquet-write` | Building, editing, writing or converting | Send each pragma as its own statement. The CRS must match and is never reprojected. Conversion from Parquet must state `crs`. Read back what you wrote. |
+| `cityparquet-3d-analysis` | Measuring volume, footprint or height, checking validity, reprojecting | Gate `ST_3DVolume` on validity in a `WHERE`, not a `FILTER`. Pass the geometry properties. Group by `feature_id`. Which `three_d` function replaces which `spatial` one. |
+
+## Why these traps
+
+Each trap in the skills comes from running SQL against the Delft package on
+DuckDB v1.5.5, not from the documentation alone. Every SQL block in the skills
+runs as part of the MCP server's test suite. Two of the traps give a wrong
+answer rather than an error, and a third fails in a way that looks like a
+data problem:
+
+- **A footprint total twice too large.** On 3DBAG data both a `Building` and
+  its `BuildingPart`s carry the LoD0 footprint. Summing LoD0 over every row
+  gives 643 626 m² for Delft; the buildings cover 323 154 m².
+- **A conversion with no coordinate reference system.**
+  `COPY (SELECT * FROM read_parquet(…)) TO 'out.city.jsonl' (FORMAT cityjsonseq)`
+  writes a valid file that states no CRS, unless the `crs` option is given.
+- **A validity filter that does not filter.**
+  `sum(ST_3DVolume(s)) FILTER (WHERE ST_3DValidationReport(s).is_valid)` looks
+  gated but still calls `ST_3DVolume` on every row, so the first invalid solid
+  raises `solid is not manifold`. The filter belongs in the `WHERE` clause.
+
+In one test run, a model without the skills, asked for the total volume of
+Delft's buildings, wrote `ST_Volume(ST_GeomFromWKB(geometry_lod2_2))` after
+`LOAD spatial`, and `ST_Volume` does not exist. With the skills, the same
+model wrote the gated `ST_3DVolume` query, which returns 1 915 861 m³ over the
+1098 valid solids of the 1116 building parts.

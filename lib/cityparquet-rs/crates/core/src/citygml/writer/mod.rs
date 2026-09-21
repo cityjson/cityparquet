@@ -24,9 +24,13 @@ use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
 use self::building::{BuildingSolids, BuildingTree, render_abstract_object};
 use self::document::{Bounds, write_city_model_close, write_city_model_open};
 use crate::Result;
+use cityparquet_schema::crs::AxisOrder;
+
 use crate::citygml::crs::srs_name_for;
 use crate::decode::decode_batch;
-use crate::export::{appearance_columns, read_lod_keyed_appearance, table_display_name};
+use crate::export::{
+    AppearanceKind, appearance_columns, read_lod_keyed_appearance, table_display_name,
+};
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 use crate::sidecar::{read_materials, read_textures};
 use crate::stac::properties::PackageTables;
@@ -178,6 +182,11 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
     // a spec clarification — see that doc comment for why the two absent-`crs`
     // shapes cannot yet be told apart here.
     let srs_name = srs_name_for(meta.crs.known())?;
+    // The package stores WKB in GeoParquet's (longitude, latitude) order,
+    // while the `srsName` written above names the authority's own axis order.
+    // Every decoded coordinate is put back into that order before it reaches a
+    // `gml:posList`, or the document would contradict the CRS it declares.
+    let axis_order = meta.crs.known().map(AxisOrder::of).unwrap_or_default();
     // Stored attribute column types drive attribute routing (not value shapes).
     let attr_types = attributes::attribute_types(&schema, &meta.attributes);
 
@@ -253,9 +262,18 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
 
         for batch in reader {
             let batch = batch?;
-            let material_cols = appearance_columns(&batch, "material");
-            let texture_cols = appearance_columns(&batch, "texture");
-            let objects = decode_batch(&batch, &table_meta)?;
+            let material_cols = appearance_columns(&batch, AppearanceKind::Material);
+            let texture_cols = appearance_columns(&batch, AppearanceKind::Texture);
+            let mut objects = decode_batch(&batch, &table_meta)?;
+            if axis_order != AxisOrder::LonLat {
+                for obj in &mut objects {
+                    for (_, decoded, _) in &mut obj.geometries {
+                        for c in &mut decoded.coords {
+                            *c = axis_order.apply(*c);
+                        }
+                    }
+                }
+            }
             for (row, obj) in objects.into_iter().enumerate() {
                 let ty = obj.object.thetype.clone();
                 // Only Building and BuildingPart are handled; other CityObject
@@ -268,8 +286,14 @@ pub fn write_package(opts: &WriteOptions) -> Result<WriteReport> {
                 // `material_lod*` / `texture_lod*` columns into a
                 // `{"<canonical-lod>": {...}}` map and keyed out per geometry
                 // below. `decode_batch` excludes these columns.
-                let material_col = read_lod_keyed_appearance(&batch, &material_cols, row)?;
-                let texture_col = read_lod_keyed_appearance(&batch, &texture_cols, row)?;
+                let material_col = read_lod_keyed_appearance(
+                    &batch,
+                    &material_cols,
+                    row,
+                    AppearanceKind::Material,
+                )?;
+                let texture_col =
+                    read_lod_keyed_appearance(&batch, &texture_cols, row, AppearanceKind::Texture)?;
                 let mut solids = Vec::new();
                 for (lod, decoded, props) in obj.geometries {
                     // Real semantics on a geometry we are about to skip are

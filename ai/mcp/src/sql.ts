@@ -18,6 +18,24 @@ export function splitStatements(sql: string): string[] {
   while (i < sql.length) {
     const ch = sql[i]!;
 
+    // An E-string (`E'…'`) takes backslash escapes, so `E'it\'s'` is one
+    // string; an ordinary one does not. The prefix counts only when it
+    // starts a token — `name'…'` is an identifier followed by a string.
+    if ((ch === "e" || ch === "E") && sql[i + 1] === "'" && !/[A-Za-z0-9_$]/.test(sql[i - 1] ?? "")) {
+      i += 2;
+      while (i < sql.length) {
+        if (sql[i] === "\\") i += 2;
+        else if (sql[i] === "'") {
+          if (sql[i + 1] === "'") i += 2;
+          else {
+            i += 1;
+            break;
+          }
+        } else i += 1;
+      }
+      continue;
+    }
+
     if (ch === "'" || ch === '"') {
       const quote = ch;
       i += 1;
@@ -33,8 +51,12 @@ export function splitStatements(sql: string): string[] {
       continue;
     }
 
-    if (ch === "$") {
-      const tag = /^\$[A-Za-z_]*\$/.exec(sql.slice(i));
+    // A tag may carry digits after its first character (`$t1$`), but may not
+    // start with one: `$1` is a positional parameter, not a quote. And it
+    // must start a token — `$` is legal inside an identifier, so `x$t1$` is a
+    // table name, not the opening of a string.
+    if (ch === "$" && !/[A-Za-z0-9_$]/.test(sql[i - 1] ?? "")) {
+      const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
       if (tag) {
         const marker = tag[0];
         const end = sql.indexOf(marker, i + marker.length);
@@ -49,9 +71,20 @@ export function splitStatements(sql: string): string[] {
       continue;
     }
 
+    // Block comments nest, as DuckDB's own lexer has them: the first `*/`
+    // inside `/* a /* b */ c */` closes only the inner one.
     if (ch === "/" && sql[i + 1] === "*") {
-      const end = sql.indexOf("*/", i + 2);
-      i = end === -1 ? sql.length : end + 2;
+      let depth = 1;
+      i += 2;
+      while (i < sql.length && depth > 0) {
+        if (sql[i] === "/" && sql[i + 1] === "*") {
+          depth += 1;
+          i += 2;
+        } else if (sql[i] === "*" && sql[i + 1] === "/") {
+          depth -= 1;
+          i += 2;
+        } else i += 1;
+      }
       continue;
     }
 

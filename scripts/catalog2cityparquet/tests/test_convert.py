@@ -15,8 +15,12 @@ def test_converter_errors_map_to_ledger_reasons():
         == "unsupported_citygml_version"
     )
     assert (
-        convert.classify_error('CityGML srsName "EPSG:4979" resolves to geographic CRS 4979')
-        == "geographic_crs"
+        convert.classify_error(
+            'PROJJSON axis 0 is in "degree minute second hemisphere"; this writer quantises '
+            "metre- and degree-valued axes, and any unit carrying an exact conversion factor "
+            "to one of them — reproject the source into a CRS it can encode"
+        )
+        == "unencodable_crs_units"
     )
     assert (
         convert.classify_error(

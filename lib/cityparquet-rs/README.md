@@ -106,8 +106,10 @@ resolvable before the writer runs, exactly as an EPSG code in the source
 would. When it is actually applied, the footer records
 `city.other.crs_source = "operator-supplied"`, so the output never implies the
 source declared a CRS it did not carry. A geographic (degree-valued) code is
-refused: nothing in this pipeline reprojects, and coordinates are quantised at
-millimetre scale.
+fine: nothing in this pipeline reprojects, but the quantisation step is taken
+per axis from the CRS's own declared units, so a degree axis is quantised at a
+degree-sized step. A CRS whose units carry no such step — EPSG's packed
+sexagesimal spelling is the case in the vendored table — is refused.
 
 With `--partition`, `-o` becomes the _parent_ of one self-contained package per
 partition (`count-00000/`, `features-00003/`, `box_x93_y44/`, …), all sharing
@@ -198,17 +200,18 @@ export+compare check. See
 **From the repository root** — everything that reaches both this crate and the
 `benchmark/` tree:
 
-| Recipe                                 | What it does                                                                                                                                                                                                                        |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `just convert-all FOLDER [OUT]`        | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`)                                                                                                                                |
-| `just fetch-data [DEST] [ONLY]`        | fetch the read benchmark's corpus (six real CityJSON datasets, 423 MB) into `DEST` (default `benchmark/formats/data/benchmark/`); `ONLY` picks the entries serving one benchmark set — `default` (the default), `no-citygml`, `all` |
-| `just fetch-tools`                     | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq)                                                                                                                             |
-| `just bench FOLDER [OUT] [FORMATS]`    | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `benchmark/formats/read_results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set      |
-| `just ordering-bench FOLDER [OUT]`     | the same run restricted to the ordering axis (source-order vs Hilbert CityParquet), into `OUT` (default `benchmark/formats/ordering_results`)                                                                                       |
-| `just write-bench FOLDER [OUT]`        | encoding-variant WRITE benchmark + the DuckDB `COPY` baseline, one CSV per input                                                                                                                                                    |
-| `just compression-bench FOLDER [OUT]`  | codec + row-group WRITE-bench matrix, one CSV per input, plus charts                                                                                                                                                                |
-| `just plot` / `just plot-pretty`       | render charts and the cross-dataset summary page from CSVs already measured                                                                                                                                                         |
-| `just plot-test` / `just scripts-test` | the harness's two non-Rust test suites (`benchmark/plot`'s pytest, `benchmark/scripts/`'s bash suite) — outside `just check`, which is the Rust gate                                                                                |
+| Recipe                                        | What it does                                                                                                                                                                                                                        |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just convert-all FOLDER [OUT]`               | convert every city-model input under `FOLDER` into a package under `OUT` (default `out/cityparquet`)                                                                                                                                |
+| `just fetch-data [DEST] [ONLY]`               | fetch the read benchmark's corpus (six real CityJSON datasets, 423 MB) into `DEST` (default `benchmark/formats/data/benchmark/`); `ONLY` picks the entries serving one benchmark set — `default` (the default), `no-citygml`, `all` |
+| `just fetch-tools`                            | fetch the pinned external converters the read benchmark's conversion chain needs (citygml-tools, cjseq)                                                                                                                             |
+| `just bench FOLDER [OUT] [FORMATS]`           | cross-format READ benchmark over every input under `FOLDER`, one CSV per input under `OUT` (default `benchmark/formats/read_results`); `FORMATS` is a comma-separated format list, empty for the default format-comparison set      |
+| `just ordering-bench FOLDER [OUT]`            | the same run restricted to the ordering axis (source-order vs Hilbert CityParquet), into `OUT` (default `benchmark/formats/ordering_results`)                                                                                       |
+| `just write-bench FOLDER [OUT]`               | encoding-variant WRITE benchmark + the DuckDB `COPY` baseline, one CSV per input                                                                                                                                                    |
+| `just codec-bench FOLDER [OUT] [PREPARED]`    | codec axis over every input under `FOLDER` on the read harness: a timed write per variant (peak RSS), then a full read and the bbox windows; `OUT` default `benchmark/formats/scaling_codec_results`                                |
+| `just rowgroup-bench FOLDER [OUT] [PREPARED]` | the same for the row-group axis, `OUT` default `benchmark/formats/scaling_rowgroup_results`                                                                                                                                         |
+| `just plot` / `just plot-pretty`              | render charts and the cross-dataset summary page from CSVs already measured                                                                                                                                                         |
+| `just plot-test` / `just scripts-test`        | the harness's two non-Rust test suites (`benchmark/plot`'s pytest, `benchmark/scripts/`'s bash suite) — outside `just check`, which is the Rust gate                                                                                |
 
 Every recipe that walks a `FOLDER` discovers and names its inputs through the
 one input-extension convention at the top of the **root** `justfile`

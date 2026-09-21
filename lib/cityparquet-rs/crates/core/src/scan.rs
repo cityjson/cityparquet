@@ -18,6 +18,8 @@ use cityparquet_schema::{
 use cjseq::GeometryType;
 
 use crate::source::{Source, SourceFormat};
+use cityparquet_schema::crs::AxisOrder;
+
 use crate::wkb_write::{VertexPool, geometry_bbox};
 
 /// Outcome of scanning a [`Source`] once: the inferred schema plus the
@@ -39,6 +41,16 @@ pub struct ScanResult {
     /// The dataset's reference system as the raw OGC CRS URL string (from
     /// CityJSON header metadata), before PROJJSON resolution.
     pub crs_url: Option<String>,
+    /// The dataset's axis order, from the resolved CRS. Every coordinate the
+    /// writer puts into WKB or into the `bbox` column is stored through it, so
+    /// a latitude-first CRS (EPSG:4326, EPSG:6697 — what a Japanese national
+    /// export declares) still yields GeoParquet-conformant
+    /// `(x, y) = (longitude, latitude)` geometry.
+    pub axis_order: AxisOrder,
+    /// Whether the dataset's horizontal axes are angular (degrees), from the
+    /// resolved CRS's declared units. Read by LoD0 synthesis, whose thresholds
+    /// and geometric predicates are metre-valued throughout.
+    pub horizontal_is_angular: bool,
     /// The dataset CRS as the footer's **tri-state** `crs`
     /// ([`CrsState`], spec §metadata "CRS rules"): the resolved PROJJSON when
     /// the source declared a CRS this writer could resolve, an explicit
@@ -194,9 +206,53 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
     // only counts LoD-bearing analysis geometry).
     let mut has_geometry_instance = false;
 
+    let crs_url = header
+        .metadata
+        .as_ref()
+        .and_then(|m| m.reference_system.clone())
+        .map(|rs| match serde_json::to_value(&rs)? {
+            serde_json::Value::String(s) => Ok(s),
+            other => Err(CityParquetError::Schema(format!(
+                "ReferenceSystem serialised to non-string JSON: {other}"
+            ))),
+        })
+        .transpose()?;
+
+    // Resolved before the scan proper, because both the coordinates it reads
+    // and the diagnostics it may raise depend on the CRS.
+    //
+    // A degree-valued CRS is representable: the quantisation step is derived
+    // per axis from the CRS's own declared units, so a degree axis gets a
+    // degree-sized step. What is NOT representable is a CRS whose units the
+    // encoder has no step for (feet, grads), and that is refused HERE — before
+    // any output is touched — rather than in the writer, because a failure
+    // written as a success is the worst outcome this pipeline can produce.
+    //
+    // The axis order comes from the same resolution: every coordinate this
+    // scan turns into a `bbox` goes through a `VertexPool`, and so is stored
+    // in WKB's (longitude, latitude) order, exactly as the geometry columns
+    // are.
+    // An identifier that does not resolve at all is NOT fatal — the spec's
+    // "an unresolvable CRS is declared, not fatal" rule writes such a package
+    // with an explicit `city.crs: null` further down. Only a CRS that DOES
+    // resolve and then turns out to be unencodable is refused.
+    let (axis_order, horizontal_is_angular) = match crs_url
+        .as_deref()
+        .and_then(|url| cityparquet_schema::crs::resolve_to_projjson(url).ok())
+    {
+        Some(projjson) => {
+            let scale = cityparquet_schema::crs::axis_scale(&projjson)?;
+            (
+                AxisOrder::of(&projjson),
+                scale[0] == cityparquet_schema::crs::NANO_DEGREE,
+            )
+        }
+        None => (AxisOrder::default(), false),
+    };
+
     for feature in source.features()? {
         let feature = feature?;
-        let pool = VertexPool::new(&feature.vertices, &header.transform);
+        let pool = VertexPool::new(&feature.vertices, &header.transform, axis_order);
 
         for (id, co) in &feature.city_objects {
             object_count += 1;
@@ -295,40 +351,6 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         .filter(|(_, types)| types.iter().all(|t| is_geoparquet_legal_type(t)))
         .map(|(lod, types)| (lod, types.into_iter().collect()))
         .collect();
-
-    let crs_url = header
-        .metadata
-        .as_ref()
-        .and_then(|m| m.reference_system.clone())
-        .map(|rs| match serde_json::to_value(&rs)? {
-            serde_json::Value::String(s) => Ok(s),
-            other => Err(CityParquetError::Schema(format!(
-                "ReferenceSystem serialised to non-string JSON: {other}"
-            ))),
-        })
-        .transpose()?;
-
-    // A degree-valued CRS is unrepresentable for this writer, whoever declared
-    // it. The CityGML `srsName` resolver and the operator's `--crs` both
-    // refuse one already; the CityJSON `referenceSystem` reached the writer
-    // unchecked, and the writer then quantised degrees at millimetre scale
-    // (0.001° ~ 111 m), collapsing a whole dataset onto a handful of vertices
-    // and exiting 0. A failure written as a success is the worst outcome this
-    // pipeline can produce, so the check lives HERE — in the scan, before any
-    // output is touched — rather than in the writer.
-    //
-    // The wording deliberately matches the CityGML resolver's, since a
-    // downstream classifier reads these messages to tell one refusal from
-    // another.
-    if let Some(url) = &crs_url
-        && cityparquet_schema::crs::is_geographic_crs(url)
-    {
-        return Err(CityParquetError::Schema(format!(
-            "source CRS {url:?} resolves to geographic CRS; this writer only supports \
-             projected (metre-based) CRS (coordinates are quantised at millimetre scale, \
-             which would destroy degrees) — reproject the source first"
-        )));
-    }
 
     let transform = serde_json::to_value(&header.transform)?;
 
@@ -486,6 +508,8 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         object_count,
         dataset_bbox,
         crs_url,
+        axis_order,
+        horizontal_is_angular,
         crs,
         crs_diagnostic,
         transform,

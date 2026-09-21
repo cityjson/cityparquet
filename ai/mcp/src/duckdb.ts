@@ -6,16 +6,35 @@ import { DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 import { serialiser } from "./serialise.js";
 
 /**
- * `spatial` is deliberately absent. It cannot be loaded alongside `three_d` in
- * either order — `spatial` first breaks `three_d` with "Cannot AlterEntry
- * without client context", `three_d` first breaks `spatial` with "Scalar
- * Function with name …". The playground's extension list has never included it
- * either, so this is existing practice made explicit.
- *
- * The cost, which the skills must state: no ST_Area, no ST_GeomFromWKB, none of
- * the 2D vocabulary. ST_3DFootprintArea is the substitute.
+ * `spatial` for DuckDB's 2D vocabulary (`ST_Area`, `ST_Transform`, …) on the
+ * GeoParquet LoD0 column; `three_d` for the solids, which `spatial` cannot
+ * read. The two load together in either order since the v1.5.5 community
+ * builds (at v1.5.4 they could not). `spatial` brings GDAL, a second file
+ * reader, so `test/duckdb.test.ts` checks that the sandbox blocks GDAL's
+ * local reads as well as DuckDB's.
  */
-export const DEFAULT_EXTENSIONS = ["httpfs", "cityjson", "three_d"] as const;
+export const DEFAULT_EXTENSIONS = ["httpfs", "cityjson", "three_d", "spatial"] as const;
+
+/**
+ * The hosted server's set: no `spatial`. GDAL has its own HTTP client —
+ * `/vsicurl/`, `/vsicurl_streaming/`, and a `proxy=` override carried in the
+ * filename — which reaches the network directly, outside both
+ * `disabled_filesystems` and the locked `http_proxy`. On a public endpoint
+ * with no platform egress control under it that is an SSRF primitive, and
+ * `spatial` exposes no setting to turn it off. `test/egress-proxy.test.ts`
+ * pins the bypass, so it fails when that stops being true.
+ */
+export const HOSTED_EXTENSIONS = ["httpfs", "cityjson", "three_d"] as const;
+
+/**
+ * `CITYPARQUET_MCP_EXTENSIONS`, parsed. Unset, empty or all-blank means the
+ * defaults — never a list holding one empty name, which DuckDB would reject
+ * as `INSTALL ` with nothing after it.
+ */
+export function extensionsFromEnv(value: string | undefined): readonly string[] {
+  const names = (value ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  return names.length > 0 ? names : DEFAULT_EXTENSIONS;
+}
 
 const COMMUNITY_EXTENSIONS = new Set(["cityjson", "three_d"]);
 
@@ -31,9 +50,31 @@ export interface EngineOptions {
   readonly extensions?: readonly string[];
   readonly memoryLimit?: string;
   readonly threads?: number;
+  /**
+   * `host:port` of the egress proxy every httpfs request must go through,
+   * locked in with the rest of the sandbox. Only honoured with `sandbox`.
+   * A query-created secret's `HTTP_PROXY` overrides this setting, which is
+   * why `runQuery` refuses secrets on a sandboxed engine.
+   */
+  readonly httpProxy?: string;
+  /**
+   * The hosts the engine may reach, for code that fetches from Node rather
+   * than through DuckDB (`describe` reading `metadata.json`). Absent means
+   * no restriction. It must agree with what the proxy above allows.
+   */
+  readonly allowedHosts?: readonly string[];
 }
 
 export interface Engine {
+  /**
+   * Whether the engine was brought up locked down. Tools that reach the local
+   * filesystem from Node rather than through DuckDB — `describe` reading a
+   * local `metadata.json` — must check this themselves, since DuckDB's own
+   * `disabled_filesystems` does not govern Node's `fs`.
+   */
+  readonly sandbox: boolean;
+  /** See `EngineOptions.allowedHosts`: absent means Node-side fetches are unrestricted. */
+  readonly allowedHosts?: readonly string[];
   readonly connection: DuckDBConnection;
   readonly extensions: readonly { name: string; version: string }[];
   /**
@@ -80,14 +121,18 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
   //    the extension directory on disk), so this must run before the sandbox
   //    disables LocalFileSystem below — not after, as a query issued once the
   //    engine is locked down.
-  const reader = await connection.runAndReadAll(
-    `SELECT extension_name, extension_version FROM duckdb_extensions()
-     WHERE loaded AND extension_name IN (${wanted.map((n) => `'${n}'`).join(", ")})`,
-  );
-  const extensions = reader.getRowsJson().map((row) => ({
-    name: String(row[0]),
-    version: String(row[1]),
-  }));
+  // An empty list would make the `IN ()` below a syntax error.
+  let extensions: { name: string; version: string }[] = [];
+  if (wanted.length > 0) {
+    const reader = await connection.runAndReadAll(
+      `SELECT extension_name, extension_version FROM duckdb_extensions()
+       WHERE loaded AND extension_name IN (${wanted.map((n) => `'${n}'`).join(", ")})`,
+    );
+    extensions = reader.getRowsJson().map((row) => ({
+      name: String(row[0]),
+      version: String(row[1]),
+    }));
+  }
 
   const missing = wanted.filter((n) => !extensions.some((e) => e.name === n));
   if (missing.length > 0) {
@@ -113,6 +158,13 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     //    and the reason memory_limit should be generous.
     await connection.run("SET disabled_filesystems = 'LocalFileSystem'");
 
+    // 7b. Every httpfs request through the egress proxy, so what the engine
+    //     can reach is decided outside DuckDB. After the loads (which may
+    //     download) and before the lock (after which it cannot be undone).
+    if (options.httpProxy) {
+      await connection.run(`SET http_proxy = '${options.httpProxy.replace(/'/g, "''")}'`);
+    }
+
     // 8. And none of the above can be undone by a query.
     await connection.run("SET lock_configuration = true");
   }
@@ -128,6 +180,8 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
   const exclusive = serialiser();
 
   return {
+    sandbox: options.sandbox,
+    allowedHosts: options.allowedHosts,
     connection,
     extensions,
     exclusive,

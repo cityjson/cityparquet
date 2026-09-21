@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use arrow_array::{
-    Array, BinaryArray, Int32Array, ListArray, RecordBatch, StringArray, StructArray,
+    Array, BinaryArray, Int32Array, ListArray, MapArray, RecordBatch, StringArray, StructArray,
 };
+use cityparquet::appearance_columns::{material_cell_value, texture_cell_value};
 use cityparquet::encode::encode;
 use cityparquet::scan::scan;
 use cityparquet::source::Source;
@@ -199,7 +200,7 @@ fn railway_keeps_index_repeat_sliver_surfaces_intact() {
             .column_by_name("material_lod3_0")
             .unwrap()
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<MapArray>()
             .unwrap();
         let geom = batch
             .column_by_name("geometry_lod3_0")
@@ -235,11 +236,12 @@ fn railway_keeps_index_repeat_sliver_surfaces_intact() {
                  one(s), for {id}"
             );
             if id != "UUID_d96effed-08fe-4f74-b134-05b194aa3cff" {
-                let material: serde_json::Value =
-                    serde_json::from_str(materials.value(row)).unwrap();
+                let material = material_cell_value(materials, row)
+                    .unwrap()
+                    .expect("a material cell for this row");
                 let values = material["visual"]["values"]
                     .as_array()
-                    .expect("per-surface material values array");
+                    .expect("per-face material values list");
                 assert_eq!(
                     values.len(),
                     101,
@@ -443,29 +445,33 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
             .column_by_name("material_lod1_2")
             .unwrap()
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<MapArray>()
             .unwrap();
-        let material: serde_json::Value = serde_json::from_str(material.value(row)).unwrap();
+        let material = material_cell_value(material, row)
+            .unwrap()
+            .expect("a material cell for this row");
         assert_eq!(
-            material["visual"]["values"][0],
+            material["visual"]["values"],
             serde_json::json!([0, 1, 1, 0, 1]),
-            "material values must be realigned within the shell nesting"
+            "material values must be realigned, flat per stored face"
         );
 
         let texture = batch
             .column_by_name("texture_lod1_2")
             .unwrap()
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<MapArray>()
             .unwrap();
-        let texture: serde_json::Value = serde_json::from_str(texture.value(row)).unwrap();
+        let texture = texture_cell_value(texture, row)
+            .unwrap()
+            .expect("a texture cell for this row");
         // Post-interner: the texture index (only one def in this isolated
         // fixture, so its dataset-global id is 0) and every UV index are
         // inlined as `[u, v]` pairs from the re-parsed vertices-texture
         // pool (see the comment where `vertices_texture` is built above).
         let uv = |i: usize| vertices_texture[i].clone();
         assert_eq!(
-            texture["visual"]["values"][0],
+            texture["visual"]["values"],
             serde_json::json!([
                 [[0, uv(0), uv(1), uv(2), uv(3)]],
                 [[0, uv(4), uv(5), uv(6), uv(7)]],
@@ -473,7 +479,7 @@ fn delft_derived_solid_realigns_semantics_material_and_texture_for_dropped_face(
                 [[0, uv(16), uv(17), uv(18), uv(19)]],
                 [[0, uv(20), uv(21), uv(22), uv(23)]]
             ]),
-            "texture values must be realigned within the shell nesting, globally rewritten, and UV-inlined"
+            "texture values must be realigned, flat per stored face, globally rewritten, and UV-inlined"
         );
     }
     assert!(

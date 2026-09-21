@@ -6,7 +6,7 @@ sidebar:
 ---
 
 CityParquet stores geometry as ISO WKB blobs, carries the CityGML CM information WKB
-cannot express — chiefly per-surface semantics — in a parallel JSON column, gives
+cannot express — chiefly per-surface semantics — in a parallel `STRUCT` column, gives
 every level of detail its own column pair, and puts a 3D bounding box on every row for
 spatial pruning. This page defines all four.
 

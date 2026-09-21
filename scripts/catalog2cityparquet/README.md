@@ -96,7 +96,8 @@ throughout, because the catalogue's hosts are not:
 
 - **Media types are wrong.** One collection advertises `application/gml+xml` and serves
   a 468 MB ZIP. Format is decided by **magic bytes** and nothing else.
-- **Filenames hide in query strings.** Estonia publishes hrefs such as `dl.ashx?f=x.gml`.
+- **Filenames hide in query strings.** Estonia publishes hrefs such as `dl.ashx?f=x.gml`,
+  and the Auvergne-Rhône-Alpes Nextcloud share `download?path=…&files=x.gml`.
   The saved name matters, because the next stage decides convertibility from the suffix —
   a payload saved as `dl.ashx` would be discarded as unconvertible.
 - **One origin 403s** without a browser `User-Agent`, so one is sent.
@@ -112,7 +113,9 @@ Three guards matter here, all of them because the payloads are third-party and s
 enormous:
 
 - **A 20 GiB budget across the whole payload**, charged as bytes are _written_, not as
-  headers declare them. A per-archive cap would multiply with nesting.
+  headers declare them. A per-archive cap would multiply with nesting. A whole-city
+  PLATEAU archive can exceed it (Yokohama unpacks to 27.7 GB), so `--max-unpack-gib`
+  raises it for a run.
 - **No member may escape** the working directory, and a repeated member name is refused
   rather than silently overwritten.
 - **ZIP-shaped documents stay shut.** `.xlsx`, `.docx`, `.kmz` and friends are ZIPs
@@ -243,19 +246,19 @@ and re-run; resumption means you only pay for what is missing.
 Closed set. A reason outside it is a programming error, not a new category — silently
 admitting typos would make the histogram meaningless.
 
-| Reason                         | Kind            | What it means                                                                                                                                                                                           |
-| ------------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `download_failed`              | conformance     | The origin would not serve the bytes: a transport error, an HTTP error status, or a timeout. The publisher's availability, not the converter's competence.                                              |
-| `unsupported_archive`          | conformance     | The payload unpacked cleanly and held nothing the converter reads.                                                                                                                                      |
-| `unsupported_citygml_version`  | conformance     | CityGML the reader does not support (it implements 2.0).                                                                                                                                                |
-| `unsupported_cityjson_version` | conformance     | CityJSON the reader rejects as invalid or out of version range.                                                                                                                                         |
-| `no_crs`                       | conformance     | The source carries CRS-bearing coordinates but declares no CRS a writer can resolve. Fixable per collection with `--crs`.                                                                               |
-| `geographic_crs`               | conformance     | The source declares a geographic (degrees) CRS, which CityParquet does not accept for 3D city geometry.                                                                                                 |
-| `convert_failed`               | conformance     | The converter refused for a reason the classifier does not recognise, or it timed out. The catch-all: a large count here means the classifier needs another rule, not that the data is uniquely broken. |
-| `empty_collection`             | conformance     | The collection publishes no items at all — 20 of the 53 hold only a `collection.json`.                                                                                                                  |
-| `duplicate_bundle`             | conformance     | Skipped before downloading: Japan's 381 whole-city ZIPs repackage the same data as the 60,090 per-module tiles, and converting both would encode Japan twice.                                           |
-| `stale_item_index`             | conformance     | The collection's published `items.parquet` disagreed with the object listing; the listing was used. A fact about the catalogue, recorded rather than merely logged.                                     |
-| `environment`                  | **environment** | This machine failed here. Excluded from the histogram; see above.                                                                                                                                       |
+| Reason                         | Kind            | What it means                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `download_failed`              | conformance     | The origin would not serve the bytes: a transport error, an HTTP error status, or a timeout. The publisher's availability, not the converter's competence.                                                                                                                                                                                                                                  |
+| `unsupported_archive`          | conformance     | The payload unpacked cleanly and held nothing the converter reads.                                                                                                                                                                                                                                                                                                                          |
+| `unsupported_citygml_version`  | conformance     | CityGML the reader does not support (it implements 2.0).                                                                                                                                                                                                                                                                                                                                    |
+| `unsupported_cityjson_version` | conformance     | CityJSON the reader rejects as invalid or out of version range.                                                                                                                                                                                                                                                                                                                             |
+| `no_crs`                       | conformance     | The source carries CRS-bearing coordinates but declares no CRS a writer can resolve. Fixable per collection with `--crs`.                                                                                                                                                                                                                                                                   |
+| `unencodable_crs_units`        | conformance     | The source declares a CRS whose axis units the converter defines no quantisation step for — a packed sexagesimal spelling such as EPSG:4035. A geographic (degrees) CRS is **not** in this class: its step comes from its declared units, as a foot- or chain-valued one does.                                                                                                              |
+| `convert_failed`               | conformance     | The converter refused for a reason the classifier does not recognise, or it timed out. The catch-all: a large count here means the classifier needs another rule, not that the data is uniquely broken.                                                                                                                                                                                     |
+| `empty_collection`             | conformance     | The collection publishes no items at all — 20 of the 53 hold only a `collection.json`.                                                                                                                                                                                                                                                                                                      |
+| `duplicate_bundle`             | conformance     | Skipped before downloading: Japan's 381 whole-city ZIPs repackage the same data as the 60,090 per-module tiles, and converting both would encode Japan twice. A bundle named with `--item` is converted instead, so the duplicate protection is off for such a run: selecting a bundle and its tiles, or adding a bundle to an output that already holds its tiles, encodes the data twice. |
+| `stale_item_index`             | conformance     | The collection's published `items.parquet` disagreed with the object listing; the listing was used. A fact about the catalogue, recorded rather than merely logged.                                                                                                                                                                                                                         |
+| `environment`                  | **environment** | This machine failed here. Excluded from the histogram; see above.                                                                                                                                                                                                                                                                                                                           |
 
 ### Where the records live
 
@@ -338,9 +341,49 @@ denominator the published number is a fraction of.
       failed  2
 
 reasons (what the data did):
-        1  geographic_crs
-        1  no_crs
+        1  unsupported_citygml_version
+        1  convert_failed
 ```
+
+## Publishing
+
+A run's tree is named after the source catalogue
+(`<collection>/items/<item-id>/`). The `publish` subcommand lays converted
+packages out as the shorter, stable tree a public bucket serves, and aggregates
+its STAC:
+
+```bash
+uv run --project scripts/catalog2cityparquet python -m catalog2cityparquet \
+    publish scripts/catalog2cityparquet/showcase/datasets.yaml \
+    --data-root /data2/hideba/cityparquet_data --out /data2/hideba/cityparquet_data/publish
+rclone copy /data2/hideba/cityparquet_data/publish r2:cityparquet/data/
+```
+
+The spec names each published collection, the source collection whose
+title, description, licence and providers it carries, a glob of package
+directories, and a regular expression whose `slug` group names each package.
+A collection of one package needs no slug and is published flat:
+
+```
+OUT/
+  catalog.json
+  plateau/
+    collection.json
+    chiyoda-ku/            metadata.json + the package's Parquet files
+    …
+  3dbag/
+    collection.json
+    metadata.json          a collection of one package, published flat
+    building.parquet
+```
+
+The payload is hard-linked, not copied, so `--out` must be on the same
+filesystem as the packages. Each package's Item is rewritten for the three
+things the layout changes — its id (the slug), a `title` (the slug, capitalised,
+unless the spec gives one), and its `collection`/`parent`/`root` links;
+footer-derived properties and provenance links are carried untouched. A
+collection's directory is replaced wholesale on every publish, a directory
+without an Item is not published, and two packages sharing a slug are refused.
 
 ## Locking
 
@@ -382,17 +425,19 @@ it is what the ledger is for.
 
 ## Flags
 
-| Flag                     | Default                   | Meaning                                                                                                                                                                                                                                   |
-| ------------------------ | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--out`                  | `out/cityparquet-catalog` | Output tree root                                                                                                                                                                                                                          |
-| `--collection`           | all                       | Repeatable; restrict to these collection ids                                                                                                                                                                                              |
-| `--limit-per-collection` | none                      | Convert at most N items per collection                                                                                                                                                                                                    |
-| `--jobs`                 | 8                         | Concurrent items; bounded out of politeness to origins                                                                                                                                                                                    |
-| `--crs`                  | none                      | Repeatable `COLLECTION=EPSG:xxxx` override for CRS-less sources. Both halves are validated at startup, and a key naming no attempted collection is reported on stderr — a typo here would otherwise record a whole collection as `no_crs` |
-| `--keep-downloads`       | off                       | Retain temp downloads for debugging                                                                                                                                                                                                       |
-| `--no-skip-existing`     | off                       | Reconvert items that already have a package                                                                                                                                                                                               |
-| `--aggregate-only`       | off                       | Rebuild STAC from an existing tree, no downloads                                                                                                                                                                                          |
-| `--work-dir`             | `<out>/_work`             | Where downloads are unpacked; needs room for the largest single payload, and must not be shared with a concurrent run                                                                                                                     |
+| Flag                     | Default                   | Meaning                                                                                                                                                                                                                                                                                                        |
+| ------------------------ | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--out`                  | `out/cityparquet-catalog` | Output tree root                                                                                                                                                                                                                                                                                               |
+| `--collection`           | all                       | Repeatable; restrict to these collection ids                                                                                                                                                                                                                                                                   |
+| `--limit-per-collection` | none                      | Convert at most N items per collection                                                                                                                                                                                                                                                                         |
+| `--jobs`                 | 8                         | Concurrent items; bounded out of politeness to origins                                                                                                                                                                                                                                                         |
+| `--crs`                  | none                      | Repeatable `COLLECTION=EPSG:xxxx` override for CRS-less sources. Both halves are validated at startup, and a key naming no attempted collection is reported on stderr — a typo here would otherwise record a whole collection as `no_crs`                                                                      |
+| `--keep-downloads`       | off                       | Retain temp downloads for debugging                                                                                                                                                                                                                                                                            |
+| `--no-skip-existing`     | off                       | Reconvert items that already have a package                                                                                                                                                                                                                                                                    |
+| `--aggregate-only`       | off                       | Rebuild STAC from an existing tree, no downloads                                                                                                                                                                                                                                                               |
+| `--work-dir`             | `<out>/_work`             | Where downloads are unpacked; needs room for the largest single payload, and must not be shared with a concurrent run                                                                                                                                                                                          |
+| `--item`                 | all                       | Repeatable; convert only these item ids of the single `--collection`, reading each item document directly rather than enumerating the collection. A named whole-city bundle is converted rather than skipped as a `duplicate_bundle`, and a name that resolves to no document is recorded as `download_failed` |
+| `--max-unpack-gib`       | 20                        | How much one item may unpack to, across every nested archive                                                                                                                                                                                                                                                   |
 
 Plus three that exist so the tool can be pointed somewhere else — at a test double, a
 staging bucket, or a locally built binary:

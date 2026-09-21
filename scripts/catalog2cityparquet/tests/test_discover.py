@@ -573,3 +573,48 @@ def test_fetch_collection_reads_the_collection_document(served_dir, client):
     root, base = served_dir
     write_json(root / "fr" / "collection.json", {"type": "Collection", "id": "fr", "links": []})
     assert discover.fetch_collection(base, "fr", client)["id"] == "fr"
+
+
+def test_items_by_id_reads_the_named_documents_and_nothing_else(served_dir, client, monkeypatch):
+    # Naming items resolves their documents directly: listing a 60,471-item
+    # collection to convert 62 of them would cost 61 page requests first.
+    root, base = served_dir
+    write_json(root / "jp" / "items" / "a_item.json", stac_item("a", f"{base}/data/a.zip"))
+    write_json(root / "jp" / "items" / "b_item.json", stac_item("b", f"{base}/data/b.zip"))
+
+    def no_listing(*args, **kwargs):
+        raise AssertionError("the listing must not be consulted")
+
+    monkeypatch.setattr(discover, "list_item_objects", no_listing)
+    items = discover.items_by_id(base, "jp", ["b"], client)
+    assert [i.item_id for i in items] == ["b"]
+    assert items[0].source_item_url == f"{base}/jp/items/b_item.json"
+
+
+def test_a_named_item_that_does_not_exist_is_handed_back(served_dir, client):
+    # A typo in an id must reach the ledger rather than shrink the run.
+    root, base = served_dir
+    write_json(root / "jp" / "items" / "a_item.json", stac_item("a", f"{base}/data/a.zip"))
+    dropped: list[str] = []
+    items = discover.items_by_id(base, "jp", ["a", "nope"], client, dropped=dropped)
+    assert [i.item_id for i in items] == ["a"]
+    assert dropped == ["nope"]
+
+
+def test_a_named_item_is_recorded_under_the_id_that_was_asked_for(served_dir, client):
+    # A failed lookup and a later successful retry must share one ledger
+    # identity, and a document declaring some other id must not stand in for
+    # the one requested.
+    root, base = served_dir
+    write_json(root / "jp" / "items" / "a_item.json", stac_item("b", f"{base}/data/a.zip"))
+    write_json(root / "jp" / "items" / "c_item.json", [])
+    dropped: list[str] = []
+    assert discover.items_by_id(base, "jp", ["a", "c"], client, dropped=dropped) == []
+    assert dropped == ["a", "c"]
+
+
+def test_a_named_item_id_is_quoted_into_its_url(served_dir, client):
+    root, base = served_dir
+    write_json(root / "jp" / "items" / "a#x_item.json", stac_item("a#x", f"{base}/data/a.zip"))
+    items = discover.items_by_id(base, "jp", ["a#x"], client)
+    assert [i.item_id for i in items] == ["a#x"]

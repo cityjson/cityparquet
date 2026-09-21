@@ -30,6 +30,23 @@ pub fn ns_is(rr: &ResolveResult, prefix: &str) -> bool {
     matches!(rr, ResolveResult::Bound(ns) if ns.as_ref().starts_with(prefix.as_bytes()))
 }
 
+/// The resolved namespace of an element, as bytes; `None` when unbound.
+///
+/// Used where a prefix match is too loose: a feature's boundary surfaces are
+/// in **that feature's own module** namespace, and matching the CityGML family
+/// instead would also admit a `gen:`/`app:` child or an ADE hook.
+pub fn ns_of(rr: &ResolveResult) -> Option<Vec<u8>> {
+    match rr {
+        ResolveResult::Bound(ns) => Some(ns.as_ref().to_vec()),
+        _ => None,
+    }
+}
+
+/// True when a resolved namespace is exactly `ns` (see [`ns_of`]).
+pub fn ns_eq(rr: &ResolveResult, ns: &[u8]) -> bool {
+    matches!(rr, ResolveResult::Bound(bound) if bound.as_ref() == ns)
+}
+
 /// Fetch an attribute value (by its raw, possibly-prefixed name) as a String.
 pub fn get_attr(e: &BytesStart, name: &[u8]) -> Option<String> {
     e.attributes().flatten().find_map(|a| {

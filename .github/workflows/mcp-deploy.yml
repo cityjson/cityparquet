@@ -1,0 +1,143 @@
+name: mcp-deploy
+
+# Deploys the hosted MCP server (ai/mcp) to Google Cloud Run: the image built
+# from ai/mcp/Dockerfile, pushed to Artifact Registry. Run it by hand
+# (Actions → mcp-deploy → Run workflow) to deploy another branch: pick it in
+# "Use workflow from", or name any branch, tag or commit in the `ref` input,
+# which takes precedence. GitHub offers Run workflow only once this file is on
+# the default branch.
+#
+# Authenticates as flatcitybuf's deploy does: Workload Identity Federation,
+# through the WIF_PROVIDER and GCP_PROJECT_ID secrets. One-off setup, including
+# the runtime service account with no roles, is in ai/mcp/README.md.
+
+on:
+  push:
+    branches: [main]
+    paths: ["ai/mcp/**", ".github/workflows/mcp-deploy.yml"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or commit to deploy (default: the branch picked above)"
+        required: false
+        type: string
+
+concurrency:
+  group: mcp-deploy
+  cancel-in-progress: false
+
+env:
+  REGION: europe-west4
+  SERVICE_NAME: cityparquet-mcp
+  GAR_LOCATION: europe-west4
+  GAR_REPOSITORY: cityparquet
+  # The service runs as this account, which holds no IAM roles. The cloud
+  # metadata server hands its token to anything in the container that asks;
+  # with no roles, that token opens nothing.
+  RUNTIME_SERVICE_ACCOUNT: cityparquet-mcp-runtime
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          ref: ${{ inputs.ref || github.ref }}
+      - name: What is being deployed
+        run: echo "Deploying $(git rev-parse --short HEAD) (${{ inputs.ref || github.ref_name }})" >> "$GITHUB_STEP_SUMMARY"
+
+      # The same gate as mcp.yml, so nothing reaches the public endpoint that
+      # would not pass it — the sandbox and egress tests above all.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with: { node-version: "24", cache: "pnpm", cache-dependency-path: ai/mcp/pnpm-lock.yaml }
+      - run: pnpm install --frozen-lockfile && pnpm typecheck && pnpm test
+        working-directory: ai/mcp
+
+      - name: Google Auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Build and push the image
+        id: image
+        run: |-
+          image="${GAR_LOCATION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${GAR_REPOSITORY}/${SERVICE_NAME}:$(git rev-parse HEAD)"
+          gcloud auth configure-docker "${GAR_LOCATION}-docker.pkg.dev" --quiet
+          docker build --platform linux/amd64 -t "$image" ai/mcp
+          docker push "$image"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      # Recorded so a deployment that fails the smoke test can be rolled back.
+      # Empty on the first deploy, when there is nothing to go back to.
+      - name: Note the revision now serving
+        id: previous
+        run: |-
+          # Only "the service does not exist yet" means no previous revision;
+          # any other failure stops the deploy rather than losing the way back.
+          if ! out=$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" \
+                       --format='value(status.traffic[0].revisionName)' 2>&1); then
+            # gcloud says "Cannot find service [name]" for one not yet created.
+            if grep -qiE "cannot find service|could not be found|not found" <<<"$out"; then out=""; else echo "$out"; exit 1; fi
+          fi
+          echo "revision=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ steps.image.outputs.image }}
+          # Sized for cost: at most four instances of 1 vCPU and 2 GiB, which
+          # scale to zero when idle and are billed only while serving. Two engines of
+          # 700 MB each, one DuckDB thread apiece; two concurrent bounding-box
+          # queries against the 16 GB 3DBAG file were checked to fit under a
+          # hard 2 GB limit. Requests beyond four at once wait in Cloud Run's
+          # queue, and the server answers 503 once its own queue is full.
+          env_vars: |
+            CITYPARQUET_MCP_POOL_SIZE=2
+            CITYPARQUET_MCP_MEMORY_LIMIT=700MB
+            CITYPARQUET_MCP_THREADS=1
+            CITYPARQUET_MCP_EGRESS_HOSTS=cityparquet.open3d.city,cityjson.open3d.city,flatcitybuf.open3d.city
+          flags: |
+            --port=8080
+            --cpu=1
+            --memory=2Gi
+            --concurrency=4
+            --min-instances=0
+            --max-instances=4
+            --timeout=90
+            --no-cpu-boost
+            --execution-environment=gen2
+            --service-account=${{ env.RUNTIME_SERVICE_ACCOUNT }}@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+            --allow-unauthenticated
+
+      # The egress allowlist, the secret refusal and the sandbox, checked from
+      # outside on the deployment itself.
+      - name: Smoke test the deployment
+        run: node ai/mcp/scripts/smoke.mjs "${{ steps.deploy.outputs.url }}"
+
+      - name: Roll back a deployment that failed the smoke test
+        if: failure() && steps.deploy.outcome == 'success' && steps.previous.outputs.revision != ''
+        run: |-
+          gcloud run services update-traffic "$SERVICE_NAME" --region "$REGION" \
+            --to-revisions "${{ steps.previous.outputs.revision }}=100"
+
+      # A first deployment has nothing to roll back to: take it private
+      # instead, so a server that failed its security checks is not public.
+      - name: Take a failed first deployment private
+        if: failure() && steps.deploy.outcome == 'success' && steps.previous.outputs.revision == ''
+        run: |-
+          gcloud run services remove-iam-policy-binding "$SERVICE_NAME" --region "$REGION" \
+            --member allUsers --role roles/run.invoker

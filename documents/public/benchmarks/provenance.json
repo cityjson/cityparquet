@@ -1,0 +1,13 @@
+{
+  "source": "benchmark/runs/summary/full",
+  "exported": "2026-09-21",
+  "note": "Existing bench-summary output exported without rerunning measurements or the renderer. PNGs are unmodified.",
+  "sha256": {
+    "sizes.png": "6e8b203f34dbbdb4eba242c68b2641419be88eaf13f95e8f4ec2a3986f80526c",
+    "heatmap.png": "c3fb075e199e1d4cc05638e65d81cfaf196008e2d266e1ae3182990c46fc1f56",
+    "databases.png": "449807d9dc32b1f88bb448517f59f2c77bd360eaafa544e03db2b79b7b503ec5",
+    "bench_data.json": "8584328b6ff84a06dc71227f793ab9b038c5f25c287dd136d870820d952e301b",
+    "completeness.json": "fa9ca844b2bdd2811d7f06cc090179ec8dcd72adc4b08ca5a52897ad0f0ab2b1",
+    "summary.html": "d887031292ef87909750f455c21aeabb091a1e3030e1e86e75486aaaf13d5d7d"
+  }
+}

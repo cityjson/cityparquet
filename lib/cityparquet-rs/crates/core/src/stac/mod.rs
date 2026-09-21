@@ -11,6 +11,7 @@ pub mod assets;
 pub mod attribute_type;
 pub mod properties;
 
+use cityparquet_schema::crs::AxisOrder;
 use std::fs;
 use std::path::Path;
 
@@ -139,6 +140,12 @@ pub fn build_item(tables: &PackageTables, opts: &ItemOptions) -> Result<Item> {
     // georeference the package explicitly says it does not have.
     if !crs_state.is_unknown()
         && let Some(bbox) = package_bbox(tables)?
+        // `bbox` is stored in WKB's (longitude/easting, latitude/northing)
+        // order. `to_wgs84` reasons in the CRS's OWN declared order — it has
+        // its own northing-first and latitude-first branches — so the box is
+        // put back into that order before it is handed over, or the two
+        // reorderings compound instead of cancelling.
+        && let Some(bbox) = Some(reorder_bbox3d(bbox, package_axis_order(&crs_state)))
         && let Ok(wgs84) = bbox.to_wgs84(crs.as_ref().unwrap_or(&CRS::unknown()))
     {
         builder = builder.bbox(wgs84).geometry_from_bbox();
@@ -383,6 +390,23 @@ fn epsg_crs(projjson: &Value) -> Option<CRS> {
             .or_else(|| code.as_str().and_then(|s| s.parse::<u64>().ok()))
     })?;
     u32::try_from(code).ok().map(CRS::from_epsg)
+}
+
+/// The axis order the package's geometry and `bbox` are stored in, from its
+/// own `city.crs`.
+fn package_axis_order(crs_state: &CrsState) -> AxisOrder {
+    crs_state.known().map(AxisOrder::of).unwrap_or_default()
+}
+
+/// Reorder a [`BBox3D`] between WKB's axis order and the CRS's own. Its own
+/// inverse, like [`AxisOrder::apply`].
+fn reorder_bbox3d(bbox: BBox3D, axis_order: AxisOrder) -> BBox3D {
+    match axis_order {
+        AxisOrder::LonLat => bbox,
+        AxisOrder::LatLon => BBox3D::new(
+            bbox.ymin, bbox.xmin, bbox.zmin, bbox.ymax, bbox.xmax, bbox.zmax,
+        ),
+    }
 }
 
 /// The `bbox` struct's six leaf columns, in the order [`BBox3D`] uses.

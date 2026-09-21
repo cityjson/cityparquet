@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema};
 
-use crate::model::geometry_properties_data_type;
+use crate::model::{geometry_properties_data_type, material_data_type, texture_data_type};
 use crate::types::{Lod, geometry_column_name};
 
 fn json_col(name: &str) -> Field {
@@ -125,8 +125,16 @@ pub fn geometry_templates_schema(lods: &[Lod]) -> Schema {
             geometry_properties_data_type(),
             true,
         ));
-        fields.push(json_col(&geometry_column_name("material", lod)));
-        fields.push(json_col(&geometry_column_name("texture", lod)));
+        fields.push(Field::new(
+            geometry_column_name("material", lod),
+            material_data_type(),
+            true,
+        ));
+        fields.push(Field::new(
+            geometry_column_name("texture", lod),
+            texture_data_type(),
+            true,
+        ));
     }
     Schema::new(fields)
 }

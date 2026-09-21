@@ -46,7 +46,7 @@ CONFORMANCE_REASONS = frozenset(
         "unsupported_citygml_version",
         "unsupported_cityjson_version",
         "no_crs",
-        "geographic_crs",
+        "unencodable_crs_units",
         "convert_failed",
         "empty_collection",
         "duplicate_bundle",

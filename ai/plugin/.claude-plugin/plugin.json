@@ -1,0 +1,10 @@
+{
+  "name": "cityparquet",
+  "version": "0.1.0",
+  "description": "Skills for reading, writing and measuring CityParquet 3D city models with DuckDB and the cityparquet MCP server.",
+  "author": { "name": "Hidemichi Baba", "url": "https://github.com/cityjson/cityparquet" },
+  "homepage": "https://cityjson.github.io/cityparquet/",
+  "repository": "https://github.com/cityjson/cityparquet",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["cityparquet", "cityjson", "citygml", "duckdb", "parquet", "3d-city-models"]
+}

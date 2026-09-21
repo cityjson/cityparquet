@@ -167,6 +167,7 @@ describe("every tool, actually invoked", () => {
     const instance = await DuckDBInstance.create(":memory:");
     const connection = await instance.connect();
     engine = {
+      sandbox: false,
       connection,
       extensions: [],
       exclusive: serialiser(),

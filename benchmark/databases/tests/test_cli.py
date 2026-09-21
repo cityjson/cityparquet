@@ -45,14 +45,14 @@ def test_dataset_derives_name_and_both_package_dirs_under_root_data():
     d = _dataset(Path("/somewhere/delft.city.jsonl"))
     assert d.name == "delft"
     assert d.source == Path("/somewhere/delft.city.jsonl")
-    assert d.cityparquet_dir == ROOT / "data" / "cityparquet" / "delft"
-    assert d.hilbert_dir == ROOT / "data" / "cityparquet-hilbert" / "delft"
+    assert d.cityparquet_dir == ROOT.parent / "formats" / "data" / "readbench" / "delft.parquet"
+    assert d.hilbert_dir == ROOT.parent / "formats" / "data" / "readbench" / "delft-hilbert.parquet"
 
 
 def test_dataset_strips_city_jsonl_suffix_not_just_the_extension():
     d = _dataset(Path("/x/Montreal.city.jsonl"))
     assert d.name == "Montreal"
-    assert d.cityparquet_dir == ROOT / "data" / "cityparquet" / "Montreal"
+    assert d.cityparquet_dir == ROOT.parent / "formats" / "data" / "readbench" / "Montreal.parquet"
 
 
 # --- _build_systems -------------------------------------------------------

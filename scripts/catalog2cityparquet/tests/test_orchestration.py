@@ -84,7 +84,7 @@ def _stub_conversion(monkeypatch, *, run_convert=None, seen=None):
         return 3
 
     monkeypatch.setattr(driver.fetch, "download", fake_download)
-    monkeypatch.setattr(driver.fetch, "normalise", lambda path, workdir: [path])
+    monkeypatch.setattr(driver.fetch, "normalise", lambda path, workdir, max_bytes: [path])
     monkeypatch.setattr(driver.convert, "run_convert", run_convert or default_run_convert)
     monkeypatch.setattr(driver.convert, "stamp", lambda pkg_dir, item: None)
     return record
@@ -381,7 +381,7 @@ def test_the_download_is_named_from_the_url(tmp_path, monkeypatch):
 
 def test_a_payload_with_nothing_convertible_is_a_classified_failure(tmp_path, monkeypatch):
     _stub_conversion(monkeypatch)
-    monkeypatch.setattr(driver.fetch, "normalise", lambda path, workdir: [])
+    monkeypatch.setattr(driver.fetch, "normalise", lambda path, workdir, max_bytes: [])
 
     with pytest.raises(convert.ConvertError) as excinfo:
         driver.process_item(
@@ -2376,3 +2376,129 @@ def test_the_histogram_subcommand_reduces_the_cumulative_ledger(tmp_path, capsys
 def test_the_histogram_subcommand_reports_a_missing_reports_directory(tmp_path, capsys):
     assert driver.main(["histogram", str(tmp_path / "nowhere")]) == 1
     assert "nowhere" in capsys.readouterr().err
+
+
+# --- explicit item selection ---------------------------------------------------
+
+
+def test_named_items_are_resolved_directly_not_enumerated(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(driver.discover, "fetch_collection", lambda base, cid, client: {"id": cid})
+
+    def no_enumeration(*args, **kwargs):
+        raise AssertionError("naming items must not enumerate the collection")
+
+    def fake_items_by_id(base, cid, ids, client, dropped=None):
+        seen["ids"] = list(ids)
+        dropped.append("missing")
+        return [Item(cid, i, "u", None, None) for i in ids]
+
+    monkeypatch.setattr(driver.discover, "enumerate_items", no_enumeration)
+    monkeypatch.setattr(driver.discover, "items_by_id", fake_items_by_id)
+    converted = []
+
+    def fake_convert_items(items, **kwargs):
+        converted.extend(i.item_id for i in items)
+
+    monkeypatch.setattr(driver, "convert_items", fake_convert_items)
+    ledger = Ledger(tmp_path / "_reports")
+    config = _config(tmp_path, item_ids=("x_citygml_1_op", "y_citygml_1_op"))
+
+    driver.run_collections(["japan-plateau-3d"], ledger=ledger, config=config)
+
+    assert seen["ids"] == ["x_citygml_1_op", "y_citygml_1_op"]
+    assert converted == ["x_citygml_1_op", "y_citygml_1_op"]
+    # The id that resolved to nothing is a recorded outcome, not a silent gap.
+    assert ledger.histogram() == {"download_failed": 1}
+
+
+def test_a_named_bundle_is_converted_not_skipped(tmp_path, monkeypatch):
+    # Naming a whole-city bundle is asking for it: the duplicate-bundle rule
+    # exists to stop a WHOLE-collection run encoding Japan twice, and a run
+    # that selected its items has no tiles to duplicate.
+    processed = []
+    monkeypatch.setattr(driver, "process_item", lambda item, **k: processed.append(item.item_id))
+    items = [Item("japan-plateau-3d", "x_citygml_1_op", "u", None, None)]
+    ledger = Ledger(tmp_path / "_reports")
+    config = _config(tmp_path, jobs=1, item_ids=("x_citygml_1_op",))
+
+    driver.convert_items(items, ledger=ledger, config=config)
+
+    assert processed == ["x_citygml_1_op"]
+    assert "duplicate_bundle" not in ledger.histogram()
+
+
+def test_the_unpack_budget_reaches_normalise(tmp_path, monkeypatch):
+    seen = {}
+    _stub_conversion(monkeypatch)
+
+    def fake_normalise(path, workdir, max_bytes):
+        seen["max_bytes"] = max_bytes
+        return [path]
+
+    monkeypatch.setattr(driver.fetch, "normalise", fake_normalise)
+    config = _config(tmp_path, max_unpack_bytes=64 * 2**30)
+    driver.process_item(
+        Item("c", "i", "https://example.invalid/a.zip", None, None), config=config, client=None
+    )
+    assert seen["max_bytes"] == 64 * 2**30
+
+
+def test_item_selection_and_the_unpack_budget_are_flags():
+    config = driver.config_from_args(
+        driver.parse_args(
+            ["--collection", "jp", "--item", "a", "--item", "b", "--max-unpack-gib", "64"]
+        )
+    )
+    assert config.item_ids == ("a", "b")
+    assert config.max_unpack_bytes == 64 * 2**30
+
+
+def test_the_default_unpack_budget_is_unchanged():
+    assert driver.config_from_args(driver.parse_args([])).max_unpack_bytes == 20 * 2**30
+
+
+def test_naming_items_needs_exactly_one_collection():
+    # An item id is only unique within its collection.
+    with pytest.raises(SystemExit):
+        driver.config_from_args(driver.parse_args(["--item", "a"]))
+    with pytest.raises(SystemExit):
+        driver.config_from_args(
+            driver.parse_args(["--collection", "p", "--collection", "q", "--item", "a"])
+        )
+
+
+@pytest.mark.parametrize("bad", ["../x", "a/b", ""])
+def test_an_unusable_item_id_is_rejected_before_any_work(bad):
+    with pytest.raises(SystemExit):
+        driver.config_from_args(driver.parse_args(["--collection", "jp", "--item", bad]))
+
+
+def test_a_converted_bundle_is_not_later_recorded_as_a_duplicate(tmp_path, monkeypatch):
+    # Converted with --item, then a whole-collection run over the same output:
+    # the package exists, so the item is skipped with no record — not ledgered
+    # as a `duplicate_bundle` that would replace its success in the roll-up.
+    processed = []
+    monkeypatch.setattr(driver, "process_item", lambda item, **k: processed.append(item.item_id))
+    config = _config(tmp_path, jobs=1)
+    item = Item("japan-plateau-3d", "x_citygml_1_op", "u", None, None)
+    _write_package(config, item)
+    ledger = Ledger(tmp_path / "_reports")
+    driver.convert_items([item], ledger=ledger, config=config)
+    assert processed == []
+    assert ledger.histogram() == {}
+
+
+def test_a_limit_cannot_truncate_named_items():
+    with pytest.raises(SystemExit):
+        driver.config_from_args(
+            driver.parse_args(["--collection", "jp", "--item", "a", "--limit-per-collection", "1"])
+        )
+
+
+def test_a_repeated_item_id_is_rejected():
+    # Two workers converting into one package directory race each other.
+    with pytest.raises(SystemExit):
+        driver.config_from_args(
+            driver.parse_args(["--collection", "jp", "--item", "a", "--item", "a"])
+        )

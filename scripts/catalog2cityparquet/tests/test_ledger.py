@@ -64,7 +64,7 @@ def test_the_vocabulary_is_the_documented_closed_set():
         "unsupported_citygml_version",
         "unsupported_cityjson_version",
         "no_crs",
-        "geographic_crs",
+        "unencodable_crs_units",
         "convert_failed",
         "empty_collection",
         "duplicate_bundle",

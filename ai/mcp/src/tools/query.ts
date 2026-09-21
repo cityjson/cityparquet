@@ -28,6 +28,32 @@ export interface StatementResult {
   readonly error?: string;
 }
 
+/**
+ * A DuckDB secret created by a query can carry its own `HTTP_PROXY`, which
+ * overrides the engine's locked `http_proxy` and so walks round the egress
+ * proxy; its `EXTRA_HTTP_HEADERS` can carry the header a cloud metadata
+ * server needs to hand out a token. A sandboxed engine therefore allows none:
+ * any statement naming a secret is refused unrun — the word anywhere, string
+ * literals included, since failing closed on a rare false positive is the
+ * right trade — and `purgeSecrets` is the backstop for any route this misses.
+ */
+function refusesSecrets(statement: string): boolean {
+  return /secret/i.test(statement);
+}
+
+/** Drops every secret the engine holds; true if there were any. Runs inside `exclusive`. */
+async function purgeSecrets(engine: Engine): Promise<boolean> {
+  const reader = await engine.connection.runAndReadAll("SELECT name FROM duckdb_secrets()");
+  const names = reader.getRowsJson().map((row) => String(row[0]));
+  for (const name of names) {
+    await engine.connection.run(`DROP TEMPORARY SECRET IF EXISTS "${name.replace(/"/g, '""')}"`);
+  }
+  return names.length > 0;
+}
+
+const SECRETS_REFUSED =
+  "secrets are not allowed on this server: a DuckDB secret can override the egress proxy, so a statement that mentions SECRET is refused unrun";
+
 export async function runQuery(
   engine: Engine,
   sql: string,
@@ -37,6 +63,10 @@ export async function runQuery(
   const results: StatementResult[] = [];
 
   for (const statement of splitStatements(sql)) {
+    if (engine.sandbox && refusesSecrets(statement)) {
+      results.push({ statement, error: SECRETS_REFUSED });
+      break;
+    }
     // Reassigned once execution actually starts, inside the critical section
     // below — not here. A statement can queue behind another tool call's
     // turn on the shared connection first, and that wait is not this
@@ -60,6 +90,10 @@ export async function runQuery(
       // statement. Serialising means whichever statement is running when the
       // timer fires is, guaranteed, this one.
       const { names, types, fetched, typed } = await engine.exclusive(async () => {
+        // Before every statement, not only after the suspicious ones: a
+        // secret that exists by any route is dropped before anything can
+        // read through it.
+        if (engine.sandbox && (await purgeSecrets(engine))) throw new Error(SECRETS_REFUSED);
         started = performance.now();
         // `interrupt` is what makes the deadline recoverable: the statement is
         // cancelled inside the engine rather than abandoned, so the connection is

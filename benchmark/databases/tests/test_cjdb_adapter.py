@@ -341,4 +341,5 @@ def test_patch_disclosure_reports_upstream_version_and_patch_file(monkeypatch):
     assert disclosure["upstream_version"] == cjdb_module.CJDB_UPSTREAM_VERSION
     assert disclosure["patched"] == "true"
     assert disclosure["patch_file"] == "vendor/cjdb/ground-surfaces-tie.patch"
+    assert len(disclosure["patch_sha256"]) == 64
     assert disclosure["built_from"] == _FAKE_PATCHED_SOURCE

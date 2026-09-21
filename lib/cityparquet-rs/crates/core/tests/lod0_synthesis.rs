@@ -2,6 +2,7 @@
 //! writer must turn a source solid into a GeoParquet-legal `MultiPolygon Z`
 //! footprint.
 
+use cityparquet_schema::crs::AxisOrder;
 use std::path::PathBuf;
 
 use arrow_array::{Array, StringArray};
@@ -50,7 +51,7 @@ fn delft_solids_synthesise_valid_multipolygon_footprints() {
 
     for feature in src.features().unwrap() {
         let feature = feature.unwrap();
-        let pool = VertexPool::new(&feature.vertices, &header.transform);
+        let pool = VertexPool::new(&feature.vertices, &header.transform, AxisOrder::LonLat);
         for co in feature.city_objects.values() {
             let Some(geoms) = &co.geometry else {
                 continue;
@@ -79,7 +80,7 @@ fn delft_solids_synthesise_valid_multipolygon_footprints() {
                 );
 
                 let (verts, ms) = footprint_to_geometry(&fp);
-                let raw = VertexPool::raw(&verts);
+                let raw = VertexPool::raw(&verts, AxisOrder::LonLat);
                 let outcome = geometry_to_wkb(&ms, &raw)
                     .unwrap()
                     .expect("a non-empty footprint yields WKB");

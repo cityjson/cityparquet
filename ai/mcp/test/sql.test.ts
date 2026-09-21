@@ -38,6 +38,41 @@ describe("splitStatements", () => {
     ]);
   });
 
+  it("ignores a semicolon inside a dollar-quoted string whose tag has digits", () => {
+    expect(splitStatements("SELECT $t1$a;b$t1$; SELECT 2")).toEqual(["SELECT $t1$a;b$t1$", "SELECT 2"]);
+  });
+
+  it("does not take a dollar sign inside an identifier for a dollar tag", () => {
+    expect(splitStatements("CREATE TABLE x$t1$(id INTEGER); CREATE SCHEMA d; PRAGMA p('d')")).toEqual([
+      "CREATE TABLE x$t1$(id INTEGER)",
+      "CREATE SCHEMA d",
+      "PRAGMA p('d')",
+    ]);
+  });
+
+  it("does not take a positional parameter for a dollar tag", () => {
+    expect(splitStatements("SELECT $1; SELECT $2")).toEqual(["SELECT $1", "SELECT $2"]);
+  });
+
+  it("honours a backslash-escaped quote inside an E-string", () => {
+    expect(splitStatements("SELECT E'it\\'s; fine'; SELECT 2")).toEqual(["SELECT E'it\\'s; fine'", "SELECT 2"]);
+  });
+
+  it("leaves a backslash literal in an ordinary string", () => {
+    expect(splitStatements("SELECT 'a\\'; SELECT 2")).toEqual(["SELECT 'a\\'", "SELECT 2"]);
+  });
+
+  it("does not read an identifier ending in e as an E-string prefix", () => {
+    expect(splitStatements("SELECT name'a\\'; SELECT 2")).toEqual(["SELECT name'a\\'", "SELECT 2"]);
+  });
+
+  it("ignores a semicolon in a nested block comment", () => {
+    expect(splitStatements("SELECT /* outer /* inner */ still; comment */ 1; SELECT 2")).toEqual([
+      "SELECT /* outer /* inner */ still; comment */ 1",
+      "SELECT 2",
+    ]);
+  });
+
   it("drops empty statements and trailing semicolons", () => {
     expect(splitStatements("SELECT 1;;\n  \n")).toEqual(["SELECT 1"]);
   });

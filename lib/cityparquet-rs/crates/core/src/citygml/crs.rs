@@ -9,53 +9,55 @@
 //!   name we cannot parse advertises no CRS — the reader does not invent one
 //!   (mis-advertising a wrong CRS is worse than advertising none). Preserving
 //!   the raw `srsName` as a provenance field is a later enhancement.
-//! - Hard-reject a name that resolves to a known **geographic** (degree) CRS:
-//!   the fixed 1 mm quantisation would destroy degree coordinates. The
-//!   geographic list is common-but-not-exhaustive; an unlisted geographic code
-//!   is a documented residual limitation (no coordinate-magnitude sniffing —
-//!   real fixtures use small local metre coordinates near the origin).
+//! - A **geographic** (degree-valued) name resolves like any other. The
+//!   quantisation step is no longer a fixed millimetre: it is derived per axis
+//!   from the resolved CRS's own declared units
+//!   ([`cityparquet_schema::crs::axis_scale`]), so a degree axis is quantised
+//!   at a degree-sized step. A CRS whose units the encoder has no step for
+//!   fails there, loudly, rather than being refused from a hand-maintained
+//!   list here.
 
-// The known-geographic EPSG list this reader rejects lives with the
-// EPSG->PROJJSON table in `cityparquet_schema::crs`: it governs CityJSON input
-// and the CLI's `--crs` override as much as it governs a CityGML `srsName`, so
-// it is not CityGML-specific policy.
-use cityparquet_schema::crs::is_geographic_epsg;
 use cityparquet_schema::{CityParquetError, Result};
 use cjseq::ReferenceSystem;
 
 /// Outcome of resolving a CityGML `srsName`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CrsResolution {
-    /// Resolved to a projected/compound EPSG code we advertise as a CRS.
+    /// Resolved to an EPSG code we advertise as a CRS.
     Epsg(String),
+    /// `OGC:CRS84` — WGS 84 in longitude/latitude order. It is a real,
+    /// resolvable CRS with no EPSG code of its own, so it cannot travel as
+    /// [`Self::Epsg`]; a resolver that only looked for a code would report it
+    /// as unresolved and quantise a degree document at a metre step.
+    Crs84,
     /// A syntactically understood name we choose not to advertise (kept as
     /// provenance only).
     Unresolved,
 }
 
-/// Resolve a raw `srsName`. Errors only when it resolves to a known geographic
-/// CRS (an unrepresentable-for-us profile violation).
+/// Resolve a raw `srsName` to the EPSG code it names, or [`CrsResolution::Unresolved`]
+/// for a syntactically understood name we choose not to advertise.
 pub fn resolve(srs_name: &str) -> Result<CrsResolution> {
     let name = srs_name.trim();
-    // OGC:CRS84 is lon/lat degrees, expressed as a name rather than an EPSG code.
+    // CRS84 is spelled as a name, never as an EPSG code, so it is matched
+    // before the code parsing below can fail to find one.
     if name.to_ascii_uppercase().contains("CRS84") {
-        return Err(geographic_err(srs_name, "CRS84"));
+        return Ok(CrsResolution::Crs84);
     }
     let Some(code) = epsg_code(name) else {
         return Ok(CrsResolution::Unresolved);
     };
-    if is_geographic_epsg(&code) {
-        return Err(geographic_err(srs_name, &code));
-    }
     Ok(CrsResolution::Epsg(code))
 }
 
-fn geographic_err(srs_name: &str, code: &str) -> CityParquetError {
-    CityParquetError::Schema(format!(
-        "CityGML srsName {srs_name:?} resolves to geographic CRS {code}; the reader only \
-         supports projected (metre-based) CRS (coordinates are quantised at 1 mm, which \
-         would destroy degrees)"
-    ))
+/// The `OGC:CRS84` reference system, for a document that names it.
+pub fn reference_system_crs84() -> ReferenceSystem {
+    ReferenceSystem::new(
+        None,
+        "OGC".to_string(),
+        "1.3".to_string(),
+        "CRS84".to_string(),
+    )
 }
 
 /// Build the CityJSON `ReferenceSystem` (OGC EPSG URL) for a resolved code.
@@ -99,12 +101,10 @@ fn epsg_code(name: &str) -> Option<String> {
 ///
 /// `None` CRS -> `Ok(None)` (no CRS to advertise). Otherwise the candidate
 /// EPSG code is built into a `urn:ogc:def:crs:EPSG::<code>` and round-tripped
-/// through [`resolve`], which must hand back the *same* projected code — this
-/// reuses the reader's geographic-CRS rejection (and its exact-syntax
-/// parsing) so the writer can never emit an `srsName` the reader would refuse
-/// to consume. A geographic code (e.g. 4326), an unsupported/non-EPSG
-/// authority, or anything else `resolve` cannot parse back to the same code
-/// is an error.
+/// through [`resolve`], which must hand back the *same* code — reusing the
+/// reader's exact-syntax parsing so the writer can never emit an `srsName` the
+/// reader would refuse to consume. An unsupported/non-EPSG authority, or
+/// anything else `resolve` cannot parse back to the same code, is an error.
 pub fn srs_name_for(crs: Option<&serde_json::Value>) -> Result<Option<String>> {
     let Some(crs) = crs else {
         return Ok(None);
@@ -186,12 +186,43 @@ mod tests {
     }
 
     #[test]
-    fn geographic_crs_is_rejected() {
-        assert!(resolve("EPSG:4326").is_err());
-        assert!(resolve("urn:ogc:def:crs:EPSG::4979").is_err());
-        // NAD27 (4267) is geographic/degrees — must not slip through as projected.
-        assert!(resolve("EPSG:4267").is_err());
-        assert!(resolve("urn:ogc:def:crs:OGC:1.3:CRS84").is_err());
+    fn crs84_resolves_to_its_own_variant() {
+        // CRS84 is WGS 84 in longitude/latitude order, spelled as a name
+        // rather than an EPSG code — so it carries no code to parse, and a
+        // resolver that only looks for one silently reports "no CRS" and
+        // quantises a degree document at a metre step.
+        assert_eq!(
+            resolve("urn:ogc:def:crs:OGC:1.3:CRS84").unwrap(),
+            CrsResolution::Crs84
+        );
+        assert_eq!(
+            resolve("http://www.opengis.net/def/crs/OGC/1.3/CRS84").unwrap(),
+            CrsResolution::Crs84
+        );
+        assert_eq!(
+            reference_system_crs84().to_url(),
+            "https://www.opengis.net/def/crs/OGC/1.3/CRS84"
+        );
+    }
+
+    #[test]
+    fn geographic_crs_resolves_like_any_other() {
+        // A degree-valued CRS is no longer refused here: the quantisation step
+        // is derived from its declared axis units downstream, so it encodes
+        // correctly rather than not at all. EPSG:6697 is what every PLATEAU
+        // (Japan) export declares.
+        assert_eq!(
+            resolve("https://www.opengis.net/def/crs/EPSG/0/6697").unwrap(),
+            CrsResolution::Epsg("6697".into())
+        );
+        assert_eq!(
+            resolve("EPSG:4326").unwrap(),
+            CrsResolution::Epsg("4326".into())
+        );
+        assert_eq!(
+            resolve("urn:ogc:def:crs:EPSG::4979").unwrap(),
+            CrsResolution::Epsg("4979".into())
+        );
     }
 
     #[test]
@@ -248,9 +279,12 @@ mod tests {
     }
 
     #[test]
-    fn srs_name_geographic_crs_errors() {
-        let crs = serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/4326");
-        assert!(srs_name_for(Some(&crs)).is_err());
+    fn srs_name_round_trips_a_geographic_crs() {
+        let crs = serde_json::json!("https://www.opengis.net/def/crs/EPSG/0/6697");
+        assert_eq!(
+            srs_name_for(Some(&crs)).unwrap().as_deref(),
+            Some("urn:ogc:def:crs:EPSG::6697")
+        );
     }
 
     #[test]

@@ -393,20 +393,22 @@ sub=${1:-}
 # nothing but the argv can prove it was passed.
 printf '%s\n' "$@" >"$SANDBOX/fcb-$sub-argv.txt"
 shift || true
-out=""
-src=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -o) out=$2; shift 2 ;;
-    -i) src=$2; shift 2 ;;
-    *) shift ;;
-  esac
-done
 case "$sub" in
-  # The .fcb's whole content is the path it was serialised from, so a case can
-  # assert WHICH file fed it rather than trusting the script's echo.
-  ser) printf '%s\n' "$src" >"$out" ;;
-  info) printf 'Dataset:\n  Features: 3\n' ;;
+  # fcb 0.7.x takes options first, then positional INPUT OUTPUT.
+  ser)
+    args=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -A|--index-all-attributes) shift ;;
+        *) args+=("$1"); shift ;;
+      esac
+    done
+    src=${args[0]:-}
+    out=${args[1]:-}
+    [[ -n "$src" && -n "$out" ]] || { echo "stub fcb ser: missing INPUT OUTPUT" >&2; exit 1; }
+    printf '%s\n' "$src" >"$out"
+    ;;
+  inspect) printf 'Dataset:\n  Features: 3\n' ;;
   *) echo "stub fcb: unknown subcommand '$sub'" >&2; exit 1 ;;
 esac
 FCB_STUB
@@ -1278,9 +1280,9 @@ case_measurement_flags_are_passed() {
 }
 
 # --------------------------------------------------------------------------
-# Case 8d: the `fcb info` verification block actually verifies something.
+# Case 8d: the `fcb inspect` verification block actually verifies something.
 #
-# The block reads a feature count out of `fcb info` and refuses a count that
+# The block reads a feature count out of `fcb inspect` and refuses a count that
 # is missing or <= 0 — but nothing asserted the number it read, so the whole
 # block was inert: hardcoding `FCB_INFO="Features: 1"` left the suite green.
 # It also used `grep -E '^\s*Features:'`, and `\s` is a GNU extension POSIX
@@ -1288,7 +1290,7 @@ case_measurement_flags_are_passed() {
 # matched nothing and every FlatCityBuf prepare died at the guard.
 # --------------------------------------------------------------------------
 case_fcb_info_count_is_reported() {
-  local name="the fcb info feature count is read from fcb and reported"
+  local name="the fcb inspect feature count is read from fcb and reported"
   local dir
   dir="$(new_sandbox cargo fcb)"
   run_prepare "$dir" --formats flatcitybuf "$dir/data/tiny.city.jsonl" "$dir/out"
@@ -1296,10 +1298,10 @@ case_fcb_info_count_is_reported() {
     fail "$name" "exit $LAST_RC; log: $(cat "$LAST_LOG")"
     return
   fi
-  # The stub's `fcb info` reports 3 features; the whole line, so a count read
-  # from anywhere but `fcb info` fails here.
-  if ! log_has_line "  fcb info: 3 features in $dir/out/tiny.fcb"; then
-    fail "$name" "the fcb info count was not read/reported; log: $(cat "$LAST_LOG")"
+  # The stub's `fcb inspect` reports 3 features; the whole line, so a count read
+  # from anywhere but `fcb inspect` fails here.
+  if ! log_has_line "  fcb inspect: 3 features in $dir/out/tiny.fcb"; then
+    fail "$name" "the fcb inspect count was not read/reported; log: $(cat "$LAST_LOG")"
     return
   fi
   pass "$name"
@@ -1369,7 +1371,7 @@ case_artefact_names_match_the_rust_enum() {
 # Case 8e: artefacts built by an OLDER derivation chain must not be reused.
 #
 # The prepare script skips an artefact that already exists and passes its
-# validity check, and `benchmark/formats/data/readbench/` persists across runs — so a
+# validity check, and `benchmark/runs/data/readbench/` persists across runs — so a
 # directory prepared before the chain changed keeps serving artefacts derived
 # from a stage that no longer exists, and nothing says so. That is C1's bug
 # class one level up: a pre-fix `<base>.jsonl.gz` is a gzip of the WHOLE

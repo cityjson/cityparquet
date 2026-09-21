@@ -9,28 +9,32 @@ would break.
 
 ## The exact pins, and why
 
-`package.json` pins `@duckdb/node-api` at `1.5.4-r.1` (DuckDB v1.5.4) and
-`@modelcontextprotocol/server` at `2.0.0`, both **exact**, no caret. v1.5.4 is
-the newest DuckDB version for which *both* `cityjson` and `three_d` exist in
-the community extension repository — `three_d` is absent at v1.5.5. A caret
-range on `@duckdb/node-api` would let `pnpm install` silently bring up a newer
-DuckDB that has no `three_d` build, and the server would fail at `LOAD` time
-with no code change to explain why. Do not loosen this pin without first
-checking the community repository for the target DuckDB version.
+`package.json` pins `@duckdb/node-api` at `1.5.5-r.5` (DuckDB v1.5.5) and
+`@modelcontextprotocol/server` at `2.0.0`, both **exact**, no caret. A
+community extension is built against one DuckDB version, and the community
+repository only carries builds for the versions it was built for: `cityjson`
+and `three_d` both exist at v1.5.5, and at v1.5.4 they exist only as older
+builds that lack most of what `FUNCTIONS.md` documents — every
+`cityparquet_*` pragma, `ST_3DFootprintArea`, `ST_3DTransform`, the
+`(BLOB, STRUCT)` overload of `ST_3DFromWKB`. A caret range would let
+`pnpm install` bring up a DuckDB for which one of them has no build, and the
+server would fail at `LOAD` time with no code change to explain why. Before
+moving this pin, check that **both** extensions answer at the target version
+(`https://community-extensions.duckdb.org/<version>/linux_amd64/<name>.duckdb_extension.gz`)
+and that `test/duckdb.test.ts`'s blocked table still passes.
 
-## `spatial` is never loaded, and cannot be
+## `spatial` is loaded, and so is GDAL
 
-`spatial` and `three_d` cannot both be loaded into one DuckDB connection, in
-either order: `spatial` first breaks `three_d` with "Cannot AlterEntry without
-client context"; `three_d` first breaks `spatial` with "Scalar Function with
-name …". This is a defect in `three_d` / DuckDB's extension loading, not
-something fixable here — see `lib/duckdb-3d`'s own repository for whether it
-has been reported. `DEFAULT_EXTENSIONS` in `src/duckdb.ts` loads `three_d`
-(CityParquet's 3D solid geometry needs it) and so never loads `spatial`. The
-consequence for tool authors and for `cityparquet_query` callers: `ST_Area`
-and `ST_GeomFromWKB` are unavailable, and there is no 2D PostGIS-style
-vocabulary at all. `ST_3DFootprintArea` and `ST_3DTryFromWKB` are the
-substitutes — see the table in `README.md`.
+`DEFAULT_EXTENSIONS` in `src/duckdb.ts` — the local server's set — is
+`httpfs`, `cityjson`, `three_d`, `spatial`; the hosted server uses
+`HOSTED_EXTENSIONS`, without `spatial` (see the egress section below). `spatial` and `three_d` load together in either order since the
+v1.5.5 community builds. (At v1.5.4 they could not: `spatial` first broke
+`three_d` with "Cannot AlterEntry without client context", and the reverse
+broke `spatial`. The design spec's body describes that.) `spatial` brings
+GDAL, a second file reader with its own path grammar; the "GDAL, through
+spatial" suite in `test/duckdb.test.ts` checks, with a positive control, that
+the sandbox blocks GDAL's local reads as well as DuckDB's. Keep it green: a
+GDAL read that succeeds under the sandbox is a hole.
 
 ## The startup sequence in `src/duckdb.ts` is load-bearing
 
@@ -107,34 +111,124 @@ ordinary case. The check builds its comparison in memory and never writes to
 `corpus/corpus.json`, so it leaves the working tree exactly as found whether
 it passes or fails — nobody has to remember not to commit a churned stamp.
 
-## The published community extension builds lag their own documentation
+## Check what the loaded build provides
 
-`lib/duckdb-cityjson/docs/FUNCTIONS.md` documents `cityjson_geoparquet_geo`
-and `cityparquet_city_field`. Neither function exists in the extension build
-currently published to the DuckDB community repository — the submodule's docs
-describe work that has not shipped yet. When writing or changing a tool that
-calls into `cityjson` or `three_d`, verify what the loaded build actually
-provides with `SELECT * FROM duckdb_functions() WHERE function_name = '…'`
-rather than trusting the submodule's `FUNCTIONS.md`. The corpus still indexes
-that file's prose for `cityparquet_docs_search` and `cityparquet_docs_read` —
-an agent can legitimately read about a function it cannot yet call — but tool
-*implementations* must not assume it is callable.
+The corpus is built from the submodules' `FUNCTIONS.md`, and the submodules
+move ahead of what the community repository publishes: `lib/duckdb-cityjson`
+is well past the published `a1455e1`. So the corpus can describe functions
+the loaded build does not have. When writing or changing a tool that calls
+into `cityjson` or `three_d`, confirm the function exists in the loaded
+build: `SELECT function_name FROM duckdb_functions() WHERE function_name
+ILIKE '…'`. Use `ILIKE`, not `=` or `IN`: `spatial` registers mixed-case
+names such as `ST_Area`, and an exact lowercase match misses them.
 
-## `describe()` cannot read a local package directory
+## `describe()` reads local files through Node, outside DuckDB's sandbox
 
-`cityparquet_describe` given a package **directory** always takes the STAC
-probe path, never the local one, even when that directory is on the same
-machine and holds a `metadata.json`. `describe()`'s package branch
-(`src/tools/describe.ts`) always calls `fetch(`${url}/metadata.json`)`, and
-`fetch()` throws immediately on a base that is not a URL — a plain filesystem
-path fails there before any attempt to read the file. The `catch` around that
-call absorbs the throw and falls back to probing the normative module
-basenames with `summariseFile`, exactly as it would for a genuinely
-unreachable remote host — so the tool degrades silently rather than reading
-the local `metadata.json` it could otherwise see, and the result's `notes`
-attribute the fallback to a fetch failure rather than to "this is a local
-path". A single `.parquet` file path is unaffected: that branch never calls
-`fetch()`. This is a known gap, not yet fixed.
+`cityparquet_describe` accepts a local package directory, a local `.parquet`
+file or a `file://` URL as well as an `http(s)` URL. For a local package it
+reads `metadata.json` with Node's `fs`, not with DuckDB — and DuckDB's
+`disabled_filesystems` does not govern Node. So `describe()` checks
+`engine.sandbox` itself and refuses every local path on a sandboxed engine
+**before** any `readFile`. Without that check the hosted server would read
+`<any directory>/metadata.json` for anyone who asked, which is exactly the
+local-file read the sandbox exists to prevent. Any new tool that touches the
+disk from Node carries the same obligation; `test/describe.test.ts` has the
+case that pins it.
+
+## `describe()`'s notes name the actual failure
+
+"Unreachable" means a request failed. A missing `metadata.json`, an HTTP
+error status, a body that is not JSON, an asset `href` that does not resolve
+and a listed asset that is not readable Parquet each get their own note. The
+package `crs` is reported only when every table that states one agrees;
+otherwise it is null and each table's own `crs` stands. A malformed `city`
+footer falls back to `geo` rather than failing the whole CRS read. Tables are
+named after their file, not their STAC asset key — Items produced by this
+stack list `building.parquet` under a generic `data` key as well.
+
+One DuckDB behaviour matters to fixtures: its Parquet reader **refuses** a
+file whose `geo` footer lacks `version` ("Geoparquet metadata does not have a
+version") before `describe()` sees it. A test fixture with a `geo` key must be
+well-formed GeoParquet metadata.
+
+## The hosted server: one engine per request
+
+`src/http.ts` is the public entry point (streamable HTTP, stateless, always
+sandboxed; there is no option to turn the sandbox off there). Three things in
+it are load-bearing:
+
+- **Every request that calls `describe` or `query` gets its own engine**, from
+  `src/pool.ts`, and the engine is closed afterwards. A shared instance does
+  not isolate callers: DuckDB's catalogs, attached ones included, are
+  instance-wide, so a table one caller creates is readable by the next, and
+  `duckdb_databases()` lists every attached catalog. A per-request `ATTACH
+  ':memory:'` on a shared instance was tried and leaks exactly this way. The
+  pool builds each slot's next engine as soon as the last is released (a few
+  hundred milliseconds with the extensions on disk), and its size is the
+  server's concurrency; beyond `maxWaiting` queued requests it answers 503.
+- **Requests that do not touch DuckDB get no engine** (`NO_ENGINE` in
+  `src/http-app.ts`): `initialize`, `tools/list`, the documentation tools.
+  A new tool that uses the engine must be added to `ENGINE_TOOLS`, or it
+  fails loudly on the stand-in.
+- **The whole response body is read before the engine is released.** 2025-era
+  requests are answered through the SDK's stateless fallback as a short SSE
+  stream; streaming it straight through would let the engine close under it.
+
+The image (`Dockerfile`) **bakes the extensions in** at build time
+(`src/bake.ts`), because a sandboxed engine's network goes through the
+egress proxy, which does not admit the extension repository, and it installs `ca-certificates`, without which
+httpfs fails every `https://` read with an SSL CA error. `INSTALL` of an
+extension already on disk is a no-op, so the startup sequence above runs
+unchanged in the image; `podman run --network none` proves it starts.
+
+## The egress proxy is the hosted server's network boundary
+
+The hosted engine can reach the data hosts and nothing else, and the
+platform does not enforce that: Cloud Run has no host allowlist, and its
+metadata server, which hands out the runtime service account's token, is
+reachable from every container. `src/egress-proxy.ts` runs in the server
+process, admits `CONNECT` to the allowlisted hosts on port 443 (after
+resolving them and refusing internal addresses), and refuses everything
+else, plain HTTP included. Every sandboxed engine's `http_proxy` is set to it
+before `lock_configuration`, so a query cannot unset it. Every reader was
+checked to go through it: `read_parquet`, `read_json`, `read_text`, the
+`cityjson` and FlatCityBuf readers, and GDAL's `ST_Read` and `/vsicurl/`.
+`test/egress-proxy.test.ts` pins this; treat it like the blocked table.
+
+Four things keep the proxy the only way out:
+
+- **No `spatial`.** GDAL, which `spatial` brings, has its own HTTP client:
+  `/vsicurl/`, `/vsicurl_streaming/` and a `proxy=` override carried in the
+  filename reach the network directly, outside both `disabled_filesystems` and
+  the locked `http_proxy` (probed: a sandboxed engine locked to the proxy
+  fetched from a local server, and `/vsicurl_streaming/` returned rows).
+  `spatial` has no setting to turn it off. So `HOSTED_EXTENSIONS` omits it and
+  `src/http.ts` refuses to start if asked to load it; a test in
+  `test/egress-proxy.test.ts` pins the bypass. Earlier probes that saw GDAL
+  "blocked" were reading a format error, not a refused request — a GDAL
+  refusal proves nothing without a server that records the hit.
+
+- **Secrets.** A DuckDB secret created by a query can carry its own
+  `HTTP_PROXY`, which **overrides** the locked `http_proxy` (probed: reads went
+  through the secret's proxy), and its `EXTRA_HTTP_HEADERS` can carry the
+  `Metadata-Flavor` header the metadata server wants. `lock_configuration`
+  does not stop `CREATE SECRET`: secrets are catalog objects, not settings.
+  So `runQuery` on a sandboxed engine refuses any statement containing
+  "secret", literals included, and before every statement drops any secret
+  that exists by some other route and stops.
+- **Node's own fetches.** `describe` fetches `metadata.json` from Node, not
+  through DuckDB, so it applies the proxy's rules itself: HTTPS on the default
+  port, an allowlisted host that does not resolve to an internal address,
+  redirects not followed. One gap remains, known and accepted: `fetch` resolves
+  the name again after the check, so whoever controls an allowlisted host's
+  DNS could rebind it to an internal address between the two. That is only
+  ourselves (`open3d.city`), and the result is an HTTPS request with no
+  metadata header. Routing this fetch through the egress proxy would close it.
+- **The runtime account.** The service runs as `cityparquet-mcp-runtime`,
+  which holds no roles, so even a leaked metadata token opens nothing.
+
+`scripts/smoke.mjs` checks all of this from outside after every deploy, and
+passes against a local container too, since the proxy is part of the server.
 
 ## The `cityparquet_` tool prefix is provisional
 

@@ -17,7 +17,9 @@ though `_versions()` also stamps a terse marker for at-a-glance visibility.
 
 from __future__ import annotations
 
+import os
 import platform
+import hashlib
 from typing import Any
 
 _INGEST_CAVEAT = (
@@ -30,12 +32,12 @@ _INGEST_CAVEAT = (
 
 def required_keys() -> tuple[str, ...]:
     return (
-        "dataset", "host", "versions", "pg_settings", "ingest", "sizes",
-        "patches", "srid",
+        "dataset", "source", "baseline", "host", "versions", "pg_settings", "ingest", "sizes",
+        "patches", "srid", "memory_measurement", "temporary_storage",
     )
 
 
-def collect(*, dataset_name: str, ingest: dict[str, float],
+def collect(*, dataset_name: str, source: str | None = None, ingest: dict[str, float],
             sizes: dict[str, tuple[int, int]], versions: dict[str, str],
             pg_settings: dict[str, str],
             patches: dict[str, dict[str, str]] | None = None,
@@ -55,6 +57,8 @@ def collect(*, dataset_name: str, ingest: dict[str, float],
     """
     return {
         "dataset": dataset_name,
+        "source": source,
+        "baseline": "3dcitydb",
         "host": {
             "platform": platform.platform(),
             "processor": platform.processor(),
@@ -69,4 +73,19 @@ def collect(*, dataset_name: str, ingest: dict[str, float],
         },
         "patches": patches or {},
         "srid": srid or {},
+        "memory_measurement": {
+            "metric": "peak_rss_bytes",
+            "scope": "execution process only",
+            "postgresql": "query backend PID after disabling parallel workers; excludes other backend, background-worker, and idle-server processes; mapped shared pages can contribute to RSS; blank if procfs namespace mapping cannot be verified",
+            "duckdb": "process executing the embedded engine; includes its idle baseline",
+            "cityparquet": "fresh reader child process; includes its idle baseline",
+            "sampling_interval_ms": 5,
+        },
+        "temporary_storage": {
+            "host_tmpdir": os.environ.get("TMPDIR"),
+            "run_root": os.environ.get("CITYBENCH_TEMP_DIR"),
+            "citydb_tool_tmpdir": os.environ.get("CITYBENCH_CITYDB_TOOL_TMPDIR"),
+            "duckdb_tmpdir": os.environ.get("CITYBENCH_DUCKDB_TMPDIR"),
+            "description": "Per-run scratch directories are under host_tmpdir; PostgreSQL containers receive separate /tmp binds, and DuckDB sets temp_directory explicitly.",
+        },
     }
