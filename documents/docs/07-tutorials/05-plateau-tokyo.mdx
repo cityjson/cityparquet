@@ -97,7 +97,7 @@ LIMIT 5;
 
 The 31 779 buildings with no code are exactly the ones whose `usage` is `461`
 (unknown); [the last section](#place-the-buildings-that-have-no-code) places them
-from the land-use layer. Every query below filters to Setagaya first.
+from the land-use layer. Until then, every query filters to Setagaya first.
 
 :::note[Codes, not labels]
 PLATEAU attributes such as `usage` and land-use `class` are codes from PLATEAU's
@@ -109,12 +109,13 @@ The queries below supply English glosses of the few they need as a `VALUES` tabl
 ## 3D: measure in metres, not degrees
 
 `three_d` measures in whatever units the coordinates are in — it stores no CRS. Fed
-PLATEAU's solids directly, it returns volumes in "cubic degrees":
+PLATEAU's solids directly, it returns volumes in square degrees times metres:
 
 ```sql
 SELECT id, ST_3DVolume(ST_3DFromWKB(geometry_lod2_0)) AS volume
 FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/building.parquet'
 WHERE geometry_lod2_0 IS NOT NULL
+  AND left("13+区市町村コード+大字・町コード+町・丁目コード", 5) = '13112'
 LIMIT 3;
 ```
 
@@ -122,9 +123,9 @@ LIMIT 3;
 ┌───────────────────────────────────────────┬───────────────────────┐
 │                    id                     │        volume         │
 ├───────────────────────────────────────────┼───────────────────────┤
-│ bldg_c34ee739-faf0-4da2-a9a8-4f3bdbc5471d │ 6.570047911722917e-10 │
 │ bldg_d6250f5e-27ce-4864-8fa3-3be389d14c60 │ 7.492772268741232e-08 │
-│ bldg_f67d70c9-65a9-446b-9ac2-607b66a49bc9 │ 9.223661830708302e-08 │
+│ bldg_b160c442-ae5f-4b1d-9c5d-ecc85b87236d │ 8.210686725887237e-07 │
+│ bldg_1e59e63a-e0a4-44c7-9010-ff2fb1789fef │ 6.825300264782158e-07 │
 └───────────────────────────────────────────┴───────────────────────┘
 ```
 
@@ -142,6 +143,7 @@ FROM (
   SELECT id, ST_3DTransform(ST_3DFromWKB(geometry_lod2_0), 'EPSG:6697', 'EPSG:6677') AS s
   FROM 'https://cityparquet.open3d.city/data/plateau/setagaya-ku/building.parquet'
   WHERE geometry_lod2_0 IS NOT NULL
+    AND left("13+区市町村コード+大字・町コード+町・丁目コード", 5) = '13112'
   LIMIT 3
 );
 ```
@@ -150,9 +152,9 @@ FROM (
 ┌───────────────────────────────────────────┬───────────┬──────────────┬────────────┐
 │                    id                     │ volume_m3 │ footprint_m2 │ roof_top_m │
 ├───────────────────────────────────────────┼───────────┼──────────────┼────────────┤
-│ bldg_c34ee739-faf0-4da2-a9a8-4f3bdbc5471d │ 6.6       │ 10.7         │ 14.15      │
 │ bldg_d6250f5e-27ce-4864-8fa3-3be389d14c60 │ 753.1     │ 100.7        │ 21.29      │
-│ bldg_f67d70c9-65a9-446b-9ac2-607b66a49bc9 │ 927.0     │ 116.4        │ 21.49      │
+│ bldg_b160c442-ae5f-4b1d-9c5d-ecc85b87236d │ 8252.3    │ 560.7        │ 43.61      │
+│ bldg_1e59e63a-e0a4-44c7-9010-ff2fb1789fef │ 6859.8    │ 543.1        │ 35.8       │
 └───────────────────────────────────────────┴───────────┴──────────────┴────────────┘
 ```
 
@@ -182,22 +184,23 @@ WITH b AS (
   WHERE left("13+区市町村コード+大字・町コード+町・丁目コード", 5) = '13112'
 )
 SELECT count(*) AS buildings,
-       round(median(abs(ST_3DVolume(s) / ST_3DFootprintArea(s)
-                        - (ST_3DZMax(s) - ST_3DZMin(s)))), 3) AS volume_vs_prism_m,
+       max(abs(ST_3DVolume(s) / ST_3DFootprintArea(s)
+               - (ST_3DZMax(s) - ST_3DZMin(s)))) AS worst_volume_vs_prism_m,
        round(median((ST_3DZMax(s) - ST_3DZMin(s)) - measured), 2) AS prism_minus_measured_m
 FROM b
 WHERE measured > 0;
 ```
 
 ```text
-┌───────────┬───────────────────┬────────────────────────┐
-│ buildings │ volume_vs_prism_m │ prism_minus_measured_m │
-├───────────┼───────────────────┼────────────────────────┤
-│ 182001    │ 0.0               │ -0.9                   │   -- ~3.5 s
-└───────────┴───────────────────┴────────────────────────┘
+┌───────────┬─────────────────────────┬────────────────────────┐
+│ buildings │ worst_volume_vs_prism_m │ prism_minus_measured_m │
+├───────────┼─────────────────────────┼────────────────────────┤
+│ 182001    │ 5.684341886080802e-14   │ -0.9                   │   -- ~4 s
+└───────────┴─────────────────────────┴────────────────────────┘
 ```
 
-Volume over footprint matches the prism height exactly, for 182 001 buildings. The
+Volume over footprint matches the prism height for all 182 001 buildings: the worst
+of them is out by 6 × 10⁻¹⁴ m, which is floating-point rounding. The
 second column is a fact about the source rather than the reprojection: PLATEAU's LoD1
 prisms are a median 0.9 m lower than the building's recorded `measuredHeight`, so the
 two are not interchangeable. `-9999` is PLATEAU's value for an unknown height, hence
@@ -215,7 +218,8 @@ SET geometry_always_xy = true;
 
 Without it, `spatial` follows EPSG's declared latitude-first order for JGD2011, reads
 the coordinates the wrong way round, and every area comes back `NaN`. With it, the
-one-argument `ST_Transform` takes the source CRS from the column itself:
+two-argument `ST_Transform(geometry, target_crs)` takes the source CRS from the
+column itself:
 
 ```sql
 WITH land_use_class(class, land_use) AS (VALUES

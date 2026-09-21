@@ -140,9 +140,8 @@ ORDER BY package;
 ```
 
 Three packages, in a few seconds: Shibuya itself, and the two neighbours whose
-tiles overlap it. The PLATEAU packages here are written as one row group each, so the
-statistics describe the whole table; a package written with smaller row groups lets
-the same query skip parts of a table as well as whole packages.
+tiles overlap it. The query rules packages in or out on their tables'
+statistics, without reading a row of data.
 
 ## Query across packages
 
