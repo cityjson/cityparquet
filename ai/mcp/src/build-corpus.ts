@@ -16,7 +16,9 @@ import { fileURLToPath } from "node:url";
 import type { Chapter, Corpus, CorpusEntry } from "./corpus.js";
 import { reduceMdx, splitSections } from "./mdx.js";
 
-const SITE_BASE_URL = "https://cityparquet.open3d.city";
+// Where documents/ is published (.github/workflows/docs.yml: DOCS_SITE_URL +
+// DOCS_BASE_PATH), so a link an agent surfaces is one a user can follow.
+const SITE_BASE_URL = "https://cityjson.github.io/cityparquet";
 
 export function chapterIdFromFilename(filename: string): string {
   return filename.replace(/\.mdx?$/, "").replace(/^\d+-/, "");
