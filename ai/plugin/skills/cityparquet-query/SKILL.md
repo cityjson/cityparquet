@@ -56,9 +56,11 @@ GROUP BY ALL;
 ## Rows are objects, not buildings
 
 A `Building` and its `BuildingPart`s are separate rows, and they share a
-`feature_id`, which is the root object's `id`. On 3DBAG data the `Building`
-row has only the LoD0 footprint. Each `BuildingPart` has LoD0 **as well**,
-plus the LoD 1.2 to 2.2 solids. So:
+`feature_id`, which is the root object's `id`. Which rows carry which LoD
+depends on the dataset, so check it (last bullet) before aggregating. On
+3DBAG data the `Building` row has only the LoD0 footprint. Each
+`BuildingPart` has LoD0 **as well**, plus the LoD 1.2 to 2.2 solids. So, on
+such data:
 
 - Take solids from all rows, and report per building with `GROUP BY feature_id`.
   Filtering to `object_type = 'Building'` finds no solids at all.
@@ -90,7 +92,7 @@ ORDER BY b3_h_dak_max DESC LIMIT 3;
 | Mistake | Fix |
 | --- | --- |
 | `object_id`, `geometry`, `geometry_lod0` | The columns are `id` and `geometry_lod0_0`; take the names from `cityparquet_describe` |
-| `read_parquet` load, then edit and write | `cityparquet_read`, or pass `crs =>` when writing |
+| `read_parquet` load, then insert, merge or write | Load with `cityparquet_read`. After a `read_parquet` load, inserts and merges run **without** a CRS check, so data in another CRS mixes in silently, and `crs =>` on the write only labels the mixture |
 | `cityparquet_read` on a URL | Download the package; `read_parquet` for read-only questions |
 | `CREATE SCHEMA d; PRAGMA …('d')` sent to the DuckDB CLI in one batch | DuckDB expands every pragma before running any statement, so send them separately. `cityparquet_query` already does this |
 | Assuming a function exists | `SELECT function_name FROM duckdb_functions() WHERE function_name ILIKE '…'` |

@@ -15,10 +15,15 @@ every `COPY … TO` and every `cityparquet_write`.
    batch before running any statement, so `CREATE SCHEMA d; PRAGMA
    cityparquet_init('d');` sent to the CLI as one batch fails.
    `cityparquet_query` splits scripts for you; the CLI does not.
-2. **The CRS is never reprojected.** On insert or merge it must match the
-   package's CRS, and an unknown on one side is refused. A package loaded with
-   `read_parquet` states no CRS at all. Pass `crs =>` when you write it,
-   otherwise the footer records an explicit `null`.
+2. **The CRS is never reprojected, and it is only checked if it is known.**
+   On insert or merge the incoming CRS must match the package's, and an
+   unknown on one side is refused. But a package loaded with `read_parquet`
+   has no footer at all, so there is nothing to check against, and every
+   insert and merge is accepted, whatever its CRS. Load with
+   `cityparquet_read` before inserting or merging. Pass `crs =>` to
+   `cityparquet_write` only to state the CRS of data you know is in it:
+   without `crs =>` the footer records `null`, and with it the footer records
+   whatever you pass, correct or not.
 
 ## Edit an existing package
 

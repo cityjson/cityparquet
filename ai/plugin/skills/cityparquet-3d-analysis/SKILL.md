@@ -56,12 +56,18 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;
   solids, which volume, validity and surface area need. `ST_Geom3DFromWKB`
   builds general geometry, which distance and LoD0 multipolygons need. LoD0 is
   a `MultiPolygon`, so `ST_3DTryFromWKB(geometry_lod0_0)` returns `NULL`.
-- **Aggregate per building.** Solids sit on `BuildingPart` rows, so
-  `GROUP BY feature_id` to report a building. Height is then
+- **Find which rows carry which LoD before choosing rows.**
+  `SELECT object_type, count(geometry_lod0_0), count(geometry_lod2_2) FROM … GROUP BY 1`.
+  On 3DBAG data the solids sit on `BuildingPart` rows only, and LoD0 on both
+  `Building` and `BuildingPart` rows. Other datasets differ.
+- **Aggregate per building** with `GROUP BY feature_id`, which is the root
+  object's `id`. Height is then
   `max(ST_3DBounds(s).max_z) - min(ST_3DBounds(s).min_z)`.
-- **Count each footprint once.** On 3DBAG data both `Building` and
-  `BuildingPart` rows carry LoD0, so a LoD0 sum over every row is double. Sum
-  LoD0 over `object_type = 'Building'`, or sum the parts' solid footprints.
+- **Count each footprint once.** Where both a building and its parts carry
+  LoD0, sum LoD0 over `object_type = 'Building'` only; summing every row
+  counts each footprint twice. Do not sum the parts' footprints instead:
+  parts can overlap in plan, such as a tower above a podium, and their sum
+  then exceeds the ground area.
 - **Units follow the CRS.** A metre-based CRS such as EPSG:7415 gives m² and
   m³. Geographic coordinates in degrees give meaningless numbers, so reproject
   them to a projected CRS first. `ST_3DTransform` reprojects X and Y only:
@@ -73,8 +79,8 @@ WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid;
 | --- | --- |
 | `ST_3DVolume: solid is not manifold` | No validity gate, or a `FILTER` gate. Filter in an outer `WHERE` |
 | `ST_Volume` / `ST_Area` / `ST_Transform` / `ST_ZMax` does not exist | `ST_3DVolume` / `ST_3DFootprintArea` / `ST_3DTransform` / `ST_3DBounds(s).max_z` |
-| Volume sum far too small or zero | Filtered to `object_type = 'Building'`. The solids are on the parts |
-| Footprint total twice too large | LoD0 summed over both buildings and parts |
+| Volume sum far too small or zero | Filtered to an object type that carries no solids. On 3DBAG data they are on `BuildingPart` rows |
+| Footprint total twice too large | LoD0 summed over both buildings and parts; sum the `Building` rows |
 | Cavity volumes counted as solid | The properties argument was left out |
 | A function from the docs is missing | Check `duckdb_functions()` with `ILIKE`. The loaded build may be older |
 

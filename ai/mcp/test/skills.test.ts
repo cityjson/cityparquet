@@ -13,12 +13,14 @@ import { runQuery } from "../src/tools/query.js";
 // user's own directory; they are pointed at a scratch directory holding a
 // byte-for-byte copy of that package.
 
-const SKILLS = ["cityparquet", "cityparquet-query", "cityparquet-write", "cityparquet-3d-analysis"];
+/** The router teaches no SQL of its own; every other skill must. */
+const ROUTER = "cityparquet";
+const SKILLS = [ROUTER, "cityparquet-query", "cityparquet-write", "cityparquet-3d-analysis"];
 const DELFT = "https://cityparquet.open3d.city/data/delft";
 
 function sqlBlocks(skill: string): string[] {
   const md = readFileSync(new URL(`../../plugin/skills/${skill}/SKILL.md`, import.meta.url), "utf8");
-  return [...md.matchAll(/```sql\n([\s\S]*?)```/g)].map((m) => m[1]!);
+  return [...md.replace(/\r\n/g, "\n").matchAll(/^```sql[^\S\n]*\n([\s\S]*?)^```/gim)].map((m) => m[1]!);
 }
 
 describe("the SQL in the skills", () => {
@@ -34,9 +36,37 @@ describe("the SQL in the skills", () => {
     }
   });
 
-  for (const skill of SKILLS) {
+  // Running is not enough: the silent failures these skills exist to prevent
+  // — a CRS dropped on the way out, a validity gate that excludes every
+  // solid — all run without error. These are checked after a skill's blocks
+  // have run, on the same engine, against what the blocks should have made.
+  const outcomes: Record<string, { sql: string; rows: unknown[][] }[]> = {
+    "cityparquet-write": [
+      { sql: "SELECT reference_system.code FROM cityjsonseq_metadata('/data/delft.city.jsonl')", rows: [["7415"]] },
+      { sql: "SELECT json_extract_string(city, '$.crs.id.code') FROM readback.__cityparquet", rows: [["7415"]] },
+      { sql: "SELECT DISTINCT object_type FROM delft.building", rows: [["Building"]] },
+      { sql: "SELECT count(*)::INTEGER FROM readback.building", rows: [[2231]] },
+    ],
+    "cityparquet-3d-analysis": [
+      {
+        sql: `SELECT count(*)::INTEGER FROM (
+                SELECT ST_3DTryFromWKB(geometry_lod2_2, geometry_properties_lod2_2) AS solid
+                FROM read_parquet('${DELFT}/building.parquet') WHERE geometry_lod2_2 IS NOT NULL)
+              WHERE solid IS NOT NULL AND ST_3DValidationReport(solid).is_valid`,
+        rows: [[1098]],
+      },
+    ],
+  };
+
+  it("finds SQL in every skill but the router", () => {
+    for (const skill of SKILLS) {
+      if (skill === ROUTER) expect(sqlBlocks(skill), skill).toEqual([]);
+      else expect(sqlBlocks(skill).length, skill).toBeGreaterThan(0);
+    }
+  });
+
+  for (const skill of SKILLS.filter((s) => s !== ROUTER)) {
     const blocks = sqlBlocks(skill);
-    if (blocks.length === 0) continue; // the router skill teaches no SQL of its own
     describe(skill, () => {
       let engine: Engine;
       beforeAll(async () => {
@@ -53,6 +83,14 @@ describe("the SQL in the skills", () => {
           for (const result of results) expect(result.error, result.statement).toBeUndefined();
         });
       });
+
+      for (const { sql, rows } of outcomes[skill] ?? []) {
+        it(`leaves the expected result: ${sql.replace(/\s+/g, " ").slice(0, 60)}`, async () => {
+          const [result] = await runQuery(engine, sql.replaceAll("'/data/", `'${data}/`));
+          expect(result!.error).toBeUndefined();
+          expect(result!.rows).toEqual(rows);
+        });
+      }
     });
   }
 });
