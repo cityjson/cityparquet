@@ -424,3 +424,24 @@ def test_a_city_model_whose_marker_is_past_the_sniff_window_is_kept(tmp_path):
     small.write_text('{"name": "not a city model"}')
     assert fetch.is_city_model(big)
     assert not fetch.is_city_model(small)
+
+
+def test_a_large_xml_document_is_judged_by_its_root_element(tmp_path):
+    # PLATEAU's `WaterBodyDetailAttribute_riverCode.xml` code list is 7.6 MB:
+    # past any sniff window, yet its root element says what it is.
+    codelist = tmp_path / "riverCode.xml"
+    codelist.write_text(
+        '<?xml version="1.0"?>\n<!-- a code list -->\n'
+        '<gml:Dictionary xmlns:gml="http://www.opengis.net/gml">'
+        + "<gml:dictionaryEntry/>" * 200_000
+        + "</gml:Dictionary>"
+    )
+    model = tmp_path / "a.gml"
+    model.write_text(
+        '<?xml version="1.0"?>\n<!-- a <CityModel> in a comment is not a root -->\n'
+        '<core:CityModel xmlns:core="http://www.opengis.net/citygml/2.0">'
+        + "<x/>" * 400_000
+        + "</core:CityModel>"
+    )
+    assert not fetch.is_city_model(codelist)
+    assert fetch.is_city_model(model)

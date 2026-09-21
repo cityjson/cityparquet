@@ -316,25 +316,33 @@ def normalise(
 #: prolog and comments, or a CityJSON header whose `type` is not written first.
 _MODEL_SNIFF_BYTES = 1 << 20
 
+#: An XML document's root element: the first start tag after any XML
+#: declaration, processing instructions, comments and doctype.
+_XML_ROOT = re.compile(
+    rb"\A(?:\xef\xbb\xbf)?(?:\s|<\?.*?\?>|<!--.*?-->|<!DOCTYPE[^>]*>)*<([A-Za-z_][\w.:-]*)",
+    re.DOTALL,
+)
+
 
 def is_city_model(path: Path) -> bool:
     """Whether a file with a convertible suffix actually holds a city model.
 
     The suffix is not enough: a whole-city PLATEAU archive ships ~500
     `codelists/*.xml` GML dictionaries and schema files beside its CityGML, and
-    any one of them handed to the converter fails the whole city. A CityGML
-    document's root is a `CityModel`; a CityJSON (or CityJSONSeq) document's
-    first object has `"type": "CityJSON"`.
+    any one of them handed to the converter fails the whole city.
+
+    An XML document is judged by its root element, which follows only the
+    prolog, comments and a doctype: a CityGML document's root is `CityModel`.
+    A JSON document's `"type": "CityJSON"` may come after any amount of
+    vertices, since members are unordered; not finding it in a file longer
+    than the window is unknown, not absent, and such a file goes to the
+    converter, which refuses a non-model loudly — a silent drop would report a
+    partial conversion as complete.
     """
     with path.open("rb") as fh:
         head = fh.read(_MODEL_SNIFF_BYTES)
         truncated = bool(fh.read(1))
     if path.suffix.lower() in (".json", ".jsonl"):
-        found = re.search(rb'"type"\s*:\s*"CityJSON"', head) is not None
-    else:
-        found = re.search(rb"<(?:[A-Za-z_][\w.-]*:)?CityModel[\s>/]", head) is not None
-    # A marker not found in a file longer than the window is unknown, not
-    # absent: JSON members come in any order. Such a file goes to the
-    # converter, which refuses a non-model loudly — a silent drop would
-    # report a partial conversion as complete.
-    return found or truncated
+        return re.search(rb'"type"\s*:\s*"CityJSON"', head) is not None or truncated
+    root = _XML_ROOT.search(head)
+    return root is not None and root.group(1).split(b":")[-1] == b"CityModel"
