@@ -442,7 +442,14 @@ pub fn package_bbox(tables: &PackageTables) -> Result<Option<BBox3D>> {
 
         for rg in builder.metadata().row_groups() {
             for (i, leaf) in BBOX_LEAVES.iter().enumerate() {
-                let Some((lo, hi)) = bbox_leaf_bounds(rg, leaf) else {
+                let bounds = match bbox_leaf_bounds(rg, leaf) {
+                    LeafBounds::Range(lo, hi) => Some((lo, hi)),
+                    // Every object here lacks geometry (a `CityObjectGroup`
+                    // row group, say): nothing in it lies outside the extent.
+                    LeafBounds::AllNull => continue,
+                    LeafBounds::Unknown => None,
+                };
+                let Some((lo, hi)) = bounds else {
                     // A row group that cannot report a leaf may hold geometry
                     // outside everything observed so far. Continuing would
                     // yield a bbox that is smaller than the data — the one
@@ -481,23 +488,40 @@ pub fn package_bbox(tables: &PackageTables) -> Result<Option<BBox3D>> {
     }))
 }
 
-/// The `(min, max)` of the `bbox.<leaf>` column chunk in `rg`, if it exists
-/// and carries f64 statistics.
+/// What one row group's statistics say about a `bbox` leaf.
+enum LeafBounds {
+    /// Every value lies in `[min, max]`.
+    Range(f64, f64),
+    /// Every value is null: the row group's objects have no geometry.
+    AllNull,
+    /// The statistics are missing or cannot bound the values.
+    Unknown,
+}
+
+/// The `(min, max)` of the `bbox.<leaf>` column chunk in `rg`, from its f64
+/// statistics — or that the chunk holds only nulls.
 ///
 /// The column path is built with `ColumnPath::new` over the two nested parts:
 /// `ColumnPath::from("bbox.xmin")` does **not** split on `.` in parquet 58 and
 /// would silently match nothing. `crate::reader`'s `bbox_leaf_statistics`
 /// documents the same trap — it bit the writer side once already.
-fn bbox_leaf_bounds(rg: &RowGroupMetaData, leaf: &str) -> Option<(f64, f64)> {
+fn bbox_leaf_bounds(rg: &RowGroupMetaData, leaf: &str) -> LeafBounds {
     let path = ColumnPath::new(vec!["bbox".to_string(), leaf.to_string()]);
-    let stats = rg
+    let Some(stats) = rg
         .columns()
         .iter()
-        .find(|c| c.column_path() == &path)?
-        .statistics()?;
-    match stats {
-        Statistics::Double(s) => Some((*s.min_opt()?, *s.max_opt()?)),
-        _ => None,
+        .find(|c| c.column_path() == &path)
+        .and_then(|c| c.statistics())
+    else {
+        return LeafBounds::Unknown;
+    };
+    let Statistics::Double(s) = stats else {
+        return LeafBounds::Unknown;
+    };
+    match (s.min_opt(), s.max_opt()) {
+        (Some(lo), Some(hi)) => LeafBounds::Range(*lo, *hi),
+        _ if s.null_count_opt() == u64::try_from(rg.num_rows()).ok() => LeafBounds::AllNull,
+        _ => LeafBounds::Unknown,
     }
 }
 
@@ -600,5 +624,60 @@ mod tests {
         let source = json!({"referenceDate": "2019-06-01"});
         let resolved = resolve_datetime(Some("not-a-datetime"), Some(&source));
         assert_eq!(resolved, "2019-06-01T00:00:00Z");
+    }
+
+    /// A row group whose every object has no geometry — PLATEAU's
+    /// `CityObjectGroup`s cluster into exactly that — carries a `bbox` of nulls,
+    /// so its leaf statistics have a null count and no min/max. It holds
+    /// nothing outside the extent, so it must not cost the package its extent.
+    #[test]
+    fn a_row_group_of_null_bboxes_does_not_void_the_extent() {
+        use std::sync::Arc;
+
+        use arrow_array::{ArrayRef, Float64Array, RecordBatch, StructArray};
+        use arrow_buffer::NullBuffer;
+        use arrow_schema::{DataType, Field, Schema};
+        use parquet::arrow::ArrowWriter;
+        use parquet::file::properties::WriterProperties;
+
+        let DataType::Struct(fields) = cityparquet_schema::model::bbox_data_type() else {
+            unreachable!("bbox is a struct")
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "bbox",
+            DataType::Struct(fields.clone()),
+            true,
+        )]));
+        let batch = |values: [f64; 6], valid: bool| {
+            let leaves: Vec<ArrayRef> = values
+                .iter()
+                .map(|v| Arc::new(Float64Array::from(vec![*v])) as ArrayRef)
+                .collect();
+            let bbox = StructArray::new(fields.clone(), leaves, Some(NullBuffer::from(vec![valid])));
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(bbox)]).unwrap()
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("building.parquet");
+        let props = WriterProperties::builder().set_max_row_group_size(1).build();
+        let mut writer =
+            ArrowWriter::try_new(std::fs::File::create(&path).unwrap(), schema.clone(), Some(props))
+                .unwrap();
+        writer.write(&batch([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], true)).unwrap();
+        writer.write(&batch([0.0; 6], false)).unwrap();
+        writer.close().unwrap();
+
+        let tables = super::PackageTables {
+            dir: dir.path().to_path_buf(),
+            tables: vec![path],
+            sidecar_files: vec![],
+        };
+        let bbox = super::package_bbox(&tables)
+            .unwrap()
+            .expect("the null row group must be skipped, not void the extent");
+        assert_eq!(
+            [bbox.xmin, bbox.ymin, bbox.zmin, bbox.xmax, bbox.ymax, bbox.zmax],
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
     }
 }

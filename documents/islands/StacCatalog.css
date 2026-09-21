@@ -52,7 +52,10 @@
 }
 
 .cp-stac table {
-  width: 100%;
+  /* Wider than the column when it must be: the wrapper scrolls, the cells
+     never collapse to one character. */
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 0.8125rem;
   margin: 0;
@@ -61,6 +64,7 @@
 .cp-stac th,
 .cp-stac td {
   padding: 0.35rem 0.6rem;
+  white-space: nowrap;
   text-align: left;
   border-bottom: 1px solid var(--cp-border);
   vertical-align: top;
@@ -93,8 +97,10 @@
   white-space: nowrap;
 }
 
-.cp-stac-types {
-  min-width: 12rem;
+.cp-stac td.cp-stac-types {
+  white-space: normal;
+  min-width: 14rem;
+  max-width: 24rem;
 }
 
 .cp-stac-error {

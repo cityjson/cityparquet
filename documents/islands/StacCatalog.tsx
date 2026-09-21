@@ -121,14 +121,20 @@ function ExtentMap({
         all.push(bounds);
       }
     });
+    // A fresh accumulator: `extend` mutates, and each bounds is a rectangle's.
     if (all.length)
       m.fitBounds(
-        all.reduce((a, b) => a.extend(b)),
+        all.reduce((a, b) => a.extend(b), L.latLngBounds([])),
         { padding: [20, 20] },
       );
     else m.setView([30, 0], 2);
     map.current = m;
+    // The island mounts before the page settles its layout, and Leaflet sizes
+    // its panes from the container it measured at construction.
+    const resized = new ResizeObserver(() => m.invalidateSize());
+    resized.observe(host.current);
     return () => {
+      resized.disconnect();
       m.remove();
       layers.current.clear();
     };
