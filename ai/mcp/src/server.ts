@@ -29,6 +29,18 @@ export interface ServerDeps {
   readonly ceilings?: QueryCeilings;
 }
 
+/**
+ * An optional integer that tolerates how forms send one: some MCP clients
+ * send "" for a field left blank, and a typed number as a string. Blank means
+ * unset; a numeric string is read as its number; anything else still fails.
+ */
+function optionalInt(min: number, max: number) {
+  return z.preprocess(
+    (value) => (value === "" || value === null ? undefined : typeof value === "string" ? Number(value) : value),
+    z.number().int().min(min).max(max).optional(),
+  );
+}
+
 const corpusEnum = z.enum(CORPUS_IDS as unknown as [CorpusId, ...CorpusId[]]);
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
@@ -59,7 +71,7 @@ export function createServer({ corpus, engine, ceilings }: ServerDeps): McpServe
       inputSchema: z.object({
         query: z.string().describe("Term to look for, e.g. 'semantic surfaces' or 'ST_3DVolume'"),
         corpus: corpusEnum.optional(),
-        limit: z.number().int().min(1).max(50).optional(),
+        limit: optionalInt(1, 50),
       }),
     },
     async ({ query, corpus: id, limit }) => json(search(corpus, query, { corpus: id, limit })),
@@ -108,9 +120,9 @@ export function createServer({ corpus, engine, ceilings }: ServerDeps): McpServe
         `Run SQL against DuckDB with the cityjson and three_d extensions loaded, and spatial on a local server (the hosted one does not load it). Solids (LoD1 and up) need three_d — ST_3DVolume, ST_3DFootprintArea, ST_3DTransform — because spatial cannot read them; where spatial is loaded, its ST_Area and ST_Transform work on the LoD0 column. Check that a function exists with duckdb_functions() before relying on it. A script is split and its statements run one at a time. BLOB columns and oversized values are elided, so SELECT * on an object table is a poor idea — select the columns you need instead. Results are capped at ${QUERY_DEFAULTS.maxRows} rows by default.`,
       inputSchema: z.object({
         sql: z.string().describe("One or more SQL statements, separated by semicolons"),
-        max_rows: z.number().int().min(1).max(5000).optional(),
-        max_cell_bytes: z.number().int().min(16).max(65536).optional(),
-        timeout_ms: z.number().int().min(1000).max(600_000).optional(),
+        max_rows: optionalInt(1, 5000),
+        max_cell_bytes: optionalInt(16, 65536),
+        timeout_ms: optionalInt(1000, 600_000),
       }),
     },
     async ({ sql, max_rows, max_cell_bytes, timeout_ms }) => {

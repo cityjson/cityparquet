@@ -123,7 +123,7 @@ export function createHttpApp(options: HttpAppOptions): (request: Request) => Pr
     if (!needsEngine(parsed)) return serveMcp(request, body, NO_ENGINE);
 
     try {
-      return await options.pool.use((engine) => serveMcp(request, body, engine));
+      return await options.pool.use((engine) => serveMcp(request, body, engine), { signal: request.signal });
     } catch (error) {
       if (error instanceof PoolBusyError) return plain(503, error.message, { "retry-after": "2" });
       throw error;

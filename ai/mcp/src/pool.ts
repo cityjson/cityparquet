@@ -30,7 +30,7 @@ export interface EnginePool {
    * An engine no other request has touched, for the duration of `task`. It is
    * closed afterwards and never handed out again.
    */
-  use<T>(task: (engine: Engine) => Promise<T>): Promise<T>;
+  use<T>(task: (engine: Engine) => Promise<T>, options?: { readonly signal?: AbortSignal }): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -100,8 +100,9 @@ export function createEnginePool(options: PoolOptions): EnginePool {
     }
   }
 
-  function acquire(): Promise<Engine> {
+  function acquire(signal?: AbortSignal): Promise<Engine> {
     if (closing !== null) return Promise.reject(new Error("the engine pool is closed"));
+    if (signal?.aborted) return Promise.reject(new Error("request aborted before an engine was free"));
     const engine = ready.shift();
     if (engine) {
       leased += 1;
@@ -111,15 +112,30 @@ export function createEnginePool(options: PoolOptions): EnginePool {
       return Promise.reject(new PoolBusyError("the server is at capacity; retry shortly"));
     }
     return new Promise<Engine>((resolve, reject) => {
+      const leave = () => {
+        const index = waiters.indexOf(waiter);
+        if (index !== -1) waiters.splice(index, 1);
+        clearTimeout(waiter.timer);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      // A request whose client has gone — Cloud Run cuts one off at its
+      // timeout — must not go on to take an engine and run for nobody.
+      const onAbort = () => {
+        leave();
+        reject(new Error("request aborted before an engine was free"));
+      };
       const waiter = {
-        resolve,
+        resolve: (engine: Engine) => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve(engine);
+        },
         reject,
         timer: setTimeout(() => {
-          const index = waiters.indexOf(waiter);
-          if (index !== -1) waiters.splice(index, 1);
+          leave();
           reject(new PoolBusyError(`no engine became free within ${options.maxWaitMs} ms; retry shortly`));
         }, options.maxWaitMs),
       };
+      signal?.addEventListener("abort", onAbort, { once: true });
       waiters.push(waiter);
       refill();
     });
@@ -138,8 +154,8 @@ export function createEnginePool(options: PoolOptions): EnginePool {
   refill();
 
   return {
-    async use<T>(task: (engine: Engine) => Promise<T>): Promise<T> {
-      const engine = await acquire();
+    async use<T>(task: (engine: Engine) => Promise<T>, useOptions?: { readonly signal?: AbortSignal }): Promise<T> {
+      const engine = await acquire(useOptions?.signal);
       try {
         return await task(engine);
       } finally {

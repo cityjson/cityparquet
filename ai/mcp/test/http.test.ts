@@ -135,6 +135,18 @@ describe("the hosted HTTP app", () => {
     expect(result.truncated).toBe(true);
   });
 
+  // Some MCP clients send "" for an optional field left blank, and a number
+  // typed into a form as a string.
+  it("reads an empty optional number as unset, and a numeric string as a number", async () => {
+    const blank = await call(app, "cityparquet_query", { sql: "SELECT * FROM range(3)", max_rows: "" });
+    expect(blank.isError).toBe(false);
+    expect(JSON.parse(blank.text)[0].row_count).toBe(3);
+    const typed = await call(app, "cityparquet_query", { sql: "SELECT * FROM range(9)", max_rows: "5" });
+    expect(JSON.parse(typed.text)[0].row_count).toBe(5);
+    const nonsense = await call(app, "cityparquet_query", { sql: "SELECT 1", max_rows: "lots" });
+    expect(nonsense.isError).toBe(true);
+  });
+
   it("describes a remote package", async () => {
     const { text } = await call(app, "cityparquet_describe", { url: "https://cityparquet.open3d.city/data/delft" });
     expect(JSON.parse(text).crs).toMatch(/EPSG:7415/);

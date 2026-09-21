@@ -119,6 +119,7 @@ jobs:
             --max-instances=4
             --timeout=90
             --no-cpu-boost
+            --execution-environment=gen2
             --service-account=${{ env.RUNTIME_SERVICE_ACCOUNT }}@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com
             --allow-unauthenticated
 

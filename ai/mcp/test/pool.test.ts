@@ -155,4 +155,29 @@ describe("createEnginePool", () => {
     expect(made[0]!.closed).toBe(true);
     await expect(pool.close()).resolves.toBeUndefined(); // idempotent
   });
+
+  it("drops a waiter whose request has gone, without spending an engine on it", async () => {
+    const { made, create } = factory();
+    const pool = createEnginePool({ size: 1, maxWaiting: 5, maxWaitMs: 5000, create });
+    const hold = pool.use(() => sleep(60));
+    await sleep(10);
+    const gone = new AbortController();
+    let ran = false;
+    const waiting = pool.use(async () => { ran = true; }, { signal: gone.signal });
+    gone.abort();
+    await expect(waiting).rejects.toThrow(/abort/i);
+    await hold;
+    await sleep(20);
+    expect(ran).toBe(false);
+    expect(made.length).toBeLessThanOrEqual(2); // the held engine and its replacement, nothing for the waiter
+    await pool.close();
+  });
+
+  it("refuses at once a request that has already gone", async () => {
+    const { create } = factory();
+    const pool = createEnginePool({ size: 1, maxWaiting: 5, maxWaitMs: 5000, create });
+    await expect(pool.use(async () => "x", { signal: AbortSignal.abort() })).rejects.toThrow(/abort/i);
+    await pool.close();
+  });
 });
+

@@ -57,8 +57,11 @@ const pool = createEnginePool({
   maxWaiting: integer("CITYPARQUET_MCP_MAX_WAITING", 8),
   maxWaitMs: integer("CITYPARQUET_MCP_MAX_WAIT_MS", 30_000),
   // `sandbox: true` is not configurable here: this entry point is the public one.
-  create: () =>
-    createEngine({
+  // Timed, because a slow build is what a caller waits on when every engine
+  // is in use; the log is where that shows.
+  create: async () => {
+    const started = performance.now();
+    const engine = await createEngine({
       sandbox: true,
       extensionDirectory,
       extensions,
@@ -66,7 +69,10 @@ const pool = createEnginePool({
       threads,
       httpProxy: egress.address,
       allowedHosts: egressHosts,
-    }),
+    });
+    log("engine built", { ms: Math.round(performance.now() - started) });
+    return engine;
+  },
   onError: logError,
 });
 
@@ -101,7 +107,7 @@ async function readBody(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-async function toRequest(req: IncomingMessage): Promise<Request> {
+async function toRequest(req: IncomingMessage, signal: AbortSignal): Promise<Request> {
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
     if (Array.isArray(value)) for (const item of value) headers.append(name, item);
@@ -112,6 +118,7 @@ async function toRequest(req: IncomingMessage): Promise<Request> {
     method: req.method,
     headers,
     body: hasBody ? new Uint8Array(await readBody(req)) : undefined,
+    signal,
   });
 }
 
@@ -139,11 +146,18 @@ function fail(res: ServerResponse, status: number, text: string): void {
 
 const server = createHttpServer((req, res) => {
   const started = performance.now();
+  // Aborted when the client goes before the response is written — including
+  // Cloud Run cutting it off at its timeout — so a request still queued for an
+  // engine leaves the queue rather than running for nobody.
+  const gone = new AbortController();
+  res.on("close", () => {
+    if (!res.writableFinished) gone.abort();
+  });
   // Everything inside the promise chain: a method or URL the Request
   // constructor rejects (TRACE, a malformed Host) must be a 400, not an
   // exception that takes the process down.
   Promise.resolve()
-    .then(() => toRequest(req))
+    .then(() => toRequest(req, gone.signal))
     .then(
       (request) =>
         app(request).then((response) => {
