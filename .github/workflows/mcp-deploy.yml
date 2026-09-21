@@ -88,7 +88,8 @@ jobs:
           # any other failure stops the deploy rather than losing the way back.
           if ! out=$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" \
                        --format='value(status.traffic[0].revisionName)' 2>&1); then
-            if grep -qi "could not be found\|not found" <<<"$out"; then out=""; else echo "$out"; exit 1; fi
+            # gcloud says "Cannot find service [name]" for one not yet created.
+            if grep -qiE "cannot find service|could not be found|not found" <<<"$out"; then out=""; else echo "$out"; exit 1; fi
           fi
           echo "revision=$out" >> "$GITHUB_OUTPUT"
 
