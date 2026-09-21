@@ -110,7 +110,9 @@ enum Commands {
         /// is written with `city.crs: null` (CRS unknown) and warns. When the
         /// override is applied, the output records
         /// `city.other.crs_source = "operator-supplied"`. A geographic
-        /// (degree-valued) code is refused: nothing here reprojects.
+        /// (degree-valued) code is fine — the quantisation step comes from the
+        /// CRS's own declared axis units — but a CRS whose units have no such
+        /// step is refused.
         #[arg(long, value_name = "EPSG")]
         crs: Option<String>,
 

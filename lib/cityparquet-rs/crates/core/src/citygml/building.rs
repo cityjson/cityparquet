@@ -204,11 +204,29 @@ pub fn read_generic_object<R: BufRead>(
                     {
                         attributes::accumulate(&mut b.attributes, k, v);
                     }
+                } else if !ns_is(&rr, NS_GML) && is_nesting_property(&name) {
+                    // A CityGML nesting property. Its polygons are harvested as
+                    // **xlink targets only** — never as geometry of their own.
+                    // A `lodNSolid` composes its faces by
+                    // `gml:surfaceMember xlink:href`, and for an object with
+                    // boundary surfaces those faces live inside `boundedBy`;
+                    // consuming the property without keeping them made every
+                    // one of the solid's references dangle. Emitting them a
+                    // second time as a standalone MultiSurface would instead
+                    // double the object's geometry, so they go to the xlink
+                    // registry and nowhere else. (Their semantic types are not
+                    // read: semantics on a non-building object remains out of
+                    // this reader's scope, as the module docs say.)
+                    for (id, poly) in geometry::collect_polygons(reader, buf)? {
+                        if let Some(id) = id {
+                            b.polygons.insert(id, poly);
+                        }
+                    }
                 } else if !ns_is(&rr, NS_GML) {
                     // A typed module property (e.g. wtr:class, luse:function): if
                     // it is a leaf with text, keep it as a string attribute;
-                    // otherwise (structural, e.g. boundedBy) it is consumed and
-                    // dropped. gml: elements are never attributes.
+                    // otherwise (structural) it is consumed and dropped.
+                    // gml: elements are never attributes.
                     if let Some(text) = read_leaf_text(reader, buf, &name)? {
                         attributes::accumulate(
                             &mut b.attributes,
@@ -465,6 +483,29 @@ fn lod_suffix(local: &[u8], suffix: &[u8]) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Whether a module-namespace property is one of CityGML 2.0's **nesting**
+/// properties — the places the schema puts a `_CityObject`'s boundary surfaces
+/// and its sub-features, and therefore the only places a parent's
+/// `lodNSolid` can find the polygons it composes by `xlink:href`.
+///
+/// `boundedBy` carries the semantic surfaces (`OuterFloorSurface`,
+/// `WallSurface`, …); `outer*` / `interior*` carry installations and
+/// construction elements (`outerBridgeConstruction`,
+/// `interiorBuildingInstallation`, …); `consistsOf*` carries parts
+/// (`consistsOfBuildingPart`). Matched as a closed vocabulary rather than by
+/// descending into every unrecognised element, so an ADE subtree — `uro:*` is
+/// 32 million elements on a Japanese national export — is still skipped by
+/// bytes rather than parsed for geometry nothing will reference.
+fn is_nesting_property(local: &[u8]) -> bool {
+    let Ok(name) = std::str::from_utf8(local) else {
+        return false;
+    };
+    name == "boundedBy"
+        || name.starts_with("outer")
+        || name.starts_with("interior")
+        || name.starts_with("consistsOf")
 }
 
 /// The geometry a `lodN{Geometry}` container wraps (CG-5): a Solid family, or a
@@ -1175,9 +1216,14 @@ impl RawBuilding {
         match &sref.target {
             RefTarget::Inline(poly) => Ok(poly),
             RefTarget::Xlink(id) => self.polygons.get(id).ok_or_else(|| {
+                // Name the object, not just the polygon: on a national corpus
+                // of thousands of files the id alone gives an operator nothing
+                // to search for, and the conversion aborts here.
+                let which = self.id.as_deref().unwrap_or("<no gml:id>");
+                let ty = &self.object_type;
                 CityParquetError::Schema(format!(
-                    "CityGML solid references #{id}, which is not defined in this building \
-                     (cross-building/shared geometry is out of scope)"
+                    "{ty} {which}: CityGML solid references #{id}, which is not defined \
+                     anywhere in this object's subtree"
                 ))
             }),
         }

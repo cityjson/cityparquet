@@ -106,8 +106,10 @@ resolvable before the writer runs, exactly as an EPSG code in the source
 would. When it is actually applied, the footer records
 `city.other.crs_source = "operator-supplied"`, so the output never implies the
 source declared a CRS it did not carry. A geographic (degree-valued) code is
-refused: nothing in this pipeline reprojects, and coordinates are quantised at
-millimetre scale.
+fine: nothing in this pipeline reprojects, but the quantisation step is taken
+per axis from the CRS's own declared units, so a degree axis is quantised at a
+degree-sized step. A CRS whose units carry no such step — EPSG's packed
+sexagesimal spelling is the case in the vendored table — is refused.
 
 With `--partition`, `-o` becomes the _parent_ of one self-contained package per
 partition (`count-00000/`, `features-00003/`, `box_x93_y44/`, …), all sharing
