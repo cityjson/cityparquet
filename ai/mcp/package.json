@@ -3,14 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
-  "bin": { "cityparquet-mcp": "./dist/stdio.js" },
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "cityparquet-mcp": "./dist/stdio.js",
+    "cityparquet-mcp-http": "./dist/http.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "corpus": "pnpm build && node dist/build-corpus.js",
     "corpus:check": "pnpm build && node dist/check-corpus-fresh.js",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "serve": "node dist/http.js"
   },
   "dependencies": {
     "@duckdb/node-api": "1.5.5-r.5",

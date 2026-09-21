@@ -13,9 +13,20 @@ import type { Engine } from "./duckdb.js";
 import { describe } from "./tools/describe.js";
 import { QUERY_DEFAULTS, runQuery } from "./tools/query.js";
 
+/**
+ * Upper bounds on what one `cityparquet_query` call may ask for. A local
+ * server leaves them at the schema's own maxima; the hosted one lowers them,
+ * because its engines are shared out one request at a time.
+ */
+export interface QueryCeilings {
+  readonly maxRows: number;
+  readonly timeoutMs: number;
+}
+
 export interface ServerDeps {
   readonly corpus: Corpus;
   readonly engine: Engine;
+  readonly ceilings?: QueryCeilings;
 }
 
 const corpusEnum = z.enum(CORPUS_IDS as unknown as [CorpusId, ...CorpusId[]]);
@@ -27,7 +38,7 @@ const failure = (error: unknown) => ({
   isError: true,
 });
 
-export function createServer({ corpus, engine }: ServerDeps): McpServer {
+export function createServer({ corpus, engine, ceilings }: ServerDeps): McpServer {
   const server = new McpServer({ name: "cityparquet", version: "0.1.0" });
 
   server.registerTool(
@@ -106,9 +117,9 @@ export function createServer({ corpus, engine }: ServerDeps): McpServer {
       try {
         return json(
           await runQuery(engine, sql, {
-            maxRows: max_rows ?? QUERY_DEFAULTS.maxRows,
+            maxRows: Math.min(max_rows ?? QUERY_DEFAULTS.maxRows, ceilings?.maxRows ?? Infinity),
             maxCellBytes: max_cell_bytes ?? QUERY_DEFAULTS.maxCellBytes,
-            timeoutMs: timeout_ms ?? QUERY_DEFAULTS.timeoutMs,
+            timeoutMs: Math.min(timeout_ms ?? QUERY_DEFAULTS.timeoutMs, ceilings?.timeoutMs ?? Infinity),
           }),
         );
       } catch (error) {
