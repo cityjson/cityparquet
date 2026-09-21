@@ -249,7 +249,7 @@ impl FeatureReader {
                         let id = gml_id(&e);
                         let end = local.as_ref().to_vec();
                         let raw =
-                            read_generic_object(&mut self.reader, &mut self.buf, ty, id, &end)?;
+                            read_generic_object(&mut self.reader, &mut self.buf, ty, id, &end, 0)?;
                         self.index += 1;
                         let feature = raw.into_feature(
                             &self.scale,

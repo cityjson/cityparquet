@@ -41,7 +41,8 @@ use super::attributes;
 use super::geometry::{self, Polygon, RawSolid, RefTarget, SolidGeom, SurfaceRef};
 use super::vertices::VertexBuilder;
 use super::xml::{
-    NS_APP, NS_BLDG, NS_GEN, NS_GML, get_attr_local, gml_id, ns_is, skip_element, xml_err,
+    NS_APP, NS_BLDG, NS_GEN, NS_GML, get_attr_local, gml_id, ns_eq, ns_is, ns_of, skip_element,
+    xml_err,
 };
 use crate::appearance::AppearanceInterner;
 
@@ -148,6 +149,7 @@ pub fn read_generic_object<R: BufRead>(
     object_type: &str,
     id: Option<String>,
     end_name: &[u8],
+    depth: usize,
 ) -> Result<RawBuilding> {
     let mut b = RawBuilding {
         id,
@@ -204,24 +206,23 @@ pub fn read_generic_object<R: BufRead>(
                     {
                         attributes::accumulate(&mut b.attributes, k, v);
                     }
+                } else if !ns_is(&rr, NS_GML) && name == b"boundedBy" {
+                    // The object's own boundary surfaces: read with their
+                    // semantic types, in the object's own module namespace
+                    // (the one `boundedBy` itself is in).
+                    let Some(ns) = ns_of(&rr) else {
+                        skip_element(reader, buf)?;
+                        continue;
+                    };
+                    read_bounded_by(reader, buf, &mut b, &ns)?;
                 } else if !ns_is(&rr, NS_GML) && is_nesting_property(&name) {
-                    // A CityGML nesting property. Its polygons are harvested as
-                    // **xlink targets only** — never as geometry of their own.
-                    // A `lodNSolid` composes its faces by
-                    // `gml:surfaceMember xlink:href`, and for an object with
-                    // boundary surfaces those faces live inside `boundedBy`;
-                    // consuming the property without keeping them made every
-                    // one of the solid's references dangle. Emitting them a
-                    // second time as a standalone MultiSurface would instead
-                    // double the object's geometry, so they go to the xlink
-                    // registry and nowhere else. (Their semantic types are not
-                    // read: semantics on a non-building object remains out of
-                    // this reader's scope, as the module docs say.)
-                    for (id, poly) in geometry::collect_polygons(reader, buf)? {
-                        if let Some(id) = id {
-                            b.polygons.insert(id, poly);
-                        }
-                    }
+                    // A CityGML nesting property: `outerBridgeConstruction`,
+                    // `consistsOfBridgePart`, … Its child is a 2nd-level
+                    // CityObject of its own where the type map knows it, and
+                    // otherwise a subtree whose polygons a parent's solid may
+                    // still compose by `xlink:href`.
+                    let ns = ns_of(&rr).unwrap_or_default();
+                    read_child_object(reader, buf, &mut b, &name, &ns, depth)?;
                 } else if !ns_is(&rr, NS_GML) {
                     // A typed module property (e.g. wtr:class, luse:function): if
                     // it is a leaf with text, keep it as a string attribute;
@@ -337,14 +338,14 @@ fn read_abstract_building<R: BufRead>(
                         }
                     }
                 } else if bldg && name == b"boundedBy" {
-                    read_bounded_by(reader, buf, &mut b)?;
+                    read_bounded_by(reader, buf, &mut b, NS_BLDG.as_bytes())?;
                 } else if bldg && name == b"consistsOfBuildingPart" {
                     read_consists_of_part(reader, buf, &mut b, depth)?;
                 } else if bldg
                     && (name == b"outerBuildingInstallation"
                         || name == b"interiorBuildingInstallation")
                 {
-                    read_installation(reader, buf, &mut b, &name)?;
+                    read_child_object(reader, buf, &mut b, &name, NS_BLDG.as_bytes(), depth)?;
                 } else if ns_is(&rr, NS_APP) && name == b"appearance" {
                     let app = super::appearance::read_appearance(reader, buf, b"appearance")?;
                     b.appearance.materials.extend(app.materials);
@@ -389,38 +390,59 @@ fn read_abstract_building<R: BufRead>(
 /// the property's `End`. An empty or `xlink:href`-only property (which
 /// `expand_empty_elements` delivers as `Start`+`End` with no child) yields no
 /// part.
-/// Read a `bldg:{outer,interior}BuildingInstallation` property (positioned
-/// after its `Start`, ending at `End(prop_name)`): its inner
-/// `bldg:BuildingInstallation` becomes a 2nd-level child object of `b` (CG-5),
-/// read like a generic object (lodN geometry + attributes). Installation parts
-/// / appearance are out of scope.
-fn read_installation<R: BufRead>(
+/// Read a CityGML nesting property (positioned after its `Start`, ending at
+/// `End(prop_name)`).
+///
+/// A child the type map recognises ([`child_object_type`]) becomes a
+/// **2nd-level child object** of `b` (CG-5), read like a generic object (lodN
+/// geometry + attributes); its own parts / appearance are out of scope.
+/// Anything else has its polygons harvested into the xlink registry and
+/// nothing more: a parent's `lodNSolid` may compose its faces from them, and
+/// dropping them made every such reference dangle. They are never emitted as
+/// geometry of their own — they are the parent solid's faces, and a second
+/// standalone MultiSurface would double the object.
+fn read_child_object<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     b: &mut RawBuilding,
     prop_name: &[u8],
+    ns: &[u8],
+    depth: usize,
 ) -> Result<()> {
+    if depth > MAX_PART_DEPTH {
+        return Err(CityParquetError::Schema(format!(
+            "CityGML features nested deeper than {MAX_PART_DEPTH}"
+        )));
+    }
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
         match ev {
             Event::Start(e) => {
                 let local = e.local_name();
-                // `outerBuildingInstallation` wraps `bldg:BuildingInstallation`;
-                // `interiorBuildingInstallation` wraps `bldg:IntBuildingInstallation`.
-                // Both map to the CityJSON `BuildingInstallation` type.
-                let is_install = ns_is(&rr, NS_BLDG)
-                    && matches!(
-                        local.as_ref(),
-                        b"BuildingInstallation" | b"IntBuildingInstallation"
-                    );
-                if is_install {
+                let ty = ns_eq(&rr, ns)
+                    .then(|| child_object_type(local.as_ref()))
+                    .flatten();
+                if let Some(ty) = ty {
                     let end = local.as_ref().to_vec();
                     let id = gml_id(&e);
-                    let inst = read_generic_object(reader, buf, "BuildingInstallation", id, &end)?;
-                    b.parts.push(inst);
+                    let child = read_generic_object(reader, buf, ty, id, &end, depth + 1)?;
+                    // The child's polygons are also the PARENT's xlink targets:
+                    // a `lodNSolid` on the parent routinely composes faces that
+                    // the schema defines inside a construction element or an
+                    // installation. Registering them resolves those references;
+                    // it emits nothing, so the face is not duplicated — the
+                    // child still owns whatever geometry it declares.
+                    for (id, poly) in &child.polygons {
+                        b.polygons.entry(id.clone()).or_insert_with(|| poly.clone());
+                    }
+                    b.parts.push(child);
                 } else {
-                    skip_element(reader, buf)?;
+                    for (id, poly) in geometry::collect_polygons(reader, buf)? {
+                        if let Some(id) = id {
+                            b.polygons.insert(id, poly);
+                        }
+                    }
                 }
             }
             Event::End(e) if e.local_name().as_ref() == prop_name => break,
@@ -483,6 +505,28 @@ fn lod_suffix(local: &[u8], suffix: &[u8]) -> Option<String> {
     } else {
         None
     }
+}
+
+/// The CityJSON type of a CityGML 2.0 **2nd-level** feature, by element local
+/// name, or `None` for an element that is not one.
+///
+/// Two of these are spelling remaps rather than pass-throughs, the same kind
+/// the 1st-level map already makes for `TransportSquare` -> `Square`: CityGML
+/// 2.0 writes `BridgeConstructionElement` where CityJSON (following CityGML
+/// 3.0) writes `BridgeConstructiveElement`, and both the outer and the
+/// interior spellings of an installation collapse onto one CityJSON type.
+///
+/// Tunnel's counterparts (`TunnelInstallation`, `TunnelPart`, `HollowSpace`)
+/// are deliberately absent: no fixture exercises them, and an untested entry
+/// would be a guess about a vocabulary this reader has never been run against.
+fn child_object_type(local: &[u8]) -> Option<&'static str> {
+    Some(match local {
+        b"BuildingInstallation" | b"IntBuildingInstallation" => "BuildingInstallation",
+        b"BridgeInstallation" | b"IntBridgeInstallation" => "BridgeInstallation",
+        b"BridgeConstructionElement" => "BridgeConstructiveElement",
+        b"BridgePart" => "BridgePart",
+        _ => return None,
+    })
 }
 
 /// Whether a module-namespace property is one of CityGML 2.0's **nesting**
@@ -647,29 +691,38 @@ fn boundary_lod(local: &[u8]) -> Option<String> {
         .or_else(|| lod_suffix(local, b"Surface"))
 }
 
-/// A `bldg:boundedBy`: each semantic surface child (`WallSurface`, ...)
-/// contributes one entry to `surfaces` and its polygons are read from its
-/// `lodN` geometry (registered for xlink resolution AND recorded in
-/// `boundary_polys` for the no-solid MultiSurface path).
+/// A `boundedBy`: each semantic surface child (`WallSurface`,
+/// `OuterFloorSurface`, ...) contributes one entry to `surfaces` and its
+/// polygons are read from its `lodN` geometry (registered for xlink resolution
+/// AND recorded in `boundary_polys` for the no-solid MultiSurface path).
+///
+/// `ns` is the **owning feature's own module namespace** — taken from the
+/// `boundedBy` element itself, which the schema puts in that same module. A
+/// bridge's boundary surfaces are `brid:`, a building's `bldg:`, and nothing
+/// about reading them is module-specific beyond that. Matching the CityGML
+/// namespace *family* instead would be looser than the schema: a
+/// `_GenericApplicationPropertyOf…` ADE hook can appear as a child of any
+/// feature.
 fn read_bounded_by<R: BufRead>(
     reader: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     b: &mut RawBuilding,
+    ns: &[u8],
 ) -> Result<()> {
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
-        let bldg = ns_is(&rr, NS_BLDG);
+        let own_module = ns_eq(&rr, ns);
         match ev {
             Event::Start(e) => {
                 let local = e.local_name();
-                if bldg {
+                if own_module {
                     // The semantic surface: its element name is the CityJSON
                     // surface type.
                     let name = local.as_ref().to_vec();
                     let idx = b.surfaces.len();
                     b.surfaces.push(String::from_utf8_lossy(&name).into_owned());
-                    read_semantic_surface(reader, buf, b, idx, &name)?;
+                    read_semantic_surface(reader, buf, b, idx, &name, ns)?;
                 } else {
                     skip_element(reader, buf)?;
                 }
@@ -677,7 +730,7 @@ fn read_bounded_by<R: BufRead>(
             Event::End(e) if e.local_name().as_ref() == b"boundedBy" => break,
             Event::Eof => {
                 return Err(CityParquetError::Schema(
-                    "unexpected end of document inside <bldg:boundedBy>".to_string(),
+                    "unexpected end of document inside <boundedBy>".to_string(),
                 ));
             }
             _ => {}
@@ -697,11 +750,15 @@ fn read_semantic_surface<R: BufRead>(
     b: &mut RawBuilding,
     sem_idx: usize,
     end_name: &[u8],
+    ns: &[u8],
 ) -> Result<()> {
     loop {
         buf.clear();
         let (rr, ev) = reader.read_resolved_event_into(buf).map_err(xml_err)?;
-        let bldg = ns_is(&rr, NS_BLDG);
+        // The owning feature's module, as in `read_bounded_by`: a bridge's
+        // boundary geometry is `brid:lod2MultiSurface`, a building's
+        // `bldg:lod2MultiSurface`.
+        let bldg = ns_eq(&rr, ns);
         match ev {
             Event::Start(e) => {
                 let local = e.local_name();
@@ -726,11 +783,11 @@ fn read_semantic_surface<R: BufRead>(
                     // present): its own entry, resolved recursively.
                     let idx = b.surfaces.len();
                     b.surfaces.push(String::from_utf8_lossy(&name).into_owned());
-                    read_semantic_surface(reader, buf, b, idx, &name)?;
+                    read_semantic_surface(reader, buf, b, idx, &name, ns)?;
                 } else if bldg && name == b"opening" {
                     // Transparent wrapper: its Door/Window child is a nested
                     // semantic surface, handled by the branch above on recursion.
-                    read_semantic_surface(reader, buf, b, sem_idx, &name)?;
+                    read_semantic_surface(reader, buf, b, sem_idx, &name, ns)?;
                 } else {
                     skip_element(reader, buf)?;
                 }
@@ -831,8 +888,21 @@ impl RawBuilding {
             built.push(self.build_solid_geometry(geom, lod, vb)?);
         }
         // A non-building object's own lodN{MultiSurface,Geometry} geometry
-        // (CG-7): one CityJSON MultiSurface per LoD, no semantics.
+        // (CG-7): one CityJSON MultiSurface per LoD, no semantics. A LoD whose
+        // `boundedBy` surfaces carry geometry is skipped here: that geometry is
+        // emitted below WITH its semantics, and the same faces twice would be
+        // two geometries at one LoD — of which the encoder keeps the first,
+        // silently discarding the semantic one.
+        let semantic_lods: std::collections::HashSet<&String> = self
+            .boundary_polys
+            .iter()
+            .map(|(_, lod, _)| lod)
+            .chain(self.boundary_refs.iter().map(|(_, lod, _)| lod))
+            .collect();
         for (lod, polys) in &self.plain_surfaces {
+            if semantic_lods.contains(lod) {
+                continue;
+            }
             built.push(build_plain_multisurface(polys, lod, vb)?);
         }
         // For each LoD whose geometry lives only in `boundedBy` surfaces (no
