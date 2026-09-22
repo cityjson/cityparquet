@@ -241,3 +241,32 @@ def _dump(data: dict, tmp_path: Path) -> Path:
     path = tmp_path / "bench_data.json"
     path.write_text(prep.json.dumps(data), encoding="utf-8")
     return path
+
+
+def test_a_rerun_without_corpus_data_leaves_no_stale_corpus_figure(tmp_path: Path):
+    from benchviz import html
+
+    bench = fixture_bench(tmp_path)
+    _mixed_bloom_fixture(bench)
+    figures_dir = tmp_path / "figures"
+    data, _ = prep.build(prep.Inputs(bench))
+    figures.main(_dump(data, tmp_path), figures_dir)
+    assert (figures_dir / "bloom-corpus.svg").exists()
+
+    # The same output directory, re-used by a run whose bloom axis measured
+    # slices only: the earlier corpus figure must not survive into the page.
+    for key in ("records", "sizes"):
+        data["scaling"]["bloom"][key] = [
+            r for r in data["scaling"]["bloom"][key] if r["series"] == "scaling"
+        ]
+    data_path = _dump(data, tmp_path)
+    figures.main(data_path, figures_dir)
+    assert not (figures_dir / "bloom-corpus.svg").exists()
+    assert not (figures_dir / "bloom-corpus.png").exists()
+    page = html.main(data_path=data_path, out_path=tmp_path / "index.html", figures_dir=figures_dir)
+    text = page.read_text(encoding="utf-8")
+    corpus_section = text.split("<h2>Bloom filters on the corpus</h2>", 1)[1].split(
+        "</section>", 1
+    )[0]
+    assert "<img" not in corpus_section
+    assert "Not rendered" in corpus_section

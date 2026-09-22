@@ -763,11 +763,16 @@ def _axis_corpus(data: dict[str, Any], key: str, out: Path) -> list[Path]:
 
     Grouped bars, one group per corpus dataset and one bar per variant, for
     the same metrics as the scaling figure. Nothing is written for an axis
-    that measured no corpus dataset (codec and row group run slices only).
+    that measured no corpus dataset (codec and row group run slices only), and
+    any `{key}-corpus` figure already in `out` is removed.
     """
     records, sizes, variants = _axis(data, key)
     datasets = _corpus_datasets(records)
     if not datasets:
+        # Remove a corpus figure an earlier run left in a re-used directory,
+        # so the summary page cannot embed it as if this run had measured it.
+        for suffix in ("svg", "png"):
+            (out / f"{key}-corpus.{suffix}").unlink(missing_ok=True)
         return []
     corpus = [r for r in records if r.get("series") == "corpus"]
     corpus_sizes = [r for r in sizes if r.get("series") == "corpus"]
