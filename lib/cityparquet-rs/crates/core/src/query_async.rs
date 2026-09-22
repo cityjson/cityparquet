@@ -153,8 +153,8 @@ pub async fn attr_filter_async(
 
     query_core::require_column(builder.schema(), column)?;
 
-    let output_mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
-    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred);
+    let output_mask = query_core::root_mask(builder.parquet_schema(), column)?;
+    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred)?;
 
     let mut stream = builder
         .with_projection(output_mask)
@@ -192,7 +192,7 @@ pub async fn attr_stats_async(
 
     let mut acc = query_core::AttrStatsAccumulator::new(builder.metadata(), column);
 
-    let projection = ProjectionMask::columns(builder.parquet_schema(), [column]);
+    let projection = query_core::root_mask(builder.parquet_schema(), column)?;
     let mut stream = builder
         .with_projection(projection)
         .build()
@@ -209,7 +209,7 @@ pub async fn attr_stats_async(
 }
 
 /// The async mirror of [`crate::query::id_lookup`]: filters to `id` via the
-/// shared `query_core::id_row_filter`, then fully decodes the (expected
+/// shared `query_core::utf8_eq_row_filter`, then fully decodes the (expected
 /// exactly one) surviving row.
 pub async fn id_lookup_async(
     store: Arc<dyn ObjectStore>,
@@ -223,7 +223,7 @@ pub async fn id_lookup_async(
         .map_err(CityParquetError::parquet_from)?;
     let schema = builder.cityparquet_arrow_schema()?;
 
-    let row_filter = query_core::id_row_filter(builder.parquet_schema(), id);
+    let row_filter = query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id)?;
     let mut stream = builder
         .with_row_filter(row_filter)
         .build()
@@ -259,7 +259,7 @@ pub async fn project_column_async(
 
     query_core::require_column(builder.schema(), column)?;
 
-    let projection = ProjectionMask::columns(builder.parquet_schema(), [column]);
+    let projection = query_core::root_mask(builder.parquet_schema(), column)?;
     let mut stream = builder
         .with_projection(projection)
         .build()
