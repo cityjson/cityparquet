@@ -32,7 +32,7 @@ to `paper/assets/bench/`.
 
 ```sh
 just bench-prep --families formats
-just bench-run --families codec,rowgroup
+just bench-run --families codec,rowgroup,bloom
 just bench-run --datasets 3dbag --smoke
 just bench-summary --data-root benchmark/runs
 ```

@@ -270,3 +270,54 @@ def test_a_rerun_without_corpus_data_leaves_no_stale_corpus_figure(tmp_path: Pat
     )[0]
     assert "<img" not in corpus_section
     assert "Not rendered" in corpus_section
+
+
+def test_the_rendered_page_carries_the_bloom_and_predate_caveats(tmp_path: Path):
+    """Every caveat the bloom figures need reaches the page, because it is a
+    numbered fairness caveat in the LIVE `READ_BENCHMARK.md`.
+
+    `prep.read_caveats` extracts that one list and `html.main` is the only
+    thing that prints caveats — it reads `meta.caveats_read` and nothing else.
+    So a bloom caveat kept in `benchmark/formats/README.md` instead would leave
+    the bloom, bloom-scaling and bloom-corpus figures on the page with no
+    warning beside them at all. Phrases, not a count: the list is allowed to
+    grow (see `prep.read_caveats`), and each phrase is one source line with no
+    character `html.escape` rewrites.
+    """
+    from benchviz import html
+
+    bench = fixture_bench(tmp_path)
+    _mixed_bloom_fixture(bench)
+    data, _ = prep.build(prep.Inputs(bench))
+    data_path = _dump(data, tmp_path)
+    figures_dir = tmp_path / "figures"
+    figures.main(data_path, figures_dir)
+    page = html.main(
+        data_path=data_path, out_path=tmp_path / "index.html", figures_dir=figures_dir
+    )
+    text = page.read_text(encoding="utf-8")
+
+    # The premise: the page really is showing bloom figures.
+    for title in (
+        "Bloom-filter configuration",
+        "Bloom-filter scaling",
+        "Bloom filters on the corpus",
+    ):
+        section = text.split(f"<h2>{title}</h2>", 1)[1].split("</section>", 1)[0]
+        assert "<img" in section, title
+
+    caveats = text.split("<h2>Measurement caveats</h2>", 1)[1]
+    for phrase in (
+        # 24-29: the bloom family's own.
+        "about how pruning scales",
+        "a miss can still keep a row group",
+        "reads the footer twice per lookup",
+        "measures single-table packages only",
+        "the same verified-absent string as `id-miss`",
+        "counts the requests the reader made after",
+        # 30-31: what predates default-on filters and must be re-run.
+        "The committed codec and row-group CSVs predate bloom filters.",
+        "The committed format and size CSVs predate bloom filters as well.",
+        "refuses to",
+    ):
+        assert phrase in caveats, phrase

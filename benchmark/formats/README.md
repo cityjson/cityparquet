@@ -28,21 +28,20 @@ codec and row-group runs postdate that change: each directory's `MACHINE.md`
 names the commit, and the 3DBAG slices carry no appearance data, so those
 columns are empty in every package they measured.
 
-**The committed codec and row-group CSVs predate bloom filters.** Every
-package they measured, the `cityparquet` baseline included, carries none, and
-their `id-50pct` rows read the `id` column without bloom pruning. The current
-writer puts filters on `id`, `feature_id` and high-cardinality string
-attributes by default, so its packages are larger and its lookups prune:
-re-run both families before comparing them with the `bloom` family, or with
-each other across that change.
+**The committed codec and row-group CSVs predate bloom filters, and so do the
+format and size ones.** Both disclosures are
+[`READ_BENCHMARK.md`](READ_BENCHMARK.md)'s fairness caveats 30 and 31, which is
+where every family's caveats are kept: `benchviz` renders that one numbered
+list onto the summary page, so a caveat written only here would never reach a
+reader of the figures.
 
 ## Running the suite
 
 Use the root entry points:
 
 ```sh
-just bench-prep --families formats,codec,rowgroup
-just bench-run --families formats,codec,rowgroup
+just bench-prep --families formats,codec,rowgroup,bloom
+just bench-run --families formats,codec,rowgroup,bloom
 just bench-summary
 ```
 
@@ -160,31 +159,19 @@ Its rows add `bytes_read` and `http_requests`; the results go to
 `scaling_bloom_http_results/` and are not part of `bench-run` or the rendered
 summary. They are a snapshot of one network path at one time.
 
-Caveats that travel with every number:
-
-1. **The larger slices show pruning across many row groups.** At the
-   default 65 536-row groups the small slices are one row group, which a
-   filter can still prune on a miss but which says nothing about how pruning
-   scales; the slices from `3dbag_n100000` upward, at two or more groups, are
-   the informative ones.
-2. **A filter's positive is not a match.** At FPP 0.01 a miss can still keep
-   a row group; `row_groups_total − bloom_pruned` on the `*-miss` rows is how
-   many the reader still scanned.
-3. **The footer is read twice per lookup** — once for the decode metadata,
-   once inside the lookup — equally for both variants.
-4. **Single-table packages only.** The runner queries one object table; a
-   multi-table corpus package is refused, never partially read.
-5. **`feature-50pct` is the `id-50pct` feature**, and `feature-miss` the same
-   verified-absent string as `id-miss` (absent from both columns).
-6. **Requests are logical.** Over `--transport http`, `CountingObjectStore`
-   counts the requests the reader made after object_store coalesced nearby
-   ranges — not raw wire traffic, retries or connection reuse.
+The caveats that travel with every one of its numbers are
+[`READ_BENCHMARK.md`](READ_BENCHMARK.md)'s fairness caveats **24 to 29** —
+the row-group scale a slice has to reach before its pruning means anything, a
+positive not being a match, the twice-read footer, the single-table
+restriction, what the `feature-*` probes are, and requests being logical. They
+live there, not here, because that numbered list is the one `benchviz` renders
+onto the summary page beside the figures.
 
 ## Reproduce
 
 ```sh
-just bench-prep --families codec,rowgroup
-just bench-run --families codec,rowgroup
+just bench-prep --families codec,rowgroup,bloom
+just bench-run --families codec,rowgroup,bloom
 just bench-summary
 ```
 

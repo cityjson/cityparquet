@@ -1,6 +1,11 @@
 # CityParquet read-benchmark methodology
 
-The format family's query definitions and fairness caveats live here. The
+The format family's query definitions live here, and so does the **one
+numbered fairness-caveat list for every family** — the format family's own,
+the configuration families' and the `bloom` family's. It is single because
+`benchviz` renders exactly this list onto the summary page (`prep.read_caveats`
+extracts it verbatim, `html.py` prints it under "Measurement caveats"), so a
+caveat kept anywhere else never reaches a reader of the figures. The
 suite entry points, dataset selection and figure layout are described in
 [`../README.md`](../README.md). Run `just bench-prep --families formats`,
 `just bench-run --families formats`, then `just bench-summary` from the
@@ -831,6 +836,55 @@ AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
     cardinalities, and the five-format comparison up to 100k. CityGML's
     cross-format cost is measured properly in `read_results/`, on six real
     published datasets, which is what that family is for.
+
+24. **The `bloom` family's larger slices show pruning across many row
+    groups.** At the default 65 536-row groups the small slices are one row
+    group, which a filter can still prune on a miss but which says nothing
+    about how pruning scales; the slices from `3dbag_n100000` upward, at two
+    or more groups, are the informative ones.
+
+25. **In the `bloom` family, a filter's positive is not a match.** At FPP 0.01
+    a miss can still keep a row group; `row_groups_total − bloom_pruned` on
+    the `*-miss` rows is how many the reader still scanned.
+
+26. **The `bloom` family reads the footer twice per lookup** — once for the
+    decode metadata, once inside the lookup — equally for both variants.
+
+27. **The `bloom` family measures single-table packages only.** The runner
+    queries one object table; a multi-table corpus package is refused, never
+    partially read.
+
+28. **In the `bloom` family, `feature-50pct` is the `id-50pct` feature**, and
+    `feature-miss` the same verified-absent string as `id-miss` (absent from
+    both columns).
+
+29. **The `bloom` family's requests are logical.** Over `--transport http`,
+    `CountingObjectStore` counts the requests the reader made after
+    object_store coalesced nearby ranges — not raw wire traffic, retries or
+    connection reuse.
+
+30. **The committed codec and row-group CSVs predate bloom filters.** Every
+    package they measured, the `cityparquet` baseline included, carries none,
+    and their `id-50pct` rows read the `id` column without bloom pruning. The
+    current writer puts filters on `id`, `feature_id` and high-cardinality
+    string attributes by default, so its packages are larger and its lookups
+    prune: re-run both families before comparing them with the `bloom`
+    family, or with each other across that change.
+
+31. **The committed format and size CSVs predate bloom filters as well.**
+    `read_results/*.csv` — every `cityparquet-hilbert` `id-lookup` row,
+    `id-miss` included — and `read_results/sizes.csv`, together with the
+    writer matrices in `results/` and `scaling_write_results/` and their
+    sibling `sizes.csv` files, were all measured before the writer turned
+    filters on by default. They are 13-column CSVs, written before the three
+    lookup counters existed, which is the shape's own evidence of their age.
+    So the cross-format id-lookup times and the cross-format byte counts the
+    paper cites describe a package with no filters: **re-run the `formats`
+    and `sizes` families before comparing either against a package the
+    current writer produced, or against the `bloom` family.** A partial
+    re-run is not available: `benchmark/scripts/format_write.py` refuses to
+    append to a results CSV whose header is not the current 16-column one, so
+    an incremental re-run needs the 13-column file removed first.
 
 ## Environment
 
