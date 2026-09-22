@@ -68,7 +68,7 @@ summary, not a certification of complete specification conformance.
 | Appearance and instances | Material and texture assignments, appearance sidecars, and geometry-template sidecars with LoD-specific geometry |
 | Metadata and CRS | Structured `city` footer metadata, GeoParquet `geo` metadata for eligible geometry, PROJJSON CRS information, and a STAC Item in `metadata.json` |
 | Bloom filters | On `id`, `feature_id` and high-cardinality string attributes at FPP 0.01, after the last row group; `--no-bloom` turns them off |
-| Reading | Arrow record batches, column projection, attribute filtering, bounding-box pruning, bloom-filter pruning for `id`, `feature_id` and string-equality lookups (every filter of a column fetched in one range request over object storage), and optional asynchronous object-store access |
+| Reading | Arrow record batches, column projection, attribute filtering, bounding-box pruning, bloom-filter pruning for `id`, `feature_id` and string-equality lookups (every filter of a column asked for in one batched range read, which object storage coalesces into few requests; a filter without a declared `bloom_filter_length` is fetched separately), and optional asynchronous object-store access |
 | Checking | Semantic comparison and round-trip checks; no standalone Rust `validate` CLI command |
 
 The Rust implementation currently writes WKB geometry. A dataset-level STAC
@@ -110,16 +110,25 @@ The extension also manages **complete CityParquet packages** as DuckDB schemas:
 default). DuckDB writes a filter only for a dictionary-encoded column chunk and
 applies its dictionary and bloom options to a whole file, so the extension
 writes each object table with 122 880-row row groups and a dictionary cut-off of
-the same size, under an 8 MiB cap on a string dictionary page. `id`,
-`feature_id` and the high-cardinality string attributes carry filters, as the
+the same size, under an 8 MiB cap on a string dictionary page. Eligibility is
+therefore conditional on that cap, not a fixed column list: a chunk carries a
+filter exactly while its distinct values fit under it. Across a full row group
+the cap works out at roughly 68 bytes per row for a near-unique column, so
+`id`, `feature_id` and ordinary identifier-shaped attributes stay far below it
+and carry filters, as the
 [recommended defaults](/specification/metadata#recommended-writer-defaults-informative)
-prescribe. So does every other column DuckDB dictionary-encodes, which the Rust
-writer leaves without: the low-cardinality strings and, in general, the numeric
-and temporal attributes, the `bbox` leaves and the elements of list columns. WKB
-geometry and JSON columns exceed the cap and stay unfiltered, except in a row
-group small enough — typically the last — for their dictionary page to fit.
-Sidecars carry none. DuckDB consults the filters itself for `=` and `IN`
-predicates, including those pushed down from a join.
+prescribe — but a high-cardinality string wider than that is written PLAIN and
+carries none, and a compact WKB geometry or JSON column can stay under the cap
+and carry one, in any row group rather than only a short trailing one.
+
+On the packages measured so far the filtered set has been a superset of the
+Rust writer's, and wider than the string columns: on the delft package (2 231
+rows, one row group) 68 of 115 column chunks carry a filter — the numeric and
+temporal attributes, the `bbox` leaves, the elements of list columns and the
+geometry columns among them. That is an observation on those data, not a
+property guaranteed for any input. Sidecars carry none. DuckDB consults the
+filters itself for `=` and `IN` predicates, including those pushed down from a
+join.
 
 Use the package-writing API when you need the complete package contract. A
 standalone `COPY ... TO (FORMAT PARQUET)` is a table export and does not, by

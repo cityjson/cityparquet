@@ -203,6 +203,8 @@ is decided once for the whole dataset, before the first row group is written,
 so every file of a package — and every partition of a partitioned dataset —
 carries the same column set. All filters sit
 together after the last row group, before the page indexes and footer, with
-`bloom_filter_length` set, so a reader fetches every filter of a column in one
-range request. Low-cardinality strings, numeric, list, JSON and geometry
-columns, and the sidecars, carry none.
+`bloom_filter_length` set, so a reader can ask for every filter of a column in
+one batched range read, which object storage coalesces into few requests. A
+filter whose column chunk declares no `bloom_filter_length` is not in that
+batch and is fetched separately. Low-cardinality strings, numeric, list, JSON
+and geometry columns, and the sidecars, carry none.

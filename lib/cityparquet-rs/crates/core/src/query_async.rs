@@ -639,8 +639,11 @@ mod tests {
     }
 
     /// Acceptance 4, on the fixture: every filter the prune needs arrives
-    /// through ONE `get_byte_ranges` call, which the object store coalesces
-    /// into one request (the filters sit together after the last row group).
+    /// through ONE `get_byte_ranges` call. The batched call is the guarantee;
+    /// how many requests the store serves it in is not — it coalesces ranges
+    /// only while the gap between them stays under its threshold (1 MiB by
+    /// default). Here the filters sit together after the last row group and
+    /// the gaps are small, so this fixture is served in exactly one request.
     #[tokio::test]
     async fn the_async_prune_fetches_every_filter_with_one_ranged_call() {
         use crate::counting_store::CountingObjectStore;

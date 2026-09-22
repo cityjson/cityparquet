@@ -405,7 +405,8 @@ impl WriterRecipe {
         // two identifier columns whose min/max statistics cannot prune —
         // plus the high-cardinality string attributes. Every
         // filter goes after the last row group (`BloomFilterPosition::End`),
-        // where one coalesced range read reaches them all. NDV is left to
+        // where one batched range read asks for them all and an object store
+        // coalesces what it can of it into few requests. NDV is left to
         // parquet-rs, which resolves it to the row-group row count and folds
         // each filter down to the values actually present. Placed after the
         // `ParquetDefaults` early return, so that preset writes none.
