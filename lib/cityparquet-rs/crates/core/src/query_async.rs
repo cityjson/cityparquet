@@ -248,10 +248,14 @@ pub async fn attr_stats_async(
 /// [`AsyncFileReader::get_byte_ranges`] call on `reader` — a reader the
 /// caller holds beside any builder (a clone of the same
 /// [`ParquetObjectReader`] is cheap); `ParquetObjectReader` forwards it to
-/// `object_store`'s `get_ranges`, which coalesces nearby ranges into few
-/// requests. Under `BloomFilterPosition::End` successive filters of one
-/// column are separated only by that row group's other filters, so the
-/// ranges coalesce. A filter without a declared length is read on its own
+/// `object_store`'s `get_ranges`, which coalesces ranges into few requests
+/// while the gap between them stays under its threshold (1 MiB by default).
+/// Under `BloomFilterPosition::End` successive filters of one column are
+/// separated only by that row group's other filters, which is what usually
+/// keeps them under it — a file with enough filtered columns, or large
+/// enough filters, between them needs more than one request. The batched
+/// call is the guarantee; the request count is the store's business.
+/// A filter without a declared length is read on its own
 /// through the builder's `get_row_group_column_bloom_filter`.
 /// [`BloomPrune::filter_bytes`] counts bitset bytes either way, so it equals
 /// the sync path's.
