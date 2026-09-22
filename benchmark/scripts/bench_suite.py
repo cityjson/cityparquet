@@ -249,7 +249,7 @@ def require_prepared(inputs: list[Path], locations: dict[str, Path]) -> None:
         raise SystemExit(f"prepared artefacts missing: run just bench-prep first ({locations['prepared']})")
 
 
-def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], smoke: bool) -> None:
+def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], datasets: list[str], smoke: bool, write_formats: str = "") -> None:
     selected = {key: manifest["datasets"][key] for key in datasets}
     format_inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in {"corpus", "largest-scaling"} or (smoke and entry["role"] == "scaling")]
     scaling_inputs = [source(entry, locations) for entry in selected.values() if entry["role"] in {"scaling", "largest-scaling"}]
@@ -270,8 +270,14 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
                     "--raw-out", str(output / f"{dataset_stem(input_path)}.write.samples.csv"),
                     "--scratch", str(locations["work"] / "write-samples"),
                     "--repeat", "1" if smoke else "3",
+                    *(["--formats", write_formats] if write_formats else []),
                 )
-                write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=1 if smoke else 7, write_repeat=1 if smoke else 3, smoke=smoke, fixed_configuration="CityParquet=Hilbert; direct writers from canonical CityJSONSeq")
+                # A write subset is part of the run's identity: a CSV whose
+                # write rows were measured for four formats must say so.
+                configuration = "CityParquet=Hilbert; direct writers from canonical CityJSONSeq"
+                if write_formats:
+                    configuration += f"; write-formats={write_formats}"
+                write_run_manifest(input_path, output / f"{dataset_stem(input_path)}.csv", family="formats", repeat=1 if smoke else 7, write_repeat=1 if smoke else 3, smoke=smoke, fixed_configuration=configuration)
         if "sizes" in families:
             output = result_dir(locations, "sizes", smoke) / "sizes.csv"
             for input_path in format_inputs:
@@ -300,6 +306,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--families", default="all")
     result.add_argument("--datasets", default="")
     result.add_argument("--smoke", action="store_true")
+    result.add_argument("--write-formats", default="", help="comma-separated subset of the formats whose write rows are measured (forwarded to format_write.py --formats; default: all). A subset keeps the other formats' existing write rows out of the CSV, so use it only to re-measure part of a run and merge deliberately")
     result.add_argument("--data-root", type=Path, default=Path(os.environ.get("CITYPARQUET_BENCH_ROOT", DEFAULT_DATA_ROOT)))
     result.add_argument("--out", type=Path)
     result.add_argument("--figures", type=Path)
@@ -321,7 +328,7 @@ def main() -> None:
     if args.command == "prep":
         prepare(data, locations, families, datasets, args.smoke)
     elif args.command == "run":
-        run_suite(data, locations, families, datasets, args.smoke)
+        run_suite(data, locations, families, datasets, args.smoke, args.write_formats)
     else:
         output = (args.out or locations["summary"] / ("smoke" if args.smoke else "full")).expanduser().resolve()
         figures = args.figures.expanduser().resolve() if args.figures else None
