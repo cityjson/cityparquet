@@ -93,9 +93,23 @@ def _apply_threads(systems: list, threads: int, workers: int) -> None:
             system.set_parallel_workers(workers)
 
 
+def _session_settings(systems: list) -> dict[str, dict[str, str]]:
+    """What each PostgreSQL session's parallelism resolves to RIGHT NOW."""
+    settings: dict[str, dict[str, str]] = {}
+    for system in systems:
+        if hasattr(system, "session_settings"):
+            try:
+                settings[system.tag] = system.session_settings()
+            except Exception as exc:           # a closed session is a result
+                settings[system.tag] = {"error": str(exc)}
+    return settings
+
+
 def _run_all_scenarios(systems: list, params, dataset_name: str, repeat: int,
                         sizes: dict[str, tuple[int, int]],
-                        tolerance: float) -> list[dict[str, str]]:
+                        tolerance: float,
+                        resolved: dict[str, dict] | None = None,
+                        ) -> list[dict[str, str]]:
     """Every read scenario under BOTH thread configurations, then the writes.
 
     Order is load-bearing, not incidental:
@@ -117,6 +131,13 @@ def _run_all_scenarios(systems: list, params, dataset_name: str, repeat: int,
     rows: list[dict[str, str]] = []
     for name, threads, workers in THREAD_CONFIGURATIONS:
         _apply_threads(systems, threads, workers)
+        # Read back while the configuration is LIVE: recording it once at
+        # the end of the run would describe only whichever configuration
+        # happened to be set last, and `max_worker_processes` (which bounds
+        # how many workers a query can actually get) is exactly the figure a
+        # reader needs beside the per-gather cap that was asked for.
+        if resolved is not None:
+            resolved[name] = _session_settings(systems)
         rows += run_matrix(
             systems, params, dataset_name, repeat=repeat,
             scenarios=READ_SCENARIOS, sizes=sizes, tolerance=tolerance,
@@ -267,7 +288,10 @@ def cmd_bench(args) -> int:
         )
 
     tolerance = getattr(args, "count_tolerance", DEFAULT_COUNT_TOLERANCE)
-    rows = _run_all_scenarios(systems, p, dataset.name, args.repeat, sizes, tolerance)
+    resolved: dict[str, dict] = {}
+    rows = _run_all_scenarios(
+        systems, p, dataset.name, args.repeat, sizes, tolerance, resolved
+    )
 
     results_dir = Path(args.output_dir) if args.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -287,7 +311,7 @@ def cmd_bench(args) -> int:
                 pg_settings=pg_settings,
                 patches=_patches(systems),
                 srid=_srids(systems),
-                execution=_execution(systems),
+                execution=_execution(resolved),
                 count_check={
                     "relative_spread_tolerance": tolerance,
                     "statuses": {
@@ -377,22 +401,15 @@ def cmd_smoke(args) -> int:
     return 0
 
 
-def _execution(systems: list) -> dict:
+def _execution(resolved: dict[str, dict]) -> dict:
     """The two thread configurations, and what each session resolved to.
 
     The PostgreSQL block is read back from the benchmark session itself
-    (`pg.parallel_settings`), because `max_worker_processes` bounds how many
-    workers a query can actually get regardless of what
-    `max_parallel_workers_per_gather` asks for — recorded rather than
-    assumed.
+    (`pg.parallel_settings`) WHILE each configuration is live, because
+    `max_worker_processes` bounds how many workers a query can actually get
+    regardless of what `max_parallel_workers_per_gather` asks for —
+    recorded rather than assumed.
     """
-    resolved = {}
-    for system in systems:
-        if hasattr(system, "session_settings"):
-            try:
-                resolved[system.tag] = system.session_settings()
-            except Exception as exc:               # a closed session is a result
-                resolved[system.tag] = {"error": str(exc)}
     return {
         "configurations": [
             {"name": name, "duckdb_threads": threads,
@@ -406,6 +423,11 @@ def _execution(systems: list) -> dict:
             "configuration, after every read row"
         ),
         "postgresql_session_resolved": resolved,
+        "postgresql_session_resolved_note": (
+            "read back from each benchmark session while that configuration "
+            "was live; `max_worker_processes` is the cluster-wide pool that "
+            "bounds how many workers a query actually receives"
+        ),
         "postgresql_planner_thresholds": (
             "parallel_setup_cost and min_parallel_table_scan_size are left at "
             "their defaults under both configurations"
