@@ -155,9 +155,12 @@ coalesce. If a candidate lacks `bloom_filter_length`, fall back to
 
 **Diagnostics.** `id_lookup`/`id_lookup_async` keep their signatures; new
 `id_lookup_with_stats`/`id_lookup_async_with_stats` return
-`(Option<Object>, LookupStats { row_groups_total, bloom_pruned,
-row_groups_read, filter_bytes })`, with `row_groups_read` counted in the stream
-(a hit stops at its first match). The readbench adapter
+`(Option<DecodedObject>, LookupStats { row_groups_total, bloom_pruned,
+filter_bytes })`, where `filter_bytes` is the bitset bytes of every filter
+examined. There is deliberately no "row groups read" counter: a batch carries
+no row-group index, and reading one builder per row group to count them would
+change the read pattern behind the existing cross-format id-lookup figures
+(decision 2026-09-22). A hit still stops at its first match. The readbench adapter
 (`benchmark/readbench/src/formats/cityparquet.rs:264`) calls the `_with_stats`
 form and writes the counters into its result record; the plain forms delegate.
 
@@ -256,7 +259,7 @@ map, `bench_recipe_test.sh`, `benchviz/prep.py`, `figures.py`):
 - **Datasets:** the 3DBAG scaling slices (the multi-row-group ones matter:
   n100000 upward) and the corpus datasets.
 - **Metrics:** latency (local and HTTP), bytes and requests
-  (`CountingObjectStore`), row groups bloom-pruned / read, filter bytes and
+  (`CountingObjectStore`), row groups total / bloom-pruned, filter bytes and
   package-size overhead, write time.
 - **Disclosed caveats:** id lookup fetches metadata twice
   (`benchmark/readbench/src/formats/cityparquet.rs:264`) — equal across
