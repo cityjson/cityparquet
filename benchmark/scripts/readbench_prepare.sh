@@ -96,10 +96,33 @@
 # A CityGML INPUT is still COPIED, never round-tripped: where the source data
 # is already CityGML, that is what gets measured.
 #
-# The `-A` (index-all-attributes) flag on `fcb ser` is REQUIRED, not
-# cosmetic: the later attribute-filter benchmark needs FCB's B+-tree
-# attribute index to exist, and the spatial (R-tree) index is on by default
-# so both of FCB's indexed-query paths are available for comparison.
+# THE FLATCITYBUF CONFIGURATION IS `fcb ser -A`, AND NOTHING ELSE — one
+# configuration, chosen once, not a swept axis. `-A` (index-all-attributes)
+# is REQUIRED, not cosmetic: the attribute-filter benchmark needs FCB's
+# B+-tree attribute index to exist, and the spatial (R-tree) index is on by
+# default, so both of FCB's indexed-query paths are available for
+# comparison. Every other index knob keeps its `fcb ser` default — attribute
+# B+-tree branching factor 256, R-tree node size 16 — and that is a measured
+# choice:
+#
+#   - Branching factor. `3dbag_n100000` was written at 16 / 64 / 128 / 256
+#     and read back with the read benchmark's own child (3 repeats each):
+#     `count`, all three `bbox-query` windows, the indexed `attr-filter`
+#     (`b3_dak_type == slanted`) and the `id-lookup` miss were within noise
+#     of one another at every factor (the indexed filter sits at ~5.3 ms on
+#     all four, the file sizes within 0.5%). No factor wins, so the default
+#     stands.
+#   - R-tree node size. `--index-node-size` MUST be left alone. `fcb_core`
+#     0.7.6's own `FcbReader::select_query` — the seekable path this
+#     benchmark reads through — passes `PackedRTree::DEFAULT_NODE_SIZE`
+#     instead of the header's `index_node_size` (its streaming sibling
+#     `select_query_seq` reads the header correctly), so a file written
+#     `--index-node-size 64` panics on every `bbox-query` with a capacity
+#     overflow. Measured, not assumed.
+#
+# The write benchmark's own FlatCityBuf variant must pass the SAME flags:
+# a read artefact and a write artefact built differently are not the same
+# measurement.
 #
 # EXTERNAL TOOLS ARE GUARDED PER FORMAT, not up front: `fcb` is only required
 # when `flatcitybuf` was requested, `citygml-tools`/`cjseq`/`jq` only when the
