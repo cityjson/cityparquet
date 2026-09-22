@@ -551,6 +551,7 @@ fn build_attr_pred(eq: Option<&str>, ge: Option<f64>, le: Option<f64>) -> Result
 /// function so the conversion itself is unit-testable. Non-Linux, non-macOS
 /// platforms fall through to the raw value (BSD-lineage bytes) — this crate
 /// only ever runs on the two.
+#[cfg(any(not(target_os = "linux"), test))]
 fn rss_to_bytes(raw: i64) -> u64 {
     #[cfg(target_os = "linux")]
     {
@@ -562,9 +563,59 @@ fn rss_to_bytes(raw: i64) -> u64 {
     }
 }
 
-/// `getrusage(RUSAGE_SELF).ru_maxrss`, normalised to BYTES on every
-/// platform via [`rss_to_bytes`].
+/// The child's own peak resident set size, in BYTES.
+///
+/// On Linux this is `VmHWM` from `/proc/self/status`, NOT
+/// `getrusage(RUSAGE_SELF).ru_maxrss`. The two differ for an exec'd child:
+/// `exec_mmap` folds the high-water mark of the PRE-exec address space —
+/// under `posix_spawn`/`vfork` that is the PARENT's — into the task's
+/// `signal->maxrss`, which is what `getrusage` and `wait4` report, so a
+/// child could never report less than the coordinator's own peak. Every
+/// committed read CSV before this change carries that floor: on the 1M
+/// 3DBAG slice 36 read rows across four formats share the value
+/// 269 963 264, the coordinator's RSS after deriving the query parameters
+/// (see `READ_BENCHMARK.md`, Caveat 26). `VmHWM` is the high-water mark of
+/// the child's OWN `mm`, created fresh by exec, and is not inherited
+/// (measured: a `/proc/self/status` child under a 420 MB parent reports
+/// 10.5 MB, while `ru_maxrss` reports 419 MB). Other platforms fall back to
+/// `getrusage` via [`rss_to_bytes`].
 fn max_rss_bytes() -> Result<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status")
+            .context("reading /proc/self/status for VmHWM")?;
+        vm_hwm_bytes(&status)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        max_rss_bytes_getrusage()
+    }
+}
+
+/// Parse the `VmHWM:` line of a `/proc/<pid>/status` document into bytes.
+/// The kernel prints it in kB (units of 1024 bytes).
+#[cfg(any(target_os = "linux", test))]
+fn vm_hwm_bytes(status: &str) -> Result<u64> {
+    let line = status
+        .lines()
+        .find(|l| l.starts_with("VmHWM:"))
+        .ok_or_else(|| anyhow::anyhow!("no VmHWM line in /proc/self/status"))?;
+    let mut fields = line.split_whitespace().skip(1);
+    let value: u64 = fields
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("VmHWM line has no value: '{line}'"))?
+        .parse()
+        .with_context(|| format!("parsing VmHWM from '{line}'"))?;
+    match fields.next() {
+        Some("kB") => Ok(value.saturating_mul(1024)),
+        other => bail!("unexpected VmHWM unit {other:?} in '{line}'"),
+    }
+}
+
+/// `getrusage(RUSAGE_SELF).ru_maxrss`, normalised to BYTES on every
+/// platform via [`rss_to_bytes`]. Not used on Linux (see [`max_rss_bytes`]).
+#[cfg(not(target_os = "linux"))]
+fn max_rss_bytes_getrusage() -> Result<u64> {
     // SAFETY: `usage` is zero-initialized and only read after `getrusage`
     // returns success; `RUSAGE_SELF` and a valid `&mut rusage` are exactly
     // what this libc binding requires.
@@ -581,7 +632,7 @@ fn max_rss_bytes() -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::rss_to_bytes;
+    use super::{rss_to_bytes, vm_hwm_bytes};
 
     /// P1 regression: `ru_maxrss`'s unit is platform-defined — KiB on Linux
     /// (`getrusage(2)`), bytes on macOS/BSD. Before `rss_to_bytes` existed
@@ -593,5 +644,40 @@ mod tests {
         assert_eq!(rss_to_bytes(2048), 2048 * 1024, "Linux ru_maxrss is KiB");
         #[cfg(not(target_os = "linux"))]
         assert_eq!(rss_to_bytes(2048), 2048, "macOS/BSD ru_maxrss is bytes");
+    }
+
+    #[test]
+    fn vm_hwm_is_parsed_from_the_status_document_in_kib() {
+        let status = "Name:\tx\nVmPeak:\t  20 kB\nVmHWM:\t   10556 kB\nVmRSS:\t 9000 kB\n";
+        assert_eq!(vm_hwm_bytes(status).unwrap(), 10556 * 1024);
+        assert!(
+            vm_hwm_bytes("Name:\tx\n").is_err(),
+            "a document without VmHWM is an error"
+        );
+        assert!(
+            vm_hwm_bytes("VmHWM:\t 12 MB\n").is_err(),
+            "an unexpected unit is an error"
+        );
+    }
+
+    /// The point of `VmHWM`: an exec'd child must not inherit this process's
+    /// high-water mark. Spawn `cat /proc/self/status` from the test binary
+    /// (whose own VmHWM is tens of MB) and check the child's VmHWM is its
+    /// own few MB, below the parent's. No ballast is allocated here on
+    /// purpose: the `alloc` module's peak-tracking test shares this process
+    /// and a large allocation would disturb it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_spawned_child_reports_its_own_high_water_mark() {
+        let parent = vm_hwm_bytes(&std::fs::read_to_string("/proc/self/status").unwrap()).unwrap();
+        let out = std::process::Command::new("cat")
+            .arg("/proc/self/status")
+            .output()
+            .expect("spawning cat");
+        let child = vm_hwm_bytes(&String::from_utf8_lossy(&out.stdout)).unwrap();
+        assert!(
+            child < parent && child < 16 * 1024 * 1024,
+            "child VmHWM {child} is not below the parent's {parent}"
+        );
     }
 }

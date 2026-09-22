@@ -279,14 +279,17 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
   that one in-process scenario call. **Empty for `duckdb-parquet`**: DuckDB
   runs out-of-process, so there is no allocator hook into it the way the
   `--child` protocol has one into `cityparquet-readbench` itself.
-- `peak_rss_bytes` — the child's own `getrusage(RUSAGE_SELF).ru_maxrss`
+- `peak_rss_bytes` — the child's own peak resident set size
   (`cityparquet`/`cityparquet-hilbert`/`flatcitybuf`/`cityjsonseq`/
   `cityjsonseq-gz`), or a separate untimed `/usr/bin/time -l`/`-v` capture
-  around the same query (`duckdb-parquet`). **Normalised to bytes on every
-  platform** by `rss_to_bytes` in `benchmark/readbench/src/main.rs`
-  (`ru_maxrss` is natively KiB on Linux per `getrusage(2)`, bytes on
-  macOS/BSD). Every committed CSV was produced after that normalisation, so
-  the column is bytes throughout.
+  around the same query (`duckdb-parquet`). On Linux the child reads
+  `VmHWM` from `/proc/self/status`; elsewhere it reads
+  `getrusage(RUSAGE_SELF).ru_maxrss`, **normalised to bytes** by
+  `rss_to_bytes` in `benchmark/readbench/src/main.rs` (`ru_maxrss` is
+  natively KiB on Linux per `getrusage(2)`, bytes on macOS/BSD). The column
+  is bytes throughout. **Every CSV committed before the `VmHWM` change is
+  floored at the coordinator's own RSS** — see Caveat 26 — so its small
+  values are not the child's.
 - `selectivity` = `result_count / total_object_count`, empty where N/A
   (`count`, `full-read`). See Caveat 2 for what `total_object_count` means
   per scenario.
@@ -351,8 +354,11 @@ each cold number stands alone, one per format, one `full-read` only.
    **CityObject-granular in every format** — `citygml`/`cityjsonseq`/
    `flatcitybuf` deliberately flatten to per-CityObject counting for exactly
    these four scenarios (`flatcitybuf` because that is what its B+-tree
-   attribute index naturally returns per entry; the two parsing formats by
-   explicit choice, to match) — so these four are directly, honestly
+   attribute index naturally returns per entry: `fcb_core` indexes every
+   value of a feature's `city_objects` map, not only the root object, so on
+   Vienna an indexed `attr-filter` returns 600 entries from 307 features,
+   and the raw-accessor walks of Caveat 24 count the same way; the two
+   parsing formats by explicit choice, to match) — so these four are directly, honestly
    comparable across every format; `count`/`full-read`/`bbox-query` are not.
    Empirically: `lod3_railway.city.json` is 121 CityObjects / 38 top-level
    features; `delft.city.jsonl`'s `object_type == "BuildingPart"` count is
@@ -938,6 +944,31 @@ on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
     written `fcb ser -A --index-node-size 64` panics with a capacity
     overflow on every `bbox-query`. Reproduced here, not inferred.
 
+26. **`peak_rss_bytes` in every CSV committed before 2026-09-22 is floored
+    at the coordinator's own RSS, and the floor hides every format that
+    used less.** The child used to report `getrusage(RUSAGE_SELF).ru_maxrss`.
+    Linux's `exec_mmap` folds the high-water mark of the address space a
+    task had BEFORE `exec` into `signal->maxrss`, and under
+    `posix_spawn`/`vfork` that address space is the parent's, so a freshly
+    exec'd child can never report less than the coordinator's peak. On the
+    committed 1M 3DBAG run 36 of the 43 read rows — every `citygml`,
+    `cityjson`, `flatcitybuf` and `cityparquet-hilbert` row — carry the
+    identical value 269 963 264 B, the coordinator's RSS after deriving the
+    query parameters from the package; only `cityjsonseq` (4.3 GB) rose
+    above it. On Zurich 35 rows share 54 816 768 B. Those numbers are the
+    coordinator's memory, not the format's, and any read-memory ratio
+    computed from them (the `rss_b` heatmap panel) is a ratio of floors.
+    The write rows had the same defect through Python's `os.wait4` (the
+    constant 14 680 064 B on every `cityjsonseq` write row was the launcher).
+
+    Fixed by reading `VmHWM` from `/proc/self/status` in the child (its own
+    `mm`, created by `exec`, is not inherited; measured 10.5 MB for a child
+    under a 420 MB parent, against 419 MB from `ru_maxrss`) and by running
+    every write converter under `/usr/bin/time -f %M` (floor ≈ 1 MB). The
+    fix changes no timing. **Read-memory figures from before and after this
+    change must not be mixed**, and the pre-change CSVs' `peak_rss_bytes`
+    must not be quoted for any format whose value equals the run's floor.
+
 ## Environment
 
 **Two halves, and both must be recorded for a run to be reproducible**: the
@@ -1000,10 +1031,11 @@ duckdb --version; cargo --version; rustc --version; fcb --version
 cat benchmark/formats/tools/tool_versions.txt      # the pinned conversion chain
 ```
 
-`peak_rss_bytes` is in **bytes** on every platform (`rss_to_bytes` in
-`benchmark/readbench/src/main.rs` normalises the KiB `ru_maxrss` that
-Linux reports), so a Linux run and a macOS run are directly comparable in that
-column.
+`peak_rss_bytes` is in **bytes** on every platform (Linux reads `VmHWM`
+in kB from `/proc/self/status`; `rss_to_bytes` in
+`benchmark/readbench/src/main.rs` normalises the `ru_maxrss` other
+platforms report), so a Linux run and a macOS run are directly comparable in
+that column, subject to Caveat 26 for runs made before the `VmHWM` change.
 
 ## Reproduce
 
