@@ -13,14 +13,16 @@ The container runtime is rootless **Podman**.
 
 ## Purpose and claim
 
-The harness measures **steady-state read performance** — wall-clock time,
-peak resident memory of the executing process and, for PostgreSQL,
-server-reported execution time — of ten access-pattern scenarios against a
-dataset already loaded into each system. **Ingest is not compared.**
-Encoding a CityParquet package and populating an indexed relational schema
-are different operations, not points on one scale. Ingest wall-clock is
-recorded in `<dataset>.manifest.json` (never in the results CSV) with this
-caveat attached:
+The harness measures **steady-state performance** — wall-clock time, peak
+resident memory of the executing process and, for PostgreSQL read
+scenarios, server-reported execution time — against a dataset already
+loaded into each system. Thirteen **read** scenarios run under two
+disclosed thread configurations; three **write** scenarios then run once,
+reported in their own table under their own caveat (Caveat 19). **Ingest is
+not compared.** Encoding a CityParquet package and populating an indexed
+relational schema are different operations, not points on one scale.
+Ingest wall-clock is recorded in `<dataset>.manifest.json` (never in the
+results CSV) with this caveat attached:
 
 > Ingest timings are context only and are NOT comparable across systems.
 > Encoding a CityParquet package and populating an indexed relational
@@ -33,6 +35,18 @@ seconds: the absence of a load step is the property under discussion, not a
 measurement gap.
 
 ## Committed evidence
+
+> **The committed CSV predates this scenario set and is not citable
+> against it.** It was produced by the previous harness: `full-read`,
+> `project` and `hierarchy` instead of `geometry-scan`,
+> `parts-per-building` and the write tier; `attr-filter` on `object_type`;
+> lower-left area windows achieving 0.49 %/6.37 %/22.1 % instead of the
+> row-fraction targets; DuckDB on 16 threads against a PostgreSQL with
+> parallel query disabled; and the source-order package displayed as
+> "CityParquet" while the format family displayed the Hilbert one. The
+> database family must be re-run before any database figure is regenerated.
+> `notes/benchmark-fairness-review-2026-09-22.md` records what each of
+> those changed and why.
 
 The only committed database results are one run over the 1,000,001-object
 3DBAG scaling slice (`3dbag_n1000000`):
@@ -52,85 +66,264 @@ before citing a number. In brief:
   systems were not part of the run, so `peak_heap_bytes` is empty on every
   row.
 - **Provenance.** The manifest records no Git revision and no timestamp.
-- **Count mismatches.** All nine `bbox-query` rows carry `status=mismatch`.
-  cjdb returns slightly fewer objects than the other two systems at every
-  window, and `duckdb-cityparquet` and `3dcitydb` differ by three objects at
-  the 25 % window (221,005 against 221,008). These rows are not citable
-  until the counts are reconciled. Caveats 10–12 describe mechanisms
-  that produce these kinds of disagreement; none has been confirmed as the
-  cause on this dataset.
-- Because of those rows the run exited non-zero (`cmd_bench` returns 1 when
-  any row has `status` `error` or `mismatch`).
+- **Count mismatches — now explained.** All nine `bbox-query` rows carry
+  `status=mismatch`, and the run therefore exited non-zero. The mechanism
+  has since been established object by object (Caveats 11 and 12): cjdb's
+  importer drops 2/16/60 BuildingPart footprints, and PostGIS's float4 `&&`
+  admits 4 extra objects at the 25 % window on both PostgreSQL systems. A
+  re-run under the current harness will publish these as
+  `status=ok-deviation` with that decomposition in `notes`, because the
+  relative spread (0.03-0.04 %) is inside the stated tolerance.
 
 ## Systems
 
-| tag | what it is | index support |
-|---|---|---|
-| `duckdb-cityparquet` | DuckDB (Python client) `read_parquet()` over the source-order CityParquet package `<prepared>/<dataset>.parquet`; no separate ingest | Parquet statistics used by DuckDB's own scan |
-| `cjdb` | cjdb 2.2.0, **patched (Caveat 2)**, imported into PostgreSQL/PostGIS. Full geometry is JSONB (`city_object.geometry`); only a 2D footprint is a PostGIS geometry (`ground_geometry`) | cjdb's own defaults plus one added btree(`object_id`) — see "Index sets" |
-| `3dcitydb` | 3DCityDB v5.1.2, imported with `citydb-tool` 1.3.2 into PostgreSQL/PostGIS. Generic `feature`/`property`/`geometry_data` schema: CityGML classes are rows, attributes are EAV rows | the indexes `citydb-tool import cityjson` creates; none added |
-| `cityparquet` | the native Rust reader over the same source-order package, driven per sample as `cityparquet-readbench --child` | Parquet row-group min/max statistics and column projection |
-| `cityparquet-hilbert` | the same reader over `<prepared>/<dataset>-hilbert.parquet`, rows in Hilbert-curve order | the same statistics, with tighter per-row-group bounding boxes |
+| tag | what it is | runs | index support |
+|---|---|---|---|
+| `duckdb-cityparquet` | DuckDB (Python client) `read_parquet()` over the **Hilbert** CityParquet package `<prepared>/<dataset>-hilbert.parquet`; no separate ingest | every scenario | Parquet statistics used by DuckDB's own scan |
+| `duckdb-cityparquet-source` | the same, over the **source-order** package `<prepared>/<dataset>.parquet` | `bbox-query`, `bbox-fetch`, `point-query` only | the same statistics, with row groups in source order |
+| `duckdb-cityparquet-writeback` | the same as `duckdb-cityparquet`, with `cityparquet_write` inside the timed window | the write tier only | — |
+| `cjdb` | cjdb 2.2.0, **patched (Caveat 2)**, imported into PostgreSQL/PostGIS. Full geometry is JSONB (`city_object.geometry`); only a 2D footprint is a PostGIS geometry (`ground_geometry`) | every scenario | cjdb's own defaults plus one added btree(`object_id`) — see "Index sets" |
+| `3dcitydb` | 3DCityDB v5.1.2, imported with `citydb-tool` 1.3.2 into PostgreSQL/PostGIS. Generic `feature`/`property`/`geometry_data` schema: CityGML classes are rows, attributes are EAV rows | every scenario | the indexes `citydb-tool import cityjson` creates; none added |
+| `cityparquet` | the native Rust reader over the source-order package, driven per sample as `cityparquet-readbench --child` | `count`, `bbox-query`, `attr-filter`, `attr-stats`, `id-lookup` (Caveat 7) | Parquet row-group min/max statistics and column projection |
+| `cityparquet-hilbert` | the same reader over `<prepared>/<dataset>-hilbert.parquet`, rows in Hilbert-curve order | the same five | the same statistics, with tighter per-row-group bounding boxes |
 
-`citybench run` uses the first three by default. The native readers run only
-when named in `--systems` and need the binary
+`citybench run` uses the three `duckdb-cityparquet*` tags plus `cjdb` and
+`3dcitydb` by default. The native readers run only when named in
+`--systems` and need the binary
 `benchmark/readbench/target/release/cityparquet-readbench`
 (`cargo build --release --manifest-path benchmark/readbench/Cargo.toml`).
 
+### Which package is "CityParquet"
+
+`duckdb-cityparquet` reads the **Hilbert** package, because that is the
+one the format family's figures display under the name "CityParquet"
+(`benchmark/plot/benchviz/figures.py`). Until this was changed the two
+benchmark families published *different artefacts* under one name: the
+database family read the source-order package, on which Hilbert ordering
+was measured to be 1.44x/2.02x/3.13x **slower** at the 1/5/25 % windows,
+so the old choice flattered CityParquet on exactly the bbox rows
+(`notes/benchmark-fairness-review-2026-09-22.md` §4.5).
+
+Row order can only change the answer's *cost*, never the answer, and only
+where a predicate is spatial. So the source-order package is published as a
+second system tag for those three scenarios alone, rather than doubling
+every row for a difference that would be noise. Publish both orders; do
+not pick a winner afterwards.
+
 ## Query parameters
 
-Every system receives the **same** parameters, derived deterministically from
-the source CityJSON or CityJSONSeq file by `citybench.params.derive` (ties
-are broken by sorting). No system derives its own idea of "a 5 % window" or
-"a typical building".
+Every system receives the **same** parameters, derived deterministically by
+`citybench.params.derive` (ties are broken by sorting). No system derives
+its own idea of "a 5 % window" or "a typical building".
 
-| field | derivation |
-|---|---|
-| `bbox_full` | extent of every dequantised vertex in the file |
-| `attr_column` | always `object_type` |
-| `attr_eq` | most frequent CityObject type |
-| `numeric_column` | most frequent numeric attribute; `null` if none |
-| `target_id` | lexicographically first CityObject id |
-| `parent_id` | lexicographically first CityObject with `children`; `null` if none |
-| `total_city_objects` | the selectivity denominator |
+Derivation reads two things: the source CityJSON/CityJSONSeq file, and the
+**CityParquet package**. The package supplies the extent, the query
+windows, the `attr-filter` predicate and `attr-range`'s threshold — every
+parameter the format harness also derives from the package — so the two
+families ask the same questions of the same dataset. (The source-order and
+Hilbert packages hold the same rows in a different order, so either yields
+identical parameters; the source-order one is named for determinism.)
 
-`citybench run` derives the parameters afresh from the source on every run
-and writes them beside the CSV as `<dataset>.params.json`; it never reads a
-name-keyed file. `just derive-params` writes the same payload to
-`params/<dataset>.json` (see "Heterogeneity corpus parameter files").
+| field | derivation | from |
+|---|---|---|
+| `bbox_full` | union of every row's `bbox` | package |
+| `windows` | three row-fraction windows, below | package |
+| `point_xy` | the median row centre the windows are built around | package |
+| `attr_filter` | the per-dataset `attr-filter` predicate, below | package |
+| `attr_range` | `b3_h_dak_max` where present, else `numeric_column`, thresholded at its own 0.8 quantile | package |
+| `numeric_column` | most frequent numeric attribute; `null` if none | source |
+| `target_id` | lexicographically first CityObject id | source |
+| `total_city_objects` | the selectivity denominator | source |
+| `window_rows` | rows with a non-NULL `bbox`; the windows' own denominator | package |
 
-`bbox-query` uses three windows covering 1 %, 5 % and 25 % of `bbox_full`'s
-x/y area, anchored at its lower-left corner (`BBox.window`), matching the
-window construction of `benchmark/formats/READ_BENCHMARK.md`. **The window's
-z range is never narrowed**: every object is in range vertically, so no
-system is ever tested against a z-restricted window, whatever its mechanism
-could support.
+`citybench run` derives the parameters afresh on every run and writes them
+beside the CSV as `<dataset>.params.json`; it never reads a name-keyed
+file. `just derive-params --dataset <src> --prepared-dir <dir>` writes the
+same payload to `params/<dataset>.json` (see "Heterogeneity corpus
+parameter files").
 
-## The ten scenarios
+### The query windows
+
+`bbox-query` and `bbox-fetch` each use three windows targeting **1 %, 5 %
+and 25 % of the package's ROWS**. Each is **centred on the median row
+centre** and sized by bisecting a per-axis half-extent until the target
+fraction is reached — a port of
+`benchmark/readbench/src/params.rs::window_for_target`, step for step,
+including its ±10 %-of-target `approx` disclosure. `notes` carries the tag
+(`bbox-1pct`, suffixed `-approx` when the target was not reachable on this
+data) and the fraction the window actually achieved.
+
+This replaces a construction that scaled the extent's **area** from its
+**lower-left corner**. The two harnesses' labels then named different
+queries: the database family achieved 0.49 %, 6.37 % and 22.1 % where the
+format family achieved 1.00 %, 5.00 % and 25.0 %, while two places in this
+repository asserted that the constructions matched
+(`notes/benchmark-fairness-review-2026-09-22.md` §4.4). A corner window is
+also one workload rather than a spatial sample, and it interacts with row
+ordering.
+
+**The window's z range is never narrowed**: every object is in range
+vertically, so no system is ever tested against a z-restricted window,
+whatever its mechanism could support.
+
+`point-query` (CJDB Q3) uses the same median centre as a degenerate
+window — a single point — so it probes where the data is rather than at an
+arbitrary coordinate. It is not a point-in-polygon test and is not
+guaranteed to return exactly one object.
+
+### The `attr-filter` predicate
+
+`attr-filter` filters a real **CityJSON attribute**, picked per dataset by
+the same rule the format family uses (`citybench.params.HAND_PICKED`, a
+port of `params.rs`): 3DBAG `b3_dak_type = 'slanted'`, Zurich
+`class = 'BB01'`, Vienna `roofType = 'FLACHDACH'`, Ingolstadt
+`klumMaterialClass = 'Wood'`, NYC `BIN = '1000000'`, Rotterdam
+`TerrainHeight >= q0.75`. A dataset with no hand-picked entry falls back to
+the string attribute whose most frequent value's share lands closest to
+25 %, then to the alphabetically first numeric attribute at its 0.75
+quantile, then to `skipped:`.
+
+It previously filtered `object_type`, which is a reserved structural
+column, not an attribute. That is both an unnatural query and the exact
+predicate that made every FlatCityBuf row in the format family fall back to
+a full walk, because FCB's B+-tree indexes only the `attributes` map
+(review §0). The column is now recorded in the params sidecar along with
+the predicate, the matched count and whether it was hand-picked.
+
+## The thirteen read scenarios
 
 Each system answers each scenario through its own natural mechanism — never a
 hand-tuned shortcut, never a shape contrived to match another system's plan
 (the design rule stated in `sql_citydb.py` and `sql_duckdb.py`).
 
-| scenario | common target | `duckdb-cityparquet` | `cjdb` | `3dcitydb` | `cityparquet`(`-hilbert`) |
-|---|---|---|---|---|---|
-| `full-read` | decode every object; `(count, checksum)` | `SELECT count(*), sum(hash(COLUMNS(*)))::HUGEINT` — DuckDB expands `COLUMNS(*)` into one hash sum per column, forcing every column to be decoded | `count(*)` plus the summed text length of `geometry`, `attributes` and `ground_geometry`, each `coalesce`d so one NULL column cannot drop a row | pre-aggregated `geometry_data` and `property` text lengths joined back to `feature`, with the CityObject predicate (Caveat 1) | scan every row group single-threaded, decode each row's WKB (`cityparquet::query`) |
-| `count` | total CityObject count | `SELECT count(*)` | `SELECT count(*) FROM cjdb.city_object` | `count(*)` over `feature` with the CityObject predicate | Parquet file metadata `num_rows` |
-| `bbox-query` (1/5/25 %) | objects whose bbox intersects the window | `bbox.xmax/xmin/ymax/ymin` comparisons on the `bbox` STRUCT — **x/y only** | `ground_geometry && ST_MakeEnvelope(...)`, GIST-indexed — 2D by storage (Caveat 3) | `envelope && ST_MakeEnvelope(...)`, GIST-indexed — `envelope` is 3D, but `ST_MakeEnvelope` returns a 2D polygon, so the test is 2D | row-group pruning plus a row-level test of all six bounds |
-| `attr-filter` | objects with `object_type = attr_eq` | `WHERE object_type = ?` | `WHERE "type" = %s` (btree) | `objectclass_id` = the class id for `attr_eq` (btree) | Arrow row filter plus row-group statistics |
-| `attr-stats` | `(count, min, max, sum)` of `numeric_column` | aggregates over the flattened top-level column | aggregates over `(attributes->>col)::numeric` — every row's JSONB unpacked | EAV join `property`→`feature` on `name = col`, aggregating `coalesce(val_double, val_int)` because an integer value is stored in `val_int` (see also Caveat 13) | column-chunk statistics for min/max; projected scan for sum/count |
-| `id-lookup` | the row for `target_id`, materialised | `SELECT * WHERE id = ?` — the whole object row, geometry included; no index | `SELECT * WHERE object_id = %s` (added btree) — the row includes the geometry JSONB | `SELECT * FROM feature WHERE objectid = %s` (btree) — the `feature` row only; `property` and `geometry_data` are not joined | row filter on `id`, decode the surviving row |
-| `project` | one column read across every row; non-null count | `SELECT count(object_type)` | `SELECT count("type")` | `count(objectclass_id)` with the CityObject predicate | single-column projection |
-| `lod-extract` *(SQL only)* | objects carrying an LoD 1.2 geometry | `count(geometry_lod1_2) WHERE geometry_lod1_2 IS NOT NULL` — one column projected; `WHERE FALSE` when the package has no such column (Caveat 15) | `geometry @? '$[*] ? (@.lod == "1.2")'` — the `@?` operator, which uses cjdb's GIN(`geometry`) index; the `jsonb_path_exists` function form does not | `property` join on `val_lod = '1' AND val_geometry_id IS NOT NULL` — the importer stores LoD 1.2 as `'1'` (`docs/3dcitydb-v5-schema.md`, "LoD value format") | not run (Caveat 7) |
-| `semantic-surface` *(SQL only)* | objects with ≥ 1 `RoofSurface`, **any LoD** (Caveat 9) | `OR` of `list_contains(json_extract_string(<col>.surfaces, '$[*].type'), 'RoofSurface')` over every `geometry_properties_lod*` column the package has | `geometry @? '$[*].semantics.surfaces[*] ? (@.type == "RoofSurface")'` | `count(DISTINCT pr.feature_id)` over owners of a `RoofSurface` feature — a presence test, not a surface-row count | not run |
-| `hierarchy` *(SQL only)* | direct children of `parent_id` | `WHERE list_contains(parents, ?)` | join `city_object_relationships` to the parent's `object_id` | `property.val_feature_id` join from parent to child, CityObject predicate on the child | not run |
+Where CJDB's own queries return rows, so do these: **ids**, or ids plus a
+footprint. The counts these rows once returned let a columnar reader answer
+from metadata or from Parquet definition levels alone, which is a real
+property worth measuring but not the same question a client asking for
+objects poses.
 
-`bbox-query` produces one row per window, tagged `bbox-1pct`, `bbox-5pct` or
-`bbox-25pct` in `notes`, so the seven Tier-1 scenarios give nine rows per
-system and each Tier-2 scenario one more row per SQL system: twelve rows for
-each SQL system, nine for each native reader. A scenario the dataset cannot
-answer (no numeric attribute for `attr-stats`, no parent/child pair for
-`hierarchy`) is recorded as `skipped: ...`, not as an error.
+| scenario | returns | common target | `duckdb-cityparquet` | `cjdb` | `3dcitydb` |
+|---|---|---|---|---|---|
+| `geometry-scan` | `(count, bytes)` | every object's geometry | `count(*), sum(octet_length(...))` over every `geometry_lod*` column (Caveat 18) | `count(*), sum(length(geometry::text))` | `count(DISTINCT f.id), sum(length(gd.geometry::text))` over `geometry_data` joined to CityObject-grain features |
+| `count` | count | total CityObject count | `SELECT count(*)` — answered from file metadata; caption it as such | `SELECT count(*) FROM cjdb.city_object` | `count(*)` over `feature` with the CityObject predicate (Caveat 1) |
+| `bbox-query` (1/5/25 %) | count | objects whose bbox intersects the window | `bbox.xmax/xmin/ymax/ymin` comparisons on the `bbox` STRUCT — **x/y only** | `ground_geometry && ST_MakeEnvelope(...)`, GIST-indexed — 2D by storage (Caveat 3) | `envelope && ST_MakeEnvelope(...)`, GIST-indexed; `ST_MakeEnvelope` returns a 2D polygon, so the test is 2D |
+| `bbox-fetch` (1/5/25 %) | id + footprint | Buildings in the window, with their LoD0 footprint | `SELECT id, geometry_lod0_0 WHERE object_type = 'Building' AND bbox…` | `SELECT object_id, ground_geometry WHERE "type" = 'Building' AND ground_geometry && …` | `f.objectid, gd.geometry` through the `property` row with `val_lod = '0'` and a non-NULL `val_geometry_id`, `envelope && …` |
+| `point-query` | id + footprint | `bbox-fetch` at a degenerate window on the median row centre | `bbox.xmin <= x AND bbox.xmax >= x AND …` | `ground_geometry && ST_SetSRID(ST_MakePoint(x, y), srid)` | the same on `envelope` |
+| `attr-filter` | ids | objects matching the per-dataset attribute predicate | `WHERE "<col>" = ?` — a typed, flattened top-level column | `WHERE attributes ->> '<col>' = %s` — **no index on `attributes`** (see "Index sets") | `property` join on `pr.name = %s AND pr.val_string = %s` (Caveat 13) |
+| `attr-range` | ids | objects whose numeric attribute exceeds the threshold | `WHERE "<col>" > ?` — DOUBLE column with row-group statistics | `WHERE (attributes ->> '<col>')::float > %s` | `property` join with `coalesce(val_double, val_int) > %s` |
+| `attr-stats` | `(count, min, max, sum)` | aggregate of `numeric_column` | aggregates over the flattened top-level column | aggregates over `(attributes->>col)::numeric` — every row's JSONB unpacked, and heavier arithmetic than a DOUBLE sum | EAV join `property`→`feature` on `name = col`, aggregating `coalesce(val_double, val_int)` (Caveat 13) |
+| `id-lookup` | the object | the row for `target_id`, materialised | `SELECT * WHERE id = ?` — the whole object row, geometry included; no index | `SELECT * WHERE object_id = %s` (added btree) — the row includes the geometry JSONB | `SELECT * FROM feature WHERE objectid = %s` (btree) — the `feature` row only; `property` and `geometry_data` are not joined (Caveat 17) |
+| `lod-extract` | ids | objects carrying an LoD 1.2 geometry | `SELECT id WHERE geometry_lod1_2 IS NOT NULL`; `WHERE FALSE` when the package has no such column (Caveat 15) | `geometry @? '$[*] ? (@.lod == "1.2")'` — the `@?` operator, which uses cjdb's GIN(`geometry`) index; the `jsonb_path_exists` function form does not | `property` join on `val_lod = '1' AND val_geometry_id IS NOT NULL` — the importer stores LoD 1.2 as `'1'` (`docs/3dcitydb-v5-schema.md`, "LoD value format") |
+| `semantic-surface` | count | objects with ≥ 1 `RoofSurface`, **any LoD** (Caveat 9) | `OR` of `list_contains(json_extract_string(<col>.surfaces, '$[*].type'), 'RoofSurface')` over every `geometry_properties_lod*` column the package has | `geometry @? '$[*].semantics.surfaces[*] ? (@.type == "RoofSurface")'` | `count(DISTINCT pr.feature_id)` over owners of a `RoofSurface` feature — a presence test, not a surface-row count |
+| `parts-per-building` | one row per Building | how many parts each Building has, **childless Buildings included** | `SELECT id, coalesce(len(children), 0) WHERE object_type = 'Building'` — a stored array, no join | `LEFT JOIN city_object_relationships cor ON cor.parent_id = co.id`, `count(cor.child_id)`, `GROUP BY co.object_id` | `feature parent LEFT JOIN property LEFT JOIN feature child`, the CityObject predicate on the child, `count(child.id)` |
+| `parts-per-building-join` | one row per Building | the same question in the shape a normalised store must use | `LEFT JOIN (SELECT unnest(parents) AS parent, id … WHERE object_type = 'BuildingPart') p ON p.parent = b.id … GROUP BY b.id` | — | — |
+
+The two windowed scenarios produce one row per window each, tagged
+`bbox-1pct`, `bbox-5pct` or `bbox-25pct` in `notes` alongside the achieved
+fraction. Every read scenario is measured under **both** thread
+configurations, and `notes` carries `threads=single` or `threads=parallel`.
+A scenario the dataset cannot answer (no numeric attribute for `attr-stats`
+or `attr-range`, no usable attribute for `attr-filter`) is recorded as
+`skipped: ...`, not as an error.
+
+`parts-per-building-join` is a **control, not a comparison**: the same
+question as `parts-per-building` asked the way a normalised store must ask
+it, run on DuckDB alone so the cost of the join is visible against the
+natural form on the same engine and the same data. cjdb and 3DCityDB have
+only the join form, which *is* their `parts-per-building`. The two DuckDB
+forms are asserted to return identical row sets
+(`tests/test_duckdb_cp.py`); publishing a ratio between them otherwise
+would compare different result sets.
+
+## The write tier
+
+Three scenarios, run **last** and reported in their own table. They are
+**different operations, not one scale** (Caveat 19).
+
+| scenario | `duckdb-cityparquet` / `-writeback` | `cjdb` | `3dcitydb` |
+|---|---|---|---|
+| `attr-add` | `ALTER TABLE pkg.building ADD COLUMN footprint_area DOUBLE`, then `UPDATE … SET footprint_area = ST_Area(geometry_lod0_0) WHERE object_type = 'Building'` | Q6 verbatim: `jsonb_set(attributes::jsonb, '{footprint_area}', to_jsonb(ST_Area(ground_geometry)))` | `INSERT INTO citydb.property (feature_id, name, datatype_id, val_double) SELECT id, 'footprint_area', <double>, ST_Area(envelope) FROM feature WHERE objectclass_id = <Building>` |
+| `attr-update` | `UPDATE … SET footprint_area = footprint_area + 10.0` | Q7 verbatim: the same `jsonb_set` over `(attributes->>'footprint_area')::float + 10.0` | `UPDATE citydb.property SET val_double = val_double + 10 WHERE name = 'footprint_area'` |
+| `attr-delete` | `ALTER TABLE pkg.building DROP COLUMN footprint_area` | Q8 verbatim: `jsonb_set_lax(…, NULL, true, 'delete_key')` | `DELETE FROM citydb.property WHERE name = 'footprint_area'` |
+
+CityParquet has no in-place update path — a Parquet file's smallest
+rewritable unit is a column chunk — so the comparable operation is the one
+the DuckDB CityJSON extension's package model offers. `PRAGMA
+cityparquet_read` loads the package into DuckDB tables (untimed setup;
+`read_parquet` would not do, because only the pragma recovers each file's
+footer and so its CRS), the statements above mutate them, and
+`cityparquet_write` writes the package back. **Both costs are published**:
+`duckdb-cityparquet` times the in-engine mutation alone and
+`duckdb-cityparquet-writeback` additionally times the package write.
+
+Mechanics, all of which change what the numbers mean:
+
+- **No `EXPLAIN (ANALYZE)` re-run**, so write rows carry no
+  `server_time_s`. `EXPLAIN ANALYZE` on an INSERT/UPDATE/DELETE *executes*
+  it: reusing the read path would have applied Q6 twice, incremented Q7 by
+  20 rather than 10, and rewritten half a million cjdb tuples a second time
+  per sample.
+- **No discarded warm-up.** A warm-up here would be a real mutation. Each
+  sample after the first is preceded by an **untimed reset** that restores
+  the state the scenario expects (`attr-add`'s INSERT is not idempotent;
+  DuckDB's `ADD COLUMN` errors the second time), so every timed sample
+  measures the same work.
+- **`VACUUM ANALYZE` runs after the last sample of each PostgreSQL write
+  scenario**, never inside a timed window, so the dead tuples `attr-add`
+  leaves behind are not charged to `attr-update`.
+- **The order is load-bearing**: `attr-add` creates the attribute
+  `attr-update` increments and `attr-delete` removes. The tier runs after
+  every read row of both thread configurations, because its mutations leave
+  bloat a later read pass would measure as the steady state.
+- **`result_count` is rows touched**, from the cursor's rowcount. DuckDB's
+  `DROP COLUMN` reports none, so `attr-delete`'s CityParquet count is
+  *defined* as the Building row count the other two systems' statements
+  touch. That is a definition, not a measurement.
+- **The area expressions differ, inherited from the CJDB paper.** Its own
+  Q6 computes `ST_Area(ground_geometry)` — a footprint area — on cjdb
+  against `ST_Area(envelope)` — an envelope area, an upper bound on the
+  footprint's — on 3DCityDB. This harness keeps both rather than measuring
+  a query CJDB never published. CityParquet uses `ST_Area` over its LoD0
+  footprint where DuckDB's spatial extension and the column are available,
+  and the `bbox` rectangle's area otherwise; which one was used is stamped
+  into `notes`.
+- **cjdb's Q6 is strict.** `jsonb_set` returns NULL for a NULL argument, so
+  a Building whose `ground_geometry` is NULL has its whole `attributes`
+  document set to NULL. On 3DBAG the NULL footprints are all BuildingParts
+  (review §5), which Q6's `type = 'Building'` excludes; on another corpus it
+  could bite. Disclosed rather than guarded, because "verbatim" was the
+  point.
+- **One deviation from the paper's text**: its trailing `::json` cast is
+  dropped, because cjdb 2.2.0 stores `attributes` as `jsonb` and PostgreSQL
+  registers no assignment cast from `json` to `jsonb`. The
+  `attributes::jsonb` the paper writes is kept and is a no-op here.
+
+## Mapping to the CJDB paper
+
+CJDB's own benchmark ([Appendix A, pp. 16-17](https://arxiv.org/pdf/2307.06621#page=16))
+runs eight queries. Eight of this harness's scenarios correspond to one
+each; the differences are stated here rather than left for a reader to
+discover.
+
+| CJDB | ours | how ours differs |
+|---|---|---|
+| Q1 `h_dak_max > 20` | `attr-range` | The threshold is the column's own 0.8 quantile rather than a literal 20, so the selectivity carries across datasets; on 3DBAG the two land within a rounding error of each other. Q1 is implicitly Building-grained, and so is ours: the attribute exists only on Buildings. |
+| Q2 bbox | `bbox-fetch` (and `bbox-query` for the count alone) | **CJDB uses `ST_Contains(window, ground_geometry)` — containment. This harness uses `&&` overlap on every system**, which is what a bbox index answers natively on all three and what `bbox-query` already asked. Ours also restricts to `type = 'Building'`, which Q2 does not. |
+| Q3 point | `point-query` | None of substance: Q3 is a bbox overlap with a *point*, not a point-in-polygon test, and may return several objects. Ours adds the Building restriction and places the point at the median row centre. |
+| Q4 parts per building | `parts-per-building` | Adapted to cjdb 2.2.0's schema, where `city_object_relationships.parent_id` is the integer `city_object.id`, not the textual `object_id`. Childless Buildings are kept, as Q4's `LEFT JOIN` keeps them. `parts-per-building-join` is an extra DuckDB-only control with no CJDB counterpart. |
+| Q5 LoD 1.2 | `lod-extract` | Returns ids, as Q5 does. cjdb uses the `@?` jsonpath operator rather than the paper's `@>`, because only the operator form cooperates with cjdb's own GIN index. 3DCityDB must test `val_lod = '1'`: its importer truncates the fractional tier. |
+| Q6 add attribute | `attr-add` | See the write tier above: `::json` dropped; envelope-versus-footprint area inherited. |
+| Q7 update attribute | `attr-update` | None. |
+| Q8 delete attribute | `attr-delete` | None on the PostgreSQL side. |
+
+Scenarios with **no CJDB counterpart**, and what each is for:
+`geometry-scan` (a whole-geometry scan; see Caveat 18 for why it is fairer
+than the row it replaces but still not neutral), `count` (a legitimate
+query answered from metadata on a columnar reader — caption it that way),
+`attr-stats` (a single-column aggregate, the cleanest row in the set),
+`attr-filter` (equality on an indexable attribute), `id-lookup` (single-object
+materialisation, which CityParquet loses heavily), `semantic-surface`, and
+`parts-per-building-join`.
 
 ## Fairness controls
 
@@ -161,16 +354,40 @@ values the committed run read back with `current_setting()`:
 | `work_mem` | 256MB | 256MB |
 | `random_page_cost` | 1.1 | 1.1 |
 | `max_parallel_workers` | 16 | 16 |
-| `max_parallel_workers_per_gather` | 0 (benchmark session) | 0 (benchmark session) |
 
-Both adapters call `pg.disable_parallel_query`, which sets
-`max_parallel_workers_per_gather = 0` on the benchmark connection, so every
-timed PostgreSQL query executes in a single backend process and its resident
-memory is attributable to that one PID. This overrides the configuration
-file's value of 16. `cli.py` stamps `"0 (benchmark session)"` into the
-manifest rather than reading it back from the benchmark session. DuckDB runs
-with `SET threads TO 16` and `SET memory_limit = '32GB'`
-(`systems/duckdb_cp.py`). See Caveat 5.
+`max_parallel_workers_per_gather` is not a file setting here: it is set per
+run configuration on the benchmark session, and read back into the
+manifest's `execution` block along with `max_worker_processes` — the
+cluster-wide pool that bounds how many workers a query can *actually* get,
+whatever the per-gather cap asks for.
+
+### The two thread configurations
+
+Every read scenario is measured **twice**, and both are published. `notes`
+carries `threads=single` or `threads=parallel`; the manifest's `execution`
+block records both settings and which is primary.
+
+| | DuckDB | PostgreSQL |
+|---|---|---|
+| **`single`** — the **primary** figure | `SET threads TO 1` | `max_parallel_workers_per_gather = 0` |
+| `parallel` — a disclosed second pass | `SET threads TO 16` | `max_parallel_workers_per_gather = 8` |
+
+`single` is primary because it is the condition under which the two engines
+are asked for the same amount of CPU, and because it matches the format
+harness, which pins every reader to one thread. The committed run gave
+DuckDB 16 threads against a PostgreSQL with parallel query disabled, and
+the resulting advantage was not spread evenly: it concentrated on the
+headline rows (7.6x on the whole-table scan, 5.5x on `lod-extract`, 5.4x on
+`semantic-surface`) and left the two-to-three-order-of-magnitude wins
+untouched (`notes/benchmark-fairness-review-2026-09-22.md` §4.3).
+
+Under `parallel`, `parallel_setup_cost` and `min_parallel_table_scan_size`
+stay at their defaults: raising the worker cap is a resource decision,
+lowering the planner's thresholds would be tuning the query. DuckDB also
+runs with `SET memory_limit = '32GB'` and
+`SET enable_geoparquet_conversion = false` (Caveat 18) under both.
+
+The write tier runs **once**, under `single`, after every read row.
 
 `track_io_timing = on` makes buffer timing available to
 `EXPLAIN (ANALYZE, BUFFERS)`. `max_connections = 20`.
@@ -239,23 +456,53 @@ timed samples of the same query; `--repeat` defaults to **7**.
   to just after every row has been fetched. After each timed execution the
   same query runs again, untimed, under `EXPLAIN (ANALYZE, BUFFERS, FORMAT
   JSON)` to obtain `server_time_s` (Caveat 4).
-- `duckdb-cityparquet` times `execute(...).fetchall()` in-process.
+- `duckdb-cityparquet` times in-process. For a scenario that returns rows
+  the result is materialised **inside** the timed window, to **Arrow**
+  (`to_arrow_table()`), not to Python objects — a Python-object fetch of a
+  row-returning scenario was measured at about 72 µs/row on `SELECT *`,
+  which would make the row the client's number rather than the engine's.
+  `notes` carries `fetch: arrow`. The PostgreSQL adapters already read
+  every row to exhaustion inside their own timed window, so no system wins
+  by handing back a lazy cursor.
 - The native readers start a fresh child process per sample, and the harness
   uses the child's own reported elapsed time, so process start-up is
   excluded.
+- **Write rows follow a different protocol** — no warm-up, an untimed reset
+  before each sample, and no `EXPLAIN (ANALYZE)` re-run. See "The write
+  tier".
 
 ### Count cross-check
 
 The count cross-check is the harness's main defect detector
 (`citybench.runner`): every scenario's result count is compared across every
-system that answered it, for the same parameters. When systems disagree, at
-least one is answering a different question and its timing is meaningless
-until reconciled. Every row for that scenario (and window) is tagged
-`count-mismatch: <system=count ...>` in `notes` and receives
-`status=mismatch`. `skipped:` and `error:` rows carry no count and are
-excluded from the comparison. `citybench run` exits non-zero if any row has
-`status` `error` or `mismatch`; `citybench smoke` additionally fails on any
-`count-mismatch` or `error:` note.
+system that answered it, for the same parameters. `skipped:` and `error:`
+rows carry no count and are excluded from the comparison.
+
+A disagreement is always described in `notes` as
+`count-mismatch: <system=count ...> spread=<(max-min)/max>`. What differs
+is the **status**:
+
+| relative spread | `status` | run outcome |
+|---|---|---|
+| systems agree | `ok` | — |
+| ≤ the tolerance (default **0.1 %**, `--count-tolerance`) | `ok-deviation` | the run continues |
+| above the tolerance | `mismatch` | `citybench run` exits non-zero; the row is not citable |
+
+The tolerance exists because the bbox counts on 3DBAG differ by
+0.03-0.04 % for reasons that are **properties of the compared systems, not
+of the query**, and whose mechanism is established down to the object
+(Caveats 11 and 12, and `notes/benchmark-fairness-review-2026-09-22.md`
+§5). Every system runs its own idiomatic predicate, which is the point;
+a binary pass/fail over three objects in 221,005 told a reader nothing they
+could act on, while the decomposition does. Above the tolerance the check
+still fails the run — it remains the main defect detector, not a
+formality. The tolerance is recorded in the manifest's `count_check` block
+alongside what each status means.
+
+`citybench smoke` fails on any row whose **status** is `mismatch` or
+`error`. It deliberately does not search `notes` for the text
+`count-mismatch`: an `ok-deviation` row keeps that text, because the
+decomposition is the row's value.
 
 The check compares answers, not work: it cannot detect a system that returns
 the right count without doing the work the scenario is meant to measure
@@ -289,8 +536,9 @@ harness's rows needs six empty fields per row. The two harnesses use
 different `dataset` identifiers (`3dbag_n1000000` here, the source file name
 there) and are separate experiments.
 
-- **`selectivity`** — `result_count / total_city_objects`; empty for `count`
-  and `full-read`. The window's area target is in `notes`, not here.
+- **`selectivity`** — `result_count / total_city_objects`; empty for
+  `count`, `geometry-scan` and the write tier (a mutation's rows-touched is
+  not a selection). The window's target is in `notes`, not here.
 - **`time_s` / `time_mad_s`** — see "The warm protocol".
 - **`peak_heap_bytes`** — populated only for the native readers (the child's
   allocator high-water mark); empty for every SQL system.
@@ -300,15 +548,22 @@ there) and are separate experiments.
   `memory-scope: postgresql-backend-rss`), and the manifest's
   `memory_measurement` block describes it.
 - **`repeat`** — the number of timed samples in that row.
-- **`notes`** — memory scope, window tag, `count-mismatch: ...`,
-  `skipped: ...` or `error: <ExceptionType>`.
+- **`notes`** — `threads=single`/`threads=parallel`, memory scope, fetch
+  mode, window tag and achieved fraction, `count-mismatch: ...`,
+  `skipped: ...` or `error: <ExceptionType>`; on write rows also
+  `write-tier: in-engine` or `in-engine+package-write` and which area
+  expression was used.
 - **`bytes_read` / `http_requests`** — always empty (Caveat 8).
-- **`server_time_s`** — empty for the in-process systems; for `cjdb` and
-  `3dcitydb`, the mean of PostgreSQL's reported `Execution Time` from the
+- **`server_time_s`** — empty for the in-process systems **and for every
+  write row on every system**; for `cjdb`'s and `3dcitydb`'s read rows, the
+  mean of PostgreSQL's reported `Execution Time` from the
   `EXPLAIN (ANALYZE, BUFFERS)` re-runs (`pg.time_query`). Raw values are in
-  `raw_server_time_samples_s`.
+  `raw_server_time_samples_s`. A write row has none because `EXPLAIN
+  ANALYZE` would execute the mutation a second time.
 - **`size_bytes` / `size_bytes_no_index`** — see "Two size figures".
-- **`status`** — `ok`, `mismatch`, `skipped` or `error`.
+- **`status`** — `ok`, `ok-deviation`, `mismatch`, `skipped` or `error`.
+  See "Count cross-check" for what `ok-deviation` means and which tolerance
+  it was judged against (the manifest records the value).
 
 ## Fairness caveats
 
@@ -369,12 +624,17 @@ Read these before citing a number.
    "subset of wall-clock" reading cannot explain. **Do not subtract the two
    to compute a client-server tax.** Read them side by side, qualitatively.
 
-5. **PostgreSQL runs every query without parallel workers; DuckDB uses 16
-   threads.** Parallel query is disabled per session to keep resident memory
-   attributable to one backend process (see "Tuning and parallelism"). Both
-   PostgreSQL containers are allowed 16 CPUs, but a single benchmark query
-   uses one backend. Timings therefore compare single-process PostgreSQL
-   execution with multi-threaded DuckDB execution.
+5. **The two thread configurations are not one number.** Under `single`,
+   DuckDB runs on one thread and each PostgreSQL query in one backend:
+   that is the like-for-like CPU budget and the primary figure. Under
+   `parallel`, DuckDB gets 16 threads and PostgreSQL a per-gather worker
+   budget of 8 — which the cluster-wide `max_worker_processes` may reduce
+   further, so the manifest records both. **Never read a `threads=single`
+   row against a `threads=parallel` one.** The earlier harness effectively
+   published the cross of the two (DuckDB at 16, PostgreSQL at 0) as a
+   single result; the advantage that produced concentrated on the headline
+   rows rather than spreading evenly
+   (`notes/benchmark-fairness-review-2026-09-22.md` §4.3).
 
 6. **`peak_rss_bytes` has a different process scope per system and is not a
    like-for-like comparison.**
@@ -383,24 +643,32 @@ Read these before citing a number.
      from `/proc/<pid>/status`. The value excludes other backends,
      background workers and the idle server, but mapped shared pages
      (including touched `shared_buffers`) can contribute. It is blank when
-     the PID cannot be mapped safely.
+     the PID cannot be mapped safely. **Under `parallel` only the LEADER
+     backend is sampled**, so any parallel worker's resident memory is
+     excluded and the figure understates the query's true footprint by an
+     unmeasured amount.
    - `duckdb-cityparquet` rows sample the harness's own Python process, which
      embeds DuckDB and runs the 5 ms sampler thread, so the value includes the
      interpreter and the engine's idle baseline and cached state. Every
      scenario runs on one shared connection, so the value is cumulative across
      the scenario sequence: a light scenario inherits the memory retained by a
      heavier one before it (in the committed 3DBAG CSV, `count`, which reads
-     only file metadata, follows `full-read` and reports a similar peak).
+     only file metadata, follows the whole-table scan and reports a similar
+     peak).
    - Native-reader rows report the child process's `getrusage` high-water
      mark, converted to bytes on every platform (`rss_to_bytes` in
      `benchmark/readbench/src/main.rs`), including its idle baseline.
 
-7. **Tier-2 scenarios have no native-reader rows.** `lod-extract`,
-   `semantic-surface` and `hierarchy` run only on the SQL systems
-   (`registry.SQL_SYSTEMS`); `cityparquet-readbench --child` implements only
-   the seven Tier-1 scenarios. `build_child_args` raises `ValueError` for a
-   Tier-2 name, and `cli._run_all_scenarios` runs the two tiers as separate
-   matrices so this never appears as an `error:` row.
+7. **The native readers answer only five of the sixteen scenarios.**
+   `cityparquet-readbench --child` implements `count`, `bbox-query`,
+   `attr-filter`, `attr-stats` and `id-lookup`
+   (`benchmark/readbench/src/scenario.rs`). `geometry-scan`, `bbox-fetch`,
+   `point-query`, `attr-range`, `lod-extract`, `semantic-surface`, the two
+   `parts-per-building` forms and the whole write tier have no counterpart
+   there, and the read harness is not this family's to extend.
+   `registry.systems_for` names exactly which systems answer each scenario,
+   so the child is never handed a name it would raise `ValueError` for —
+   which `run_matrix` could not tell apart from a genuine failure.
 
 8. **`bytes_read` and `http_requests` are always empty.** Every system reads
    local disk or a localhost socket. The HTTP and object-storage comparison
@@ -431,38 +699,72 @@ Read these before citing a number.
     not use `ground_geometry` are unaffected.
 
 11. **cjdb's footprint heuristic can also drop or shrink an object's own
-    footprint.** After discarding (near-)vertical faces,
-    `get_ground_surfaces()` keeps only faces whose mean Z is strictly below
-    the mean of the remaining distinct Z values. An object whose non-vertical
-    faces share a single Z value — for example a small roof feature modelled
-    as walls plus one `RoofSurface` — keeps nothing, so `ground_geometry` is
-    NULL even though the object has geometry. For flat, elongated geometry
-    with little Z variation (for example railway track surfaces) the split
-    can keep only part of the horizontal extent, producing an undersized
-    footprint. Either way cjdb's `bbox-query` undercounts. Neither case is
-    the tie bug the patch fixes, and neither is patched.
+    footprint — and on 3DBAG it demonstrably does.** After discarding
+    (near-)vertical faces, `get_ground_surfaces()` keeps only faces whose
+    mean Z is strictly below the mean of the remaining distinct Z values. An
+    object whose non-vertical faces share a single Z value keeps nothing, so
+    `ground_geometry` is NULL even though the object has geometry. For flat,
+    elongated geometry with little Z variation the split can keep only part
+    of the horizontal extent, producing an undersized footprint. Either way
+    cjdb's `bbox-query` undercounts. Neither case is the tie bug the patch
+    fixes, and neither is patched: this follows from cjdb's own importer,
+    and patching it would benchmark a cjdb that does not exist.
 
-12. **PostGIS `&&` can return false positives at large coordinate
-    magnitudes.** Serialised PostGIS geometries cache a single-precision
-    (float4) bounding box, which the `&&` operator uses whether or not an
-    index is involved. An envelope lying a few centimetres outside the query
-    window can therefore test as overlapping when coordinates are in the
-    millions (for example CH1903+/LV95), where one float4 step exceeds a few
-    centimetres. `3dcitydb` (and, in principle, `cjdb`) use `&&`;
-    `duckdb-cityparquet` and the native readers compare double-precision
-    bounds and are not exposed. The harness keeps `&&`, the idiomatic,
-    index-cooperating PostGIS form, rather than switching to `ST_Intersects`.
+    **Measured, not hypothesised.** On the committed 1M 3DBAG run the bbox
+    counts decompose exactly
+    (`notes/benchmark-fairness-review-2026-09-22.md` §5, which replays
+    cjdb's own patched `get_ground_geometry()` over the source and
+    reproduces all three counts):
+
+    | window | `duckdb-cityparquet` | `cjdb` | | `3dcitydb` | |
+    |---|---|---|---|---|---|
+    | 1 % | 4,903 | 4,901 | = 4,903 − 2 NULL footprints | 4,903 | + 0 |
+    | 5 % | 63,745 | 63,729 | = 63,745 − 16 | 63,745 | + 0 |
+    | 25 % | 221,005 | 220,949 | = 221,005 − 60 + 4 float4 | 221,008 | + 3 (the float4 model predicts + 4) |
+
+    Of the 60 NULL-footprint BuildingParts at the 25 % window, 39 have no
+    lower horizontal face in the minimum-LoD geometry and 21 have one that
+    shapely rejects as invalid, so only the roof survives and the split
+    discards it. Two competing explanations were **refuted**: "footprint
+    versus 3D extent" accounts for 0 objects at every window (the LoD1.2 /
+    1.3 / 2.2 solids are extrusions of the footprint), and Caveat 16 does
+    not operate either (0 of 1,000,001 CityParquet rows has a NULL `bbox`).
+    The 3DCityDB residual of 3 rather than the modelled 4 is explained in
+    class but not in count; settling it needs the four boundary rows'
+    `envelope` read on a live import.
+
+12. **PostGIS `&&` returns false positives at EPSG:7415 magnitudes, and
+    both PostgreSQL systems are affected in fact.** Serialised PostGIS
+    geometries cache a single-precision (float4) bounding box, which the
+    `&&` operator uses whether or not an index is involved. One float4 step
+    at x ≈ 1.86e5 — ordinary RD New coordinates, not "in the millions" — is
+    **0.0156 m**, so an envelope lying a centimetre or two outside the
+    window can test as overlapping. An earlier version of this caveat said
+    this needed coordinates in the millions and that `cjdb` was affected
+    only "in principle"; both are wrong. On the committed 3DBAG run the
+    float4 term contributes **+4 objects at the 25 % window on both
+    PostgreSQL systems** (Caveat 11's table). `duckdb-cityparquet` and the
+    native readers compare double-precision bounds and are not exposed.
+
+    The harness keeps `&&`, the idiomatic, index-cooperating PostGIS form.
+    The exact predicate (`ST_Intersects(envelope, env)`, or `&& env AND
+    ST_Intersects(ST_Envelope(ground_geometry), env)` for cjdb) would remove
+    the +4/+3 at the cost of leaving each system's native form and adding
+    per-candidate CPU to the timings, for a 3-in-221,005 correction.
 
 13. **3DCityDB's importer restructures CityGML-recognised attributes, which
-    can empty `attr-stats`.** `attr-stats` looks up `property.name` equal to
-    the literal CityJSON attribute name every other system is given. When
-    `citydb-tool` maps a CityJSON attribute onto a structured CityGML 3.0
-    datatype — `measuredHeight` becomes a `height` property of type `Height`,
-    with the scalar on a child `property` row named `value` — no row has the
-    original name, and 3DCityDB reports 0 against the others' counts. The
-    query is not special-cased for such names. `attr-stats` is comparable
-    across systems only when `numeric_column` is not such an attribute; the
-    committed 3DBAG run uses `b3_extrusie`, on which all three systems agree.
+    can empty `attr-stats`, `attr-filter` and `attr-range`.** All three look
+    up `property.name` equal to the literal CityJSON attribute name every
+    other system is given. When `citydb-tool` maps a CityJSON attribute onto
+    a structured CityGML 3.0 datatype — `measuredHeight` becomes a `height`
+    property of type `Height`, with the scalar on a child `property` row
+    named `value` — no row has the original name, and 3DCityDB reports 0
+    against the others' counts. The queries are not special-cased for such
+    names. These scenarios are comparable across systems only when the
+    chosen attribute is not such an attribute; the committed 3DBAG run uses
+    `b3_extrusie` for `attr-stats`, on which all three systems agree. If a
+    re-run shows `attr-range` or `attr-filter` disagreeing for this reason,
+    pick the next attribute all three agree on, as `attr-stats` did.
 
 14. **The native reader accepts only single-table packages.**
     `cityparquet convert` writes one table per first-level CityObject family.
@@ -476,15 +778,17 @@ Read these before citing a number.
 15. **`lod-extract` and `semantic-surface` are degenerate on
     `duckdb-cityparquet` when the package lacks the columns they read.**
     `lod-extract` targets the column `geometry_lod1_2`. When a package has no
-    such column, `sql_duckdb.sql_for` emits `SELECT count(*) ... WHERE FALSE`,
+    such column, `sql_duckdb.sql_for` emits `SELECT id ... WHERE FALSE`,
     which DuckDB folds at plan time without scanning anything, while cjdb and
     3DCityDB still execute their queries and return 0. The counts agree, so
     the cross-check raises nothing, but the `duckdb-cityparquet` time on such
     a row measures no work and must not be compared with the others or cited
     as evidence for projection pushdown. `semantic-surface` does the same
-    when a package has no `geometry_properties_lod*` column. The committed
-    3DBAG package has `geometry_lod1_2` (all three systems count 500,296), so
-    its `lod-extract` row is not degenerate.
+    when a package has no `geometry_properties_lod*` column, and `bbox-fetch`
+    / `point-query` return a NULL footprint when it has no
+    `geometry_lod0_0`. The committed 3DBAG package has `geometry_lod1_2`
+    (all three systems count 500,296) and `geometry_lod0_0`, so neither row
+    is degenerate on it.
 
 16. **CityParquet's `bbox` is NULL for an object whose only geometry is a
     `GeometryInstance`.** The writer computes `bbox` from the object's own
@@ -494,7 +798,62 @@ Read these before citing a number.
     `wkb_write.rs`). An object with only template instances in its subtree
     and no declared extent therefore has a NULL `bbox`, and every
     `bbox-query` on CityParquet excludes it, while cjdb and 3DCityDB resolve
-    the placed geometry and can include it.
+    the placed geometry and can include it. Such a row is also outside the
+    query-window derivation's denominator, which is recorded as
+    `window_rows` in the params sidecar. On the committed 3DBAG slice this
+    caveat does not operate: 0 of 1,000,001 rows has a NULL `bbox`.
+
+17. **`id-lookup` returns a different amount of object per system.**
+    `duckdb-cityparquet` and `cjdb` return the whole object row, geometry
+    included. 3DCityDB returns the `feature` row only: `property` and
+    `geometry_data` are not joined, so it hands back an object's identity
+    and envelope without its attributes or geometry. That makes 3DCityDB's
+    `id-lookup` the least work of the three, and the scenario is one
+    CityParquet loses heavily in any case. Read it as "locate a row by id",
+    not "materialise a comparable object".
+
+18. **`geometry-scan` is fairer than the row it replaces, but it is not
+    neutral, and a byte length does not prove a decode.** All three systems
+    now scan the same thing, which the retired `full-read` did not: that row
+    hashed 84 columns on DuckDB, serialised three JSONB/PostGIS columns to
+    text on cjdb, and cast whole composite records through two `GROUP BY`
+    CTEs over entire tables on 3DCityDB (276 s against 1.2 s, and largely
+    artefact — `notes/benchmark-fairness-review-2026-09-22.md` §4.2). Three
+    asymmetries remain, and none is removed by this change:
+    - **Binary against text.** DuckDB reads stored WKB lengths; both
+      PostgreSQL systems serialise to text first (`geometry::text` is a
+      JSONB render on cjdb, EWKT on 3DCityDB) and then throw the string
+      away. A client reading JSONB genuinely pays that, but it is not the
+      same operation.
+    - **One DuckDB term is itself a re-serialisation.** CityParquet writes
+      the LoD0 footprint with Parquet's own GEOMETRY logical type, which
+      DuckDB 1.5 decodes to its native `GEOMETRY` — measured to be true
+      **whatever `enable_geoparquet_conversion` is set to**, because that
+      setting governs the `geo`-footer path, not the logical type.
+      `octet_length` does not bind against it, so that column's term is
+      `octet_length(ST_AsWKB(...))`. The other `geometry_lod*` columns are
+      BLOB and are read as stored lengths.
+    - **A summed byte length does not establish that a geometry was
+      decoded** on any of the three.
+
+19. **The write tier is different operations, not one scale.** cjdb rewrites
+    roughly half a million JSONB tuples under MVCC; 3DCityDB inserts,
+    updates and deletes half a million EAV rows; CityParquet adds or drops a
+    column of an in-memory table and, on the `-writeback` rows, re-encodes
+    the package and its footers. The area expressions also differ, inherited
+    from the CJDB paper (footprint area on cjdb, envelope area on
+    3DCityDB). Publish the write table beside the read table with this
+    caveat attached, exactly as the ingest section already does — not as
+    points on one axis. `attr-delete`'s CityParquet `result_count` is a
+    definition rather than a measurement (see "The write tier").
+
+20. **`EXPLAIN (ANALYZE, BUFFERS)` doubles the per-sample work on both
+    PostgreSQL systems for every read row.** The instrumented re-run is
+    outside the timed window, so it does not inflate `time_s` directly, but
+    it does mean each PostgreSQL read sample executes its query twice while
+    neither DuckDB row does — relevant to cache state between samples, and
+    to wall-clock planning of a full run. Write rows are exempt, because
+    there the re-run would apply the mutation twice (see "The write tier").
 
 ## Running the benchmark
 
@@ -529,9 +888,14 @@ uv run python -m citybench.cli run \
   --data-root ../runs \
   --prepared-dir ../runs/data/readbench \
   --dataset <path/to/dataset>.city.jsonl \
-  [--systems duckdb-cityparquet,cjdb,3dcitydb] [--repeat 7] [--srid 7415] \
+  [--systems duckdb-cityparquet,duckdb-cityparquet-source,duckdb-cityparquet-writeback,cjdb,3dcitydb] \
+  [--repeat 7] [--srid 7415] [--count-tolerance 0.001] \
   [--output-dir <dir>]
 ```
+
+One invocation measures both thread configurations and then the write
+tier; there is no flag to run half of it, because the order is what keeps
+the write tier's bloat out of the read rows.
 
 With `--data-root` (which must lie below `benchmark/runs/`),
 `lifecycle.isolated_databases`:
@@ -618,6 +982,12 @@ further datasets: `delft.json`, `Montreal.json`, `Vienna.json`, `Zurich.json`
 and `lod3_railway.json`. No results for them are committed, and
 `citybench run` does not read these files; they are reference outputs of
 `citybench.params.derive` for those sources.
+
+**These files predate the package-derived parameters** and no longer match
+what `derive` produces: it now needs the dataset's CityParquet package as
+well as its source, so regenerating one takes
+`just derive-params --dataset <src> --prepared-dir <dir>` with the package
+already prepared.
 
 Montreal, Vienna, Zurich and lod3_railway are fetched and checksum-pinned,
 not committed:

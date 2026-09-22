@@ -20,6 +20,12 @@ REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / "benchmark" / "manifest.toml"
 FAMILIES = ("sizes", "formats", "codec", "rowgroup", "databases")
 DEFAULT_DATA_ROOT = REPO / "benchmark" / "runs"
+# Relative spread below which the database family's cross-system count
+# check publishes an EXPLAINED deviation (status=ok-deviation, with the
+# decomposition kept in `notes`) instead of failing the run. See
+# `benchmark/databases/README.md`, "Count cross-check", and
+# `citybench.runner.DEFAULT_COUNT_TOLERANCE`.
+DATABASE_COUNT_TOLERANCE = 0.001
 
 
 def load_manifest() -> dict:
@@ -297,7 +303,14 @@ def run_suite(manifest: dict, locations: dict[str, Path], families: list[str], d
             raise SystemExit("database input is not prepared; run just bench-prep --families databases first")
         output = locations["databases"] / ("smoke" if smoke else "results")
         root = locations["formats"].parent
-        command("uv", "run", "--project", "benchmark/databases", "python", "-m", "citybench.cli", "smoke" if smoke else "run", "--data-root", str(root), "--prepared-dir", str(locations["prepared"]), "--dataset", str(database_input), "--output-dir", str(output))
+        # One invocation measures BOTH thread configurations — `single`
+        # (the primary figure) and `parallel` — and then the write tier,
+        # in that order: the write tier's mutations leave bloat behind that
+        # a later read pass would measure as if it were the steady state.
+        # The count tolerance is passed explicitly rather than left to the
+        # CLI default so the suite's own choice is visible here and in the
+        # run manifest.
+        command("uv", "run", "--project", "benchmark/databases", "python", "-m", "citybench.cli", "smoke" if smoke else "run", "--data-root", str(root), "--prepared-dir", str(locations["prepared"]), "--dataset", str(database_input), "--output-dir", str(output), "--count-tolerance", str(DATABASE_COUNT_TOLERANCE))
 
 
 def parser() -> argparse.ArgumentParser:
