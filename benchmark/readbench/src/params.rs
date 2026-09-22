@@ -873,7 +873,11 @@ fn survey_string_columns(table: &Path, columns: &[String]) -> Result<(Vec<String
                     // predicate is reproducible run-to-run.
                     let top = tally
                         .into_iter()
-                        .filter(|(value, _)| !value.contains(NOTES_HOSTILE))
+                        // The empty string is excluded for the same reason:
+                        // it renders as a bare `attr=<column>=`, which
+                        // `readbench_duckdb.sh` reads back as "no predicate"
+                        // and refuses.
+                        .filter(|(value, _)| !value.is_empty() && !value.contains(NOTES_HOSTILE))
                         .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
                     StringSurvey {
                         column: column.clone(),
