@@ -89,7 +89,9 @@ if [[ ! -x "$DUCK" ]]; then
     echo "         build one with 'just -f ../duckdb-cityjson/justfile build',"
     echo "         or point CITYPARQUET_DUCKDB_CITYJSON at one elsewhere"
 else
-    "$DUCK" <<SQL
+    # -bail: stop at the first failing statement and exit non-zero, so a broken
+    # write fails here rather than as a missing-file panic inside the test.
+    "$DUCK" -bail <<SQL
 CREATE SCHEMA ip;
 CREATE TABLE ip.building AS SELECT * FROM read_cityjsonseq('${PWD}/tests/fixtures/delft.city.jsonl');
 PRAGMA cityparquet_init('ip');

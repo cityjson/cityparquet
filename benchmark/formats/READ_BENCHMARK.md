@@ -871,18 +871,27 @@ AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
     prune: re-run both families before comparing them with the `bloom`
     family, or with each other across that change.
 
-31. **The committed format and size CSVs predate bloom filters as well.**
-    `read_results/*.csv` — every `cityparquet-hilbert` `id-lookup` row,
-    `id-miss` included — and `read_results/sizes.csv`, together with the
-    writer matrices in `results/` and `scaling_write_results/` and their
-    sibling `sizes.csv` files, were all measured before the writer turned
-    filters on by default. They are 13-column CSVs, written before the three
-    lookup counters existed, which is the shape's own evidence of their age.
+31. **Every other committed CSV predates bloom filters too.** Caveat 30 names
+    the configuration families; the rest are in the same position, and nothing
+    committed was measured with filters on. Specifically:
+
+    - The read CSVs of `read_results/`, `scaling_read_results/`,
+      `ordering_results/` and `scaling_ordering_results/` are all in the
+      13-column shape that predates the three lookup counters
+      (`row_groups_total`, `bloom_pruned`, `filter_bytes`) — which is the
+      shape's own evidence of their age. So **every** `cityparquet` /
+      `cityparquet-hilbert` `id-lookup` row in them, `id-miss` included, read
+      the `id` column with no filter to prune with.
+    - Every `sizes.csv` beside them, and the `total_bytes` column of the
+      12-column writer matrices in `results/` and `scaling_write_results/`,
+      measures packages that carry no filter bytes. (Neither writer-matrix
+      directory has a `sizes.csv` of its own; its bytes are in the matrix.)
+
     So the cross-format id-lookup times and the cross-format byte counts the
-    paper cites describe a package with no filters: **re-run the `formats`
-    and `sizes` families before comparing either against a package the
-    current writer produced, or against the `bloom` family.** A partial
-    re-run is not available: `benchmark/scripts/format_write.py` refuses to
+    paper cites describe a package with no filters: **re-run the `formats` and
+    `sizes` families before comparing either against a package the current
+    writer produced, or against the `bloom` family.** A partial re-run of a
+    read CSV is not available: `benchmark/scripts/format_write.py` refuses to
     append to a results CSV whose header is not the current 16-column one, so
     an incremental re-run needs the 13-column file removed first.
 
