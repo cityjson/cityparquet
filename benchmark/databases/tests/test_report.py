@@ -92,3 +92,51 @@ def test_write_csv_roundtrips(tmp_path):
         got = list(csv.DictReader(fh))
     assert got[0]["result_count"] == "7"
     assert list(got[0].keys()) == list(COLUMNS)
+
+
+# --- the `status` override ------------------------------------------------
+#
+# `ok-deviation` is not visible in `notes`: a deviating row keeps its full
+# `count-mismatch: ...` detail, because that decomposition is the row's
+# value. Only the runner knows whether the spread was inside the run's
+# stated tolerance, so it supplies the status rather than having this
+# module re-derive it from the text.
+
+
+def _measurement(notes: str = "") -> Measurement:
+    return Measurement(
+        result_count=1, times_s=[0.1], server_times_s=[], peak_rss_bytes=None,
+        notes=notes,
+    )
+
+
+def test_status_is_taken_from_the_runner_when_supplied():
+    row = row_from_measurement(
+        dataset="d", fmt="cjdb", scenario="bbox-query",
+        measurement=_measurement("count-mismatch: cjdb=9 3dcitydb=10 spread=0.1"),
+        selectivity=None, status="ok-deviation",
+    )
+    assert row["status"] == "ok-deviation"
+    # The detail is kept, not dropped.
+    assert "count-mismatch" in row["notes"]
+
+
+def test_error_and_skipped_still_win_over_the_supplied_status():
+    # A system that never answered has no count to have deviated.
+    for notes, expected in (("error: RuntimeError", "error"),
+                            ("skipped: no numeric attribute", "skipped")):
+        row = row_from_measurement(
+            dataset="d", fmt="cjdb", scenario="attr-stats",
+            measurement=_measurement(notes), selectivity=None,
+            status="ok-deviation",
+        )
+        assert row["status"] == expected
+
+
+def test_status_falls_back_to_the_note_when_the_runner_supplies_none():
+    row = row_from_measurement(
+        dataset="d", fmt="cjdb", scenario="bbox-query",
+        measurement=_measurement("count-mismatch: cjdb=9 3dcitydb=10"),
+        selectivity=None,
+    )
+    assert row["status"] == "mismatch"
