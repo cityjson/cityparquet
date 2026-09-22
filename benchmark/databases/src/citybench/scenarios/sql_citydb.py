@@ -383,7 +383,7 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         # numeric columns is what a competent query would do for "the
         # count/min/max/sum of this attribute" regardless of which JSON
         # numeric subtype it happens to be. Contrast Vienna's
-        # `measuredHeight` (README Caveat 11): there, no `property` row is
+        # `measuredHeight` (README Caveat 13): there, no `property` row is
         # named `measuredHeight` AT ALL — the value is nested one level
         # down under a differently-named child row (`name='value'`) — so no
         # coalesce over sibling val_* columns of the SAME row can reach it;
@@ -451,7 +451,7 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         # while the other two systems hand back the geometry, and the three
         # rows would not be the same amount of object. It still returns
         # less than they do — the attributes live in `property` and are not
-        # joined — which is README Caveat 16.
+        # joined — which is README Caveat 17.
         return (
             f"SELECT DISTINCT ON (f.id) f.*, gd.geometry FROM {_F} f "
             f"JOIN {_P} pr ON pr.{CAPTURED_PROPERTY_FK} = f.id "

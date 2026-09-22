@@ -213,7 +213,7 @@ def sql_for(scenario: str, params: Params, table: str,
         # this corpus that is 4 of 5 datasets (only `delft` carries
         # `geometry_lod1_2`), so the published `duckdb-cityparquet`
         # `lod-query` timing on those four rows is not a measurement of
-        # anything -- see README Caveat 14.
+        # anything -- see README Caveat 15.
         if columns is not None and "geometry_lod1_2" not in columns:
             return f"SELECT * FROM {table} WHERE FALSE", ()
         return (
