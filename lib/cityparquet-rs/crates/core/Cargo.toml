@@ -37,6 +37,7 @@ jsonschema = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
+bytes = { workspace = true }
 
 [features]
 object-store = [

@@ -444,6 +444,7 @@ dependencies = [
  "arrow-select",
  "async-trait",
  "axum",
+ "bytes",
  "cardinality-estimator",
  "chrono",
  "city3d-stac-types",

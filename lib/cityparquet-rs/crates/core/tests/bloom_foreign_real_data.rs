@@ -281,3 +281,66 @@ fn dictionary_typed_identifiers_are_looked_up_like_plain_ones() {
         assert_eq!(stats.filter_bytes > 0, filtered);
     }
 }
+
+#[cfg(feature = "object-store")]
+fn local_store(dir: &Path) -> Arc<dyn object_store::ObjectStore> {
+    Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir).unwrap())
+}
+
+/// The dotted attribute over the async transport: the same counts and
+/// statistics as the sync path.
+#[cfg(feature = "object-store")]
+#[tokio::test]
+async fn a_dotted_attribute_is_found_by_its_exact_name_over_object_store() {
+    let (_dir, input) = delft_renamed("bag.identificatie");
+    let (on, on_table) = convert_input(&input, true);
+    let target = values(&on_table, "bag.identificatie")[500].clone();
+    let path = object_store::path::Path::from("building.parquet");
+    for value in [target.as_str(), MISS] {
+        let pred = AttrPredicate::Eq(serde_json::Value::String(value.to_string()));
+        let sync = attr_filter_with_stats(&on_table, "bag.identificatie", &pred).unwrap();
+        let async_result = cityparquet::query_async::attr_filter_async_with_stats(
+            local_store(on.path()),
+            &path,
+            "bag.identificatie",
+            &pred,
+        )
+        .await
+        .unwrap();
+        assert_eq!(async_result, sync, "{value}");
+    }
+}
+
+/// Dictionary-typed identifiers over the async transport.
+#[cfg(feature = "object-store")]
+#[tokio::test]
+async fn dictionary_typed_identifiers_are_looked_up_over_object_store() {
+    let plain_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), plain_dir.path().to_path_buf());
+    opts.recipe = recipe(false);
+    convert(&opts).unwrap();
+    let plain = plain_dir.path().join("building.parquet");
+    let copies = tempfile::tempdir().unwrap();
+    dictionary_copy(
+        &plain,
+        &copies.path().join("dictionary_bloom.parquet"),
+        true,
+    );
+    let table = copies.path().join("dictionary_bloom.parquet");
+    let meta = table_meta(&table);
+    let target = values(&plain, "id")[1000].clone();
+    let path = object_store::path::Path::from("dictionary_bloom.parquet");
+    for id in [target.as_str(), MISS] {
+        let sync = id_lookup_with_stats(&table, &meta, id).unwrap();
+        let async_result = cityparquet::query_async::id_lookup_async_with_stats(
+            local_store(copies.path()),
+            &path,
+            &meta,
+            id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(async_result.1, sync.1, "{id}");
+        assert_eq!(async_result.0.map(|o| o.id), sync.0.map(|o| o.id), "{id}");
+    }
+}
