@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use cityparquet::scan::{city_and_geo_for_file, scan};
@@ -386,5 +387,84 @@ fn an_unresolvable_reference_system_scans_to_an_explicit_null_crs() {
     assert!(
         diagnostic.contains("IGNF") && diagnostic.contains("could not be resolved"),
         "the diagnostic must name the identifier it could not resolve, got: {diagnostic}"
+    );
+}
+
+/// The high-cardinality rule on delft, whose attributes sit on the 1115
+/// Building rows only: `identificatie` (1115 distinct of 1115 non-null) and
+/// `documentnummer` (293 of 1115, 0.26) qualify at 0.2; `status` (5 values),
+/// the other short vocabularies, the Date/Timestamp-typed strings and the
+/// all-null columns do not.
+#[test]
+fn delft_scan_selects_exactly_the_high_cardinality_string_attributes() {
+    let result = scan(&Source::open(&fixture("delft.city.jsonl")).unwrap()).unwrap();
+    let expected: BTreeSet<String> = ["documentnummer", "identificatie"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    assert_eq!(result.bloom_attributes, expected);
+}
+
+/// The estimator's hasher is seeded deterministically, so the selection —
+/// and with it the package layout — is identical run to run.
+#[test]
+fn the_bloom_attribute_selection_is_deterministic() {
+    let first = scan(&Source::open(&fixture("delft.city.jsonl")).unwrap()).unwrap();
+    let second = scan(&Source::open(&fixture("delft.city.jsonl")).unwrap()).unwrap();
+    assert_eq!(first.bloom_attributes, second.bloom_attributes);
+}
+
+/// A copy of delft with every LoD `0` geometry dropped and every
+/// `identificatie` attribute renamed to `to` — a JSON mutation of the real
+/// fixture, never hand-written CityJSON. Without its LoD0 footprints delft
+/// keeps LoDs 1.2, 1.3 and 2.2, so LoD0 synthesis has work to do.
+fn delft_without_lod0_and_identificatie_renamed(to: &str) -> (tempfile::TempDir, PathBuf) {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut out = String::new();
+    for (index, line) in text.lines().enumerate() {
+        if index == 0 || line.trim().is_empty() {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut feature: serde_json::Value = serde_json::from_str(line).unwrap();
+        for (_, object) in feature["CityObjects"].as_object_mut().unwrap() {
+            if let Some(geometries) = object.get_mut("geometry").and_then(|g| g.as_array_mut()) {
+                geometries.retain(|g| g["lod"] != "0");
+            }
+            if let Some(attrs) = object.get_mut("attributes").and_then(|a| a.as_object_mut())
+                && let Some(value) = attrs.remove("identificatie")
+            {
+                attrs.insert(to.to_string(), value);
+            }
+        }
+        out.push_str(&serde_json::to_string(&feature).unwrap());
+        out.push('\n');
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delft_renamed.city.jsonl");
+    std::fs::write(&path, out).unwrap();
+    (dir, path)
+}
+
+/// Stripped of its LoD0, delft has no `0.*` LoD, so an attribute named
+/// `geometry_lod0_0` is a legal column after `scan` — and a qualifying one — until LoD0 synthesis
+/// reserves the name and diverts it into `other`. It must leave the bloom set
+/// with its column.
+#[test]
+fn an_attribute_diverted_by_lod0_synthesis_leaves_the_bloom_set() {
+    let (_dir, path) = delft_without_lod0_and_identificatie_renamed("geometry_lod0_0");
+    let mut result = scan(&Source::open(&path).unwrap()).unwrap();
+    assert!(
+        result.bloom_attributes.contains("geometry_lod0_0"),
+        "before synthesis: {:?}",
+        result.bloom_attributes
+    );
+    result.add_synthesized_lod0_column();
+    assert!(result.diverted_attribute_names.contains("geometry_lod0_0"));
+    assert!(
+        !result.bloom_attributes.contains("geometry_lod0_0"),
+        "after synthesis: {:?}",
+        result.bloom_attributes
     );
 }

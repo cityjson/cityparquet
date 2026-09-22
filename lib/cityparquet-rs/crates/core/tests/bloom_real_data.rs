@@ -7,7 +7,9 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::recipe::{BloomPolicy, RecipePreset, WriterRecipe};
+use cityparquet::source::Source;
 use cityparquet::stac::properties::PackageTables;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 
@@ -93,15 +95,20 @@ fn delft_recipe(row_group_size: usize) -> WriterRecipe {
 }
 
 #[test]
-fn the_default_recipe_filters_the_identifiers_in_every_row_group() {
+fn the_default_recipe_filters_the_identifiers_and_high_cardinality_attributes() {
     let out = convert_with("delft.city.jsonl", delft_recipe(512));
     let table = out.path().join("building.parquet");
     let groups = row_group_count(&table);
     assert_eq!(groups, 5, "2231 rows at 512 per group");
-    let expected: BTreeMap<String, usize> = [("feature_id", groups), ("id", groups)]
-        .into_iter()
-        .map(|(name, n)| (name.to_string(), n))
-        .collect();
+    let expected: BTreeMap<String, usize> = [
+        ("documentnummer", groups),
+        ("feature_id", groups),
+        ("id", groups),
+        ("identificatie", groups),
+    ]
+    .into_iter()
+    .map(|(name, n)| (name.to_string(), n))
+    .collect();
     assert_eq!(filtered_columns(&table), expected);
     assert_filters_follow_the_data(&table);
 }
@@ -154,5 +161,33 @@ fn sidecars_carry_no_filter_and_every_object_table_filters_its_identifiers() {
             );
         }
         assert_filters_follow_the_data(table);
+    }
+}
+
+/// 1115 features in 300 contiguous chunks leaves 3 or 4 Buildings per
+/// partition, where a partition-local rule would select `status` everywhere
+/// (one distinct value of at most four is at least 0.2). Every partition
+/// must carry the dataset-wide decision instead.
+#[test]
+fn partitions_share_the_dataset_wide_attribute_decision() {
+    let out = tempfile::tempdir().unwrap();
+    let src = Source::open(&fixture("delft.city.jsonl")).unwrap();
+    let opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
+    let report = convert_partitioned(
+        std::slice::from_ref(&src),
+        &PartitionSpec::Count(300),
+        &opts,
+    )
+    .unwrap();
+    assert_eq!(report.partitions.len(), 300);
+    for (label, _) in &report.partitions {
+        let filtered = filtered_columns(&out.path().join(label).join("building.parquet"));
+        for name in ["id", "feature_id", "identificatie", "documentnummer"] {
+            assert!(
+                filtered.contains_key(name),
+                "{label} lacks {name}: {filtered:?}"
+            );
+        }
+        assert!(!filtered.contains_key("status"), "{label}: {filtered:?}");
     }
 }

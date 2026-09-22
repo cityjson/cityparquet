@@ -7,6 +7,8 @@
 //! types of the Arrow schema [`CityParquetSchema`] renders, so it can never
 //! drift from the schema it is given.
 
+use std::collections::BTreeSet;
+
 use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
 use arrow_schema::{Field, Schema};
 use parquet::arrow::ArrowSchemaConverter;
@@ -14,7 +16,7 @@ use parquet::basic::{BrotliLevel, Compression, Encoding, GzipLevel, ZstdLevel};
 use parquet::file::properties::{BloomFilterPosition, EnabledStatistics, WriterProperties};
 use parquet::schema::types::ColumnPath;
 
-use cityparquet_schema::{CityParquetError, CityParquetSchema, Result};
+use cityparquet_schema::{AttributeType, CityParquetError, CityParquetSchema, Result};
 
 /// A compression codec, overriding whichever codec [`RecipePreset`] would
 /// otherwise pick — the benchmark's compression-codec axis, orthogonal to
@@ -68,8 +70,9 @@ impl Codec {
 
 /// Parquet bloom filters on the object tables (specification "Physical
 /// encoding and conformance"; design decision G). Which columns carry one is
-/// decided by [`WriterRecipe::writer_properties`]; this switches them on and
-/// sets their target false-positive probability.
+/// decided by [`WriterRecipe::writer_properties`], from the attribute set
+/// [`crate::scan::ScanResult::bloom_attributes`] selects; this switches them
+/// on and sets their target false-positive probability.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BloomPolicy {
     pub enabled: bool,
@@ -311,7 +314,16 @@ impl WriterRecipe {
     /// rows are actually written; `crate::package::TableWriters::finish`
     /// appends it via `append_key_value_metadata`, mirroring how
     /// `sidecar_files` used to be appended post-encode.
-    pub fn writer_properties(&self, schema: &CityParquetSchema) -> Result<WriterProperties> {
+    ///
+    /// `bloom_attributes` names the scalar string attributes that also get a
+    /// bloom filter under an enabled [`BloomPolicy`] —
+    /// [`crate::scan::ScanResult::bloom_attributes`]. A name that is not a
+    /// `String` attribute of `schema` is ignored.
+    pub fn writer_properties(
+        &self,
+        schema: &CityParquetSchema,
+        bloom_attributes: &BTreeSet<String>,
+    ) -> Result<WriterProperties> {
         // TAGGED (`geoarrow = true`): the WKB geometry-column detection below
         // keys off the `geoarrow.wkb` extension metadata that flag adds.
         let arrow_schema = schema.to_arrow_schema()?;
@@ -390,7 +402,8 @@ impl WriterRecipe {
         }
 
         // Bloom filters: `id` and `feature_id` in every object table — the
-        // two identifier columns whose min/max statistics cannot prune. Every
+        // two identifier columns whose min/max statistics cannot prune —
+        // plus the high-cardinality string attributes. Every
         // filter goes after the last row group (`BloomFilterPosition::End`),
         // where one coalesced range read reaches them all. NDV is left to
         // parquet-rs, which resolves it to the row-group row count and folds
@@ -404,6 +417,17 @@ impl WriterRecipe {
                 builder = builder
                     .set_column_bloom_filter_enabled(path.clone(), true)
                     .set_column_bloom_filter_fpp(path, self.bloom.fpp);
+            }
+            // High-cardinality scalar string attributes, as `scan` decided
+            // them. An attribute column is one top-level leaf, so its path is
+            // the single-part `[name]` even when the name holds a literal `.`.
+            for (name, ty) in &schema.attributes {
+                if *ty == AttributeType::String && bloom_attributes.contains(name) {
+                    let path = ColumnPath::new(vec![name.clone()]);
+                    builder = builder
+                        .set_column_bloom_filter_enabled(path.clone(), true)
+                        .set_column_bloom_filter_fpp(path, self.bloom.fpp);
+                }
             }
         }
 
@@ -485,7 +509,9 @@ mod tests {
     #[test]
     fn recipe_renders_the_binding_per_column_rules() {
         let schema = sample_schema();
-        let props = WriterRecipe::default().writer_properties(&schema).unwrap();
+        let props = WriterRecipe::default()
+            .writer_properties(&schema, &BTreeSet::new())
+            .unwrap();
 
         // id / feature_id: DELTA_BYTE_ARRAY, dictionary off.
         assert!(!props.dictionary_enabled(&ColumnPath::from("id")));
@@ -598,7 +624,9 @@ mod tests {
             ],
             crs: None,
         };
-        let props = WriterRecipe::default().writer_properties(&schema).unwrap();
+        let props = WriterRecipe::default()
+            .writer_properties(&schema, &BTreeSet::new())
+            .unwrap();
 
         // Attribute defaults: dictionary on, statistics not disabled.
         assert!(props.dictionary_enabled(&ColumnPath::from("geometry_extra")));
@@ -622,7 +650,7 @@ mod tests {
             statistics_for_json: true,
             ..WriterRecipe::default()
         };
-        let props = recipe.writer_properties(&schema).unwrap();
+        let props = recipe.writer_properties(&schema, &BTreeSet::new()).unwrap();
         assert_ne!(
             props.statistics_enabled(&ColumnPath::from("other")),
             EnabledStatistics::None
@@ -657,7 +685,7 @@ mod tests {
         let schema = sample_schema();
         let props = RecipePreset::ParquetDefaults
             .recipe()
-            .writer_properties(&schema)
+            .writer_properties(&schema, &BTreeSet::new())
             .unwrap();
 
         let bbox_xmin = ColumnPath::new(vec!["bbox".to_string(), "xmin".to_string()]);
@@ -670,7 +698,7 @@ mod tests {
         let schema = sample_schema();
         let props = RecipePreset::NoDictionary
             .recipe()
-            .writer_properties(&schema)
+            .writer_properties(&schema, &BTreeSet::new())
             .unwrap();
 
         assert!(!props.dictionary_enabled(&ColumnPath::from("object_type")));
@@ -682,7 +710,7 @@ mod tests {
         let schema = sample_schema();
         let props = RecipePreset::NoByteStreamSplit
             .recipe()
-            .writer_properties(&schema)
+            .writer_properties(&schema, &BTreeSet::new())
             .unwrap();
 
         assert_eq!(
@@ -707,7 +735,7 @@ mod tests {
         let schema = sample_schema();
         let props = RecipePreset::NoDelta
             .recipe()
-            .writer_properties(&schema)
+            .writer_properties(&schema, &BTreeSet::new())
             .unwrap();
 
         let bbox_xmin = ColumnPath::new(vec!["bbox".to_string(), "xmin".to_string()]);
@@ -723,7 +751,7 @@ mod tests {
         let schema = sample_schema();
         let props = RecipePreset::Snappy
             .recipe()
-            .writer_properties(&schema)
+            .writer_properties(&schema, &BTreeSet::new())
             .unwrap();
 
         assert_eq!(
@@ -760,7 +788,9 @@ mod tests {
         let schema = sample_schema();
 
         // cityparquet preset defaults to ZSTD at zstd_level.
-        let props = WriterRecipe::default().writer_properties(&schema).unwrap();
+        let props = WriterRecipe::default()
+            .writer_properties(&schema, &BTreeSet::new())
+            .unwrap();
         assert_eq!(
             props.compression(&ColumnPath::from("yoc")),
             Compression::ZSTD(ZstdLevel::try_new(3).unwrap())
@@ -769,7 +799,7 @@ mod tests {
         // snappy preset defaults to SNAPPY.
         let props = RecipePreset::Snappy
             .recipe()
-            .writer_properties(&schema)
+            .writer_properties(&schema, &BTreeSet::new())
             .unwrap();
         assert_eq!(
             props.compression(&ColumnPath::from("yoc")),
@@ -798,7 +828,7 @@ mod tests {
                 compression: Some(codec),
                 ..WriterRecipe::default()
             };
-            let props = recipe.writer_properties(&schema).unwrap();
+            let props = recipe.writer_properties(&schema, &BTreeSet::new()).unwrap();
             assert_eq!(
                 props.compression(&ColumnPath::from("yoc")),
                 want,
@@ -812,7 +842,7 @@ mod tests {
                 compression: Some(codec),
                 ..WriterRecipe::default()
             };
-            let props = recipe.writer_properties(&schema).unwrap();
+            let props = recipe.writer_properties(&schema, &BTreeSet::new()).unwrap();
             assert_eq!(
                 props.compression(&ColumnPath::from("yoc")),
                 want,
@@ -829,7 +859,9 @@ mod tests {
     #[test]
     fn the_geometry_column_leaf_gets_explicit_settings() {
         let schema = sample_schema();
-        let props = WriterRecipe::default().writer_properties(&schema).unwrap();
+        let props = WriterRecipe::default()
+            .writer_properties(&schema, &BTreeSet::new())
+            .unwrap();
         let path = ColumnPath::from("geometry_lod2_2");
         assert!(!props.dictionary_enabled(&path));
         assert_eq!(props.statistics_enabled(&path), EnabledStatistics::Chunk);
@@ -838,7 +870,7 @@ mod tests {
     #[test]
     fn the_default_recipe_filters_id_and_feature_id_after_the_last_row_group() {
         let props = WriterRecipe::default()
-            .writer_properties(&sample_schema())
+            .writer_properties(&sample_schema(), &BTreeSet::new())
             .unwrap();
         for name in ["id", "feature_id"] {
             let bloom = props
@@ -873,7 +905,9 @@ mod tests {
         };
         let parquet_defaults = RecipePreset::ParquetDefaults.recipe();
         for recipe in [disabled, parquet_defaults] {
-            let props = recipe.writer_properties(&sample_schema()).unwrap();
+            let props = recipe
+                .writer_properties(&sample_schema(), &BTreeSet::new())
+                .unwrap();
             for name in ["id", "feature_id"] {
                 assert!(
                     props
@@ -889,7 +923,10 @@ mod tests {
     #[test]
     fn every_tuned_preset_honours_the_policy() {
         for preset in RecipePreset::ALL {
-            let props = preset.recipe().writer_properties(&sample_schema()).unwrap();
+            let props = preset
+                .recipe()
+                .writer_properties(&sample_schema(), &BTreeSet::new())
+                .unwrap();
             let filtered = props
                 .bloom_filter_properties(&ColumnPath::new(vec!["id".to_string()]))
                 .is_some();
@@ -910,7 +947,9 @@ mod tests {
             },
             ..WriterRecipe::default()
         };
-        let props = recipe.writer_properties(&sample_schema()).unwrap();
+        let props = recipe
+            .writer_properties(&sample_schema(), &BTreeSet::new())
+            .unwrap();
         assert_eq!(
             props
                 .bloom_filter_properties(&ColumnPath::new(vec!["id".to_string()]))
@@ -924,10 +963,69 @@ mod tests {
                 ..WriterRecipe::default()
             };
             let err = recipe
-                .writer_properties(&sample_schema())
+                .writer_properties(&sample_schema(), &BTreeSet::new())
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("strictly between 0 and 1"), "{fpp}: {err}");
         }
+    }
+
+    #[test]
+    fn bloom_attributes_reach_only_string_columns_by_single_part_path() {
+        let schema = CityParquetSchema {
+            lods: vec![Lod::parse("2.2").unwrap()],
+            geoparquet_lods: vec![Lod::parse("2.2").unwrap()],
+            attributes: vec![
+                ("identificatie".to_string(), AttributeType::String),
+                ("status".to_string(), AttributeType::String),
+                ("dotted.name".to_string(), AttributeType::String),
+                ("yoc".to_string(), AttributeType::Int64),
+                ("props".to_string(), AttributeType::Json),
+            ],
+            crs: None,
+        };
+        let selected: BTreeSet<String> = ["identificatie", "dotted.name", "yoc", "props", "absent"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let props = WriterRecipe::default()
+            .writer_properties(&schema, &selected)
+            .unwrap();
+        let filtered = |parts: &[&str]| {
+            props
+                .bloom_filter_properties(&ColumnPath::new(
+                    parts.iter().map(|p| p.to_string()).collect(),
+                ))
+                .is_some()
+        };
+        assert!(filtered(&["identificatie"]));
+        assert!(
+            filtered(&["dotted.name"]),
+            "a literal `.` stays one path part"
+        );
+        assert!(!filtered(&["dotted", "name"]));
+        assert!(!filtered(&["status"]), "not selected");
+        assert!(
+            !filtered(&["yoc"]),
+            "numeric attributes never carry a filter"
+        );
+        assert!(
+            !filtered(&["props"]),
+            "JSON attributes never carry a filter"
+        );
+
+        let off = WriterRecipe {
+            bloom: BloomPolicy {
+                enabled: false,
+                ..BloomPolicy::default()
+            },
+            ..WriterRecipe::default()
+        }
+        .writer_properties(&schema, &selected)
+        .unwrap();
+        assert!(
+            off.bloom_filter_properties(&ColumnPath::new(vec!["identificatie".to_string()]))
+                .is_none()
+        );
     }
 }
