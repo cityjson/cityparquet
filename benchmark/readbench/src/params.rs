@@ -14,7 +14,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use arrow_array::types::Int32Type;
 use arrow_array::{
-    Array, ArrayAccessor, DictionaryArray, Float64Array, RecordBatch, StringArray, StructArray,
+    Array, ArrayAccessor, DictionaryArray, Float64Array, Int64Array, RecordBatch, StringArray,
+    StructArray,
 };
 use arrow_schema::{DataType, Schema};
 use cityparquet::reader::CityParquetReaderBuilder;
@@ -22,10 +23,12 @@ use cityparquet_schema::CityMetadata;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
+use crate::naming::strip_known_extension;
+
 /// Opens `table` just far enough to read its embedded CityParquet key-value
 /// metadata — the `attribute_columns` list `pick_numeric_attribute` chooses
 /// from.
-fn open_metadata(table: &Path) -> Result<CityMetadata> {
+pub fn open_metadata(table: &Path) -> Result<CityMetadata> {
     let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .with_context(|| format!("reading Parquet metadata from {}", table.display()))?;
@@ -33,7 +36,7 @@ fn open_metadata(table: &Path) -> Result<CityMetadata> {
 }
 
 /// `table`'s Arrow schema — the types `pick_numeric_attribute` filters on.
-fn open_arrow_schema(table: &Path) -> Result<Schema> {
+pub fn open_arrow_schema(table: &Path) -> Result<Schema> {
     let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .with_context(|| format!("reading Parquet schema from {}", table.display()))?;
@@ -449,10 +452,8 @@ pub fn id_probes(
 
 /// `array`'s Utf8 values as `Option<String>` per row (`None` for a null
 /// cell) — handles both a plain `Utf8` array and a `Dictionary<Int32,
-/// Utf8>` array. The reserved `object_type` column is ALWAYS
-/// `Dictionary<Int32, Utf8>` per `cityparquet_schema::model`'s own schema
-/// (never plain `Utf8`), but this accepts either shape rather than assuming
-/// one, mirroring `cityparquet::query::evaluate_attr_predicate`'s own
+/// Utf8>` array, because a string ATTRIBUTE column may be written as
+/// either, mirroring `cityparquet::query::evaluate_attr_predicate`'s own
 /// `Utf8`/`Dictionary` dispatch.
 fn utf8_values(array: &dyn Array) -> Result<Vec<Option<String>>> {
     match array.data_type() {
@@ -483,34 +484,93 @@ fn utf8_values(array: &dyn Array) -> Result<Vec<Option<String>>> {
     }
 }
 
-/// The most-frequent `object_type` value in `table` (and its count) — a
-/// single-column projected scan, tallied in memory (the reserved
-/// `object_type` column is always present, so this never needs the
-/// attribute-column machinery). Ties are broken deterministically by the
-/// `object_type` string itself (rather than `HashMap` iteration order, which
-/// is SipHash-randomised per process) so the derived `AttrFilter` predicate —
-/// and therefore the whole run — is reproducible run-to-run.
-fn most_frequent_object_type(table: &Path) -> Result<(String, u64)> {
+/// `array`'s values as `Option<f64>` per row (`None` for a null cell), for
+/// the two numeric attribute types [`pick_numeric_attribute`] admits.
+fn f64_values(array: &dyn Array) -> Result<Vec<Option<f64>>> {
+    match array.data_type() {
+        DataType::Float64 => {
+            let values = array
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .ok_or_else(|| anyhow::anyhow!("expected a Float64 array"))?;
+            Ok((0..values.len())
+                .map(|i| (!values.is_null(i)).then(|| values.value(i)))
+                .collect())
+        }
+        DataType::Int64 => {
+            let values = array
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| anyhow::anyhow!("expected an Int64 array"))?;
+            Ok((0..values.len())
+                .map(|i| (!values.is_null(i)).then(|| values.value(i) as f64))
+                .collect())
+        }
+        other => bail!("expected an Int64 or Float64 array, got {other:?}"),
+    }
+}
+
+/// Opens `table` projected down to `columns`, in the order given.
+fn projected_reader(
+    table: &Path,
+    columns: &[&str],
+) -> Result<parquet::arrow::arrow_reader::ParquetRecordBatchReader> {
     let file = File::open(table).with_context(|| format!("opening {}", table.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .with_context(|| format!("reading {}", table.display()))?;
-    let projection = ProjectionMask::columns(builder.parquet_schema(), ["object_type"]);
-    let reader = builder
+    let projection = ProjectionMask::columns(builder.parquet_schema(), columns.iter().copied());
+    builder
         .with_projection(projection)
         .build()
-        .with_context(|| format!("scanning object_type column of {}", table.display()))?;
+        .with_context(|| format!("scanning {columns:?} of {}", table.display()))
+}
 
-    let mut counts: HashMap<String, u64> = HashMap::new();
-    for batch in reader {
+/// `(rows whose `column` equals `value`, total rows)` — a single-column
+/// projected scan of `table`.
+fn count_string_matches(table: &Path, column: &str, value: &str) -> Result<(u64, u64)> {
+    let mut matched = 0u64;
+    let mut total = 0u64;
+    for batch in projected_reader(table, &[column])? {
         let batch = batch.with_context(|| format!("reading a batch of {}", table.display()))?;
-        for value in utf8_values(batch.column(0).as_ref())?.into_iter().flatten() {
-            *counts.entry(value).or_insert(0) += 1;
+        total += batch.num_rows() as u64;
+        for cell in utf8_values(batch.column(0).as_ref())?.into_iter().flatten() {
+            if cell == value {
+                matched += 1;
+            }
         }
     }
-    counts
-        .into_iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
-        .ok_or_else(|| anyhow::anyhow!("{} has no object_type values", table.display()))
+    Ok((matched, total))
+}
+
+/// Every non-null value of the numeric `column`, plus `table`'s total row
+/// count — a single-column projected scan. One `f64` per non-null row: 8 MB
+/// on the largest slice in the corpus.
+fn numeric_column_values(table: &Path, column: &str) -> Result<(Vec<f64>, u64)> {
+    let mut values: Vec<f64> = Vec::new();
+    let mut total = 0u64;
+    for batch in projected_reader(table, &[column])? {
+        let batch = batch.with_context(|| format!("reading a batch of {}", table.display()))?;
+        total += batch.num_rows() as u64;
+        values.extend(f64_values(batch.column(0).as_ref())?.into_iter().flatten());
+    }
+    Ok((values, total))
+}
+
+/// `quantile` of `values` by LINEAR INTERPOLATION between the two
+/// order statistics that bracket it — the "continuous" definition (numpy's
+/// `linear`, DuckDB's `quantile_cont`), so the threshold the sidecar
+/// publishes is one a reader can reproduce with a one-line SQL query.
+/// `values` must be non-empty; it is sorted in place.
+pub fn quantile_of(values: &mut [f64], quantile: f64) -> f64 {
+    assert!(!values.is_empty(), "quantile_of needs at least one value");
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let position = quantile * (values.len() - 1) as f64;
+    let lower = position.floor() as usize;
+    let upper = position.ceil() as usize;
+    if lower == upper {
+        return values[lower];
+    }
+    values[lower] + (position - lower as f64) * (values[upper] - values[lower])
 }
 
 /// The alphabetically-first `Int64`/`Float64` attribute column in `meta`'s
@@ -534,6 +594,408 @@ fn pick_numeric_attribute(meta: &CityMetadata, schema: &Schema) -> Option<String
     candidates.into_iter().next()
 }
 
+/// The `attr-filter` predicate: either a string equality or a numeric lower
+/// bound, on a real CityJSON ATTRIBUTE.
+///
+/// Serialised into the sidecar externally tagged and lower-cased, so the
+/// DuckDB baseline can dispatch on it with `jq` alone
+/// (`{"eq": "slanted"}` / `{"ge": 2.45}`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttrFilterPred {
+    /// `column == value`, always a STRING comparison (see
+    /// `main.rs::build_attr_pred` for why `--attr-eq` never means numeric
+    /// equality).
+    Eq(String),
+    /// `column >= bound`.
+    Ge(f64),
+}
+
+/// One resolved `attr-filter` predicate, and what it matched when it was
+/// derived.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AttrFilterSpec {
+    /// The attribute column the predicate runs against — a member of the
+    /// CityParquet package's own `attributes` list, never a reserved
+    /// structural column.
+    pub column: String,
+    pub pred: AttrFilterPred,
+    /// CityObject rows the predicate matched on the CityParquet table at
+    /// derivation time — the count every format's own `result_count` must
+    /// agree with (the coordinator's self-consistency check).
+    pub matched: u64,
+    /// `matched` as a fraction of the table's rows.
+    pub share: f64,
+    /// The column and predicate came from [`HAND_PICKED`] rather than from
+    /// [`fallback_attr_filter`]'s derived rule.
+    pub hand_picked: bool,
+}
+
+impl AttrFilterSpec {
+    /// This predicate's `notes` tag: `attr=<column>=<value>` for an
+    /// equality, `attr=<column>>=<bound>` for a numeric lower bound.
+    pub fn notes_tag(&self) -> String {
+        match &self.pred {
+            AttrFilterPred::Eq(value) => format!("attr={}={}", self.column, value),
+            AttrFilterPred::Ge(bound) => format!("attr={}>={}", self.column, bound),
+        }
+    }
+}
+
+/// What a [`HAND_PICKED`] entry asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Pick {
+    /// Equality against this exact string value.
+    Eq(&'static str),
+    /// `>=` the column's own quantile at this position, computed from the
+    /// data at derivation time.
+    Quantile(f64),
+}
+
+/// How a [`HAND_PICKED`] entry is matched against a dataset's base name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Key {
+    /// The dataset IS this name, or a `-<suffix>` ordering variant of it
+    /// (`rotterdam_delfshaven-hilbert`).
+    Dataset(&'static str),
+    /// Every dataset whose name starts with this prefix — the 3DBAG
+    /// scaling slices (`3dbag_n1000` … `3dbag_n1000000`, each also with a
+    /// `-hilbert` variant), which are prefixes of one source stream and so
+    /// all carry the same attributes.
+    Family(&'static str),
+}
+
+/// The per-dataset `attr-filter` predicate for the corpus this benchmark
+/// actually measures, chosen once by hand from a survey of the prepared
+/// packages.
+///
+/// The derived rule below would pick *a* workable attribute on each of
+/// these, but not the one a reader of the paper would recognise as the
+/// query the format is for: a roof type on 3DBAG, a building class on
+/// Zurich, a roof type on Vienna. Every entry names a column that is a
+/// member of the CityJSON `attributes` map (so FlatCityBuf's `fcb ser -A`
+/// B+-tree indexes it) and that every format carries, and every predicate
+/// was verified to return the same `result_count` on every runner.
+const HAND_PICKED: [(Key, &str, Pick); 6] = [
+    // The natural roof-type query; 3DBAG carries it on the Building, one
+    // per feature.
+    (Key::Family("3dbag_"), "b3_dak_type", Pick::Eq("slanted")),
+    (
+        Key::Dataset("zurich_building_lod2"),
+        "class",
+        Pick::Eq("BB01"),
+    ),
+    (
+        Key::Dataset("vienna_102081"),
+        "roofType",
+        Pick::Eq("FLACHDACH"),
+    ),
+    (
+        Key::Dataset("ingolstadt"),
+        "klumMaterialClass",
+        Pick::Eq("Wood"),
+    ),
+    // NYC's only categorical attributes are identifiers; `1000000` is the
+    // placeholder BIN, a legitimate low-selectivity equality.
+    (
+        Key::Dataset("nyc_da13_buildings"),
+        "BIN",
+        Pick::Eq("1000000"),
+    ),
+    // Rotterdam's string attributes are constant, so a numeric range is
+    // the only selective predicate it has.
+    (
+        Key::Dataset("rotterdam_delfshaven"),
+        "TerrainHeight",
+        Pick::Quantile(FALLBACK_QUANTILE),
+    ),
+];
+
+/// The share of rows [`fallback_attr_filter`]'s string branch aims a
+/// predicate at — selective enough that an index can help, common enough
+/// that the result is not a rounding error.
+const FALLBACK_TARGET_SHARE: f64 = 0.25;
+
+/// The quantile the numeric branch (and Rotterdam's hand-picked entry)
+/// thresholds at, so that `>=` selects about [`FALLBACK_TARGET_SHARE`] of
+/// the non-null rows.
+const FALLBACK_QUANTILE: f64 = 0.75;
+
+/// A string attribute needs at least this many distinct values to be a
+/// candidate — a constant column has no selective equality.
+const FALLBACK_MIN_DISTINCT: usize = 2;
+
+/// …and at most this many, above which the column is an identifier rather
+/// than a category. Also the cap on how many distinct values are tallied
+/// per column, so a near-unique column costs a bounded amount of memory.
+const FALLBACK_MAX_DISTINCT: usize = 1000;
+
+/// Characters that would corrupt the results CSV's `notes` column (or its
+/// `;`-separated disclosure list) if they appeared in a chosen value.
+const NOTES_HOSTILE: [char; 5] = [';', ',', '"', '\n', '\r'];
+
+/// The [`HAND_PICKED`] entry for `base`, if any.
+fn hand_picked_for(base: &str) -> Option<(&'static str, Pick)> {
+    HAND_PICKED.iter().find_map(|(key, column, pick)| {
+        let hit = match key {
+            Key::Dataset(name) => base == *name || base.starts_with(&format!("{name}-")),
+            Key::Family(prefix) => base.starts_with(prefix),
+        };
+        hit.then_some((*column, *pick))
+    })
+}
+
+/// `column` is an attribute column of this package (never a reserved
+/// structural column) whose Arrow type is `wanted`.
+fn attribute_of_type(
+    meta: &CityMetadata,
+    schema: &Schema,
+    column: &str,
+    wanted: fn(&DataType) -> bool,
+) -> bool {
+    meta.attributes.iter().any(|name| name == column)
+        && schema
+            .field_with_name(column)
+            .map(|field| wanted(field.data_type()))
+            .unwrap_or(false)
+}
+
+/// Utf8 or `Dictionary<Int32, Utf8>` — the two shapes [`utf8_values`] reads.
+fn is_string_type(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8 => true,
+        DataType::Dictionary(key, value) => {
+            key.as_ref() == &DataType::Int32 && value.as_ref() == &DataType::Utf8
+        }
+        _ => false,
+    }
+}
+
+fn is_numeric_type(data_type: &DataType) -> bool {
+    matches!(data_type, DataType::Int64 | DataType::Float64)
+}
+
+/// Resolves one [`Pick`] against the data: counts what it matches, and for
+/// a [`Pick::Quantile`] computes the threshold first. `None` when the pick
+/// matches nothing at all — a zero-result `attr-filter` measures the cost
+/// of proving an absence, not of indexed attribute access.
+fn resolve_pick(
+    table: &Path,
+    column: &str,
+    pick: Pick,
+    hand_picked: bool,
+) -> Result<Option<AttrFilterSpec>> {
+    let (pred, matched, total) = match pick {
+        Pick::Eq(value) => {
+            let (matched, total) = count_string_matches(table, column, value)?;
+            (AttrFilterPred::Eq(value.to_string()), matched, total)
+        }
+        Pick::Quantile(quantile) => {
+            let (mut values, total) = numeric_column_values(table, column)?;
+            if values.is_empty() {
+                return Ok(None);
+            }
+            let bound = quantile_of(&mut values, quantile);
+            let matched = values.iter().filter(|v| **v >= bound).count() as u64;
+            (AttrFilterPred::Ge(bound), matched, total)
+        }
+    };
+    if matched == 0 || total == 0 {
+        return Ok(None);
+    }
+    Ok(Some(AttrFilterSpec {
+        column: column.to_string(),
+        pred,
+        matched,
+        share: matched as f64 / total as f64,
+        hand_picked,
+    }))
+}
+
+/// One surveyed string attribute column: its most frequent CSV-safe value,
+/// that value's row count, and how many distinct values the column holds
+/// (saturating at [`FALLBACK_MAX_DISTINCT`] + 1, at which point the column
+/// is disqualified and no longer tallied).
+struct StringSurvey {
+    column: String,
+    distinct: usize,
+    top: Option<(String, u64)>,
+}
+
+/// Tallies every candidate string attribute column of `table` in ONE
+/// projected scan. A column that passes [`FALLBACK_MAX_DISTINCT`] distinct
+/// values stops being tallied, so a near-unique identifier column costs a
+/// bounded amount of memory rather than one `String` per row.
+fn survey_string_columns(table: &Path, columns: &[String]) -> Result<(Vec<StringSurvey>, u64)> {
+    let names: Vec<&str> = columns.iter().map(String::as_str).collect();
+    let mut counts: Vec<Option<HashMap<String, u64>>> =
+        columns.iter().map(|_| Some(HashMap::new())).collect();
+    let mut over_cap: Vec<bool> = columns.iter().map(|_| false).collect();
+    let mut total = 0u64;
+
+    for batch in projected_reader(table, &names)? {
+        let batch = batch.with_context(|| format!("reading a batch of {}", table.display()))?;
+        total += batch.num_rows() as u64;
+        // The projection preserves the file's own column order, not
+        // `names`', so each column is found by NAME rather than by index.
+        for (index, column) in columns.iter().enumerate() {
+            let Some(array) = batch.column_by_name(column) else {
+                continue;
+            };
+            let Some(tally) = counts[index].as_mut() else {
+                continue;
+            };
+            for value in utf8_values(array.as_ref())?.into_iter().flatten() {
+                *tally.entry(value).or_insert(0) += 1;
+            }
+            if tally.len() > FALLBACK_MAX_DISTINCT {
+                counts[index] = None;
+                over_cap[index] = true;
+            }
+        }
+    }
+
+    Ok((
+        columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| match counts[index].take() {
+                None => StringSurvey {
+                    column: column.clone(),
+                    distinct: FALLBACK_MAX_DISTINCT + 1,
+                    top: None,
+                },
+                Some(tally) => {
+                    let distinct = tally.len();
+                    // Ties on count are broken by the LEXICOGRAPHICALLY
+                    // SMALLEST value, never by `HashMap` iteration order
+                    // (SipHash-randomised per process), so the derived
+                    // predicate is reproducible run-to-run.
+                    let top = tally
+                        .into_iter()
+                        .filter(|(value, _)| !value.contains(NOTES_HOSTILE))
+                        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
+                    StringSurvey {
+                        column: column.clone(),
+                        distinct,
+                        top,
+                    }
+                }
+            })
+            .collect(),
+        total,
+    ))
+}
+
+/// The derived rule, for a dataset [`HAND_PICKED`] does not name.
+///
+/// FIRST the string attribute column with between [`FALLBACK_MIN_DISTINCT`]
+/// and [`FALLBACK_MAX_DISTINCT`] distinct values whose most frequent value's
+/// share of rows lies closest to [`FALLBACK_TARGET_SHARE`], ties broken by
+/// column name; its predicate is equality with that value. FAILING THAT, the
+/// alphabetically-first numeric attribute, thresholded at its own
+/// [`FALLBACK_QUANTILE`]. FAILING THAT, `None` — `attr-filter` is skipped
+/// and the coordinator says so, exactly as `attr-stats` already is for a
+/// dataset with no numeric attribute. Never fabricated.
+fn fallback_attr_filter(
+    meta: &CityMetadata,
+    schema: &Schema,
+    table: &Path,
+) -> Result<Option<AttrFilterSpec>> {
+    let mut string_columns: Vec<String> = meta
+        .attributes
+        .iter()
+        .filter(|name| attribute_of_type(meta, schema, name, is_string_type))
+        .cloned()
+        .collect();
+    string_columns.sort();
+    string_columns.dedup();
+
+    if !string_columns.is_empty() {
+        let (surveys, total) = survey_string_columns(table, &string_columns)?;
+        let best = surveys
+            .iter()
+            .filter(|survey| {
+                (FALLBACK_MIN_DISTINCT..=FALLBACK_MAX_DISTINCT).contains(&survey.distinct)
+            })
+            .filter_map(|survey| {
+                let (value, count) = survey.top.as_ref()?;
+                let share = *count as f64 / total.max(1) as f64;
+                Some((survey, value, *count, share))
+            })
+            .min_by(|a, b| {
+                (a.3 - FALLBACK_TARGET_SHARE)
+                    .abs()
+                    .partial_cmp(&(b.3 - FALLBACK_TARGET_SHARE).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.0.column.cmp(&b.0.column))
+            });
+        if let Some((survey, value, matched, share)) = best {
+            return Ok(Some(AttrFilterSpec {
+                column: survey.column.clone(),
+                pred: AttrFilterPred::Eq(value.clone()),
+                matched,
+                share,
+                hand_picked: false,
+            }));
+        }
+    }
+
+    match pick_numeric_attribute(meta, schema) {
+        Some(column) => resolve_pick(table, &column, Pick::Quantile(FALLBACK_QUANTILE), false),
+        None => Ok(None),
+    }
+}
+
+/// The `attr-filter` predicate for `dataset`: the [`HAND_PICKED`] entry when
+/// there is one and the package actually carries it, the derived rule
+/// otherwise.
+///
+/// `dataset` is the input's FILE NAME (extension included, as
+/// [`resolve`] receives it), so the ordering variants share their source
+/// dataset's pick: `3dbag_n1000-hilbert.city.jsonl` is the same data as
+/// `3dbag_n1000.city.jsonl` in a different row order, and measuring the two
+/// with different predicates would compare nothing.
+///
+/// The predicate is never a reserved structural column. `object_type` — the
+/// column this scenario used to be driven with — is not a member of the
+/// CityJSON `attributes` map, which is exactly what FlatCityBuf's B+-tree
+/// attribute index covers (`fcb_core`'s `writer::attribute`), so every
+/// FlatCityBuf row of every committed run fell back to a full walk and the
+/// scenario compared an indexed read against nothing.
+pub fn pick_attr_filter(
+    dataset: &str,
+    meta: &CityMetadata,
+    schema: &Schema,
+    table: &Path,
+) -> Result<Option<AttrFilterSpec>> {
+    let base = strip_known_extension(dataset);
+
+    if let Some((column, pick)) = hand_picked_for(base) {
+        let wanted: fn(&DataType) -> bool = match pick {
+            Pick::Eq(_) => is_string_type,
+            Pick::Quantile(_) => is_numeric_type,
+        };
+        if attribute_of_type(meta, schema, column, wanted) {
+            match resolve_pick(table, column, pick, true)? {
+                Some(spec) => return Ok(Some(spec)),
+                None => eprintln!(
+                    "cityparquet-readbench: the hand-picked attr-filter predicate on \
+                     '{column}' matches no row of '{base}' — falling back to the derived rule"
+                ),
+            }
+        } else {
+            eprintln!(
+                "cityparquet-readbench: '{base}' has a hand-picked attr-filter column \
+                 '{column}', but this package carries no attribute of that name and type — \
+                 falling back to the derived rule"
+            );
+        }
+    }
+
+    fallback_attr_filter(meta, schema, table)
+}
+
 /// Every query parameter one dataset's whole (format x scenario) matrix is
 /// driven with, derived once from the prepared artefacts.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -544,9 +1006,12 @@ pub struct ResolvedParams {
     /// EMPTY when the CityJSONSeq artefact was not present to cut the
     /// deciles from — the caller then skips `id-lookup` and says so.
     pub id_probes: Vec<IdProbe>,
-    /// The most-frequent `object_type` value — the `attr-filter` predicate.
-    pub object_type: String,
-    pub object_type_count: u64,
+    /// The `attr-filter` predicate: an indexable CityJSON ATTRIBUTE and the
+    /// comparison to run against it (see [`pick_attr_filter`]). `None` when
+    /// the dataset carries no attribute this rule can build a selective
+    /// predicate from — `attr-filter` is then skipped and the caller says
+    /// so, never fabricated.
+    pub attr_filter: Option<AttrFilterSpec>,
     /// The alphabetically-first Int64/Float64 attribute column, or `None`
     /// when the dataset has no numeric attribute at all. Never fabricated:
     /// `attr-stats` and `project` are skipped when this is `None`.
@@ -609,7 +1074,7 @@ pub fn resolve(
 
     let meta = open_metadata(cp_table)?;
     let schema = open_arrow_schema(cp_table)?;
-    let (object_type, object_type_count) = most_frequent_object_type(cp_table)?;
+    let attr_filter = pick_attr_filter(dataset, &meta, &schema, cp_table)?;
     let numeric_attr = pick_numeric_attribute(&meta, &schema);
 
     let file =
@@ -622,8 +1087,7 @@ pub fn resolve(
         dataset: dataset.to_string(),
         windows,
         id_probes,
-        object_type,
-        object_type_count,
+        attr_filter,
         numeric_attr,
         cp_object_total,
     })
@@ -812,6 +1276,142 @@ mod tests {
             w.achieved > 0.0,
             "even an unreachable target must yield a populated window, got {w:?}"
         );
+    }
+
+    // --- attr-filter predicate derivation ---------------------------------
+    //
+    // `pick_attr_filter` itself needs a real table to count against (the
+    // integration tests in `tests/params.rs` cover that leg). What is pure,
+    // and what the fairness of this scenario actually rests on, is WHICH
+    // column and predicate each rule names — so that is what these pin.
+
+    #[test]
+    fn every_3dbag_slice_and_ordering_variant_gets_the_same_hand_picked_pick() {
+        for base in [
+            "3dbag_n1000",
+            "3dbag_n5000",
+            "3dbag_n1000000",
+            "3dbag_n1000-hilbert",
+        ] {
+            assert_eq!(
+                hand_picked_for(base),
+                Some(("b3_dak_type", Pick::Eq("slanted"))),
+                "{base} must share the 3DBAG family's roof-type predicate"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hand_picked_dataset_is_matched_through_its_ordering_variant_suffix() {
+        assert_eq!(
+            hand_picked_for("rotterdam_delfshaven"),
+            Some(("TerrainHeight", Pick::Quantile(FALLBACK_QUANTILE)))
+        );
+        assert_eq!(
+            hand_picked_for("rotterdam_delfshaven-hilbert"),
+            Some(("TerrainHeight", Pick::Quantile(FALLBACK_QUANTILE))),
+            "an ordering variant is the same data and must get the same predicate"
+        );
+        assert_eq!(
+            hand_picked_for("zurich_building_lod2"),
+            Some(("class", Pick::Eq("BB01")))
+        );
+    }
+
+    #[test]
+    fn a_dataset_outside_the_table_gets_no_hand_picked_entry() {
+        assert_eq!(hand_picked_for("delft"), None);
+        assert_eq!(
+            hand_picked_for("rotterdam"),
+            None,
+            "a PREFIX of a table key is a different dataset, not a variant of it"
+        );
+    }
+
+    /// Nothing in [`HAND_PICKED`] may name `object_type` (or any other
+    /// reserved structural column): it is not a member of the CityJSON
+    /// `attributes` map, which is exactly what FlatCityBuf's B+-tree index
+    /// covers — the defect this table exists to fix.
+    #[test]
+    fn no_hand_picked_column_is_a_reserved_structural_column() {
+        for (_, column, _) in HAND_PICKED {
+            assert!(
+                !["object_type", "id", "bbox", "parents", "children"].contains(&column),
+                "{column} is a reserved structural column, never an indexable attribute"
+            );
+        }
+    }
+
+    /// The `notes` tag must stay inside one CSV field and one `;`-separated
+    /// disclosure slot.
+    #[test]
+    fn the_notes_tag_renders_both_predicate_shapes_without_csv_hostile_characters() {
+        let eq = AttrFilterSpec {
+            column: "b3_dak_type".to_string(),
+            pred: AttrFilterPred::Eq("slanted".to_string()),
+            matched: 356,
+            share: 0.356,
+            hand_picked: true,
+        };
+        assert_eq!(eq.notes_tag(), "attr=b3_dak_type=slanted");
+
+        let ge = AttrFilterSpec {
+            column: "TerrainHeight".to_string(),
+            pred: AttrFilterPred::Ge(2.45),
+            matched: 217,
+            share: 0.2544,
+            hand_picked: true,
+        };
+        assert_eq!(ge.notes_tag(), "attr=TerrainHeight>=2.45");
+
+        for tag in [eq.notes_tag(), ge.notes_tag()] {
+            assert!(
+                !tag.contains(NOTES_HOSTILE),
+                "{tag} would corrupt the CSV notes column"
+            );
+        }
+    }
+
+    /// The sidecar shape the DuckDB baseline dispatches on with `jq`
+    /// alone — `.attr_filter.pred.eq` / `.attr_filter.pred.ge`.
+    #[test]
+    fn the_predicate_serialises_jq_dispatchably() {
+        let eq = serde_json::to_value(AttrFilterPred::Eq("BB01".to_string())).unwrap();
+        assert_eq!(eq["eq"], serde_json::json!("BB01"));
+        let ge = serde_json::to_value(AttrFilterPred::Ge(2.45)).unwrap();
+        assert_eq!(ge["ge"], serde_json::json!(2.45));
+    }
+
+    /// A package whose object table carries NO attribute column at all has
+    /// no predicate to derive, and none is invented: `attr-filter` is
+    /// skipped and the coordinator says so, exactly as `attr-stats` already
+    /// is for a dataset with no numeric attribute. The table is never opened
+    /// on this path, which is what lets this stay a unit test.
+    #[test]
+    fn a_dataset_with_no_attribute_column_yields_no_predicate() {
+        let meta = CityMetadata::new();
+        let schema = Schema::empty();
+        let picked = pick_attr_filter(
+            "a-dataset-outside-the-table.city.jsonl",
+            &meta,
+            &schema,
+            Path::new("/nonexistent/table.parquet"),
+        )
+        .expect("an attribute-less package is not an error");
+        assert_eq!(picked, None, "never fabricated");
+    }
+
+    /// The continuous ("linear") definition, so the published threshold is
+    /// reproducible with one line of SQL (`quantile_cont`).
+    #[test]
+    fn the_quantile_interpolates_between_the_bracketing_order_statistics() {
+        let mut values = vec![4.0, 1.0, 3.0, 2.0];
+        // position = 0.75 * 3 = 2.25 -> values[2] + 0.25 * (values[3] - values[2])
+        assert!((quantile_of(&mut values, 0.75) - 3.25).abs() < 1e-12);
+
+        let mut exact = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        // position = 0.75 * 4 = 3.0, an order statistic exactly.
+        assert!((quantile_of(&mut exact, 0.75) - 4.0).abs() < 1e-12);
     }
 
     #[test]

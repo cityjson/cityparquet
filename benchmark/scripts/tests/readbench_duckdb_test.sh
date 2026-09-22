@@ -60,9 +60,26 @@ fi
 # --- and it must actually READ the sidecar ---
 grep -q "jq -r '.windows\[\]" "$code" ||
   fail "the script must read its windows from the sidecar with jq"
-grep -q "jq -r '.object_type'" "$code" ||
-  fail "the script must read object_type from the sidecar"
+grep -q "jq -r '.attr_filter.column" "$code" ||
+  fail "the script must read the attr-filter column from the sidecar"
+grep -q "jq -r '.attr_filter.pred.eq" "$code" ||
+  fail "the script must read the attr-filter equality value from the sidecar"
+grep -q "jq -r '.attr_filter.pred.ge" "$code" ||
+  fail "the script must read the attr-filter numeric bound from the sidecar"
 grep -q "jq -r '.numeric_attr" "$code" ||
   fail "the script must read numeric_attr from the sidecar"
+
+# --- the attr-filter predicate must never run against `object_type`: it is a
+# reserved structural column, absent from the CityJSON `attributes` map
+# FlatCityBuf's B+-tree indexes, so the scenario compared an indexed read
+# against nothing ---
+if grep -q "WHERE object_type = " "$code"; then
+  fail "attr-filter still filters on object_type; it must use the sidecar's attribute predicate"
+fi
+
+# --- the column name must be double-quoted: `class` (Zurich) is a reserved
+# SQL word and an unquoted identifier would be a syntax error ---
+grep -q 'QUOTED_COLUMN' "$code" ||
+  fail "the attr-filter column must be quoted as an SQL identifier"
 
 echo "PASS: readbench_duckdb.sh reads the resolved-parameters sidecar"

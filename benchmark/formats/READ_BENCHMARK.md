@@ -134,8 +134,9 @@ just how long it takes locally.
   measured per-format bytes; no figure is quoted here).
 
 - **The coordinator's own `QueryParams` derivation stays local regardless of
-  `--transport`.** The dataset bbox, the sampled `object_type`/numeric
-  attribute/id, and the shared CityObject total are always read directly
+  `--transport`.** The dataset bbox, the derived attribute predicate, the
+  numeric attribute, the sampled ids, and the shared CityObject total are
+  always read directly
   from the local `--prepared-dir` (see `benchmark/readbench/src/
 coordinator.rs`'s own module doc). This means an http-transport run still
   needs the prepared artefacts present _locally_ too (to derive query
@@ -182,10 +183,10 @@ never a hand-tuned shortcut, never an artificial common code path:
 | `full-read`                      | decode every feature's geometry; `(feature_count, boundary_count)` | stream every `cityObjectMember` (quick-xml), decoding every `gml:pos`/`posList`, resolving every `xlink:href` surface reference and rebuilding a feature-local vertex pool, then walk each geometry's `boundaries` tree | parse the whole document, then **resolve every boundary leaf** through the shared `vertices` + `transform` — _not_ the same operation as `cityjsonseq`'s (Caveat 13) | parse every line, walk each feature's own `boundaries` tree | `select_all` + a RAW `CityFeature` walk (`cur_feature`): every geometry's five flattened index arrays and its semantics indices, every template instance's boundaries, every vertex — no CityJSON conversion (Caveat 24) | scan all row groups, decode WKB                                                                    | `SELECT sum(hash(COLUMNS(*)))` — forces every column decoded                                                                                            |
 | `count`                          | total feature/object count                                         | count `cityObjectMember`s (full parse)                                                                                                                                                                                  | size of the `CityObjects` map (full parse)                                                                                                                           | count parsed lines (full parse)                             | `features_count()` header field (O(1))                           | Parquet file metadata `num_rows` (O(1), no scan)                                                   | `SELECT count(*)`                                                                                                                                       |
 | `bbox-query` (1%/5%/25% of rows) | ids/count of objects whose bbox intersects a query window          | parse all, test each member's own unioned bbox                                                                                                                                                                          | parse all, test each CityObject's bbox (min/max over the vertices its geometries reference, resolved through `transform`)                                            | parse all, test each feature's own unioned bbox             | `select_query(Query::BBox)` — R-tree, **2D only** (see Caveat 4) | row-group prune (`with_bbox_row_groups`) + row-level bbox test — **exact**                         | `WHERE bbox.xmax>=.. AND bbox.xmin<=.. AND bbox.ymax>=.. AND bbox.ymin<=..` (full z window, so no z clause needed)                                      |
-| `attr-filter`                    | count of objects matching `attr == v` (or a numeric range)         | parse all, test each CityObject's `attributes`                                                                                                                                                                          | parse all, test each CityObject's `attributes`                                                                                                                       | parse all, test each CityObject's `attributes`              | B+-tree attribute index (`select_attr_query`) when the column is in the CityJSON `attributes` map; otherwise a raw `select_all` walk that decodes only that one column (Caveats 11, 19, 24) | `RowFilter` (`ArrowPredicateFn`) + row-group statistics prune                                      | `WHERE object_type = '<v>'`                                                                                                                             |
+| `attr-filter`                    | count of objects matching an ATTRIBUTE predicate — `attr == v`, or `attr >= q` (see "Which attribute the predicate runs on") | parse all, test each CityObject's `attributes`                                                                                                                                                                          | parse all, test each CityObject's `attributes`                                                                                                                       | parse all, test each CityObject's `attributes`              | B+-tree attribute index (`select_attr_query`) when the column is in the CityJSON `attributes` map; otherwise a raw `select_all` walk that decodes only that one column (Caveats 11, 19, 24) | `RowFilter` (`ArrowPredicateFn`) + row-group statistics prune                                      | `WHERE "<attr>" = '<v>'` / `WHERE "<attr>" >= <q>`, read from the sidecar                                                                                |
 | `attr-stats`                     | `(min, max, sum, count)` of a numeric attribute                    | parse all, aggregate                                                                                                                                                                                                    | parse all, aggregate                                                                                                                                                 | parse all, aggregate                                        | full walk decoding only that one attribute column, no geometry, then aggregate (no numeric-range index) | min/max from Parquet column-chunk statistics (near-free); sum/count from a 1-column projected scan | `SELECT min(c), max(c), sum(c), count(c)`                                                                                                               |
 | `id-lookup` (x4)                 | the single object with a given id, materialised                    | parse until found (early exit); a miss drains to EOF                                                                                                                                                                    | parse the whole document, then one map lookup                                                                                                                        | parse until found (early exit)                              | the B+-tree is tried and never has the field, so in practice a raw `select_all` walk comparing each CityObject's borrowed `id()`, exiting at the hit (Caveats 19, 24) | `RowFilter` on `id` + decode of the one surviving row                                              | not run (id lookup is not a distinct DuckDB SQL pattern worth timing separately from `attr-filter`'s `WHERE` plan; the coordinator's own rows carry it) |
-| `project`                        | one attribute column read across every row; non-null count         | parse all, read that attribute                                                                                                                                                                                          | parse all, read that attribute                                                                                                                                       | parse all, read that attribute                              | full walk decoding only that one attribute column, no geometry   | single-column `ProjectionMask`                                                                     | `SELECT count(object_type)`                                                                                                                             |
+| `project`                        | one attribute column read across every row; non-null count         | parse all, read that attribute                                                                                                                                                                                          | parse all, read that attribute                                                                                                                                       | parse all, read that attribute                              | full walk decoding only that one attribute column, no geometry   | single-column `ProjectionMask`                                                                     | `SELECT count(<that same numeric column>)`                                                                                                              |
 
 `cityparquet` and `cityparquet-hilbert` share one runner and one column here:
 a Hilbert-ordered package is still a plain CityParquet package on disk, and
@@ -198,6 +199,55 @@ mechanisms are not merely _similar_: `citygml` and `cityjson` reuse the
 `cityjsonseq` runner's own attribute helpers **verbatim**, so all three agree
 on what a column name and an `--attr-eq` predicate mean by construction
 rather than by coincidence.
+
+### Which attribute the predicate runs on
+
+`attr-filter` compares **indexed attribute access**, so its predicate must run
+on a real CityJSON ATTRIBUTE — a member of a CityObject's `attributes` map.
+That is exactly what FlatCityBuf's B+-tree covers (`fcb ser -A` indexes every
+attribute), and it is why this scenario used to measure nothing on that
+format: it was driven by the reserved `object_type` column, which is
+structural and never in the `attributes` map, so every FlatCityBuf row of
+every earlier run carried `no-attr-index` and answered by a full walk.
+
+The predicate is derived once per dataset by
+`benchmark/readbench/src/params.rs` (`pick_attr_filter`), recorded in the
+`<out>.csv.params.json` sidecar as `attr_filter` (column, predicate, matched
+count, share), and read from there by `readbench_duckdb.sh` rather than
+re-derived. It appears in `notes` as `attr=<column>=<value>` or
+`attr=<column>>=<q>`.
+
+**Hand-picked, for the datasets this benchmark actually measures.** These are
+the queries a reader of the corpus would recognise, chosen once from a survey
+of the prepared packages; the share is of all CityObject rows:
+
+| dataset                         | predicate                     | share |
+| ------------------------------- | ----------------------------- | ----- |
+| `3dbag_*` (every scaling slice) | `b3_dak_type == "slanted"`    | ~35%  |
+| `zurich_building_lod2`          | `class == "BB01"`             | 19.4% |
+| `vienna_102081`                 | `roofType == "FLACHDACH"`     | 45.4% |
+| `ingolstadt`                    | `klumMaterialClass == "Wood"` | 6.9%  |
+| `nyc_da13_buildings`            | `BIN == "1000000"`            | 0.7%  |
+| `rotterdam_delfshaven`          | `TerrainHeight >= 2.45`       | 25.4% |
+
+NYC's only categorical attributes are identifiers, so its entry is the
+placeholder `BIN` — a legitimate low-selectivity equality. Rotterdam's string
+attributes are constant, so a numeric range is the only selective predicate it
+has; the bound is the column's own 0.75 quantile (linear interpolation, i.e.
+DuckDB's `quantile_cont`), computed from the data at derivation time rather
+than written down here.
+
+**Derived, for any other dataset.** The string attribute column with between 2
+and 1000 distinct values whose most frequent value's share of rows lies
+closest to 0.25 (ties by column name); its predicate is equality with that
+value. Failing that, the alphabetically-first numeric attribute, thresholded
+at `>=` its own 0.75 quantile. Failing that, `attr-filter` is **skipped** and
+the coordinator says so on stderr — the same "never fabricated" treatment
+`attr-stats` already gets on a dataset with no numeric attribute.
+
+A hand-picked entry whose column the package does not carry, or whose value
+matches no row, falls back to the derived rule with a line on stderr rather
+than measuring a query that returns nothing.
 
 `bbox-query` is measured at **three** selectivity targets — windows selecting
 ~1%, ~5%, and ~25% of the dataset's **rows** — one CSV row per target, tagged
@@ -241,8 +291,10 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
   (`count`, `full-read`). See Caveat 2 for what `total_object_count` means
   per scenario.
 - `notes` — a `;`-separated tag list (never a comma: it is one CSV field):
-  the `bbox-*pct` selectivity tag, the attribute name/predicate used for
-  `attr-filter`/`attr-stats`/`project`, the sampled id for `id-lookup`, or
+  the `bbox-*pct` selectivity tag, the attribute predicate used for
+  `attr-filter` (`attr=<column>=<value>` or `attr=<column>>=<q>`), the
+  attribute name for `attr-stats`/`project` (`attr=<column>`), the sampled
+  id for `id-lookup`, or
   `cold` (always first) for the one cold-cache row — plus any DISCLOSURE the
   run made about that row:
   - `no-attr-index` / `attr-index-failed` — FlatCityBuf answered this row by
@@ -324,10 +376,11 @@ each cold number stands alone, one per format, one `full-read` only.
 
    **The guard against a grain mismatch WARNS; it never fails the run.**
    After `attr-filter` has run for every resolved format, the coordinator
-   compares their `result_count`s — `object_type` equality is CityObject-level
-   in every format, so a healthy run sees them agree exactly — and prints
-   either `self-consistency OK: …` or `WARNING: formats disagree on
-AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
+   compares their `result_count`s — the derived attribute predicate is
+   CityObject-level in every format, so a healthy run sees them agree exactly
+   — and prints either `self-consistency OK: …` or `WARNING: formats disagree
+on AttrFilter(attr=<column>=<value>) result_count: …` on **stderr**, naming
+   the predicate that was measured. It is a diagnostic,
    not a correctness gate: a run whose formats disagreed still writes a
    complete-looking CSV, with nothing in the CSV itself recording that they
    did. It also covers `attr-filter` **only** — never `id-lookup`, and never
@@ -484,7 +537,7 @@ AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
     (Codex, 2026-07-08) confirmed the query primitives, bbox prune + row-level
     filter, and allocator placement correct; its two flagged "dictionary"
     criticals were verified FALSE POSITIVES — `TypedDictionaryArray::value(i)`
-    resolves the row's key, and the committed `attr-filter(object_type)` run
+    resolves the row's key, and the then-committed `attr-filter(object_type)` run
     over 2231 rows with ~4 distinct types would have panicked at row 4 had the
     alleged raw-index reading been real.
 
@@ -646,7 +699,7 @@ AttrFilter(object_type) result_count: …` on **stderr**. It is a diagnostic,
       **miss** (`result_count = 0`) beside every other format's **hit**. That
       is a _different query_, not a slower one, and nothing downstream catches
       it — the coordinator's cross-format self-consistency check covers
-      `attr-filter(object_type)` only, never `id-lookup`.
+      `attr-filter` only, never `id-lookup`.
 
     `benchmark/scripts/readbench_prepare.sh` therefore refuses such a document whenever
     `citygml` is in the format set — in its preflight for a CityGML input,

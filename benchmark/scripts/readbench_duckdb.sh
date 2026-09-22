@@ -69,7 +69,9 @@
 #                testing bbox.{xmax,xmin,ymax,ymin} overlap only (the window's
 #                z span is always the dataset's FULL z range, so a z test
 #                would never exclude a row)
-#   attr-filter  the sidecar's `object_type`, WHERE-equality count
+#   attr-filter  the sidecar's own attribute predicate (`attr_filter`): a
+#                WHERE count, string equality or numeric `>=` (skipped, noted
+#                on stderr, when the sidecar names none)
 #   attr-stats   only if the sidecar names a numeric column (else skipped,
 #                noted on stderr)
 #   project      SELECT count(<that same numeric column>)
@@ -406,17 +408,38 @@ while IFS=$'\t' read -r TAG APPROX WXMIN WYMIN _WZMIN WXMAX WYMAX _WZMAX; do
   append_row "$DATASET" "duckdb-parquet" "bbox-query" "$SEL" "$MATCHES" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" "$NOTES"
 done < <(jq -r '.windows[] | [.tag, .approx, .window[0], .window[1], .window[2], .window[3], .window[4], .window[5]] | @tsv' "$PARAMS")
 
-# --- attr-filter: the coordinator's own most-frequent object_type, read from
-# the sidecar rather than re-derived with a GROUP BY here (the tie-break used
-# to be duplicated in both places and claimed to match) ---
-OBJECT_TYPE="$(jq -r '.object_type' "$PARAMS")"
+# --- attr-filter: the coordinator's own derived attribute predicate, read
+# from the sidecar rather than re-derived here (the tie-break used to be
+# duplicated in both places and claimed to match). The column is a real
+# CityJSON attribute, so its name needs DOUBLE-QUOTING — `class` (Zurich) is
+# a reserved SQL word — and an `eq` value needs its single quotes doubled.
+# A sidecar with `attr_filter: null` names no predicate at all: the scenario
+# is skipped and said so, exactly as `attr-stats` is below. ---
+ATTR_COLUMN="$(jq -r '.attr_filter.column // empty' "$PARAMS")"
+if [[ -n "$ATTR_COLUMN" ]]; then
+  ATTR_EQ="$(jq -r '.attr_filter.pred.eq // empty' "$PARAMS")"
+  ATTR_GE="$(jq -r '.attr_filter.pred.ge // empty' "$PARAMS")"
+  QUOTED_COLUMN="\"${ATTR_COLUMN//\"/\"\"}\""
+  if [[ -n "$ATTR_EQ" ]]; then
+    WHERE="$QUOTED_COLUMN = '${ATTR_EQ//\'/\'\'}'"
+    NOTES="attr=$ATTR_COLUMN=$ATTR_EQ"
+  elif [[ -n "$ATTR_GE" ]]; then
+    WHERE="$QUOTED_COLUMN >= $ATTR_GE"
+    NOTES="attr=$ATTR_COLUMN>=$ATTR_GE"
+  else
+    echo "error: the sidecar names attr-filter column '$ATTR_COLUMN' but no eq/ge predicate" >&2
+    exit 1
+  fi
 
-SQL="SELECT count(*) FROM read_parquet('$TABLE') WHERE object_type = '$OBJECT_TYPE';"
-MATCHES=$(run_sql "$SQL")
-read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
-RSS=$(capture_rss "$SQL")
-SEL=$(safe_div "$MATCHES" "$TOTAL")
-append_row "$DATASET" "duckdb-parquet" "attr-filter" "$SEL" "$MATCHES" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" "attr=object_type=$OBJECT_TYPE"
+  SQL="SELECT count(*) FROM read_parquet('$TABLE') WHERE $WHERE;"
+  MATCHES=$(run_sql "$SQL")
+  read -r TIME_S TIME_MAD_S <<< "$(timed_median "$SQL")"
+  RSS=$(capture_rss "$SQL")
+  SEL=$(safe_div "$MATCHES" "$TOTAL")
+  append_row "$DATASET" "duckdb-parquet" "attr-filter" "$SEL" "$MATCHES" "$TIME_S" "$TIME_MAD_S" "" "$RSS" "$REPEAT" "$NOTES"
+else
+  echo "# skip: attr-filter — the sidecar names no attribute predicate (never fabricated)" >&2
+fi
 
 # --- attr-stats: only if the dataset has a numeric attribute at all ---
 NUMERIC_COLUMN="$(jq -r '.numeric_attr // empty' "$PARAMS")"

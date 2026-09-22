@@ -51,7 +51,8 @@
 //!
 //! **Self-consistency (disclosed, never a hard failure).** After the
 //! `AttrFilter` scenario has run for every resolved format, this module
-//! compares their `result_count`s: `object_type` equality is CityObject-level
+//! compares their `result_count`s: the derived attribute predicate (see
+//! [`cityparquet_readbench::params::pick_attr_filter`]) is CityObject-level
 //! for every format (CityParquet's own row grain; CityJSONSeq/FlatCityBuf
 //! deliberately flatten to the same grain for this scenario — see their own
 //! module docs), so a healthy run should see them agree exactly. A mismatch
@@ -387,16 +388,27 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     }
 
     eprintln!(
-        "cityparquet-readbench: derived params for '{dataset}': windows={:?}, object_type \
-         most-frequent='{}' (n={}), numeric attribute={:?}, id probes={:?}, CityObject \
-         total={}",
+        "cityparquet-readbench: derived params for '{dataset}': windows={:?}, attr-filter={}, \
+         numeric attribute={:?}, id probes={:?}, CityObject total={}",
         resolved
             .windows
             .iter()
             .map(|w| (w.tag.as_str(), w.achieved, w.approx))
             .collect::<Vec<_>>(),
-        resolved.object_type,
-        resolved.object_type_count,
+        match &resolved.attr_filter {
+            Some(spec) => format!(
+                "{} (n={}, {:.1}% of rows, {})",
+                spec.notes_tag(),
+                spec.matched,
+                spec.share * 100.0,
+                if spec.hand_picked {
+                    "hand-picked"
+                } else {
+                    "derived"
+                }
+            ),
+            None => "none (skipped)".to_string(),
+        },
         resolved.numeric_attr,
         resolved
             .id_probes
@@ -546,30 +558,40 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                         )?;
                     }
                 }
-                Scenario::AttrFilter => {
-                    let params = QueryParams {
-                        attr_column: Some("object_type".to_string()),
-                        attr_pred: Some(AttrPred::Eq(serde_json::Value::String(
-                            resolved.object_type.clone(),
-                        ))),
-                        ..Default::default()
-                    };
-                    let notes = format!("object_type={}", resolved.object_type);
-                    let count = run_measurement(
-                        &mut rows,
-                        &mut samples,
-                        &dataset,
-                        format,
-                        label,
-                        source,
-                        *scenario,
-                        &params,
-                        opts.repeat,
-                        Some(resolved.cp_object_total),
-                        &notes,
-                    )?;
-                    attr_filter_counts.insert(label.clone(), count);
-                }
+                Scenario::AttrFilter => match &resolved.attr_filter {
+                    Some(spec) => {
+                        let params = QueryParams {
+                            attr_column: Some(spec.column.clone()),
+                            attr_pred: Some(match &spec.pred {
+                                params::AttrFilterPred::Eq(value) => {
+                                    AttrPred::Eq(serde_json::Value::String(value.clone()))
+                                }
+                                params::AttrFilterPred::Ge(bound) => AttrPred::Ge(*bound),
+                            }),
+                            ..Default::default()
+                        };
+                        let notes = spec.notes_tag();
+                        let count = run_measurement(
+                            &mut rows,
+                            &mut samples,
+                            &dataset,
+                            format,
+                            label,
+                            source,
+                            *scenario,
+                            &params,
+                            opts.repeat,
+                            Some(resolved.cp_object_total),
+                            &notes,
+                        )?;
+                        attr_filter_counts.insert(label.clone(), count);
+                    }
+                    None => eprintln!(
+                        "cityparquet-readbench: skipping scenario '{scenario}' for format \
+                         '{format}': dataset '{dataset}' has no attribute column a selective \
+                         predicate can be derived from (never fabricated)"
+                    ),
+                },
                 Scenario::AttrStats | Scenario::Project => match &resolved.numeric_attr {
                     Some(column) => {
                         let params = QueryParams {
@@ -676,17 +698,24 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // Self-consistency check: never fatal, but never invisible either (see
     // this module's own doc comment).
     if attr_filter_counts.len() > 1 {
+        // Named after the column the predicate actually ran against, so the
+        // line says WHICH query the formats agreed (or disagreed) on.
+        let predicate = resolved
+            .attr_filter
+            .as_ref()
+            .map(|spec| spec.notes_tag())
+            .unwrap_or_else(|| "attr-filter".to_string());
         let mut values = attr_filter_counts.values();
         let first = *values.next().expect("len > 1 implies at least one value");
         if values.all(|v| *v == first) {
             eprintln!(
                 "cityparquet-readbench: self-consistency OK: every resolved format's \
-                 AttrFilter(object_type) result_count == {first}"
+                 AttrFilter({predicate}) result_count == {first}"
             );
         } else {
             eprintln!(
                 "cityparquet-readbench: WARNING: formats disagree on \
-                 AttrFilter(object_type) result_count: {attr_filter_counts:?}"
+                 AttrFilter({predicate}) result_count: {attr_filter_counts:?}"
             );
             tag_attr_filter_mismatch(&mut rows);
         }
@@ -753,7 +782,7 @@ const VARIANT_BASELINE: &str = "cityparquet";
 ///
 /// The stderr WARNING above is for whoever watched the run; this is for
 /// everyone who only ever sees the artefact. Without it a run whose formats
-/// disagreed on `AttrFilter(object_type)` — i.e. one whose object-level rows
+/// disagreed on the `AttrFilter` predicate — i.e. one whose object-level rows
 /// are not measuring the same query — is byte-indistinguishable from a clean
 /// one.
 const ATTR_FILTER_MISMATCH: &str = "attr-filter-count-mismatch";
@@ -877,6 +906,24 @@ fn locate_cityparquet_table(prepared_dir: &Path, base: &str) -> Result<PathBuf> 
     }
 }
 
+/// A child's own protocol line: the LAST non-empty line of its stdout.
+///
+/// Every `--child` invocation prints its protocol line last, so nothing
+/// before it belongs to this coordinator. Splitting the WHOLE capture on
+/// whitespace instead — which is what this used to do — makes the parse
+/// hostage to any library that writes to stdout behind a runner's back:
+/// `fcb_core`'s indexed numeric-range `select_attr_query` prints
+/// `index_start: …` / `start_position: …` / `query condition: …` on some
+/// paths, which would turn a perfectly good `--attr-ge` measurement into an
+/// "expected 4 or 6 fields" failure rather than a number.
+fn protocol_line(stdout: &str) -> &str {
+    stdout
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .unwrap_or("")
+}
+
 /// One parsed `--child` protocol stdout line. `io` is `Some` only for the 6-
 /// field http-transport protocol shape (see [`spawn_child`]'s own parsing).
 struct ChildLine {
@@ -990,7 +1037,7 @@ fn spawn_child(
 
     let notes = child_disclosures(&String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8(output.stdout).context("child stdout was not valid UTF-8")?;
-    let line = stdout.trim();
+    let line = protocol_line(&stdout);
     let fields: Vec<&str> = line.split_whitespace().collect();
     // 4 fields: local transport (unchanged since Task 8). 6 fields: http
     // transport, `bytes_read`/`http_requests` appended (see
@@ -1196,12 +1243,12 @@ fn run_write(
         }
         let stdout =
             String::from_utf8(output.stdout).context("write child stdout was not valid UTF-8")?;
-        let fields: Vec<&str> = stdout.split_whitespace().collect();
+        let line = protocol_line(&stdout);
+        let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.len() != 4 {
             bail!(
-                "expected 4 fields from the write child, got {} in '{}'",
+                "expected 4 fields from the write child, got {} in '{line}'",
                 fields.len(),
-                stdout.trim()
             );
         }
         let time_s: f64 = fields[0]
@@ -1463,6 +1510,37 @@ mod tests {
         }
     }
 
+    /// A library that prints to stdout behind a runner's back must not be
+    /// able to break the child protocol. `fcb_core`'s indexed numeric-range
+    /// query does exactly that, so an `--attr-ge` measurement would
+    /// otherwise fail to parse rather than return a number.
+    #[test]
+    fn the_protocol_line_is_the_last_non_empty_stdout_line() {
+        assert_eq!(
+            protocol_line("0.001 10 20 30\n"),
+            "0.001 10 20 30",
+            "a clean child is unchanged"
+        );
+        assert_eq!(
+            protocol_line(
+                "index_start: 1234\nstart_position: 8\nquery condition: TerrainHeight Ge \
+                 2.45\n0.000467 19132 5255168 217\n"
+            ),
+            "0.000467 19132 5255168 217",
+            "library chatter before the protocol line must be ignored"
+        );
+        assert_eq!(
+            protocol_line("0.001 10 20 30\n\n  \n"),
+            "0.001 10 20 30",
+            "trailing blank lines are not the protocol line"
+        );
+        assert_eq!(
+            protocol_line(""),
+            "",
+            "an empty capture yields an empty line"
+        );
+    }
+
     /// The `notes` column is one CSV field, so several tags on one row must
     /// never introduce a comma — that would shift `bytes_read` and
     /// `http_requests` one column left for that row alone.
@@ -1470,7 +1548,7 @@ mod tests {
     fn several_notes_tags_stay_inside_one_csv_field() {
         let rendered = row(
             Scenario::AttrFilter,
-            &["object_type=Building", "no-attr-index"],
+            &["attr=b3_dak_type=slanted", "no-attr-index"],
         )
         .render();
         assert_eq!(
@@ -1480,19 +1558,19 @@ mod tests {
             CSV_HEADER.split(',').count()
         );
         assert!(
-            rendered.contains("object_type=Building;no-attr-index"),
+            rendered.contains("attr=b3_dak_type=slanted;no-attr-index"),
             "tags must be joined with ';': {rendered}"
         );
     }
 
-    /// A run whose formats disagreed on `AttrFilter(object_type)` is not
+    /// A run whose formats disagreed on the `AttrFilter` predicate is not
     /// measuring the same query in every row of that scenario. Warning about
     /// it on stderr alone leaves the CSV — the thing that gets published and
     /// plotted — indistinguishable from a clean run's.
     #[test]
     fn a_spoiled_run_is_visible_in_the_csv_not_only_on_stderr() {
         let mut rows = vec![
-            row(Scenario::AttrFilter, &["object_type=Building"]),
+            row(Scenario::AttrFilter, &["attr=b3_dak_type=slanted"]),
             row(Scenario::Count, &[]),
         ];
         tag_attr_filter_mismatch(&mut rows);

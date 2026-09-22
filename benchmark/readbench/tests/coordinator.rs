@@ -485,14 +485,16 @@ fn an_explicitly_requested_skip_does_not_raise_the_incomplete_set_alarm() {
 /// total — the `cityparquet` package's own `Count` — shared across every
 /// format, never a per-format total. On `delft.city.jsonl`,
 /// `cityjsonseq`'s own `Count` is 1115 (feature-level: one line per
-/// top-level `Building`), while `AttrFilter(object_type == "BuildingPart")`
-/// is 1116 (CityObject-level: `BuildingPart`s are children flattened out of
-/// their parent `Building` features) — dividing the object-level numerator
-/// by the feature-level `cityjsonseq` total therefore yields `1116/1115 ≈
-/// 1.0009`, a selectivity > 1.0, which is nonsensical and was the pre-fix
-/// bug this test pins down as GREEN (it would fail RED against the
-/// unfixed coordinator, which used `total_count_for(format, path)` — each
-/// format's OWN count — as the denominator for every non-BBoxQuery
+/// top-level `Building`), while every object-level numerator counts
+/// CityObjects out of 2231 (`BuildingPart`s are children flattened out of
+/// their parent `Building` features) — so dividing an object-level
+/// numerator by the feature-level `cityjsonseq` total inflates that
+/// format's selectivity by roughly a factor of two, and with the numerator
+/// this scenario used to carry (`object_type == "BuildingPart"`, 1116) it
+/// produced `1116/1115 ≈ 1.0009`, a nonsensical selectivity > 1.0. That was
+/// the pre-fix bug this test pins down as GREEN (it would fail RED against
+/// the unfixed coordinator, which used `total_count_for(format, path)` —
+/// each format's OWN count — as the denominator for every non-BBoxQuery
 /// scenario).
 #[test]
 fn attr_filter_selectivity_uses_the_shared_cityparquet_object_total_as_denominator() {
@@ -553,11 +555,18 @@ fn attr_filter_selectivity_uses_the_shared_cityparquet_object_total_as_denominat
     let cjseq_count: u64 = cityjsonseq_row.field("result_count").parse().unwrap();
     assert_eq!(
         cp_count, cjseq_count,
-        "AttrFilter(object_type) result_count must match across formats (both CityObject-level)"
+        "AttrFilter result_count must match across formats (both CityObject-level)"
     );
+    // `delft.city.jsonl` is not in `params::HAND_PICKED`, so its predicate
+    // comes from the derived rule: `b3_dak_type` is the string attribute
+    // whose most frequent value's share of rows lands closest to 0.25, and
+    // that value is `slanted` — 584 of the 2231 CityObjects (independently
+    // confirmed with DuckDB over the converted package). 3DBAG carries the
+    // attribute on the `Building` only, so the count is CityObject-level
+    // and a strict subset of the 1115 parents.
     assert_eq!(
-        cp_count, 1116,
-        "delft.city.jsonl's known BuildingPart count"
+        cp_count, 584,
+        "delft.city.jsonl's known `b3_dak_type == \"slanted\"` count"
     );
 
     let cp_selectivity: f64 = cityparquet_row.field("selectivity").parse().unwrap();
@@ -994,12 +1003,24 @@ fn the_run_writes_a_resolved_params_sidecar_beside_the_csv() {
         4,
         "four id probes in the sidecar"
     );
+    let attr_filter = &parsed["attr_filter"];
     assert!(
-        !parsed["object_type"]
+        !attr_filter["column"]
             .as_str()
-            .expect("object_type")
+            .expect("attr_filter.column")
             .is_empty(),
-        "the sidecar carries the attr-filter predicate"
+        "the sidecar carries the attr-filter column"
+    );
+    assert!(
+        attr_filter["pred"]["eq"].is_string() || attr_filter["pred"]["ge"].is_number(),
+        "the sidecar carries the attr-filter predicate itself, jq-dispatchable: {attr_filter}"
+    );
+    assert!(
+        attr_filter["matched"]
+            .as_u64()
+            .expect("attr_filter.matched")
+            > 0,
+        "the sidecar carries what the predicate matched when it was derived"
     );
     assert!(
         parsed["cp_object_total"].as_u64().expect("cp_object_total") > 0,
