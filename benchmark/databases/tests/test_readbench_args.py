@@ -71,15 +71,27 @@ def test_attr_stats_raises_scenario_unavailable_when_dataset_has_no_numeric_colu
         build_child_args("attr-stats", no_numeric, "/pkg")
 
 
-def test_id_lookup_passes_target_id():
-    args = build_child_args("id-lookup", PARAMS, "/pkg")
-    assert args[args.index("--target-id") + 1] == "obj-1"
+def test_id_lookup_passes_the_probe_it_was_handed():
+    """One child invocation per probe, each handed the SAME id at the same
+    position in the canonical stream order that every SQL system is given
+    — including the verified-absent one, which is the probe that actually
+    separates a reader with an id index from one without."""
+    for probe in PARAMS.id_probes:
+        args = build_child_args("id-lookup", PARAMS, "/pkg", probe=probe)
+        assert args[args.index("--target-id") + 1] == probe.id
 
 
-def test_tier2_scenarios_are_rejected():
-    # The Rust child implements only the inherited seven.
+def test_id_lookup_without_a_probe_is_a_loud_failure():
     with pytest.raises(ValueError):
-        build_child_args("hierarchy", PARAMS, "/pkg")
+        build_child_args("id-lookup", PARAMS, "/pkg")
+
+
+def test_scenarios_the_child_does_not_implement_are_rejected():
+    # The Rust child implements five of the ten read scenarios; the read
+    # harness is not this family's to extend.
+    for scenario in ("lod-query", "parts-per-building", "geometry-scan"):
+        with pytest.raises(ValueError):
+            build_child_args(scenario, PARAMS, "/pkg")
 
 
 def test_parse_child_stdout_local_four_fields():

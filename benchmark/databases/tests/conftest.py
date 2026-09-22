@@ -14,7 +14,8 @@ fixture's windows carry a real `achieved` fraction and `approx` flag.
 from __future__ import annotations
 
 from citybench.config import (
-    BBOX_TARGETS, AttrFilter, AttrRange, BBox, Params, window_for_target,
+    BBOX_TARGETS, AppendSpec, AttrFilter, AttrRange, BBox, IdProbe, Params,
+    window_for_target,
 )
 
 #: 200 boxes evenly spaced along the fixture extent, so the three windows
@@ -27,6 +28,18 @@ _BOXES = [
     (float(i) * 0.5, 50.0, float(i) * 0.5, 50.0) for i in range(200)
 ]
 _EXTENT = BBox(minx=0.0, miny=0.0, minz=0.0, maxx=100.0, maxy=100.0, maxz=10.0)
+
+
+def make_probes(first: str = "obj-1") -> tuple[IdProbe, ...]:
+    """The four `id-lookup` probes a real derivation produces: three
+    positioned hits plus one verified-absent id. Tests that only need "an
+    id" use `first`, which is the 10 % probe."""
+    return (
+        IdProbe(tag="id-10pct", id=first, present=True),
+        IdProbe(tag="id-50pct", id="obj-50", present=True),
+        IdProbe(tag="id-90pct", id="obj-90", present=True),
+        IdProbe(tag="id-miss", id="obj-50-absent", present=False),
+    )
 
 
 def make_params(**overrides) -> Params:
@@ -46,9 +59,14 @@ def make_params(**overrides) -> Params:
             column="b3_h_dak_max", quantile=0.8, threshold=20.0, matched=20,
         ),
         numeric_column="h_dak_max",
-        target_id="obj-1",
+        id_probes=make_probes("obj-1"),
         total_city_objects=100,
         window_rows=100,
+        append=AppendSpec(
+            path="/tmp/fixture.append.city.jsonl", suffix="-appended",
+            object_count=3, source_feature_id="obj-9",
+            unmapped_references=0,
+        ),
     )
     defaults.update(overrides)
     return Params(**defaults)

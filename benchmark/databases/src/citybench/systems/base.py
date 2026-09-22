@@ -23,14 +23,15 @@ class System(Protocol):
         """Load ``dataset``, build indexes, ANALYZE. Returns wall-clock."""
 
     def run(self, scenario: str, params: Params, repeat: int,
-            window=None) -> Measurement:
+            window=None, probe=None) -> Measurement:
         """Run one scenario ``repeat`` times after one discarded warm-up.
 
-        ``window`` is the resolved `BboxWindow` for a windowed scenario
-        (`bbox-query`, `bbox-fetch`), derived once by `citybench.params`
-        and handed to every system verbatim, and None for every other
-        scenario. Every adapter takes this signature — the runner calls it
-        uniformly.
+        ``window`` is the resolved `BboxWindow` for `bbox-query` and
+        ``probe`` the resolved `IdProbe` for `id-lookup`, both derived once
+        by `citybench.params` and handed to every system verbatim, and both
+        None for every other scenario. Every adapter takes this signature —
+        the runner calls it uniformly, expanding those two scenarios into
+        one call per window and one per probe.
 
         The write tier is the one exception to "one discarded warm-up": a
         warm-up there would be a real mutation, so those adapters run each

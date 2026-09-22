@@ -13,20 +13,21 @@ way.
 
 from __future__ import annotations
 
-from citybench.config import BBox, BboxWindow, Params
+from citybench.config import BBox, BboxWindow, IdProbe, Params
 from citybench.scenarios.registry import ScenarioUnavailable
 
 SCHEMA = "cjdb"
 SRID_PLACEHOLDER = 0  # replaced by the adapter with the dataset's real SRID
 
 
-#: The CityObject type the Building-grained CJDB queries (Q2, Q3, Q4, Q6-Q8)
+#: The CityObject type the Building-grained CJDB queries (Q4, Q6-Q8)
 #: restrict to. `sql_duckdb.BUILDING_TYPE`'s counterpart.
 BUILDING_TYPE = "Building"
 
 
 def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
-            srid: int = SRID_PLACEHOLDER) -> tuple[str, tuple]:
+            srid: int = SRID_PLACEHOLDER, *,
+            probe: IdProbe | None = None) -> tuple[str, tuple]:
     p = params
     t = f"{SCHEMA}.city_object"
 
@@ -56,33 +57,6 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
             f"SELECT count(*) FROM {t} "
             "WHERE ground_geometry && ST_MakeEnvelope(%s, %s, %s, %s, %s)",
             (win.minx, win.miny, win.maxx, win.maxy, srid),
-        )
-
-    if scenario == "bbox-fetch":
-        # CJDB Q2's result shape — `object_id, ground_geometry`, Buildings
-        # only — with `&&` overlap where CJDB's own Q2 uses
-        # `ST_Contains(window, ground_geometry)`. See the README's CJDB
-        # mapping: overlap is the predicate all three systems can answer
-        # from an index, and the difference is stated, not glossed.
-        win = _window(window)
-        return (
-            f'SELECT object_id, ground_geometry FROM {t} '
-            'WHERE "type" = %s '
-            "AND ground_geometry && ST_MakeEnvelope(%s, %s, %s, %s, %s)",
-            (BUILDING_TYPE, win.minx, win.miny, win.maxx, win.maxy, srid),
-        )
-
-    if scenario == "point-query":
-        # CJDB Q3, verbatim in shape: a bbox overlap against a POINT, which
-        # is a single GIST probe and may return several objects. This is the
-        # scenario expected to go against CityParquet, and it is included
-        # for that reason.
-        x, y = p.point_xy
-        return (
-            f'SELECT object_id, ground_geometry FROM {t} '
-            'WHERE "type" = %s '
-            "AND ground_geometry && ST_SetSRID(ST_MakePoint(%s, %s), %s)",
-            (BUILDING_TYPE, x, y, srid),
         )
 
     if scenario == "attr-filter":
@@ -118,7 +92,7 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         )
 
     if scenario == "attr-stats":
-        # Mirrors `hierarchy`'s own `parent_id is None` guard below: a
+        # Mirrors the guards the other two modules apply: a
         # dataset with no numeric attribute at all is a legitimate dataset
         # property (see sql_duckdb.py's equivalent guard for the two
         # heterogeneity-corpus datasets that hit this), not a query bug —
@@ -133,9 +107,17 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         )
 
     if scenario == "id-lookup":
-        return f"SELECT * FROM {t} WHERE object_id = %s", (p.target_id,)
+        # One of the runner's four probes — 10/50/90 % of the canonical
+        # stream order plus a verified-absent id. The row `SELECT *`
+        # materialises includes the geometry JSONB.
+        return f"SELECT * FROM {t} WHERE object_id = %s", (_probe(probe).id,)
 
-    if scenario == "lod-extract":
+    if scenario == "lod-query":
+        # Catalogue B12 / CJDB Q5: "retrieve all buildings having a specific
+        # LoD geometry". WHOLE ROWS, as the other two systems return — and
+        # on cjdb the row carries the whole `geometry` JSONB, so this
+        # materialises every matching object's full geometry document.
+        #
         # No per-LoD column exists: the LoD lives inside the geometry
         # JSONB, so every row's geometry must be visited and filtered.
         #
@@ -156,25 +138,14 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         # during path evaluation (a missing key, a type mismatch) and
         # returns false; jsonb_path_exists(...) without silent => true does
         # not — it raises. delft's geometry is regular enough that neither
-        # form ever hits this, which is why the 1116/1116 count check could
-        # not have detected a divergence either way. Datasets with less
-        # regular geometry (mixed CityGML modules, sparse/optional
-        # semantics) should be watched for this the first time this SQL
-        # runs against them.
-        # Returns IDS, as CJDB Q5 does — the same change `sql_duckdb`'s own
-        # `lod-extract` makes, so the two are comparable.
+        # form ever hits this, which is why the count check could not have
+        # detected a divergence either way. Datasets with less regular
+        # geometry (mixed CityGML modules, sparse/optional semantics)
+        # should be watched for this the first time this SQL runs against
+        # them.
         return (
-            f"SELECT object_id FROM {t} "
+            f"SELECT * FROM {t} "
             "WHERE geometry @? '$[*] ? (@.lod == \"1.2\")'",
-            (),
-        )
-
-    if scenario == "semantic-surface":
-        # See the @? note on lod-extract above — it applies here too.
-        return (
-            f"SELECT count(*) FROM {t} "
-            "WHERE geometry @? "
-            "'$[*].semantics.surfaces[*] ? (@.type == \"RoofSurface\")'",
             (),
         )
 
@@ -204,6 +175,52 @@ def _window(window: BboxWindow | None) -> BBox:
     if window is None:
         raise ValueError("a windowed scenario needs its resolved BboxWindow")
     return window.window
+
+
+def _probe(probe: IdProbe | None) -> IdProbe:
+    if probe is None:
+        raise ValueError("id-lookup needs its resolved IdProbe")
+    return probe
+
+
+#: The tables `append-object`'s untimed reset empties back to its watermark,
+#: in foreign-key order. `city_object_relationships` references
+#: `city_object`, which references `cj_metadata`; the import adds rows to
+#: all three (a fresh `cj_metadata` row per imported file), and leaving the
+#: metadata row behind would make the NEXT sample prompt interactively —
+#: cjdb's importer asks on stdin when a file of that name was imported
+#: before (`cjdb/modules/importer.py`), which in a benchmark run is a hang,
+#: not a question.
+APPEND_RESET_TABLES: tuple[str, ...] = (
+    "city_object_relationships", "city_object", "cj_metadata",
+)
+
+
+def append_watermark_sql() -> list[tuple[str, str]]:
+    """`(table, sql)` for the highest id each append-affected table holds.
+
+    Read UNTIMED before each sample. A watermark rather than a `LIKE` on the
+    suffixed ids because the importer also writes rows that carry no id of
+    ours at all — the relationship rows tying the appended Building to its
+    parts, and its own `cj_metadata` row.
+    """
+    return [
+        (table, f"SELECT coalesce(max(id), 0) FROM {SCHEMA}.{table}")
+        for table in APPEND_RESET_TABLES
+    ]
+
+
+def append_reset_sql(watermarks: dict[str, int]) -> list[tuple[str, tuple]]:
+    """The UNTIMED statements removing everything one append added.
+
+    Run before every sample after the first, and once more after the last,
+    so the schema every other scenario was measured against is the schema
+    this one leaves behind.
+    """
+    return [
+        (f"DELETE FROM {SCHEMA}.{table} WHERE id > %s", (watermarks[table],))
+        for table in APPEND_RESET_TABLES
+    ]
 
 
 def write_sql(scenario: str) -> tuple[str, tuple]:
@@ -280,10 +297,10 @@ def index_ddl() -> list[str]:
       - city_object_ground_gix / idx_city_object_ground_geometry — both
         GIST(ground_geometry), covering bbox-query.
       - city_object_type_idx — btree("type"), covering the `type =
-        'Building'` restriction of bbox-fetch/point-query/
-        parts-per-building and of every write-tier statement.
+        'Building'` restriction of parts-per-building and of every
+        write-tier statement.
       - lod — GIN(geometry) using the DEFAULT jsonb_ops opclass, covering
-        lod-extract/semantic-surface's `geometry @? path` predicate.
+        lod-query's `geometry @? path` predicate.
         Verified empirically (EXPLAIN, default planner settings, against a
         live import with ONLY cjdb's own indexes present): jsonb_ops
         supports the @? jsonpath-match operator just as well as the more
@@ -291,7 +308,7 @@ def index_ddl() -> list[str]:
         both give a Bitmap Index Scan. A second GIN index here would be a
         genuinely redundant index object, not a fairness improvement.
       - city_object_relationships_parent_idx / _child_idx — btree on
-        parent_id/child_id, covering hierarchy.
+        parent_id/child_id, covering parts-per-building.
       - city_object_cj_metadata_id_object_id_key — a UNIQUE btree on
         (cj_metadata_id, object_id). This does NOT cover id-lookup's
         `WHERE object_id = %s` the way a leading-column index would:

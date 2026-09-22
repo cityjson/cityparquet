@@ -8,11 +8,12 @@ from citybench.runner import (
     run_matrix,
 )
 from citybench.scenarios.registry import (
-    ALL, SELECTIVITY_SCENARIOS, ScenarioUnavailable, systems_for,
+    ALL, ID_PROBE_SCENARIOS, SELECTIVITY_SCENARIOS, ScenarioUnavailable,
+    systems_for,
 )
 from conftest import ge_attr_filter, make_params
 
-PARAMS = make_params(numeric_column="h", target_id="a")
+PARAMS = make_params(numeric_column="h")
 
 
 class FakeSystem:
@@ -23,7 +24,7 @@ class FakeSystem:
     def prepare(self): ...
     def teardown(self): ...
 
-    def run(self, scenario, params, repeat, window=None):
+    def run(self, scenario, params, repeat, window=None, probe=None):
         return Measurement(
             result_count=self._count,
             times_s=[0.1] * repeat,
@@ -42,7 +43,7 @@ class RaisingSystem:
     def prepare(self): ...
     def teardown(self): ...
 
-    def run(self, scenario, params, repeat, window=None):
+    def run(self, scenario, params, repeat, window=None, probe=None):
         raise self._exc
 
 
@@ -196,7 +197,7 @@ def test_non_windowed_non_excluded_scenario_still_reports_selectivity():
     # The discriminating case: `attr-filter` has no window target (target
     # is None throughout), yet per the inherited CSV contract
     # ("selectivity = result_count / total_object_count, empty where N/A
-    # (count, full-read)") it MUST still report result_count/total. A rule
+    # (count, geometry-scan)") it MUST still report result_count/total. A rule
     # that gates on "has a window" rather than on scenario identity fails
     # this test while still passing every other selectivity test here.
     systems = [FakeSystem("cjdb", 25)]
@@ -207,7 +208,7 @@ def test_non_windowed_non_excluded_scenario_still_reports_selectivity():
 def test_other_non_windowed_scenarios_also_report_selectivity():
     # Covered individually so a rule that special-cases just one of them
     # cannot slip through.
-    for scenario in ("attr-stats", "id-lookup", "attr-range", "lod-extract"):
+    for scenario in ("attr-stats", "attr-range", "lod-query"):
         systems = [FakeSystem("cjdb", 10)]
         rows = run_matrix(systems, PARAMS, "delft", repeat=2, scenarios=(scenario,))
         assert rows[0]["selectivity"] == "0.100000", scenario
@@ -221,6 +222,7 @@ def test_no_selectivity_scenarios_is_the_whole_dataset_reads_plus_the_writes():
     # selection either.
     assert NO_SELECTIVITY_SCENARIOS == frozenset({
         "count", "geometry-scan", "attr-add", "attr-update", "attr-delete",
+        "append-object",
     })
 
 
@@ -356,13 +358,48 @@ def test_run_matrix_all_systems_skipped_leaves_no_stray_mismatch():
 
 
 def test_run_matrix_default_scenarios_cover_the_full_registry():
-    # No `scenarios=` kwarg: every scenario cjdb answers runs, with the two
-    # windowed scenarios expanding into three window rows each.
+    # No `scenarios=` kwarg: every scenario cjdb answers runs, with
+    # `bbox-query` expanding into three window rows and `id-lookup` into
+    # four id-probe rows.
     systems = [FakeSystem("cjdb", 10)]
     rows = run_matrix(systems, PARAMS, "delft", repeat=1)
     answered = [s for s in ALL if "cjdb" in systems_for(s)]
     windowed = [s for s in answered if s in SELECTIVITY_SCENARIOS]
-    assert len(rows) == len(answered) - len(windowed) + 3 * len(windowed)
+    probed = [s for s in answered if s in ID_PROBE_SCENARIOS]
+    assert len(rows) == (
+        len(answered) - len(windowed) - len(probed)
+        + 3 * len(windowed) + 4 * len(probed)
+    )
+
+
+def test_id_lookup_expands_into_one_row_per_probe_tagged_in_notes():
+    """Four probes, four rows, each naming which probe it asked for — a
+    single `id-lookup` time would be a function of where that one id
+    happened to sit in the stream."""
+    systems = [FakeSystem("cjdb", 1)]
+    rows = run_matrix(systems, PARAMS, "delft", repeat=1,
+                      scenarios=("id-lookup",))
+    assert len(rows) == 4
+    assert [r["notes"] for r in rows] == [
+        "id-10pct", "id-50pct", "id-90pct", "id-miss",
+    ]
+
+
+def test_each_id_probe_is_cross_checked_against_itself_not_against_the_others():
+    """The miss probe legitimately returns 0 where the hits return 1. If
+    the four probes shared one row, that difference would read as a
+    cross-system count mismatch."""
+
+    class ProbeAwareSystem(FakeSystem):
+        def run(self, scenario, params, repeat, window=None, probe=None):
+            self._count = 1 if probe is None or probe.present else 0
+            return super().run(scenario, params, repeat, window, probe)
+
+    systems = [ProbeAwareSystem("cjdb", 1), ProbeAwareSystem("3dcitydb", 1)]
+    rows = run_matrix(systems, PARAMS, "delft", repeat=1,
+                      scenarios=("id-lookup",))
+    assert all(r["status"] == "ok" for r in rows)
+    assert {r["result_count"] for r in rows} == {"1", "0"}
 
 
 def test_run_matrix_dataset_name_is_stamped_onto_every_row():

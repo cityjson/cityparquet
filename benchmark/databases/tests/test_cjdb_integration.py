@@ -48,20 +48,30 @@ def test_count_matches_source_city_object_total(system):
 def test_every_non_windowed_read_scenario_runs(system):
     params = _params()
     for scenario in ("geometry-scan", "count", "attr-filter", "attr-range",
-                     "attr-stats", "id-lookup", "point-query"):
+                     "attr-stats"):
         m = system.run(scenario, params, repeat=1)
         assert m.times_s and m.times_s[0] > 0
         assert m.server_times_s and m.server_times_s[0] > 0
 
 
+def test_every_id_probe_runs_and_the_miss_finds_nothing(system):
+    """Three positioned hits and one verified-absent id. The miss is the
+    probe that actually separates a store with an id index from one
+    without, so it must genuinely miss."""
+    params = _params()
+    for probe in params.id_probes:
+        m = system.run("id-lookup", params, repeat=1, probe=probe)
+        assert m.times_s and m.times_s[0] > 0
+        assert m.result_count == (1 if probe.present else 0), probe.tag
+
+
 def test_bbox_scenarios_increase_with_the_window(system):
     params = _params()
-    for scenario in ("bbox-query", "bbox-fetch"):
-        counts = [
-            system.run(scenario, params, repeat=1, window=w).result_count
-            for w in params.windows
-        ]
-        assert counts[0] <= counts[1] <= counts[2], scenario
+    counts = [
+        system.run("bbox-query", params, repeat=1, window=w).result_count
+        for w in params.windows
+    ]
+    assert counts[0] <= counts[1] <= counts[2]
 
 
 def test_the_write_tier_runs_cjdbs_own_queries_and_carries_no_server_time(system):
@@ -75,6 +85,26 @@ def test_the_write_tier_runs_cjdbs_own_queries_and_carries_no_server_time(system
         assert m.times_s[0] > 0
         assert m.server_times_s == []
         assert m.result_count is not None and m.result_count > 0
+
+
+def test_append_object_adds_and_then_removes_the_appended_objects(system):
+    """B18 through cjdb's own importer, twice, so the untimed reset between
+    samples is exercised: a second sample would otherwise import a second
+    copy, or prompt on stdin for the repeated file name. Afterwards the
+    schema must hold exactly what it held before."""
+    params = _params()
+    before = _city_object_count(system)
+    m = system.run("append-object", params, repeat=2)
+    assert len(m.times_s) == 2 and all(t > 0 for t in m.times_s)
+    assert m.result_count == params.append.object_count
+    assert "external-importer" in m.notes
+    assert _city_object_count(system) == before
+
+
+def _city_object_count(system) -> int:
+    with system._conn.cursor() as cur:
+        cur.execute(f"SELECT count(*) FROM {system._schema}.city_object")
+        return int(cur.fetchone()[0])
 
 
 # --- Beyond the brief -----------------------------------------------------
@@ -109,12 +139,11 @@ def test_parts_per_building_reports_one_row_per_building(system):
     assert m.result_count > 0
 
 
-def test_lod_extract_and_semantic_surface_run_without_error(system):
+def test_lod_query_runs_and_returns_whole_rows(system):
     params = _params()
-    for scenario in ("lod-extract", "semantic-surface"):
-        m = system.run(scenario, params, repeat=1)
-        assert m.result_count is not None
-        assert m.result_count >= 0
+    m = system.run("lod-query", params, repeat=1)
+    assert m.result_count is not None
+    assert m.result_count >= 0
 
 
 def test_size_reports_a_positive_byte_count_including_the_new_indexes(system):
@@ -137,7 +166,7 @@ def test_geometry_scan_counts_every_city_object(system):
     assert m.result_count == params.total_city_objects
 
 
-def test_lod_extract_and_semantic_surface_plans_use_a_bitmap_index_scan(system):
+def test_lod_query_plans_use_a_bitmap_index_scan(system):
     # The point of the @? rewrite (see the fix report) is that the planner
     # CHOOSES an index-based plan on its own — not that it can be coerced
     # into one with enable_seqscan=off. Default planner settings only, so a
@@ -148,7 +177,7 @@ def test_lod_extract_and_semantic_surface_plans_use_a_bitmap_index_scan(system):
     from citybench.scenarios import sql_cjdb
 
     params = _params()
-    for scenario in ("lod-extract", "semantic-surface"):
+    for scenario in ("lod-query",):
         sql, args = sql_cjdb.sql_for(scenario, params)
         with system._conn.cursor() as cur:
             cur.execute(f"EXPLAIN {sql}", args)

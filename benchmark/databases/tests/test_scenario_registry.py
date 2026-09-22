@@ -3,6 +3,7 @@ import pytest
 from citybench.scenarios import sql_citydb, sql_cjdb, sql_duckdb
 from citybench.scenarios.registry import (
     ALL,
+    ID_PROBE_SCENARIOS,
     ScenarioUnavailable,
     COUNT_FROM_FIRST_COLUMN,
     COUNT_FROM_ROWCOUNT,
@@ -17,73 +18,86 @@ from citybench.scenarios.registry import (
     count_mode,
     systems_for,
 )
-from conftest import make_params
+from conftest import make_params, make_probes
 
 
 def test_the_scenario_set_is_the_read_tiers_plus_the_write_tier():
     assert ALL == TIER1 + TIER2 + TIER3
     assert READ_SCENARIOS == TIER1 + TIER2
-    assert len(ALL) == 16
+    assert len(ALL) == 14
 
 
 def test_tier1_carries_the_cjdb_mapped_read_scenarios():
     assert TIER1 == (
-        "geometry-scan", "count", "bbox-query", "bbox-fetch", "point-query",
+        "geometry-scan", "count", "bbox-query",
         "attr-filter", "attr-range", "attr-stats", "id-lookup",
     )
-    # `full-read` and `project` are gone: the first was three different
-    # operations under one name, the second duplicated `attr-filter`'s
-    # column read (review §4.2 and §4.1).
-    assert "full-read" not in ALL
-    assert "project" not in ALL
-    assert "hierarchy" not in ALL      # subsumed by parts-per-building
+    # Dropped by the author's review of the query catalogue
+    # (`notes/benchmark-queries.md`): containment fetches and point
+    # queries ("a point query is a window query" — they measure how the
+    # query is composed, not the format), single-attribute projection, and
+    # semantic-surface presence. `full-read` went earlier, for being three
+    # different operations under one name (review §4.2).
+    for retired in ("bbox-fetch", "point-query", "semantic-surface",
+                    "project", "full-read", "hierarchy"):
+        assert retired not in ALL
 
 
-def test_tier2_is_the_semantic_and_hierarchy_scenarios():
+def test_tier2_is_the_lod_and_hierarchy_scenarios():
     assert TIER2 == (
-        "lod-extract", "semantic-surface", "parts-per-building",
-        "parts-per-building-join",
+        "lod-query", "parts-per-building", "parts-per-building-join",
     )
 
 
-def test_tier3_runs_last_and_in_add_update_delete_order():
+def test_tier3_runs_last_and_appends_after_the_attribute_scenarios():
     """`attr-add` creates the attribute `attr-update` increments and
     `attr-delete` removes, so the order is load-bearing — and the tier is
     last because its mutations leave behind bloat a later read pass would
-    measure as if it were the steady state."""
-    assert TIER3 == ("attr-add", "attr-update", "attr-delete")
-    assert ALL[-3:] == TIER3
+    measure as if it were the steady state. `append-object` comes last of
+    all: it is the only row that adds objects, through each system's own
+    importer."""
+    assert TIER3 == ("attr-add", "attr-update", "attr-delete", "append-object")
+    assert ALL[-4:] == TIER3
 
 
-def test_both_windowed_scenarios_expand_but_the_point_query_does_not():
-    assert SELECTIVITY_SCENARIOS == frozenset({"bbox-query", "bbox-fetch"})
-    # `point-query`'s window is a single point: one row, not three.
-    assert "point-query" not in SELECTIVITY_SCENARIOS
+def test_only_the_window_query_expands_into_selectivity_rows():
+    assert SELECTIVITY_SCENARIOS == frozenset({"bbox-query"})
+
+
+def test_id_lookup_expands_into_its_four_probes():
+    """The format family's own construction: three positions in the
+    canonical stream order plus a verified-absent id. A single target
+    would make the published time a function of where that one id happened
+    to sit."""
+    assert ID_PROBE_SCENARIOS == frozenset({"id-lookup"})
+    assert ID_PROBE_SCENARIOS.isdisjoint(SELECTIVITY_SCENARIOS)
 
 
 def test_the_source_order_package_is_published_for_the_ordering_scenarios_only():
-    assert ORDERING_SCENARIOS == frozenset(
-        {"bbox-query", "bbox-fetch", "point-query"}
-    )
+    # One scenario, deliberately: `bbox-query` is the only one whose answer
+    # depends on the package's row order now that `bbox-fetch` and
+    # `point-query` have left the set. The tag is KEPT at that size — it is
+    # the ordering-dependence control.
+    assert ORDERING_SCENARIOS == frozenset({"bbox-query"})
     for scenario in ORDERING_SCENARIOS:
         assert "duckdb-cityparquet-source" in systems_for(scenario)
     assert "duckdb-cityparquet-source" not in systems_for("attr-stats")
 
 
 def test_native_readers_only_run_what_the_rust_child_implements():
-    # `geometry-scan`, `bbox-fetch`, `point-query` and `attr-range` have no
-    # counterpart in the child's own Scenario enum, and the read harness is
-    # not this family's to extend.
+    # `geometry-scan`, `attr-range`, `lod-query` and the two
+    # `parts-per-building` forms have no counterpart in the child's own
+    # Scenario enum, and the read harness is not this family's to extend.
     assert READBENCH_SCENARIOS == frozenset(
         {"count", "bbox-query", "attr-filter", "attr-stats", "id-lookup"}
     )
     assert systems_for("count")[:2] == ("cityparquet", "cityparquet-hilbert")
     assert "cityparquet" not in systems_for("geometry-scan")
-    assert "cityparquet" not in systems_for("point-query")
+    assert "cityparquet" not in systems_for("lod-query")
 
 
 def test_tier2_runs_on_sql_systems_only():
-    assert systems_for("semantic-surface") == (
+    assert systems_for("lod-query") == (
         "duckdb-cityparquet", "cjdb", "3dcitydb"
     )
 
@@ -151,16 +165,18 @@ COLUMNS = {
 }
 
 
-def _build(scenario, system, params, window):
+def _build(scenario, system, params, window, probe=None):
     """The `(sql, args)` one system would send for one scenario."""
     if system == "cjdb":
-        return sql_cjdb.sql_for(scenario, params, window, srid=7415)
+        return sql_cjdb.sql_for(scenario, params, window, srid=7415,
+                                probe=probe)
     if system == "3dcitydb":
         return sql_citydb.sql_for(
-            scenario, params, window, 7415,
+            scenario, params, window, 7415, probe=probe,
             cityobject_class_ids=CLASS_IDS, building_class_id=BUILDING_ID,
         )
-    return sql_duckdb.sql_for(scenario, params, TABLE, window, columns=COLUMNS)
+    return sql_duckdb.sql_for(scenario, params, TABLE, window, probe=probe,
+                              columns=COLUMNS)
 
 
 def _placeholders(sql: str, system: str) -> int:
@@ -185,17 +201,31 @@ def test_every_read_scenario_builds_on_every_system_that_runs_it(scenario):
         windows = (
             params.windows if scenario in SELECTIVITY_SCENARIOS else (None,)
         )
+        probes = (
+            params.id_probes if scenario in ID_PROBE_SCENARIOS else (None,)
+        )
         for window in windows:
-            sql, args = _build(scenario, system, params, window)
-            assert sql.strip(), f"{system}/{scenario} built empty SQL"
-            assert _placeholders(sql, system) == len(args), (
-                f"{system}/{scenario} binds {len(args)} args into "
-                f"{_placeholders(sql, system)} placeholders: {sql}"
-            )
+            for probe in probes:
+                sql, args = _build(scenario, system, params, window, probe)
+                assert sql.strip(), f"{system}/{scenario} built empty SQL"
+                assert _placeholders(sql, system) == len(args), (
+                    f"{system}/{scenario} binds {len(args)} args into "
+                    f"{_placeholders(sql, system)} placeholders: {sql}"
+                )
 
 
 @pytest.mark.parametrize("scenario", TIER3)
 def test_every_write_scenario_builds_on_every_system_that_runs_it(scenario):
+    if scenario == "append-object":
+        # The two PostgreSQL systems run their own IMPORTER here, not a
+        # statement; what they build is the untimed reset, which is checked
+        # in each module's own test file.
+        statements = sql_duckdb.write_statements(
+            scenario, "pkg", "ignored", make_params().append
+        )
+        assert statements and all(sql.count("?") == len(args)
+                                  for sql, args in statements)
+        return
     for system in systems_for(scenario):
         if system == "cjdb":
             sql, args = sql_cjdb.write_sql(scenario)
@@ -210,9 +240,16 @@ def test_every_write_scenario_builds_on_every_system_that_runs_it(scenario):
             ):
                 assert reset_sql.count("%s") == len(reset_args)
         else:
-            statements = sql_duckdb.write_statements(scenario, "pkg", "ST_Area(g)")
+            params = make_params()
+            statements = sql_duckdb.write_statements(
+                scenario, "pkg", "ST_Area(g)", params.append
+            )
             assert statements
             for sql, args in statements:
+                assert sql.count("?") == len(args)
+            for sql, args in sql_duckdb.write_reset_statements(
+                scenario, "pkg", "ST_Area(g)", params.append
+            ):
                 assert sql.count("?") == len(args)
 
 
@@ -231,13 +268,11 @@ def test_an_attribute_less_dataset_skips_rather_than_errors_on_every_system():
 
 
 def test_scenarios_returning_rows_use_rowcount_not_a_first_column():
-    """Every scenario that returns ids — as CJDB's own queries do — is
+    """Every scenario that returns rows — as CJDB's own queries do — is
     counted by the rows it materialised, so no engine can win by returning
     a lazy cursor or by answering a count from metadata."""
-    for scenario in ("bbox-fetch", "point-query", "attr-filter", "attr-range",
-                     "id-lookup", "lod-extract", "parts-per-building",
-                     "parts-per-building-join"):
+    for scenario in ("attr-filter", "attr-range", "id-lookup", "lod-query",
+                     "parts-per-building", "parts-per-building-join"):
         assert count_mode(scenario) == "rowcount", scenario
-    for scenario in ("count", "geometry-scan", "bbox-query", "attr-stats",
-                     "semantic-surface"):
+    for scenario in ("count", "geometry-scan", "bbox-query", "attr-stats"):
         assert count_mode(scenario) == "first-column", scenario

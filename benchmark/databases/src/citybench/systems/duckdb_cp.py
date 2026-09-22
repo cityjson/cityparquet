@@ -160,14 +160,14 @@ class DuckDBCityParquet:
         return self._columns
 
     def run(self, scenario: str, params: Params, repeat: int,
-            window=None) -> Measurement:
+            window=None, probe=None) -> Measurement:
         assert self._conn is not None
         mode = registry.count_mode(scenario)
         if mode == "write-rowcount":
-            return self._run_write(scenario, repeat)
+            return self._run_write(scenario, params, repeat)
 
         sql, args = sql_duckdb.sql_for(
-            scenario, params, self._table(), window,
+            scenario, params, self._table(), window, probe=probe,
             columns=self._column_types(),
         )
 
@@ -278,13 +278,22 @@ class DuckDBCityParquet:
         base.mkdir(parents=True, exist_ok=True)
         return base / self.tag
 
-    def _run_write(self, scenario: str, repeat: int) -> Measurement:
+    def _run_write(self, scenario: str, params: Params,
+                   repeat: int) -> Measurement:
         assert self._conn is not None
         schema = self._ensure_package()
         area, area_note = self._footprint_area()
-        statements = sql_duckdb.write_statements(scenario, schema, area)
-        resets = sql_duckdb.write_reset_statements(scenario, schema, area)
-        defined_count = self._building_row_count(schema)
+        append = params.append
+        statements = sql_duckdb.write_statements(scenario, schema, area, append)
+        resets = sql_duckdb.write_reset_statements(scenario, schema, area, append)
+        # `append-object` adds objects rather than touching Buildings, and
+        # `PRAGMA insert_cityjsonseq` reports no rowcount, so its defined
+        # count is the CityObject count of the appended file — the Building
+        # plus its parts — which is what every system's row reports.
+        defined_count = (
+            append.object_count if scenario == "append-object" and append
+            else self._building_row_count(schema)
+        )
 
         def once(reset: bool) -> tuple[int, float, int | None]:
             if reset:
@@ -319,14 +328,24 @@ class DuckDBCityParquet:
         # the untimed reset that undoes it is exactly what the timed samples
         # already pay for.
         samples = [once(index > 0) for index in range(repeat)]
+        if resets and scenario == "append-object":
+            # Once more after the LAST sample, so the loaded package this
+            # connection holds ends in the state every other scenario was
+            # measured against rather than carrying an appended object.
+            for statement, statement_args in resets:
+                self._conn.execute(statement, list(statement_args))
         scope = "in-engine+package-write" if self._writeback else "in-engine"
+        detail = (
+            f"importer: insert_cityjsonseq objects: {defined_count}"
+            if scenario == "append-object" else area_note
+        )
         return Measurement(
             result_count=samples[0][0],
             times_s=[s[1] for s in samples],
             server_times_s=[],
             peak_rss_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
             peak_heap_bytes=None,
-            notes=f"memory-scope: duckdb-process-rss write-tier: {scope} {area_note}",
+            notes=f"memory-scope: duckdb-process-rss write-tier: {scope} {detail}",
         )
 
     def size(self) -> SizeReport:

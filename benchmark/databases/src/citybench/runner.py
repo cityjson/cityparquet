@@ -7,8 +7,9 @@ and its timing is meaningless. Such rows are tagged, never silently
 published.
 
 A scenario can also be legitimately unanswerable for a given dataset (for
-example, ``hierarchy`` on a dataset with no parent/child relationships at
-all). That is a dataset property, not a system failure, and is recorded
+example, ``attr-stats`` on a dataset with no numeric attribute at all, or
+``append-object`` on a plain CityJSON source no single feature can be cut
+out of). That is a dataset property, not a system failure, and is recorded
 distinctly — ``skipped: ...`` rather than ``error: ...`` — so the results
 table does not conflate "nothing to ask" with "the system crashed".
 """
@@ -17,10 +18,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from citybench.config import Measurement, Params
+from citybench.config import BboxWindow, IdProbe, Measurement, Params
 from citybench.report import row_from_measurement
 from citybench.scenarios.registry import (
-    ALL, SELECTIVITY_SCENARIOS, TIER3, ScenarioUnavailable, systems_for,
+    ALL, ID_PROBE_SCENARIOS, SELECTIVITY_SCENARIOS, TIER3,
+    ScenarioUnavailable, systems_for,
 )
 
 # Scenarios for which the `selectivity` column is left blank. Per the
@@ -96,6 +98,33 @@ def _failed(note: str) -> Measurement:
     )
 
 
+def variants(scenario: str, params: Params
+             ) -> list[tuple[BboxWindow | None, IdProbe | None]]:
+    """The `(window, probe)` pairs ``scenario`` expands into.
+
+    Most scenarios are measured once and yield `[(None, None)]`.
+    `bbox-query` is measured at each of the three row-fraction windows, and
+    `id-lookup` at each of the four id probes — three positions in the
+    canonical stream order plus a verified-absent id. Each pair becomes its
+    own CSV row on every system, and therefore its own cross-system count
+    check: the 10 % probe's count is compared against the 10 % probe's, not
+    against a blend of all four.
+    """
+    if scenario in SELECTIVITY_SCENARIOS:
+        return [(window, None) for window in params.windows]
+    if scenario in ID_PROBE_SCENARIOS:
+        return [(None, probe) for probe in params.id_probes]
+    return [(None, None)]
+
+
+def _variant_note(window: BboxWindow | None, probe: IdProbe | None) -> str:
+    if window is not None:
+        return f"{window.notes_tag()} achieved={window.achieved:.6f}"
+    if probe is not None:
+        return probe.notes_tag()
+    return ""
+
+
 def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
                scenarios: tuple[str, ...] = ALL,
                sizes: dict[str, tuple[int, int]] | None = None,
@@ -127,8 +156,8 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
 
     ``selectivity`` is populated as ``result_count / total_city_objects``
     for every scenario except those in ``NO_SELECTIVITY_SCENARIOS`` (
-    ``count`` and ``full-read``), per the inherited CSV contract — see
-    that constant's docstring for the exact wording.
+    ``count``, ``geometry-scan`` and the write tier), per the inherited CSV
+    contract — see that constant's docstring for the exact wording.
     """
     sizes = sizes or {}
     rows: list[dict[str, str]] = []
@@ -138,25 +167,20 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
         wanted = [by_tag[tag] for tag in systems_for(scenario) if tag in by_tag]
         if not wanted:
             continue
-        windows = (
-            params.windows if scenario in SELECTIVITY_SCENARIOS else (None,)
-        )
-
-        for window in windows:
-            # The window's own tag, suffixed `-approx` when the row-fraction
-            # target was not reachable on this data, plus the fraction it
-            # actually achieved — so a reader never has to assume "1 %"
-            # meant 1 %.
-            window_note = (
-                f"{window.notes_tag()} achieved={window.achieved:.6f}"
-                if window is not None else ""
-            )
+        for window, probe in variants(scenario, params):
+            # The variant's own tag: for a window, suffixed `-approx` when
+            # the row-fraction target was not reachable on this data, plus
+            # the fraction it actually achieved — so a reader never has to
+            # assume "1 %" meant 1 %. For an id probe, where in the
+            # canonical stream order the id sits, or that it is the
+            # verified-absent one.
+            variant_note = _variant_note(window, probe)
             measurements: dict[str, Measurement] = {}
 
             for system in wanted:
                 try:
                     measurements[system.tag] = system.run(
-                        scenario, params, repeat, window=window
+                        scenario, params, repeat, window=window, probe=probe
                     )
                 except ScenarioUnavailable as exc:
                     # A dataset property, not a system failure — kept
@@ -178,7 +202,7 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
             )
 
             for tag, m in measurements.items():
-                note = " ".join(n for n in (run_note, window_note, deviation) if n)
+                note = " ".join(n for n in (run_note, variant_note, deviation) if n)
                 total, no_index = sizes.get(tag, (None, None))
                 # Blank only for NO_SELECTIVITY_SCENARIOS; every other
                 # scenario — including the non-windowed ones such as

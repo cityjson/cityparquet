@@ -11,12 +11,13 @@ import pytest
 from citybench.config import Params
 from citybench.scenarios.registry import ScenarioUnavailable
 from citybench.scenarios.sql_cjdb import (
-    index_ddl, sql_for, write_reset_sql, write_sql,
+    append_reset_sql, append_watermark_sql, index_ddl, sql_for,
+    write_reset_sql, write_sql,
 )
-from conftest import ge_attr_filter, make_params
+from conftest import ge_attr_filter, make_params, make_probes
 
 PARAMS = make_params(
-    target_id="NL.IMBAG.Pand.1", total_city_objects=2231,
+    id_probes=make_probes("NL.IMBAG.Pand.1"), total_city_objects=2231,
 )
 
 
@@ -55,7 +56,7 @@ def test_unknown_scenario_raises():
 
 
 def _params(**overrides) -> Params:
-    return make_params(target_id="NL.IMBAG.Pand.1", total_city_objects=2231,
+    return make_params(id_probes=make_probes("NL.IMBAG.Pand.1"), total_city_objects=2231,
                        **overrides)
 
 
@@ -104,27 +105,6 @@ def test_bbox_query_defaults_to_the_srid_placeholder_when_none_is_given():
     assert args[-1] == 0  # SRID_PLACEHOLDER, unmistakably not a real SRID
 
 
-def test_bbox_fetch_returns_object_id_and_footprint_for_buildings():
-    params = _params()
-    window = _window(params)
-    sql, args = sql_for("bbox-fetch", params, window, srid=7415)
-    w = window.window
-    assert sql.strip().startswith("SELECT object_id, ground_geometry")
-    assert args == ("Building", w.minx, w.miny, w.maxx, w.maxy, 7415)
-    assert "&&" in sql
-    # CJDB's own Q2 is ST_Contains; the harness runs overlap on every
-    # system and says so in the README rather than claiming fidelity.
-    assert "ST_Contains" not in sql
-
-
-def test_point_query_probes_with_a_point_not_an_envelope():
-    params = _params()
-    sql, args = sql_for("point-query", params, srid=7415)
-    x, y = params.point_xy
-    assert "ST_SetSRID(ST_MakePoint(%s, %s), %s)" in sql
-    assert args == ("Building", x, y, 7415)
-
-
 def test_attr_filter_reaches_the_attribute_through_the_jsonb_document():
     sql, args = sql_for("attr-filter", _params())
     assert "attributes ->> 'b3_dak_type' = %s" in sql
@@ -147,11 +127,22 @@ def test_attr_range_is_cjdb_q1():
     assert args == (20.0,)
 
 
-def test_id_lookup_filters_on_object_id_not_the_internal_pk():
-    sql, args = sql_for("id-lookup", _params())
-    assert "object_id" in sql
-    assert args == ("NL.IMBAG.Pand.1",)
-    assert "NL.IMBAG.Pand.1" not in sql  # bound parameter, not a literal
+def test_id_lookup_asks_for_the_probe_it_was_handed():
+    """One call per probe — the ids at 10/50/90 % of the canonical stream
+    order plus a verified-absent one — and `object_id`, cjdb's textual
+    CityJSON identifier, never the internal integer `id`."""
+    params = _params()
+    for probe in params.id_probes:
+        sql, args = sql_for("id-lookup", params, probe=probe)
+        assert "object_id = %s" in sql
+        assert args == (probe.id,)
+        assert probe.id not in sql
+    assert sql.strip().startswith("SELECT *")
+
+
+def test_id_lookup_without_a_probe_is_a_loud_failure():
+    with pytest.raises(ValueError):
+        sql_for("id-lookup", _params())
 
 
 def test_parts_per_building_joins_on_the_integer_surrogate_key():
@@ -191,15 +182,18 @@ def test_write_resets_restore_the_state_each_sample_expects():
     assert write_reset_sql("attr-delete") == [write_sql("attr-add")]
 
 
-def test_lod_extract_returns_ids_and_filters_inside_the_geometry_jsonb():
-    sql, args = sql_for("lod-extract", _params())
-    assert sql.strip().startswith("SELECT object_id")  # ids, as CJDB Q5 does
+def test_lod_query_returns_whole_rows_and_filters_inside_the_geometry_jsonb():
+    """Catalogue B12: the buildings, not their ids. On cjdb the row
+    carries the whole `geometry` JSONB, so every matching object's full
+    geometry document is materialised."""
+    sql, args = sql_for("lod-query", _params())
+    assert sql.strip().startswith("SELECT *")
     assert "geometry @?" in sql
     assert '"1.2"' in sql  # the LoD tag, not the LoD2 geometry
     assert args == ()
 
 
-def test_lod_extract_uses_the_operator_form_not_the_function_form():
+def test_lod_query_uses_the_operator_form_not_the_function_form():
     # Discriminating on purpose: for structurally regular JSON (which
     # delft's is), jsonb_path_exists(geometry, path) and geometry @? path
     # return the same boolean — but only the @? OPERATOR is recognised by
@@ -212,39 +206,26 @@ def test_lod_extract_uses_the_operator_form_not_the_function_form():
     # errors during path evaluation and jsonb_path_exists without
     # silent=>true does not — but that distinction is orthogonal to what
     # this test pins: the index-reachability of the syntax actually used.)
-    sql, _ = sql_for("lod-extract", _params())
+    sql, _ = sql_for("lod-query", _params())
     assert "jsonb_path_exists" not in sql
     assert "@?" in sql
 
 
-def test_semantic_surface_filters_on_the_roof_surface_type_inside_the_jsonb():
-    sql, args = sql_for("semantic-surface", _params())
-    assert "geometry @?" in sql
-    assert "RoofSurface" in sql
-    assert "semantics.surfaces" in sql
-    assert args == ()
-
-
-def test_semantic_surface_uses_the_operator_form_not_the_function_form():
-    # See test_lod_extract_uses_the_operator_form_not_the_function_form —
-    # the same index-defeating trap applies to this scenario's predicate.
-    sql, _ = sql_for("semantic-surface", _params())
-    assert "jsonb_path_exists" not in sql
-    assert "@?" in sql
-
-
-def test_semantic_surface_is_not_restricted_to_a_single_lod():
-    # Cross-system comparability defect (review-caught): sql_duckdb.py's
-    # semantic-surface scenario was once scoped to LoD2.2 alone while this
-    # query and sql_citydb.py's both check any LoD — see
-    # tests/test_semantic_surface_lod_scope.py for the live-data proof.
-    # This query's OWN any-LoD-ness must not silently regress either: the
-    # leading `$[*]` iterates cjdb's geometry array (one entry per LoD)
-    # UNFILTERED — there must be no `@.lod ==` predicate narrowing which
-    # LoD's semantics are inspected.
-    sql, _ = sql_for("semantic-surface", _params())
-    assert "$[*].semantics.surfaces" in sql
-    assert "@.lod" not in sql
+def test_the_append_reset_empties_every_table_the_import_writes_to():
+    """`append-object`'s untimed reset. The `cj_metadata` row matters as
+    much as the objects: cjdb's importer PROMPTS ON STDIN when a file of
+    the same name was imported before, which in a benchmark run is a hang,
+    not a question."""
+    marks = {table: 10 for table, _ in append_watermark_sql()}
+    statements = append_reset_sql(marks)
+    tables = [sql for sql, _ in statements]
+    assert [sql.count("%s") for sql, _ in statements] == [1] * len(statements)
+    assert any("city_object_relationships" in sql for sql in tables)
+    assert any("cj_metadata" in sql for sql in tables)
+    # Relationships before the objects they reference, metadata last.
+    assert tables[0].index("city_object_relationships") >= 0
+    assert "cj_metadata" in tables[-1]
+    assert all(args == (10,) for _, args in statements)
 
 
 def test_attr_filter_raises_scenario_unavailable_without_a_predicate():
@@ -276,7 +257,7 @@ def test_index_ddl_does_not_duplicate_indexes_cjdb_already_creates():
     # predicates (see docs/cjdb-schema.md, and index_ddl's own docstring
     # for the EXPLAIN evidence behind each): GIST(ground_geometry) x2,
     # btree("type"), GIN(geometry) [jsonb_ops — confirmed to serve the @?
-    # operator lod-extract/semantic-surface use just as well as a second,
+    # operator lod-query uses just as well as a second,
     # jsonb_path_ops-opclass index would], and btree(parent_id)/(child_id).
     # `CREATE INDEX IF NOT EXISTS` dedupes by NAME, not by definition, so
     # re-adding any of these under a different name would build a genuinely

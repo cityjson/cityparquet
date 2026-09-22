@@ -32,7 +32,7 @@ from citybench.scenarios.registry import (
 )
 from conftest import ge_attr_filter, make_params
 
-PARAMS = make_params(numeric_column="h", target_id="a")
+PARAMS = make_params(numeric_column="h")
 
 
 # --- _dataset -----------------------------------------------------------
@@ -122,7 +122,7 @@ class TierAwareFakeSystem:
         self.threads: list[int] = []
         self.workers: list[int] = []
 
-    def run(self, scenario, params, repeat, window=None):
+    def run(self, scenario, params, repeat, window=None, probe=None):
         if self.tag not in systems_for(scenario):
             raise ValueError(f"{self.tag} cannot run scenario {scenario!r}")
         return Measurement(

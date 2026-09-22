@@ -6,8 +6,9 @@ import pytest
 
 from citybench.config import BBox, window_for_target
 from citybench.params import (
-    ATTR_RANGE_QUANTILE, derive, from_json, resolve_attr_filter,
-    resolve_attr_range, source_facts, to_json,
+    APPEND_SUFFIX, ATTR_RANGE_QUANTILE, derive, from_json, id_probes,
+    resolve_attr_filter, resolve_attr_range, scan_source, to_json,
+    write_append_feature,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "tiny.city.jsonl"
@@ -98,12 +99,163 @@ def line_package(directory: Path, count: int = 200, **kwargs) -> Path:
     return build_package(directory, rows, ["roofType", "height"], **kwargs)
 
 
-def test_source_facts_count_every_city_object_not_just_features():
+def test_the_source_scan_counts_every_city_object_not_just_features():
     # 2 features, but 3 CityObjects (b1, b1-0, b2)
-    total, target_id, numeric = source_facts(FIXTURE)
-    assert total == 3
-    assert target_id in {"b1", "b1-0", "b2"}
-    assert numeric == "h_dak_max"
+    scan = scan_source(FIXTURE)
+    assert scan.total_objects == 3
+    assert scan.all_ids == {"b1", "b1-0", "b2"}
+    assert scan.numeric_column == "h_dak_max"
+
+
+def test_the_canonical_order_is_the_feature_stream_not_every_object():
+    """`id-lookup`'s probes sit at positions in the FEATURE sequence — one
+    id per line, the feature's own root object — which is the grain the
+    format harness's own `seq_feature_ids` uses. A BuildingPart is a
+    CityObject but not a feature, so it is not a probe position."""
+    scan = scan_source(FIXTURE)
+    assert scan.feature_ids == ["b1", "b2"]
+    assert scan.header_line is not None
+    assert scan.last_feature_line is not None
+    assert json.loads(scan.last_feature_line)["id"] == "b2"
+
+
+def test_a_plain_cityjson_source_has_no_stream_to_cut_a_feature_from(tmp_path):
+    """A single JSON document is read whole and its parentless CityObjects
+    are the feature grain. No header/feature line pair exists, so
+    `append-object` has no file and is skipped rather than fabricated."""
+    fixture = tmp_path / "plain.city.json"
+    fixture.write_text(json.dumps({
+        "type": "CityJSON", "version": "2.0",
+        "transform": {"scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]},
+        "CityObjects": {
+            "b1": {"type": "Building", "children": ["b1-0"],
+                   "attributes": {"h": 1.0}},
+            "b1-0": {"type": "BuildingPart", "parents": ["b1"]},
+            "b2": {"type": "Building"},
+        },
+        "vertices": [],
+    }, indent=2))
+    scan = scan_source(fixture)
+    assert scan.total_objects == 3
+    assert scan.feature_ids == ["b1", "b2"]
+    assert scan.header_line is None
+    assert write_append_feature(scan, tmp_path, "plain") is None
+
+
+def test_the_four_id_probes_sit_at_the_decile_positions_plus_a_miss(tmp_path):
+    """Three positioned hits and one verified-absent id, exactly as
+    `benchmark/readbench/src/params.rs` derives them: a single target would
+    make the published time a function of where that one id happened to
+    sit in the stream."""
+    fixture = _write_stream(tmp_path, "probes", count=10)
+    probes = id_probes(scan_source(fixture))
+    assert [probe.tag for probe in probes] == [
+        "id-10pct", "id-50pct", "id-90pct", "id-miss",
+    ]
+    # int(0.1 * 10) == 1, int(0.5 * 10) == 5, int(0.9 * 10) == 9.
+    assert [probe.id for probe in probes[:3]] == ["f1", "f5", "f9"]
+    assert all(probe.present for probe in probes[:3])
+    miss = probes[3]
+    assert miss.present is False
+    assert miss.id.startswith("f5") and miss.id != "f5"
+
+
+def test_the_miss_id_is_verified_absent_from_every_object_not_just_features(tmp_path):
+    """A BuildingPart is a CityObject the miss id could collide with even
+    though it is never a probe position, so the check is against every id
+    the source carries."""
+    fixture = tmp_path / "collide.city.jsonl"
+    fixture.write_text(
+        json.dumps({"type": "CityJSON", "version": "2.0",
+                    "transform": {"scale": [1.0] * 3, "translate": [0.0] * 3},
+                    "CityObjects": {}, "vertices": []}) + "\n"
+        + json.dumps({
+            "type": "CityJSONFeature", "id": "f0",
+            "CityObjects": {
+                "f0": {"type": "Building", "children": ["f0-absent"]},
+                # The exact id the miss rule would otherwise derive.
+                "f0-absent": {"type": "BuildingPart", "parents": ["f0"]},
+            },
+            "vertices": [[0, 0, 0]],
+        }) + "\n"
+    )
+    miss = id_probes(scan_source(fixture))[-1]
+    assert miss.id == "f0-absent-2"
+    assert miss.id not in scan_source(fixture).all_ids
+
+
+def test_the_append_file_is_the_last_feature_with_every_id_suffixed(tmp_path):
+    """Catalogue B18's input: one new object with the SAME geometry, so
+    what is measured is the cost of adding an object rather than of
+    building a different one. Every id the feature owns is rewritten —
+    the feature id, the CityObjects keys, and the parent/child references
+    between them — so nothing ties the appended object back to the
+    existing data."""
+    scan = scan_source(FIXTURE)
+    spec = write_append_feature(scan, tmp_path, "tiny")
+    assert spec is not None
+    assert spec.suffix == APPEND_SUFFIX
+    assert spec.source_feature_id == "b2"
+    assert spec.object_count == 1
+    assert spec.unmapped_references == 0
+
+    lines = Path(spec.path).read_text().splitlines()
+    assert len(lines) == 2
+    assert lines[0] == scan.header_line        # the CRS and transform, verbatim
+    feature = json.loads(lines[1])
+    assert feature["id"] == "b2-appended"
+    assert list(feature["CityObjects"]) == ["b2-appended"]
+    # The geometry and vertices are the source feature's own.
+    assert feature["vertices"] == json.loads(scan.last_feature_line)["vertices"]
+    assert not (set(feature["CityObjects"]) & scan.all_ids)
+
+
+def test_the_append_file_rewrites_parent_and_child_references(tmp_path):
+    """A Building and its parts must arrive as ONE hierarchy of new
+    objects: a reference left pointing at the original id would either be
+    refused by the importer or tie the new Building to an existing part."""
+    fixture = tmp_path / "parts.city.jsonl"
+    fixture.write_text(
+        json.dumps({"type": "CityJSON", "version": "2.0",
+                    "transform": {"scale": [1.0] * 3, "translate": [0.0] * 3},
+                    "CityObjects": {}, "vertices": []}) + "\n"
+        + json.dumps({
+            "type": "CityJSONFeature", "id": "b9",
+            "CityObjects": {
+                "b9": {"type": "Building", "children": ["b9-0", "b9-1"]},
+                "b9-0": {"type": "BuildingPart", "parents": ["b9"]},
+                "b9-1": {"type": "BuildingPart", "parents": ["b9"]},
+            },
+            "vertices": [[0, 0, 0]],
+        }) + "\n"
+    )
+    spec = write_append_feature(scan_source(fixture), tmp_path, "parts")
+    assert spec is not None and spec.object_count == 3
+    feature = json.loads(Path(spec.path).read_text().splitlines()[1])
+    objects = feature["CityObjects"]
+    assert set(objects) == {"b9-appended", "b9-0-appended", "b9-1-appended"}
+    assert objects["b9-appended"]["children"] == ["b9-0-appended", "b9-1-appended"]
+    assert objects["b9-0-appended"]["parents"] == ["b9-appended"]
+    assert spec.unmapped_references == 0
+
+
+def _write_stream(tmp_path, name: str, count: int) -> Path:
+    """A CityJSONSeq of `count` one-object features, ids `f0`..`f<count-1>`."""
+    fixture = tmp_path / f"{name}.city.jsonl"
+    lines = [json.dumps({
+        "type": "CityJSON", "version": "2.0",
+        "transform": {"scale": [1.0] * 3, "translate": [0.0] * 3},
+        "CityObjects": {}, "vertices": [],
+    })]
+    for i in range(count):
+        lines.append(json.dumps({
+            "type": "CityJSONFeature", "id": f"f{i}",
+            "CityObjects": {f"f{i}": {"type": "Building",
+                                      "attributes": {"h_dak_max": float(i)}}},
+            "vertices": [[i, 0, 0]],
+        }))
+    fixture.write_text("\n".join(lines) + "\n")
+    return fixture
 
 
 def test_window_is_centred_on_the_median_row_and_hits_its_row_target(tmp_path):
@@ -345,7 +497,8 @@ def test_a_childless_dataset_still_derives(tmp_path):
     package = line_package(tmp_path / "childless.parquet")
     p = derive(_write_no_parent_fixture(tmp_path), package)
     assert p.total_city_objects == 1
-    assert p.windows and p.target_id == "b1"
+    assert p.windows
+    assert [probe.id for probe in p.id_probes[:3]] == ["b1", "b1", "b1"]
 
 
 def _write_no_numeric_attribute_fixture(tmp_path) -> Path:
@@ -428,3 +581,26 @@ def test_json_roundtrip_preserves_none_numeric_column(tmp_path):
     assert json.loads(text)["numeric_column"] is None
     assert from_json(text) == p
     assert from_json(text).numeric_column is None
+
+
+def test_the_sidecar_records_the_probes_and_the_append_file(tmp_path):
+    """Both are query parameters a reader must be able to check after the
+    fact: which id was asked for, and exactly what object was appended."""
+    package = line_package(tmp_path / "sidecar.parquet")
+    out = tmp_path / "out"
+    p = derive(FIXTURE, package, append_dir=out, dataset="tiny")
+    payload = json.loads(to_json(p))
+    assert [probe["tag"] for probe in payload["id_probes"]] == [
+        "id-10pct", "id-50pct", "id-90pct", "id-miss",
+    ]
+    assert payload["append"]["suffix"] == APPEND_SUFFIX
+    assert payload["append"]["object_count"] == 1
+    assert Path(payload["append"]["path"]).is_file()
+    assert from_json(to_json(p)) == p
+
+
+def test_no_append_directory_means_no_append_file(tmp_path):
+    """`derive` without an output directory is a read-only operation: the
+    append file is an artefact of a run, not of reading a package."""
+    package = line_package(tmp_path / "noappend.parquet")
+    assert derive(FIXTURE, package).append is None

@@ -12,7 +12,7 @@ from citybench.scenarios.sql_duckdb import (
     BUILDING_PART_TYPE, BUILDING_TYPE, geometry_byte_length, sql_for,
     write_reset_statements, write_statements,
 )
-from conftest import ge_attr_filter, make_params
+from conftest import ge_attr_filter, make_params, make_probes
 
 TABLE = "read_parquet('/data/example/building.parquet')"
 
@@ -123,49 +123,6 @@ def test_geometry_scan_re_encodes_only_the_native_geometry_column():
     )
     sql, _ = sql_for("geometry-scan", _params(), TABLE, columns=COLUMNS)
     assert sql.count("ST_AsWKB(") == 1
-
-
-def test_bbox_query_binds_the_resolved_window():
-    params = _params()
-    window = _window(params)
-    sql, args = sql_for("bbox-query", params, TABLE, window)
-    w = window.window
-    assert args == (w.minx, w.maxx, w.miny, w.maxy)
-    assert "bbox.xmax" in sql
-    assert sql.strip().upper().startswith("SELECT COUNT(*)")
-
-
-def test_bbox_query_without_a_window_is_a_programming_error_not_a_default():
-    with pytest.raises(ValueError, match="resolved BboxWindow"):
-        sql_for("bbox-query", _params(), TABLE)
-
-
-def test_bbox_fetch_returns_id_and_footprint_for_buildings_only():
-    params = _params()
-    window = _window(params)
-    sql, args = sql_for("bbox-fetch", params, TABLE, window, columns=COLUMNS)
-    w = window.window
-    assert sql.strip().startswith("SELECT id, geometry_lod0_0")
-    assert args == (BUILDING_TYPE, w.minx, w.maxx, w.miny, w.maxy)
-    assert "count(" not in sql
-
-
-def test_bbox_fetch_degrades_to_a_null_footprint_without_a_lod0_column():
-    params = _params()
-    sql, _ = sql_for("bbox-fetch", params, TABLE, _window(params),
-                     columns={"id": "VARCHAR", "object_type": "VARCHAR"})
-    assert "SELECT id, NULL" in sql
-    assert "geometry_lod0_0" not in sql
-
-
-def test_point_query_is_a_degenerate_window_at_the_median_centre():
-    params = _params()
-    sql, args = sql_for("point-query", params, TABLE, columns=COLUMNS)
-    x, y = params.point_xy
-    assert args == (BUILDING_TYPE, x, x, y, y)
-    assert "bbox.xmin <= ?" in sql and "bbox.xmax >= ?" in sql
-
-
 def test_count_counts_every_row_unconditionally():
     sql, args = sql_for("count", _params(), TABLE)
     assert "count(*)" in sql
@@ -197,21 +154,76 @@ def test_attr_range_is_a_strict_inequality_on_the_derived_threshold():
     assert args == (20.0,)
 
 
-def test_id_lookup_parameterises_the_target_id_rather_than_interpolating_it():
-    sql, args = sql_for("id-lookup", _params(), TABLE)
-    assert "id = ?" in sql
-    assert args == ("obj-1",)
-    assert "obj-1" not in sql  # must travel as a bound parameter, not literal text
+def test_id_lookup_asks_for_the_probe_it_was_handed_and_binds_it():
+    """One call per probe, and the id travels as a bound parameter rather
+    than as literal text — the four probes differ only in that value, so
+    interpolating it would also mean four different query plans."""
+    params = _params()
+    for probe in params.id_probes:
+        sql, args = sql_for("id-lookup", params, TABLE, probe=probe)
+        assert "id = ?" in sql
+        assert args == (probe.id,)
+        assert probe.id not in sql
 
 
-def test_lod_extract_returns_ids_from_the_lod1_geometry_column_not_lod2():
-    sql, args = sql_for("lod-extract", _params(), TABLE)
-    assert sql.strip().startswith("SELECT id")
+def test_id_lookup_returns_the_whole_object_row():
+    sql, _ = sql_for("id-lookup", _params(), TABLE,
+                     probe=_params().id_probes[0])
+    assert sql.strip().startswith("SELECT *")
+
+
+def test_id_lookup_without_a_probe_is_a_loud_failure():
+    """The runner always supplies one. A silent default would publish four
+    identical rows under four different probe tags."""
+    with pytest.raises(ValueError):
+        sql_for("id-lookup", _params(), TABLE)
+
+
+def test_lod_query_returns_whole_rows_from_the_lod1_geometry_column():
+    """Catalogue B12: "retrieve all buildings having a specific LoD
+    geometry" — the buildings, not their ids. A projection of ids alone is
+    answerable from one column's definition levels and measures almost
+    nothing."""
+    sql, args = sql_for("lod-query", _params(), TABLE)
+    assert sql.strip().startswith("SELECT *")
     assert "geometry_lod1_2 IS NOT NULL" in sql
-    # `count(col)` was answerable from the definition levels alone, which
-    # measured almost nothing; CJDB's Q5 returns ids.
     assert "count(" not in sql
     assert "geometry_lod2" not in sql
+    assert args == ()
+
+
+def test_append_object_calls_the_extensions_own_importer():
+    """Catalogue B18 through `insert_cityjsonseq`, not a hand-written
+    INSERT: the row is meant to include the derived-state maintenance an
+    importer does (`feature_id`, the reciprocal hierarchy, `bbox`)."""
+    append = _params().append
+    statements = write_statements("append-object", "pkg", "ignored", append)
+    assert len(statements) == 1
+    sql, args = statements[0]
+    assert sql.startswith("PRAGMA insert_cityjsonseq('pkg', ")
+    assert append.path in sql
+    assert args == ()
+
+
+def test_append_object_without_an_append_file_is_skipped_not_errored():
+    """A plain CityJSON source has no feature to cut out. That is a dataset
+    property — a `skipped:` row — not a failure."""
+    with pytest.raises(ScenarioUnavailable):
+        write_statements("append-object", "pkg", "ignored", None)
+
+
+def test_append_object_reset_deletes_exactly_the_appended_ids():
+    """Untimed, between samples: the importer refuses an id it already
+    holds, so without this a second sample would fail rather than measure.
+    Every id in the appended file carries the suffix, so the predicate
+    names them and nothing else."""
+    reset = write_reset_statements(
+        "append-object", "pkg", "ignored", _params().append
+    )
+    assert len(reset) == 1
+    sql, args = reset[0]
+    assert sql.startswith("PRAGMA cityparquet_delete('pkg', ")
+    assert "id LIKE ''%-appended''" in sql
     assert args == ()
 
 
@@ -235,46 +247,6 @@ def test_write_resets_make_every_sample_measure_the_same_work():
     assert write_reset_statements("attr-update", "pkg", "x") == []
     reset = write_reset_statements("attr-delete", "pkg", "x")
     assert "ADD COLUMN IF NOT EXISTS" in reset[0][0]
-
-
-def test_unknown_write_scenario_raises_key_error():
-    with pytest.raises(KeyError):
-        write_statements("nonsense", "pkg", "x")
-
-
-def test_semantic_surface_filters_on_the_lod2_surface_type_list():
-    # `surfaces` is a JSON-encoded VARCHAR, not a nested LIST<STRUCT> —
-    # `.type` cannot be dot-accessed on it directly (a real binder error
-    # caught by running this SQL against an actual converted package).
-    # `json_extract_string(..., '$[*].type')` is the fix.
-    sql, args = sql_for("semantic-surface", _params(), TABLE)
-    assert "json_extract_string(geometry_properties_lod2_2.surfaces" in sql
-    assert "'$[*].type'" in sql
-    assert "RoofSurface" in sql
-    assert "list_contains" in sql
-    assert args == ()
-
-
-def test_semantic_surface_checks_every_lod_column_not_lod2_2_alone():
-    # A real cross-system comparability defect (review-caught, not caught
-    # by delft's own count-check — see sql_duckdb.py's module comment on
-    # this branch and tests/test_semantic_surface_lod_scope.py for the
-    # full story): an earlier version of this query was scoped to
-    # geometry_properties_lod2_2 ALONE, silently asking a narrower
-    # question than cjdb's and sql_citydb.py's own (any-LoD)
-    # semantic-surface queries. Pinned here at the text level so a
-    # regression back to a single LoD column is caught immediately,
-    # without needing a live database — test_semantic_surface_lod_scope.py
-    # additionally proves this matters with real divergent data.
-    sql, _ = sql_for("semantic-surface", _params(), TABLE)
-    for col in ("geometry_properties_lod0_0", "geometry_properties_lod1_2",
-                "geometry_properties_lod1_3", "geometry_properties_lod2_2"):
-        assert col in sql, f"{col} missing from semantic-surface SQL: {sql}"
-    # Four independent list_contains(...) checks OR'd together, not one.
-    assert sql.count("list_contains(") == 4
-    assert sql.count(" OR ") == 3
-
-
 def test_unknown_scenario_raises_key_error():
     with pytest.raises(KeyError):
         sql_for("nonsense", _params(), TABLE)
@@ -287,69 +259,33 @@ def test_unknown_scenario_raises_key_error():
 # Referencing a hardcoded, delft-shaped column name against that package
 # raised a DuckDB BinderException outright, discovered running Task 14's
 # heterogeneity corpus. These tests pin the fix: when the caller supplies
-# the package's real column set, both scenarios degrade to a real,
+# the package's real column set, `lod-query` degrades to a real,
 # zero-result query instead of erroring.
 
 
-def test_lod_extract_uses_the_real_column_when_present_in_columns():
-    sql, args = sql_for("lod-extract", _params(), TABLE,
-                         columns={"geometry_lod1_2": "BLOB", "id": "VARCHAR"})
+def test_lod_query_uses_the_real_column_when_present_in_columns():
+    sql, args = sql_for("lod-query", _params(), TABLE,
+                        columns={"geometry_lod1_2": "BLOB", "id": "VARCHAR"})
     assert "geometry_lod1_2" in sql
     assert args == ()
 
 
-def test_lod_extract_returns_a_real_zero_query_when_lod1_2_column_is_absent():
+def test_lod_query_returns_a_real_zero_query_when_lod1_2_column_is_absent():
     # Montreal-shaped: only geometry_lod0_0/geometry_lod2_0 exist.
     sql, args = sql_for(
-        "lod-extract", _params(), TABLE,
-        columns={"geometry_lod0_0": "GEOMETRY", "geometry_lod2_0": "BLOB", "id": "VARCHAR"},
+        "lod-query", _params(), TABLE,
+        columns={"geometry_lod0_0": "GEOMETRY", "geometry_lod2_0": "BLOB",
+                 "id": "VARCHAR"},
     )
-    # Still the scenario's own row shape (ids), just an empty one.
-    assert sql.strip().startswith("SELECT id")
+    # Still the scenario's own row shape (whole rows), just an empty set.
+    assert sql.strip().startswith("SELECT *")
     assert "WHERE FALSE" in sql.upper()
     assert "geometry_lod1_2" not in sql
     assert args == ()
 
 
-def test_lod_extract_without_columns_keeps_the_old_unconditional_query():
-    # columns=None (the default) must reproduce the exact pre-fix SQL, so
-    # every existing caller/test that never passes it is unaffected.
-    sql, args = sql_for("lod-extract", _params(), TABLE)
+def test_lod_query_without_columns_keeps_the_unconditional_query():
+    sql, args = sql_for("lod-query", _params(), TABLE)
     assert "geometry_lod1_2" in sql
     assert "WHERE FALSE" not in sql.upper()
     assert args == ()
-
-
-def test_semantic_surface_ors_across_whatever_lod_properties_columns_exist():
-    # Montreal-shaped: only lod0_0/lod2_0 — neither is in delft's
-    # hardcoded four-column list, so the old code would have referenced
-    # zero real columns' worth of the WRONG names.
-    sql, _ = sql_for(
-        "semantic-surface", _params(), TABLE,
-        columns={
-            "geometry_properties_lod0_0": "STRUCT(surfaces VARCHAR)",
-            "geometry_properties_lod2_0": "STRUCT(surfaces VARCHAR)",
-            "id": "VARCHAR",
-        },
-    )
-    assert "geometry_properties_lod0_0" in sql
-    assert "geometry_properties_lod2_0" in sql
-    assert "geometry_properties_lod1_2" not in sql
-    assert sql.count("list_contains(") == 2
-    assert sql.count(" OR ") == 1
-
-
-def test_semantic_surface_falls_back_to_select_false_when_no_lod_properties_column_exists():
-    sql, args = sql_for("semantic-surface", _params(), TABLE,
-                         columns={"id": "VARCHAR", "object_type": "VARCHAR"})
-    assert sql.strip().upper().startswith("SELECT COUNT(*)")
-    assert "WHERE FALSE" in sql.upper()
-    assert args == ()
-
-
-def test_semantic_surface_without_columns_keeps_the_old_hardcoded_four():
-    # columns=None (the default) must reproduce the exact pre-fix SQL.
-    sql, _ = sql_for("semantic-surface", _params(), TABLE)
-    for col in ("geometry_properties_lod0_0", "geometry_properties_lod1_2",
-                "geometry_properties_lod1_3", "geometry_properties_lod2_2"):
-        assert col in sql

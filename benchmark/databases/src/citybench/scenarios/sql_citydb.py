@@ -11,7 +11,7 @@ captured from a real import rather than read from prose documentation.
 
 from __future__ import annotations
 
-from citybench.config import BBox, BboxWindow, Params
+from citybench.config import BBox, BboxWindow, IdProbe, Params
 from citybench.scenarios.registry import ScenarioUnavailable
 
 SCHEMA = "citydb"
@@ -39,8 +39,8 @@ CAPTURED_PROPERTY_FK = "feature_id"       # property -> feature foreign key
 # module instead needs a single, self-contained boolean EXPRESSION that can
 # be dropped into any scenario's `WHERE` clause via plain string
 # interpolation — including queries where `feature` is unaliased (`count`),
-# aliased `f` (`full-read`, `attr-stats`, `lod-extract`), or not the only
-# table in the FROM list (`attr-stats` and `lod-extract` both join
+# aliased `f` (`attr-stats`, `lod-query`), or not the only
+# table in the FROM list (`attr-stats` and `lod-query` both join
 # `property`, which has no `objectclass_id` column of its own, so the bare
 # column name below resolves unambiguously to `feature`'s regardless of its
 # alias). So the doc's outer `JOIN objectclass oc` + `oc.is_toplevel` is
@@ -59,7 +59,7 @@ CAPTURED_PROPERTY_FK = "feature_id"       # property -> feature foreign key
 #
 # Built by _cityobject_predicate() rather than as a single fixed string so
 # the SAME predicate can be alias-qualified where a query has more than one
-# `feature` reference in scope — see `hierarchy` below, the one branch that
+# `feature` reference in scope — see `parts-per-building` below, the one branch that
 # needs the qualified form.
 #
 # `column` defaults to CAPTURED_CLASS_COLUMN ("objectclass_id" — the
@@ -185,7 +185,7 @@ def _static_predicate(cityobject_class_ids: tuple[int, ...],
 # docs/3dcitydb-v5-schema.md's "LoD value format" section, a Task 9
 # finding). Querying the brief's literal "1.2" against this column matches
 # zero rows, silently, rather than erroring — the bad case the brief's own
-# `lod-extract` comment warns about for a *different* substitution (the
+# `lod-query` comment warns about for a *different* substitution (the
 # geometry_data.lod column that doesn't exist at all). "1" is the closest
 # comparable tier to cjdb/CityParquet's LoD1.2/1.3.
 CAPTURED_LOD_TARGET = "1"
@@ -194,16 +194,10 @@ _F = f"{SCHEMA}.feature"
 _P = f"{SCHEMA}.property"
 
 
-#: `property.val_lod` for the LoD0 footprint geometry — the integer tier
-#: `citydb-tool` truncates CityJSON's `"0"` to (see CAPTURED_LOD_TARGET and
-#: `docs/3dcitydb-v5-schema.md`, "LoD value format": the captured Delft
-#: import holds 1115 rows with `val_lod = '0'`, one per Building).
-CAPTURED_LOD0_TARGET = "0"
-
-#: The CityGML class name `bbox-fetch`, `point-query`, `parts-per-building`
-#: and the write tier restrict to, resolved to an `objectclass_id` once per
-#: ingest by `resolve_class_id` rather than hard-coded: the catalogue's ids
-#: are a schema-version fact, not a constant this module may assume.
+#: The CityGML class name `parts-per-building` and the write tier restrict
+#: to, resolved to an `objectclass_id` once per ingest by
+#: `resolve_class_id` rather than hard-coded: the catalogue's ids are a
+#: schema-version fact, not a constant this module may assume.
 BUILDING_CLASSNAME = "Building"
 
 #: The `datatype.typename` the write tier's new `property` rows are given.
@@ -255,6 +249,7 @@ def resolve_datatype_id(conn, typename: str = DOUBLE_TYPENAME) -> int:
 
 def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
             srid: int = 0, *,
+            probe: IdProbe | None = None,
             cityobject_class_ids: tuple[int, ...],
             building_class_id: int | None = None) -> tuple[str, tuple]:
     """`cityobject_class_ids` is keyword-only and has no default,
@@ -267,7 +262,7 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
     `_static_predicate(cityobject_class_ids)` is called LAZILY, inline in
     each branch that needs it (not once, eagerly, at the top) — so a
     scenario whose own guard rejects the request first (`attr-stats` with
-    no numeric column, `hierarchy` with no parent id) raises that specific,
+    no numeric column) raises that specific,
     informative error even if `cityobject_class_ids` also happens to be
     invalid, rather than an unrelated-looking `ValueError` from a predicate
     the branch was never going to reach anyway.
@@ -309,43 +304,6 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
             f"WHERE {_static_predicate(cityobject_class_ids)} AND {CAPTURED_ENVELOPE_COLUMN} "
             "&& ST_MakeEnvelope(%s, %s, %s, %s, %s)",
             (win.minx, win.miny, win.maxx, win.maxy, srid),
-        )
-
-    if scenario == "bbox-fetch":
-        # CJDB Q2's result shape on v5's schema: the Building's own
-        # `objectid` and the LoD0 geometry the `property` row points at.
-        # `val_lod = '0'` is the integer tier `citydb-tool` writes for
-        # CityJSON's own `"0"` (docs/3dcitydb-v5-schema.md, "LoD value
-        # format"), and `val_geometry_id IS NOT NULL` restricts the join to
-        # the geometry-bearing property rows. The class predicate is
-        # `Building` alone, not the CityObject-granularity predicate:
-        # CJDB's Q2 is Building-grained and so are the other two systems'
-        # rows here.
-        win = _window(window)
-        return (
-            f"SELECT f.{CAPTURED_ID_COLUMN}, gd.geometry FROM {_F} f "
-            f"JOIN {_P} pr ON pr.{CAPTURED_PROPERTY_FK} = f.id "
-            f"  AND pr.val_geometry_id IS NOT NULL AND pr.val_lod = %s "
-            f"JOIN {SCHEMA}.geometry_data gd ON gd.id = pr.val_geometry_id "
-            f"WHERE f.{CAPTURED_CLASS_COLUMN} = %s "
-            f"AND f.{CAPTURED_ENVELOPE_COLUMN} && ST_MakeEnvelope(%s, %s, %s, %s, %s)",
-            (CAPTURED_LOD0_TARGET, _building(building_class_id),
-             win.minx, win.miny, win.maxx, win.maxy, srid),
-        )
-
-    if scenario == "point-query":
-        # CJDB Q3 on v5: the same shape as bbox-fetch against a degenerate
-        # window — `&&` with a POINT, a single GIST probe.
-        x, y = p.point_xy
-        return (
-            f"SELECT f.{CAPTURED_ID_COLUMN}, gd.geometry FROM {_F} f "
-            f"JOIN {_P} pr ON pr.{CAPTURED_PROPERTY_FK} = f.id "
-            f"  AND pr.val_geometry_id IS NOT NULL AND pr.val_lod = %s "
-            f"JOIN {SCHEMA}.geometry_data gd ON gd.id = pr.val_geometry_id "
-            f"WHERE f.{CAPTURED_CLASS_COLUMN} = %s "
-            f"AND f.{CAPTURED_ENVELOPE_COLUMN} "
-            "&& ST_SetSRID(ST_MakePoint(%s, %s), %s)",
-            (CAPTURED_LOD0_TARGET, _building(building_class_id), x, y, srid),
         )
 
     if scenario == "attr-filter":
@@ -395,7 +353,7 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         )
 
     if scenario == "attr-stats":
-        # Mirrors `hierarchy`'s own `parent_id is None` guard below: a
+        # Mirrors the guards the other two modules apply: a
         # dataset with no numeric attribute at all is a legitimate dataset
         # property (see sql_duckdb.py's equivalent guard for the two
         # heterogeneity-corpus datasets that hit this), not a query bug —
@@ -441,18 +399,21 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
 
     if scenario == "id-lookup":
         # No CityObject-granularity predicate: `objectid` is a unique
-        # identifier and `params.target_id` always names a genuine
-        # CityObject (it comes from a CityJSON file's `CityObjects` keys —
-        # 3DCityDB's semantic-surface features get their own internal
+        # identifier and every probe id names a genuine CityObject (they
+        # come from the CityJSON source's own feature stream —
+        # 3DCityDB's boundary-surface features get their own internal
         # `objectid`s, never one of these), so the row this finds is
         # already CityObject-granular by construction. count_mode is
         # "rowcount" (0 or 1), not first-column.
         return (
             f"SELECT * FROM {_F} WHERE {CAPTURED_ID_COLUMN} = %s",
-            (p.target_id,),
+            (_probe(probe).id,),
         )
 
-    if scenario == "lod-extract":
+    if scenario == "lod-query":
+        # Catalogue B12 / CJDB Q5: "retrieve all buildings having a
+        # specific LoD geometry", returning WHOLE ROWS rather than ids.
+        #
         # NOTE: geometry_data has NO `lod` column — verified against a live
         # instance in Task 5. In v5 the LoD is carried on the PROPERTY row
         # that points at the geometry (`property.val_lod`, alongside
@@ -464,74 +425,41 @@ def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
         # notation "1.2" — see that constant's docstring and
         # docs/3dcitydb-v5-schema.md's "LoD value format" section: v5's
         # importer truncates the fractional LoD tag, so "1.2" matches zero
-        # rows, silently.
+        # rows, silently. That tier-collapsing is disclosed, not corrected:
+        # 3DCityDB's "LoD 1" covers CityJSON's 1.2 AND 1.3.
         #
         # The CityObject-granularity predicate matters here independently
-        # of `count`'s reason for it: without it, this also counts each
+        # of `count`'s reason for it: without it, this also returns each
         # LoD1 solid's *boundary surfaces'* own LoD1 geometry rows
         # (`lod1MultiSurface`, one set per WallSurface/GroundSurface/
         # RoofSurface), not just the CityObject's own LoD1 solid
-        # (`lod1Solid`) — 4929 rows unrestricted, 1116 restricted, on this
-        # fixture. Only the restricted count is comparable to cjdb's
-        # CityObject-level "does this CityObject have an LoD1.2 geometry"
-        # count.
-        # Returns IDS, as CJDB Q5 does; the other two systems' own
-        # `lod-extract` made the same change.
-        return (
-            f"SELECT f.{CAPTURED_ID_COLUMN} FROM {_P} pr "
-            f"JOIN {_F} f ON f.id = pr.{CAPTURED_PROPERTY_FK} "
-            f"WHERE {_static_predicate(cityobject_class_ids)} AND pr.val_lod = %s AND pr.val_geometry_id IS NOT NULL",
-            (CAPTURED_LOD_TARGET,),
-        )
-
-    if scenario == "semantic-surface":
-        # CityObject-granular: count of top-level CityObjects (via the
-        # canonical predicate, applied to the OWNING feature) that have AT
-        # LEAST ONE boundary surface classified RoofSurface — a presence
-        # check, matching cjdb's and duckdb-cityparquet's own
-        # semantic-surface semantics (see sql_cjdb.py / sql_duckdb.py).
+        # (`lod1Solid`) — 4929 rows unrestricted, 1116 restricted, on the
+        # delft fixture. Only the restricted set is comparable to the
+        # CityObject-level rows the other two systems return.
         #
-        # An EARLIER version of this branch counted RoofSurface `feature`
-        # rows directly and deliberately WITHOUT the granularity
-        # predicate, reasoned at the time as "measuring the cost of the
-        # semantic surfaces themselves". That reasoning was self-
-        # consistent but was never cross-checked against cjdb's/duckdb's
-        # OWN semantic-surface query — both of which ask "does this
-        # CityObject have >=1 RoofSurface" (presence), not "how many
-        # RoofSurface features exist" (a raw count) — until this task's
-        # smoke target ran all three together for the first time and
-        # `run_matrix`'s cross-check caught it: 3dcitydb=2232 vs
-        # cjdb=duckdb-cityparquet=1116, a genuine count-mismatch, not a
-        # measurement fluke. Investigated, not assumed: 3DCityDB's
-        # importer gives every BuildingPart TWO solids (`lod1Solid` —
-        # collapsing CityJSON's fractional 1.2/1.3 sub-tiers into one, per
-        # `CAPTURED_LOD_TARGET`'s own docstring — and `lod2Solid`), each
-        # with its OWN `boundary`-linked RoofSurface feature, so every one
-        # of the 1116 BuildingParts genuinely owns exactly 2 RoofSurface
-        # rows (`GROUP BY pr.feature_id HAVING count(*) > 1` returns all
-        # 1116, each with count 2 — confirmed against a live import, not
-        # inferred). The raw count and the presence count are BOTH
-        # internally correct answers to DIFFERENT questions; since cjdb
-        # and duckdb-cityparquet already ask the presence question, and
-        # rewriting THEM to a raw, multi-solid surface count has no
-        # natural equivalent in either engine's storage model (cjdb would
-        # need to unnest a JSONB array across every LoD; duckdb-cityparquet
-        # stores one semantic-surfaces list per LoD column, not per
-        # solid), this branch is rewritten to ask the presence question
-        # instead: `property.val_feature_id` -> the RoofSurface feature,
-        # `property.feature_id` -> its owner, DISTINCT-counted. Verified
-        # against a live import to return exactly 1116, matching both
-        # other systems.
-        owner_co = _static_predicate(cityobject_class_ids, "owner")
+        # `DISTINCT ON (f.id)` is this query's "SELECT DISTINCT f.*": the
+        # row count stays CityObject-grained — ONE row per feature even if
+        # several `property` rows of that feature match — without asking
+        # PostgreSQL to compare whole WKB geometries for equality, which a
+        # plain `SELECT DISTINCT` over a geometry column would. On the
+        # delft fixture it removes nothing (each CityObject owns exactly
+        # one `lod1Solid`); the sort it adds is an ordinary bigint sort and
+        # is disclosed in the README rather than hidden.
+        #
+        # `geometry_data` is JOINED deliberately: without it 3DCityDB would
+        # hand back a `feature` row carrying an identity and an envelope
+        # while the other two systems hand back the geometry, and the three
+        # rows would not be the same amount of object. It still returns
+        # less than they do — the attributes live in `property` and are not
+        # joined — which is README Caveat 16.
         return (
-            f"SELECT count(DISTINCT pr.feature_id) "
-            f"FROM {_P} pr "
-            f"JOIN {_F} rs ON rs.id = pr.val_feature_id "
-            f"JOIN {_F} owner ON owner.id = pr.feature_id "
-            f"WHERE rs.{CAPTURED_CLASS_COLUMN} = ("
-            f"  SELECT id FROM {SCHEMA}.objectclass WHERE classname = %s) "
-            f"AND {owner_co}",
-            ("RoofSurface",),
+            f"SELECT DISTINCT ON (f.id) f.*, gd.geometry FROM {_F} f "
+            f"JOIN {_P} pr ON pr.{CAPTURED_PROPERTY_FK} = f.id "
+            f"JOIN {SCHEMA}.geometry_data gd ON gd.id = pr.val_geometry_id "
+            f"WHERE {_static_predicate(cityobject_class_ids)} "
+            f"AND pr.val_lod = %s AND pr.val_geometry_id IS NOT NULL "
+            f"ORDER BY f.id",
+            (CAPTURED_LOD_TARGET,),
         )
 
     if scenario == "parts-per-building":
@@ -572,6 +500,46 @@ def _window(window: BboxWindow | None) -> BBox:
     if window is None:
         raise ValueError("a windowed scenario needs its resolved BboxWindow")
     return window.window
+
+
+def _probe(probe: IdProbe | None) -> IdProbe:
+    if probe is None:
+        raise ValueError("id-lookup needs its resolved IdProbe")
+    return probe
+
+
+#: The tables `append-object`'s untimed reset empties back to its
+#: watermark, in foreign-key order. `citydb-tool import` writes far more
+#: than the CityObjects of the file: a `feature` row per boundary surface,
+#: a `property` row per attribute and association, and a `geometry_data`
+#: row per geometry. Those carry no id of ours, so the reset is a watermark
+#: on each table's own primary key rather than a predicate on `objectid`.
+APPEND_RESET_TABLES: tuple[str, ...] = ("property", "geometry_data", "feature")
+
+
+def append_watermark_sql() -> list[tuple[str, str]]:
+    """`(table, sql)` for the highest id each append-affected table holds."""
+    return [
+        (table, f"SELECT coalesce(max(id), 0) FROM {SCHEMA}.{table}")
+        for table in APPEND_RESET_TABLES
+    ]
+
+
+def append_reset_sql(watermarks: dict[str, int]) -> list[tuple[str, tuple]]:
+    """The UNTIMED statements removing everything one append added.
+
+    Deletion order is `property` (which references both `feature` and
+    `geometry_data`), then `geometry_data` (which references `feature`),
+    then `feature`. An appearance-bearing dataset would also add
+    `surface_data`/`surface_data_mapping` rows, which this reset does not
+    remove: the delete would then fail loudly on the foreign key rather
+    than leave the schema quietly wrong, and no dataset in this corpus
+    carries appearances.
+    """
+    return [
+        (f"DELETE FROM {SCHEMA}.{table} WHERE id > %s", (watermarks[table],))
+        for table in APPEND_RESET_TABLES
+    ]
 
 
 def _building(building_class_id: int | None) -> int:
@@ -664,11 +632,11 @@ def index_ddl() -> list[str]:
       - `feature_objectclass_inx` (btree objectclass_id) — the
         CityObject-granularity predicate itself, wherever it appears,
         NOW sargable (see below — an earlier version of this docstring
-        reported it permanently unreachable for `attr-stats`/`lod-extract`/
+        reported it permanently unreachable for `attr-stats`/`lod-query`/
         hierarchy's child side; that was true only of the old correlated
         predicate shape, not of this column in general). Directly the
-        driving `Index Cond` for `count`/`project`/`attr-filter`/
-        `semantic-surface`/`attr-stats`; for `lod-extract`/hierarchy's
+        driving `Index Cond` for `count`/`attr-filter`/
+        `attr-stats`; for `lod-query`/parts-per-building's
         child side the planner instead drives from an even more selective
         index first and applies this one as a cheap `Filter` over the
         resulting small candidate set — both are genuinely index-driven
@@ -677,14 +645,14 @@ def index_ddl() -> list[str]:
       - `feature_envelope_spx` (GIST envelope) — bbox-query.
       - `property_name_inx` (btree name) — attr-stats.
       - `property_val_geometry_fkx` / `property_val_lod_inx` (btree
-        val_geometry_id / val_lod) — lod-extract's other candidate driving
+        val_geometry_id / val_lod) — lod-query's other candidate driving
         index; which of the two (or `feature_objectclass_inx`) the planner
         picks depends on the imported dataset's own row-count distribution
         across LoDs and classes, observed to differ between delft-scale and
         Zurich-scale imports — not asserted to be fixed across datasets,
         only to always be index-driven.
       - `property_feature_fkx` (btree feature_id) + `feature_pk` (btree
-        id) — the rest of hierarchy's join chain.
+        id) — the rest of parts-per-building's join chain.
 
     An EARLIER version of this docstring concluded "no faster index-driven
     plan exists for this predicate shape" and left open, unresolved,
@@ -718,16 +686,16 @@ def index_ddl() -> list[str]:
     settings, no scenario seq-scans `feature` for it any more, verified
     live by `EXPLAIN` for every scenario that uses it:
 
-    - `count`, `project`, `attr-filter`, `attr-stats`, `semantic-surface`
+    - `count`, `attr-filter`, `attr-stats`
       (its `owner` side): the planner chooses `Index Cond:
       (objectclass_id = ANY (...))` against `feature_objectclass_inx`
       directly — the three of these (`attr-stats`, and, in the JOIN cases
-      below, `lod-extract`/`hierarchy`) an earlier round of this docstring
+      below, `lod-query`/`parts-per-building`) an earlier round of this docstring
       reported as permanently seq-scan-bound are no longer seq-scanning at
       all.
-    - `lod-extract` and `hierarchy`'s child side: here the planner
+    - `lod-query` and `parts-per-building`'s child side: here the planner
       instead drives from a DIFFERENT, even more selective index first
-      (`property_val_lod_inx` for `lod-extract`; `feature_objectid_inx` on
+      (`property_val_lod_inx` for `lod-query`; `feature_objectid_inx` on
       the parent lookup, joined through, for `hierarchy`) and applies
       `objectclass_id = ANY (...)` as a plain `Filter` over the resulting
       small candidate set — genuinely the cheaper plan once the join order

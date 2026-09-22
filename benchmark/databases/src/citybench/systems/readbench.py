@@ -50,17 +50,18 @@ def parse_child_stdout(stdout: str) -> tuple[int, float, int, int]:
 
 
 def build_child_args(scenario: str, params: Params, input_path: str,
-                      window=None, fmt: str = "cityparquet") -> list[str]:
+                      window=None, fmt: str = "cityparquet",
+                      probe=None) -> list[str]:
     """The argv for one `--child` invocation.
 
     The flag-per-scenario mapping below is read from
     `benchmark/readbench/src/formats/cityparquet.rs`'s own `Scenario`
     match, not guessed, and `READBENCH_SCENARIOS` names exactly the subset
-    the child implements. `geometry-scan`, `bbox-fetch`, `point-query`,
-    `attr-range` and the write tier have no counterpart in the Rust child's
-    own `Scenario` enum, and the read harness is not this family's to
-    extend, so the native-reader systems simply do not run them — the
-    registry never asks them to.
+    the child implements. `geometry-scan`, `attr-range`, `lod-query`, the
+    two `parts-per-building` forms and the write tier have no counterpart
+    in the Rust child's own `Scenario` enum, and the read harness is not
+    this family's to extend, so the native-reader systems simply do not run
+    them — the registry never asks them to.
 
     `attr-filter` is handed the SAME per-dataset predicate the format
     family derives for itself (`params.AttrFilter`), through `--attr-eq`
@@ -106,7 +107,12 @@ def build_child_args(scenario: str, params: Params, input_path: str,
             raise ScenarioUnavailable("dataset has no numeric attribute")
         args += ["--attr-column", params.numeric_column]
     elif scenario == "id-lookup":
-        args += ["--target-id", params.target_id]
+        # The runner's probe, not a probe of the child's own choosing: the
+        # native reader is handed the SAME id at the same position in the
+        # canonical stream order as every SQL system, one call per probe.
+        if probe is None:
+            raise ValueError("id-lookup requires its resolved IdProbe")
+        args += ["--target-id", probe.id]
 
     return args
 
@@ -138,7 +144,7 @@ class ReadbenchSystem:
         return IngestResult(wall_clock_s=0.0, notes="no load step")
 
     def run(self, scenario: str, params: Params, repeat: int,
-            window=None) -> Measurement:
+            window=None, probe=None) -> Measurement:
         assert self._package is not None
         args = build_child_args(
             scenario, params, str(self._package), window,
@@ -148,6 +154,7 @@ class ReadbenchSystem:
             # the honest one keeps this invocation self-documenting even
             # though it makes no behavioural difference today).
             fmt=self.tag,
+            probe=probe,
         )
 
         def once() -> tuple[int, float, int, int]:

@@ -52,7 +52,7 @@ def test_count_is_city_object_granular(system):
 def test_every_non_windowed_read_scenario_runs_and_reports_server_time(system):
     params = _params()
     for scenario in ("geometry-scan", "count", "attr-filter", "attr-range",
-                     "attr-stats", "id-lookup", "point-query"):
+                     "attr-stats"):
         m = system.run(scenario, params, repeat=1)
         assert m.times_s[0] > 0
         assert m.server_times_s[0] > 0
@@ -60,7 +60,7 @@ def test_every_non_windowed_read_scenario_runs_and_reports_server_time(system):
 
 def test_bbox_scenarios_are_monotonic_in_the_window(system):
     params = _params()
-    for scenario in ("bbox-query", "bbox-fetch"):
+    for scenario in ("bbox-query",):
         counts = [
             system.run(scenario, params, repeat=1, window=w).result_count
             for w in params.windows
@@ -70,7 +70,7 @@ def test_bbox_scenarios_are_monotonic_in_the_window(system):
 
 def test_tier2_scenarios_run(system):
     params = _params()
-    for scenario in ("lod-extract", "semantic-surface", "parts-per-building"):
+    for scenario in ("lod-query", "parts-per-building"):
         m = system.run(scenario, params, repeat=1)
         assert m.times_s[0] > 0
 
@@ -85,6 +85,26 @@ def test_the_write_tier_runs_and_carries_no_server_time(system):
         assert m.times_s[0] > 0
         assert m.server_times_s == []
         assert m.result_count is not None and m.result_count > 0
+
+
+def test_append_object_adds_and_then_removes_everything_the_importer_wrote(system):
+    """B18 through `citydb-tool import cityjson`, twice, so the untimed
+    watermark reset between samples is exercised. v5 writes more `feature`
+    rows than the file has CityObjects — a row per boundary surface — and
+    all of them must go again."""
+    params = _params()
+    before = _feature_count(system)
+    m = system.run("append-object", params, repeat=2)
+    assert len(m.times_s) == 2 and all(t > 0 for t in m.times_s)
+    assert m.result_count == params.append.object_count
+    assert "external-importer" in m.notes
+    assert _feature_count(system) == before
+
+
+def _feature_count(system) -> int:
+    with system._conn.cursor() as cur:
+        cur.execute(f"SELECT count(*) FROM {system._schema}.feature")
+        return int(cur.fetchone()[0])
 
 
 # --- Beyond the brief -----------------------------------------------------
@@ -122,7 +142,7 @@ def test_geometry_scan_result_count_is_city_object_granular_not_exploded_by_lod(
     assert m.result_count == params.total_city_objects
 
 
-def test_lod_extract_matches_the_known_buildingpart_lod1_solid_count(system):
+def test_lod_query_matches_the_known_buildingpart_lod1_solid_count(system):
     # Verified directly against a live import (Task 9 report, and
     # docs/3dcitydb-v5-schema.md's "LoD value format" section): with the
     # CityObject-granularity predicate applied, val_lod='1' AND
@@ -131,25 +151,7 @@ def test_lod_extract_matches_the_known_buildingpart_lod1_solid_count(system):
     # query would return by also counting each solid's own boundary
     # surfaces' LoD1 geometry.
     params = _params()
-    m = system.run("lod-extract", params, repeat=1)
-    assert m.result_count == 1116
-
-
-def test_semantic_surface_matches_the_cityobject_granular_presence_count(system):
-    # From the captured class breakdown (docs/3dcitydb-v5-schema.md):
-    # objectclass 712 RoofSurface has 2232 rows in `feature` for this
-    # fixture — but that raw feature count is NOT what this scenario
-    # reports (a real count-mismatch caught by Task 12's smoke target: an
-    # earlier version of this branch counted RoofSurface rows directly and
-    # got 2232, while cjdb and duckdb-cityparquet both report 1116 for the
-    # "same" scenario). Every BuildingPart genuinely owns two RoofSurface
-    # rows (one from `lod1Solid`, one from `lod2Solid`), so the raw count
-    # answers "how many RoofSurface features exist", not cjdb's/
-    # duckdb-cityparquet's "how many CityObjects have >=1 RoofSurface".
-    # Fixed to count DISTINCT owning CityObjects instead — see
-    # sql_citydb.py's comment on this branch for the full investigation.
-    params = _params()
-    m = system.run("semantic-surface", params, repeat=1)
+    m = system.run("lod-query", params, repeat=1)
     assert m.result_count == 1116
 
 
@@ -198,7 +200,7 @@ def test_size_reports_a_positive_byte_count(system):
 # --- EXPLAIN-based regression guards --------------------------------------
 #
 # Mirrors test_cjdb_integration.py's
-# test_lod_extract_and_semantic_surface_plans_use_a_bitmap_index_scan: the
+# test_lod_query_plans_use_a_bitmap_index_scan: the
 # point is that the planner CHOOSES an index-based plan on its own under
 # DEFAULT settings, not that it can be coerced into one. A regression that
 # dropped an index, let statistics go stale, or reintroduced a
@@ -217,7 +219,8 @@ def test_id_lookup_uses_the_objectid_index(system):
 
     params = _params()
     sql, args = sql_citydb.sql_for(
-        "id-lookup", params, cityobject_class_ids=system._cityobject_class_ids,
+        "id-lookup", params, probe=params.id_probes[0],
+        cityobject_class_ids=system._cityobject_class_ids,
     )
     plan = _explain_text(system, sql, args)
     assert "feature_objectid_inx" in plan
@@ -244,7 +247,7 @@ def test_count_and_attr_range_route_the_predicate_through_an_index(system):
     # apply the resolved static predicate standalone (no JOIN in the same
     # query). C1 fix (final whole-branch review): the OLD correlated
     # predicate genuinely could not reach this index inside a JOIN
-    # (attr-stats/lod-extract/parts-per-building's child side); the NEW static,
+    # (attr-stats/lod-query/parts-per-building's child side); the NEW static,
     # pre-resolved `objectclass_id IN (...)` form is sargable everywhere,
     # including inside a JOIN — see the scenarios below and
     # sql_citydb.index_ddl()'s docstring for the full, corrected picture.
@@ -301,12 +304,12 @@ def test_attr_stats_feature_side_no_longer_seq_scans_after_the_c1_fix(system):
     assert "Seq Scan on feature" not in plan, plan
 
 
-def test_lod_extract_uses_an_index_and_no_longer_seq_scans_feature(system):
+def test_lod_query_uses_an_index_and_no_longer_seq_scans_feature(system):
     from citybench.scenarios import sql_citydb
 
     params = _params()
     sql, args = sql_citydb.sql_for(
-        "lod-extract", params, cityobject_class_ids=system._cityobject_class_ids,
+        "lod-query", params, cityobject_class_ids=system._cityobject_class_ids,
     )
     plan = _explain_text(system, sql, args)
     # The property-side driving index: either is a legitimate plan choice

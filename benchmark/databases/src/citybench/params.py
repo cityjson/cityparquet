@@ -15,13 +15,13 @@ import dataclasses
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import duckdb
 
 from citybench.config import (
-    BBOX_TARGETS, AttrFilter, AttrRange, BBox, BboxWindow, Params,
-    object_table_files, window_from_halves,
+    BBOX_TARGETS, ID_DECILES, ID_MISS_TAG, AppendSpec, AttrFilter, AttrRange,
+    BBox, BboxWindow, IdProbe, Params, object_table_files, window_from_halves,
 )
 
 # --- the `attr-filter` predicate, shared with the format harness ---------
@@ -81,73 +81,291 @@ ATTR_RANGE_QUANTILE = 0.8
 NOTES_HOSTILE = (";", ",", '"', "\n", "\r")
 
 
-def _iter_json_lines(source: Path) -> Iterator[dict[str, Any]]:
-    """Yield each parsed JSON object from a CityJSON or CityJSONSeq file.
+#: The suffix every id of the derived one-feature append file is given, so
+#: the appended object is a NEW object carrying the SAME geometry. Verified
+#: absent from the source before the file is written; a collision appends
+#: `-2`, `-3`, ... exactly as `params.rs::miss_id` does for its own probe.
+APPEND_SUFFIX = "-appended"
 
-    A plain CityJSON file is a single JSON document (possibly pretty-printed
-    across many lines), so the whole file is tried as one object first. If
-    that fails to parse — because the file is actually CityJSONSeq, one
-    JSON object per line (a header line followed by feature lines) — fall
-    back to reading it line by line.
+#: `id-miss`'s id is the `id-50pct` id with this suffix — the format
+#: family's own construction (`params.rs::miss_id`), verified absent from
+#: EVERY CityObject id of the source rather than only from the feature ids,
+#: because a BuildingPart could carry the colliding name.
+MISS_SUFFIX = "-absent"
+
+
+@dataclasses.dataclass(frozen=True)
+class SourceScan:
+    """Everything one pass over the CityJSON source yields.
+
+    One pass, not four: the source is the multi-gigabyte artefact in this
+    harness (the 1M 3DBAG slice), and the selectivity denominator, the
+    `attr-stats` column, `id-lookup`'s probes and `append-object`'s feature
+    are all facts about it.
     """
-    text = source.read_text()
+
+    #: Every CityObject in the file, at every level of the hierarchy.
+    total_objects: int
+    #: The most frequent numeric attribute; None if the dataset has none.
+    numeric_column: str | None
+    #: Every CityObject id, for verifying that a derived id is absent.
+    all_ids: set[str]
+    #: The FEATURE ids in stream order — `id-lookup`'s canonical order.
+    #: For CityJSONSeq that is each line's own `id` (the feature's root
+    #: object, a Building on this corpus); for a plain CityJSON document it
+    #: is the parentless `CityObjects` keys in document order, which is the
+    #: same grain.
+    feature_ids: list[str]
+    #: CityJSONSeq only: the header line, verbatim, and the last feature
+    #: line, verbatim. Both None for a plain CityJSON document.
+    header_line: str | None
+    last_feature_line: str | None
+
+
+def _is_seq_header(line: str) -> dict[str, Any] | None:
+    """The parsed header of a CityJSONSeq file, or None.
+
+    The discriminator is the FIRST line alone, so a multi-gigabyte
+    CityJSONSeq is never read into memory just to find out what it is: a
+    CityJSONSeq's first line is a complete `{"type": "CityJSON", ...}`
+    document on its own, while a plain CityJSON file — pretty-printed or
+    not — either fails to parse a line at a time or carries its
+    `CityObjects` in that same first line (handled by the caller, which
+    falls back to the document branch when the stream yields no feature).
+    """
     try:
-        yield json.loads(text)
-        return
+        doc = json.loads(line)
     except json.JSONDecodeError:
-        pass  # not a single JSON document: fall through to line-delimited
-
-    for line in text.splitlines():
-        line = line.strip()
-        if line:
-            yield json.loads(line)
+        return None
+    if isinstance(doc, dict) and doc.get("type") == "CityJSON":
+        return doc
+    return None
 
 
-def source_facts(source: Path) -> tuple[int, str, str | None]:
-    """``(total CityObjects, lexicographically first id, numeric column)``.
+def _accumulate(doc: dict[str, Any], numeric_counts: Counter[str],
+                all_ids: set[str]) -> int:
+    """Fold one document's CityObjects into the running scan. Returns how
+    many objects it held."""
+    objects = doc.get("CityObjects") or {}
+    for obj_id, obj in objects.items():
+        all_ids.add(obj_id)
+        for key, value in (obj.get("attributes") or {}).items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                numeric_counts[key] += 1
+    return len(objects)
 
-    These three stay source-derived rather than package-derived so that the
-    selectivity denominator and `id-lookup`'s probe describe the CityJSON
-    the PostgreSQL systems were actually fed, not the converted artefact
-    only DuckDB reads. The extent is no longer derived here: the query
-    windows are searched over the package's own per-row `bbox` column, as
-    the format harness does, so dequantising every vertex of a multi-
-    gigabyte source in Python bought nothing and cost minutes.
+
+def scan_source(source: Path) -> SourceScan:
+    """One streaming pass over the CityJSON or CityJSONSeq source.
+
+    These facts stay source-derived rather than package-derived so that the
+    selectivity denominator, `id-lookup`'s probes and `append-object`'s
+    feature describe the CityJSON the PostgreSQL systems were actually fed,
+    not the converted artefact only DuckDB reads. The extent is not derived
+    here: the query windows are searched over the package's own per-row
+    `bbox` column, as the format harness does, so dequantising every vertex
+    of a multi-gigabyte source in Python bought nothing and cost minutes.
     """
     numeric_counts: Counter[str] = Counter()
-    all_ids: list[str] = []
+    all_ids: set[str] = set()
+    feature_ids: list[str] = []
     total_objects = 0
+    header_line: str | None = None
+    last_feature_line: str | None = None
 
-    for doc in _iter_json_lines(source):
-        for obj_id, obj in doc.get("CityObjects", {}).items():
-            total_objects += 1
-            all_ids.append(obj_id)
-            for key, value in (obj.get("attributes") or {}).items():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    numeric_counts[key] += 1
+    with source.open() as handle:
+        for index, raw in enumerate(handle):
+            line = raw.strip()
+            if not line:
+                continue
+            if header_line is None and index == 0:
+                header = _is_seq_header(line)
+                if header is None:
+                    break          # a plain CityJSON document; see below
+                header_line = line
+                total_objects += _accumulate(header, numeric_counts, all_ids)
+                continue
+            if header_line is None:
+                break
+            feature = json.loads(line)
+            total_objects += _accumulate(feature, numeric_counts, all_ids)
+            feature_ids.append(feature["id"])
+            last_feature_line = line
+
+    if not feature_ids:
+        # Either the first line was not a CityJSONSeq header, or it was one
+        # with no feature after it (a single-line CityJSON document whose
+        # `type` is "CityJSON"). Both are the same case: one JSON document,
+        # read whole, whose parentless CityObjects are the feature grain.
+        numeric_counts = Counter()
+        all_ids = set()
+        doc = json.loads(source.read_text())
+        total_objects = _accumulate(doc, numeric_counts, all_ids)
+        feature_ids = [
+            obj_id for obj_id, obj in (doc.get("CityObjects") or {}).items()
+            if not (obj.get("parents") or [])
+        ] or list((doc.get("CityObjects") or {}).keys())
+        header_line = None
+        last_feature_line = None
 
     if total_objects == 0:
         raise ValueError(f"{source}: no CityObjects found")
 
     # Ties broken by name so the result is deterministic.
     #
-    # An earlier version of this function raised ValueError when a dataset
-    # carried no numeric attribute at all. Discovered to be too broad
-    # against the heterogeneity corpus (Task 14): Montreal's 294 Buildings
-    # carry NO "attributes" object whatsoever, and lod3_railway's 121
-    # CityObjects across 14 CityGML types carry only categorical attributes
-    # ("function"/"class"/"species") — genuine, legitimate properties of
-    # those datasets, not malformed input. The old raise aborted derivation
-    # of EVERY scenario's parameters for the sake of the one scenario
-    # (attr-stats) that actually needs a numeric column. So `numeric_column`
-    # is simply None, and only attr-stats (guarded by a
-    # `ScenarioUnavailable` in each `sql_*.sql_for`) is affected, recorded
-    # downstream as a `skipped:` row.
+    # `numeric_column` is None rather than an error when a dataset carries
+    # no numeric attribute at all. Discovered against the heterogeneity
+    # corpus (Task 14): Montreal's 294 Buildings carry NO "attributes"
+    # object whatsoever, and lod3_railway's 121 CityObjects across 14
+    # CityGML types carry only categorical attributes — genuine, legitimate
+    # properties of those datasets, not malformed input. Only `attr-stats`
+    # (guarded by a `ScenarioUnavailable` in each `sql_*.sql_for`) is
+    # affected, recorded downstream as a `skipped:` row.
     numeric_column = (
         min(numeric_counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
         if numeric_counts else None
     )
-    return total_objects, sorted(all_ids)[0], numeric_column
+    return SourceScan(
+        total_objects=total_objects,
+        numeric_column=numeric_column,
+        all_ids=all_ids,
+        feature_ids=feature_ids,
+        header_line=header_line,
+        last_feature_line=last_feature_line,
+    )
+
+
+def derived_id(seed: str, suffix: str, taken: set[str]) -> str:
+    """`seed + suffix`, made unique against `taken` by a numeric tail.
+
+    `params.rs::miss_id`'s rule, so both families derive an absent id the
+    same deterministic, reproducible way rather than randomly.
+    """
+    base = f"{seed}{suffix}"
+    if base not in taken:
+        return base
+    for tail in range(2, 1_000_000):
+        candidate = f"{base}-{tail}"
+        if candidate not in taken:
+            return candidate
+    raise ValueError(f"cannot derive an id absent from {len(taken)} taken ids")
+
+
+def id_probes(scan: SourceScan) -> tuple[IdProbe, ...]:
+    """`id-lookup`'s four probes: three positioned hits plus a verified miss.
+
+    The positioned ids are those at 10 %, 50 % and 90 % of the canonical
+    stream order, by the format harness's own index rule
+    (`params.rs::id_probes`: `(position * len) as usize`, clamped to the
+    last index). The miss is the 50 % id with `MISS_SUFFIX`, verified absent
+    from every CityObject id in the source — the probe that actually
+    separates a store with an id index from one without, and the only one
+    whose cost is position-free.
+    """
+    if not scan.feature_ids:
+        raise ValueError("id_probes needs at least one feature")
+    ids = scan.feature_ids
+    probes = [
+        IdProbe(tag=tag, id=ids[min(int(position * len(ids)), len(ids) - 1)],
+                present=True)
+        for position, tag in ID_DECILES
+    ]
+    seed = next(p.id for p in probes if p.tag == "id-50pct")
+    probes.append(
+        IdProbe(tag=ID_MISS_TAG,
+                id=derived_id(seed, MISS_SUFFIX, scan.all_ids),
+                present=False)
+    )
+    return tuple(probes)
+
+
+def rewrite_feature_ids(feature: dict[str, Any], suffix: str
+                        ) -> tuple[dict[str, Any], int]:
+    """``(the feature with every id it owns suffixed, unmapped references)``.
+
+    Every key of the feature's own `CityObjects`, the feature's own `id`,
+    and every `parents`/`children` entry naming one of those keys is
+    rewritten. A reference naming an object this feature does NOT carry is
+    left exactly as it was and counted: on a well-formed CityJSONSeq there
+    are none (a feature is self-contained by definition), and rewriting one
+    would invent a relationship to an object that does not exist while
+    keeping one would tie the appended object back into the existing data.
+    Neither is silently the right answer, so the count is recorded in the
+    params sidecar instead.
+    """
+    objects = feature.get("CityObjects") or {}
+    mapping = {key: f"{key}{suffix}" for key in objects}
+    unmapped = 0
+
+    def remap(ids: list[str]) -> list[str]:
+        nonlocal unmapped
+        out = []
+        for value in ids:
+            if value in mapping:
+                out.append(mapping[value])
+            else:
+                unmapped += 1
+                out.append(value)
+        return out
+
+    renamed: dict[str, Any] = {}
+    for key, obj in objects.items():
+        obj = dict(obj)
+        if obj.get("parents"):
+            obj["parents"] = remap(list(obj["parents"]))
+        if obj.get("children"):
+            obj["children"] = remap(list(obj["children"]))
+        renamed[mapping[key]] = obj
+
+    out = dict(feature)
+    out["CityObjects"] = renamed
+    out["id"] = mapping.get(feature["id"], f"{feature['id']}{suffix}")
+    return out, unmapped
+
+
+def write_append_feature(scan: SourceScan, out_dir: Path, dataset: str
+                         ) -> AppendSpec | None:
+    """Write `<dataset>.append.city.jsonl` and describe it.
+
+    The file is the source's header line verbatim followed by ONE feature:
+    the LAST of the canonical stream, with every id it owns suffixed. Taking
+    the last rather than a random one keeps the derivation deterministic and
+    keeps the appended geometry an ordinary object of this dataset rather
+    than a synthetic one. The header is copied byte for byte so the file
+    declares the same CRS and `transform` the destination already holds —
+    which every importer here checks and refuses a mismatch on.
+
+    Returns None for a plain CityJSON source: one feature cannot be cut out
+    of it without re-indexing the shared `vertices` array, which would make
+    the appended object this harness's construction rather than the
+    dataset's own. `append-object` is then recorded as `skipped:`.
+    """
+    if scan.header_line is None or scan.last_feature_line is None:
+        return None
+    suffix = APPEND_SUFFIX
+    feature = json.loads(scan.last_feature_line)
+    # A suffix that happens to collide is a real possibility on a dataset
+    # whose ids already end in it (a re-derivation over an appended file,
+    # say), and an insert of an id the destination already holds is refused
+    # outright by every importer here.
+    while any(f"{key}{suffix}" in scan.all_ids
+              for key in (feature.get("CityObjects") or {})):
+        suffix = f"{suffix}-2"
+    renamed, unmapped = rewrite_feature_ids(feature, suffix)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{dataset}.append.city.jsonl"
+    path.write_text(
+        scan.header_line + "\n"
+        + json.dumps(renamed, separators=(",", ":"), sort_keys=True) + "\n"
+    )
+    return AppendSpec(
+        path=str(path.resolve()),
+        suffix=suffix,
+        object_count=len(renamed["CityObjects"]),
+        source_feature_id=feature["id"],
+        unmapped_references=unmapped,
+    )
 
 
 def package_attributes(files: list[str], conn: duckdb.DuckDBPyConnection) -> list[str]:
@@ -392,7 +610,8 @@ def resolve_windows(table: str, conn: duckdb.DuckDBPyConnection
     return dataset, centre, windows, rows
 
 
-def derive(source: Path, package: Path) -> Params:
+def derive(source: Path, package: Path, *, append_dir: Path | None = None,
+           dataset: str | None = None) -> Params:
     """The shared query parameters: source facts plus package facts.
 
     ``package`` is a CityParquet package directory. It supplies the extent,
@@ -402,8 +621,21 @@ def derive(source: Path, package: Path) -> Params:
     and Hilbert packages hold the same rows in a different order, so either
     yields identical parameters; the caller passes the source-order one for
     determinism.
+
+    ``append_dir`` is where `append-object`'s derived one-feature
+    CityJSONSeq file is written — beside the params sidecar, so the file
+    every importer was handed is committed with the parameters that
+    describe it. Omitted, no file is written and `append-object` is
+    recorded as `skipped:`. ``dataset`` names that file; it defaults to the
+    package's own dataset name.
     """
-    total_objects, target_id, numeric_column = source_facts(source)
+    scan = scan_source(source)
+    numeric_column = scan.numeric_column
+    probes = id_probes(scan)
+    append = (
+        write_append_feature(scan, append_dir, dataset or dataset_name_of(package))
+        if append_dir is not None else None
+    )
 
     conn = duckdb.connect()
     try:
@@ -433,9 +665,10 @@ def derive(source: Path, package: Path) -> Params:
         attr_filter=attr_filter,
         attr_range=attr_range,
         numeric_column=numeric_column,
-        target_id=target_id,
-        total_city_objects=total_objects,
+        id_probes=probes,
+        total_city_objects=scan.total_objects,
         window_rows=window_rows,
+        append=append,
     )
 
 
@@ -458,7 +691,8 @@ def to_json(p: Params) -> str:
         "bbox_full": dataclasses.asdict(p.bbox_full),
         "numeric_column": p.numeric_column,
         "point_xy": list(p.point_xy),
-        "target_id": p.target_id,
+        "id_probes": [dataclasses.asdict(probe) for probe in p.id_probes],
+        "append": dataclasses.asdict(p.append) if p.append else None,
         "total_city_objects": p.total_city_objects,
         "window_rows": p.window_rows,
         "windows": [
@@ -490,7 +724,8 @@ def from_json(text: str) -> Params:
         attr_filter=AttrFilter(**d["attr_filter"]) if d["attr_filter"] else None,
         attr_range=AttrRange(**d["attr_range"]) if d["attr_range"] else None,
         numeric_column=d["numeric_column"],
-        target_id=d["target_id"],
+        id_probes=tuple(IdProbe(**probe) for probe in d["id_probes"]),
         total_city_objects=d["total_city_objects"],
         window_rows=d["window_rows"],
+        append=AppendSpec(**d["append"]) if d.get("append") else None,
     )

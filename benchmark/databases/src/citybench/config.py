@@ -334,6 +334,69 @@ class AttrRange:
     matched: int
 
 
+#: `(position in the canonical stream order, notes tag)` for the three
+#: `id-lookup` hit probes, and the tag of the fourth. A port of
+#: `benchmark/readbench/src/params.rs`'s `ID_DECILES` / `ID_MISS_TAG`, so an
+#: `id-50pct` row in either benchmark family names the same construction: a
+#: single target would make the published time a function of where that one
+#: id happened to sit in the stream.
+ID_DECILES: tuple[tuple[float, str], ...] = (
+    (0.10, "id-10pct"),
+    (0.50, "id-50pct"),
+    (0.90, "id-90pct"),
+)
+ID_MISS_TAG = "id-miss"
+
+
+@dataclass(frozen=True)
+class IdProbe:
+    """One resolved `id-lookup` target.
+
+    Unlike the format family's own `IdProbe`, this one carries no
+    `substituted` flag. There, a probe had to be checked against a
+    CityGML artefact synthesised by `citygml-tools`, whose member set is
+    not guaranteed to match the seq stream's. Here every system is fed the
+    SAME source file, so every id of that file exists in every system by
+    construction and there is nothing to substitute.
+    """
+
+    tag: str
+    id: str
+    #: Whether this id is expected to be found. False only for `id-miss`.
+    present: bool
+
+    def notes_tag(self) -> str:
+        return self.tag
+
+
+@dataclass(frozen=True)
+class AppendSpec:
+    """The one-feature CityJSONSeq file `append-object` (B18) imports.
+
+    Cut from the source's own LAST feature — its header line verbatim, then
+    that one feature with every id it owns given `suffix`, so it is a NEW
+    object carrying the SAME geometry. Deriving it rather than shipping a
+    fixture keeps the appended object the right shape, CRS and attribute set
+    for whichever dataset is being measured.
+    """
+
+    #: Absolute path to `<dataset>.append.city.jsonl`.
+    path: str
+    #: The id suffix every id in the file was given.
+    suffix: str
+    #: CityObjects in that feature — the Building plus its parts. This is
+    #: the row's DEFINED `result_count` on every system, because each
+    #: importer writes a different number of its own rows for them.
+    object_count: int
+    #: The id of the source feature it was cut from, BEFORE rewriting.
+    source_feature_id: str
+    #: `parents`/`children` entries naming an object outside this feature,
+    #: which are left untouched. Zero on a well-formed CityJSONSeq; recorded
+    #: so an unexpected cross-feature reference is visible rather than
+    #: silently rewritten or silently kept.
+    unmapped_references: int
+
+
 @dataclass(frozen=True)
 class Params:
     """Query parameters derived once and shared by every system verbatim."""
@@ -341,23 +404,36 @@ class Params:
     bbox_full: BBox
     #: The three row-fraction windows, in `BBOX_TARGETS` order.
     windows: tuple[BboxWindow, ...]
-    #: The median row-centre the windows are built around; `point-query`'s
-    #: degenerate window (CJDB Q3) is this point.
+    #: The median row-centre the windows are built around. Recorded as the
+    #: windows' own provenance, not as a query parameter of its own: the
+    #: point query CJDB's Q3 poses is not reproduced, because a point query
+    #: is a window query (`notes/benchmark-queries.md`).
     point_xy: tuple[float, float]
     attr_filter: AttrFilter | None   # None when no attribute supports a predicate
     attr_range: AttrRange | None     # None if the dataset has no numeric attribute
     numeric_column: str | None  # numeric attribute for attr-stats; None if the dataset has none
-    target_id: str          # for id-lookup
+    #: `id-lookup`'s four probes, in `ID_DECILES` + miss order.
+    id_probes: tuple[IdProbe, ...]
     total_city_objects: int  # selectivity denominator
     #: Rows carrying a non-NULL `bbox` in the CityParquet package — the
     #: denominator every window's `achieved` fraction is a fraction of.
     window_rows: int
+    #: The one-feature CityJSONSeq file `append-object` imports; None when
+    #: the source is a plain CityJSON document, from which no feature can be
+    #: cut without re-indexing its vertices.
+    append: AppendSpec | None = None
 
     def window(self, tag: str) -> BboxWindow:
         for candidate in self.windows:
             if candidate.tag == tag:
                 return candidate
         raise KeyError(f"no window tagged {tag!r}")
+
+    def probe(self, tag: str) -> IdProbe:
+        for candidate in self.id_probes:
+            if candidate.tag == tag:
+                return candidate
+        raise KeyError(f"no id probe tagged {tag!r}")
 
 
 @dataclass(frozen=True)

@@ -82,7 +82,7 @@ def test_params_and_measurement_are_frozen():
         attr_filter=None,
         attr_range=None,
         numeric_column="h_dak_max",
-        target_id="abc",
+        id_probes=(),
         total_city_objects=10,
         window_rows=10,
     )

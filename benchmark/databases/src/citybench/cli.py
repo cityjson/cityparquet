@@ -238,11 +238,18 @@ def cmd_derive_params(args) -> int:
     dataset = _dataset(
         source, Path(args.prepared_dir) if getattr(args, "prepared_dir", None) else None
     )
-    p = params_mod.derive(source, dataset.cityparquet_dir)
-    out = ROOT / "params" / f"{Dataset.name_from_path(source)}.json"
+    name = Dataset.name_from_path(source)
+    out = ROOT / "params" / f"{name}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
+    # The one-feature `append-object` file is written BESIDE the sidecar
+    # that describes it, so the two are committed and read together.
+    p = params_mod.derive(
+        source, dataset.cityparquet_dir, append_dir=out.parent, dataset=name
+    )
     out.write_text(params_mod.to_json(p))
     print(f"wrote {out}")
+    if p.append:
+        print(f"wrote {p.append.path}")
     return 0
 
 
@@ -273,7 +280,17 @@ def cmd_bench(args) -> int:
     # same rows in a different order, so the windows and attribute picks are
     # identical either way, and naming one makes the derivation
     # deterministic regardless of which systems this run includes.
-    p = params_mod.derive(source, dataset.cityparquet_dir)
+    #
+    # The results directory is resolved HERE, before the run rather than
+    # after it, because `append-object`'s derived one-feature CityJSONSeq
+    # file is written into it and every system is handed that path.
+    results_dir = Path(args.output_dir) if args.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    p = params_mod.derive(
+        source, dataset.cityparquet_dir,
+        append_dir=results_dir, dataset=dataset.name,
+    )
+    (results_dir / f"{dataset.name}.params.json").write_text(params_mod.to_json(p))
 
     ingest_times: dict[str, float] = {}
     sizes: dict[str, tuple[int, int]] = {}
@@ -293,9 +310,6 @@ def cmd_bench(args) -> int:
         systems, p, dataset.name, args.repeat, sizes, tolerance, resolved
     )
 
-    results_dir = Path(args.output_dir) if args.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
-    results_dir.mkdir(parents=True, exist_ok=True)
-    (results_dir / f"{dataset.name}.params.json").write_text(params_mod.to_json(p))
     write_csv(results_dir / f"{dataset.name}.csv", rows)
 
     pg_settings = _pg_settings(getattr(args, "ports", None))
