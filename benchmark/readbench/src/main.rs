@@ -166,12 +166,14 @@ struct RunArgs {
     /// CONFIGURATION run: every id is written with its recipe by a write
     /// child, kept as `<prepared-dir>/<base>.<id>.parquet`, then read by the
     /// CityParquet runner. Exclusive with `--formats`; the list must contain
-    /// the bare `cityparquet` baseline; local transport only.
+    /// the bare `cityparquet` baseline. Over `--transport http` the run is
+    /// read-only: it reads the `<base>.<id>.parquet` packages a local run
+    /// wrote, uploaded beside the prepared artefacts, and writes none.
     #[arg(long, value_delimiter = ',')]
     variants: Option<Vec<String>>,
 
     /// Warm write repeats per variant (a discarded warmup precedes them).
-    /// Only read by `--variants`. Must be >= 1.
+    /// Only read by a local `--variants` run. Must be >= 1.
     #[arg(long, default_value_t = 3)]
     write_repeat: usize,
 

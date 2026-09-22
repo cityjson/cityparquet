@@ -516,7 +516,9 @@ write-bench FOLDER OUT=(BENCH / "results"):
 # start, and each input's run then appends its own rows. Network-independent
 # given already-fetched inputs; multi-hour at the 1M-object slice; kept OUT
 # of `just check`/CI.
-# With BASE_URL the run is read-only over HTTP: it reads the variant packages a local run left in PREPARED, uploaded to BASE_URL, and WRITE_REPEAT is unused.
+# With BASE_URL the run is read-only over HTTP: it reads the variant
+# packages a local run left in PREPARED, uploaded to BASE_URL, and
+# WRITE_REPEAT is unused.
 #
 # VARIANTS is the whole benchmark: the three public recipes below pass their
 # lists here and nowhere else, and benchmark/scripts/tests/bench_recipe_test.sh
