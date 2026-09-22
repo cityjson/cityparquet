@@ -6,67 +6,20 @@ engine querying our format, against SQL engines querying theirs.
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 import duckdb
 
-from citybench.config import Dataset, IngestResult, Measurement, Params, SizeReport
+from citybench.config import (
+    Dataset, IngestResult, Measurement, Params, SizeReport, object_table_files,
+)
 from citybench.lifecycle import duckdb_temp_directory
 from citybench.scenarios import registry, sql_duckdb
 from citybench.systems import pg
 from citybench.systems.base import register
 from citybench.stats import peak_resident_bytes
 
-# The STAC asset role `cityparquet convert` stamps on every per-module
-# OBJECT table it writes (verified against a real converted package's
-# metadata.json — see `object_table_files`'s own docstring). Sidecar
-# tables (materials/textures/geometry_templates) and the "data" alias
-# entry (a convenience duplicate of the FIRST object table, for a
-# single-family package) do not carry this role, so filtering on it is
-# what tells object tables apart from everything else `assets` lists.
-_OBJECT_TABLE_ROLE = "cityparquet-objects"
-
-
-def object_table_files(package: Path) -> list[str]:
-    """The object-table Parquet filenames a CityParquet package lists.
-
-    A single-family package (every delft-shaped dataset in this corpus)
-    lists exactly one, ``building.parquet``. A by-type, multi-family
-    package (``lod3_railway``, whose 121 CityObjects span 14 CityGML
-    types — Railway, Bridge, Tunnel, CityFurniture, ... — none of them
-    Building) lists several: ``railway.parquet``, ``bridge.parquet``,
-    ``tunnel.parquet``, and so on. An EARLIER version of this system
-    hardcoded ``building.parquet`` (this is by-type layout's ONLY table
-    name for a Building-only dataset like delft, which is why that bug
-    slipped past every prior task's own smoke run), which fails outright
-    against a package with no Building table at all — discovered running
-    Task 14's heterogeneity corpus, not assumed in advance.
-
-    Resolved from ``metadata.json``'s own ``assets``, filtered to entries
-    whose ``roles`` include ``"cityparquet-objects"`` — verified against a
-    real converted package to be exactly the per-module object tables,
-    excluding both the "data" convenience alias (a duplicate pointer at
-    the FIRST object table, carrying only the plain ``"data"`` role) and
-    any materials/textures/geometry_templates sidecar assets (which carry
-    their own, different roles). Sorted for a deterministic query shape
-    across runs.
-    """
-    manifest = json.loads((package / "metadata.json").read_text())
-    hrefs = [
-        asset["href"]
-        for asset in manifest.get("assets", {}).values()
-        if _OBJECT_TABLE_ROLE in asset.get("roles", ())
-    ]
-    if not hrefs:
-        raise ValueError(
-            f"{package}/metadata.json lists no asset with role "
-            f"{_OBJECT_TABLE_ROLE!r}; not a valid CityParquet package"
-        )
-    # hrefs are relative ("./building.parquet"); normalise against the
-    # package directory so the caller gets absolute, glob-free paths.
-    return sorted((package / href).resolve().as_posix() for href in hrefs)
 
 
 @register
