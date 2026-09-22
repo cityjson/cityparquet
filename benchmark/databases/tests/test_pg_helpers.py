@@ -135,3 +135,12 @@ def test_the_benchmark_connection_hands_json_back_as_text():
     assert set(conn.adapters.registered) == {"json", "jsonb"}
     assert all(loader is psycopg.types.string.TextLoader
                for loader in conn.adapters.registered.values())
+
+
+def test_parses_execution_time_from_a_text_explain_payload():
+    """The benchmark connections load json/jsonb as TEXT (register_text_passthrough),
+    so the EXPLAIN payload is a string there; every PostgreSQL read row errored
+    with ValueError in the 2026-09-22 smoke before this was handled."""
+    from citybench.systems.pg import parse_explain_execution_time
+    payload = '[{"Plan": {"Node Type": "Seq Scan"}, "Execution Time": 12.5}]'
+    assert parse_explain_execution_time(payload) == 0.0125

@@ -29,6 +29,8 @@ not subtracted from one another.
 
 from __future__ import annotations
 
+import json
+
 import time
 import os
 
@@ -76,11 +78,16 @@ def register_text_passthrough(conn: psycopg.Connection) -> None:
         conn.adapters.register_loader(name, psycopg.types.string.TextLoader)
 
 
-def parse_explain_execution_time(plan: list) -> float:
+def parse_explain_execution_time(plan: list | str) -> float:
     """Seconds, from an ``EXPLAIN (ANALYZE, FORMAT JSON)`` payload.
 
-    PostgreSQL reports 'Execution Time' in milliseconds.
+    PostgreSQL reports 'Execution Time' in milliseconds. The payload arrives
+    as TEXT on a connection with `register_text_passthrough` applied (the
+    benchmark connections), so a string is decoded here; a connection with
+    psycopg's default loaders hands the list over already parsed.
     """
+    if isinstance(plan, str):
+        plan = json.loads(plan)
     if not plan:
         raise ValueError("empty EXPLAIN payload")
     root = plan[0]
