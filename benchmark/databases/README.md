@@ -325,6 +325,34 @@ plus its parts — and what each importer actually wrote is measured and
 stamped into `notes` (`city-object-rows-added` on cjdb,
 `feature-rows-added` on 3DCityDB) rather than left to be assumed.
 
+> **`append-object` does not currently run on `duckdb-cityparquet`, and
+> the reason is upstream.** `PRAGMA insert_cityjsonseq` into a package
+> loaded by `cityparquet_read` is refused on any **appearance-free**
+> corpus, 3DBAG included:
+>
+> ```
+> Binder Error: insert_cityjson: column 'material_lod0_0' cannot be
+> widened -- the destination is MAP(VARCHAR, BIGINT[]) and the incoming
+> type is VARCHAR.
+> ```
+>
+> Measured, not inferred: `cityparquet convert` writes every
+> `material_lod*`/`texture_lod*` column with its full nested type even
+> when nothing in the dataset uses appearances, while the extension's own
+> CityJSON reader types those same columns `VARCHAR` for a file with no
+> appearance section — `DESCRIBE SELECT * FROM read_cityjsonseq(...)`
+> reports `VARCHAR` for the whole 3DBAG source, not only for the derived
+> one-feature slice. The two sides of the stack disagree about the
+> package's schema, so the insert is refused before it begins. Until an
+> all-NULL placeholder column can be widened (or the writer and the reader
+> agree on its type), both DuckDB `append-object` rows are `error:
+BinderException` on this corpus and `citybench run` exits non-zero. The
+> harness does **not** work around it: a system that cannot answer is a
+> result, and papering over a schema disagreement between this project's
+> own two implementations is exactly the kind of thing a benchmark must
+> not do quietly. The fix belongs in `lib/duckdb-cityjson` or in the
+> writer, not here.
+
 CityParquet has no in-place update path — a Parquet file's smallest
 rewritable unit is a column chunk — so the comparable operation is the one
 the DuckDB CityJSON extension's package model offers. `PRAGMA
