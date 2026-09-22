@@ -221,7 +221,7 @@ class CjdbSystem:
             server_times_s=[s[2] for s in samples],
             peak_rss_bytes=max((s[3] for s in samples if len(s) > 3 and s[3] is not None), default=None),
             peak_heap_bytes=None,
-            notes="memory-scope: postgresql-backend-rss",
+            notes="memory-scope: postgresql-backend-rss fetch: text",
         )
 
     def _run_write(self, scenario: str, repeat: int) -> Measurement:

@@ -387,6 +387,14 @@ Mechanics, all of which change what the numbers mean:
   `cj_metadata` row behind would be worse than untidy: cjdb's importer
   prompts on stdin when a file of that name was imported before, which in
   a benchmark run is a hang rather than a question.
+- **cjdb's importer runs its own post-import step on every append.**
+  `post_import()` calls `index_attributes()`, whose
+  `get_attributes_and_types` is a `SELECT DISTINCT ON (type) … ORDER BY
+type, id DESC` over the whole `city_object` table, and then issues its
+  `CREATE INDEX IF NOT EXISTS` statements (no-ops after the first import).
+  That sampling query is inside the timed window, it is proportional to
+  the table rather than to the one appended feature, and it is genuinely
+  what `cjdb import` costs — disclosed, not excluded.
 - **Two of the four rows time an external process, launcher included.**
   `cjdb import` pays `uv`'s resolution and a Python start; `citydb-tool
 import` pays a container start and a JVM start, which for a one-feature
@@ -833,23 +841,31 @@ BUFFERS)` execution, whose per-node timing and buffer counters (and
    - **3DCityDB's row carries no attributes** (they live in `property`,
      unjoined), so it returns less than the other two — the same asymmetry
      Caveat 17 records for `id-lookup`.
-   - **3DCityDB pays a sort the others do not.** `DISTINCT ON (f.id)`
-     keeps the row count CityObject-grained when several `property` rows
-     of one feature match; it is scoped to the key rather than to the whole
-     row so PostgreSQL never compares WKB geometries for equality. On
-     delft it removes nothing, each CityObject owning exactly one
+   - **3DCityDB pays an ordering the others do not.** `DISTINCT ON
+(f.id) … ORDER BY f.id` keeps the row count CityObject-grained when
+     several `property` rows of one feature match, and is scoped to the
+     key rather than to the whole row so PostgreSQL never compares WKB
+     geometries for equality. The sort KEY is a bigint but the sorted
+     tuples carry the geometry, so at scale this may spill to disk rather
+     than fit `work_mem` — check the plan for a `Sort`/`Unique` node
+     before reading the row against the other two. On delft the
+     de-duplication removes nothing, each CityObject owning exactly one
      `lod1Solid`.
    - **3DCityDB's "LoD 1" is wider than CityJSON's "1.2".** `citydb-tool`
      truncates the fractional tier on import, so `val_lod = '1'` covers
      1.2 and 1.3 alike. Where a dataset carries both, its row set is a
      superset of the other two systems' and the cross-check will say so.
 
-   The row also carries a **client-side cost that is not symmetric**: the
-   DuckDB rows are fetched to Arrow, while `psycopg` builds Python objects
-   for every column of every row — JSONB parsed into dicts on cjdb. On a
-   large result set that is real work on the PostgreSQL side of the
-   comparison which the DuckDB side does not pay, in the opposite
-   direction from most of this harness's asymmetries.
+   **Client-side object construction is kept off both sides.** DuckDB
+   materialises to Arrow (`fetch: arrow`), and the PostgreSQL connections
+   register a text passthrough for `json`/`jsonb` (`fetch: text`,
+   `pg.register_text_passthrough`) so psycopg does not parse every
+   geometry document into Python dicts. Both sides still transfer every
+   row and read it to exhaustion inside the timed window; what is skipped
+   is the client's per-value object construction, which is not what this
+   benchmark compares — and which, left in, would have been tens of
+   gigabytes of Python objects for cjdb's half a million inline-vertex
+   geometry documents on the 1M slice.
 
 10. **cjdb's footprint is NULL for an object with no geometry of its own.**
     `get_ground_surfaces()` derives a footprint only from the object's own

@@ -1,5 +1,6 @@
 import pytest
 
+from citybench.systems import pg
 from citybench.systems.pg import dump_indexes, extract_count, parse_explain_execution_time
 
 
@@ -107,3 +108,30 @@ def test_dump_indexes_queries_pg_indexes_scoped_to_the_given_schema():
 def test_dump_indexes_returns_an_empty_list_for_a_schema_with_no_indexes():
     conn = _FakeIndexConnection([])
     assert dump_indexes(conn, "empty_schema") == []
+
+
+def test_the_benchmark_connection_hands_json_back_as_text():
+    """Keeps the client's per-value object construction off the PostgreSQL
+    side of the comparison, as `_arrow` already keeps it off DuckDB's.
+    Without it, cjdb's `lod-query` would parse half a million
+    inline-vertex geometry documents into Python dicts inside the timed
+    window — a client measurement, and an out-of-memory risk at 1M."""
+    import psycopg
+    import psycopg.types.string
+
+    class FakeAdapters:
+        def __init__(self):
+            self.registered = {}
+
+        def register_loader(self, name, loader):
+            self.registered[name] = loader
+
+    class FakeConn:
+        def __init__(self):
+            self.adapters = FakeAdapters()
+
+    conn = FakeConn()
+    pg.register_text_passthrough(conn)
+    assert set(conn.adapters.registered) == {"json", "jsonb"}
+    assert all(loader is psycopg.types.string.TextLoader
+               for loader in conn.adapters.registered.values())

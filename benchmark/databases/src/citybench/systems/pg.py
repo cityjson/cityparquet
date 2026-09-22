@@ -33,6 +33,7 @@ import time
 import os
 
 import psycopg
+import psycopg.types.string
 
 from citybench.config import SizeReport
 from citybench.stats import container_init_host_pid, host_pid_for_namespace_pid, host_pid_from_podman, peak_resident_bytes
@@ -40,10 +41,39 @@ from citybench.stats import container_init_host_pid, host_pid_for_namespace_pid,
 
 def connect(port: int, *, dbname: str = "bench", user: str = "bench",
             password: str = "bench", host: str = "localhost") -> psycopg.Connection:
-    return psycopg.connect(
+    conn = psycopg.connect(
         host=host, port=port, dbname=dbname, user=user, password=password,
         autocommit=True,
     )
+    register_text_passthrough(conn)
+    return conn
+
+
+def register_text_passthrough(conn: psycopg.Connection) -> None:
+    """Hand JSON back as TEXT rather than parsed into Python objects.
+
+    Not a tuning knob: a consistency fix, and it works AGAINST the system
+    it is applied to being flattered. The DuckDB adapter materialises a
+    row-returning scenario to Arrow rather than to Python objects,
+    precisely so the number is the engine's and not the client's per-value
+    object construction (measured at about 72 us/row on `SELECT *` —
+    `duckdb_cp._arrow`). Without this, the PostgreSQL side of the same
+    comparison would pay exactly that cost and more: psycopg parses every
+    `jsonb` value into Python dicts and lists, and on cjdb the geometry IS
+    a JSONB document with its vertices resolved inline. `lod-query` on the
+    1M slice returns half a million such rows; parsed, they are tens of
+    gigabytes of Python objects in the harness process, which is a client
+    measurement and an out-of-memory risk rather than a database one.
+
+    The rows are still transferred in full and still read to exhaustion
+    inside the timed window — the server does all of its own work, and the
+    bytes all cross the socket. Only the client-side object construction is
+    skipped, on the side that would otherwise be the only one paying it.
+    Disclosed as `fetch: text` in every PostgreSQL row's `notes`, beside
+    the DuckDB rows' `fetch: arrow`.
+    """
+    for name in ("json", "jsonb"):
+        conn.adapters.register_loader(name, psycopg.types.string.TextLoader)
 
 
 def parse_explain_execution_time(plan: list) -> float:
