@@ -16,9 +16,9 @@ DuckDB's Parquet writer and the Parquet bloom-filter specification.
 <Badge variant="success">decided</Badge>
 
 **Decision.** Writers put standard Parquet bloom filters on every object
-table's `id` and `feature_id`, and on each scalar string attribute column whose
-distinct values reach 0.2 of its non-null values across the dataset, at a
-false-positive probability of 0.01. All filters sit together after the last row
+table's `id` and `feature_id`, and on each non-empty scalar string attribute
+column whose estimated distinct count (HyperLogLog) reaches 0.2 of its non-null
+count across the dataset, at a false-positive probability of 0.01. All filters sit together after the last row
 group, before the page indexes and footer, with `bloom_filter_length` set.
 Sidecars and numeric, JSON, list and geometry columns carry none. See the
 [specification](/specification/object-table-schema#bloom-filters).

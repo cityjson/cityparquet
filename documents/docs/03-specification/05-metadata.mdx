@@ -196,10 +196,12 @@ As implementation guidance, not a format requirement: **zstd level 3** compressi
 
 Bloom filters, at a false-positive probability of **0.01**: on every object
 table's `id` and `feature_id`, and on each scalar `VARCHAR` attribute column
-(not JSON) whose distinct values number at least **0.2 ×** its non-null values
-across the dataset. The rule is decided once for the whole dataset, before the
-first row group is written, so every file of a package — and every partition
-of a partitioned dataset — carries the same column set. All filters sit
+(not JSON) that holds at least one non-null value and whose estimated distinct
+count — a HyperLogLog estimate is ample — reaches at least **0.2 ×** its
+non-null count across the dataset. An all-null column carries none. The rule
+is decided once for the whole dataset, before the first row group is written,
+so every file of a package — and every partition of a partitioned dataset —
+carries the same column set. All filters sit
 together after the last row group, before the page indexes and footer, with
 `bloom_filter_length` set, so a reader fetches every filter of a column in one
 range request. Low-cardinality strings, numeric, list, JSON and geometry
