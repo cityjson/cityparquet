@@ -103,6 +103,7 @@ compression effort across codec families.
 | `heatmap`                                            | One panel per dataset, with write time, write memory, read time and read memory heatmaps |
 | `codec`, `rowgroup`, `bloom`                         | Five metric panels for the largest measured scaling dataset                              |
 | `codec-scaling`, `rowgroup-scaling`, `bloom-scaling` | Absolute metrics against actual CityObject counts                                        |
+| `bloom-corpus`                                       | The bloom pair per corpus dataset, apart from the slice curves                           |
 | `databases`                                          | Storage bars and query time/memory heatmaps                                              |
 
 Heatmap colours encode measurement divided by baseline: **lower is better**,

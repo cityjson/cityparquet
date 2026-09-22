@@ -708,10 +708,40 @@ def _measure_key(row: dict[str, str]) -> str:
     return "write" if row["scenario"] == "write" else _scenario_key(row)
 
 
+MANIFEST_PATH = Path(__file__).resolve().parents[2] / "manifest.toml"
+SCALING_ROLES = frozenset({"scaling", "largest-scaling"})
+
+
+def _manifest_stem(source: str) -> str:
+    return source.removesuffix(".city.jsonl").removesuffix(".city.json")
+
+
+def scaling_series_ids(path: Path = MANIFEST_PATH) -> frozenset[str]:
+    """Dataset ids of the nested 3DBAG slices, from the suite manifest.
+
+    Only these form a scaling curve: the slices are prefixes of one source, so
+    their differences are differences of size. A corpus dataset is a different
+    city model, and joining it to the curve would read a data difference as a
+    scale effect.
+    """
+    if not path.exists():
+        return frozenset()
+    manifest = tomllib.loads(path.read_text(encoding="utf-8"))
+    return frozenset(
+        _manifest_stem(entry.get("source", ""))
+        for entry in manifest.get("datasets", {}).values()
+        if entry.get("role") in SCALING_ROLES
+    )
+
+
 def load_scaling_axis(
     directory: Path, baseline: str = AXIS_BASELINE, measures: tuple[str, ...] = AXIS_MEASURES
 ) -> dict:
     """One configuration axis (codec, row group or bloom) from a `--variants` run.
+
+    Every record and size row carries `series`: `scaling` for a nested 3DBAG
+    slice (`scaling_series_ids`), `corpus` for any other input, so the
+    renderer draws curves from the slices alone.
 
     Every ratio is variant over default, so values below 1x use less time,
     memory or disk. The
@@ -719,6 +749,7 @@ def load_scaling_axis(
     list is the figure's order and sorting would lose it. Absolute seconds
     and bytes stay: the trend strip plots them.
     """
+    series_ids = scaling_series_ids()
     records: list[dict] = []
     sizes: list[dict] = []
     gaps: list[dict] = []
@@ -791,6 +822,7 @@ def load_scaling_axis(
                 records.append(
                     {
                         "dataset": name,
+                        "series": "scaling" if name in series_ids else "corpus",
                         "objects": objects_by[name],
                         "variant": variant,
                         "kind": "default" if variant == baseline else "variant",
@@ -837,6 +869,7 @@ def load_scaling_axis(
                 sizes.append(
                     {
                         "dataset": ds,
+                        "series": "scaling" if ds in series_ids else "corpus",
                         "objects": objects_by.get(ds),
                         "variant": fmt,
                         "bytes": b,

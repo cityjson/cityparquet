@@ -149,11 +149,16 @@ which carries none — and times `id-lookup` (`id-50pct`, `id-miss`) and
 go to `sizes.csv`; the write rows carry write time and peak RSS, where the
 filters' memory shows (every filter is held until its file is closed). Every
 lookup row carries `row_groups_total`, `bloom_pruned` and `filter_bytes` (the
-bitset bytes of the filters examined). Caveats that travel with every number:
+bitset bytes of the filters examined). The scaling curves are drawn from the
+nested 3DBAG slices alone; the corpus datasets are other city models, not
+larger slices, and are drawn apart, per dataset, in `bloom-corpus`. Caveats
+that travel with every number:
 
-1. **Only the multi-row-group inputs can prune.** At the default 65 536-row
-   groups the small slices are one row group, where a filter can only save
-   that one; the slices from `3dbag_n100000` upward are the informative ones.
+1. **The larger slices show pruning across many row groups.** At the
+   default 65 536-row groups the small slices are one row group, which a
+   filter can still prune on a miss but which says nothing about how pruning
+   scales; the slices from `3dbag_n100000` upward, at two or more groups, are
+   the informative ones.
 2. **A filter's positive is not a match.** At FPP 0.01 a miss can still keep
    a row group; `row_groups_total − bloom_pruned` on the `*-miss` rows is how
    many the reader still scanned.

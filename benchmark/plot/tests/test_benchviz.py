@@ -27,7 +27,16 @@ def test_preparation_and_paper_figure_set(tmp_path: Path):
     names = {p.name for p in output.glob("*")}
     expected = {
         f"{name}.{kind}"
-        for name in ("sizes", "heatmap", "codec", "codec-scaling", "rowgroup", "rowgroup-scaling", "bloom", "bloom-scaling")
+        for name in (
+            "sizes",
+            "heatmap",
+            "codec",
+            "codec-scaling",
+            "rowgroup",
+            "rowgroup-scaling",
+            "bloom",
+            "bloom-scaling",
+        )
         for kind in ("svg", "png")
     }
     assert expected <= names
@@ -163,3 +172,72 @@ def test_bloom_axis_keys_the_lookup_probes_and_carries_the_counters(tmp_path: Pa
     assert (off["bloom_pruned"], off["filter_bytes"]) == (0, 0)
     assert off["time_ratio"] == 0.0049 / 0.0021
     assert record("cityparquet", "write")["row_groups_total"] is None
+
+
+def _mixed_bloom_fixture(bench: Path) -> None:
+    """Corpus and 3DBAG slices in one bloom directory, with colliding counts.
+
+    `3dbag_n1000`, `3dbag_n5000` and the corpus `rotterdam_delfshaven` all
+    report 2,231 objects; `3dbag_n10000` reports 10,004.
+    """
+    directory = bench / "scaling_bloom_results"
+    template = (directory / "delft.csv").read_text().splitlines()
+    (directory / "delft.csv").unlink()
+    counts = {
+        "3dbag_n1000": 2231,
+        "3dbag_n5000": 2231,
+        "3dbag_n10000": 10004,
+        "rotterdam_delfshaven": 2231,
+    }
+    sizes = ["dataset,format,bytes,mb,ratio_vs_cityjsonseq,baseline_format,ratio_vs_baseline"]
+    for i, (name, count) in enumerate(counts.items()):
+        rows = [template[0]]
+        for line in template[1:]:
+            cells = line.split(",")
+            cells[0] = f"{name}.city.jsonl"
+            if cells[2] == "write":
+                cells[4] = str(count)
+            cells[5] = f"{float(cells[5]) * (i + 1):.6f}"
+            rows.append(",".join(cells))
+        (directory / f"{name}.csv").write_text("\n".join(rows) + "\n")
+        sizes.append(f"{name},cityparquet,{1000 * (i + 1)},0.1,1.0,cityparquet,1.0")
+        sizes.append(f"{name},cityparquet+nobloom,{900 * (i + 1)},0.1,1.0,cityparquet,0.9")
+    (directory / "sizes.csv").write_text("\n".join(sizes) + "\n")
+
+
+def test_bloom_scaling_curve_holds_only_the_slices_and_the_corpus_stands_apart(tmp_path: Path):
+    bench = fixture_bench(tmp_path)
+    _mixed_bloom_fixture(bench)
+    data, _ = prep.build(prep.Inputs(bench))
+    axis = data["scaling"]["bloom"]
+    series = {r["dataset"]: r["series"] for r in axis["records"] + axis["sizes"]}
+    assert series == {
+        "3dbag_n1000": "scaling",
+        "3dbag_n5000": "scaling",
+        "3dbag_n10000": "scaling",
+        "rotterdam_delfshaven": "corpus",
+    }
+
+    # Every slice keeps its own point, the two equal counts included, and the
+    # corpus dataset of the same count joins neither the curve nor overwrites it.
+    for source, measure in (
+        (axis["records"], "write"),
+        (axis["records"], "id-miss"),
+        (axis["sizes"], None),
+    ):
+        for variant in axis["variants"]:
+            points = figures._scaling_points(source, variant, measure)
+            assert [r["dataset"] for r in points] == ["3dbag_n1000", "3dbag_n5000", "3dbag_n10000"]
+    write = figures._scaling_points(axis["records"], "cityparquet", "write")
+    assert [r["time_s"] for r in write] == [1.17, 2.34, 3.51]
+    assert figures._corpus_datasets(axis["records"]) == ["rotterdam_delfshaven"]
+
+    output = figures.main(_dump(data, tmp_path), tmp_path / "figures")
+    names = {p.name for p in output.glob("*")}
+    assert {"bloom-scaling.svg", "bloom-corpus.svg", "bloom.svg"} <= names
+
+
+def _dump(data: dict, tmp_path: Path) -> Path:
+    path = tmp_path / "bench_data.json"
+    path.write_text(prep.json.dumps(data), encoding="utf-8")
+    return path
