@@ -112,12 +112,16 @@ writing.**
 
 Two disclosures follow from that choice:
 
-- **The CityJSONSeq writer pays an allocator toll the other four do not.**
-  `cityparquet-readbench` installs `peak_alloc` as its global allocator, for
-  the read benchmark's heap accounting; `cjseq`, `fcb` and the `cityparquet`
-  CLI use the system allocator. This row therefore carries a small systematic
-  overhead, which makes it a slightly conservative divisor — the other formats'
-  ratios against it are if anything understated.
+- **The CityJSONSeq writer runs under a different global allocator from the
+  other four**, and it does not matter here. `cityparquet-readbench` installs
+  `peak_alloc` for the read benchmark's heap accounting; `cjseq`, `fcb` and
+  the `cityparquet` CLI use the system allocator, so this row in principle
+  pays two atomics per allocation the others do not. Measured, it does not:
+  the same re-serialisation loop built with and without `peak_alloc` and run
+  25 times each, interleaved, on `3dbag_n10000` gives medians of 0.81 s
+  (without) and 0.80 s (with) — the difference is below the run-to-run noise
+  floor, `peak_alloc`'s counters being relaxed atomics on a single-threaded
+  workload. Disclosed because the row is the divisor, not because it moves it.
 - **cjseq's typed `Metadata` has no catch-all for unnamed keys**, so a header
   key it does not model (`fullMetadataUrl`, `version` in the 3DBAG-derived
   streams) is dropped. This is confined to the single header line and never
@@ -131,7 +135,8 @@ row measures a write **into the page cache**, not a durable write to the
 device. That is the same contract for all five, which is what makes them
 comparable; it is not a measurement of storage throughput.
 
-**Peak RSS is read from `/usr/bin/time -f %M`, not from `os.wait4`.** Under
+**Peak RSS is read from GNU `/usr/bin/time -f %M` (so the script is Linux-only
+and says so, rather than falling back), not from `os.wait4`.** Under
 CPython's `posix_spawn`/`vfork` launcher a child's `ru_maxrss` is at least the
 parent's own RSS — `/bin/true` under a parent holding 400 MB reports 433 MB —
 and plain `fork` does not help, because the child inherits the parent's

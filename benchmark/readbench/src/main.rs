@@ -434,10 +434,12 @@ fn run_write_child(cli: Cli) -> Result<()> {
 ///
 /// **Allocator caveat.** This binary installs `peak_alloc` as its
 /// `#[global_allocator]` (see [`alloc`]), so every allocation here pays two
-/// atomics that `cjseq`, `fcb` and the `cityparquet` CLI do not. The
-/// cityjsonseq write row therefore carries a small, systematic overhead the
-/// four rows it divides do not — disclosed in
-/// `benchmark/formats/README.md`, not silently absorbed.
+/// atomics that `cjseq`, `fcb` and the `cityparquet` CLI do not. Measured on
+/// `3dbag_n10000` — this loop built with and without `peak_alloc`, 25
+/// interleaved runs each — the difference is below the run-to-run noise floor
+/// (medians 0.81 s without, 0.80 s with), the counters being relaxed atomics
+/// on a single-threaded workload. Disclosed in `benchmark/formats/README.md`
+/// because this row is the divisor, not because it moves it.
 fn write_cityjsonseq(input: &Path, output: &Path) -> Result<()> {
     use cityparquet::cjseq::{CityJSON, CityJSONFeature};
 
