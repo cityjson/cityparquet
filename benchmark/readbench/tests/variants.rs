@@ -298,7 +298,10 @@ fn variants_and_formats_are_exclusive_and_the_list_is_validated() {
 
 /// The bloom pair: the same package with and without filters. Lookup rows
 /// carry counters — no filter bytes and nothing pruned without filters —
-/// and write rows carry none.
+/// and write rows carry none. delft is ONE row group, so the pruning the
+/// family exists to show is exactly visible: a `*-miss` probe rules that group
+/// out (`bloom_pruned` 1) with filters and cannot without them, and a hit
+/// probe never prunes on either side.
 #[test]
 fn a_bloom_pair_records_lookup_counters() {
     let (prepared, input) = prepared_delft();
@@ -333,7 +336,7 @@ fn a_bloom_pair_records_lookup_counters() {
     // Per variant: write, id-50pct, id-miss, feature-50pct, feature-miss.
     assert_eq!(rows.len(), 10, "{text}");
     for row in &rows {
-        let (label, scenario) = (field(row, 1), field(row, 2));
+        let (label, scenario, notes) = (field(row, 1), field(row, 2), field(row, 10));
         let counters: Vec<&str> = (13..16).map(|i| field(row, i)).collect();
         assert_eq!(row.split(',').count(), 16, "{row}");
         if scenario == "write" {
@@ -341,11 +344,17 @@ fn a_bloom_pair_records_lookup_counters() {
             continue;
         }
         assert_eq!(counters[0], "1", "delft is one row group: {row}");
+        let is_miss = notes.starts_with("id-miss") || notes.starts_with("feature-miss");
         if label == "cityparquet+nobloom" {
             assert_eq!(counters[1], "0", "{row}");
             assert_eq!(counters[2], "0", "{row}");
         } else {
             assert_ne!(counters[2], "0", "{row}");
+            assert_eq!(
+                counters[1],
+                if is_miss { "1" } else { "0" },
+                "the pruning the bloom family exists to show: {row}"
+            );
         }
     }
 }
@@ -425,6 +434,18 @@ async fn a_variants_run_over_http_reads_the_uploaded_packages_without_writing() 
         assert!(!field(row, 11).is_empty(), "bytes_read: {row}");
         assert!(!field(row, 12).is_empty(), "http_requests: {row}");
         assert_eq!(field(row, 13), "1", "row_groups_total: {row}");
+        // The async path prunes exactly as the sync one does: delft's single
+        // row group is ruled out for the verified-absent probe with filters
+        // and cannot be without them.
+        assert_eq!(
+            field(row, 14),
+            if field(row, 1) == "cityparquet+nobloom" {
+                "0"
+            } else {
+                "1"
+            },
+            "bloom_pruned: {row}"
+        );
     }
     assert_eq!(std::fs::read_to_string(&sizes).unwrap(), sizes_before);
 }

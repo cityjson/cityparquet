@@ -1073,9 +1073,19 @@ fn feature_lookup_measures_cityparquet_only_with_lookup_counters() {
         ["2", "3"].contains(&hit.field("result_count")),
         "a delft feature is a Building and its parts"
     );
+    assert_eq!(
+        hit.field("bloom_pruned"),
+        "0",
+        "a hit cannot prune the group that holds it"
+    );
     let miss = rows
         .iter()
         .find(|r| r.field("notes").starts_with("feature-miss"))
         .unwrap();
     assert_eq!(miss.field("result_count"), "0");
+    assert_eq!(
+        miss.field("bloom_pruned"),
+        "1",
+        "the `feature_id` filter rules out delft's single row group"
+    );
 }

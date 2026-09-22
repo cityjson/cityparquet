@@ -131,8 +131,11 @@ DUCKDB=${DUCKDB:-duckdb}
 # Must stay identical to the coordinator's own `CSV_HEADER`
 # (`benchmark/readbench/src/coordinator.rs`), which is the single
 # authority on this contract — this script appends rows to CSVs the
-# coordinator wrote. `benchmark/plot/tests/test_csv_contract.py` reads both
-# literals out of their sources and asserts they agree.
+# coordinator wrote. `benchmark/plot/tests/test_csv_contract.py` (run by
+# `just plot-test`) reads this literal, the coordinator's, and
+# `benchmark/scripts/format_write.py`'s `HEADER` out of their own sources and
+# asserts all three agree, plus that `benchviz.prep.READ_COLUMNS` is still a
+# leading prefix of them.
 CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes"
 
 usage() {

@@ -11,6 +11,12 @@ import argparse, csv, os, shutil, statistics, subprocess, tempfile, time
 from pathlib import Path
 
 FORMATS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet-hilbert")
+# Must stay identical to the coordinator's own `CSV_HEADER`
+# (`benchmark/readbench/src/coordinator.rs`), the single authority on this
+# contract: this script appends `write` rows to CSVs the coordinator wrote, and
+# refuses outright (below) to append to one whose header differs.
+# `benchmark/plot/tests/test_csv_contract.py` asserts the two literals and
+# `benchmark/scripts/readbench_duckdb.sh`'s third copy agree.
 HEADER = ["dataset","format","scenario","selectivity","result_count","time_s","time_mad_s","peak_heap_bytes","peak_rss_bytes","repeat","notes","bytes_read","http_requests","row_groups_total","bloom_pruned","filter_bytes"]
 SAMPLES_HEADER = ["dataset","format","scenario","sample","time_s","peak_rss_bytes"]
 

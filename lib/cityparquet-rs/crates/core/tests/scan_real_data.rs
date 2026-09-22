@@ -407,11 +407,21 @@ fn delft_scan_selects_exactly_the_high_cardinality_string_attributes() {
 
 /// The estimator's hasher is seeded deterministically, so the selection —
 /// and with it the package layout — is identical run to run.
+///
+/// Two scans in ONE process would agree under a per-process random seed too,
+/// which is exactly the failure this is meant to catch, so both scans are
+/// checked against the hard-coded set the sibling test above pins rather than
+/// only against each other.
 #[test]
 fn the_bloom_attribute_selection_is_deterministic() {
+    let expected: BTreeSet<String> = ["documentnummer", "identificatie"]
+        .into_iter()
+        .map(String::from)
+        .collect();
     let first = scan(&Source::open(&fixture("delft.city.jsonl")).unwrap()).unwrap();
     let second = scan(&Source::open(&fixture("delft.city.jsonl")).unwrap()).unwrap();
-    assert_eq!(first.bloom_attributes, second.bloom_attributes);
+    assert_eq!(first.bloom_attributes, expected);
+    assert_eq!(second.bloom_attributes, expected);
 }
 
 /// A copy of delft with every LoD `0` geometry dropped and every

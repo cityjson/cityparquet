@@ -177,9 +177,11 @@ struct RunArgs {
     #[arg(long, default_value_t = 3)]
     write_repeat: usize,
 
-    /// Comma-separated scenario names (`full-read`, `count`, `bbox-query`,
-    /// `attr-filter`, `attr-stats`, `id-lookup`, `project`, or their
-    /// [`Scenario::from_str`] aliases); omit for every scenario.
+    /// Comma-separated scenario names, or their [`Scenario::from_str`]
+    /// aliases. Omitting this selects [`Scenario::ALL`] — the seven
+    /// format-comparison scenarios `full-read`, `count`, `bbox-query`,
+    /// `attr-filter`, `attr-stats`, `id-lookup` and `project`. `feature-lookup`
+    /// is CityParquet-only, so it is not in that set and has to be named here.
     #[arg(long, value_delimiter = ',')]
     scenarios: Option<Vec<String>>,
 
