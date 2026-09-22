@@ -111,11 +111,13 @@ default). DuckDB writes a filter only for a dictionary-encoded column chunk and
 applies its dictionary and bloom options to a whole file, so the extension
 writes each object table with 122 880-row row groups and a dictionary cut-off of
 the same size, under an 8 MiB cap on a string dictionary page. Eligibility is
-therefore conditional on that cap, not a fixed column list: a chunk carries a
-filter exactly while its distinct values fit under it. Across a full row group
-the cap works out at roughly 68 bytes per row for a near-unique column, so
-`id`, `feature_id` and ordinary identifier-shaped attributes stay far below it
-and carry filters, as the
+therefore conditional on the chunk actually being dictionary-encoded, not a
+fixed column list — which excludes a type whose writer never uses a dictionary,
+Boolean among them, PLAIN and unfiltered however small its vocabulary. The
+dictionary-page cap restricts the rest: across a full row group it works out at
+roughly 68 bytes per row for a near-unique column, so `id`, `feature_id` and
+ordinary identifier-shaped attributes stay far below it and carry filters, as
+the
 [recommended defaults](/specification/metadata#recommended-writer-defaults-informative)
 prescribe — but a high-cardinality string wider than that is written PLAIN and
 carries none, and a compact WKB geometry or JSON column can stay under the cap
