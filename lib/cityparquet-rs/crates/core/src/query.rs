@@ -23,9 +23,11 @@
 //! bloom filters for a set of values and keeps only the row groups that can
 //! hold one; a chunk without a filter is always kept, and a positive result
 //! is never a match — the exact `RowFilter` still decides every row. The
-//! lookups and string-equality [`attr_filter`] read the kept row groups with
-//! one reader (`with_row_groups`), so an `id` hit still stops at its first
-//! match. Every single-column mask is resolved by exact column name.
+//! identifier lookups ([`id_lookup_with_stats`], [`feature_lookup_with_stats`],
+//! [`package_feature_lookup_with_stats`]) and string-equality [`attr_filter`]
+//! read the kept row groups with one reader per table (`with_row_groups`), so
+//! an `id` hit still stops at its first match. Every single-column mask is
+//! resolved by exact column name.
 
 use std::fs::File;
 use std::path::Path;
@@ -38,7 +40,7 @@ use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::ChunkReader;
 use parquet::schema::types::ColumnPath;
 
-use crate::decode::DecodedObject;
+use crate::decode::{DecodedObject, decode_batch};
 use crate::query_core;
 use crate::reader::{CityParquetReaderBuilder, CityParquetRecordBatchReader};
 
@@ -302,6 +304,85 @@ pub fn id_lookup_with_stats(
         }
     }
     Ok((None, stats))
+}
+
+/// Every object whose `feature_id` equals `feature_id` — a feature and all
+/// its parts — in table row order; empty if none. See
+/// [`feature_lookup_with_stats`].
+pub fn feature_lookup(
+    table_path: &Path,
+    meta: &CityMetadata,
+    feature_id: &str,
+) -> Result<Vec<DecodedObject>> {
+    feature_lookup_with_stats(table_path, meta, feature_id).map(|(objects, _)| objects)
+}
+
+/// [`feature_lookup`] with what it cost. The `feature_id` bloom filters
+/// prune the row groups first; the survivors are then read to the end — a
+/// feature's rows may span row groups, so there is no early stop — with an
+/// exact `feature_id` equality `RowFilter`, and every matching row is
+/// decoded in full. One reader reads every kept row group.
+pub fn feature_lookup_with_stats(
+    table_path: &Path,
+    meta: &CityMetadata,
+    feature_id: &str,
+) -> Result<(Vec<DecodedObject>, LookupStats)> {
+    let file = File::open(table_path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
+        .map_err(CityParquetError::parquet_from)?;
+    let schema = builder.cityparquet_arrow_schema()?;
+    let candidates: Vec<usize> = (0..builder.metadata().num_row_groups()).collect();
+    let prune = bloom_keep_row_groups(
+        &file,
+        builder.metadata(),
+        &query_core::top_level_path("feature_id"),
+        &[feature_id],
+        &candidates,
+    )?;
+    let stats = LookupStats::from_prune(&prune);
+
+    let row_filter =
+        query_core::utf8_eq_row_filter(builder.parquet_schema(), "feature_id", feature_id)?;
+    let parquet_reader = builder
+        .with_row_groups(prune.keep)
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
+
+    let mut objects = Vec::new();
+    for batch in reader {
+        objects.extend(decode_batch(&batch?, meta)?);
+    }
+    Ok((objects, stats))
+}
+
+/// [`feature_lookup`] over a whole package: every object table the
+/// package's `metadata.json` names, in manifest order. See
+/// [`package_feature_lookup_with_stats`].
+pub fn package_feature_lookup(package_dir: &Path, feature_id: &str) -> Result<Vec<DecodedObject>> {
+    package_feature_lookup_with_stats(package_dir, feature_id).map(|(objects, _)| objects)
+}
+
+/// [`feature_lookup_with_stats`] per object table, the objects concatenated
+/// in manifest order and the statistics summed. Each table's own footer
+/// supplies the metadata its rows decode with.
+pub fn package_feature_lookup_with_stats(
+    package_dir: &Path,
+    feature_id: &str,
+) -> Result<(Vec<DecodedObject>, LookupStats)> {
+    let tables = crate::stac::properties::PackageTables::open(package_dir)?;
+    let mut objects = Vec::new();
+    let mut stats = LookupStats::default();
+    for table in &tables.tables {
+        let meta = ParquetRecordBatchReaderBuilder::try_new(File::open(table)?)
+            .map_err(CityParquetError::parquet_from)?
+            .cityparquet_metadata()?;
+        let (found, table_stats) = feature_lookup_with_stats(table, &meta, feature_id)?;
+        objects.extend(found);
+        stats += table_stats;
+    }
+    Ok((objects, stats))
 }
 
 /// Projected single-column read of `column` across every row, via a

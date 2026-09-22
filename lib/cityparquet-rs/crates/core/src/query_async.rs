@@ -50,7 +50,8 @@ use parquet::file::metadata::ParquetMetaData;
 /// Re-stamps `batch` with `schema` (field metadata included) — the async
 /// analogue of [`crate::reader::CityParquetRecordBatchReader`]'s per-batch
 /// rewrap, inlined here rather than as its own stream-wrapper type since
-/// only [`full_read_async`]/[`id_lookup_async_with_stats`] need it.
+/// only the full-row readers ([`full_read_async`] and the identifier lookups)
+/// need it.
 fn restamp(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
     RecordBatch::try_new(SchemaRef::clone(schema), batch.columns().to_vec())
         .map_err(CityParquetError::from)
@@ -384,6 +385,69 @@ pub async fn id_lookup_async_with_stats(
         }
     }
     Ok((None, stats))
+}
+
+/// The async mirror of [`crate::query::feature_lookup`]. See
+/// [`feature_lookup_async_with_stats`].
+pub async fn feature_lookup_async(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    meta: &CityMetadata,
+    feature_id: &str,
+) -> Result<Vec<DecodedObject>> {
+    feature_lookup_async_with_stats(store, path, meta, feature_id)
+        .await
+        .map(|(objects, _)| objects)
+}
+
+/// The async mirror of [`crate::query::feature_lookup_with_stats`]: the
+/// `feature_id` filters arrive in one ranged call
+/// ([`bloom_keep_row_groups_async`]) and the surviving row groups are read
+/// to the end by one stream.
+pub async fn feature_lookup_async_with_stats(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    meta: &CityMetadata,
+    feature_id: &str,
+) -> Result<(Vec<DecodedObject>, LookupStats)> {
+    let mut reader = ParquetObjectReader::new(store, path.clone());
+    let arrow_meta = ArrowReaderMetadata::load_async(&mut reader, ArrowReaderOptions::new())
+        .await
+        .map_err(CityParquetError::parquet_from)?;
+    let candidates: Vec<usize> = (0..arrow_meta.metadata().num_row_groups()).collect();
+    let prune = bloom_keep_row_groups_async(
+        &mut reader,
+        &arrow_meta,
+        &query_core::top_level_path("feature_id"),
+        &[feature_id],
+        &candidates,
+    )
+    .await?;
+    let stats = LookupStats::from_prune(&prune);
+
+    let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(reader, arrow_meta);
+    let schema = builder.cityparquet_arrow_schema()?;
+    let row_filter =
+        query_core::utf8_eq_row_filter(builder.parquet_schema(), "feature_id", feature_id)?;
+    let mut stream = builder
+        .with_row_groups(prune.keep)
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+
+    let mut objects = Vec::new();
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let batch = restamp(batch, &schema)?;
+        objects.extend(crate::decode::decode_batch(&batch, meta)?);
+    }
+    Ok((objects, stats))
 }
 
 /// The async mirror of [`crate::query::project_column`]: a single-column
@@ -857,5 +921,37 @@ mod tests {
             .unwrap();
         assert_eq!(async_count, sync_count);
         assert_eq!(async_count, 2231);
+    }
+
+    #[tokio::test]
+    async fn feature_lookup_async_matches_the_sync_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, path) = delft_table_with(dir.path(), small_groups()).await;
+        let table_file = dir.path().join(path.as_ref());
+        let meta = sync_meta(&table_file);
+        let first = crate::query::id_lookup(&table_file, &meta, &every_id(&table_file)[0])
+            .unwrap()
+            .unwrap();
+        let feature = first.feature_id.clone().expect("feature_id is non-null");
+        for target in [feature.as_str(), MISS] {
+            let (sync_objects, sync_stats) =
+                crate::query::feature_lookup_with_stats(&table_file, &meta, target).unwrap();
+            let (async_objects, async_stats) =
+                feature_lookup_async_with_stats(Arc::clone(&store), &path, &meta, target)
+                    .await
+                    .unwrap();
+            assert_eq!(async_stats, sync_stats, "{target}");
+            let ids = |objects: &[DecodedObject]| -> Vec<String> {
+                objects.iter().map(|o| o.id.clone()).collect()
+            };
+            assert_eq!(ids(&async_objects), ids(&sync_objects), "{target}");
+            assert_eq!(
+                feature_lookup_async(Arc::clone(&store), &path, &meta, target)
+                    .await
+                    .unwrap()
+                    .len(),
+                sync_objects.len()
+            );
+        }
     }
 }

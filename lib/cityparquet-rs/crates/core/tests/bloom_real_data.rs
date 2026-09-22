@@ -11,7 +11,8 @@ use cityparquet::package::{ConvertOptions, convert};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
 use cityparquet::query::{
     AttrPredicate, attr_filter, attr_filter_with_stats, bloom_keep_row_groups, bloom_targets,
-    id_lookup, id_lookup_with_stats,
+    feature_lookup, feature_lookup_with_stats, id_lookup, id_lookup_with_stats,
+    package_feature_lookup, package_feature_lookup_with_stats,
 };
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::recipe::{BloomPolicy, RecipePreset, WriterRecipe};
@@ -523,4 +524,104 @@ fn attr_filter_type_errors_do_not_depend_on_filters() {
             assert!(err.contains(message), "{column} {pred:?}: {err}");
         }
     }
+}
+
+/// `feature_id` -> the ids of its rows, read straight off the table.
+fn rows_by_feature(table: &Path) -> BTreeMap<String, Vec<String>> {
+    let ids = values_by_row_group(table, "id");
+    let features = values_by_row_group(table, "feature_id");
+    assert_eq!(
+        ids.len(),
+        features.len(),
+        "feature_id is non-null on every row"
+    );
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for ((_, id), (_, feature)) in ids.into_iter().zip(features) {
+        out.entry(feature).or_default().push(id);
+    }
+    out
+}
+
+/// Acceptance 4b on the fixture: every row of every multi-part delft feature
+/// (a Building and its BuildingParts), identical with and without filters.
+#[test]
+fn feature_lookup_returns_every_part_with_and_without_filters() {
+    let on = convert_with("delft.city.jsonl", delft_recipe(64));
+    let off = convert_with("delft.city.jsonl", nobloom(64));
+    let on_table = on.path().join("building.parquet");
+    let off_table = off.path().join("building.parquet");
+    let expected = rows_by_feature(&on_table);
+    let multi_part: Vec<(&String, &Vec<String>)> =
+        expected.iter().filter(|(_, ids)| ids.len() >= 2).collect();
+    assert!(
+        multi_part.len() >= 1000,
+        "delft features are Building + BuildingPart"
+    );
+    let largest = expected.values().map(Vec::len).max().unwrap();
+    assert_eq!(largest, 3, "delft has one three-object feature");
+
+    let mut probes: Vec<(&String, &Vec<String>)> = multi_part.iter().step_by(53).copied().collect();
+    probes.extend(expected.iter().filter(|(_, ids)| ids.len() == 3));
+    for (feature, ids) in probes {
+        for table in [&on_table, &off_table] {
+            let (objects, stats) =
+                feature_lookup_with_stats(table, &table_meta(table), feature).unwrap();
+            let got: Vec<String> = objects.iter().map(|o| o.id.clone()).collect();
+            assert_eq!(&got, ids, "{feature} in {}", table.display());
+            assert!(
+                objects
+                    .iter()
+                    .all(|o| o.feature_id.as_deref() == Some(feature.as_str())),
+                "{feature}"
+            );
+            assert_eq!(stats.row_groups_total, 35);
+            assert!(stats.bloom_pruned < stats.row_groups_total);
+        }
+        let plain = feature_lookup(&on_table, &table_meta(&on_table), feature).unwrap();
+        assert_eq!(plain.len(), ids.len());
+    }
+}
+
+#[test]
+fn a_feature_miss_is_pruned_and_returns_nothing() {
+    let on = convert_with("delft.city.jsonl", delft_recipe(64));
+    let table = on.path().join("building.parquet");
+    let (objects, stats) = feature_lookup_with_stats(&table, &table_meta(&table), MISS).unwrap();
+    assert!(objects.is_empty());
+    assert!(stats.bloom_pruned >= 1, "{stats:?}");
+    assert!(stats.filter_bytes > 0);
+}
+
+/// The package form walks every object table the manifest names: on the
+/// multi-table railway package, a feature's rows come back from every table
+/// that holds them, and the statistics sum over the tables.
+#[test]
+fn package_feature_lookup_spans_every_object_table() {
+    let out = convert_with("lod3_railway.city.json", WriterRecipe::default());
+    let tables = PackageTables::open(out.path()).unwrap();
+    assert!(tables.tables.len() > 1, "railway is a multi-table package");
+
+    let mut expected: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for table in &tables.tables {
+        for (feature, ids) in rows_by_feature(table) {
+            expected.entry(feature).or_default().extend(ids);
+        }
+    }
+    let row_groups: usize = tables.tables.iter().map(|t| row_group_count(t)).sum();
+
+    for (feature, ids) in &expected {
+        let (objects, stats) = package_feature_lookup_with_stats(out.path(), feature).unwrap();
+        let mut got: Vec<String> = objects.iter().map(|o| o.id.clone()).collect();
+        let mut want = ids.clone();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want, "{feature}");
+        assert_eq!(stats.row_groups_total, row_groups);
+        assert_eq!(
+            package_feature_lookup(out.path(), feature).unwrap().len(),
+            ids.len()
+        );
+    }
+    let (objects, _) = package_feature_lookup_with_stats(out.path(), MISS).unwrap();
+    assert!(objects.is_empty());
 }

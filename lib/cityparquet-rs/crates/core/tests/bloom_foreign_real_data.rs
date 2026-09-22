@@ -13,7 +13,9 @@ use arrow_array::types::Int32Type;
 use arrow_array::{Array, ArrayRef, DictionaryArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cityparquet::package::{ConvertOptions, convert};
-use cityparquet::query::{AttrPredicate, attr_filter_with_stats, id_lookup_with_stats};
+use cityparquet::query::{
+    AttrPredicate, attr_filter_with_stats, feature_lookup_with_stats, id_lookup_with_stats,
+};
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::recipe::{BloomPolicy, WriterRecipe};
 use cityparquet::schema::CityMetadata;
@@ -342,5 +344,42 @@ async fn dictionary_typed_identifiers_are_looked_up_over_object_store() {
         .unwrap();
         assert_eq!(async_result.1, sync.1, "{id}");
         assert_eq!(async_result.0.map(|o| o.id), sync.0.map(|o| o.id), "{id}");
+    }
+}
+
+/// A dictionary-typed `feature_id` returns every part of a feature, with and
+/// without filters, exactly as the plain package does.
+#[test]
+fn dictionary_typed_feature_ids_return_every_part() {
+    let plain_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), plain_dir.path().to_path_buf());
+    opts.recipe = recipe(false);
+    convert(&opts).unwrap();
+    let plain = plain_dir.path().join("building.parquet");
+    let copies = tempfile::tempdir().unwrap();
+    let on = copies.path().join("dictionary_bloom.parquet");
+    let off = copies.path().join("dictionary_plain.parquet");
+    dictionary_copy(&plain, &on, true);
+    dictionary_copy(&plain, &off, false);
+
+    let feature = values(&plain, "feature_id")[1000].clone();
+    let ids = |table: &Path, feature: &str| -> Vec<String> {
+        feature_lookup_with_stats(table, &table_meta(table), feature)
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|o| o.id)
+            .collect()
+    };
+    let expected = ids(&plain, &feature);
+    assert!(
+        expected.len() >= 2,
+        "a delft feature is a Building and its parts"
+    );
+    for table in [&on, &off] {
+        assert_eq!(ids(table, &feature), expected, "{}", table.display());
+        let (objects, stats) = feature_lookup_with_stats(table, &table_meta(table), MISS).unwrap();
+        assert!(objects.is_empty());
+        assert_eq!(stats.bloom_pruned >= 1, table == &on, "{stats:?}");
     }
 }
