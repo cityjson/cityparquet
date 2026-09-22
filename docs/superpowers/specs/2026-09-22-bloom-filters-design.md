@@ -40,14 +40,14 @@ skip exactly the columns that matter.
 
 ### Column policy
 
-| Column | Filter |
-|---|---|
-| `id`, `feature_id` (every module table) | always (when bloom is enabled) |
-| Scalar `Utf8` attribute columns, not tagged `arrow.json` | if high-cardinality (below) |
-| `object_type`, Boolean/Int64/Float64/Date32/Timestamp attributes | never |
-| `List<Utf8>` attributes, `parents`/`children`/`children_roles`, `address.*`, `template.*`, material/texture maps | never |
-| `bbox.*`, `geometry*`, `geometry_properties*`, JSON attributes, `other` | never |
-| Sidecars (`materials`, `textures`, `geometry_templates`) | never — `sidecar_writer_properties()` unchanged |
+| Column                                                                                                           | Filter                                          |
+| ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `id`, `feature_id` (every module table)                                                                          | always (when bloom is enabled)                  |
+| Scalar `Utf8` attribute columns, not tagged `arrow.json`                                                         | if high-cardinality (below)                     |
+| `object_type`, Boolean/Int64/Float64/Date32/Timestamp attributes                                                 | never                                           |
+| `List<Utf8>` attributes, `parents`/`children`/`children_roles`, `address.*`, `template.*`, material/texture maps | never                                           |
+| `bbox.*`, `geometry*`, `geometry_properties*`, JSON attributes, `other`                                          | never                                           |
+| Sidecars (`materials`, `textures`, `geometry_templates`)                                                         | never — `sidecar_writer_properties()` unchanged |
 
 Numeric attributes are excluded on purpose: the existing Int64 equality predicate
 compares through `f64` (`query_core.rs:138`), so an exact-integer bloom probe
@@ -63,7 +63,7 @@ the scan a column qualifies when
     estimated_distinct >= 0.2 × non_null_count
 
 and `non_null_count > 0` (an all-null column, which inference types as `Utf8`,
-never qualifies). This is *analogous to*, not identical with, DuckDB's
+never qualifies). This is _analogous to_, not identical with, DuckDB's
 dictionary cut-off (row-group rows / 5): ours is dataset-wide and over non-null
 values, so a sparse column or a vocabulary repeated across row groups can be
 decided differently than a per-row-group rule would — an accepted limitation,
@@ -214,10 +214,10 @@ dictionary options (`WRITE_BLOOM_FILTER`, `BLOOM_FILTER_FALSE_POSITIVE_RATIO`
 default 0.01, `DICTIONARY_SIZE_LIMIT` default rows/5) are **file-wide**, with no
 per-column control.
 
-| COPY options | Filters on | Cost |
-|---|---|---|
-| defaults | `object_type`, `status` (low-card) — not `id`, `feature_id`, `identificatie` | — |
-| `DICTIONARY_SIZE_LIMIT` ≥ row-group rows | every column, geometry WKB included | `id` +39 %, `identificatie` +32 %, WKB dictionary-encoded |
+| COPY options                             | Filters on                                                                   | Cost                                                      |
+| ---------------------------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------- |
+| defaults                                 | `object_type`, `status` (low-card) — not `id`, `feature_id`, `identificatie` | —                                                         |
+| `DICTIONARY_SIZE_LIMIT` ≥ row-group rows | every column, geometry WKB included                                          | `id` +39 %, `identificatie` +32 %, WKB dictionary-encoded |
 
 **Decision (2026-09-22): COPY options, with the divergence documented.** The
 object-table `COPY` gains
@@ -238,11 +238,10 @@ filters low-cardinality strings (as it does by default) and lists of short
 values. That difference, and the occasional tail-row-group blob filter, go into
 `06-resources/02-software.mdx`. The write function gains a `bloom` option
 (default true) mapping to `WRITE_BLOOM_FILTER`, mirroring `--no-bloom`.
-Sidecar `COPY`s are unchanged. Reading needs no change: DuckDB already uses
+Sidecar `COPY`s set `WRITE_BLOOM_FILTER false`, because DuckDB's default would otherwise filter any dictionary-encoded sidecar chunk. Reading needs no change: DuckDB already uses
 filters for `=`/`IN` pushdown. Work happens in the `lib/duckdb-cityjson`
 submodule (its own `CLAUDE.md`, its own commits; the monorepo bumps the
 pointer).
-
 
 ## Benchmark — a `bloom` family
 
@@ -287,9 +286,9 @@ Generated inputs and results go under `benchmark/runs/` only.
 4. The async lookup fetches filters with one `get_byte_ranges` call, and
    `CountingObjectStore` shows filter requests far fewer than row groups (same
    file: ≤ 8 requests for 1954 filters).
-4b. `feature_lookup` returns every row of a multi-part 3DBAG feature (Building
+   4b. `feature_lookup` returns every row of a multi-part 3DBAG feature (Building
    plus its BuildingParts), identical with and without filters.
-4c. A duckdb-cityjson-written package passes check 1 under the chosen option.
+   4c. A duckdb-cityjson-written package passes check 1 under the chosen option.
 5. `+nobloom` files are byte-identical in layout to today's (no filter bytes).
 6. `cd lib/cityparquet-rs && just check`, `just plot-test`,
    `just scripts-test` and the readbench gate pass.
