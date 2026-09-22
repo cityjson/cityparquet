@@ -23,7 +23,11 @@ this worse. Nothing in the stack writes or reads Parquet bloom filters today
    and `bloom_filter_length` set — DuckDB's layout.
 4. **Async reader:** one coalesced range request for all filters it needs.
 5. **Default:** on in the default `CityParquet` recipe; explicitly disableable.
-6. **Crates, not hand-rolled code:** parquet-rs does sizing, hashing, folding,
+6. **Scope:** both writers (cityparquet-rs and duckdb-cityjson) write filters
+   under the same policy; `feature_id` lookup is in scope (it is the join key
+   between parts and their feature, used as often as `id`).
+7. **Benchmark:** one `bloom` family, one pair — with and without filters.
+8. **Crates, not hand-rolled code:** parquet-rs does sizing, hashing, folding,
    serialisation and metadata; the reader decodes with `Sbbf::from_bytes` /
    `get_row_group_column_bloom_filter` and probes with `Sbbf::check`.
 
@@ -105,10 +109,8 @@ defaults"). `NoDictionary` and `CityParquet` honour the policy.
 
 - CLI `convert`: `--no-bloom`, `--bloom-fpp <f64>` (0 < fpp < 1, validated
   with a clear error, not the parquet-rs panic).
-- Variant grammar (`variant.rs`): `+nobloom`, and `+fpp<N>` with N in
-  thousandths (`+fpp50` = 0.05, `+fpp10` = 0.01, `+fpp1` = 0.001) — no `.` in a
-  variant id, because ids become file names (`<name>.<variant>.parquet`).
-  `id()` must round-trip.
+- Variant grammar (`variant.rs`): one new token, `+nobloom`. `id()` must
+  round-trip. (No FPP token: the benchmark does not sweep FPP.)
 
 ## Reader
 
@@ -159,7 +161,24 @@ row_groups_read, filter_bytes })`, with `row_groups_read` counted in the stream
 (`benchmark/readbench/src/formats/cityparquet.rs:264`) calls the `_with_stats`
 form and writes the counters into its result record; the plain forms delegate.
 
-**Call sites:** `id_lookup*` (column `id`), and `attr_filter` when the
+### `feature_id` lookup (new)
+
+`query::feature_lookup(table_path, meta, feature_id) -> Vec<Object>` and
+`query_async::feature_lookup_async(..)`, plus `_with_stats` forms returning
+`LookupStats`. Unlike `id_lookup` it returns **every** row with that
+`feature_id` (a feature and all its parts), so it never stops early: it
+bloom-prunes on `feature_id`, then reads the surviving row groups to the end
+with an exact equality `RowFilter`. It is table-level, like `id_lookup`;
+a package-level form iterates the module tables named in the package's
+`metadata.json`. CLI: a `lookup --feature-id <ID>` form beside the existing
+id lookup, if the CLI has one (implementer checks and mirrors it).
+
+For SQL joins on `feature_id`/`id` through DuckDB, nothing is added in the
+reader: DuckDB already consults bloom filters for `=`/`IN` filters, including
+those it pushes down from a join's build side.
+
+**Call sites:** `id_lookup*` (column `id`), `feature_lookup*` (column
+`feature_id`), and `attr_filter` when the
 predicate is `Utf8` equality on a column that carries a filter. Fix
 `attr_filter`'s doc comment, which wrongly claims statistics pruning today
 (`query.rs:106-116`).
@@ -180,33 +199,65 @@ freedom (`:147-160`):
 filters placed after the last row group, the high-cardinality rule.
 `04-design-decisions/`: a short decision page (why `id`/`feature_id`, why not
 DuckDB's dictionary rule, why End placement). `06-resources/02-software.mdx`:
-the divergence that duckdb-cityjson (DuckDB `COPY`) writes filters only on
-dictionary-encoded columns, so not on `id`.
+the duckdb-cityjson divergence described below.
+
+## duckdb-cityjson writer
+
+Same policy, written through DuckDB's `COPY … (FORMAT PARQUET, …)` in
+`src/cityjson/cityparquet_write.cpp:630-633`. Constraint, verified on DuckDB
+v1.5.4 (the submodule's version) with 200k 3DBAG rows at 65,536-row groups:
+DuckDB writes a filter only for dictionary-encoded chunks, and its bloom and
+dictionary options (`WRITE_BLOOM_FILTER`, `BLOOM_FILTER_FALSE_POSITIVE_RATIO`
+default 0.01, `DICTIONARY_SIZE_LIMIT` default rows/5) are **file-wide**, with no
+per-column control.
+
+| COPY options | Filters on | Cost |
+|---|---|---|
+| defaults | `object_type`, `status` (low-card) — not `id`, `feature_id`, `identificatie` | — |
+| `DICTIONARY_SIZE_LIMIT` ≥ row-group rows | every column, geometry WKB included | `id` +39 %, `identificatie` +32 %, WKB dictionary-encoded |
+
+**Decision (2026-09-22): COPY options, with the divergence documented.** The
+object-table `COPY` gains
+
+    DICTIONARY_SIZE_LIMIT <row-group rows>, STRING_DICTIONARY_PAGE_SIZE_LIMIT 8388608,
+    WRITE_BLOOM_FILTER true, BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.01
+
+where `<row-group rows>` is the row-group size that `COPY` uses (DuckDB's
+default unless the write function sets one — the implementer makes the two
+agree explicitly). Verified on the same 200k rows: filters on `id`,
+`feature_id`, `identificatie` and the other short strings; WKB geometry and the
+`surfaces` JSON stay PLAIN without a filter because their dictionary page
+exceeds the 8 MiB cap (except a small final row group that fits under it);
+cost ≈ +0.4 MB on a 98 MB file (`id` dictionary- rather than plain-encoded).
+
+The resulting column set is a **superset** of the Rust policy: DuckDB also
+filters low-cardinality strings (as it does by default) and lists of short
+values. That difference, and the occasional tail-row-group blob filter, go into
+`06-resources/02-software.mdx`. The write function gains a `bloom` option
+(default true) mapping to `WRITE_BLOOM_FILTER`, mirroring `--no-bloom`.
+Sidecar `COPY`s are unchanged. Reading needs no change: DuckDB already uses
+filters for `=`/`IN` pushdown. Work happens in the `lib/duckdb-cityjson`
+submodule (its own `CLAUDE.md`, its own commits; the monorepo bumps the
+pointer).
+
 
 ## Benchmark — a `bloom` family
 
-Beside `codec` and `rowgroup`, same machinery (`manifest.toml`, root `justfile`
-`variant-bench`, `bench_suite.py` family map, `bench_recipe_test.sh`,
-`benchviz/prep.py`, `figures.py`):
+Beside `codec` (codec choice) and `rowgroup` (row-group size), a third family,
+`bloom` (effect of bloom filters on query performance), on the same machinery
+(`manifest.toml`, root `justfile` `variant-bench`, `bench_suite.py` family
+map, `bench_recipe_test.sh`, `benchviz/prep.py`, `figures.py`):
 
-- **Variants** (pairs, all else equal):
-  `cityparquet+nobloom`, `cityparquet`,
-  `cityparquet+rg8192+nobloom`, `cityparquet+rg8192`,
-  `cityparquet+rg512+nobloom`, `cityparquet+rg512`,
-  `cityparquet+fpp50`, `cityparquet+fpp1`.
-- **Scenarios:** `id-lookup` with probes `id-50pct`, `id-miss`, and a new
-  **`id-miss-inrange`**. Today's `id-miss` appends `-readbench-absent` to a
-  seed id (`params.rs:377`) and is not checked against the column's bounds.
-  `id-miss-inrange` derives a candidate from an existing id by changing its
-  last character, then verifies it is absent **and** lies within every row
-  group's `id` min/max (so statistics cannot prune it and only the filter
-  can). If no such candidate is found within a bounded search, the probe is
-  reported as unavailable for that dataset, not silently replaced.
+- **Variants:** `cityparquet` (filters, the default) and
+  `cityparquet+nobloom`. Nothing else.
+- **Scenarios:** `id-lookup` with probes `id-50pct` and `id-miss`, and the new
+  `feature-lookup` with probes `feature-50pct` and `feature-miss` (a verified
+  absent `feature_id`, generated like `id-miss`).
 - **Datasets:** the 3DBAG scaling slices (the multi-row-group ones matter:
-  n100000 upward, and n1000000) and the corpus datasets.
+  n100000 upward) and the corpus datasets.
 - **Metrics:** latency (local and HTTP), bytes and requests
-  (`CountingObjectStore`), row groups bloom-pruned / scanned, empirical false
-  positives, total filter bytes and package-size overhead, write time.
+  (`CountingObjectStore`), row groups bloom-pruned / read, filter bytes and
+  package-size overhead, write time.
 - **Disclosed caveats:** id lookup fetches metadata twice
   (`benchmark/readbench/src/formats/cityparquet.rs:264`) — equal across
   variants, stated not hidden; the runner reads single-table packages
@@ -227,16 +278,20 @@ Generated inputs and results go under `benchmark/runs/` only.
    group's data; none on sidecars.
 2. No false negatives: every `id` of `3dbag_n10000` written at `+rg512` is
    found by `id_lookup` and `id_lookup_async`.
-3. `id-miss` on the 1M slice at `+rg512`: bloom-pruned row groups ≥ 95 % of 1954.
+3. A miss on the 1M slice written with `--row-group-size 512` (a test, not a
+   benchmark variant): bloom-pruned row groups ≥ 95 % of 1954, for both `id`
+   and `feature_id`.
 4. The async lookup fetches filters with one `get_byte_ranges` call, and
-   `CountingObjectStore` shows filter requests far fewer than row groups (on
-   the 1M slice at `+rg512`: ≤ 8 requests for 1954 filters).
+   `CountingObjectStore` shows filter requests far fewer than row groups (same
+   file: ≤ 8 requests for 1954 filters).
+4b. `feature_lookup` returns every row of a multi-part 3DBAG feature (Building
+   plus its BuildingParts), identical with and without filters.
+4c. A duckdb-cityjson-written package passes check 1 under the chosen option.
 5. `+nobloom` files are byte-identical in layout to today's (no filter bytes).
 6. `cd lib/cityparquet-rs && just check`, `just plot-test`,
    `just scripts-test` and the readbench gate pass.
 
 ## Out of scope
 
-`feature_id` lookup API (its filter is written now; a lookup path is later),
-numeric-attribute filters (blocked on typed Int64 equality), sidecar filters,
-page-index pruning, and changing duckdb-cityjson's writer.
+Numeric-attribute filters (blocked on typed Int64 equality), sidecar filters,
+page-index pruning, and an FPP sweep.
