@@ -151,8 +151,16 @@ filters' memory shows (every filter is held until its file is closed). Every
 lookup row carries `row_groups_total`, `bloom_pruned` and `filter_bytes` (the
 bitset bytes of the filters examined). The scaling curves are drawn from the
 nested 3DBAG slices alone; the corpus datasets are other city models, not
-larger slices, and are drawn apart, per dataset, in `bloom-corpus`. Caveats
-that travel with every number:
+larger slices, and are drawn apart, per dataset, in `bloom-corpus`.
+
+Over HTTP, `just bloom-bench-http FOLDER BASE_URL` reads — never writes — the
+two packages a local `bloom-bench` run left in the prepared directory, once that
+directory is uploaded to `BASE_URL` (`benchmark/scripts/readbench_upload.md`).
+Its rows add `bytes_read` and `http_requests`; the results go to
+`scaling_bloom_http_results/` and are not part of `bench-run` or the rendered
+summary. They are a snapshot of one network path at one time.
+
+Caveats that travel with every number:
 
 1. **The larger slices show pruning across many row groups.** At the
    default 65 536-row groups the small slices are one row group, which a

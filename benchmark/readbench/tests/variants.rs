@@ -293,20 +293,6 @@ fn variants_and_formats_are_exclusive_and_the_list_is_validated() {
         ),
         "unknown scenario 'write'",
     );
-    expect_rejection(
-        &with(
-            &base,
-            &[
-                "--variants",
-                "cityparquet",
-                "--transport",
-                "http",
-                "--base-url",
-                "http://localhost:1",
-            ],
-        ),
-        "server-side write",
-    );
     assert!(!out.exists(), "a rejected run writes no CSV");
 }
 
@@ -362,4 +348,83 @@ fn a_bloom_pair_records_lookup_counters() {
             assert_ne!(counters[2], "0", "{row}");
         }
     }
+}
+
+async fn spawn_server(dir: PathBuf) -> std::net::SocketAddr {
+    let app = axum::Router::new().fallback_service(tower_http::services::ServeDir::new(dir));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
+/// Over HTTP a `--variants` run reads the packages a local run wrote and an
+/// operator uploaded — here, the prepared directory served as it is. No
+/// write rows, no sizes, and every lookup row carries its transport and
+/// lookup counters. `multi_thread`: `run` blocks on a child process while the
+/// server task must keep accepting.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_variants_run_over_http_reads_the_uploaded_packages_without_writing() {
+    let (prepared, input) = prepared_delft();
+    let common = |out: &PathBuf| -> Vec<String> {
+        [
+            "--input",
+            input.to_str().unwrap(),
+            "--prepared-dir",
+            prepared.path().to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+            "--repeat",
+            "1",
+            "--write-repeat",
+            "1",
+            "--scenarios",
+            "id-lookup",
+            "--id-probes",
+            "id-miss",
+            "--variants",
+            "cityparquet,cityparquet+nobloom",
+        ]
+        .map(String::from)
+        .to_vec()
+    };
+    let local_csv = prepared.path().join("local.csv");
+    let args = common(&local_csv);
+    let local = run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(
+        local.status.success(),
+        "{}",
+        String::from_utf8_lossy(&local.stderr)
+    );
+    let sizes = prepared.path().join("sizes.csv");
+    let sizes_before = std::fs::read_to_string(&sizes).unwrap();
+
+    let addr = spawn_server(prepared.path().to_path_buf()).await;
+    let http_csv = prepared.path().join("http.csv");
+    let mut args = common(&http_csv);
+    args.extend(["--transport".to_string(), "http".to_string()]);
+    args.extend(["--base-url".to_string(), format!("http://{addr}")]);
+    let output = run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let text = std::fs::read_to_string(&http_csv).unwrap();
+    let rows: Vec<&str> = text.lines().skip(1).collect();
+    assert_eq!(
+        rows.len(),
+        2,
+        "one id-miss row per variant, no write rows:\n{text}"
+    );
+    for row in &rows {
+        assert_eq!(field(row, 2), "id-lookup", "{row}");
+        assert!(!field(row, 11).is_empty(), "bytes_read: {row}");
+        assert!(!field(row, 12).is_empty(), "http_requests: {row}");
+        assert_eq!(field(row, 13), "1", "row_groups_total: {row}");
+    }
+    assert_eq!(std::fs::read_to_string(&sizes).unwrap(), sizes_before);
 }

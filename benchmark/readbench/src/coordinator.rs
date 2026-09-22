@@ -51,6 +51,9 @@
 //! [`write_sizes`]). Every write runs before any read, so the two kinds of
 //! load never interleave; the rows are sorted back into per-variant groups
 //! before they are written.
+//! Over `--transport http` the run is read-only: it reads the
+//! `<base>.<id>.parquet` packages a local run wrote, uploaded beside the
+//! prepared artefacts, and writes no `write` row and no `sizes.csv`.
 //!
 //! **Self-consistency (disclosed, never a hard failure).** After the
 //! `AttrFilter` scenario has run for every resolved format, this module
@@ -106,10 +109,11 @@ pub struct RunOptions {
     /// this is a CONFIGURATION run rather than a format comparison: every id
     /// is converted by a write child into
     /// `<prepared_dir>/<base>.<id>.parquet` and then read by the CityParquet
-    /// runner. Exclusive with `formats`; local transport only.
+    /// runner. Exclusive with `formats`. Over HTTP the packages are read,
+    /// never written.
     pub variants: Option<Vec<String>>,
     /// Warm write repeats per variant (a discarded warmup precedes them);
-    /// read only on a `variants` run, where it must be >= 1.
+    /// read only on a local `variants` run, where it must be >= 1.
     pub write_repeat: usize,
     /// Requested scenario names (canonical [`Scenario::as_str`] spelling,
     /// case-insensitive); `None`/empty selects every [`Scenario::ALL`].
@@ -211,10 +215,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         (_, Some(v)) if !v.is_empty() => Some(parse_variant_list(v)?),
         _ => None,
     };
-    if variants.is_some() && opts.transport == Transport::Http {
-        bail!("--variants runs on --transport local only: there is no server-side write");
-    }
-    if variants.is_some() && opts.write_repeat == 0 {
+    if variants.is_some() && opts.transport == Transport::Local && opts.write_repeat == 0 {
         bail!("--write-repeat must be >= 1");
     }
 
@@ -446,9 +447,8 @@ pub fn run(opts: &RunOptions) -> Result<()> {
     // page cache; the CSV is sorted back into per-variant groups at the end
     // (see the sort before the rows are written).
     let mut sizes: Vec<SizeRow> = Vec::new();
-    let variant_seq: Option<PathBuf> = match &variants {
-        None => None,
-        Some(_) => Some(seq_path.clone().ok_or_else(|| {
+    let variant_seq: Option<PathBuf> = match (&variants, opts.transport) {
+        (Some(_), Transport::Local) => Some(seq_path.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "--variants needs the prepared CityJSONSeq artefact {}.city.jsonl to convert \
                  from (run `just readbench-prepare {}` first)",
@@ -456,28 +456,51 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 opts.input.display()
             )
         })?),
+        _ => None,
     };
     if let Some(list) = &variants {
-        let seq = variant_seq
-            .as_deref()
-            .expect("set together with `variants`");
         for (id, _) in list {
-            let package = run_write(
-                &mut rows,
-                &mut samples,
-                &dataset,
-                base,
-                id,
-                &opts.prepared_dir,
-                seq,
-                opts.write_repeat,
-            )?;
-            sizes.push(SizeRow {
-                dataset: base.to_string(),
-                label: id.clone(),
-                bytes: dir_bytes(&package)?,
-            });
-            resolved_formats.push((Format::CityParquet, Source::Local(package), id.clone()));
+            match opts.transport {
+                Transport::Local => {
+                    let seq = variant_seq
+                        .as_deref()
+                        .expect("set for every local `variants` run");
+                    let package = run_write(
+                        &mut rows,
+                        &mut samples,
+                        &dataset,
+                        base,
+                        id,
+                        &opts.prepared_dir,
+                        seq,
+                        opts.write_repeat,
+                    )?;
+                    sizes.push(SizeRow {
+                        dataset: base.to_string(),
+                        label: id.clone(),
+                        bytes: dir_bytes(&package)?,
+                    });
+                    resolved_formats.push((
+                        Format::CityParquet,
+                        Source::Local(package),
+                        id.clone(),
+                    ));
+                }
+                // Read-only: the package a local run wrote under this same
+                // name, uploaded beside the prepared artefacts. The write is a
+                // local measurement and is not repeated over the network.
+                Transport::Http => resolved_formats.push((
+                    Format::CityParquet,
+                    Source::Http {
+                        base_url: opts
+                            .base_url
+                            .clone()
+                            .expect("run validated --base-url for --transport http"),
+                        key: format!("{base}.{id}.parquet"),
+                    },
+                    id.clone(),
+                )),
+            }
         }
     }
 
@@ -746,10 +769,10 @@ pub fn run(opts: &RunOptions) -> Result<()> {
 
     write_samples(&opts.out, &samples)?;
 
-    if variants.is_some() {
+    if variants.is_some() && opts.transport == Transport::Local {
         let seq = variant_seq
             .as_deref()
-            .expect("set together with `variants`");
+            .expect("set for every local variants run");
         write_sizes(&opts.out, base, seq, &sizes)?;
     }
 

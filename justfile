@@ -513,16 +513,17 @@ write-bench FOLDER OUT=(BENCH / "results"):
 # CSV shape (a `write` row per variant, the variant id in the `format`
 # column), package bytes in OUT/sizes.csv, and the host in OUT/MACHINE.md.
 # Each OUT/<name>.csv is removed first; OUT/sizes.csv is removed once at the
-# start, and each input's run then appends its own rows. Local transport
-# only. Network-independent given already-fetched inputs; multi-hour at the
-# 1M-object slice; kept OUT of `just check`/CI.
+# start, and each input's run then appends its own rows. Network-independent
+# given already-fetched inputs; multi-hour at the 1M-object slice; kept OUT
+# of `just check`/CI.
+# With BASE_URL the run is read-only over HTTP: it reads the variant packages a local run left in PREPARED, uploaded to BASE_URL, and WRITE_REPEAT is unused.
 #
 # VARIANTS is the whole benchmark: the three public recipes below pass their
 # lists here and nowhere else, and benchmark/scripts/tests/bench_recipe_test.sh
 # reads those lists back out of this file.
 [private]
 [doc("Configuration-axis run: timed writes + two reads per variant, over every input under FOLDER")]
-variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3' SCENARIOS='full-read,bbox-query,id-lookup' ID_PROBES='id-50pct' FEATURE_PROBES='':
+variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3' SCENARIOS='full-read,bbox-query,id-lookup' ID_PROBES='id-50pct' FEATURE_PROBES='' BASE_URL='':
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{OUT}}" "{{PREPARED}}"
@@ -546,6 +547,10 @@ variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEA
         if [[ -n "{{FEATURE_PROBES}}" ]]; then
             feature_args=(--feature-probes "{{FEATURE_PROBES}}")
         fi
+        transport_args=()
+        if [[ -n "{{BASE_URL}}" ]]; then
+            transport_args=(--transport http --base-url "{{BASE_URL}}")
+        fi
         cargo run --release {{READBENCH_CARGO}} -- run \
             --input "$f" \
             --prepared-dir "{{PREPARED}}" \
@@ -555,6 +560,7 @@ variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEA
             --scenarios "{{SCENARIOS}}" \
             --id-probes "{{ID_PROBES}}" \
             ${feature_args[@]+"${feature_args[@]}"} \
+            ${transport_args[@]+"${transport_args[@]}"} \
             --variants "{{VARIANTS}}"
 
         found=$((found + 1))
@@ -593,6 +599,15 @@ rowgroup-bench FOLDER OUT=(BENCH / "runs/formats/scaling_rowgroup_results") PREP
 [doc("Bloom axis over the scaling slices and corpus: cityparquet vs cityparquet+nobloom")]
 bloom-bench FOLDER OUT=(BENCH / "runs/formats/scaling_bloom_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3':
     just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "{{WRITE_REPEAT}}" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss"
+
+# The bloom axis over HTTP: reads (never writes) the two packages a local
+# `bloom-bench` run left in PREPARED, after PREPARED was uploaded to BASE_URL
+# (benchmark/scripts/readbench_upload.md). Not part of `bench-run`: it needs a
+# real bucket, and its timings are a snapshot of one network path.
+[private]
+[doc("Bloom axis over HTTP, against uploaded bloom-bench packages")]
+bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/scaling_bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "1" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"
 
 # ---------------------------------------------------------------------------
 # The harness's own test suites
