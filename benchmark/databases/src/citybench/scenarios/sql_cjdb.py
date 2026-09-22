@@ -13,14 +13,19 @@ way.
 
 from __future__ import annotations
 
-from citybench.config import Params
+from citybench.config import BBox, BboxWindow, Params
 from citybench.scenarios.registry import ScenarioUnavailable
 
 SCHEMA = "cjdb"
 SRID_PLACEHOLDER = 0  # replaced by the adapter with the dataset's real SRID
 
 
-def sql_for(scenario: str, params: Params, selectivity: float | None = None,
+#: The CityObject type the Building-grained CJDB queries (Q2, Q3, Q4, Q6-Q8)
+#: restrict to. `sql_duckdb.BUILDING_TYPE`'s counterpart.
+BUILDING_TYPE = "Building"
+
+
+def sql_for(scenario: str, params: Params, window: BboxWindow | None = None,
             srid: int = SRID_PLACEHOLDER) -> tuple[str, tuple]:
     p = params
     t = f"{SCHEMA}.city_object"
@@ -28,35 +33,89 @@ def sql_for(scenario: str, params: Params, selectivity: float | None = None,
     if scenario == "count":
         return f"SELECT count(*) FROM {t}", ()
 
-    if scenario == "full-read":
-        # count(*) first (the comparable quantity), then a checksum that
-        # touches every SUBSTANTIAL column — geometry, attributes and
-        # ground_geometry — not just geometry. sql_duckdb's counterpart
-        # hashes across every column (hash(COLUMNS(*))); decoding only one
-        # column here would let cjdb look artificially fast on this Tier-1
-        # headline scenario purely because it is asked to do less work.
-        # Each column's length is coalesced to 0 individually so a row
-        # with one NULL column does not null out the whole row's
-        # contribution to the sum (and so silently vanish from the total).
+    if scenario == "geometry-scan":
+        # The geometry column only, matching `sql_duckdb`'s own
+        # `geometry-scan`: every object's geometry, once, reported as
+        # `(count, bytes)`. The old `full-read` also summed `attributes`
+        # and `ground_geometry`, which was a different amount of work from
+        # the other two systems' rows.
+        #
+        # `length(geometry::text)` is a JSONB-to-text serialisation, not a
+        # stored byte length: a client reading JSONB genuinely pays this,
+        # but it is NOT the same operation DuckDB's `octet_length` performs
+        # (README Caveat 18). `length()` then throws the string away.
         return (
-            f"SELECT count(*), sum("
-            "coalesce(length(geometry::text), 0) + "
-            "coalesce(length(attributes::text), 0) + "
-            "coalesce(length(ground_geometry::text), 0)"
-            f")::bigint FROM {t}",
+            f"SELECT count(*), sum(coalesce(length(geometry::text), 0))::bigint "
+            f"FROM {t}",
             (),
         )
 
     if scenario == "bbox-query":
-        win = p.bbox_full.window(selectivity)
+        win = _window(window)
         return (
             f"SELECT count(*) FROM {t} "
             "WHERE ground_geometry && ST_MakeEnvelope(%s, %s, %s, %s, %s)",
             (win.minx, win.miny, win.maxx, win.maxy, srid),
         )
 
+    if scenario == "bbox-fetch":
+        # CJDB Q2's result shape — `object_id, ground_geometry`, Buildings
+        # only — with `&&` overlap where CJDB's own Q2 uses
+        # `ST_Contains(window, ground_geometry)`. See the README's CJDB
+        # mapping: overlap is the predicate all three systems can answer
+        # from an index, and the difference is stated, not glossed.
+        win = _window(window)
+        return (
+            f'SELECT object_id, ground_geometry FROM {t} '
+            'WHERE "type" = %s '
+            "AND ground_geometry && ST_MakeEnvelope(%s, %s, %s, %s, %s)",
+            (BUILDING_TYPE, win.minx, win.miny, win.maxx, win.maxy, srid),
+        )
+
+    if scenario == "point-query":
+        # CJDB Q3, verbatim in shape: a bbox overlap against a POINT, which
+        # is a single GIST probe and may return several objects. This is the
+        # scenario expected to go against CityParquet, and it is included
+        # for that reason.
+        x, y = p.point_xy
+        return (
+            f'SELECT object_id, ground_geometry FROM {t} '
+            'WHERE "type" = %s '
+            "AND ground_geometry && ST_SetSRID(ST_MakePoint(%s, %s), %s)",
+            (BUILDING_TYPE, x, y, srid),
+        )
+
     if scenario == "attr-filter":
-        return f'SELECT count(*) FROM {t} WHERE "type" = %s', (p.attr_eq,)
+        # The same per-dataset CityJSON attribute the format family filters
+        # on, reached through the JSONB document. cjdb builds no index on
+        # `attributes` and this harness adds none: a GIN(attributes) index
+        # would sit unused by every other scenario while inflating
+        # `size_bytes`, the storage figure CityParquet is compared against.
+        # Disclosed in the README rather than silently compensated.
+        if p.attr_filter is None:
+            raise ScenarioUnavailable("dataset has no attr-filter predicate")
+        spec = p.attr_filter
+        if spec.op == "eq":
+            return (
+                f"SELECT object_id FROM {t} "
+                f"WHERE attributes ->> '{spec.column}' = %s",
+                (spec.eq_value,),
+            )
+        return (
+            f"SELECT object_id FROM {t} "
+            f"WHERE (attributes ->> '{spec.column}')::float >= %s",
+            (spec.ge_bound,),
+        )
+
+    if scenario == "attr-range":
+        # CJDB Q1, in cjdb's own idiom.
+        if p.attr_range is None:
+            raise ScenarioUnavailable("dataset has no numeric attribute")
+        return (
+            f"SELECT object_id FROM {t} "
+            f"WHERE (attributes ->> '{p.attr_range.column}')::float > %s",
+            (p.attr_range.threshold,),
+        )
 
     if scenario == "attr-stats":
         # Mirrors `hierarchy`'s own `parent_id is None` guard below: a
@@ -75,9 +134,6 @@ def sql_for(scenario: str, params: Params, selectivity: float | None = None,
 
     if scenario == "id-lookup":
         return f"SELECT * FROM {t} WHERE object_id = %s", (p.target_id,)
-
-    if scenario == "project":
-        return f'SELECT count("type") FROM {t}', ()
 
     if scenario == "lod-extract":
         # No per-LoD column exists: the LoD lives inside the geometry
@@ -105,8 +161,10 @@ def sql_for(scenario: str, params: Params, selectivity: float | None = None,
         # regular geometry (mixed CityGML modules, sparse/optional
         # semantics) should be watched for this the first time this SQL
         # runs against them.
+        # Returns IDS, as CJDB Q5 does — the same change `sql_duckdb`'s own
+        # `lod-extract` makes, so the two are comparable.
         return (
-            f"SELECT count(*) FROM {t} "
+            f"SELECT object_id FROM {t} "
             "WHERE geometry @? '$[*] ? (@.lod == \"1.2\")'",
             (),
         )
@@ -120,21 +178,98 @@ def sql_for(scenario: str, params: Params, selectivity: float | None = None,
             (),
         )
 
-    if scenario == "hierarchy":
-        # Mirrors sql_duckdb's own hierarchy branch: an absent parent/child
-        # pair is a property of the dataset, not a query bug, so this is
-        # raised before any SQL is built rather than sent as a query that
-        # would either error against NULL or silently match nothing.
-        if p.parent_id is None:
-            raise ScenarioUnavailable("dataset has no parent/child hierarchy")
+    if scenario == "parts-per-building":
+        # CJDB Q4, adapted to cjdb 2.2.0's actual schema. The paper joins
+        # `city_object_relationships.parent_id` to the city object, but in
+        # 2.2.0 `parent_id` is the INTEGER surrogate `city_object.id`, not
+        # the textual `object_id` (`docs/cjdb-schema.md`), so the join is on
+        # `co.id` and the grouping on `co.object_id`.
+        #
+        # `LEFT JOIN`, and no `HAVING`: Q4 reports one row per Building
+        # INCLUDING childless ones. Dropping them would compare a different
+        # result set against the other systems' — the mapping error Codex
+        # caught in the review's §7.
         return (
-            f"SELECT count(*) FROM {SCHEMA}.city_object_relationships r "
-            f"JOIN {t} parent ON parent.id = r.parent_id "
-            "WHERE parent.object_id = %s",
-            (p.parent_id,),
+            f'SELECT co.object_id, count(cor.child_id) FROM {t} co '
+            f"LEFT JOIN {SCHEMA}.city_object_relationships cor "
+            "ON cor.parent_id = co.id "
+            'WHERE co."type" = %s GROUP BY co.object_id',
+            (BUILDING_TYPE,),
         )
 
     raise KeyError(f"unknown scenario: {scenario}")
+
+
+def _window(window: BboxWindow | None) -> BBox:
+    if window is None:
+        raise ValueError("a windowed scenario needs its resolved BboxWindow")
+    return window.window
+
+
+def write_sql(scenario: str) -> tuple[str, tuple]:
+    """CJDB's own Q6/Q7/Q8, against cjdb 2.2.0's schema.
+
+    One deliberate deviation from the paper's text, and only one: the
+    paper's trailing ``::json`` cast is dropped, because cjdb 2.2.0 stores
+    `city_object.attributes` as **jsonb** (`docs/cjdb-schema.md`) and
+    PostgreSQL registers no assignment cast from `json` to `jsonb`. The
+    `attributes::jsonb` the paper writes is kept verbatim and is a no-op on
+    this schema.
+
+    Two properties of the paper's own SQL that this harness does NOT
+    "fix", because fixing them would benchmark a query CJDB never ran:
+
+    - `jsonb_set` is STRICT, so a Building whose `ground_geometry` is NULL
+      has its whole `attributes` document set to NULL by Q6. On 3DBAG the
+      NULL footprints are all BuildingParts (review §5), which Q6's
+      `type = 'Building'` predicate excludes, so no row is affected there;
+      on another corpus it could be.
+    - Q6 computes `ST_Area(ground_geometry)` — a footprint area — where
+      3DCityDB's Q6 computes `ST_Area(envelope)`, an envelope area. That
+      asymmetry is the CJDB paper's, inherited here and disclosed in the
+      README rather than silently equalised.
+    """
+    t = f"{SCHEMA}.city_object"
+    if scenario == "attr-add":
+        return (
+            f"UPDATE {t} SET attributes = jsonb_set(attributes::jsonb, "
+            "'{footprint_area}', to_jsonb(ST_Area(ground_geometry))) "
+            'WHERE "type" = %s',
+            (BUILDING_TYPE,),
+        )
+    if scenario == "attr-update":
+        return (
+            f"UPDATE {t} SET attributes = jsonb_set(attributes::jsonb, "
+            "'{footprint_area}', "
+            "to_jsonb((attributes ->> 'footprint_area')::float + 10.0)) "
+            'WHERE "type" = %s',
+            (BUILDING_TYPE,),
+        )
+    if scenario == "attr-delete":
+        return (
+            f"UPDATE {t} SET attributes = jsonb_set_lax(attributes::jsonb, "
+            "'{footprint_area}', NULL, true, 'delete_key') "
+            'WHERE "type" = %s',
+            (BUILDING_TYPE,),
+        )
+    raise KeyError(f"unknown write scenario: {scenario}")
+
+
+def write_reset_sql(scenario: str) -> list[tuple[str, tuple]]:
+    """The UNTIMED statements restoring the state one write scenario
+    expects, run before every sample after the first so that `repeat` > 1
+    measures the same work each time.
+
+    `attr-update` needs none: incrementing an existing key is the same
+    amount of work however many times it has already been incremented.
+    """
+    if scenario == "attr-add":
+        return [write_sql("attr-delete")]
+    if scenario == "attr-update":
+        return []
+    if scenario == "attr-delete":
+        return [write_sql("attr-add")]
+    raise KeyError(f"unknown write scenario: {scenario}")
 
 
 def index_ddl() -> list[str]:
@@ -144,7 +279,9 @@ def index_ddl() -> list[str]:
     creates, unasked:
       - city_object_ground_gix / idx_city_object_ground_geometry — both
         GIST(ground_geometry), covering bbox-query.
-      - city_object_type_idx — btree("type"), covering attr-filter/project.
+      - city_object_type_idx — btree("type"), covering the `type =
+        'Building'` restriction of bbox-fetch/point-query/
+        parts-per-building and of every write-tier statement.
       - lod — GIN(geometry) using the DEFAULT jsonb_ops opclass, covering
         lod-extract/semantic-surface's `geometry @? path` predicate.
         Verified empirically (EXPLAIN, default planner settings, against a
@@ -169,10 +306,19 @@ def index_ddl() -> list[str]:
     Creating the other four (ground_geometry, type, geometry, parent/child)
     on top of cjdb's own would build duplicate index objects: no query
     benefit, but they DO inflate on-disk size — the very metric this
-    project's own format is compared against. attributes has no dedicated
-    index either, for a different reason: no scenario query filters on it
-    (attr-stats aggregates over the WHOLE table, unconditionally), so a
-    GIN(attributes) index would sit unused and only add to cjdb's size.
+    project's own format is compared against.
+
+    `attributes` has NO index, and this harness adds none. Two scenarios do
+    now filter on it — `attr-filter` (`attributes ->> '<col>' = %s`) and
+    `attr-range` (`(attributes ->> '<col>')::float > %s`) — so unlike the
+    other columns this is a real, measurable disadvantage rather than a
+    redundancy. It is left alone because a useful index here is a
+    per-expression btree on the one attribute each dataset happens to be
+    filtered by, which is a query-specific object cjdb's own importer never
+    builds and a real cjdb deployment would not have; a blanket
+    GIN(attributes) would not serve `attr-range`'s inequality at all while
+    adding materially to `size_bytes`. The README states this beside both
+    scenarios' numbers.
 
     Only what is genuinely missing is created here; this DDL is committed
     alongside the results.

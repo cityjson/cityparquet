@@ -19,30 +19,55 @@ from dataclasses import replace
 
 from citybench.config import Measurement, Params
 from citybench.report import row_from_measurement
-from citybench.scenarios.registry import ALL, SELECTIVITY_SCENARIOS, ScenarioUnavailable
-
-SELECTIVITY_TARGETS = (0.01, 0.05, 0.25)
-
-# The window tag published in `notes`, matching the existing harness.
-_WINDOW_TAGS = {0.01: "bbox-1pct", 0.05: "bbox-5pct", 0.25: "bbox-25pct"}
+from citybench.scenarios.registry import (
+    ALL, SELECTIVITY_SCENARIOS, TIER3, ScenarioUnavailable, systems_for,
+)
 
 # Scenarios for which the `selectivity` column is left blank. Per the
 # inherited contract (benchmark/formats/READ_BENCHMARK.md's CSV section):
-# "selectivity = result_count / total_object_count, empty where N/A (count,
-# full-read)". Both of these scenarios answer over the whole dataset, so a
-# result_count/total ratio would not describe a selection at all; every
-# other scenario — attr-filter, attr-stats, id-lookup, project, bbox-query,
-# and the tier-2 additions — DOES report it. Named here, once, so the rule
-# is greppable rather than re-derived at each call site.
-NO_SELECTIVITY_SCENARIOS = frozenset({"count", "full-read"})
+# "selectivity = result_count / total_object_count, empty where N/A". These
+# scenarios answer over the whole dataset, so a result_count/total ratio
+# would not describe a selection at all; the write tier's `result_count` is
+# rows TOUCHED by a mutation, which is not a selection either. Every other
+# scenario DOES report it. Named here, once, so the rule is greppable
+# rather than re-derived at each call site.
+NO_SELECTIVITY_SCENARIOS = frozenset({"count", "geometry-scan"}) | set(TIER3)
+
+#: Default relative spread below which a count disagreement is published as
+#: an explained DEVIATION rather than a `mismatch` that fails the run.
+#:
+#: The bbox scenarios' counts differ across systems by 0.03-0.04 % for
+#: reasons established in `notes/benchmark-fairness-review-2026-09-22.md`
+#: §5 and now quoted in README Caveats 11 and 12: cjdb's importer drops
+#: 2/16/60 BuildingPart footprints whose non-vertical faces share one Z,
+#: and PostGIS's float4 `&&` admits 4 extra objects at the 25 % window on
+#: BOTH PostgreSQL systems. These are properties of the compared systems,
+#: not of the query, and every system is asked the same question with its
+#: own idiomatic predicate. Treating them as a binary failure said nothing
+#: a reader could act on; the decomposition does.
+#:
+#: Above the tolerance the row stays `mismatch` and the run still exits
+#: non-zero — the check remains the harness's main defect detector.
+DEFAULT_COUNT_TOLERANCE = 0.001
 
 
-def cross_check(counts: dict[str, int]) -> str:
-    """Empty string when every system agrees; a note describing the split otherwise."""
-    if len(set(counts.values())) <= 1:
-        return ""
+def cross_check(counts: dict[str, int],
+                tolerance: float = DEFAULT_COUNT_TOLERANCE) -> tuple[str, str]:
+    """``(note, status)`` for one scenario's counts across the systems.
+
+    ``("", "ok")`` when every system agrees. Otherwise the note always
+    describes the split — it is never dropped, whatever the status — and
+    the status is ``"ok-deviation"`` when the relative spread
+    ``(max - min) / max`` is within ``tolerance``, ``"mismatch"`` above it.
+    """
+    values = set(counts.values())
+    if len(values) <= 1:
+        return "", "ok"
+    high, low = max(values), min(values)
+    spread = 0.0 if high == 0 else (high - low) / abs(high)
     detail = " ".join(f"{tag}={count}" for tag, count in sorted(counts.items()))
-    return f"count-mismatch: {detail}"
+    note = f"count-mismatch: {detail} spread={spread:.6f}"
+    return note, ("ok-deviation" if spread <= tolerance else "mismatch")
 
 
 def _selectivity(result_count: int | None, params: Params) -> float | None:
@@ -74,6 +99,8 @@ def _failed(note: str) -> Measurement:
 def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
                scenarios: tuple[str, ...] = ALL,
                sizes: dict[str, tuple[int, int]] | None = None,
+               *, tolerance: float = DEFAULT_COUNT_TOLERANCE,
+               run_note: str = "",
                ) -> list[dict[str, str]]:
     """Run every scenario on every system, cross-checking counts.
 
@@ -105,18 +132,31 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
     """
     sizes = sizes or {}
     rows: list[dict[str, str]] = []
+    by_tag = {system.tag: system for system in systems}
 
     for scenario in scenarios:
-        targets = SELECTIVITY_TARGETS if scenario in SELECTIVITY_SCENARIOS else (None,)
+        wanted = [by_tag[tag] for tag in systems_for(scenario) if tag in by_tag]
+        if not wanted:
+            continue
+        windows = (
+            params.windows if scenario in SELECTIVITY_SCENARIOS else (None,)
+        )
 
-        for target in targets:
-            window_note = _WINDOW_TAGS[target] if target is not None else ""
+        for window in windows:
+            # The window's own tag, suffixed `-approx` when the row-fraction
+            # target was not reachable on this data, plus the fraction it
+            # actually achieved — so a reader never has to assume "1 %"
+            # meant 1 %.
+            window_note = (
+                f"{window.notes_tag()} achieved={window.achieved:.6f}"
+                if window is not None else ""
+            )
             measurements: dict[str, Measurement] = {}
 
-            for system in systems:
+            for system in wanted:
                 try:
                     measurements[system.tag] = system.run(
-                        scenario, params, repeat, selectivity=target
+                        scenario, params, repeat, window=window
                     )
                 except ScenarioUnavailable as exc:
                     # A dataset property, not a system failure — kept
@@ -129,16 +169,20 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
             answered = {
                 tag: m for tag, m in measurements.items() if m.result_count is not None
             }
-            mismatch = cross_check(
-                {tag: m.result_count for tag, m in answered.items()}
+            # The two `duckdb-cityparquet` package-ordering tags read the
+            # same rows in a different order and the two write tags run the
+            # same statements, so they are genuine participants in the
+            # check rather than duplicates to exclude.
+            deviation, status = cross_check(
+                {tag: m.result_count for tag, m in answered.items()}, tolerance
             )
 
             for tag, m in measurements.items():
-                note = " ".join(n for n in (window_note, mismatch) if n)
+                note = " ".join(n for n in (run_note, window_note, deviation) if n)
                 total, no_index = sizes.get(tag, (None, None))
-                # Blank only for `count`/`full-read` (NO_SELECTIVITY_SCENARIOS);
-                # every other scenario — including the non-windowed ones such
-                # as attr-filter — reports result_count/total, per the
+                # Blank only for NO_SELECTIVITY_SCENARIOS; every other
+                # scenario — including the non-windowed ones such as
+                # attr-filter — reports result_count/total, per the
                 # inherited CSV contract this harness must concatenate with.
                 selectivity = (
                     None if scenario in NO_SELECTIVITY_SCENARIOS
@@ -153,6 +197,7 @@ def run_matrix(systems, params: Params, dataset_name: str, repeat: int,
                         selectivity=selectivity,
                         size_bytes=total,
                         size_bytes_no_index=no_index,
+                        status=status,
                     )
                 )
 

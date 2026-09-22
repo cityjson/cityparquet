@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 import os
@@ -15,7 +16,8 @@ from citybench.config import Dataset
 from citybench.report import write_csv
 from citybench.runner import run_matrix
 from citybench.scenarios import sql_citydb, sql_cjdb
-from citybench.scenarios.registry import SQL_SYSTEMS, TIER1, TIER2
+from citybench.runner import DEFAULT_COUNT_TOLERANCE
+from citybench.scenarios.registry import READ_SCENARIOS, TIER3
 from citybench.systems import pg
 from citybench.systems.cjdb import CjdbSystem
 from citybench.systems.citydb import CityDbSystem
@@ -36,12 +38,42 @@ def _dataset(source: Path, prepared_dir: Path | None = None) -> Dataset:
     return Dataset(name=name, source=source, cityparquet_dir=prepared / f"{name}.parquet", hilbert_dir=prepared / f"{name}-hilbert.parquet")
 
 
+#: The two named execution conditions, both measured and both reported.
+#:
+#: `single` is the PRIMARY figure: DuckDB on one thread, PostgreSQL in one
+#: backend. It is the condition under which the two engines are asked for
+#: the same amount of CPU, and it matches the format harness's
+#: single-threaded readers. The committed run's DuckDB ran on 16 threads
+#: against a PostgreSQL with parallel query disabled, which concentrated a
+#: 5-8x advantage on exactly the headline rows
+#: (`notes/benchmark-fairness-review-2026-09-22.md` §4.3).
+#:
+#: `parallel` gives both engines a parallel budget. PostgreSQL's planner
+#: thresholds (`parallel_setup_cost`, `min_parallel_table_scan_size`) stay
+#: at their defaults: raising the worker cap is a resource decision;
+#: lowering those would be tuning the query.
+THREAD_CONFIGURATIONS: tuple[tuple[str, int, int], ...] = (
+    ("single", 1, 0),
+    ("parallel", 16, 8),
+)
+
+
 def _build_systems(tags: list[str], *, ports: dict[str, int] | None = None) -> list:
     ports = ports or {}
     available = {
         "cjdb": lambda: CjdbSystem(port=ports.get("cjdb", 55432)),
         "3dcitydb": lambda: CityDbSystem(port=ports.get("3dcitydb", 55433)),
-        "duckdb-cityparquet": lambda: DuckDBCityParquet(),
+        # The Hilbert package, which is what the format family's figures
+        # call "CityParquet".
+        "duckdb-cityparquet": lambda: DuckDBCityParquet(package="hilbert"),
+        # The source-order package, for the ordering-sensitive scenarios
+        # only (`registry.ORDERING_SCENARIOS`).
+        "duckdb-cityparquet-source": lambda: DuckDBCityParquet(package="source"),
+        # The write tier's second row: the same mutations, timed with the
+        # package write-back included.
+        "duckdb-cityparquet-writeback": lambda: DuckDBCityParquet(
+            package="hilbert", writeback=True
+        ),
         "cityparquet": lambda: ReadbenchSystem(binary=READBENCH_BIN),
         "cityparquet-hilbert": lambda: ReadbenchSystem(
             binary=READBENCH_BIN, hilbert=True
@@ -53,30 +85,51 @@ def _build_systems(tags: list[str], *, ports: dict[str, int] | None = None) -> l
     return [available[tag]() for tag in tags]
 
 
-def _run_all_scenarios(systems: list, params, dataset_name: str, repeat: int,
-                        sizes: dict[str, tuple[int, int]]) -> list[dict[str, str]]:
-    """Run TIER1 on every requested system, TIER2 on the SQL-only subset.
+def _apply_threads(systems: list, threads: int, workers: int) -> None:
+    for system in systems:
+        if hasattr(system, "set_threads"):
+            system.set_threads(threads)
+        elif hasattr(system, "set_parallel_workers"):
+            system.set_parallel_workers(workers)
 
-    A single `run_matrix(systems, ..., scenarios=ALL)` call would hand the
-    Rust child (`cityparquet`/`cityparquet-hilbert`) a TIER2 scenario name
-    it does not implement — `ReadbenchSystem.run` raises `ValueError` for
-    those (see `systems/readbench.py`'s `build_child_args`), which
-    `run_matrix` cannot tell apart from a genuine failure and records as
-    `error: ValueError`. Since `just smoke` fails on ANY `error:` note,
-    that single-call shape would make the smoke target fail forever, not
-    just on a real regression. `registry.systems_for` already documents
-    the intended split (TIER1 -> every system, TIER2 -> `SQL_SYSTEMS`
-    only); this is that split, applied at the one call site that drives
-    the whole matrix.
+
+def _run_all_scenarios(systems: list, params, dataset_name: str, repeat: int,
+                        sizes: dict[str, tuple[int, int]],
+                        tolerance: float) -> list[dict[str, str]]:
+    """Every read scenario under BOTH thread configurations, then the writes.
+
+    Order is load-bearing, not incidental:
+
+    - every read row of both configurations comes first, because CJDB's
+      Q6-Q8 leave dead tuples on cjdb and rewritten pages on 3DCityDB that
+      a later read pass would measure as if they were the steady state;
+    - the write tier then runs ONCE, under the `single` configuration, and
+      its rows say so. Measuring mutations under both conditions would mean
+      restoring both databases between them, which is a longer and less
+      informative experiment than the one the paper needs.
+
+    `run_matrix` selects which systems answer each scenario from
+    `registry.systems_for`, so the native Rust child is never handed a
+    scenario name it does not implement (which it would raise `ValueError`
+    for, indistinguishable from a real failure) and the two
+    package-ordering tags appear only on the ordering-sensitive rows.
     """
-    tier1_rows = run_matrix(
-        systems, params, dataset_name, repeat=repeat, scenarios=TIER1, sizes=sizes,
+    rows: list[dict[str, str]] = []
+    for name, threads, workers in THREAD_CONFIGURATIONS:
+        _apply_threads(systems, threads, workers)
+        rows += run_matrix(
+            systems, params, dataset_name, repeat=repeat,
+            scenarios=READ_SCENARIOS, sizes=sizes, tolerance=tolerance,
+            run_note=f"threads={name}",
+        )
+
+    primary = THREAD_CONFIGURATIONS[0]
+    _apply_threads(systems, primary[1], primary[2])
+    rows += run_matrix(
+        systems, params, dataset_name, repeat=repeat, scenarios=TIER3,
+        sizes=sizes, tolerance=tolerance, run_note=f"threads={primary[0]}",
     )
-    sql_systems = [s for s in systems if s.tag in SQL_SYSTEMS]
-    tier2_rows = run_matrix(
-        sql_systems, params, dataset_name, repeat=repeat, scenarios=TIER2, sizes=sizes,
-    )
-    return tier1_rows + tier2_rows
+    return rows
 
 
 def _format_ddl(statements: list[str]) -> str:
@@ -161,7 +214,10 @@ def cmd_prep(args) -> int:
 
 def cmd_derive_params(args) -> int:
     source = Path(args.dataset)
-    p = params_mod.derive(source)
+    dataset = _dataset(
+        source, Path(args.prepared_dir) if getattr(args, "prepared_dir", None) else None
+    )
+    p = params_mod.derive(source, dataset.cityparquet_dir)
     out = ROOT / "params" / f"{Dataset.name_from_path(source)}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(params_mod.to_json(p))
@@ -183,13 +239,20 @@ def cmd_bench(args) -> int:
     source = Path(args.dataset)
     dataset = _dataset(source, Path(args.prepared_dir) if getattr(args, "prepared_dir", None) else None)
     tags = args.systems.split(",") if args.systems else [
-        "duckdb-cityparquet", "cjdb", "3dcitydb",
+        "duckdb-cityparquet", "duckdb-cityparquet-source",
+        "duckdb-cityparquet-writeback", "cjdb", "3dcitydb",
     ]
     systems = _build_systems(tags, ports=getattr(args, "ports", None))
 
     # Never reuse name-keyed parameters: scaling inputs can be regenerated at
     # the same path. Derive from this run's source and persist beside output.
-    p = params_mod.derive(source)
+    #
+    # The SOURCE-ORDER package supplies the package-derived parameters even
+    # though `duckdb-cityparquet` reads the Hilbert one: the two hold the
+    # same rows in a different order, so the windows and attribute picks are
+    # identical either way, and naming one makes the derivation
+    # deterministic regardless of which systems this run includes.
+    p = params_mod.derive(source, dataset.cityparquet_dir)
 
     ingest_times: dict[str, float] = {}
     sizes: dict[str, tuple[int, int]] = {}
@@ -203,7 +266,8 @@ def cmd_bench(args) -> int:
             report.size_bytes_no_index or report.size_bytes,
         )
 
-    rows = _run_all_scenarios(systems, p, dataset.name, args.repeat, sizes)
+    tolerance = getattr(args, "count_tolerance", DEFAULT_COUNT_TOLERANCE)
+    rows = _run_all_scenarios(systems, p, dataset.name, args.repeat, sizes, tolerance)
 
     results_dir = Path(args.output_dir) if args.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -211,9 +275,6 @@ def cmd_bench(args) -> int:
     write_csv(results_dir / f"{dataset.name}.csv", rows)
 
     pg_settings = _pg_settings(getattr(args, "ports", None))
-    for settings in pg_settings.values():
-        if isinstance(settings, dict):
-            settings["max_parallel_workers_per_gather"] = "0 (benchmark session)"
 
     (results_dir / f"{dataset.name}.manifest.json").write_text(
         json.dumps(
@@ -226,6 +287,23 @@ def cmd_bench(args) -> int:
                 pg_settings=pg_settings,
                 patches=_patches(systems),
                 srid=_srids(systems),
+                execution=_execution(systems),
+                count_check={
+                    "relative_spread_tolerance": tolerance,
+                    "statuses": {
+                        "ok": "every answering system returned the same count",
+                        "ok-deviation": (
+                            "the counts differ, but the relative spread "
+                            "(max - min) / max is within the tolerance; the "
+                            "`count-mismatch: ...` detail stays in `notes` "
+                            "and the run does not fail"
+                        ),
+                        "mismatch": (
+                            "the spread exceeds the tolerance; the run exits "
+                            "non-zero and the row is not citable"
+                        ),
+                    },
+                },
             ),
             indent=2,
             sort_keys=True,
@@ -240,10 +318,18 @@ def cmd_bench(args) -> int:
     for system in systems:
         system.teardown()
 
-    mismatches = [r for r in rows if "count-mismatch" in r["notes"]]
+    deviations = [r for r in rows if r["status"] == "ok-deviation"]
+    if deviations:
+        print(
+            f"NOTE: {len(deviations)} row(s) carry an explained count "
+            f"deviation within the {tolerance:.4%} tolerance; see `notes`",
+            file=sys.stderr,
+        )
+    mismatches = [r for r in rows if r["status"] == "mismatch"]
     if mismatches:
         print(
-            f"WARNING: {len(mismatches)} row(s) carry a count mismatch",
+            f"WARNING: {len(mismatches)} row(s) carry a count mismatch "
+            "beyond the tolerance",
             file=sys.stderr,
         )
     print(f"wrote {results_dir / f'{dataset.name}.csv'} ({len(rows)} rows)")
@@ -263,32 +349,89 @@ def cmd_smoke(args) -> int:
         ports=None,
         data_root=getattr(args, "data_root", None),
         srid=getattr(args, "srid", 7415),
+        count_tolerance=getattr(args, "count_tolerance", DEFAULT_COUNT_TOLERANCE),
     )
     bench_status = cmd_bench(ns)
     output_dir = Path(ns.output_dir) if ns.output_dir else BENCHMARK_DIR / "runs" / "databases" / "results"
     csv_path = output_dir / f"{Dataset.name_from_path(ns.dataset)}.csv"
-    text = csv_path.read_text()
     if bench_status:
         return bench_status
-    if "count-mismatch" in text:
+    # The STATUS column, not the `notes` text: an `ok-deviation` row keeps
+    # its full `count-mismatch: ...` decomposition in `notes` on purpose,
+    # so a substring search there would now fail every run that has one.
+    with csv_path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    if any(row["status"] == "mismatch" for row in rows):
         print(
-            "SMOKE FAILED: systems disagree on a result count. "
-            "At least one is answering a different question; its timing "
-            "is meaningless until reconciled.",
+            "SMOKE FAILED: systems disagree on a result count by more than "
+            "the tolerance. At least one is answering a different question; "
+            "its timing is meaningless until reconciled.",
             file=sys.stderr,
         )
         return 1
-    if "error:" in text:
+    if any(row["status"] == "error" for row in rows):
         print("SMOKE FAILED: a system errored; see notes column.", file=sys.stderr)
         return 1
-    print("smoke OK")
+    deviations = sum(1 for row in rows if row["status"] == "ok-deviation")
+    print(f"smoke OK ({len(rows)} rows, {deviations} explained deviation(s))")
     return 0
+
+
+def _execution(systems: list) -> dict:
+    """The two thread configurations, and what each session resolved to.
+
+    The PostgreSQL block is read back from the benchmark session itself
+    (`pg.parallel_settings`), because `max_worker_processes` bounds how many
+    workers a query can actually get regardless of what
+    `max_parallel_workers_per_gather` asks for — recorded rather than
+    assumed.
+    """
+    resolved = {}
+    for system in systems:
+        if hasattr(system, "session_settings"):
+            try:
+                resolved[system.tag] = system.session_settings()
+            except Exception as exc:               # a closed session is a result
+                resolved[system.tag] = {"error": str(exc)}
+    return {
+        "configurations": [
+            {"name": name, "duckdb_threads": threads,
+             "postgresql_max_parallel_workers_per_gather": workers,
+             "primary": index == 0}
+            for index, (name, threads, workers) in enumerate(THREAD_CONFIGURATIONS)
+        ],
+        "read_tier": "every read scenario is measured under BOTH configurations; CSV `notes` carry threads=<name>",
+        "write_tier": (
+            f"measured once, under the {THREAD_CONFIGURATIONS[0][0]} "
+            "configuration, after every read row"
+        ),
+        "postgresql_session_resolved": resolved,
+        "postgresql_planner_thresholds": (
+            "parallel_setup_cost and min_parallel_table_scan_size are left at "
+            "their defaults under both configurations"
+        ),
+    }
 
 
 def _versions(systems: list) -> dict[str, str]:
     import duckdb
 
     versions = {"duckdb": duckdb.__version__}
+    # The write tier runs through the DuckDB CityJSON extension's package
+    # model, so which build of that extension answered is part of the
+    # result, not an environment detail.
+    try:
+        conn = duckdb.connect()
+        conn.execute("LOAD cityjson")
+        row = conn.execute(
+            "SELECT extension_version, install_mode FROM duckdb_extensions() "
+            "WHERE extension_name = 'cityjson'"
+        ).fetchone()
+        conn.close()
+        if row is not None:
+            versions["duckdb-cityjson"] = f"{row[0]} ({row[1]})"
+    except Exception as exc:
+        versions["duckdb-cityjson"] = f"unavailable: {exc}"
     if any(s.tag == "cjdb" for s in systems):
         from citybench.systems.cjdb import CJDB_UPSTREAM_VERSION
 
@@ -391,6 +534,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_derive = sub.add_parser("derive-params")
     p_derive.add_argument("--dataset", required=True)
+    p_derive.add_argument("--prepared-dir", default=None,
+                          help="directory holding <dataset>.parquet; the "
+                               "windows and attribute picks are derived from "
+                               "that package, as the format harness derives "
+                               "its own")
     p_derive.set_defaults(func=cmd_derive_params)
 
     p_bench = sub.add_parser("run")
@@ -401,6 +549,13 @@ def main(argv: list[str] | None = None) -> int:
     p_bench.add_argument("--prepared-dir", default=None)
     p_bench.add_argument("--data-root", default=None)
     p_bench.add_argument("--srid", type=int, default=7415)
+    p_bench.add_argument("--count-tolerance", type=float,
+                         default=DEFAULT_COUNT_TOLERANCE,
+                         help="relative spread (max-min)/max below which a "
+                              "cross-system count disagreement is published "
+                              "as status=ok-deviation with its decomposition "
+                              "in `notes`, instead of failing the run "
+                              f"(default {DEFAULT_COUNT_TOLERANCE})")
     p_bench.add_argument("--output-dir", default=None,
                          help="directory for CSV, manifest, and index artefacts")
     p_bench.set_defaults(func=cmd_bench)
@@ -412,6 +567,8 @@ def main(argv: list[str] | None = None) -> int:
     p_smoke.add_argument("--prepared-dir", default=None)
     p_smoke.add_argument("--data-root", default=None)
     p_smoke.add_argument("--srid", type=int, default=7415)
+    p_smoke.add_argument("--count-tolerance", type=float,
+                         default=DEFAULT_COUNT_TOLERANCE)
     p_smoke.set_defaults(func=cmd_smoke)
 
     args = parser.parse_args(argv)

@@ -12,9 +12,7 @@ import subprocess
 from pathlib import Path
 
 from citybench.config import Dataset, IngestResult, Measurement, Params, SizeReport
-from citybench.scenarios.registry import TIER1, ScenarioUnavailable
-
-_SELECTIVITY_TAGS = {0.01: "bbox-1pct", 0.05: "bbox-5pct", 0.25: "bbox-25pct"}
+from citybench.scenarios.registry import READBENCH_SCENARIOS, ScenarioUnavailable
 
 
 def parse_child_stdout(stdout: str) -> tuple[int, float, int, int]:
@@ -52,30 +50,27 @@ def parse_child_stdout(stdout: str) -> tuple[int, float, int, int]:
 
 
 def build_child_args(scenario: str, params: Params, input_path: str,
-                      selectivity: float | None = None,
-                      fmt: str = "cityparquet") -> list[str]:
+                      window=None, fmt: str = "cityparquet") -> list[str]:
     """The argv for one `--child` invocation.
 
     The flag-per-scenario mapping below is read from
-    `benchmark/readbench/src/formats/cityparquet.rs`'s own
-    `Scenario` match, not guessed. In particular: `attr-filter` and
-    `project` both take a `--attr-column` flag, but it must carry
-    DIFFERENT `Params` fields for each. `attr-filter` needs the
-    categorical column its `--attr-eq` compares against
-    (`params.attr_column`). `project` also projects a categorical column —
-    `sql_duckdb.sql_for`'s own `project` branch hard-codes `object_type`,
-    the same value `params.attr_column` holds for every dataset — so
-    `project` uses `params.attr_column` too. Only `attr-stats` reads
-    `params.numeric_column`. Grouping `project` with `attr-stats` (an
-    earlier draft of this function did) would silently point this
-    system's `project` scenario at a different column than every SQL
-    system's `project`, defeating the whole point of a byte-identical
-    cross-system parameter set.
+    `benchmark/readbench/src/formats/cityparquet.rs`'s own `Scenario`
+    match, not guessed, and `READBENCH_SCENARIOS` names exactly the subset
+    the child implements. `geometry-scan`, `bbox-fetch`, `point-query`,
+    `attr-range` and the write tier have no counterpart in the Rust child's
+    own `Scenario` enum, and the read harness is not this family's to
+    extend, so the native-reader systems simply do not run them — the
+    registry never asks them to.
+
+    `attr-filter` is handed the SAME per-dataset predicate the format
+    family derives for itself (`params.AttrFilter`), through `--attr-eq`
+    for an equality and `--attr-ge` for a numeric lower bound, so the two
+    families' `attr-filter` rows are the same question.
     """
-    if scenario not in TIER1:
+    if scenario not in READBENCH_SCENARIOS:
         raise ValueError(
             f"{scenario!r} is not implemented by the readbench child; "
-            "tier-2 scenarios are SQL-only"
+            f"it implements {sorted(READBENCH_SCENARIOS)}"
         )
 
     args = [
@@ -86,13 +81,19 @@ def build_child_args(scenario: str, params: Params, input_path: str,
     ]
 
     if scenario == "bbox-query":
-        if selectivity is None:
-            raise ValueError("bbox-query requires a selectivity")
-        win = params.bbox_full.window(selectivity)
-        args += ["--bbox", ",".join(str(v) for v in win.as_cli_list())]
-        args += ["--selectivity-tag", _SELECTIVITY_TAGS[selectivity]]
+        if window is None:
+            raise ValueError("bbox-query requires its resolved window")
+        args += ["--bbox", ",".join(str(v) for v in window.window.as_cli_list())]
+        args += ["--selectivity-tag", window.tag]
     elif scenario == "attr-filter":
-        args += ["--attr-column", params.attr_column, "--attr-eq", params.attr_eq]
+        if params.attr_filter is None:
+            raise ScenarioUnavailable("dataset has no attr-filter predicate")
+        spec = params.attr_filter
+        args += ["--attr-column", spec.column]
+        if spec.op == "eq":
+            args += ["--attr-eq", str(spec.eq_value)]
+        else:
+            args += ["--attr-ge", repr(float(spec.ge_bound))]
     elif scenario == "attr-stats":
         # Mirrors every sql_*.sql_for's own `parent_id is None` guard for
         # `hierarchy`: a dataset with no numeric attribute at all (see
@@ -104,8 +105,6 @@ def build_child_args(scenario: str, params: Params, input_path: str,
         if params.numeric_column is None:
             raise ScenarioUnavailable("dataset has no numeric attribute")
         args += ["--attr-column", params.numeric_column]
-    elif scenario == "project":
-        args += ["--attr-column", params.attr_column]
     elif scenario == "id-lookup":
         args += ["--target-id", params.target_id]
 
@@ -139,10 +138,10 @@ class ReadbenchSystem:
         return IngestResult(wall_clock_s=0.0, notes="no load step")
 
     def run(self, scenario: str, params: Params, repeat: int,
-            selectivity: float | None = None) -> Measurement:
+            window=None) -> Measurement:
         assert self._package is not None
         args = build_child_args(
-            scenario, params, str(self._package), selectivity,
+            scenario, params, str(self._package), window,
             # self.tag is exactly "cityparquet" / "cityparquet-hilbert" — the
             # two `--format` values `formats::resolve` accepts for this
             # runner (both dispatch to the same CityParquetRunner; passing

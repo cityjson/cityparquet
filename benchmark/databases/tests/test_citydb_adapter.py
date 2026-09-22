@@ -17,16 +17,9 @@ import pytest
 from citybench.config import BBox, Dataset, Params
 from citybench.systems import citydb as citydb_module
 from citybench.systems.citydb import CityDbSystem
+from conftest import ge_attr_filter, make_params
 
-PARAMS = Params(
-    bbox_full=BBox(0.0, 0.0, 0.0, 100.0, 100.0, 10.0),
-    attr_column="object_type",
-    attr_eq="BuildingPart",
-    numeric_column="b3_h_dak_50p",
-    target_id="obj-1",
-    parent_id="obj-0",
-    total_city_objects=100,
-)
+PARAMS = make_params(numeric_column="b3_h_dak_50p")
 
 
 # A small, arbitrary stand-in for the real, live-resolved objectclass id
@@ -54,6 +47,16 @@ class _FakeCursor:
         self.executed.append((sql, tuple(args) if args else ()))
 
     def fetchone(self):
+        # `ingest()` now resolves three single-value facts, not one: the
+        # SRID, the Building `objectclass_id` and the `datatype_id` for a
+        # double. Dispatching on the query text keeps the canned SRID row
+        # (including its deliberate None/empty cases) from standing in for
+        # a class id, which `resolve_class_id` would reject.
+        sql = self.executed[-1][0] if self.executed else ""
+        if "objectclass" in sql:
+            return (901,)
+        if "datatype" in sql:
+            return (7,)
         return self._srid_row
 
     def fetchall(self):
@@ -316,23 +319,18 @@ def test_run_passes_the_stored_srid_into_sql_for(tmp_path, monkeypatch):
 
     monkeypatch.setattr(citydb_module.pg, "time_query", fake_time_query)
 
-    system.run("bbox-query", PARAMS, repeat=1, selectivity=0.25)
+    system.run("bbox-query", PARAMS, repeat=1,
+               window=PARAMS.window("bbox-25pct"))
 
     assert captured_args["args"][-1] == 28992
 
 
-def test_run_raises_scenario_unavailable_for_hierarchy_without_a_parent_id(monkeypatch):
+def test_run_raises_scenario_unavailable_for_attr_stats_without_a_numeric_column(monkeypatch):
     from citybench.scenarios.registry import ScenarioUnavailable
 
     system, _ = _system_with_fake_conn(monkeypatch)
-    params = Params(
-        bbox_full=PARAMS.bbox_full, attr_column=PARAMS.attr_column,
-        attr_eq=PARAMS.attr_eq, numeric_column=PARAMS.numeric_column,
-        target_id=PARAMS.target_id, parent_id=None,
-        total_city_objects=PARAMS.total_city_objects,
-    )
     with pytest.raises(ScenarioUnavailable):
-        system.run("hierarchy", params, repeat=1)
+        system.run("attr-stats", make_params(numeric_column=None), repeat=1)
 
 
 def test_teardown_closes_the_connection_and_is_safe_to_call_twice(monkeypatch):

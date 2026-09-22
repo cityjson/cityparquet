@@ -26,7 +26,7 @@ because the real schema differs from what that draft assumed:
 
 from __future__ import annotations
 
-from citybench.config import Params
+from citybench.config import BBox, BboxWindow, Params
 from citybench.scenarios.registry import ScenarioUnavailable
 
 # The LoD columns `semantic-surface` checks — every `geometry_properties_lod*`
@@ -44,18 +44,51 @@ _SEMANTIC_SURFACE_LOD_COLUMNS: tuple[str, ...] = (
 )
 
 
+#: The CityObject type `bbox-fetch`, `point-query` and `parts-per-building`
+#: restrict to, matching CJDB's Q2/Q3/Q4, all of which are Building-grained
+#: (`WHERE type = 'Building'`). A dataset with no Building returns no rows —
+#: a real answer, the same one cjdb and 3DCityDB give it.
+BUILDING_TYPE = "Building"
+#: The child type `parts-per-building`'s join form counts. CityJSON's own
+#: parent/child relationship for a Building.
+BUILDING_PART_TYPE = "BuildingPart"
+#: The LoD0 footprint column `bbox-fetch`/`point-query` return alongside the
+#: id, and `attr-add` takes its area from.
+FOOTPRINT_COLUMN = "geometry_lod0_0"
+
+
+def geometry_byte_length(column: str, duck_type: str) -> str:
+    """The stored byte length of one geometry column.
+
+    Most `geometry_lod*` columns come back as BLOB and `octet_length` reads
+    their stored WKB directly. `geometry_lod0_0` does NOT: a CityParquet
+    footprint is written with Parquet's own GEOMETRY logical type, which
+    DuckDB 1.5 decodes to its native `GEOMETRY` regardless of
+    `enable_geoparquet_conversion` (measured — the setting governs the
+    `geo`-footer path, not the logical type), and `octet_length` does not
+    bind against it. `ST_AsWKB` re-encodes it, so that one column's term is
+    a re-serialisation rather than a stored length. Disclosed in README
+    Caveat 18 rather than papered over.
+    """
+    expression = column if duck_type.upper().startswith("BLOB") else f"ST_AsWKB({column})"
+    return f"coalesce(octet_length({expression}), 0)"
+
+
 def sql_for(scenario: str, params: Params, table: str,
-            selectivity: float | None = None, *,
-            columns: frozenset[str] | None = None) -> tuple[str, tuple]:
+            window: BboxWindow | None = None, *,
+            columns: dict[str, str] | None = None) -> tuple[str, tuple]:
     """Return ``(sql, args)`` for ``scenario``. ``table`` is a read_parquet call.
 
-    ``columns`` is the real column-name set of ``table`` (a live schema
-    lookup only the caller can do — ``sql_for`` itself never touches a
-    database, matching this module's own docstring and test file), used
-    ONLY by ``lod-extract``/``semantic-surface`` below. Defaults to
-    ``None``, which keeps this function's behaviour exactly as before for
-    every existing caller (delft's own package, and this module's tests)
-    that does not pass it.
+    ``window`` is the resolved bbox window for a windowed scenario
+    (`bbox-query`, `bbox-fetch`), derived once by `citybench.params` and
+    handed to every system verbatim; `point-query` ignores it and uses
+    `params.point_xy`.
+
+    ``columns`` maps the real column names of ``table`` to their DuckDB
+    types (a live schema lookup only the caller can do — ``sql_for`` itself
+    never touches a database, matching this module's own docstring and test
+    file). Defaults to ``None``, which keeps every branch that only needs
+    delft-shaped columns working for callers that do not pass it.
 
     Discovered running Task 14's heterogeneity corpus: delft's LoD tiers
     (0.0/1.2/1.3/2.2) are NOT universal. Montreal's real converted package
@@ -76,33 +109,30 @@ def sql_for(scenario: str, params: Params, table: str,
     if scenario == "count":
         return f"SELECT count(*) FROM {table}", ()
 
-    if scenario == "full-read":
-        # count(*) first (the comparable quantity), then a checksum over
-        # every column to force a full decode — matching the existing
-        # harness's duckdb-parquet baseline rather than counting rows only.
+    if scenario == "geometry-scan":
+        # Replaces `full-read`, which was three different operations under
+        # one name: 84 hashed columns here, a JSONB text serialisation on
+        # cjdb, and whole-record text casts through two CTEs on 3DCityDB
+        # (`notes/benchmark-fairness-review-2026-09-22.md` §4.2). All three
+        # now scan the same thing — every object's geometry — and report
+        # `(count, bytes)`.
         #
-        # `COLUMNS(*)` is a star expression: DuckDB expands
-        # `sum(hash(COLUMNS(*)))::HUGEINT` into one
-        # `sum(hash(<col>))::HUGEINT` PER COLUMN, not one combined hash —
-        # confirmed empirically (77 columns in delft's schema -> a 78-item
-        # row: count(*) plus one sum-of-hashes per column). That is a
-        # STRONGER full-decode guarantee than a single merged checksum
-        # would give, so it is kept rather than collapsed to one value.
-        # `::HUGEINT`, not `::BIGINT`: verified against the real package
-        # that a per-column `sum(hash(...))` — hash() returns a 64-bit
-        # value, but DuckDB's SUM accumulates in 128 bits internally to
-        # avoid overflow — genuinely exceeds INT64 range on this table
-        # (`Conversion Error: ... value ... can't be cast ... to BIGINT`
-        # on delft's `id` column alone). HUGEINT is wide enough for the
-        # accumulator DuckDB already uses internally, so the cast becomes
-        # a no-op rather than a lossy narrowing.
-        return (
-            f"SELECT count(*), sum(hash(COLUMNS(*)))::HUGEINT FROM {table}",
-            (),
+        # This is FAIRER but it is not NEUTRAL, and the README says so
+        # (Caveat 18): DuckDB reads stored binary lengths (bar the LoD0
+        # column, see `geometry_byte_length`) while both PostgreSQL sides
+        # serialise to text first. A byte length also does not prove a
+        # geometry was decoded. The asymmetry is disclosed, not removed.
+        geometry_columns = sorted(
+            c for c in (columns or {}) if c.startswith("geometry_lod")
+        ) or ["geometry_lod1_2"]
+        types = columns or {}
+        terms = " + ".join(
+            geometry_byte_length(c, types.get(c, "BLOB")) for c in geometry_columns
         )
+        return (f"SELECT count(*), sum({terms})::HUGEINT FROM {table}", ())
 
     if scenario == "bbox-query":
-        win = p.bbox_full.window(selectivity)
+        win = _window(window)
         return (
             f"SELECT count(*) FROM {table} "
             "WHERE bbox.xmax >= ? AND bbox.xmin <= ? "
@@ -110,8 +140,63 @@ def sql_for(scenario: str, params: Params, table: str,
             (win.minx, win.maxx, win.miny, win.maxy),
         )
 
+    if scenario == "bbox-fetch":
+        # CJDB Q2 proper: id plus footprint, Buildings only. CJDB's own Q2
+        # is `ST_Contains(window, ground_geometry)` — containment, not the
+        # overlap every system here runs. Overlap is what `bbox-query`
+        # already asks and what a bbox index can answer on all three, so it
+        # is kept and the difference is stated (README, "Mapping to the
+        # CJDB paper") rather than the harness quietly claiming fidelity.
+        win = _window(window)
+        return (
+            f"SELECT id, {_footprint(columns)} FROM {table} "
+            "WHERE object_type = ? "
+            "AND bbox.xmax >= ? AND bbox.xmin <= ? "
+            "AND bbox.ymax >= ? AND bbox.ymin <= ?",
+            (BUILDING_TYPE, win.minx, win.maxx, win.miny, win.maxy),
+        )
+
+    if scenario == "point-query":
+        # CJDB Q3: a bbox overlap with a POINT, not a point-in-polygon test,
+        # and not guaranteed to return exactly one object. The point is the
+        # median row centre the windows are built around, so it lands where
+        # the data is.
+        x, y = p.point_xy
+        return (
+            f"SELECT id, {_footprint(columns)} FROM {table} "
+            "WHERE object_type = ? "
+            "AND bbox.xmin <= ? AND bbox.xmax >= ? "
+            "AND bbox.ymin <= ? AND bbox.ymax >= ?",
+            (BUILDING_TYPE, x, x, y, y),
+        )
+
     if scenario == "attr-filter":
-        return f"SELECT count(*) FROM {table} WHERE object_type = ?", (p.attr_eq,)
+        # A real CityJSON ATTRIBUTE, picked per dataset exactly as the
+        # format family picks it (`params.HAND_PICKED`), and returning ids
+        # rather than a count.
+        if p.attr_filter is None:
+            raise ScenarioUnavailable("dataset has no attr-filter predicate")
+        spec = p.attr_filter
+        if spec.op == "eq":
+            return (
+                f'SELECT id FROM {table} WHERE "{spec.column}" = ?',
+                (spec.eq_value,),
+            )
+        return (
+            f'SELECT id FROM {table} WHERE "{spec.column}" >= ?',
+            (spec.ge_bound,),
+        )
+
+    if scenario == "attr-range":
+        # CJDB Q1. A typed DOUBLE column with row-group statistics against
+        # a JSONB cast and an EAV join: an expected advantage, stated in
+        # the README rather than presented as a surprise.
+        if p.attr_range is None:
+            raise ScenarioUnavailable("dataset has no numeric attribute")
+        return (
+            f'SELECT id FROM {table} WHERE "{p.attr_range.column}" > ?',
+            (p.attr_range.threshold,),
+        )
 
     if scenario == "attr-stats":
         # Mirrors `hierarchy`'s own `parent_id is None` guard below: a
@@ -137,9 +222,6 @@ def sql_for(scenario: str, params: Params, table: str,
 
     if scenario == "id-lookup":
         return f"SELECT * FROM {table} WHERE id = ?", (p.target_id,)
-
-    if scenario == "project":
-        return f"SELECT count(object_type) FROM {table}", ()
 
     if scenario == "lod-extract":
         # Only the LoD1.2 geometry column is projected; the LoD2 column's
@@ -167,10 +249,12 @@ def sql_for(scenario: str, params: Params, table: str,
         # `lod-extract` timing on those four rows is not a measurement of
         # projection pushdown or of anything else -- see README Caveat 17.
         if columns is not None and "geometry_lod1_2" not in columns:
-            return f"SELECT count(*) FROM {table} WHERE FALSE", ()
+            return f"SELECT id FROM {table} WHERE FALSE", ()
+        # Returns IDS, as CJDB Q5 does — not `count(col)`, which on a
+        # Parquet reader is answerable from the definition levels alone and
+        # so measured almost nothing.
         return (
-            f"SELECT count(geometry_lod1_2) FROM {table} "
-            "WHERE geometry_lod1_2 IS NOT NULL",
+            f"SELECT id FROM {table} WHERE geometry_lod1_2 IS NOT NULL",
             (),
         )
 
@@ -287,20 +371,126 @@ def sql_for(scenario: str, params: Params, table: str,
             (),
         )
 
-    if scenario == "hierarchy":
-        if p.parent_id is None:
-            raise ScenarioUnavailable("dataset has no parent/child hierarchy")
-        # `parents` is a `VARCHAR[]` (a CityObject's own list of its
-        # parent ids), not a scalar `parent_id` column — confirmed against
-        # the real package ("Referenced column 'parent_id' not found").
-        # `list_contains` counts the CHILDREN of `p.parent_id`: every row
-        # whose own `parents` array names it, mirroring cjdb's
-        # `city_object_relationships` join and 3DCityDB's
-        # `val_feature_id` join, both of which answer the same "how many
-        # children does this parent have" question.
+    if scenario == "parts-per-building":
+        # CJDB Q4, in the shape CityParquet's own storage makes natural:
+        # the child list is a `VARCHAR[]` on the row, so the answer is a
+        # column read with no join at all.
+        #
+        # `coalesce(len(children), 0)`, not `len(children)`: a Building
+        # with no parts has a NULL `children` array, and Q4's whole point
+        # (Codex's correction to the mapping) is that its LEFT JOIN KEEPS
+        # childless Buildings — reporting NULL for them here while the join
+        # form below reports 0 would make the two forms disagree on values
+        # while agreeing on rows.
         return (
-            f"SELECT count(*) FROM {table} WHERE list_contains(parents, ?)",
-            (p.parent_id,),
+            f"SELECT id, coalesce(len(children), 0) FROM {table} "
+            "WHERE object_type = ?",
+            (BUILDING_TYPE,),
+        )
+
+    if scenario == "parts-per-building-join":
+        # The SAME question asked the way a normalised store must ask it —
+        # published beside the natural form so the cost of the join is
+        # visible rather than asserted. `LEFT JOIN`, so childless Buildings
+        # stay in the result and the two forms return identical row sets.
+        return (
+            f"SELECT b.id, count(p.id) FROM {table} b "
+            f"LEFT JOIN (SELECT unnest(parents) AS parent, id FROM {table} "
+            "WHERE object_type = ?) p ON p.parent = b.id "
+            "WHERE b.object_type = ? GROUP BY b.id",
+            (BUILDING_PART_TYPE, BUILDING_TYPE),
         )
 
     raise KeyError(f"unknown scenario: {scenario}")
+
+
+def _window(window: BboxWindow | None) -> BBox:
+    if window is None:
+        raise ValueError("a windowed scenario needs its resolved BboxWindow")
+    return window.window
+
+
+def _footprint(columns: dict[str, str] | None) -> str:
+    """The footprint expression `bbox-fetch`/`point-query` return.
+
+    A package with no LoD0 column at all (Montreal carries `lod0_0` and
+    `lod2_0`, but a by-type package need not) returns a NULL footprint
+    rather than failing to bind — the same degradation `lod-extract`
+    already makes, and recorded by README Caveat 15.
+    """
+    if columns is not None and FOOTPRINT_COLUMN not in columns:
+        return "NULL"
+    return FOOTPRINT_COLUMN
+
+
+def write_statements(scenario: str, schema: str, footprint_area: str
+                     ) -> list[tuple[str, tuple]]:
+    """The TIMED statements of one write scenario, against the package
+    schema `cityparquet_read` loaded (`<schema>.building`, ...).
+
+    CityParquet has no in-place update path of its own — a Parquet file's
+    smallest rewritable unit is a column chunk — so the comparable operation
+    is the one the DuckDB extension's package model offers: load the package
+    into DuckDB tables (untimed), mutate them, and write the package back.
+    `PRAGMA cityparquet_read` is the load; `cityparquet_write` is the
+    write-back, and it is timed only on the `-writeback` system tag so the
+    reader sees the in-engine cost and the file cost separately.
+
+    `footprint_area` is the expression the caller resolved for the object's
+    plan area — `ST_Area(geometry_lod0_0)` where DuckDB's spatial extension
+    and the package's LoD0 column are both available, and the `bbox` plan
+    area otherwise. Which one was used is stamped into the row's `notes`,
+    because they are not the same quantity.
+
+    There is deliberately no `cityparquet_reconcile` call: an attribute edit
+    touches no derived state (`lib/duckdb-cityjson/docs/FUNCTIONS.md`,
+    "Mutation" — "Attribute edits are ordinary `UPDATE` and need no
+    wrapper"), so reconciling would time work the operation does not need.
+    """
+    table = f"{schema}.building"
+    if scenario == "attr-add":
+        # CJDB Q6. Two statements, both timed: the column must exist before
+        # it can be filled, and cjdb's own Q6 likewise adds the key and its
+        # value in one `jsonb_set`.
+        return [
+            (f"ALTER TABLE {table} ADD COLUMN footprint_area DOUBLE", ()),
+            (f"UPDATE {table} SET footprint_area = {footprint_area} "
+             f"WHERE object_type = '{BUILDING_TYPE}'", ()),
+        ]
+    if scenario == "attr-update":
+        # CJDB Q7: `+ 10.0` over every row carrying the attribute.
+        return [
+            (f"UPDATE {table} SET footprint_area = footprint_area + 10.0 "
+             f"WHERE object_type = '{BUILDING_TYPE}'", ()),
+        ]
+    if scenario == "attr-delete":
+        # CJDB Q8. DuckDB's `DROP COLUMN` reports no rowcount, so the row's
+        # `result_count` is defined as the Building count the other two
+        # systems' `DELETE`/`jsonb_set_lax` touch — a DEFINITION, stated in
+        # the README, not a measurement.
+        return [(f"ALTER TABLE {table} DROP COLUMN footprint_area", ())]
+    raise KeyError(f"unknown write scenario: {scenario}")
+
+
+def write_reset_statements(scenario: str, schema: str, footprint_area: str
+                           ) -> list[tuple[str, tuple]]:
+    """The UNTIMED statements that put the schema back into the state
+    `scenario` expects, so a second timed sample measures the same work as
+    the first.
+
+    Without this, `repeat` > 1 would measure something different on every
+    sample: `ALTER TABLE ... ADD COLUMN` errors the second time, and
+    `DROP COLUMN` has nothing left to drop.
+    """
+    table = f"{schema}.building"
+    if scenario == "attr-add":
+        return [(f"ALTER TABLE {table} DROP COLUMN IF EXISTS footprint_area", ())]
+    if scenario == "attr-update":
+        return []          # an increment is repeatable as it stands
+    if scenario == "attr-delete":
+        return [
+            (f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS footprint_area DOUBLE", ()),
+            (f"UPDATE {table} SET footprint_area = {footprint_area} "
+             f"WHERE object_type = '{BUILDING_TYPE}'", ()),
+        ]
+    raise KeyError(f"unknown write scenario: {scenario}")

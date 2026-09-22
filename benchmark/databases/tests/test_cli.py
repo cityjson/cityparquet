@@ -24,18 +24,15 @@ from citybench.cli import (
     _srids,
     _versions,
 )
-from citybench.config import BBox, Measurement, Params
-from citybench.scenarios.registry import SQL_SYSTEMS, TIER1, TIER2
-
-PARAMS = Params(
-    bbox_full=BBox(0.0, 0.0, 0.0, 100.0, 100.0, 10.0),
-    attr_column="object_type",
-    attr_eq="Building",
-    numeric_column="h",
-    target_id="a",
-    parent_id="b",
-    total_city_objects=100,
+from citybench.cli import THREAD_CONFIGURATIONS
+from citybench.config import Measurement, Params
+from citybench.runner import DEFAULT_COUNT_TOLERANCE
+from citybench.scenarios.registry import (
+    READ_SCENARIOS, SQL_SYSTEMS, TIER1, TIER2, TIER3, systems_for,
 )
+from conftest import ge_attr_filter, make_params
+
+PARAMS = make_params(numeric_column="h", target_id="a")
 
 
 # --- _dataset -----------------------------------------------------------
@@ -111,23 +108,23 @@ def test_format_ddl_multiple_statements_are_joined_and_each_terminated():
 
 # --- _run_all_scenarios ----------------------------------------------------
 #
-# The integration bug this task exists to catch: a single run_matrix call
-# across every scenario and every system would hand the Rust child a TIER2
-# scenario name (`hierarchy`, `lod-extract`, `semantic-surface`) it does
-# not implement. `TierAwareFakeSystem` reproduces exactly the failure mode
-# `ReadbenchSystem.run` has for real (see `build_child_args`'s
-# `test_tier2_scenarios_are_rejected`) so this test would catch a
-# regression back to the single-call shape.
+# The integration bug this guards against: a single run_matrix call across
+# every scenario and every system would hand the Rust child a scenario name
+# it does not implement. `TierAwareFakeSystem` reproduces exactly the
+# failure mode `ReadbenchSystem.run` has for real (see `build_child_args`)
+# so a regression to that shape is caught here.
 
 
 class TierAwareFakeSystem:
     def __init__(self, tag: str, count: int = 1):
         self.tag = tag
         self._count = count
+        self.threads: list[int] = []
+        self.workers: list[int] = []
 
-    def run(self, scenario, params, repeat, selectivity=None):
-        if scenario in TIER2 and self.tag not in SQL_SYSTEMS:
-            raise ValueError(f"{self.tag} cannot run tier2 scenario {scenario!r}")
+    def run(self, scenario, params, repeat, window=None):
+        if self.tag not in systems_for(scenario):
+            raise ValueError(f"{self.tag} cannot run scenario {scenario!r}")
         return Measurement(
             result_count=self._count,
             times_s=[0.01] * repeat,
@@ -136,50 +133,97 @@ class TierAwareFakeSystem:
         )
 
 
-def test_run_all_scenarios_never_asks_a_non_sql_system_for_a_tier2_scenario():
+class DuckFakeSystem(TierAwareFakeSystem):
+    """A fake reconfigured the way the embedded engine is: by thread count."""
+
+    def set_threads(self, threads):
+        self.threads.append(threads)
+
+
+class PgFakeSystem(TierAwareFakeSystem):
+    """A fake reconfigured the way a PostgreSQL session is: by worker budget.
+
+    Deliberately has NO `set_threads`: `_apply_threads` picks whichever
+    method the system offers, and a PostgreSQL adapter that grew a
+    `set_threads` would silently stop receiving its worker budget.
+    """
+
+    def set_parallel_workers(self, workers):
+        self.workers.append(workers)
+
+
+def test_run_all_scenarios_never_asks_a_system_for_a_scenario_it_cannot_run():
     systems = [TierAwareFakeSystem("cityparquet"), TierAwareFakeSystem("cjdb")]
     # Must not raise: if this called run_matrix once across ALL scenarios
     # and all systems, TierAwareFakeSystem("cityparquet") would raise on
-    # the first TIER2 scenario it was asked to run.
-    rows = _run_all_scenarios(systems, PARAMS, "delft", repeat=1, sizes={})
+    # the first scenario the Rust child does not implement.
+    rows = _run_all_scenarios(systems, PARAMS, "delft", repeat=1, sizes={},
+                              tolerance=DEFAULT_COUNT_TOLERANCE)
     assert not any("error:" in r["notes"] for r in rows)
 
 
 def test_run_all_scenarios_runs_tier2_only_against_sql_systems():
     systems = [TierAwareFakeSystem("cityparquet"), TierAwareFakeSystem("cjdb")]
-    rows = _run_all_scenarios(systems, PARAMS, "delft", repeat=1, sizes={})
+    rows = _run_all_scenarios(systems, PARAMS, "delft", repeat=1, sizes={},
+                              tolerance=DEFAULT_COUNT_TOLERANCE)
     tier2_formats = {r["format"] for r in rows if r["scenario"] in TIER2}
     assert tier2_formats == {"cjdb"}
 
 
-def test_run_all_scenarios_runs_tier1_against_every_system():
+def test_run_all_scenarios_runs_the_readbench_subset_against_every_system():
     systems = [TierAwareFakeSystem("cityparquet"), TierAwareFakeSystem("cjdb")]
-    rows = _run_all_scenarios(systems, PARAMS, "delft", repeat=1, sizes={})
-    tier1_formats = {r["format"] for r in rows if r["scenario"] in TIER1}
-    assert tier1_formats == {"cityparquet", "cjdb"}
+    rows = _run_all_scenarios(systems, PARAMS, "delft", repeat=1, sizes={},
+                              tolerance=DEFAULT_COUNT_TOLERANCE)
+    formats = {r["format"] for r in rows if r["scenario"] == "count"}
+    assert formats == {"cityparquet", "cjdb"}
+    # …and only the SQL system answers a scenario the child cannot.
+    formats = {r["format"] for r in rows if r["scenario"] == "geometry-scan"}
+    assert formats == {"cjdb"}
 
 
-def test_run_all_scenarios_row_count_matches_tier1_all_plus_tier2_sql_only():
-    systems = [TierAwareFakeSystem("cityparquet"), TierAwareFakeSystem("cjdb")]
-    rows = _run_all_scenarios(systems, PARAMS, "delft", repeat=1, sizes={})
-    # TIER1 has 7 scenarios, one of which (bbox-query) expands into 3 rows
-    # per system; TIER2 has 3 scenarios, SQL-systems-only.
-    expected_tier1_scenario_rows = (len(TIER1) - 1 + 3) * len(systems)
-    expected_tier2_scenario_rows = len(TIER2) * 1  # only "cjdb" is a SQL system here
-    assert len(rows) == expected_tier1_scenario_rows + expected_tier2_scenario_rows
+def test_every_read_scenario_is_measured_under_both_thread_configurations():
+    systems = [TierAwareFakeSystem("cjdb")]
+    rows = _run_all_scenarios(systems, PARAMS, "delft", repeat=1, sizes={},
+                              tolerance=DEFAULT_COUNT_TOLERANCE)
+    read_rows = [r for r in rows if r["scenario"] in READ_SCENARIOS]
+    for name, _, _ in THREAD_CONFIGURATIONS:
+        tagged = [r for r in read_rows if f"threads={name}" in r["notes"]]
+        assert tagged, name
+    assert len(read_rows) == 2 * len(read_rows) // 2       # exactly two passes
+    assert {r["scenario"] for r in read_rows} <= set(READ_SCENARIOS)
 
 
-def test_run_all_scenarios_with_no_sql_systems_produces_no_tier2_rows_or_errors():
-    systems = [TierAwareFakeSystem("cityparquet"), TierAwareFakeSystem("cityparquet-hilbert")]
-    rows = _run_all_scenarios(systems, PARAMS, "delft", repeat=1, sizes={})
-    assert not any(r["scenario"] in TIER2 for r in rows)
-    assert not any("error:" in r["notes"] for r in rows)
+def test_the_write_tier_runs_last_under_the_primary_configuration_only():
+    """CJDB's Q6-Q8 leave dead tuples on cjdb and rewritten pages on
+    3DCityDB even after the attribute is deleted, so a read pass after them
+    would measure a bloated table."""
+    systems = [TierAwareFakeSystem("cjdb")]
+    rows = _run_all_scenarios(systems, PARAMS, "delft", repeat=1, sizes={},
+                              tolerance=DEFAULT_COUNT_TOLERANCE)
+    write_indices = [i for i, r in enumerate(rows) if r["scenario"] in TIER3]
+    read_indices = [i for i, r in enumerate(rows) if r["scenario"] in READ_SCENARIOS]
+    assert write_indices and min(write_indices) > max(read_indices)
+    primary = THREAD_CONFIGURATIONS[0][0]
+    assert all(f"threads={primary}" in rows[i]["notes"] for i in write_indices)
+    # add -> update -> delete: each leaves the state the next expects.
+    assert [rows[i]["scenario"] for i in write_indices] == list(TIER3)
 
 
-def test_run_all_scenarios_stamps_sizes_through_to_both_tiers():
+def test_each_system_is_reconfigured_the_way_its_own_engine_expects():
+    duck = DuckFakeSystem("duckdb-cityparquet")
+    postgres = PgFakeSystem("cjdb")
+    _run_all_scenarios([duck, postgres], PARAMS, "delft", repeat=1, sizes={},
+                       tolerance=DEFAULT_COUNT_TOLERANCE)
+    # Both configurations, then back to the primary for the write tier.
+    assert duck.threads == [1, 16, 1]
+    assert postgres.workers == [0, 8, 0]
+
+
+def test_run_all_scenarios_stamps_sizes_through_to_every_tier():
     systems = [TierAwareFakeSystem("cjdb")]
     rows = _run_all_scenarios(
         systems, PARAMS, "delft", repeat=1, sizes={"cjdb": (900, 700)},
+        tolerance=DEFAULT_COUNT_TOLERANCE,
     )
     assert all(r["size_bytes"] == "900" for r in rows)
 

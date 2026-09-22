@@ -38,6 +38,7 @@ import pytest
 from citybench.config import BBox, Dataset, Params
 from citybench.scenarios import sql_cjdb, sql_duckdb
 from citybench.systems.cjdb import CjdbSystem
+from conftest import ge_attr_filter, make_params
 
 pytestmark = pytest.mark.integration
 
@@ -52,11 +53,7 @@ CITYPARQUET_BIN = (
 
 # semantic-surface's own SQL branches take none of Params' other fields, so
 # this is a placeholder satisfying the dataclass, not a meaningful value.
-_PARAMS = Params(
-    bbox_full=BBox(0.0, 0.0, 0.0, 1.0, 1.0, 1.0), attr_column="object_type",
-    attr_eq="x", numeric_column="h_dak_max", target_id="x", parent_id=None,
-    total_city_objects=1,
-)
+_PARAMS = make_params(target_id="x", total_city_objects=1)
 
 
 @pytest.fixture(scope="module")

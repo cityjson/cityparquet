@@ -8,18 +8,15 @@ or a wrong column name would slip straight through otherwise.
 
 import pytest
 
-from citybench.config import BBox, Params
+from citybench.config import Params
 from citybench.scenarios.registry import ScenarioUnavailable
-from citybench.scenarios.sql_cjdb import index_ddl, sql_for
+from citybench.scenarios.sql_cjdb import (
+    index_ddl, sql_for, write_reset_sql, write_sql,
+)
+from conftest import ge_attr_filter, make_params
 
-PARAMS = Params(
-    bbox_full=BBox(0.0, 0.0, 0.0, 100.0, 100.0, 10.0),
-    attr_column="object_type",
-    attr_eq="Building",
-    numeric_column="h_dak_max",
-    target_id="NL.IMBAG.Pand.1",
-    parent_id="NL.IMBAG.Pand.2",
-    total_city_objects=2231,
+PARAMS = make_params(
+    target_id="NL.IMBAG.Pand.1", total_city_objects=2231,
 )
 
 
@@ -30,18 +27,12 @@ def test_count_targets_city_object():
 
 
 def test_bbox_query_uses_postgis_operator_for_index_use():
-    sql, args = sql_for("bbox-query", PARAMS, selectivity=0.25)
+    sql, args = sql_for("bbox-query", PARAMS, _window(PARAMS))
     # The && operator is what engages the GiST index; ST_Intersects on
     # raw geometry without && would not.
     assert "&&" in sql
     assert "ground_geometry" in sql
     assert len(args) == 5  # four ordinates plus the SRID
-
-
-def test_attr_filter_uses_the_type_column_not_jsonb():
-    sql, args = sql_for("attr-filter", PARAMS)
-    assert '"type"' in sql
-    assert args == ("Building",)
 
 
 def test_attr_stats_casts_jsonb_to_numeric():
@@ -51,12 +42,6 @@ def test_attr_stats_casts_jsonb_to_numeric():
     assert args == ()
 
 
-def test_hierarchy_uses_the_relationships_table():
-    sql, args = sql_for("hierarchy", PARAMS)
-    assert "city_object_relationships" in sql
-    assert args == ("NL.IMBAG.Pand.2",)
-
-
 def test_unknown_scenario_raises():
     with pytest.raises(KeyError):
         sql_for("nonsense", PARAMS)
@@ -64,78 +49,102 @@ def test_unknown_scenario_raises():
 
 # --- Beyond the brief ---------------------------------------------------
 #
-# Every scenario branch in sql_for, plus index_ddl, gets its own assertion:
-# a database is never involved, so there is no excuse for an untested
-# branch here to be the one that ships a wrong column name.
+# Every scenario branch in sql_for, plus index_ddl and the write tier, gets
+# its own assertion: a database is never involved, so there is no excuse for
+# an untested branch here to be the one that ships a wrong column name.
 
 
-def _params(*, parent_id: str | None = "NL.IMBAG.Pand.2",
-            numeric_column: str | None = "h_dak_max") -> Params:
-    return Params(
-        bbox_full=BBox(minx=0.0, miny=0.0, minz=0.0, maxx=100.0, maxy=100.0, maxz=10.0),
-        attr_column="object_type",
-        attr_eq="Building",
-        numeric_column=numeric_column,
-        target_id="NL.IMBAG.Pand.1",
-        parent_id=parent_id,
-        total_city_objects=2231,
-    )
+def _params(**overrides) -> Params:
+    return make_params(target_id="NL.IMBAG.Pand.1", total_city_objects=2231,
+                       **overrides)
+
+
+def _window(params: Params, tag: str = "bbox-25pct"):
+    return params.window(tag)
 
 
 def test_attr_stats_raises_scenario_unavailable_when_dataset_has_no_numeric_column():
-    # Mirrors hierarchy's own parent_id-is-None guard just below: a
-    # dataset with no numeric attribute at all (Montreal, lod3_railway —
-    # see params.py's derive()) is a legitimate dataset property, not a
-    # query bug.
+    # A dataset with no numeric attribute at all (Montreal, lod3_railway —
+    # see params.py) is a legitimate dataset property, not a query bug.
     with pytest.raises(ScenarioUnavailable, match="dataset has no numeric attribute"):
         sql_for("attr-stats", _params(numeric_column=None))
 
 
-def test_full_read_selects_count_first_then_a_forcing_checksum():
-    # count_mode("full-read") == "first-column": the registry's cross-system
-    # comparison depends on count(*) being the FIRST column, with the
-    # forcing checksum after it.
-    sql, args = sql_for("full-read", _params())
+def test_geometry_scan_selects_count_first_then_the_serialised_length():
+    # count_mode("geometry-scan") == "first-column": the registry's
+    # cross-system comparison depends on count(*) being the FIRST column.
+    sql, args = sql_for("geometry-scan", _params())
     assert sql.strip().upper().startswith("SELECT COUNT(*)")
     assert args == ()
 
 
-def test_full_read_forces_every_substantial_column_not_just_geometry():
-    # sql_duckdb's full-read hashes across EVERY column (hash(COLUMNS(*))).
-    # A cjdb full-read that only decoded `geometry` would be doing strictly
-    # less work than its DuckDB counterpart and would look artificially
-    # fast on this Tier-1 headline scenario purely because it was asked a
-    # cheaper question. attributes and ground_geometry must be forced too.
-    sql, _ = sql_for("full-read", _params())
-    assert "geometry::text" in sql
-    assert "attributes::text" in sql
-    assert "ground_geometry::text" in sql
-
-
-def test_full_read_coalesces_each_column_so_one_null_does_not_zero_the_row():
-    # A row with e.g. no attributes must still contribute its geometry and
-    # ground_geometry length to the sum. Summing lengths without coalesce
-    # would make `x + NULL` NULL for that whole row, silently dropping its
-    # contribution — not a crash, just a quietly wrong number.
-    sql, _ = sql_for("full-read", _params())
-    assert sql.count("coalesce(") == 3
+def test_geometry_scan_touches_the_geometry_alone():
+    """All three systems now scan the same thing. The retired `full-read`
+    also summed `attributes` and `ground_geometry` here, which was a
+    different amount of work from the other two systems' rows."""
+    sql, _ = sql_for("geometry-scan", _params())
+    assert "length(geometry::text)" in sql
+    assert "attributes::text" not in sql
+    assert "ground_geometry::text" not in sql
+    # A NULL geometry must still leave its row in the count.
+    assert sql.count("coalesce(") == 1
 
 
 def test_bbox_query_parameterises_the_window_and_srid_in_order():
-    sql, args = sql_for("bbox-query", _params(), selectivity=0.25, srid=7415)
-    win = _params().bbox_full.window(0.25)
-    assert args == (win.minx, win.miny, win.maxx, win.maxy, 7415)
+    params = _params()
+    window = _window(params)
+    sql, args = sql_for("bbox-query", params, window, srid=7415)
+    w = window.window
+    assert args == (w.minx, w.miny, w.maxx, w.maxy, 7415)
 
 
 def test_bbox_query_defaults_to_the_srid_placeholder_when_none_is_given():
-    _, args = sql_for("bbox-query", _params(), selectivity=0.25)
+    params = _params()
+    _, args = sql_for("bbox-query", params, _window(params))
     assert args[-1] == 0  # SRID_PLACEHOLDER, unmistakably not a real SRID
 
 
-def test_attr_filter_parameterises_rather_than_interpolating_the_value():
+def test_bbox_fetch_returns_object_id_and_footprint_for_buildings():
+    params = _params()
+    window = _window(params)
+    sql, args = sql_for("bbox-fetch", params, window, srid=7415)
+    w = window.window
+    assert sql.strip().startswith("SELECT object_id, ground_geometry")
+    assert args == ("Building", w.minx, w.miny, w.maxx, w.maxy, 7415)
+    assert "&&" in sql
+    # CJDB's own Q2 is ST_Contains; the harness runs overlap on every
+    # system and says so in the README rather than claiming fidelity.
+    assert "ST_Contains" not in sql
+
+
+def test_point_query_probes_with_a_point_not_an_envelope():
+    params = _params()
+    sql, args = sql_for("point-query", params, srid=7415)
+    x, y = params.point_xy
+    assert "ST_SetSRID(ST_MakePoint(%s, %s), %s)" in sql
+    assert args == ("Building", x, y, 7415)
+
+
+def test_attr_filter_reaches_the_attribute_through_the_jsonb_document():
     sql, args = sql_for("attr-filter", _params())
-    assert args == ("Building",)
-    assert "Building" not in sql  # would be a SQL-injection-shaped bug if it were
+    assert "attributes ->> 'b3_dak_type' = %s" in sql
+    assert sql.strip().startswith("SELECT object_id")
+    assert args == ("slanted",)
+    assert "slanted" not in sql  # bound, not interpolated
+    assert '"type" = %s' not in sql   # no longer the structural column
+
+
+def test_attr_filter_supports_the_numeric_lower_bound_form():
+    sql, args = sql_for("attr-filter", _params(attr_filter=ge_attr_filter()))
+    assert "(attributes ->> 'TerrainHeight')::float >= %s" in sql
+    assert args == (2.45,)
+
+
+def test_attr_range_is_cjdb_q1():
+    sql, args = sql_for("attr-range", _params())
+    assert "(attributes ->> 'b3_h_dak_max')::float > %s" in sql
+    assert sql.strip().startswith("SELECT object_id")
+    assert args == (20.0,)
 
 
 def test_id_lookup_filters_on_object_id_not_the_internal_pk():
@@ -145,15 +154,46 @@ def test_id_lookup_filters_on_object_id_not_the_internal_pk():
     assert "NL.IMBAG.Pand.1" not in sql  # bound parameter, not a literal
 
 
-def test_project_counts_the_type_column_rather_than_star():
-    sql, args = sql_for("project", _params())
-    assert 'count("type")' in sql
-    assert "count(*)" not in sql
-    assert args == ()
+def test_parts_per_building_joins_on_the_integer_surrogate_key():
+    """CJDB's Q4 joins `city_object_relationships.parent_id`, which in cjdb
+    2.2.0 is the INTEGER `city_object.id`, not the textual `object_id`
+    (docs/cjdb-schema.md). Joining on `object_id` would compare a text
+    column with an integer one."""
+    sql, args = sql_for("parts-per-building", _params())
+    assert "cor.parent_id = co.id" in sql
+    assert "cor.parent_id = co.object_id" not in sql
+    assert "LEFT JOIN" in sql          # childless Buildings are kept
+    assert "count(cor.child_id)" in sql
+    assert "GROUP BY co.object_id" in sql
+    assert args == ("Building",)
 
 
-def test_lod_extract_filters_on_the_lod_field_inside_the_geometry_jsonb():
+def test_write_tier_is_the_cjdb_papers_own_sql():
+    add, add_args = write_sql("attr-add")
+    assert "jsonb_set(attributes::jsonb, '{footprint_area}'" in add
+    assert "to_jsonb(ST_Area(ground_geometry))" in add
+    # cjdb 2.2.0 stores `attributes` as jsonb, and PostgreSQL registers no
+    # assignment cast from json to jsonb, so the paper's trailing ::json is
+    # the one deliberate deviation — documented in write_sql's docstring.
+    assert "::json " not in add and not add.rstrip().endswith("::json")
+    assert add_args == ("Building",)
+
+    update, _ = write_sql("attr-update")
+    assert "+ 10.0" in update
+
+    delete, _ = write_sql("attr-delete")
+    assert "jsonb_set_lax" in delete and "'delete_key'" in delete
+
+
+def test_write_resets_restore_the_state_each_sample_expects():
+    assert write_reset_sql("attr-add") == [write_sql("attr-delete")]
+    assert write_reset_sql("attr-update") == []
+    assert write_reset_sql("attr-delete") == [write_sql("attr-add")]
+
+
+def test_lod_extract_returns_ids_and_filters_inside_the_geometry_jsonb():
     sql, args = sql_for("lod-extract", _params())
+    assert sql.strip().startswith("SELECT object_id")  # ids, as CJDB Q5 does
     assert "geometry @?" in sql
     assert '"1.2"' in sql  # the LoD tag, not the LoD2 geometry
     assert args == ()
@@ -207,13 +247,12 @@ def test_semantic_surface_is_not_restricted_to_a_single_lod():
     assert "@.lod" not in sql
 
 
-def test_hierarchy_raises_scenario_unavailable_when_dataset_has_no_parent_id():
-    # Mirrors sql_duckdb's own guard: cjdb also has a relationships table
-    # that a hierarchy-less dataset simply has no rows for, so this must be
-    # intercepted before a query is built, not sent as a query that would
-    # match a NULL parent-id filter.
-    with pytest.raises(ScenarioUnavailable, match="dataset has no parent/child hierarchy"):
-        sql_for("hierarchy", _params(parent_id=None))
+def test_attr_filter_raises_scenario_unavailable_without_a_predicate():
+    # A dataset carrying no attribute the pick rule can build a selective
+    # predicate from is a dataset property, not a query bug — intercepted
+    # before a query is built, never sent with a None column name.
+    with pytest.raises(ScenarioUnavailable, match="attr-filter predicate"):
+        sql_for("attr-filter", _params(attr_filter=None))
 
 
 def test_index_ddl_creates_the_one_index_cjdb_genuinely_lacks():

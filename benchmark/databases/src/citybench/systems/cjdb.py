@@ -117,11 +117,13 @@ def patch_disclosure() -> dict[str, str]:
 class CjdbSystem:
     tag = "cjdb"
 
-    def __init__(self, *, port: int = 55432, schema: str = "cjdb") -> None:
+    def __init__(self, *, port: int = 55432, schema: str = "cjdb",
+                 parallel_workers: int = 0) -> None:
         self._port = port
         self._schema = schema
         self._conn = None
         self._srid: int = 0
+        self._parallel_workers = parallel_workers
 
     def prepare(self) -> None:
         # Fail fast, before touching the database, if the patched cjdb
@@ -129,7 +131,18 @@ class CjdbSystem:
         # docstring) has not been built yet.
         patched_cjdb_source()
         self._conn = pg.connect(self._port)
-        pg.disable_parallel_query(self._conn)
+        pg.set_parallel_query(self._conn, self._parallel_workers)
+
+    def set_parallel_workers(self, workers: int) -> None:
+        """Switch the benchmark session between thread configurations
+        without re-ingesting. `citybench run` measures both."""
+        self._parallel_workers = workers
+        if self._conn is not None:
+            pg.set_parallel_query(self._conn, workers)
+
+    def session_settings(self) -> dict[str, str]:
+        assert self._conn is not None
+        return pg.parallel_settings(self._conn)
 
     def ingest(self, dataset: Dataset) -> IngestResult:
         cjdb_source = patched_cjdb_source()
@@ -157,11 +170,13 @@ class CjdbSystem:
         return IngestResult(wall_clock_s=elapsed)
 
     def run(self, scenario: str, params: Params, repeat: int,
-            selectivity: float | None = None) -> Measurement:
+            window=None) -> Measurement:
         assert self._conn is not None
-        sql, args = sql_cjdb.sql_for(scenario, params, selectivity, self._srid)
         mode = registry.count_mode(scenario)
+        if mode == "write-rowcount":
+            return self._run_write(scenario, repeat)
 
+        sql, args = sql_cjdb.sql_for(scenario, params, window, self._srid)
         pg.time_query(self._conn, sql, args, count_mode=mode)  # discarded warm-up
         samples = [
             pg.time_query(self._conn, sql, args, count_mode=mode)
@@ -174,6 +189,35 @@ class CjdbSystem:
             peak_rss_bytes=max((s[3] for s in samples if len(s) > 3 and s[3] is not None), default=None),
             peak_heap_bytes=None,
             notes="memory-scope: postgresql-backend-rss",
+        )
+
+    def _run_write(self, scenario: str, repeat: int) -> Measurement:
+        """One write-tier scenario: CJDB's own Q6/Q7/Q8.
+
+        No discarded warm-up, unlike every read scenario: a warm-up here
+        would be a real mutation, and the reset that undoes it is exactly
+        what the timed samples already pay for. `VACUUM ANALYZE` runs after
+        the last sample, never between the reset and the timed statement, so
+        no sample's number includes it — but it does run, so the dead tuples
+        `attr-add` leaves behind are not silently charged to `attr-update`.
+        """
+        assert self._conn is not None
+        sql, args = sql_cjdb.write_sql(scenario)
+        reset = tuple(sql_cjdb.write_reset_sql(scenario))
+        samples = [
+            pg.time_write(self._conn, sql, args, reset=reset if index else ())
+            for index in range(repeat)
+        ]
+        pg.vacuum_analyze(self._conn, self._schema)
+        return Measurement(
+            result_count=samples[0][0],
+            times_s=[s[1] for s in samples],
+            # Write rows carry no server_time_s: obtaining it would mean a
+            # second EXPLAIN ANALYZE execution of the mutation itself.
+            server_times_s=[],
+            peak_rss_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
+            peak_heap_bytes=None,
+            notes="memory-scope: postgresql-backend-rss write-tier: no-explain",
         )
 
     def size(self) -> SizeReport:

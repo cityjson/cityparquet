@@ -23,12 +23,19 @@ class System(Protocol):
         """Load ``dataset``, build indexes, ANALYZE. Returns wall-clock."""
 
     def run(self, scenario: str, params: Params, repeat: int,
-            selectivity: float | None = None) -> Measurement:
+            window=None) -> Measurement:
         """Run one scenario ``repeat`` times after one discarded warm-up.
 
-        ``selectivity`` is the window-area target for bbox-query and None
-        for every other scenario. Every adapter takes this signature —
-        the runner calls it uniformly.
+        ``window`` is the resolved `BboxWindow` for a windowed scenario
+        (`bbox-query`, `bbox-fetch`), derived once by `citybench.params`
+        and handed to every system verbatim, and None for every other
+        scenario. Every adapter takes this signature — the runner calls it
+        uniformly.
+
+        The write tier is the one exception to "one discarded warm-up": a
+        warm-up there would be a real mutation, so those adapters run each
+        timed sample after an untimed reset instead (see
+        `pg.time_write` and `DuckDBCityParquet._run_write`).
         """
 
     def size(self) -> SizeReport:

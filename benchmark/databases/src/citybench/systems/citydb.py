@@ -37,12 +37,18 @@ _IMPORT_THREADS = "4"
 class CityDbSystem:
     tag = "3dcitydb"
 
-    def __init__(self, *, port: int = 55433, schema: str = "citydb") -> None:
+    def __init__(self, *, port: int = 55433, schema: str = "citydb",
+                 parallel_workers: int = 0) -> None:
         self._port = port
         self._schema = schema
         self._conn = None
         self._srid: int = 0
         self._mount = ""
+        self._parallel_workers = parallel_workers
+        # Resolved once per ingest, live, rather than hard-coded: the
+        # `objectclass`/`datatype` catalogues are schema-version facts.
+        self._building_class_id: int | None = None
+        self._datatype_id: int | None = None
         # Resolved ONCE per `ingest()` by `sql_citydb.resolve_cityobject_class_ids`
         # (C1 fix) — a plain `objectclass_id IN (...)` over this set replaces
         # the old correlated-subquery predicate in every scenario query.
@@ -67,7 +73,18 @@ class CityDbSystem:
 
     def prepare(self) -> None:
         self._conn = pg.connect(self._port)
-        pg.disable_parallel_query(self._conn)
+        pg.set_parallel_query(self._conn, self._parallel_workers)
+
+    def set_parallel_workers(self, workers: int) -> None:
+        """Switch the benchmark session between thread configurations
+        without re-ingesting. `citybench run` measures both."""
+        self._parallel_workers = workers
+        if self._conn is not None:
+            pg.set_parallel_query(self._conn, workers)
+
+    def session_settings(self) -> dict[str, str]:
+        assert self._conn is not None
+        return pg.parallel_settings(self._conn)
 
     def ingest(self, dataset: Dataset) -> IngestResult:
         self._mount = str(dataset.source.parent.resolve())
@@ -99,16 +116,24 @@ class CityDbSystem:
         # predicate on every scenario query. See sql_citydb.py's C1 fix note
         # and resolve_cityobject_class_ids()'s own docstring.
         self._cityobject_class_ids = sql_citydb.resolve_cityobject_class_ids(self._conn)
+        self._building_class_id = sql_citydb.resolve_class_id(
+            self._conn, sql_citydb.BUILDING_CLASSNAME
+        )
+        self._datatype_id = sql_citydb.resolve_datatype_id(self._conn)
         return IngestResult(wall_clock_s=elapsed)
 
     def run(self, scenario: str, params: Params, repeat: int,
-            selectivity: float | None = None) -> Measurement:
+            window=None) -> Measurement:
         assert self._conn is not None
-        sql, args = sql_citydb.sql_for(
-            scenario, params, selectivity, self._srid,
-            cityobject_class_ids=self._cityobject_class_ids,
-        )
         mode = registry.count_mode(scenario)
+        if mode == "write-rowcount":
+            return self._run_write(scenario, repeat)
+
+        sql, args = sql_citydb.sql_for(
+            scenario, params, window, self._srid,
+            cityobject_class_ids=self._cityobject_class_ids,
+            building_class_id=self._building_class_id,
+        )
 
         pg.time_query(self._conn, sql, args, count_mode=mode)  # discarded warm-up
         samples = [
@@ -122,6 +147,35 @@ class CityDbSystem:
             peak_rss_bytes=max((s[3] for s in samples if len(s) > 3 and s[3] is not None), default=None),
             peak_heap_bytes=None,
             notes="memory-scope: postgresql-backend-rss",
+        )
+
+    def _run_write(self, scenario: str, repeat: int) -> Measurement:
+        """One write-tier scenario: CJDB's Q6/Q7/Q8 on v5's schema.
+
+        No discarded warm-up, and no `EXPLAIN (ANALYZE)` re-run — see
+        `pg.time_write`. `VACUUM ANALYZE` runs after the last sample so the
+        bloat one scenario leaves behind is not charged to the next.
+        """
+        assert self._conn is not None
+        assert self._building_class_id is not None and self._datatype_id is not None
+        sql, args = sql_citydb.write_sql(
+            scenario, self._building_class_id, self._datatype_id
+        )
+        reset = tuple(sql_citydb.write_reset_sql(
+            scenario, self._building_class_id, self._datatype_id
+        ))
+        samples = [
+            pg.time_write(self._conn, sql, args, reset=reset if index else ())
+            for index in range(repeat)
+        ]
+        pg.vacuum_analyze(self._conn, self._schema)
+        return Measurement(
+            result_count=samples[0][0],
+            times_s=[s[1] for s in samples],
+            server_times_s=[],
+            peak_rss_bytes=max((s[2] for s in samples if s[2] is not None), default=None),
+            peak_heap_bytes=None,
+            notes="memory-scope: postgresql-backend-rss write-tier: no-explain",
         )
 
     def size(self) -> SizeReport:

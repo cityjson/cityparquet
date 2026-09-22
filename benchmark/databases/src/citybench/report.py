@@ -64,11 +64,21 @@ def row_from_measurement(
     selectivity: float | None,
     size_bytes: int | None = None,
     size_bytes_no_index: int | None = None,
+    status: str | None = None,
 ) -> dict[str, str]:
     """One CSV row from one system's repeated samples of one scenario.
 
     The two size figures describe the system, not the scenario, and are
     repeated on every row so the CSV can be plotted without a join.
+
+    ``status`` is the runner's verdict on the cross-system count check —
+    ``"ok"``, ``"ok-deviation"`` or ``"mismatch"``. It is supplied rather
+    than re-derived here because ``ok-deviation`` is not visible in the
+    notes: a deviating row keeps its full ``count-mismatch: ...`` detail
+    (the decomposition is the point), and only the status says whether the
+    spread was inside the run's stated tolerance. ``error:`` and
+    ``skipped:`` notes still win over it — a system that never answered has
+    no count to have deviated.
     """
     times = measurement.times_s
     server = measurement.server_times_s
@@ -92,6 +102,7 @@ def row_from_measurement(
         "size_bytes_no_index": _int(size_bytes_no_index),
         "status": ("error" if measurement.notes.startswith("error:") else
                    "skipped" if measurement.notes.startswith("skipped:") else
+                   status if status is not None else
                    "mismatch" if "count-mismatch" in measurement.notes else "ok"),
         "raw_time_samples_s": json.dumps(times, separators=(",", ":")),
         "raw_server_time_samples_s": json.dumps(server, separators=(",", ":")),
