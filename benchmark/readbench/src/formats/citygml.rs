@@ -359,6 +359,7 @@ fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Res
                 stream_members_until(doc, |feature| Ok(feature.city_objects.contains_key(id)))?;
             Ok(found as u64)
         }
+        Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
         Scenario::Project => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
             let mut count = 0u64;
@@ -430,6 +431,7 @@ async fn run_http(
             bytes: stats.bytes,
             requests: stats.requests,
         }),
+        lookup: None,
     })
 }
 
@@ -453,6 +455,7 @@ impl FormatRunner for CityGmlRunner {
                 return Ok(RunOutcome {
                     result_count,
                     io: None,
+                    lookup: None,
                 });
             }
             TransportSource::Http { base_url, key } => (base_url, key),

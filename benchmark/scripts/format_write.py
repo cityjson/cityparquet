@@ -11,7 +11,7 @@ import argparse, csv, os, shutil, statistics, subprocess, tempfile, time
 from pathlib import Path
 
 FORMATS = ("citygml", "cityjson", "cityjsonseq", "flatcitybuf", "cityparquet-hilbert")
-HEADER = ["dataset","format","scenario","selectivity","result_count","time_s","time_mad_s","peak_heap_bytes","peak_rss_bytes","repeat","notes","bytes_read","http_requests"]
+HEADER = ["dataset","format","scenario","selectivity","result_count","time_s","time_mad_s","peak_heap_bytes","peak_rss_bytes","repeat","notes","bytes_read","http_requests","row_groups_total","bloom_pruned","filter_bytes"]
 SAMPLES_HEADER = ["dataset","format","scenario","sample","time_s","peak_rss_bytes"]
 
 
@@ -97,7 +97,7 @@ def main() -> None:
         warm = values[1:]
         times = [value[0] for value in warm]
         centre = median(times)
-        aggregates.append([dataset, fmt, "write", "", "0", f"{centre:.6f}", f"{mad(times, centre):.6f}", "", str(max(value[1] for value in warm)), str(args.repeat), "canonical-cityjsonseq;citygml=seq-to-json+json-to-gml", "", ""])
+        aggregates.append([dataset, fmt, "write", "", "0", f"{centre:.6f}", f"{mad(times, centre):.6f}", "", str(max(value[1] for value in warm)), str(args.repeat), "canonical-cityjsonseq;citygml=seq-to-json+json-to-gml", "", "", "", "", ""])
         raw.extend([dataset, fmt, "write", str(index + 1), f"{elapsed:.6f}", str(rss)] for index, (elapsed, rss) in enumerate(warm))
     existing = []
     if args.out.exists():

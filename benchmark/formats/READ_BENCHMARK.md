@@ -211,13 +211,18 @@ whose target was not reachable on the data carries `approx` in `notes`
 alongside its tag; the achieved fraction is always what the `selectivity`
 column records, so target against achieved is checkable per row.
 
+`feature-lookup` (CityParquet only, run by name — the `bloom` family) returns
+every object of one `feature_id`, probed at `feature-50pct` (the `id-50pct`
+feature) and `feature-miss`; it is not one of the seven comparison scenarios,
+because no other format stores the column.
+
 ## Metrics and the CSV contract
 
 `benchmark/formats/read_results/*.csv`, one row per (dataset, format, scenario
 [, selectivity target]):
 
 ```
-dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests
+dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
 ```
 
 - `time_s` / `time_mad_s` — **warm-cache** median and median-absolute-
@@ -255,6 +260,14 @@ dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_byt
   row** (no HTTP concept locally); for a `--transport http` row, the total
   bytes transferred and HTTP request count that scenario's own
   transport-agnostic reader made (see "HTTP transport" below).
+- `row_groups_total` / `bloom_pruned` / `filter_bytes` — **empty on every
+  row but a CityParquet `id-lookup` or `feature-lookup`**: the table's row
+  groups, those its bloom filters ruled out, and the bitset bytes of every
+  filter examined (32 per block; header bytes and transport overhead are not
+  counted — `bytes_read` carries the latter over HTTP). The kept row groups are
+  read by one reader, as without filters; an `id-lookup` hit stops at its
+  first match. Deterministic across repeats; the first warm sample's values
+  are recorded.
 
 ## Warm vs cold protocol
 

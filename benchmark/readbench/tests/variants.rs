@@ -10,7 +10,8 @@ use std::process::{Command, Output};
 use cityparquet::package::{ConvertOptions, convert};
 
 const HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,\
-peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests";
+peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
+bloom_pruned,filter_bytes";
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -307,4 +308,58 @@ fn variants_and_formats_are_exclusive_and_the_list_is_validated() {
         "server-side write",
     );
     assert!(!out.exists(), "a rejected run writes no CSV");
+}
+
+/// The bloom pair: the same package with and without filters. Lookup rows
+/// carry counters — no filter bytes and nothing pruned without filters —
+/// and write rows carry none.
+#[test]
+fn a_bloom_pair_records_lookup_counters() {
+    let (prepared, input) = prepared_delft();
+    let out_csv = prepared.path().join("out.csv");
+    let output = run(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--write-repeat",
+        "1",
+        "--scenarios",
+        "id-lookup,feature-lookup",
+        "--id-probes",
+        "id-50pct,id-miss",
+        "--variants",
+        "cityparquet,cityparquet+nobloom",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = std::fs::read_to_string(&out_csv).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(lines.next().unwrap(), HEADER);
+    let rows: Vec<&str> = lines.collect();
+    // Per variant: write, id-50pct, id-miss, feature-50pct, feature-miss.
+    assert_eq!(rows.len(), 10, "{text}");
+    for row in &rows {
+        let (label, scenario) = (field(row, 1), field(row, 2));
+        let counters: Vec<&str> = (13..16).map(|i| field(row, i)).collect();
+        assert_eq!(row.split(',').count(), 16, "{row}");
+        if scenario == "write" {
+            assert_eq!(counters, vec!["", "", ""], "{row}");
+            continue;
+        }
+        assert_eq!(counters[0], "1", "delft is one row group: {row}");
+        if label == "cityparquet+nobloom" {
+            assert_eq!(counters[1], "0", "{row}");
+            assert_eq!(counters[2], "0", "{row}");
+        } else {
+            assert_ne!(counters[2], "0", "{row}");
+        }
+    }
 }

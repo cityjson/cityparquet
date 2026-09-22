@@ -101,6 +101,10 @@ struct Cli {
     #[arg(long)]
     target_id: Option<String>,
 
+    /// Target `feature_id` for `feature-lookup`.
+    #[arg(long)]
+    target_feature_id: Option<String>,
+
     /// Free-text selectivity label the coordinator threads through to the
     /// results CSV's `notes` column; no scenario reads this itself.
     #[arg(long)]
@@ -182,6 +186,11 @@ struct RunArgs {
     #[arg(long, value_delimiter = ',')]
     id_probes: Option<Vec<String>>,
 
+    /// Restrict `feature-lookup` to resolved probe tags (`feature-50pct`,
+    /// `feature-miss`). Omit to keep both.
+    #[arg(long, value_delimiter = ',')]
+    feature_probes: Option<Vec<String>>,
+
     /// After the warm matrix, run one additional `FullRead` per format,
     /// tagged `cold` in `notes` (see [`coordinator::run`]'s own doc comment
     /// on the `sudo purge` protocol this does NOT automate).
@@ -223,6 +232,7 @@ fn run(cli: Cli) -> Result<()> {
             write_repeat: run_args.write_repeat,
             scenarios: run_args.scenarios,
             id_probes: run_args.id_probes,
+            feature_probes: run_args.feature_probes,
             cold: run_args.cold,
             transport,
             base_url: run_args.base_url,
@@ -264,6 +274,7 @@ fn run(cli: Cli) -> Result<()> {
         attr_column: cli.attr_column,
         attr_pred,
         target_id: cli.target_id,
+        target_feature_id: cli.target_feature_id,
         selectivity_tag: cli.selectivity_tag,
     };
 
@@ -329,6 +340,15 @@ fn run(cli: Cli) -> Result<()> {
             "{time_s:.6} {peak_heap_bytes} {ru_maxrss_bytes} {}",
             outcome.result_count
         ),
+    }
+    if let Some(lookup) = outcome.lookup {
+        eprintln!(
+            "{} {} {} {}",
+            formats::LOOKUP_STATS_MARKER,
+            lookup.row_groups_total,
+            lookup.bloom_pruned,
+            lookup.filter_bytes
+        );
     }
     Ok(())
 }

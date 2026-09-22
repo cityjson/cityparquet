@@ -35,6 +35,9 @@
 //! `bbox-5pct`, `bbox-25pct`, each `;approx` when the target row fraction
 //! was not reachable), and [`Scenario::IdLookup`] one per probe
 //! (`id-10pct`, `id-50pct`, `id-90pct`, `id-miss`).
+//! [`Scenario::FeatureLookup`] (CityParquet only, and only when named) emits
+//! two: `feature-50pct` and `feature-miss`. Every CityParquet lookup row
+//! carries its [`LookupCounters`] in the three trailing CSV columns.
 //!
 //! **`--variants`: the configuration run.** Given variant ids rather than
 //! formats, this module measures ONE format's writer axes instead of
@@ -74,7 +77,7 @@ use cityparquet::variant::Variant;
 use cityparquet_readbench::format::{Artefact, Format};
 use cityparquet_readbench::naming::strip_known_extension;
 
-use crate::formats::{IoStats, Source};
+use crate::formats::{IoStats, LOOKUP_STATS_MARKER, LookupCounters, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 use cityparquet_readbench::params;
 
@@ -114,6 +117,8 @@ pub struct RunOptions {
     /// Optional subset of resolved `id-lookup` probe tags. Configuration runs
     /// use this to hold lookup position at 50%; format comparisons retain all.
     pub id_probes: Option<Vec<String>>,
+    /// Optional subset of resolved `feature-lookup` probe tags.
+    pub feature_probes: Option<Vec<String>>,
     /// After the warm matrix, run one additional `FullRead` per format,
     /// tagged `cold` in `notes` (see [`run`]'s own doc comment on the
     /// `sudo purge` protocol this does NOT automate).
@@ -139,8 +144,10 @@ pub enum Transport {
 /// own `io: None` handling) and populated for an
 /// http-transport row from the wrapped `ObjectStore`/range-client tally each
 /// `FormatRunner`'s `Source::Http` arm reports (see `formats::IoStats`).
+/// The last three are a CityParquet lookup's [`LookupCounters`], empty on every other row.
 const CSV_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,\
-peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests";
+peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
+bloom_pruned,filter_bytes";
 
 /// The resolved-parameters sidecar for a results CSV: the CSV's own path with
 /// `.params.json` appended, so the two travel together and a run cannot leave
@@ -357,39 +364,21 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         gml_path.as_deref(),
     )?;
 
-    if let Some(requested) = &opts.id_probes {
-        if requested.is_empty() {
-            bail!("--id-probes must name at least one resolved probe tag");
-        }
-        let available: Vec<&str> = resolved
-            .id_probes
-            .iter()
-            .map(|probe| probe.tag.as_str())
-            .collect();
-        let unknown: Vec<&String> = requested
-            .iter()
-            .filter(|tag| !available.iter().any(|available| available == &tag.as_str()))
-            .collect();
-        if !unknown.is_empty() {
-            bail!(
-                "--id-probes requested unavailable tag(s) {}; available: {}",
-                unknown
-                    .iter()
-                    .map(|tag| tag.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                available.join(", ")
-            );
-        }
-        resolved
-            .id_probes
-            .retain(|probe| requested.iter().any(|tag| tag == &probe.tag));
-    }
+    retain_requested_probes(
+        "id-probes",
+        &mut resolved.id_probes,
+        opts.id_probes.as_ref(),
+    )?;
+    retain_requested_probes(
+        "feature-probes",
+        &mut resolved.feature_probes,
+        opts.feature_probes.as_ref(),
+    )?;
 
     eprintln!(
         "cityparquet-readbench: derived params for '{dataset}': windows={:?}, object_type \
-         most-frequent='{}' (n={}), numeric attribute={:?}, id probes={:?}, CityObject \
-         total={}",
+         most-frequent='{}' (n={}), numeric attribute={:?}, id probes={:?}, feature probes={:?}, \
+         CityObject total={}",
         resolved
             .windows
             .iter()
@@ -400,6 +389,11 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         resolved.numeric_attr,
         resolved
             .id_probes
+            .iter()
+            .map(|p| (p.tag.as_str(), p.id.as_str()))
+            .collect::<Vec<_>>(),
+        resolved
+            .feature_probes
             .iter()
             .map(|p| (p.tag.as_str(), p.id.as_str()))
             .collect::<Vec<_>>(),
@@ -601,6 +595,45 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 // target would make the published time a function of where
                 // that id happened to sit in the stream, which is a property
                 // of the sample rather than of the format.
+                Scenario::FeatureLookup
+                    if !matches!(format, Format::CityParquet | Format::CityParquetHilbert) =>
+                {
+                    eprintln!(
+                        "cityparquet-readbench: skipping scenario '{scenario}' for format \
+                         '{format}': {}",
+                        crate::formats::FEATURE_LOOKUP_CITYPARQUET_ONLY
+                    )
+                }
+                Scenario::FeatureLookup if resolved.feature_probes.is_empty() => eprintln!(
+                    "cityparquet-readbench: skipping scenario '{scenario}' for format \
+                     '{format}': dataset '{dataset}' has no prepared cityjsonseq artefact to \
+                     take the feature probes from (never fabricated)"
+                ),
+                Scenario::FeatureLookup => {
+                    for probe in &resolved.feature_probes {
+                        let params = QueryParams {
+                            target_feature_id: Some(probe.id.clone()),
+                            ..Default::default()
+                        };
+                        let mut notes = probe.tag.clone();
+                        if probe.substituted {
+                            notes.push_str(";id-substituted");
+                        }
+                        run_measurement(
+                            &mut rows,
+                            &mut samples,
+                            &dataset,
+                            format,
+                            label,
+                            source,
+                            *scenario,
+                            &params,
+                            opts.repeat,
+                            Some(resolved.cp_object_total),
+                            &notes,
+                        )?;
+                    }
+                }
                 Scenario::IdLookup if resolved.id_probes.is_empty() => eprintln!(
                     "cityparquet-readbench: skipping scenario '{scenario}' for format \
                      '{format}': dataset '{dataset}' has no prepared cityjsonseq artefact to \
@@ -663,6 +696,7 @@ pub fn run(opts: &RunOptions) -> Result<()> {
                 // from.
                 notes: vec!["cold".to_string()],
                 io: line.io,
+                lookup: None,
             };
             debug_assert!(
                 line.notes.is_empty(),
@@ -719,6 +753,36 @@ pub fn run(opts: &RunOptions) -> Result<()> {
         write_sizes(&opts.out, base, seq, &sizes)?;
     }
 
+    Ok(())
+}
+
+/// Keeps only the `requested` tags of `probes`; an empty request, or a tag
+/// that did not resolve, is an error naming what is available.
+fn retain_requested_probes(
+    flag: &str,
+    probes: &mut Vec<params::IdProbe>,
+    requested: Option<&Vec<String>>,
+) -> Result<()> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    if requested.is_empty() {
+        bail!("--{flag} must name at least one resolved probe tag");
+    }
+    let available: Vec<&str> = probes.iter().map(|probe| probe.tag.as_str()).collect();
+    let unknown: Vec<&str> = requested
+        .iter()
+        .map(String::as_str)
+        .filter(|tag| !available.contains(tag))
+        .collect();
+    if !unknown.is_empty() {
+        bail!(
+            "--{flag} requested unavailable tag(s) {}; available: {}",
+            unknown.join(", "),
+            available.join(", ")
+        );
+    }
+    probes.retain(|probe| requested.iter().any(|tag| tag == &probe.tag));
     Ok(())
 }
 
@@ -891,6 +955,8 @@ struct ChildLine {
     /// the kind of thing a reader of the CSV must not have to have been
     /// watching the terminal to learn.
     notes: Vec<String>,
+    /// The child's [`LookupCounters`], from its [`LOOKUP_STATS_MARKER`] line.
+    lookup: Option<LookupCounters>,
 }
 
 /// The disclosure tags `stderr` announces, in
@@ -906,6 +972,33 @@ fn child_disclosures(stderr: &str) -> Vec<String> {
         .filter(|marker| stderr.contains(**marker))
         .map(|marker| (*marker).to_string())
         .collect()
+}
+
+/// The [`LookupCounters`] a child reported after [`LOOKUP_STATS_MARKER`],
+/// if it reported any.
+fn child_lookup_counters(stderr: &str) -> Result<Option<LookupCounters>> {
+    let Some(line) = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix(LOOKUP_STATS_MARKER))
+    else {
+        return Ok(None);
+    };
+    let fields: Vec<u64> = line
+        .split_whitespace()
+        .map(|field| {
+            field
+                .parse::<u64>()
+                .with_context(|| format!("parsing lookup counter '{field}'"))
+        })
+        .collect::<Result<_>>()?;
+    let [row_groups_total, bloom_pruned, filter_bytes] = fields[..] else {
+        bail!("expected three lookup counters after '{LOOKUP_STATS_MARKER}', got '{line}'");
+    };
+    Ok(Some(LookupCounters {
+        row_groups_total,
+        bloom_pruned,
+        filter_bytes,
+    }))
 }
 
 /// Spawns a FRESH `--child` process (this binary's own executable, found via
@@ -977,6 +1070,9 @@ fn spawn_child(
     if let Some(id) = &params.target_id {
         cmd.arg("--target-id").arg(id);
     }
+    if let Some(feature_id) = &params.target_feature_id {
+        cmd.arg("--target-feature-id").arg(feature_id);
+    }
 
     let output = cmd.output().with_context(|| {
         format!("spawning child process (format={format}, scenario={scenario})")
@@ -988,7 +1084,9 @@ fn spawn_child(
         );
     }
 
-    let notes = child_disclosures(&String::from_utf8_lossy(&output.stderr));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let notes = child_disclosures(&stderr);
+    let lookup = child_lookup_counters(&stderr)?;
     let stdout = String::from_utf8(output.stdout).context("child stdout was not valid UTF-8")?;
     let line = stdout.trim();
     let fields: Vec<&str> = line.split_whitespace().collect();
@@ -1025,6 +1123,7 @@ fn spawn_child(
             .with_context(|| format!("parsing result_count from '{}'", fields[3]))?,
         io,
         notes,
+        lookup,
     })
 }
 
@@ -1078,6 +1177,7 @@ fn run_measurement(
     // unmodified remote object, so bytes/requests are deterministic across
     // repeats (unlike timing) — no need to aggregate beyond "the first one".
     let mut io: Option<IoStats> = None;
+    let mut lookup: Option<LookupCounters> = None;
     // Likewise the first warm sample's own disclosures (see
     // [`ChildLine::notes`]): which mechanism a runner took is a property of
     // the artefact, identical in every repeat.
@@ -1108,6 +1208,7 @@ fn run_measurement(
         if result_count.is_none() {
             result_count = Some(line.result_count);
             io = line.io;
+            lookup = line.lookup;
             child_notes = line.notes;
         }
     }
@@ -1141,6 +1242,7 @@ fn run_measurement(
         repeat,
         notes: tags,
         io,
+        lookup,
     });
 
     Ok(result_count)
@@ -1263,6 +1365,7 @@ fn run_write(
         repeat: write_repeat,
         notes: Vec::new(),
         io: None,
+        lookup: None,
     });
     Ok(target)
 }
@@ -1327,6 +1430,7 @@ struct Row {
     repeat: usize,
     notes: Vec<String>,
     io: Option<IoStats>,
+    lookup: Option<LookupCounters>,
 }
 
 impl Row {
@@ -1343,6 +1447,13 @@ impl Row {
             Some(io) => (io.bytes.to_string(), io.requests.to_string()),
             None => (String::new(), String::new()),
         };
+        let lookup_fields = match self.lookup {
+            Some(l) => format!(
+                "{},{},{}",
+                l.row_groups_total, l.bloom_pruned, l.filter_bytes
+            ),
+            None => ",,".to_string(),
+        };
         let notes = self.notes.join(";");
         let (dataset, format, scenario, result_count, time_s, time_mad_s) = (
             &self.dataset,
@@ -1357,7 +1468,7 @@ impl Row {
         format!(
             "{dataset},{format},{scenario},{selectivity_field},{result_count},{time_s:.6},\
              {time_mad_s:.6},{peak_heap_bytes},{peak_rss_bytes},{repeat},{notes},\
-             {bytes_field},{requests_field}"
+             {bytes_field},{requests_field},{lookup_fields}"
         )
     }
 }
@@ -1460,6 +1571,7 @@ mod tests {
             repeat: 1,
             notes: notes.iter().map(|n| (*n).to_string()).collect(),
             io: None,
+            lookup: None,
         }
     }
 
@@ -1538,5 +1650,39 @@ mod tests {
             vec!["attr-index-failed".to_string()]
         );
         assert!(child_disclosures("").is_empty());
+    }
+
+    #[test]
+    fn lookup_counters_fill_the_three_trailing_columns_and_are_empty_otherwise() {
+        let plain = row(Scenario::IdLookup, &["id-miss"]);
+        let rendered = plain.render();
+        assert!(rendered.ends_with("id-miss,,,,,"), "{rendered}");
+        assert_eq!(rendered.split(',').count(), CSV_HEADER.split(',').count());
+
+        let mut counted = row(Scenario::IdLookup, &["id-miss"]);
+        counted.lookup = Some(LookupCounters {
+            row_groups_total: 16,
+            bloom_pruned: 15,
+            filter_bytes: 4096,
+        });
+        let rendered = counted.render();
+        assert!(rendered.ends_with("id-miss,,,16,15,4096"), "{rendered}");
+        assert_eq!(rendered.split(',').count(), CSV_HEADER.split(',').count());
+    }
+
+    #[test]
+    fn a_childs_lookup_counters_are_read_from_its_marker_line() {
+        let stderr = format!("some log\n{LOOKUP_STATS_MARKER} 16 15 4096\n");
+        assert_eq!(
+            child_lookup_counters(&stderr).unwrap(),
+            Some(LookupCounters {
+                row_groups_total: 16,
+                bloom_pruned: 15,
+                filter_bytes: 4096,
+            })
+        );
+        assert_eq!(child_lookup_counters("some log\n").unwrap(), None);
+        assert!(child_lookup_counters(&format!("{LOOKUP_STATS_MARKER} 1 2\n")).is_err());
+        assert!(child_lookup_counters(&format!("{LOOKUP_STATS_MARKER} 1 2 3 4\n")).is_err());
     }
 }
