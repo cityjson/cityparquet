@@ -67,7 +67,8 @@ summary, not a certification of complete specification conformance.
 | Geometry | WKB columns with explicit LoD suffixes, including `geometry_lod0_0`; geometry properties and bounding boxes |
 | Appearance and instances | Material and texture assignments, appearance sidecars, and geometry-template sidecars with LoD-specific geometry |
 | Metadata and CRS | Structured `city` footer metadata, GeoParquet `geo` metadata for eligible geometry, PROJJSON CRS information, and a STAC Item in `metadata.json` |
-| Reading | Arrow record batches, column projection, attribute filtering, bounding-box pruning, and optional asynchronous object-store access |
+| Bloom filters | On `id`, `feature_id` and high-cardinality string attributes at FPP 0.01, after the last row group; `--no-bloom` turns them off |
+| Reading | Arrow record batches, column projection, attribute filtering, bounding-box pruning, bloom-filter pruning for `id`, `feature_id` and string-equality lookups (every filter of a column fetched in one range request over object storage), and optional asynchronous object-store access |
 | Checking | Semantic comparison and round-trip checks; no standalone Rust `validate` CLI command |
 
 The Rust implementation currently writes WKB geometry. A dataset-level STAC
@@ -104,6 +105,21 @@ The extension also manages **complete CityParquet packages** as DuckDB schemas:
   derived values.
 - `cityparquet_validate`, `cityparquet_orphans`, and `cityparquet_vacuum` check
   structure and manage unreferenced sidecar rows.
+
+`cityparquet_write` writes Parquet bloom filters under its `bloom` option (on by
+default). DuckDB writes a filter only for a dictionary-encoded column chunk and
+applies its dictionary and bloom options to a whole file, so the extension
+writes each object table with 122 880-row row groups and a dictionary cut-off of
+the same size, under an 8 MiB cap on a string dictionary page. `id`,
+`feature_id` and the high-cardinality string attributes carry filters, as the
+[recommended defaults](/specification/metadata#recommended-writer-defaults-informative)
+prescribe. So does every other column DuckDB dictionary-encodes, which the Rust
+writer leaves without: the low-cardinality strings and, in general, the numeric
+and temporal attributes, the `bbox` leaves and the elements of list columns. WKB
+geometry and JSON columns exceed the cap and stay unfiltered, except in a row
+group small enough — typically the last — for their dictionary page to fit.
+Sidecars carry none. DuckDB consults the filters itself for `=` and `IN`
+predicates, including those pushed down from a join.
 
 Use the package-writing API when you need the complete package contract. A
 standalone `COPY ... TO (FORMAT PARQUET)` is a table export and does not, by

@@ -10,5 +10,6 @@ export default defineMeta({
     "appearance-shared-resources",
     "files-crs-metadata",
     "extensions",
+    "bloom-filters",
   ],
 });

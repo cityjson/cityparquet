@@ -192,24 +192,30 @@ where the committed CSVs are).
 `RecipePreset` is the tuned default plus five ablations, so the paper can
 quantify what each tuning rule buys:
 
-| Preset (`--recipe`) | What it is                                                                                                                             |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `cityparquet`       | the tuned default: delta-encoded ids, dictionary `object_type`, BYTE_STREAM_SPLIT bbox leaves, no stats/dictionary on WKB+JSON, zstd 3 |
-| `parquet-defaults`  | parquet-rs defaults + the recipe's global compression & row-group size only — the "untuned writer" comparator                          |
-| `no-dictionary`     | `cityparquet` minus dictionary encoding everywhere                                                                                     |
-| `no-bss`            | `cityparquet` minus BYTE_STREAM_SPLIT on the bbox leaves                                                                               |
-| `no-delta`          | `cityparquet` minus DELTA_BYTE_ARRAY on `id`/`feature_id`                                                                              |
-| `snappy`            | `cityparquet` with Snappy instead of zstd (DuckDB COPY's default codec)                                                                |
+| Preset (`--recipe`) | What it is                                                                                                                                                                                |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cityparquet`       | the tuned default: delta-encoded ids, dictionary `object_type`, BYTE_STREAM_SPLIT bbox leaves, no stats/dictionary on WKB+JSON, bloom filters on ids and high-cardinality strings, zstd 3 |
+| `parquet-defaults`  | parquet-rs defaults + the recipe's global compression & row-group size only — the "untuned writer" comparator                                                                             |
+| `no-dictionary`     | `cityparquet` minus dictionary encoding everywhere                                                                                                                                        |
+| `no-bss`            | `cityparquet` minus BYTE_STREAM_SPLIT on the bbox leaves                                                                                                                                  |
+| `no-delta`          | `cityparquet` minus DELTA_BYTE_ARRAY on `id`/`feature_id`                                                                                                                                 |
+| `snappy`            | `cityparquet` with Snappy instead of zstd (DuckDB COPY's default codec)                                                                                                                   |
 
 KV metadata is embedded under every preset — it is never a benchmark
 variable. Row-group size and zstd level remain independent CLI knobs on top.
+
+Bloom filters are orthogonal to the preset: `--no-bloom` (variant `+nobloom`)
+turns them off under any preset, and `parquet-defaults` writes none. The
+attribute columns that get one are chosen by `scan` (a HyperLogLog distinct
+count per string attribute, dataset-wide) and passed to
+`WriterRecipe::writer_properties`.
 
 ## Testing discipline
 
 Tests read **real CityJSON fixtures** (`delft.city.jsonl`,
 `lod3_railway.city.json`), never inline hand-written CityJSON; edge cases are
 derived from real fixtures/tiles in tempdirs. Development is strict red-green
-TDD. `just check` runs clippy (`-D warnings`), the full test suite, the
+TDD. `just check` runs clippy (`-D warnings`) and the full test suite with every feature on (the object-store transport included), the
 schema/Parquet isolation check, and `cargo fmt --check`; `just interop`
 additionally has DuckDB read the written Parquet natively to confirm the files
 are plain, portable Parquet.

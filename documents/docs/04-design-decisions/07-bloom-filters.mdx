@@ -1,0 +1,56 @@
+---
+title: G · Bloom filters
+description: Parquet bloom filters on the identifier columns, placed together after the last row group.
+sidebar:
+  label: G · Bloom filters
+---
+
+How CityParquet lets a lookup by `id` or `feature_id` skip the row groups that
+cannot hold it. Row-group min/max statistics cannot: 3DBAG's
+`NL.IMBAG.Pand.…` identifiers span almost the same range in every row group,
+and Hilbert ordering spreads them further. The prior art weighed here is
+DuckDB's Parquet writer and the Parquet bloom-filter specification.
+
+## Filters on the identifiers and high-cardinality strings, placed at the end
+
+<Badge variant="success">decided</Badge>
+
+**Decision.** Writers put standard Parquet bloom filters on every object
+table's `id` and `feature_id`, and on each scalar string attribute column whose
+distinct values reach 0.2 of its non-null values across the dataset, at a
+false-positive probability of 0.01. All filters sit together after the last row
+group, before the page indexes and footer, with `bloom_filter_length` set.
+Sidecars and numeric, JSON, list and geometry columns carry none. See the
+[specification](/specification/object-table-schema#bloom-filters).
+
+**Alternatives considered.**
+
+- **DuckDB's column rule** writes a filter only for a dictionary-encoded chunk.
+  The reference writer encodes `id` and `feature_id` with `DELTA_BYTE_ARRAY` and
+  no dictionary, so that rule would skip exactly the columns lookups need.
+  CityParquet follows DuckDB's _placement_, not its column rule.
+- **A filter after each row group** (parquet-rs's default placement) keeps
+  writer memory flat, but scatters a column's filters across the file, so a
+  remote reader needs a request per row group.
+- **Filters on numeric attributes**: an integer equality predicate compares
+  through `f64`, so an exact-integer probe could reject a row the predicate
+  accepts above 2^53. They wait for typed integer equality.
+
+**Why this.** `id` and `feature_id` are what lookups and joins select on —
+`feature_id` joins a feature's parts to the feature — and both are unique or
+nearly so, which is where a filter prunes and statistics do not. With every
+filter in one place a remote reader fetches all of a column's filters in one
+coalesced range request, the access pattern object storage rewards. A positive
+result is never a match: the reader's exact predicate still decides every row.
+
+**Trade-off.** Filters cost bytes on disk (folded to the values actually
+present) and, placed at the end, writer memory: every completed filter stays in
+memory until its file is closed. The high-cardinality rule is decided for the
+whole dataset before the first row group is written, so a sparse column, or a
+vocabulary repeated across row groups, can be judged differently than a
+per-row-group rule would. duckdb-cityjson, bound to DuckDB's file-wide options,
+writes filters on a superset of these columns (see
+[software](/resources/software)).
+
+**Status.** Decided. Its effect on lookup latency, bytes and requests is
+measured by the `bloom` benchmark family.
