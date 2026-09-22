@@ -610,6 +610,75 @@ fn convert_with_an_invalid_compression_fails() {
     );
 }
 
+/// Dotted paths of every column that declares a bloom filter in `table`.
+fn bloom_filtered_columns(table: &std::path::Path) -> std::collections::BTreeSet<String> {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    let reader = SerializedFileReader::new(std::fs::File::open(table).unwrap()).unwrap();
+    reader
+        .metadata()
+        .row_groups()
+        .iter()
+        .flat_map(|rg| rg.columns())
+        .filter(|c| c.bloom_filter_offset().is_some())
+        .map(|c| c.column_path().string())
+        .collect()
+}
+
+/// The default convert writes bloom filters on the identifiers; `--no-bloom`
+/// writes none at all.
+#[test]
+fn convert_writes_bloom_filters_by_default_and_no_bloom_suppresses_them() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    let filtered = |extra: &[&str]| {
+        let out = tempfile::tempdir().unwrap();
+        let status = Command::new(binary)
+            .arg("convert")
+            .arg(fixture("delft.city.jsonl"))
+            .arg("-o")
+            .arg(out.path())
+            .args(extra)
+            .status()
+            .expect("failed to run convert");
+        assert!(status.success(), "convert {extra:?} failed");
+        bloom_filtered_columns(&out.path().join("building.parquet"))
+    };
+    let default = filtered(&[]);
+    assert!(
+        default.contains("id") && default.contains("feature_id"),
+        "default filters: {default:?}"
+    );
+    let off = filtered(&["--no-bloom"]);
+    assert!(off.is_empty(), "--no-bloom filters: {off:?}");
+}
+
+/// `--bloom-fpp` outside (0, 1) is refused with a clear error before any
+/// conversion, not a parquet-rs panic.
+#[test]
+fn convert_rejects_a_bloom_fpp_outside_the_open_unit_interval() {
+    let binary = env!("CARGO_BIN_EXE_cityparquet");
+    for bad in ["0", "1", "1.5", "-0.1", "NaN"] {
+        let out = tempfile::tempdir().unwrap();
+        let output = Command::new(binary)
+            .arg("convert")
+            .arg(fixture("delft.city.jsonl"))
+            .arg("-o")
+            .arg(out.path())
+            .arg(format!("--bloom-fpp={bad}"))
+            .output()
+            .expect("failed to run convert");
+        assert!(!output.status.success(), "--bloom-fpp={bad} was accepted");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--bloom-fpp") && stderr.contains("strictly between 0 and 1"),
+            "--bloom-fpp={bad}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("panicked"),
+            "--bloom-fpp={bad} panicked: {stderr}"
+        );
+    }
+}
+
 #[test]
 fn export_package_to_gml_writes_citygml() {
     let tmp = tempfile::tempdir().unwrap();

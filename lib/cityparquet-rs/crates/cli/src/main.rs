@@ -5,7 +5,7 @@ use cityparquet::inputs::resolve_inputs;
 use cityparquet::merge::merge_sources;
 use cityparquet::package::{ConvertOptions, RowOrder, convert_source};
 use cityparquet::partition::{PartitionSpec, convert_partitioned};
-use cityparquet::recipe::{Codec, RecipePreset, WriterRecipe};
+use cityparquet::recipe::{BloomPolicy, Codec, RecipePreset, WriterRecipe};
 use cityparquet::source::{Source, SourceFormat};
 use cityparquet_cli::bench::{self, BenchOptions};
 use cityparquet_schema::Result as CpResult;
@@ -87,6 +87,17 @@ enum Commands {
         /// uses snappy).
         #[arg(long)]
         compression: Option<String>,
+
+        /// Write no Parquet bloom filter. By default every object table
+        /// carries filters on `id`, `feature_id` and its high-cardinality
+        /// string attributes, placed after the last row group.
+        #[arg(long, default_value_t = false)]
+        no_bloom: bool,
+
+        /// Target false-positive probability of every bloom filter, strictly
+        /// between 0 and 1.
+        #[arg(long, default_value_t = BloomPolicy::DEFAULT_FPP)]
+        bloom_fpp: f64,
 
         /// Row-emission order for the main table: "source" (as the input
         /// stream yields features) or "hilbert" (buffer every feature and
@@ -175,7 +186,7 @@ enum Commands {
         repeat: usize,
 
         /// Comma-separated variant identifiers
-        /// (`<preset>[+hilbert][+rg<N>][+<codec>[<level>]]`, e.g.
+        /// (`<preset>[+hilbert][+rg<N>][+<codec>[<level>]][+nobloom]`, e.g.
         /// `cityparquet+hilbert`, `cityparquet+rg512`, `cityparquet+zstd9`;
         /// see `cityparquet::variant`); omit for the default 9-variant set
         #[arg(long)]
@@ -391,6 +402,8 @@ fn main() -> std::process::ExitCode {
             zstd_level,
             recipe,
             compression,
+            no_bloom,
+            bloom_fpp,
             ordering,
             no_lod0,
             crs,
@@ -417,12 +430,21 @@ fn main() -> std::process::ExitCode {
                 None => None,
             };
 
+            let bloom = BloomPolicy {
+                enabled: !no_bloom,
+                fpp: bloom_fpp,
+            };
+            if let Err(e) = bloom.validate() {
+                eprintln!("error: --bloom-fpp: {}", render_error(&e));
+                return std::process::ExitCode::FAILURE;
+            }
             let recipe = WriterRecipe {
                 row_group_size,
                 zstd_level,
                 statistics_for_json: false,
                 preset: recipe.preset(),
                 compression,
+                bloom,
             };
             let ordering = ordering.row_order();
 

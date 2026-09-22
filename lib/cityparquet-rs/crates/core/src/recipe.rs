@@ -11,7 +11,7 @@ use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
 use arrow_schema::{Field, Schema};
 use parquet::arrow::ArrowSchemaConverter;
 use parquet::basic::{BrotliLevel, Compression, Encoding, GzipLevel, ZstdLevel};
-use parquet::file::properties::{EnabledStatistics, WriterProperties};
+use parquet::file::properties::{BloomFilterPosition, EnabledStatistics, WriterProperties};
 use parquet::schema::types::ColumnPath;
 
 use cityparquet_schema::{CityParquetError, CityParquetSchema, Result};
@@ -63,6 +63,47 @@ impl Codec {
     /// else (the caller decides how to report the invalid name).
     pub fn parse(s: &str) -> Option<Codec> {
         Codec::ALL.into_iter().find(|codec| codec.name() == s)
+    }
+}
+
+/// Parquet bloom filters on the object tables (specification "Physical
+/// encoding and conformance"; design decision G). Which columns carry one is
+/// decided by [`WriterRecipe::writer_properties`]; this switches them on and
+/// sets their target false-positive probability.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BloomPolicy {
+    pub enabled: bool,
+    /// Target false-positive probability of every filter written, strictly
+    /// between 0 and 1. parquet-rs sizes each filter for the row-group row
+    /// count and folds it down to the values actually present.
+    pub fpp: f64,
+}
+
+impl BloomPolicy {
+    /// The default target false-positive probability.
+    pub const DEFAULT_FPP: f64 = 0.01;
+
+    /// Rejects an `fpp` outside the open interval (0, 1) with a clear error,
+    /// where parquet-rs itself would panic.
+    pub fn validate(&self) -> Result<()> {
+        if self.fpp > 0.0 && self.fpp < 1.0 {
+            Ok(())
+        } else {
+            Err(CityParquetError::Schema(format!(
+                "invalid bloom-filter false-positive probability {}: expected a value \
+                 strictly between 0 and 1",
+                self.fpp
+            )))
+        }
+    }
+}
+
+impl Default for BloomPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            fpp: Self::DEFAULT_FPP,
+        }
     }
 }
 
@@ -145,7 +186,8 @@ impl RecipePreset {
     }
 
     /// The default [`WriterRecipe`] for this preset (row-group size 65536,
-    /// zstd level 3 — ignored by `Snappy` — `statistics_for_json` off).
+    /// zstd level 3 — ignored by `Snappy` — `statistics_for_json` off, bloom
+    /// filters on at FPP 0.01).
     pub fn recipe(&self) -> WriterRecipe {
         WriterRecipe {
             preset: *self,
@@ -188,6 +230,10 @@ pub struct WriterRecipe {
     /// field is the benchmark's compression-codec axis, independent of the
     /// per-column tuning rules a preset selects.
     pub compression: Option<Codec>,
+    /// Bloom filters on `id`, `feature_id` and the dataset's high-cardinality
+    /// string attributes. Honoured by every preset except
+    /// [`RecipePreset::ParquetDefaults`], which applies no per-column tuning.
+    pub bloom: BloomPolicy,
 }
 
 impl Default for WriterRecipe {
@@ -198,6 +244,7 @@ impl Default for WriterRecipe {
             statistics_for_json: false,
             preset: RecipePreset::CityParquet,
             compression: None,
+            bloom: BloomPolicy::default(),
         }
     }
 }
@@ -342,6 +389,24 @@ impl WriterRecipe {
             }
         }
 
+        // Bloom filters: `id` and `feature_id` in every object table — the
+        // two identifier columns whose min/max statistics cannot prune. Every
+        // filter goes after the last row group (`BloomFilterPosition::End`),
+        // where one coalesced range read reaches them all. NDV is left to
+        // parquet-rs, which resolves it to the row-group row count and folds
+        // each filter down to the values actually present. Placed after the
+        // `ParquetDefaults` early return, so that preset writes none.
+        if self.bloom.enabled {
+            self.bloom.validate()?;
+            builder = builder.set_bloom_filter_position(BloomFilterPosition::End);
+            for name in ["id", "feature_id"] {
+                let path = ColumnPath::new(vec![name.to_string()]);
+                builder = builder
+                    .set_column_bloom_filter_enabled(path.clone(), true)
+                    .set_column_bloom_filter_fpp(path, self.bloom.fpp);
+            }
+        }
+
         for leaf in BBOX_LEAVES {
             // `ColumnPath::from(String)` does NOT split on `.` — it produces
             // a single-part path. The physical column's path is the nested
@@ -406,6 +471,7 @@ mod tests {
     use super::*;
     use cityparquet_schema::{AttributeType, Lod};
     use parquet::basic::Compression;
+    use parquet::file::properties::BloomFilterPosition;
 
     fn sample_schema() -> CityParquetSchema {
         CityParquetSchema {
@@ -767,5 +833,101 @@ mod tests {
         let path = ColumnPath::from("geometry_lod2_2");
         assert!(!props.dictionary_enabled(&path));
         assert_eq!(props.statistics_enabled(&path), EnabledStatistics::Chunk);
+    }
+
+    #[test]
+    fn the_default_recipe_filters_id_and_feature_id_after_the_last_row_group() {
+        let props = WriterRecipe::default()
+            .writer_properties(&sample_schema())
+            .unwrap();
+        for name in ["id", "feature_id"] {
+            let bloom = props
+                .bloom_filter_properties(&ColumnPath::new(vec![name.to_string()]))
+                .unwrap_or_else(|| panic!("{name} must carry a bloom filter"));
+            assert_eq!(bloom.fpp, 0.01, "{name}");
+            // NDV is left to parquet-rs, which resolves it to the row-group
+            // row count.
+            assert_eq!(bloom.ndv, 65536, "{name}");
+        }
+        assert_eq!(props.bloom_filter_position(), BloomFilterPosition::End);
+        for name in ["object_type", "yoc", "other", "geometry_lod2_2"] {
+            assert!(
+                props
+                    .bloom_filter_properties(&ColumnPath::new(vec![name.to_string()]))
+                    .is_none(),
+                "{name} must not carry a bloom filter"
+            );
+        }
+        let bbox_xmin = ColumnPath::new(vec!["bbox".to_string(), "xmin".to_string()]);
+        assert!(props.bloom_filter_properties(&bbox_xmin).is_none());
+    }
+
+    #[test]
+    fn a_disabled_policy_and_parquet_defaults_write_no_filter() {
+        let disabled = WriterRecipe {
+            bloom: BloomPolicy {
+                enabled: false,
+                ..BloomPolicy::default()
+            },
+            ..WriterRecipe::default()
+        };
+        let parquet_defaults = RecipePreset::ParquetDefaults.recipe();
+        for recipe in [disabled, parquet_defaults] {
+            let props = recipe.writer_properties(&sample_schema()).unwrap();
+            for name in ["id", "feature_id"] {
+                assert!(
+                    props
+                        .bloom_filter_properties(&ColumnPath::new(vec![name.to_string()]))
+                        .is_none(),
+                    "{:?} must not filter {name}",
+                    recipe.preset
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_tuned_preset_honours_the_policy() {
+        for preset in RecipePreset::ALL {
+            let props = preset.recipe().writer_properties(&sample_schema()).unwrap();
+            let filtered = props
+                .bloom_filter_properties(&ColumnPath::new(vec!["id".to_string()]))
+                .is_some();
+            assert_eq!(
+                filtered,
+                preset != RecipePreset::ParquetDefaults,
+                "{preset:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fpp_reaches_the_properties_and_an_out_of_range_fpp_is_an_error() {
+        let recipe = WriterRecipe {
+            bloom: BloomPolicy {
+                enabled: true,
+                fpp: 0.05,
+            },
+            ..WriterRecipe::default()
+        };
+        let props = recipe.writer_properties(&sample_schema()).unwrap();
+        assert_eq!(
+            props
+                .bloom_filter_properties(&ColumnPath::new(vec!["id".to_string()]))
+                .unwrap()
+                .fpp,
+            0.05
+        );
+        for fpp in [0.0, 1.0, 1.5, -0.1, f64::NAN] {
+            let recipe = WriterRecipe {
+                bloom: BloomPolicy { enabled: true, fpp },
+                ..WriterRecipe::default()
+            };
+            let err = recipe
+                .writer_properties(&sample_schema())
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("strictly between 0 and 1"), "{fpp}: {err}");
+        }
     }
 }
