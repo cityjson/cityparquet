@@ -4,7 +4,7 @@
 
 **Goal:** Write standard Parquet bloom filters on every object table's `id`, `feature_id` and high-cardinality string attribute columns (default on, `+nobloom` / `--no-bloom` off), use them to prune row groups in `id_lookup`, a new `feature_lookup` and string-equality `attr_filter` (sync and async, the async path fetching every filter in one coalesced range request), write the same policy from duckdb-cityjson, specify it, and measure it as a one-pair `bloom` benchmark family.
 
-**Architecture:** parquet-rs does all sizing, hashing, folding, serialisation and metadata (`set_column_bloom_filter_*`, `BloomFilterPosition::End`, `Sbbf`). The writer's column set is decided in two places that never drift: `WriterRecipe::writer_properties` (the fixed `id`/`feature_id` rule and the policy switch) and `scan` (a HyperLogLog distinct-count per scalar string attribute, turned into `ScanResult::bloom_attributes`, canonicalised across partitions). The reader prunes with free functions that run on the builder's public metadata before a builder is configured: a pure `bloom_targets` shared by a sync `bloom_keep_row_groups` (local `pread`s) and an async `bloom_keep_row_groups_async` (one `AsyncFileReader::get_byte_ranges` call). Lookups read the surviving row groups one builder per row group (built from shared `ArrowReaderMetadata`), which is what makes `LookupStats::row_groups_read` exact. The benchmark harness gains lookup counters in its CSV, a `feature-lookup` scenario and a `bloom` family on the existing `--variants` machinery.
+**Architecture:** parquet-rs does all sizing, hashing, folding, serialisation and metadata (`set_column_bloom_filter_*`, `BloomFilterPosition::End`, `Sbbf`). The writer's column set is decided in two places that never drift: `WriterRecipe::writer_properties` (the fixed `id`/`feature_id` rule and the policy switch) and `scan` (a HyperLogLog distinct-count per scalar string attribute, turned into `ScanResult::bloom_attributes`, canonicalised across partitions). The reader prunes with free functions that run on the builder's public metadata before a builder is configured: a pure `bloom_targets` shared by a sync `bloom_keep_row_groups` (local `pread`s) and an async `bloom_keep_row_groups_async` (one `AsyncFileReader::get_byte_ranges` call). Lookups keep a single sync reader / async stream configured with `with_row_groups(prune.keep)` and the exact `RowFilter`, so an `id` hit still stops at its first match and the read pattern of the existing id-lookup figures is unchanged. Every single-column mask is resolved by exact root name (`ProjectionMask::columns` splits on `.`), identifier predicates accept `Utf8` and `Dictionary<Int32, Utf8>`, and a string probe is made only when the column itself is UTF-8 `BYTE_ARRAY`, after the predicate's type rules have been checked. The benchmark harness gains lookup counters in its CSV, a `feature-lookup` scenario and a `bloom` family on the existing `--variants` machinery.
 
 **Tech Stack:** Rust 2024 (toolchain 1.93.1), `parquet`/`arrow` 58 (58.3.0 resolved), `object_store` 0.13, `cardinality-estimator` 1.0.3, tokio; C++20 DuckDB extension (DuckDB v1.5.4) with sqllogictest; Python 3 (`uv`, pytest, matplotlib) for `benchviz`; bash for the recipe tests; Blume/MDX for the specification site.
 
@@ -36,13 +36,16 @@ These are decisions the implementer must not re-open; each is reported to the au
 1. **HLL crate: `cardinality-estimator` 1.0.3** (Cloudflare; released 2026-02-11; Apache-2.0, compatible with the workspace's `MIT OR Apache-2.0`; default hasher WyHash with a fixed seed, so `bloom_attributes` — and therefore the package layout — is reproducible run to run; exact counting below 129 distinct values, HLL++ with ~1.6 % standard error at the default `P = 12`, ≤ 3 KiB per column). Rejected: `hyperloglogplus` 0.4.1 (MIT, no `unsafe`, but unreleased since 2022-06, and its `new(precision, builder)` invites a `RandomState` hasher, which would make the selected column set vary between runs). Disclosed constraint: `CardinalityEstimator` exists only on 64-bit targets (`#[cfg(target_pointer_width = "64")]`) and uses `unsafe` internally for its tagged-pointer representation.
 2. **Presets.** The spec says "`NoDictionary` and `CityParquet` honour the policy". In `recipe.rs` every preset except `ParquetDefaults` runs the same per-column code after the `ParquetDefaults` early return, so `NoByteStreamSplit`, `NoDelta` and `Snappy` honour it too. This plan implements that (no preset-specific opt-out).
 3. **Partitioned conversion.** `bloom_attributes` must be dataset-wide, so it joins `CanonicalSchema` (package.rs:1243) and is stamped into every partition's scan (package.rs:1340-1363, partition.rs:402-411). `ScanResult::add_synthesized_lod0_column` diverts attributes after `scan`, so it also drops them from `bloom_attributes`, and `writer_properties` only honours names that are `String` attributes of the schema it renders.
-4. **`row_groups_read` "counted in the stream".** A batch carries no row-group index, so each kept row group is read by its own builder, all built from one `ArrowReaderMetadata` (`new_with_metadata`); a hit stops before the next builder. This changes the lookup's read pattern (equally for both variants) and is disclosed in the benchmark caveats.
+4. **No `row_groups_read` (decision 2026-09-22).** A batch carries no row-group index, and reading one builder per surviving row group would change the read pattern behind the existing cross-format id-lookup figures. Lookups therefore keep one reader configured with `with_row_groups(prune.keep)` and the exact `RowFilter`, stopping at an `id` hit, and `LookupStats` is `{ row_groups_total, bloom_pruned, filter_bytes }`. `filter_bytes` is the **bitset bytes of every filter examined** (32 × blocks), identical on both transports; header bytes and transport overhead are not counted (`CountingObjectStore` reports the latter).
 5. **No CLI lookup.** `cityparquet` has `convert`/`export`/`compare`/`bench` only (`crates/cli/src/main.rs:24`), so no `lookup --feature-id` form is added.
 6. **The async gate.** `query_async` is behind the `object-store` feature and `cargo test --workspace` does not enable it, so its tests never run under `cd lib/cityparquet-rs && just check` today (verified: 0 tests without the feature, 7 with it). Task 4 makes the library gate's `test` and `lint` recipes use `--all-features` (clippy with `--all-features` is clean at the plan's base commit).
 7. **duckdb-cityjson sidecars.** The spec keeps "Sidecar `COPY`s unchanged", but DuckDB's default writes filters on any dictionary-encoded chunk, so a sidecar could carry one and fail Acceptance 4c ("none on sidecars"). Task 6 adds `WRITE_BLOOM_FILTER false` to the sidecar `COPY`. Its row-group size is stated explicitly as DuckDB's default, 122 880 rows, and `DICTIONARY_SIZE_LIMIT` equals it.
 8. **Acceptance 1 for duckdb-cityjson (4c)** is read as: filters present on at least `id`, `feature_id` and the qualifying attributes (a documented superset), every offset past the data, lengths declared, none on sidecars.
 9. **HTTP for the bloom family.** `--variants` runs are local-only (coordinator.rs:217-219), yet the spec lists HTTP latency and requests as metrics. Task 10 lets a `--variants` run read already-written, uploaded variant packages over `--transport http` (no write children), mirroring how the format comparison already runs over HTTP against an uploaded prepared directory.
-10. **CSV contract.** Lookup counters become four appended CSV columns, `row_groups_total,bloom_pruned,row_groups_read,filter_bytes`, empty on every row that is not a CityParquet lookup. The child reports them on stderr (a marker line), so the timed stdout protocol keeps its 4/6-field shape.
+10. **CSV contract.** Lookup counters become three appended CSV columns, `row_groups_total,bloom_pruned,filter_bytes` (16 columns in all), empty on every row that is not a CityParquet lookup. The child reports them on stderr (a marker line), so the timed stdout protocol keeps its 4/6-field shape.
+11. **Exact column names.** parquet 58.3's `ProjectionMask::columns` splits a name on `.`, so an attribute whose name holds a literal `.` selected no leaf in `attr_filter`, `attr_stats`, `project_column` or `attr_predicate_row_filter`. Task 3 resolves every caller-supplied single-column mask by exact root name (`ProjectionMask::roots`).
+12. **Dictionary-typed identifiers.** A foreign writer may hand `id`/`feature_id` back as `Dictionary<Int32, Utf8>` (spec "Physical encoding and conformance"); the identifier `RowFilter` and `decode_batch` read them through `arrow_compat::string_view`.
+13. **Bloom eligibility follows the column.** `attr_filter` probes a filter only when the Arrow column is `Utf8`/`Dictionary<Int32, Utf8>` and its Parquet leaf is `BYTE_ARRAY` with a UTF-8 annotation, and only after the predicate's type rules pass on an empty array of the column's type — so a type error is raised identically with or without filters. `attr_filter_with_stats` exposes the pruning.
 
 ---
 
@@ -1271,16 +1274,18 @@ partitions, and passed to WriterRecipe::writer_properties."
 
 ---
 
-### Task 3: Sync bloom pruning — `id_lookup_with_stats` and `attr_filter`
+### Task 3: Sync bloom pruning — `id_lookup_with_stats` and `attr_filter_with_stats`
 
-A pure target finder, a sync pruner over any `ChunkReader`, the lookup statistics, and the two sync call sites. `id_lookup` keeps its signature and delegates.
+A pure target finder, a sync pruner over any `ChunkReader`, the lookup statistics, exact-name column masks, a column-typed probe rule, and the sync call sites. `id_lookup` and `attr_filter` keep their signatures and delegate. Every lookup still reads with ONE reader: `with_row_groups(prune.keep)` plus the exact `RowFilter`, so an `id` hit stops at its first match exactly as today.
 
 **Files:**
 
-- Modify: `lib/cityparquet-rs/crates/core/src/query_core.rs` — imports (10-21); new types and functions after `BBoxQueryResult` (after line 72); `id_row_filter` (349-367) replaced by `utf8_eq_row_filter`.
-- Modify: `lib/cityparquet-rs/crates/core/src/query.rs` — module doc (1-20), imports (22-31), `attr_filter` (106-139), `id_lookup` (190-222), new `bloom_keep_row_groups` and `id_lookup_with_stats`.
-- Modify: `lib/cityparquet-rs/crates/core/src/query_async.rs` — `id_lookup_async` (lines 226-230) keeps compiling against `utf8_eq_row_filter` (full async rewrite is Task 4).
+- Modify: `lib/cityparquet-rs/crates/core/src/query_core.rs` — imports (10-21); new types and functions after `BBoxQueryResult` (after line 72); `attr_predicate_row_filter` (303-322) now returns `Result` and masks by exact name; `id_row_filter` (346-367) replaced by `utf8_eq_row_filter`.
+- Modify: `lib/cityparquet-rs/crates/core/src/query.rs` — module doc (1-20), imports (22-31), `attr_filter` (106-139), `attr_stats` (157-180), `id_lookup` (190-222), `project_column` (228-250); new `bloom_keep_row_groups`, `id_lookup_with_stats`, `attr_filter_with_stats`.
+- Modify: `lib/cityparquet-rs/crates/core/src/query_async.rs` — the call sites that must keep compiling: `attr_filter_async` (150-160), `attr_stats_async` (195), `id_lookup_async` (226), `project_column_async` (262). Task 4 rewrites the lookup and filter functions.
+- Modify: `lib/cityparquet-rs/crates/core/src/decode.rs` — the `id`/`feature_id` columns in `decode_batch` (lines 479-481).
 - Modify: `lib/cityparquet-rs/crates/core/tests/bloom_real_data.rs` — reader tests.
+- Create: `lib/cityparquet-rs/crates/core/tests/bloom_foreign_real_data.rs` — a dotted attribute name and dictionary-typed identifiers through complete lookups.
 
 **Interfaces:**
 
@@ -1289,12 +1294,13 @@ A pure target finder, a sync pruner over any `ChunkReader`, the lookup statistic
   - `pub struct BloomTarget { pub row_group: usize, pub offset: u64, pub length: Option<u64> }` — `#[derive(Debug, Clone, Copy, PartialEq, Eq)]`.
   - `pub struct BloomTargets { pub leaf: Option<usize>, pub with_filter: Vec<BloomTarget>, pub without_filter: Vec<usize> }` — `#[derive(Debug, Clone, Default, PartialEq, Eq)]`.
   - `pub struct BloomPrune { pub keep: Vec<usize>, pub total: usize, pub pruned: usize, pub without_filter: usize, pub filter_bytes: u64 }` — `#[derive(Debug, Clone, Default, PartialEq, Eq)]`; `keep` ascending.
-  - `pub struct LookupStats { pub row_groups_total: usize, pub bloom_pruned: usize, pub row_groups_read: usize, pub filter_bytes: u64 }` — `#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]`, `impl std::ops::AddAssign`.
+  - `pub struct LookupStats { pub row_groups_total: usize, pub bloom_pruned: usize, pub filter_bytes: u64 }` — `#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]`, `impl std::ops::AddAssign`.
   - `pub fn bloom_targets(meta: &ParquetMetaData, column: &ColumnPath, candidates: &[usize]) -> BloomTargets`.
-  - crate-private: `BloomPrune::from_verdicts(targets: &BloomTargets, candidates: &[usize], verdicts: &[bool], filter_bytes: u64) -> BloomPrune`, `LookupStats::from_prune(prune: &BloomPrune) -> LookupStats`, `sbbf_matches_any(sbbf: &Sbbf, values: &[&str]) -> bool`, `top_level_path(name: &str) -> ColumnPath`, `bloom_probe_value(pred: &AttrPredicate) -> Option<&str>`, `utf8_eq_row_filter(parquet_schema: &SchemaDescriptor, column: &str, value: &str) -> RowFilter`.
+  - crate-private: `BloomPrune::from_verdicts(targets: &BloomTargets, candidates: &[usize], verdicts: &[bool], filter_bytes: u64) -> BloomPrune`, `BloomPrune::unpruned(candidates: &[usize]) -> BloomPrune`, `LookupStats::from_prune(prune: &BloomPrune) -> LookupStats`, `sbbf_matches_any(sbbf: &Sbbf, values: &[&str]) -> bool`, `filter_bitset_bytes(sbbf: &Sbbf) -> u64`, `top_level_path(name: &str) -> ColumnPath`, `root_mask(parquet_schema: &SchemaDescriptor, column: &str) -> Result<ProjectionMask>`, `string_probe<'a>(arrow_schema: &Schema, parquet_schema: &SchemaDescriptor, column: &str, pred: &'a AttrPredicate) -> Result<Option<&'a str>>`, `utf8_eq_row_filter(parquet_schema: &SchemaDescriptor, column: &str, value: &str) -> Result<RowFilter>`, `attr_predicate_row_filter(parquet_schema: &SchemaDescriptor, column: &str, pred: &AttrPredicate) -> Result<RowFilter>`.
   - `cityparquet::query::bloom_keep_row_groups<R: ChunkReader>(reader: &R, meta: &ParquetMetaData, column: &ColumnPath, values: &[&str], candidates: &[usize]) -> Result<BloomPrune>`.
   - `cityparquet::query::id_lookup_with_stats(table_path: &Path, meta: &CityMetadata, id: &str) -> Result<(Option<DecodedObject>, LookupStats)>`.
-  - Semantics used by every later task: `total = candidates.len()`; `pruned` = candidates with a filter in which no value tested positive; `without_filter` = candidates whose chunk has no filter (kept); `filter_bytes` = sum of `bloom_filter_length` of the filters read (for a filter without a declared length, its bitset size, `32 × num_blocks`); `row_groups_read` = kept row groups actually opened (a hit stops at its first match).
+  - `cityparquet::query::attr_filter_with_stats(table_path: &Path, column: &str, pred: &AttrPredicate) -> Result<(u64, LookupStats)>`.
+  - Semantics used by every later task: `total = candidates.len()`; `pruned` = candidates with a filter in which no value tested positive (IN semantics); `without_filter` = candidates kept unexamined (no filter, or no probe made); `filter_bytes` = the bitset bytes of every filter examined, `32 × Sbbf::num_blocks()`, the same on both transports (no header bytes, no transport overhead).
 
 - [ ] **Step 1: Write the failing reader tests**
 
@@ -1303,8 +1309,8 @@ In `bloom_real_data.rs`, add to the imports:
 ```rust
 use arrow_array::{Array, StringArray};
 use cityparquet::query::{
-    AttrPredicate, attr_filter, bloom_keep_row_groups, bloom_targets, id_lookup,
-    id_lookup_with_stats,
+    AttrPredicate, attr_filter, attr_filter_with_stats, bloom_keep_row_groups, bloom_targets,
+    id_lookup, id_lookup_with_stats,
 };
 use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::schema::CityMetadata;
@@ -1316,16 +1322,24 @@ use parquet::schema::types::ColumnPath;
 and append:
 
 ```rust
-/// A miss for every delft `id`/`feature_id`: the 3DBAG prefix with a suffix
-/// no BAG identifier carries.
+/// A miss for every delft `id`/`feature_id`/`identificatie`: the 3DBAG
+/// prefix with a suffix no BAG identifier carries.
 const MISS: &str = "NL.IMBAG.Pand.readbench-absent";
 
-/// Every non-null value of top-level Utf8 `column`, with its row group.
+/// Every non-null value of top-level Utf8 `column`, with its row group. The
+/// column is selected by its exact root index, never by a dotted name.
 fn values_by_row_group(table: &Path, column: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     for rg in 0..row_group_count(table) {
         let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(table).unwrap()).unwrap();
-        let mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
+        let root = builder
+            .parquet_schema()
+            .root_schema()
+            .get_fields()
+            .iter()
+            .position(|f| f.name() == column)
+            .unwrap_or_else(|| panic!("no column {column}"));
+        let mask = ProjectionMask::roots(builder.parquet_schema(), [root]);
         let reader = builder
             .with_projection(mask)
             .with_row_groups(vec![rg])
@@ -1426,11 +1440,49 @@ fn the_bloom_prune_never_drops_the_row_group_holding_an_id() {
         assert_eq!(prune.total, all.len());
         assert_eq!(prune.without_filter, 0);
         assert_eq!(prune.keep.len() + prune.pruned, all.len());
+        assert_eq!(prune.filter_bytes % 32, 0, "bitset bytes are whole blocks");
     }
 }
 
+/// IN semantics: probing several values keeps exactly the union of what each
+/// value keeps on its own.
 #[test]
-fn id_lookup_finds_sampled_ids_and_reports_what_it_read() {
+fn a_multi_value_probe_keeps_the_union_of_its_values() {
+    let out = convert_with("delft.city.jsonl", delft_recipe(64));
+    let table = out.path().join("building.parquet");
+    let meta = footer(&table);
+    let file = File::open(&table).unwrap();
+    let all: Vec<usize> = (0..meta.num_row_groups()).collect();
+    let ids = values_by_row_group(&table, "id");
+    let (first_rg, first) = &ids[0];
+    let (last_rg, last) = ids.last().unwrap();
+    assert_ne!(first_rg, last_rg);
+    let keep = |values: &[&str]| {
+        bloom_keep_row_groups(&file, &meta, &id_path(), values, &all)
+            .unwrap()
+            .keep
+    };
+    let mut union = keep(&[first.as_str()]);
+    union.extend(keep(&[last.as_str()]));
+    union.extend(keep(&[MISS]));
+    union.sort_unstable();
+    union.dedup();
+    let both = keep(&[first.as_str(), last.as_str(), MISS]);
+    assert_eq!(both, union);
+    assert!(both.contains(first_rg) && both.contains(last_rg));
+    let misses = bloom_keep_row_groups(
+        &file,
+        &meta,
+        &id_path(),
+        &[MISS, "NL.IMBAG.Pand.readbench-absent-2"],
+        &all,
+    )
+    .unwrap();
+    assert!(misses.pruned >= 1, "{misses:?}");
+}
+
+#[test]
+fn id_lookup_finds_sampled_ids_and_reports_the_prune() {
     let out = convert_with("delft.city.jsonl", delft_recipe(64));
     let table = out.path().join("building.parquet");
     let meta = table_meta(&table);
@@ -1438,8 +1490,7 @@ fn id_lookup_finds_sampled_ids_and_reports_what_it_read() {
         let (found, stats) = id_lookup_with_stats(&table, &meta, id).unwrap();
         assert_eq!(found.as_ref().map(|o| o.id.as_str()), Some(id.as_str()));
         assert_eq!(stats.row_groups_total, 35);
-        assert!(stats.row_groups_read >= 1);
-        assert!(stats.row_groups_read <= stats.row_groups_total - stats.bloom_pruned);
+        assert!(stats.bloom_pruned < stats.row_groups_total);
         assert!(stats.filter_bytes > 0);
         assert_eq!(
             id_lookup(&table, &meta, id).unwrap().map(|o| o.id),
@@ -1449,64 +1500,438 @@ fn id_lookup_finds_sampled_ids_and_reports_what_it_read() {
 }
 
 #[test]
-fn a_miss_is_pruned_by_the_filters_and_read_in_full_without_them() {
+fn a_miss_is_pruned_by_the_filters_and_unpruned_without_them() {
     let on = convert_with("delft.city.jsonl", delft_recipe(64));
     let table = on.path().join("building.parquet");
     let (found, stats) = id_lookup_with_stats(&table, &table_meta(&table), MISS).unwrap();
     assert!(found.is_none());
+    assert_eq!(stats.row_groups_total, 35);
     assert!(stats.bloom_pruned >= 1, "{stats:?}");
-    assert_eq!(stats.row_groups_read, stats.row_groups_total - stats.bloom_pruned);
 
     let off = convert_with("delft.city.jsonl", nobloom(64));
     let table = off.path().join("building.parquet");
     let (found, stats) = id_lookup_with_stats(&table, &table_meta(&table), MISS).unwrap();
     assert!(found.is_none());
-    assert_eq!(stats.bloom_pruned, 0);
-    assert_eq!(stats.row_groups_read, 35);
-    assert_eq!(stats.filter_bytes, 0);
+    assert_eq!(
+        stats,
+        cityparquet::query::LookupStats {
+            row_groups_total: 35,
+            bloom_pruned: 0,
+            filter_bytes: 0,
+        }
+    );
 }
 
-/// String equality on a filtered column (`identificatie`) and on an
-/// unfiltered one (`status`) counts exactly what an unfiltered package
-/// counts; a miss counts zero.
+/// `attr_filter` through its own pruning: a unique filtered string
+/// (`identificatie`), a repeated filtered string (`documentnummer`, its most
+/// frequent value), a miss, and an unfiltered column (`status`). Every count
+/// equals an independent count and the unfiltered package's count; the
+/// statistics show the filters at work.
 #[test]
-fn attr_filter_on_string_columns_counts_like_an_unfiltered_package() {
+fn attr_filter_prunes_filtered_string_columns_and_counts_exactly() {
     let on = convert_with("delft.city.jsonl", delft_recipe(64));
     let off = convert_with("delft.city.jsonl", nobloom(64));
     let on_table = on.path().join("building.parquet");
     let off_table = off.path().join("building.parquet");
-    assert!(filtered_columns(&on_table).contains_key("identificatie"));
+    let filtered = filtered_columns(&on_table);
+    assert!(filtered.contains_key("identificatie") && filtered.contains_key("documentnummer"));
 
-    let (_, target) = values_by_row_group(&on_table, "identificatie")
+    let count_of = |column: &str, value: &str| -> u64 {
+        values_by_row_group(&on_table, column)
+            .iter()
+            .filter(|(_, v)| v == value)
+            .count() as u64
+    };
+    let (_, unique) = values_by_row_group(&on_table, "identificatie")
         .into_iter()
         .nth(500)
         .unwrap();
-    for (column, value, expected) in [
-        ("identificatie", target.as_str(), Some(1)),
-        ("identificatie", MISS, Some(0)),
-        ("status", "Pand in gebruik", None),
+    let mut documents: BTreeMap<String, u64> = BTreeMap::new();
+    for (_, value) in values_by_row_group(&on_table, "documentnummer") {
+        *documents.entry(value).or_insert(0) += 1;
+    }
+    let (repeated, repeated_count) = documents
+        .iter()
+        .max_by_key(|(_, n)| **n)
+        .map(|(v, n)| (v.clone(), *n))
+        .unwrap();
+    assert!(repeated_count > 1);
+
+    // A value in few row groups must be pruned from some others; a repeated
+    // value may legitimately sit in every row group, so for it only the
+    // no-false-negative bound is asserted.
+    for (column, value, expected, must_prune) in [
+        ("identificatie", unique.as_str(), 1, true),
+        ("documentnummer", repeated.as_str(), repeated_count, false),
+        ("identificatie", MISS, 0, true),
     ] {
+        assert_eq!(count_of(column, value), expected, "{column}={value}");
+        let holding: std::collections::BTreeSet<usize> = values_by_row_group(&on_table, column)
+            .into_iter()
+            .filter(|(_, v)| v == value)
+            .map(|(rg, _)| rg)
+            .collect();
         let pred = AttrPredicate::Eq(serde_json::Value::String(value.to_string()));
-        let got = attr_filter(&on_table, column, &pred).unwrap();
-        assert_eq!(got, attr_filter(&off_table, column, &pred).unwrap(), "{column}={value}");
-        if let Some(expected) = expected {
-            assert_eq!(got, expected, "{column}={value}");
+        let (count, stats) = attr_filter_with_stats(&on_table, column, &pred).unwrap();
+        assert_eq!(count, expected, "{column}={value}");
+        assert_eq!(attr_filter(&on_table, column, &pred).unwrap(), expected);
+        assert_eq!(stats.row_groups_total, 35);
+        assert!(stats.bloom_pruned + holding.len() <= 35, "{column}={value}: {stats:?}");
+        if must_prune {
+            assert!(stats.bloom_pruned >= 1, "{column}={value}: {stats:?}");
+        }
+        assert!(stats.filter_bytes > 0);
+        let (off_count, off_stats) = attr_filter_with_stats(&off_table, column, &pred).unwrap();
+        assert_eq!(off_count, expected);
+        assert_eq!((off_stats.bloom_pruned, off_stats.filter_bytes), (0, 0));
+    }
+
+    let status = AttrPredicate::Eq(serde_json::Value::String("Pand in gebruik".to_string()));
+    let (count, stats) = attr_filter_with_stats(&on_table, "status", &status).unwrap();
+    assert_eq!(count, count_of("status", "Pand in gebruik"));
+    assert!(count > 0);
+    assert_eq!((stats.bloom_pruned, stats.filter_bytes), (0, 0), "status carries no filter");
+
+    let parts = AttrPredicate::Eq(serde_json::Value::String("BuildingPart".to_string()));
+    assert_eq!(attr_filter(&on_table, "object_type", &parts).unwrap(), 1116);
+}
+
+/// The predicate's type rules are checked on the column's own type before
+/// any filter is read, so the same error comes back with and without filters.
+#[test]
+fn attr_filter_type_errors_do_not_depend_on_filters() {
+    let on = convert_with("delft.city.jsonl", delft_recipe(64));
+    let off = convert_with("delft.city.jsonl", nobloom(64));
+    for (column, pred, message) in [
+        ("identificatie", AttrPredicate::Ge(1.0), "only `Eq(<string>)` applies"),
+        ("identificatie", AttrPredicate::Eq(serde_json::json!(1)), "only `Eq(<string>)` applies"),
+        (
+            "oorspronkelijkbouwjaar",
+            AttrPredicate::Eq(serde_json::Value::String("1994".to_string())),
+            "is numeric",
+        ),
+    ] {
+        for out in [&on, &off] {
+            let err = attr_filter(&out.path().join("building.parquet"), column, &pred)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(message), "{column} {pred:?}: {err}");
         }
     }
 }
 ```
 
-- [ ] **Step 2: Run and watch them fail**
-
-Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --test bloom_real_data`
-Expected: compile error — `unresolved imports cityparquet::query::bloom_keep_row_groups, bloom_targets, id_lookup_with_stats`.
-
-- [ ] **Step 3: Add the shared types to `query_core`**
-
-In `query_core.rs`, add to the imports:
+Create `lib/cityparquet-rs/crates/core/tests/bloom_foreign_real_data.rs`:
 
 ```rust
+//! Bloom-filter lookups on files whose columns a reader must not assume the
+//! shape of: an attribute whose name holds a literal `.`, and identifier and
+//! attribute columns a writer handed back as `Dictionary<Int32, Utf8>`.
+//! Built from the real delft fixture — a JSON rename, or a re-encoding of a
+//! converted table — never hand-written CityJSON.
+
+use std::collections::BTreeSet;
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use arrow_array::types::Int32Type;
+use arrow_array::{Array, ArrayRef, DictionaryArray, RecordBatch, StringArray};
+use arrow_schema::{DataType, Field, Schema};
+use cityparquet::package::{ConvertOptions, convert};
+use cityparquet::query::{AttrPredicate, attr_filter_with_stats, id_lookup_with_stats};
+use cityparquet::reader::CityParquetReaderBuilder;
+use cityparquet::recipe::{BloomPolicy, WriterRecipe};
+use cityparquet::schema::CityMetadata;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::{ArrowWriter, ProjectionMask};
+use parquet::file::properties::{BloomFilterPosition, WriterProperties};
+use parquet::file::reader::{FileReader, SerializedFileReader};
+use parquet::schema::types::ColumnPath;
+
+const MISS: &str = "NL.IMBAG.Pand.readbench-absent";
+/// The columns the dictionary copy re-encodes.
+const DICTIONARY_COLUMNS: [&str; 3] = ["id", "feature_id", "identificatie"];
+
+fn fixture(name: &str) -> PathBuf {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(name);
+    assert!(p.exists(), "missing fixture {name}; run `just fixtures`");
+    p
+}
+
+fn recipe(bloom: bool) -> WriterRecipe {
+    WriterRecipe {
+        row_group_size: 64,
+        bloom: BloomPolicy {
+            enabled: bloom,
+            ..BloomPolicy::default()
+        },
+        ..WriterRecipe::default()
+    }
+}
+
+/// delft with every `identificatie` attribute renamed to `to`.
+fn delft_renamed(to: &str) -> (tempfile::TempDir, PathBuf) {
+    let text = std::fs::read_to_string(fixture("delft.city.jsonl")).unwrap();
+    let mut out = String::new();
+    for (index, line) in text.lines().enumerate() {
+        if index == 0 || line.trim().is_empty() {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut feature: serde_json::Value = serde_json::from_str(line).unwrap();
+        for (_, object) in feature["CityObjects"].as_object_mut().unwrap() {
+            if let Some(attrs) = object
+                .get_mut("attributes")
+                .and_then(|a| a.as_object_mut())
+                && let Some(value) = attrs.remove("identificatie")
+            {
+                attrs.insert(to.to_string(), value);
+            }
+        }
+        out.push_str(&serde_json::to_string(&feature).unwrap());
+        out.push('\n');
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delft_renamed.city.jsonl");
+    std::fs::write(&path, out).unwrap();
+    (dir, path)
+}
+
+fn convert_input(input: &Path, bloom: bool) -> (tempfile::TempDir, PathBuf) {
+    let out = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(input.to_path_buf(), out.path().to_path_buf());
+    opts.recipe = recipe(bloom);
+    convert(&opts).unwrap();
+    let table = out.path().join("building.parquet");
+    (out, table)
+}
+
+fn table_meta(table: &Path) -> CityMetadata {
+    ParquetRecordBatchReaderBuilder::try_new(File::open(table).unwrap())
+        .unwrap()
+        .cityparquet_metadata()
+        .unwrap()
+}
+
+/// Every non-null value of `column` (plain or dictionary Utf8), selected by
+/// exact root index.
+fn values(table: &Path, column: &str) -> Vec<String> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(table).unwrap()).unwrap();
+    let root = builder
+        .parquet_schema()
+        .root_schema()
+        .get_fields()
+        .iter()
+        .position(|f| f.name() == column)
+        .unwrap();
+    let mask = ProjectionMask::roots(builder.parquet_schema(), [root]);
+    let mut out = Vec::new();
+    for batch in builder.with_projection(mask).build().unwrap() {
+        let batch = batch.unwrap();
+        let column = batch.column(0);
+        let plain = match column.as_any().downcast_ref::<DictionaryArray<Int32Type>>() {
+            Some(dict) => arrow_select::take::take(dict.values(), dict.keys(), None).unwrap(),
+            None => Arc::clone(column),
+        };
+        let strings = plain.as_any().downcast_ref::<StringArray>().unwrap();
+        out.extend(strings.iter().flatten().map(String::from));
+    }
+    out
+}
+
+fn filtered_columns(table: &Path) -> BTreeSet<String> {
+    let reader = SerializedFileReader::new(File::open(table).unwrap()).unwrap();
+    reader
+        .metadata()
+        .row_groups()
+        .iter()
+        .flat_map(|rg| rg.columns())
+        .filter(|c| c.bloom_filter_offset().is_some())
+        .map(|c| c.column_path().parts().join("/"))
+        .collect()
+}
+
+/// A copy of `src` with [`DICTIONARY_COLUMNS`] re-encoded as
+/// `Dictionary<Int32, Utf8>` (the embedded Arrow schema says so, so a reader
+/// hands them back as dictionaries), 64-row groups, the `city`/`geo` footer
+/// kept, and — when `bloom` — filters on those three columns.
+fn dictionary_copy(src: &Path, dst: &Path, bloom: bool) {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(src).unwrap()).unwrap();
+    let key_values: Vec<parquet::file::metadata::KeyValue> = builder
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|kv| kv.key != "ARROW:schema")
+        .collect();
+    let dictionary = DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8));
+    let source = builder.schema().clone();
+    let fields: Vec<Field> = source
+        .fields()
+        .iter()
+        .map(|f| {
+            if DICTIONARY_COLUMNS.contains(&f.name().as_str()) {
+                f.as_ref().clone().with_data_type(dictionary.clone())
+            } else {
+                f.as_ref().clone()
+            }
+        })
+        .collect();
+    let target = Arc::new(Schema::new_with_metadata(fields, source.metadata().clone()));
+    let mut props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(64))
+        .set_key_value_metadata(Some(key_values));
+    if bloom {
+        props = props.set_bloom_filter_position(BloomFilterPosition::End);
+        for name in DICTIONARY_COLUMNS {
+            let path = ColumnPath::new(vec![name.to_string()]);
+            props = props
+                .set_column_bloom_filter_enabled(path.clone(), true)
+                .set_column_bloom_filter_fpp(path, 0.01);
+        }
+    }
+    let mut writer =
+        ArrowWriter::try_new(File::create(dst).unwrap(), Arc::clone(&target), Some(props.build()))
+            .unwrap();
+    for batch in builder.build().unwrap() {
+        let batch = batch.unwrap();
+        let columns: Vec<ArrayRef> = batch
+            .schema()
+            .fields()
+            .iter()
+            .zip(batch.columns())
+            .map(|(field, column)| {
+                if DICTIONARY_COLUMNS.contains(&field.name().as_str()) {
+                    let strings = column.as_any().downcast_ref::<StringArray>().unwrap();
+                    Arc::new(strings.iter().collect::<DictionaryArray<Int32Type>>()) as ArrayRef
+                } else {
+                    Arc::clone(column)
+                }
+            })
+            .collect();
+        writer
+            .write(&RecordBatch::try_new(Arc::clone(&target), columns).unwrap())
+            .unwrap();
+    }
+    writer.close().unwrap();
+}
+
+/// An attribute named `bag.identificatie`: its filter is written under the
+/// single-part path, and `attr_filter` finds its rows by exact name — hit,
+/// miss, with and without filters. Its Parquet leaf index differs from its
+/// Arrow ordinal (every `bbox` and `geometry_properties` leaf precedes it),
+/// so resolving by ordinal would probe the wrong column.
+#[test]
+fn a_dotted_attribute_is_filtered_and_found_by_its_exact_name() {
+    let (_dir, input) = delft_renamed("bag.identificatie");
+    let (_on, on_table) = convert_input(&input, true);
+    let (_off, off_table) = convert_input(&input, false);
+    assert!(filtered_columns(&on_table).contains("bag.identificatie"));
+
+    let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(&on_table).unwrap()).unwrap();
+    let ordinal = builder.schema().index_of("bag.identificatie").unwrap();
+    let leaf = builder
+        .parquet_schema()
+        .columns()
+        .iter()
+        .position(|c| c.path().parts() == ["bag.identificatie".to_string()])
+        .unwrap();
+    assert_ne!(ordinal, leaf);
+
+    let target = values(&on_table, "bag.identificatie")[500].clone();
+    for (value, expected) in [(target.as_str(), 1u64), (MISS, 0)] {
+        let pred = AttrPredicate::Eq(serde_json::Value::String(value.to_string()));
+        let (count, stats) = attr_filter_with_stats(&on_table, "bag.identificatie", &pred).unwrap();
+        assert_eq!(count, expected, "{value}");
+        assert!(stats.bloom_pruned >= 1, "{value}: {stats:?}");
+        let (off_count, off_stats) =
+            attr_filter_with_stats(&off_table, "bag.identificatie", &pred).unwrap();
+        assert_eq!(off_count, expected, "{value}");
+        assert_eq!(off_stats.bloom_pruned, 0);
+    }
+}
+
+/// Dictionary-typed `id` and `identificatie` through complete lookups, with
+/// and without filters: the same objects and counts as the plain package,
+/// and pruning only where the filters are.
+#[test]
+fn dictionary_typed_identifiers_are_looked_up_like_plain_ones() {
+    let plain_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), plain_dir.path().to_path_buf());
+    opts.recipe = recipe(false);
+    convert(&opts).unwrap();
+    let plain = plain_dir.path().join("building.parquet");
+    let copies = tempfile::tempdir().unwrap();
+    let on = copies.path().join("dictionary_bloom.parquet");
+    let off = copies.path().join("dictionary_plain.parquet");
+    dictionary_copy(&plain, &on, true);
+    dictionary_copy(&plain, &off, false);
+    assert_eq!(
+        filtered_columns(&on),
+        DICTIONARY_COLUMNS.iter().map(|c| c.to_string()).collect()
+    );
+
+    let meta = table_meta(&plain);
+    let ids = values(&plain, "id");
+    let target = &ids[1000];
+    let expected = id_lookup_with_stats(&plain, &meta, target).unwrap().0.unwrap();
+    assert_eq!(&expected.id, target);
+    let identificatie = values(&plain, "identificatie")[500].clone();
+
+    for (table, filtered) in [(&on, true), (&off, false)] {
+        let meta = table_meta(table);
+        let (found, stats) = id_lookup_with_stats(table, &meta, target).unwrap();
+        assert_eq!(found.map(|o| o.id), Some(target.clone()));
+        assert_eq!(stats.row_groups_total, 35);
+        let (missing, stats) = id_lookup_with_stats(table, &meta, MISS).unwrap();
+        assert!(missing.is_none());
+        assert_eq!(stats.bloom_pruned >= 1, filtered, "{stats:?}");
+
+        let pred = AttrPredicate::Eq(serde_json::Value::String(identificatie.clone()));
+        let (count, stats) = attr_filter_with_stats(table, "identificatie", &pred).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(stats.bloom_pruned >= 1, filtered, "{stats:?}");
+        assert_eq!(stats.filter_bytes > 0, filtered);
+    }
+}
+```
+
+`arrow_select` is already a dependency of the crate. Task 4 adds the async transport's versions of these two tests to this file, and Task 5 a dictionary-typed `feature_id` lookup.
+
+- [ ] **Step 2: Run and watch them fail**
+
+Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --test bloom_real_data --test bloom_foreign_real_data`
+Expected: compile error — `unresolved imports cityparquet::query::attr_filter_with_stats, bloom_keep_row_groups, bloom_targets, id_lookup_with_stats`.
+
+- [ ] **Step 3: Add the shared types and rules to `query_core`**
+
+In `query_core.rs`, replace the imports (lines 10-21) with:
+
+```rust
+use arrow_array::{
+    Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, StructArray,
+    new_empty_array,
+};
+use arrow_schema::{DataType, Schema};
+use parquet::arrow::ProjectionMask;
+use parquet::arrow::arrow_reader::{ArrowPredicateFn, RowFilter};
+use parquet::basic::{ConvertedType, LogicalType, Type as PhysicalType};
 use parquet::bloom_filter::Sbbf;
+use parquet::file::metadata::{ParquetMetaData, RowGroupMetaData};
+use parquet::file::statistics::Statistics;
+use parquet::schema::types::{ColumnPath, SchemaDescriptor};
+
+use cityparquet_schema::{CityMetadata, CityParquetError, Result};
+
+use crate::decode::{DecodedObject, decode_batch};
+use crate::reader::{box_intersects_query, row_group_intersects};
+use crate::wkb_read::DecodedKind;
 ```
 
 After `BBoxQueryResult` (after line 72), insert:
@@ -1544,10 +1969,11 @@ pub struct BloomPrune {
     pub total: usize,
     /// Candidates whose filter rejected every value.
     pub pruned: usize,
-    /// Candidates kept because their chunk has no filter.
+    /// Candidates kept unexamined: no filter on their chunk, or no probe made.
     pub without_filter: usize,
-    /// Bytes of filter read: each declared `bloom_filter_length`, or the
-    /// bitset size of a filter without one.
+    /// Bitset bytes of every filter examined (32 per block), the same on the
+    /// sync and async paths. Header bytes and transport overhead are not
+    /// counted; `crate::counting_store::CountingObjectStore` reports the latter.
     pub filter_bytes: u64,
 }
 
@@ -1578,26 +2004,33 @@ impl BloomPrune {
             filter_bytes,
         }
     }
+
+    /// Every candidate kept, none examined — a predicate no filter answers.
+    pub(crate) fn unpruned(candidates: &[usize]) -> Self {
+        Self {
+            keep: candidates.to_vec(),
+            total: candidates.len(),
+            pruned: 0,
+            without_filter: candidates.len(),
+            filter_bytes: 0,
+        }
+    }
 }
 
-/// What one identifier lookup cost, in row groups and filter bytes.
+/// What the bloom filters did for one lookup or filter.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LookupStats {
     pub row_groups_total: usize,
     pub bloom_pruned: usize,
-    /// Kept row groups actually opened; a lookup that stops at its first
-    /// match reads fewer than it kept.
-    pub row_groups_read: usize,
+    /// [`BloomPrune::filter_bytes`].
     pub filter_bytes: u64,
 }
 
 impl LookupStats {
-    /// The prune's share of the statistics; `row_groups_read` starts at 0.
     pub(crate) fn from_prune(prune: &BloomPrune) -> Self {
         Self {
             row_groups_total: prune.total,
             bloom_pruned: prune.pruned,
-            row_groups_read: 0,
             filter_bytes: prune.filter_bytes,
         }
     }
@@ -1607,7 +2040,6 @@ impl std::ops::AddAssign for LookupStats {
     fn add_assign(&mut self, other: Self) {
         self.row_groups_total += other.row_groups_total;
         self.bloom_pruned += other.bloom_pruned;
-        self.row_groups_read += other.row_groups_read;
         self.filter_bytes += other.filter_bytes;
     }
 }
@@ -1663,71 +2095,169 @@ pub(crate) fn sbbf_matches_any(sbbf: &Sbbf, values: &[&str]) -> bool {
     values.iter().any(|value| sbbf.check(*value))
 }
 
+/// The [`BloomPrune::filter_bytes`] one filter contributes.
+pub(crate) fn filter_bitset_bytes(sbbf: &Sbbf) -> u64 {
+    32 * sbbf.num_blocks() as u64
+}
+
 /// A top-level column's single-part leaf path.
 pub(crate) fn top_level_path(name: &str) -> ColumnPath {
     ColumnPath::new(vec![name.to_string()])
 }
 
-/// The value `pred` probes a bloom filter with: only string equality. The
+/// The mask selecting top-level `column`, matched by its exact name.
+/// `ProjectionMask::columns` splits a name on `.`, so an attribute whose name
+/// holds a literal `.` would select no leaf at all.
+pub(crate) fn root_mask(parquet_schema: &SchemaDescriptor, column: &str) -> Result<ProjectionMask> {
+    let root = parquet_schema
+        .root_schema()
+        .get_fields()
+        .iter()
+        .position(|field| field.name() == column)
+        .ok_or_else(|| {
+            CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+        })?;
+    Ok(ProjectionMask::roots(parquet_schema, [root]))
+}
+
+/// The value `pred` probes `column`'s bloom filter with, or `None` when no
+/// probe applies. The predicate's type rules come first — checked on an
+/// empty array of the column's own type, so the error is the scan's own and
+/// never depends on whether the file carries filters. A probe is made only
+/// for string equality on a string column (`Utf8` or `Dictionary<Int32,
+/// Utf8>`) whose Parquet leaf is `BYTE_ARRAY` with a UTF-8 annotation: the
 /// numeric predicates compare through `f64` and never consult a filter.
-pub(crate) fn bloom_probe_value(pred: &AttrPredicate) -> Option<&str> {
-    match pred {
-        AttrPredicate::Eq(serde_json::Value::String(value)) => Some(value.as_str()),
-        _ => None,
+pub(crate) fn string_probe<'a>(
+    arrow_schema: &Schema,
+    parquet_schema: &SchemaDescriptor,
+    column: &str,
+    pred: &'a AttrPredicate,
+) -> Result<Option<&'a str>> {
+    let field = arrow_schema.field_with_name(column).map_err(|_| {
+        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+    })?;
+    evaluate_attr_predicate(column, new_empty_array(field.data_type()).as_ref(), pred)?;
+    let AttrPredicate::Eq(serde_json::Value::String(value)) = pred else {
+        return Ok(None);
+    };
+    let string_column = match field.data_type() {
+        DataType::Utf8 => true,
+        DataType::Dictionary(key, value) => {
+            key.as_ref() == &DataType::Int32 && value.as_ref() == &DataType::Utf8
+        }
+        _ => false,
+    };
+    if !string_column {
+        return Ok(None);
     }
+    let root = parquet_schema
+        .root_schema()
+        .get_fields()
+        .iter()
+        .position(|f| f.name() == column);
+    let leaves: Vec<usize> = match root {
+        Some(root) => (0..parquet_schema.num_columns())
+            .filter(|&leaf| parquet_schema.get_column_root_idx(leaf) == root)
+            .collect(),
+        None => Vec::new(),
+    };
+    let [leaf] = leaves[..] else {
+        return Ok(None);
+    };
+    let descr = parquet_schema.column(leaf);
+    let utf8 = descr.physical_type() == PhysicalType::BYTE_ARRAY
+        && (matches!(descr.logical_type_ref(), Some(LogicalType::String))
+            || descr.converted_type() == ConvertedType::UTF8);
+    Ok(utf8.then_some(value.as_str()))
 }
 ```
 
-Replace the whole `id_row_filter` function (lines 346-367, doc comment included) with:
+Replace `attr_predicate_row_filter` (303-322) with:
+
+```rust
+/// The single-column attribute-predicate [`RowFilter`] both transports
+/// install: `pred` evaluated by [`evaluate_attr_predicate`] over `column`
+/// alone, selected by exact name ([`root_mask`]).
+pub(crate) fn attr_predicate_row_filter(
+    parquet_schema: &SchemaDescriptor,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Result<RowFilter> {
+    let predicate_mask = root_mask(parquet_schema, column)?;
+    let owned_column = column.to_string();
+    let owned_pred = pred.clone();
+    let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
+        let array = batch.column(0);
+        evaluate_attr_predicate(&owned_column, array.as_ref(), &owned_pred)
+            .map_err(arrow_schema::ArrowError::from)
+    });
+    Ok(RowFilter::new(vec![Box::new(predicate_fn)]))
+}
+```
+
+Replace the whole `id_row_filter` function (doc comment included) with:
 
 ```rust
 /// The `column == value` [`RowFilter`] both transports install for the
 /// identifier lookups (`id`, `feature_id`): the predicate's own projection is
 /// `column` alone; the output projection stays untouched (the full row is
-/// decoded on a hit). A positive bloom result is never a match — this filter
-/// is what decides every row.
+/// decoded on a hit). Accepts `Utf8` and `Dictionary<Int32, Utf8>` — a
+/// writer's physical choice a reader must not depend on. A positive bloom
+/// result is never a match: this filter decides every row.
 pub(crate) fn utf8_eq_row_filter(
     parquet_schema: &SchemaDescriptor,
     column: &str,
     value: &str,
-) -> RowFilter {
-    let predicate_mask = ProjectionMask::columns(parquet_schema, [column]);
+) -> Result<RowFilter> {
+    let predicate_mask = root_mask(parquet_schema, column)?;
     let owned_column = column.to_string();
     let owned_value = value.to_string();
     let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
-        let values = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| {
-                arrow_schema::ArrowError::SchemaError(format!(
-                    "'{owned_column}' column is not Utf8"
-                ))
-            })?;
-        Ok(BooleanArray::from_iter((0..values.len()).map(|i| {
+        let values = crate::arrow_compat::string_view(batch.column(0).as_ref(), &owned_column)
+            .map_err(arrow_schema::ArrowError::from)?;
+        Ok(BooleanArray::from_iter((0..batch.num_rows()).map(|i| {
             Some(!values.is_null(i) && values.value(i) == owned_value)
         })))
     });
-    RowFilter::new(vec![Box::new(predicate_fn)])
+    Ok(RowFilter::new(vec![Box::new(predicate_fn)]))
 }
 ```
 
-In `query_async.rs` `id_lookup_async`, replace `let row_filter = query_core::id_row_filter(builder.parquet_schema(), id);` with `let row_filter = query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id);` (Task 4 rewrites the function).
+- [ ] **Step 4: Read dictionary-typed identifiers in `decode_batch`**
 
-- [ ] **Step 4: Add the sync pruner and lookup**
+In `decode.rs`, replace (lines 479-481):
+
+```rust
+    let id_col = downcast::<StringArray>(get_column(batch, "id")?.as_ref(), "id")?;
+    let feature_id_col =
+        downcast::<StringArray>(get_column(batch, "feature_id")?.as_ref(), "feature_id")?;
+```
+
+with:
+
+```rust
+    // Plain `Utf8` or `Dictionary<Int32, Utf8>`: a writer's physical choice
+    // (spec "Physical encoding and conformance").
+    let id_array = get_column(batch, "id")?;
+    let id_col = crate::arrow_compat::string_view(id_array.as_ref(), "id")?;
+    let feature_id_array = get_column(batch, "feature_id")?;
+    let feature_id_col =
+        crate::arrow_compat::string_view(feature_id_array.as_ref(), "feature_id")?;
+```
+
+(`id_col.value(row)` and `feature_id_col.is_null(row)`/`.value(row)` read the same through `StringView`; `id` is non-null per spec.) If `StringArray` is then unused in `decode.rs`, drop it from the imports as clippy directs.
+
+- [ ] **Step 5: The sync pruner, lookup and filter**
 
 In `query.rs`, replace the imports (lines 22-31) with:
 
 ```rust
 use std::fs::File;
 use std::path::Path;
-use std::sync::Arc;
 
 use cityparquet_schema::{CityMetadata, CityParquetError, Result};
 use parquet::arrow::ProjectionMask;
-use parquet::arrow::arrow_reader::{
-    ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
-};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::bloom_filter::Sbbf;
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::ChunkReader;
@@ -1751,8 +2281,9 @@ Append to the module doc comment (after line 20):
 //! bloom filters for a set of values and keeps only the row groups that can
 //! hold one; a chunk without a filter is always kept, and a positive result
 //! is never a match — the exact `RowFilter` still decides every row. The
-//! identifier lookups ([`id_lookup_with_stats`], `feature_lookup*`) and
-//! string-equality [`attr_filter`] use it.
+//! lookups and string-equality [`attr_filter`] read the kept row groups with
+//! one reader (`with_row_groups`), so an `id` hit still stops at its first
+//! match. Every single-column mask is resolved by exact column name.
 ```
 
 Directly before `id_lookup`, insert:
@@ -1780,9 +2311,7 @@ pub fn bloom_keep_row_groups<R: ChunkReader>(
                 .map_err(CityParquetError::parquet_from)?
             {
                 Some(sbbf) => {
-                    filter_bytes += target
-                        .length
-                        .unwrap_or(32 * sbbf.num_blocks() as u64);
+                    filter_bytes += query_core::filter_bitset_bytes(&sbbf);
                     verdicts.push(query_core::sbbf_matches_any(&sbbf, values));
                 }
                 None => verdicts.push(true),
@@ -1811,119 +2340,116 @@ pub fn id_lookup(
     id_lookup_with_stats(table_path, meta, id).map(|(object, _)| object)
 }
 
-/// [`id_lookup`] with what it cost. The `id` bloom filters prune the row
-/// groups first ([`bloom_keep_row_groups`]); each surviving row group is
-/// then read by a builder of its own, all sharing one parsed footer, with
-/// `id` as an exact `Eq` [`RowFilter`](parquet::arrow::arrow_reader::RowFilter)
-/// projected to `id` alone, and the first matching row is decoded in full
-/// via [`crate::decode::decode_batch`]. One builder per row group is what
-/// lets [`LookupStats::row_groups_read`] count exactly the row groups
-/// opened: a hit stops before the next one.
+/// [`id_lookup`] with what the filters did. The `id` bloom filters prune the
+/// row groups first ([`bloom_keep_row_groups`]); ONE reader then scans the
+/// kept row groups with `id` as an exact `Eq`
+/// [`RowFilter`](parquet::arrow::arrow_reader::RowFilter) projected to `id`
+/// alone, and the first matching row is decoded in full via
+/// [`crate::decode::decode_batch`] — the read stops there.
 pub fn id_lookup_with_stats(
     table_path: &Path,
     meta: &CityMetadata,
     id: &str,
 ) -> Result<(Option<DecodedObject>, LookupStats)> {
     let file = File::open(table_path)?;
-    let arrow_meta = ArrowReaderMetadata::load(&file, ArrowReaderOptions::new())
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
         .map_err(CityParquetError::parquet_from)?;
-    let candidates: Vec<usize> = (0..arrow_meta.metadata().num_row_groups()).collect();
+    let schema = builder.cityparquet_arrow_schema()?;
+    let candidates: Vec<usize> = (0..builder.metadata().num_row_groups()).collect();
     let prune = bloom_keep_row_groups(
         &file,
-        arrow_meta.metadata(),
+        builder.metadata(),
         &query_core::top_level_path("id"),
         &[id],
         &candidates,
     )?;
-    let mut stats = LookupStats::from_prune(&prune);
-    let schema =
-        ParquetRecordBatchReaderBuilder::new_with_metadata(file.try_clone()?, arrow_meta.clone())
-            .cityparquet_arrow_schema()?;
+    let stats = LookupStats::from_prune(&prune);
 
-    for row_group in prune.keep {
-        stats.row_groups_read += 1;
-        let builder =
-            ParquetRecordBatchReaderBuilder::new_with_metadata(file.try_clone()?, arrow_meta.clone());
-        let row_filter = query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id);
-        let parquet_reader = builder
-            .with_row_groups(vec![row_group])
-            .with_row_filter(row_filter)
-            .build()
-            .map_err(CityParquetError::parquet_from)?;
-        let reader = CityParquetRecordBatchReader::new(parquet_reader, Arc::clone(&schema));
-        for batch in reader {
-            if let Some(object) = query_core::first_decoded_object(&batch?, meta)? {
-                return Ok((Some(object), stats));
-            }
+    let row_filter = query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id)?;
+    let parquet_reader = builder
+        .with_row_groups(prune.keep)
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    let reader = CityParquetRecordBatchReader::new(parquet_reader, schema);
+    for batch in reader {
+        if let Some(object) = query_core::first_decoded_object(&batch?, meta)? {
+            return Ok((Some(object), stats));
         }
     }
     Ok((None, stats))
 }
 ```
 
-- [ ] **Step 5: Prune `attr_filter` and fix its doc comment**
-
 Replace the whole `attr_filter` function (lines 106-139, doc comment included) with:
 
 ```rust
-/// Opens `table_path`, restricts the scan to `column` alone via a
-/// [`ProjectionMask`], and applies `pred` as a Parquet
-/// [`RowFilter`](parquet::arrow::arrow_reader::RowFilter)
-/// (`ArrowPredicateFn`) so only `column` is ever decoded. Column statistics
-/// prune nothing here. For a string equality, `column`'s bloom filters —
-/// where the file carries them — first drop every row group that cannot
-/// hold the value ([`bloom_keep_row_groups`]); a positive bloom result is
-/// never a match, so the `RowFilter` still decides every row. Returns the
-/// COUNT of surviving rows (never the rows themselves): the `RowFilter`
-/// drops every non-matching row before it reaches the returned batches, so
-/// counting rows across them IS the matching count.
+/// The number of rows of `column` that satisfy `pred`. See
+/// [`attr_filter_with_stats`].
 pub fn attr_filter(table_path: &Path, column: &str, pred: &AttrPredicate) -> Result<u64> {
+    attr_filter_with_stats(table_path, column, pred).map(|(count, _)| count)
+}
+
+/// Opens `table_path`, restricts the scan to `column` alone (selected by its
+/// exact name) and applies `pred` as a Parquet
+/// [`RowFilter`](parquet::arrow::arrow_reader::RowFilter) (`ArrowPredicateFn`)
+/// so only `column` is ever decoded. Column statistics prune nothing here.
+/// The predicate's type rules are checked on the column's own type first, so
+/// a mismatch fails the same way with or without filters. For a string
+/// equality on a UTF-8 string column, the column's bloom filters — where the
+/// file carries them — then drop every row group that cannot hold the value
+/// ([`bloom_keep_row_groups`]); a positive bloom result is never a match, so
+/// the `RowFilter` still decides every row. Returns the COUNT of surviving
+/// rows (the `RowFilter` drops every non-matching row before it reaches the
+/// batches) and what the filters did.
+pub fn attr_filter_with_stats(
+    table_path: &Path,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Result<(u64, LookupStats)> {
     let file = File::open(table_path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file.try_clone()?)
         .map_err(CityParquetError::parquet_from)?;
 
-    // Checked now (before `builder` is consumed by `with_projection`/
-    // `with_row_filter` below) purely to fail fast with a clear "column not
-    // found" error; `evaluate_attr_predicate` re-derives the type itself from
-    // the projected batch's own schema, so this lookup is not load-bearing
-    // for correctness, only for a better error message.
-    query_core::require_column(builder.schema(), column)?;
-
-    // Same single-column mask twice: once as the predicate's own required
-    // projection (inside the row filter), once as the builder's overall
-    // output projection — `column` is the only thing either the predicate or
-    // the final count needs.
-    let output_mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
-    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred);
-
-    let mut builder = builder
-        .with_projection(output_mask)
-        .with_row_filter(row_filter);
-    if let Some(value) = query_core::bloom_probe_value(pred) {
-        let candidates: Vec<usize> = (0..builder.metadata().num_row_groups()).collect();
-        let prune = bloom_keep_row_groups(
+    let probe = query_core::string_probe(builder.schema(), builder.parquet_schema(), column, pred)?;
+    let output_mask = query_core::root_mask(builder.parquet_schema(), column)?;
+    let row_filter =
+        query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred)?;
+    let candidates: Vec<usize> = (0..builder.metadata().num_row_groups()).collect();
+    let prune = match probe {
+        Some(value) => bloom_keep_row_groups(
             &file,
             builder.metadata(),
             &query_core::top_level_path(column),
             &[value],
             &candidates,
-        )?;
-        builder = builder.with_row_groups(prune.keep);
-    }
-    let reader = builder.build().map_err(CityParquetError::parquet_from)?;
+        )?,
+        None => BloomPrune::unpruned(&candidates),
+    };
+    let stats = LookupStats::from_prune(&prune);
 
+    let reader = builder
+        .with_projection(output_mask)
+        .with_row_filter(row_filter)
+        .with_row_groups(prune.keep)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
     let mut count = 0u64;
     for batch in reader {
         count += batch.map_err(CityParquetError::parquet_from)?.num_rows() as u64;
     }
-    Ok(count)
+    Ok((count, stats))
 }
 ```
 
+In `attr_stats` and `project_column`, replace `let projection = ProjectionMask::columns(builder.parquet_schema(), [column]);` with `let projection = query_core::root_mask(builder.parquet_schema(), column)?;` (the `bbox_query` mask names the fixed `id`/`bbox` columns and stays). `ProjectionMask` is still imported for `bbox_query`.
+
+In `query_async.rs`, keep it compiling: in `attr_filter_async`, `attr_stats_async` and `project_column_async` replace each `ProjectionMask::columns(builder.parquet_schema(), [column])` with `query_core::root_mask(builder.parquet_schema(), column)?`, add `?` after `query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred)`, and in `id_lookup_async` replace `query_core::id_row_filter(builder.parquet_schema(), id)` with `query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id)?`.
+
 - [ ] **Step 6: Run the reader tests**
 
-Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --test bloom_real_data && cargo test -p cityparquet --test query_real_data`
-Expected: all pass (the existing `query_real_data` id and attribute tests still pass through the new code paths).
+Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --test bloom_real_data --test bloom_foreign_real_data --test query_real_data --test foreign_writer_schema && cargo test -p cityparquet --all-features --lib query_async`
+Expected: all pass — the existing id, attribute and foreign-writer tests included. If the reader's schema rendering refuses a dictionary `id` in the copy, that refusal is part of this fix (spec: a reader MUST NOT require a particular in-memory representation of a `VARCHAR` column).
 
 - [ ] **Step 7: Run the library gate**
 
@@ -1934,36 +2460,42 @@ Expected: PASS.
 
 ```bash
 git add lib/cityparquet-rs/crates/core/src/query_core.rs lib/cityparquet-rs/crates/core/src/query.rs \
-  lib/cityparquet-rs/crates/core/src/query_async.rs lib/cityparquet-rs/crates/core/tests/bloom_real_data.rs
+  lib/cityparquet-rs/crates/core/src/query_async.rs lib/cityparquet-rs/crates/core/src/decode.rs \
+  lib/cityparquet-rs/crates/core/tests/bloom_real_data.rs \
+  lib/cityparquet-rs/crates/core/tests/bloom_foreign_real_data.rs
 git commit -m "feat(query): prune id_lookup and string attr_filter with bloom filters
 
 bloom_targets locates a column's filters from footer metadata;
 bloom_keep_row_groups probes them over any ChunkReader with IN
-semantics, keeping chunks without a filter. id_lookup_with_stats reads
-the surviving row groups one builder each and reports LookupStats;
-id_lookup delegates. attr_filter prunes on string equality and its doc
-comment no longer claims statistics pruning."
+semantics. id_lookup_with_stats and attr_filter_with_stats read the kept
+row groups with one reader and report LookupStats; the plain forms
+delegate. Single-column masks resolve by exact name, identifier filters
+and decode_batch accept dictionary-typed ids, and a filter is probed only
+for a UTF-8 string column after the predicate's type check."
 ```
 
 ---
 
 ### Task 4: Async bloom pruning in one ranged request
 
-The async pruner collects every filter range from metadata and fetches them with a single `AsyncFileReader::get_byte_ranges` call (object_store coalesces nearby ranges into few requests); a filter without a declared length falls back to `get_row_group_column_bloom_filter`. The library gate starts running the async tests.
+The async pruner collects every filter range from metadata and fetches them with a single `AsyncFileReader::get_byte_ranges` call (object_store coalesces nearby ranges into few requests); a filter without a declared length falls back to `get_row_group_column_bloom_filter`. Lookups keep ONE stream over the kept row groups. The library gate starts running the async tests.
 
 **Files:**
 
 - Modify: `lib/cityparquet-rs/justfile` — `test` and `lint` recipes (lines 27-31).
 - Modify: `lib/cityparquet-rs/crates/core/Cargo.toml` — `[dev-dependencies]` (after `tower-http`).
-- Modify: `lib/cityparquet-rs/crates/core/src/query_async.rs` — imports (20-39), `attr_filter_async` (140-173), `id_lookup_async` (209-247), new `bloom_keep_row_groups_async` and `id_lookup_async_with_stats`, tests module (285-447).
+- Modify: `lib/cityparquet-rs/crates/core/src/query_async.rs` — imports (20-39), `attr_filter_async` (131-173), `id_lookup_async` (206-247), new `bloom_keep_row_groups_async`, `id_lookup_async_with_stats`, `attr_filter_async_with_stats`, tests module (285-447).
+- Modify: `lib/cityparquet-rs/crates/core/tests/bloom_foreign_real_data.rs` — the async versions of the dotted and dictionary tests.
 
 **Interfaces:**
 
-- Consumes: `BloomTargets`, `BloomPrune::from_verdicts`, `LookupStats::from_prune`, `sbbf_matches_any`, `top_level_path`, `bloom_probe_value`, `utf8_eq_row_filter` (Task 3); `bloom_keep_row_groups` for parity tests (Task 3).
+- Consumes: `BloomTargets`, `BloomPrune::{from_verdicts, unpruned}`, `LookupStats::from_prune`, `sbbf_matches_any`, `filter_bitset_bytes`, `top_level_path`, `root_mask`, `string_probe`, `utf8_eq_row_filter`, `attr_predicate_row_filter` (Task 3); `bloom_keep_row_groups`, `attr_filter_with_stats`, `id_lookup_with_stats` for parity tests (Task 3); the helpers in `bloom_foreign_real_data.rs` (Task 3).
 - Produces:
   - `pub async fn bloom_keep_row_groups_async<R>(reader: &mut R, metadata: &ArrowReaderMetadata, column: &ColumnPath, values: &[&str], candidates: &[usize]) -> Result<BloomPrune> where R: AsyncFileReader + Clone + Send + 'static` in `cityparquet::query_async`.
   - `pub async fn id_lookup_async_with_stats(store: Arc<dyn ObjectStore>, path: &ObjectPath, meta: &CityMetadata, id: &str) -> Result<(Option<DecodedObject>, LookupStats)>`.
-  - `id_lookup_async` keeps its signature and delegates.
+  - `pub async fn attr_filter_async_with_stats(store: Arc<dyn ObjectStore>, path: &ObjectPath, column: &str, pred: &AttrPredicate) -> Result<(u64, LookupStats)>`.
+  - `id_lookup_async` and `attr_filter_async` keep their signatures and delegate.
+  - `filter_bytes` equals the sync path's for the same file and probe, whether the filters came through the ranged call or the fallback.
 
 - [ ] **Step 1: Make the gate run the async tests**
 
@@ -2036,7 +2568,7 @@ In `query_async.rs` `mod tests`, add below the existing `delft_table` helper:
         let file = std::fs::File::open(table_file).unwrap();
         let builder =
             parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-        let mask = ProjectionMask::columns(builder.parquet_schema(), ["id"]);
+        let mask = query_core::root_mask(builder.parquet_schema(), "id").unwrap();
         let mut ids = Vec::new();
         for batch in builder.with_projection(mask).build().unwrap() {
             let batch = batch.unwrap();
@@ -2186,12 +2718,13 @@ In `query_async.rs` `mod tests`, add below the existing `delft_table` helper:
             &candidates,
         )
         .unwrap();
-        assert_eq!(prune, sync);
+        assert_eq!(prune, sync, "same keep, pruned count and filter bytes");
     }
 
     /// A filter without `bloom_filter_length` is read on its own through the
     /// builder's `get_row_group_column_bloom_filter`, never through the
-    /// ranged call — and prunes exactly as the ranged path does.
+    /// ranged call — and prunes, and accounts its bytes, exactly as the
+    /// ranged path does.
     #[tokio::test]
     async fn a_filter_without_a_declared_length_falls_back_to_a_per_row_group_read() {
         let dir = tempfile::tempdir().unwrap();
@@ -2223,8 +2756,8 @@ In `query_async.rs` `mod tests`, add below the existing `delft_table` helper:
             bloom_keep_row_groups_async(&mut reader, &declared, &column, &[MISS], &candidates)
                 .await
                 .unwrap();
-        assert_eq!(fallback.keep, ranged.keep);
-        assert_eq!(fallback.pruned, ranged.pruned);
+        assert_eq!(fallback, ranged);
+        assert!(fallback.filter_bytes > 0);
     }
 
     #[tokio::test]
@@ -2234,25 +2767,107 @@ In `query_async.rs` `mod tests`, add below the existing `delft_table` helper:
         let dir = tempfile::tempdir().unwrap();
         let (store, path) = delft_table_with(dir.path(), small_groups()).await;
         let table_file = dir.path().join(path.as_ref());
-        for value in ["NL.IMBAG.Pand.0503100000012869", MISS] {
+        for (column, value) in [
+            ("identificatie", "NL.IMBAG.Pand.0503100000012869"),
+            ("identificatie", MISS),
+            ("status", "Pand in gebruik"),
+        ] {
             let pred = AttrPredicate::Eq(serde_json::Value::String(value.to_string()));
-            let sync_count = crate::query::attr_filter(&table_file, "identificatie", &pred).unwrap();
-            let async_count = attr_filter_async(Arc::clone(&store), &path, "identificatie", &pred)
-                .await
-                .unwrap();
-            assert_eq!(async_count, sync_count, "{value}");
+            let sync = crate::query::attr_filter_with_stats(&table_file, column, &pred).unwrap();
+            let async_result =
+                attr_filter_async_with_stats(Arc::clone(&store), &path, column, &pred)
+                    .await
+                    .unwrap();
+            assert_eq!(async_result, sync, "{column}={value}");
         }
+        let (count, _) = attr_filter_async_with_stats(
+            Arc::clone(&store),
+            &path,
+            "identificatie",
+            &AttrPredicate::Eq(serde_json::Value::String(
+                "NL.IMBAG.Pand.0503100000012869".to_string(),
+            )),
+        )
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "the first delft Building's identificatie is unique");
+        let err = attr_filter_async(Arc::clone(&store), &path, "identificatie", &AttrPredicate::Ge(1.0))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("only `Eq(<string>)` applies"), "{err}");
     }
 ```
 
-`NL.IMBAG.Pand.0503100000012869` is the first Building's `identificatie` in `delft.city.jsonl`; the test compares transports, so it holds whatever that count is.
+In `bloom_foreign_real_data.rs`, append the async transport's versions of the Task 3 tests:
+
+```rust
+#[cfg(feature = "object-store")]
+fn local_store(dir: &Path) -> Arc<dyn object_store::ObjectStore> {
+    Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir).unwrap())
+}
+
+/// The dotted attribute over the async transport: the same counts and
+/// statistics as the sync path.
+#[cfg(feature = "object-store")]
+#[tokio::test]
+async fn a_dotted_attribute_is_found_by_its_exact_name_over_object_store() {
+    let (_dir, input) = delft_renamed("bag.identificatie");
+    let (on, on_table) = convert_input(&input, true);
+    let target = values(&on_table, "bag.identificatie")[500].clone();
+    let path = object_store::path::Path::from("building.parquet");
+    for value in [target.as_str(), MISS] {
+        let pred = AttrPredicate::Eq(serde_json::Value::String(value.to_string()));
+        let sync = attr_filter_with_stats(&on_table, "bag.identificatie", &pred).unwrap();
+        let async_result = cityparquet::query_async::attr_filter_async_with_stats(
+            local_store(on.path()),
+            &path,
+            "bag.identificatie",
+            &pred,
+        )
+        .await
+        .unwrap();
+        assert_eq!(async_result, sync, "{value}");
+    }
+}
+
+/// Dictionary-typed identifiers over the async transport.
+#[cfg(feature = "object-store")]
+#[tokio::test]
+async fn dictionary_typed_identifiers_are_looked_up_over_object_store() {
+    let plain_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), plain_dir.path().to_path_buf());
+    opts.recipe = recipe(false);
+    convert(&opts).unwrap();
+    let plain = plain_dir.path().join("building.parquet");
+    let copies = tempfile::tempdir().unwrap();
+    dictionary_copy(&plain, &copies.path().join("dictionary_bloom.parquet"), true);
+    let table = copies.path().join("dictionary_bloom.parquet");
+    let meta = table_meta(&table);
+    let target = values(&plain, "id")[1000].clone();
+    let path = object_store::path::Path::from("dictionary_bloom.parquet");
+    for id in [target.as_str(), MISS] {
+        let sync = id_lookup_with_stats(&table, &meta, id).unwrap();
+        let async_result = cityparquet::query_async::id_lookup_async_with_stats(
+            local_store(copies.path()),
+            &path,
+            &meta,
+            id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(async_result.1, sync.1, "{id}");
+        assert_eq!(async_result.0.map(|o| o.id), sync.0.map(|o| o.id), "{id}");
+    }
+}
+```
 
 - [ ] **Step 3: Run and watch them fail**
 
-Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --all-features --lib query_async`
-Expected: compile error — `cannot find function id_lookup_async_with_stats`, `cannot find function bloom_keep_row_groups_async`.
+Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --all-features --lib query_async && cargo test -p cityparquet --all-features --test bloom_foreign_real_data`
+Expected: compile error — `cannot find function id_lookup_async_with_stats`, `bloom_keep_row_groups_async`, `attr_filter_async_with_stats`.
 
-- [ ] **Step 4: Implement the async pruner and lookup**
+- [ ] **Step 4: Implement the async pruner, lookup and filter**
 
 In `query_async.rs`, replace the imports (lines 20-39) with:
 
@@ -2301,6 +2916,8 @@ Before `id_lookup_async`, insert:
 /// column are separated only by that row group's other filters, so the
 /// ranges coalesce. A filter without a declared length is read on its own
 /// through the builder's `get_row_group_column_bloom_filter`.
+/// [`BloomPrune::filter_bytes`] counts bitset bytes either way, so it equals
+/// the sync path's.
 pub async fn bloom_keep_row_groups_async<R>(
     reader: &mut R,
     metadata: &ArrowReaderMetadata,
@@ -2313,7 +2930,6 @@ where
 {
     let targets = query_core::bloom_targets(metadata.metadata(), column, candidates);
     let mut filters: Vec<Option<Sbbf>> = vec![None; targets.with_filter.len()];
-    let mut filter_bytes = 0u64;
 
     let ranged: Vec<(usize, Range<u64>)> = targets
         .with_filter
@@ -2330,8 +2946,7 @@ where
             .get_byte_ranges(ranged.iter().map(|(_, range)| range.clone()).collect())
             .await
             .map_err(CityParquetError::parquet_from)?;
-        for ((i, range), bytes) in ranged.iter().zip(fetched) {
-            filter_bytes += range.end - range.start;
+        for ((i, _), bytes) in ranged.iter().zip(fetched) {
             filters[*i] = Some(Sbbf::from_bytes(&bytes).map_err(CityParquetError::parquet_from)?);
         }
     }
@@ -2343,17 +2958,14 @@ where
             }
             let mut builder =
                 ParquetRecordBatchStreamBuilder::new_with_metadata(reader.clone(), metadata.clone());
-            let sbbf = builder
+            filters[i] = builder
                 .get_row_group_column_bloom_filter(target.row_group, leaf)
                 .await
                 .map_err(CityParquetError::parquet_from)?;
-            if let Some(sbbf) = &sbbf {
-                filter_bytes += 32 * sbbf.num_blocks() as u64;
-            }
-            filters[i] = sbbf;
         }
     }
 
+    let filter_bytes: u64 = filters.iter().flatten().map(query_core::filter_bitset_bytes).sum();
     let verdicts: Vec<bool> = filters
         .iter()
         .map(|filter| filter.as_ref().is_none_or(|sbbf| query_core::sbbf_matches_any(sbbf, values)))
@@ -2385,9 +2997,8 @@ pub async fn id_lookup_async(
 
 /// The async mirror of [`crate::query::id_lookup_with_stats`]: the footer is
 /// fetched once, the `id` filters with one ranged call
-/// ([`bloom_keep_row_groups_async`]), and each surviving row group by a
-/// stream of its own built from the shared footer, stopping at the first
-/// match.
+/// ([`bloom_keep_row_groups_async`]), and ONE stream then reads the kept row
+/// groups with the exact `id` filter, stopping at the first match.
 pub async fn id_lookup_async_with_stats(
     store: Arc<dyn ObjectStore>,
     path: &ObjectPath,
@@ -2407,41 +3018,58 @@ pub async fn id_lookup_async_with_stats(
         &candidates,
     )
     .await?;
-    let mut stats = LookupStats::from_prune(&prune);
-    let schema = ParquetRecordBatchStreamBuilder::new_with_metadata(reader.clone(), arrow_meta.clone())
-        .cityparquet_arrow_schema()?;
+    let stats = LookupStats::from_prune(&prune);
 
-    for row_group in prune.keep {
-        stats.row_groups_read += 1;
-        let builder =
-            ParquetRecordBatchStreamBuilder::new_with_metadata(reader.clone(), arrow_meta.clone());
-        let row_filter = query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id);
-        let mut stream = builder
-            .with_row_groups(vec![row_group])
-            .with_row_filter(row_filter)
-            .build()
-            .map_err(CityParquetError::parquet_from)?;
-        while let Some(batch) = stream
-            .try_next()
-            .await
-            .map_err(CityParquetError::parquet_from)?
-        {
-            if batch.num_rows() == 0 {
-                continue;
-            }
-            let batch = restamp(batch, &schema)?;
-            if let Some(object) = query_core::first_decoded_object(&batch, meta)? {
-                return Ok((Some(object), stats));
-            }
+    let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(reader, arrow_meta);
+    let schema = builder.cityparquet_arrow_schema()?;
+    let row_filter = query_core::utf8_eq_row_filter(builder.parquet_schema(), "id", id)?;
+    let mut stream = builder
+        .with_row_groups(prune.keep)
+        .with_row_filter(row_filter)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let batch = restamp(batch, &schema)?;
+        if let Some(object) = query_core::first_decoded_object(&batch, meta)? {
+            return Ok((Some(object), stats));
         }
     }
     Ok((None, stats))
 }
 ```
 
-In `attr_filter_async`, replace everything from `let reader = ParquetObjectReader::new(store, path.clone());` to the `.map_err(CityParquetError::parquet_from)?;` that ends the `let mut stream = builder ... .build()` statement with:
+Replace the whole `attr_filter_async` function (doc comment included) with:
 
 ```rust
+/// The async mirror of [`crate::query::attr_filter`]. See
+/// [`attr_filter_async_with_stats`].
+pub async fn attr_filter_async(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Result<u64> {
+    attr_filter_async_with_stats(store, path, column, pred)
+        .await
+        .map(|(count, _)| count)
+}
+
+/// The async mirror of [`crate::query::attr_filter_with_stats`]: the same
+/// type check, exact-name mask, `query_core::attr_predicate_row_filter`
+/// and probe rule, with the column's filters fetched in one ranged call.
+pub async fn attr_filter_async_with_stats(
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    column: &str,
+    pred: &AttrPredicate,
+) -> Result<(u64, LookupStats)> {
     let mut reader = ParquetObjectReader::new(store, path.clone());
     let arrow_meta = ArrowReaderMetadata::load_async(&mut reader, ArrowReaderOptions::new())
         .await
@@ -2449,37 +3077,50 @@ In `attr_filter_async`, replace everything from `let reader = ParquetObjectReade
     let builder =
         ParquetRecordBatchStreamBuilder::new_with_metadata(reader.clone(), arrow_meta.clone());
 
-    query_core::require_column(builder.schema(), column)?;
+    let probe = query_core::string_probe(builder.schema(), builder.parquet_schema(), column, pred)?;
+    let output_mask = query_core::root_mask(builder.parquet_schema(), column)?;
+    let row_filter =
+        query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred)?;
+    let candidates: Vec<usize> = (0..arrow_meta.metadata().num_row_groups()).collect();
+    let prune = match probe {
+        Some(value) => {
+            bloom_keep_row_groups_async(
+                &mut reader,
+                &arrow_meta,
+                &query_core::top_level_path(column),
+                &[value],
+                &candidates,
+            )
+            .await?
+        }
+        None => BloomPrune::unpruned(&candidates),
+    };
+    let stats = LookupStats::from_prune(&prune);
 
-    let output_mask = ProjectionMask::columns(builder.parquet_schema(), [column]);
-    let row_filter = query_core::attr_predicate_row_filter(builder.parquet_schema(), column, pred);
-
-    let mut builder = builder
+    let mut stream = builder
         .with_projection(output_mask)
-        .with_row_filter(row_filter);
-    if let Some(value) = query_core::bloom_probe_value(pred) {
-        let candidates: Vec<usize> = (0..arrow_meta.metadata().num_row_groups()).collect();
-        let prune = bloom_keep_row_groups_async(
-            &mut reader,
-            &arrow_meta,
-            &query_core::top_level_path(column),
-            &[value],
-            &candidates,
-        )
-        .await?;
-        builder = builder.with_row_groups(prune.keep);
+        .with_row_filter(row_filter)
+        .with_row_groups(prune.keep)
+        .build()
+        .map_err(CityParquetError::parquet_from)?;
+    let mut count = 0u64;
+    while let Some(batch) = stream
+        .try_next()
+        .await
+        .map_err(CityParquetError::parquet_from)?
+    {
+        count += batch.num_rows() as u64;
     }
-    let mut stream = builder.build().map_err(CityParquetError::parquet_from)?;
+    Ok((count, stats))
+}
 ```
 
-and extend its doc comment with: `/// String equality prunes with `column`'s bloom filters first, exactly as the sync path does ([`bloom_keep_row_groups_async`]).`
-
-The existing test `id_lookup_async_matches_sync_id_lookup_on_a_real_fixture` uses `StringArray` through `use super::*`; the new `#[cfg(test)] use arrow_array::{Array, StringArray};` keeps it compiling.
+`ProjectionMask` stays imported for `bbox_query_async`. The existing test `id_lookup_async_matches_sync_id_lookup_on_a_real_fixture` uses `StringArray` through `use super::*`; the `#[cfg(test)]` import keeps it compiling.
 
 - [ ] **Step 5: Run the async tests**
 
-Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --all-features --lib query_async`
-Expected: all eleven `query_async::tests` pass.
+Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --all-features --lib query_async && cargo test -p cityparquet --all-features --test bloom_foreign_real_data`
+Expected: all eleven `query_async::tests` and the four foreign tests pass.
 
 - [ ] **Step 6: Run the library gate**
 
@@ -2490,15 +3131,17 @@ Expected: PASS, with the async tests now among those run.
 
 ```bash
 git add lib/cityparquet-rs/justfile lib/cityparquet-rs/crates/core/Cargo.toml lib/cityparquet-rs/Cargo.lock \
-  lib/cityparquet-rs/crates/core/src/query_async.rs
+  lib/cityparquet-rs/crates/core/src/query_async.rs \
+  lib/cityparquet-rs/crates/core/tests/bloom_foreign_real_data.rs
 git commit -m "feat(query): async bloom pruning in one ranged request
 
 bloom_keep_row_groups_async fetches every declared-length filter with a
 single get_byte_ranges call and falls back to
-get_row_group_column_bloom_filter for a filter without a length.
-id_lookup_async_with_stats and string-equality attr_filter_async use it.
-The library gate runs with --all-features so the object-store transport
-is tested and linted."
+get_row_group_column_bloom_filter for a filter without a length,
+counting bitset bytes the same way on both paths.
+id_lookup_async_with_stats and attr_filter_async_with_stats use it and
+read the kept row groups with one stream. The library gate runs with
+--all-features so the object-store transport is tested and linted."
 ```
 
 ---
@@ -2512,13 +3155,14 @@ is tested and linted."
 - Modify: `lib/cityparquet-rs/crates/core/src/query.rs` — new functions after `id_lookup_with_stats`; module doc.
 - Modify: `lib/cityparquet-rs/crates/core/src/query_async.rs` — new functions after `id_lookup_async_with_stats`; tests.
 - Modify: `lib/cityparquet-rs/crates/core/tests/bloom_real_data.rs` — feature lookup tests.
+- Modify: `lib/cityparquet-rs/crates/core/tests/bloom_foreign_real_data.rs` — a dictionary-typed `feature_id` lookup.
 
 **Interfaces:**
 
-- Consumes: `bloom_keep_row_groups`, `bloom_keep_row_groups_async`, `LookupStats` (+ `AddAssign`, `from_prune`), `utf8_eq_row_filter`, `top_level_path` (Tasks 3-4).
+- Consumes: `bloom_keep_row_groups`, `bloom_keep_row_groups_async`, `LookupStats` (+ `AddAssign`, `from_prune`), `utf8_eq_row_filter` (returns `Result`), `top_level_path` (Tasks 3-4); `dictionary_copy`, `values`, `table_meta`, `recipe` in `bloom_foreign_real_data.rs` (Task 3).
 - Produces:
   - `pub fn feature_lookup(table_path: &Path, meta: &CityMetadata, feature_id: &str) -> Result<Vec<DecodedObject>>`
-  - `pub fn feature_lookup_with_stats(table_path: &Path, meta: &CityMetadata, feature_id: &str) -> Result<(Vec<DecodedObject>, LookupStats)>` — `row_groups_read == keep.len()`.
+  - `pub fn feature_lookup_with_stats(table_path: &Path, meta: &CityMetadata, feature_id: &str) -> Result<(Vec<DecodedObject>, LookupStats)>`.
   - `pub fn package_feature_lookup(package_dir: &Path, feature_id: &str) -> Result<Vec<DecodedObject>>`
   - `pub fn package_feature_lookup_with_stats(package_dir: &Path, feature_id: &str) -> Result<(Vec<DecodedObject>, LookupStats)>` — iterates the object tables `metadata.json` names, in manifest order, summing the statistics.
   - `pub async fn feature_lookup_async(store: Arc<dyn ObjectStore>, path: &ObjectPath, meta: &CityMetadata, feature_id: &str) -> Result<Vec<DecodedObject>>`
@@ -2571,7 +3215,7 @@ fn feature_lookup_returns_every_part_with_and_without_filters() {
                 "{feature}"
             );
             assert_eq!(stats.row_groups_total, 35);
-            assert_eq!(stats.row_groups_read, 35 - stats.bloom_pruned);
+            assert!(stats.bloom_pruned < stats.row_groups_total);
         }
         let plain = feature_lookup(&on_table, &table_meta(&on_table), feature).unwrap();
         assert_eq!(plain.len(), ids.len());
@@ -2623,10 +3267,48 @@ fn package_feature_lookup_spans_every_object_table() {
 }
 ```
 
+In `bloom_foreign_real_data.rs`, extend the `cityparquet::query` import with `feature_lookup_with_stats` and append:
+
+```rust
+/// A dictionary-typed `feature_id` returns every part of a feature, with and
+/// without filters, exactly as the plain package does.
+#[test]
+fn dictionary_typed_feature_ids_return_every_part() {
+    let plain_dir = tempfile::tempdir().unwrap();
+    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), plain_dir.path().to_path_buf());
+    opts.recipe = recipe(false);
+    convert(&opts).unwrap();
+    let plain = plain_dir.path().join("building.parquet");
+    let copies = tempfile::tempdir().unwrap();
+    let on = copies.path().join("dictionary_bloom.parquet");
+    let off = copies.path().join("dictionary_plain.parquet");
+    dictionary_copy(&plain, &on, true);
+    dictionary_copy(&plain, &off, false);
+
+    let feature = values(&plain, "feature_id")[1000].clone();
+    let ids = |table: &Path, feature: &str| -> Vec<String> {
+        feature_lookup_with_stats(table, &table_meta(table), feature)
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|o| o.id)
+            .collect()
+    };
+    let expected = ids(&plain, &feature);
+    assert!(expected.len() >= 2, "a delft feature is a Building and its parts");
+    for table in [&on, &off] {
+        assert_eq!(ids(table, &feature), expected, "{}", table.display());
+        let (objects, stats) = feature_lookup_with_stats(table, &table_meta(table), MISS).unwrap();
+        assert!(objects.is_empty());
+        assert_eq!(stats.bloom_pruned >= 1, table == &on, "{stats:?}");
+    }
+}
+```
+
 - [ ] **Step 2: Run and watch them fail**
 
-Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --test bloom_real_data feature`
-Expected: compile error — `unresolved imports cityparquet::query::feature_lookup` (and the three siblings).
+Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --test bloom_real_data --test bloom_foreign_real_data feature`
+Expected: compile error — `unresolved imports cityparquet::query::feature_lookup` (and its siblings).
 
 - [ ] **Step 3: Implement the sync forms**
 
@@ -2648,8 +3330,7 @@ pub fn feature_lookup(
 /// prune the row groups first; the survivors are then read to the end — a
 /// feature's rows may span row groups, so there is no early stop — with an
 /// exact `feature_id` equality `RowFilter`, and every matching row is
-/// decoded in full. [`LookupStats::row_groups_read`] is therefore the number
-/// of row groups kept.
+/// decoded in full. One reader reads every kept row group.
 pub fn feature_lookup_with_stats(
     table_path: &Path,
     meta: &CityMetadata,
@@ -2667,11 +3348,10 @@ pub fn feature_lookup_with_stats(
         &[feature_id],
         &candidates,
     )?;
-    let mut stats = LookupStats::from_prune(&prune);
-    stats.row_groups_read = prune.keep.len();
+    let stats = LookupStats::from_prune(&prune);
 
     let row_filter =
-        query_core::utf8_eq_row_filter(builder.parquet_schema(), "feature_id", feature_id);
+        query_core::utf8_eq_row_filter(builder.parquet_schema(), "feature_id", feature_id)?;
     let parquet_reader = builder
         .with_row_groups(prune.keep)
         .with_row_filter(row_filter)
@@ -2717,8 +3397,8 @@ pub fn package_feature_lookup_with_stats(
 
 - [ ] **Step 4: Run the sync tests**
 
-Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --test bloom_real_data feature`
-Expected: the three feature tests pass.
+Run: `cd lib/cityparquet-rs && cargo test -p cityparquet --test bloom_real_data --test bloom_foreign_real_data feature`
+Expected: the four feature tests pass.
 
 - [ ] **Step 5: Write the failing async test**
 
@@ -2803,13 +3483,12 @@ pub async fn feature_lookup_async_with_stats(
         &candidates,
     )
     .await?;
-    let mut stats = LookupStats::from_prune(&prune);
-    stats.row_groups_read = prune.keep.len();
+    let stats = LookupStats::from_prune(&prune);
 
     let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(reader, arrow_meta);
     let schema = builder.cityparquet_arrow_schema()?;
     let row_filter =
-        query_core::utf8_eq_row_filter(builder.parquet_schema(), "feature_id", feature_id);
+        query_core::utf8_eq_row_filter(builder.parquet_schema(), "feature_id", feature_id)?;
     let mut stream = builder
         .with_row_groups(prune.keep)
         .with_row_filter(row_filter)
@@ -2843,7 +3522,8 @@ Expected: PASS.
 
 ```bash
 git add lib/cityparquet-rs/crates/core/src/query.rs lib/cityparquet-rs/crates/core/src/query_async.rs \
-  lib/cityparquet-rs/crates/core/tests/bloom_real_data.rs
+  lib/cityparquet-rs/crates/core/tests/bloom_real_data.rs \
+  lib/cityparquet-rs/crates/core/tests/bloom_foreign_real_data.rs
 git commit -m "feat(query): feature_id lookup pruned by bloom filters
 
 feature_lookup returns every row of a feature — the feature and its
@@ -3331,7 +4011,7 @@ software page states the duckdb-cityjson superset."
 
 ### Task 8: Readbench harness — lookup counters and the `feature-lookup` scenario
 
-The CityParquet runner calls the `_with_stats` lookups and reports their counters; the CSV gains four trailing columns; a CityParquet-only `feature-lookup` scenario runs two probes, `feature-50pct` and `feature-miss`. No family wiring yet (Task 9).
+The CityParquet runner calls the `_with_stats` lookups and reports their counters; the CSV gains three trailing columns; a CityParquet-only `feature-lookup` scenario runs two probes, `feature-50pct` and `feature-miss`. No family wiring yet (Task 9).
 
 **Files:**
 
@@ -3354,9 +4034,9 @@ The CityParquet runner calls the `_with_stats` lookups and reports their counter
 - Produces:
   - `Scenario::FeatureLookup` (`"feature-lookup"`), not in `Scenario::ALL`.
   - `QueryParams::target_feature_id: Option<String>`; child flag `--target-feature-id`; run flag `--feature-probes <tags>`; `RunOptions::feature_probes: Option<Vec<String>>`.
-  - `pub struct LookupCounters { pub row_groups_total: u64, pub bloom_pruned: u64, pub row_groups_read: u64, pub filter_bytes: u64 }` and `RunOutcome::lookup: Option<LookupCounters>` in `formats`; `pub const LOOKUP_STATS_MARKER: &str = "cityparquet-readbench: lookup-stats"`; `pub const FEATURE_LOOKUP_CITYPARQUET_ONLY: &str`.
+  - `pub struct LookupCounters { pub row_groups_total: u64, pub bloom_pruned: u64, pub filter_bytes: u64 }` and `RunOutcome::lookup: Option<LookupCounters>` in `formats`; `pub const LOOKUP_STATS_MARKER: &str = "cityparquet-readbench: lookup-stats"`; `pub const FEATURE_LOOKUP_CITYPARQUET_ONLY: &str`.
   - `params::FEATURE_50PCT_TAG = "feature-50pct"`, `params::FEATURE_MISS_TAG = "feature-miss"`, `pub fn feature_probes(id_probes: &[IdProbe]) -> Vec<IdProbe>`, `ResolvedParams::feature_probes: Vec<IdProbe>` (in `<out>.params.json`).
-  - CSV header: `dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,row_groups_read,filter_bytes` — the last four filled only on CityParquet `id-lookup`/`feature-lookup` rows.
+  - CSV header: `dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes` (16 columns) — the last three filled only on CityParquet `id-lookup`/`feature-lookup` rows.
 
 - [ ] **Step 1: Write the failing unit tests**
 
@@ -3399,38 +4079,37 @@ In `coordinator.rs` `mod tests`, add `lookup: None,` to the `row` helper's `Row`
 
 ```rust
     #[test]
-    fn lookup_counters_fill_the_four_trailing_columns_and_are_empty_otherwise() {
+    fn lookup_counters_fill_the_three_trailing_columns_and_are_empty_otherwise() {
         let plain = row(Scenario::IdLookup, &["id-miss"]);
         let rendered = plain.render();
-        assert!(rendered.ends_with("id-miss,,,,,,"), "{rendered}");
+        assert!(rendered.ends_with("id-miss,,,,,"), "{rendered}");
         assert_eq!(rendered.split(',').count(), CSV_HEADER.split(',').count());
 
         let mut counted = row(Scenario::IdLookup, &["id-miss"]);
         counted.lookup = Some(LookupCounters {
             row_groups_total: 16,
             bloom_pruned: 15,
-            row_groups_read: 1,
             filter_bytes: 4096,
         });
         let rendered = counted.render();
-        assert!(rendered.ends_with("id-miss,,,16,15,1,4096"), "{rendered}");
+        assert!(rendered.ends_with("id-miss,,,16,15,4096"), "{rendered}");
         assert_eq!(rendered.split(',').count(), CSV_HEADER.split(',').count());
     }
 
     #[test]
     fn a_childs_lookup_counters_are_read_from_its_marker_line() {
-        let stderr = format!("some log\n{LOOKUP_STATS_MARKER} 16 15 1 4096\n");
+        let stderr = format!("some log\n{LOOKUP_STATS_MARKER} 16 15 4096\n");
         assert_eq!(
             child_lookup_counters(&stderr).unwrap(),
             Some(LookupCounters {
                 row_groups_total: 16,
                 bloom_pruned: 15,
-                row_groups_read: 1,
                 filter_bytes: 4096,
             })
         );
         assert_eq!(child_lookup_counters("some log\n").unwrap(), None);
         assert!(child_lookup_counters(&format!("{LOOKUP_STATS_MARKER} 1 2\n")).is_err());
+        assert!(child_lookup_counters(&format!("{LOOKUP_STATS_MARKER} 1 2 3 4\n")).is_err());
     }
 ```
 
@@ -3495,19 +4174,19 @@ pub struct RunOutcome {
     pub lookup: Option<LookupCounters>,
 }
 
-/// What one CityParquet identifier lookup cost —
+/// What the bloom filters did for one CityParquet identifier lookup —
 /// `cityparquet::query::LookupStats` as the child reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LookupCounters {
     pub row_groups_total: u64,
     pub bloom_pruned: u64,
-    pub row_groups_read: u64,
+    /// Bitset bytes of every filter examined (`LookupStats::filter_bytes`).
     pub filter_bytes: u64,
 }
 
 /// A child reports its [`LookupCounters`] on stderr, after its timed stdout
-/// line, as `<marker> <row_groups_total> <bloom_pruned> <row_groups_read>
-/// <filter_bytes>`, so the timed stdout protocol keeps its shape.
+/// line, as `<marker> <row_groups_total> <bloom_pruned> <filter_bytes>`, so
+/// the timed stdout protocol keeps its shape.
 pub const LOOKUP_STATS_MARKER: &str = "cityparquet-readbench: lookup-stats";
 
 /// Every non-CityParquet runner's answer to [`Scenario::FeatureLookup`].
@@ -3540,7 +4219,6 @@ fn counters(stats: LookupStats) -> LookupCounters {
     LookupCounters {
         row_groups_total: stats.row_groups_total as u64,
         bloom_pruned: stats.bloom_pruned as u64,
-        row_groups_read: stats.row_groups_read as u64,
         filter_bytes: stats.filter_bytes,
     }
 }
@@ -3665,11 +4343,10 @@ In `main.rs`, after the `match outcome.io { .. }` that prints the stdout line, a
 ```rust
     if let Some(lookup) = outcome.lookup {
         eprintln!(
-            "{} {} {} {} {}",
+            "{} {} {} {}",
             formats::LOOKUP_STATS_MARKER,
             lookup.row_groups_total,
             lookup.bloom_pruned,
-            lookup.row_groups_read,
             lookup.filter_bytes
         );
     }
@@ -3722,7 +4399,7 @@ and in `resolve`, before `let meta = open_metadata(cp_table)?;` add `let feature
 In `coordinator.rs`:
 
 - Imports: `use crate::formats::{IoStats, LOOKUP_STATS_MARKER, LookupCounters, Source};`
-- Module doc, after the sentence ending `(`id-10pct`, `id-50pct`, `id-90pct`, `id-miss`).` add: `//! [`Scenario::FeatureLookup`] (CityParquet only, and only when named) emits two: `feature-50pct` and `feature-miss`. Every CityParquet lookup row carries its [`LookupCounters`] in the four trailing CSV columns.`
+- Module doc, after the sentence ending `(`id-10pct`, `id-50pct`, `id-90pct`, `id-miss`).` add: `//! [`Scenario::FeatureLookup`] (CityParquet only, and only when named) emits two: `feature-50pct` and `feature-miss`. Every CityParquet lookup row carries its [`LookupCounters`] in the three trailing CSV columns.`
 - `RunOptions`, after `id_probes`:
 
 ```rust
@@ -3735,10 +4412,10 @@ In `coordinator.rs`:
 ```rust
 const CSV_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,\
 peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
-bloom_pruned,row_groups_read,filter_bytes";
+bloom_pruned,filter_bytes";
 ```
 
-and append to its doc comment: `/// The last four are a CityParquet lookup's [`LookupCounters`], empty on every other row.`
+and append to its doc comment: `/// The last three are a CityParquet lookup's [`LookupCounters`], empty on every other row.`
 
 - Replace the whole `if let Some(requested) = &opts.id_probes { .. }` block (360-391) with:
 
@@ -3875,13 +4552,12 @@ fn child_lookup_counters(stderr: &str) -> Result<Option<LookupCounters>> {
                 .with_context(|| format!("parsing lookup counter '{field}'"))
         })
         .collect::<Result<_>>()?;
-    let [row_groups_total, bloom_pruned, row_groups_read, filter_bytes] = fields[..] else {
-        bail!("expected four lookup counters after '{LOOKUP_STATS_MARKER}', got '{line}'");
+    let [row_groups_total, bloom_pruned, filter_bytes] = fields[..] else {
+        bail!("expected three lookup counters after '{LOOKUP_STATS_MARKER}', got '{line}'");
     };
     Ok(Some(LookupCounters {
         row_groups_total,
         bloom_pruned,
-        row_groups_read,
         filter_bytes,
     }))
 }
@@ -3893,11 +4569,8 @@ fn child_lookup_counters(stderr: &str) -> Result<Option<LookupCounters>> {
 
 ```rust
         let lookup_fields = match self.lookup {
-            Some(l) => format!(
-                "{},{},{},{}",
-                l.row_groups_total, l.bloom_pruned, l.row_groups_read, l.filter_bytes
-            ),
-            None => ",,,".to_string(),
+            Some(l) => format!("{},{},{}", l.row_groups_total, l.bloom_pruned, l.filter_bytes),
+            None => ",,".to_string(),
         };
 ```
 
@@ -3921,12 +4594,12 @@ Expected: all unit tests pass.
 
 - [ ] **Step 9: Write the failing integration tests**
 
-In `tests/coordinator.rs`, extend `CSV_COLUMNS` to `[&str; 17]` with `"row_groups_total", "bloom_pruned", "row_groups_read", "filter_bytes"` appended, and set:
+In `tests/coordinator.rs`, extend `CSV_COLUMNS` to `[&str; 16]` with `"row_groups_total", "bloom_pruned", "filter_bytes"` appended, and set:
 
 ```rust
 const EXPECTED_HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,\
 time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,\
-row_groups_total,bloom_pruned,row_groups_read,filter_bytes";
+row_groups_total,bloom_pruned,filter_bytes";
 ```
 
 then append:
@@ -3983,7 +4656,7 @@ fn feature_lookup_measures_cityparquet_only_with_lookup_counters() {
 }
 ```
 
-In `tests/variants.rs`, set `HEADER` to the same 17-column string and append:
+In `tests/variants.rs`, set `HEADER` to the same 16-column string and append:
 
 ```rust
 /// The bloom pair: the same package with and without filters. Lookup rows
@@ -4024,17 +4697,18 @@ fn a_bloom_pair_records_lookup_counters() {
     assert_eq!(rows.len(), 10, "{text}");
     for row in &rows {
         let (label, scenario) = (field(row, 1), field(row, 2));
-        let counters: Vec<&str> = (13..17).map(|i| field(row, i)).collect();
+        let counters: Vec<&str> = (13..16).map(|i| field(row, i)).collect();
+        assert_eq!(row.split(',').count(), 16, "{row}");
         if scenario == "write" {
-            assert_eq!(counters, vec!["", "", "", ""], "{row}");
+            assert_eq!(counters, vec!["", "", ""], "{row}");
             continue;
         }
         assert_eq!(counters[0], "1", "delft is one row group: {row}");
         if label == "cityparquet+nobloom" {
             assert_eq!(counters[1], "0", "{row}");
-            assert_eq!(counters[3], "0", "{row}");
+            assert_eq!(counters[2], "0", "{row}");
         } else {
-            assert_ne!(counters[3], "0", "{row}");
+            assert_ne!(counters[2], "0", "{row}");
         }
     }
 }
@@ -4043,39 +4717,41 @@ fn a_bloom_pair_records_lookup_counters() {
 - [ ] **Step 10: Run the integration tests**
 
 Run: `cargo test --manifest-path benchmark/readbench/Cargo.toml`
-Expected: the whole suite passes, the two new tests included. (Before Step 9's header constants were updated, `run_produces_the_exact_csv_contract…` and `a_variants_run_writes_reads…` failed on the header — that is the red for the 17-column contract.)
+Expected: the whole suite passes, the two new tests included. (Before Step 9's header constants were updated, `run_produces_the_exact_csv_contract…` and `a_variants_run_writes_reads…` failed on the header — that is the red for the 16-column contract.)
 
 - [ ] **Step 11: The two other CSV writers**
 
-In `benchmark/scripts/readbench_duckdb.sh`, change the header comment (lines 6-7) to end `…,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,row_groups_read,filter_bytes`, set
+In `benchmark/scripts/readbench_duckdb.sh`, change the header comment (lines 6-7) to end `…,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes`, set
 
 ```bash
-CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,row_groups_read,filter_bytes"
+CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes"
 ```
 
-and in `append_row` print six trailing empty fields instead of two:
+and in `append_row` print five trailing empty fields instead of two (16 in all):
 
 ```bash
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$dataset" "$format" "$scenario" "$selectivity" "$result_count" \
     "$time_s" "$time_mad_s" "$peak_heap_bytes" "$peak_rss_bytes" "$repeat" "$notes" \
-    "" "" "" "" "" "" \
+    "" "" "" "" "" \
     >> "$OUT_CSV"
 ```
 
 extending its comment: `The trailing lookup counters are empty too: they belong to the CityParquet runner's own lookups.`
 
-In `benchmark/scripts/format_write.py`, append `"row_groups_total","bloom_pruned","row_groups_read","filter_bytes"` to `HEADER`, and four `""` to the end of the `aggregates.append([...])` row.
+In `benchmark/scripts/format_write.py`, append `"row_groups_total","bloom_pruned","filter_bytes"` to `HEADER`, and three `""` to the end of the `aggregates.append([...])` row.
 
-In `benchmark/formats/READ_BENCHMARK.md`, extend the header line in the CSV-contract code block with `,row_groups_total,bloom_pruned,row_groups_read,filter_bytes` and add after the `bytes_read` / `http_requests` bullet:
+In `benchmark/formats/READ_BENCHMARK.md`, extend the header line in the CSV-contract code block with `,row_groups_total,bloom_pruned,filter_bytes` and add after the `bytes_read` / `http_requests` bullet:
 
 ```markdown
-- `row_groups_total` / `bloom_pruned` / `row_groups_read` / `filter_bytes` —
-  **empty on every row but a CityParquet `id-lookup` or `feature-lookup`**:
-  the table's row groups, those its bloom filters ruled out, those actually
-  opened (an `id-lookup` hit stops at its first match; a `feature-lookup`
-  reads every surviving row group to the end), and the bytes of filter read.
-  Deterministic across repeats; the first warm sample's values are recorded.
+- `row_groups_total` / `bloom_pruned` / `filter_bytes` — **empty on every
+  row but a CityParquet `id-lookup` or `feature-lookup`**: the table's row
+  groups, those its bloom filters ruled out, and the bitset bytes of every
+  filter examined (32 per block; header bytes and transport overhead are not
+  counted — `bytes_read` carries the latter over HTTP). The kept row groups are
+  read by one reader, as without filters; an `id-lookup` hit stops at its
+  first match. Deterministic across repeats; the first warm sample's values
+  are recorded.
 ```
 
 Add `feature-lookup` to the scenario section with one sentence: under `## The seven scenarios`, append the paragraph `` `feature-lookup` (CityParquet only, run by name — the `bloom` family) returns every object of one `feature_id`, probed at `feature-50pct` (the `id-50pct` feature) and `feature-miss`; it is not one of the seven comparison scenarios, because no other format stores the column. ``
@@ -4100,8 +4776,8 @@ git add benchmark/readbench/src benchmark/readbench/tests benchmark/scripts/read
 git commit -m "feat(readbench)!: lookup counters and a feature-lookup scenario
 
 The CityParquet runner calls the _with_stats lookups and reports their
-LookupStats; the CSV gains row_groups_total, bloom_pruned,
-row_groups_read and filter_bytes, filled on CityParquet lookup rows. A
+LookupStats; the CSV gains row_groups_total, bloom_pruned and
+filter_bytes, filled on CityParquet lookup rows. A
 CityParquet-only feature-lookup scenario runs the feature-50pct and
 feature-miss probes, selectable with --feature-probes."
 ```
@@ -4130,7 +4806,7 @@ One pair, `cityparquet` against `cityparquet+nobloom`, over the 3DBAG scaling sl
 
 **Interfaces:**
 
-- Consumes: `+nobloom` (Task 1); `--scenarios feature-lookup`, `--feature-probes`, the 17-column CSV (Task 8).
+- Consumes: `+nobloom` (Task 1); `--scenarios feature-lookup`, `--feature-probes`, the 16-column CSV (Task 8).
 - Produces: family `bloom`; recipe `just bloom-bench FOLDER [OUT] [PREPARED] [REPEAT] [WRITE_REPEAT]` writing `benchmark/runs/formats/scaling_bloom_results/`; `variant-bench` gains `SCENARIOS` (default `full-read,bbox-query,id-lookup`), `ID_PROBES` (default `id-50pct`) and `FEATURE_PROBES` (default empty) after `WRITE_REPEAT`; `prep.BLOOM_MEASURES = ("write", "id-50pct", "id-miss", "feature-50pct", "feature-miss")`; `prep.load_scaling_axis(directory, baseline=AXIS_BASELINE, measures=AXIS_MEASURES)`; `data["scaling"]["bloom"]`; figures `bloom` and `bloom-scaling`.
 
 - [ ] **Step 1: Write the failing Python and shell tests**
@@ -4176,17 +4852,17 @@ and call `case_bloom_bench_list` after `case_rowgroup_bench_list` at the end of 
 Create `benchmark/plot/tests/fixtures/benchviz/scaling_bloom_results/delft.csv` (renderer fixture values, not measurements):
 
 ```
-dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,row_groups_read,filter_bytes
-delft.city.jsonl,cityparquet,write,,2231,1.170000,0.003000,182000000,225000000,2,,,,,,,
-delft.city.jsonl,cityparquet,id-lookup,0.000448,1,0.004100,0.000100,390000,14700000,2,id-50pct,,,1,0,1,8192
-delft.city.jsonl,cityparquet,id-lookup,0.000000,0,0.002100,0.000100,380000,14600000,2,id-miss,,,1,1,0,8192
-delft.city.jsonl,cityparquet,feature-lookup,0.000896,2,0.004300,0.000100,395000,14700000,2,feature-50pct,,,1,0,1,8192
-delft.city.jsonl,cityparquet,feature-lookup,0.000000,0,0.002200,0.000100,381000,14600000,2,feature-miss,,,1,1,0,8192
-delft.city.jsonl,cityparquet+nobloom,write,,2231,1.150000,0.003000,181000000,224000000,2,,,,,,,
-delft.city.jsonl,cityparquet+nobloom,id-lookup,0.000448,1,0.004000,0.000100,389000,14700000,2,id-50pct,,,1,0,1,0
-delft.city.jsonl,cityparquet+nobloom,id-lookup,0.000000,0,0.004900,0.000100,389000,14700000,2,id-miss,,,1,0,1,0
-delft.city.jsonl,cityparquet+nobloom,feature-lookup,0.000896,2,0.004200,0.000100,394000,14700000,2,feature-50pct,,,1,0,1,0
-delft.city.jsonl,cityparquet+nobloom,feature-lookup,0.000000,0,0.004800,0.000100,394000,14700000,2,feature-miss,,,1,0,1,0
+dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
+delft.city.jsonl,cityparquet,write,,2231,1.170000,0.003000,182000000,225000000,2,,,,,,
+delft.city.jsonl,cityparquet,id-lookup,0.000448,1,0.004100,0.000100,390000,14700000,2,id-50pct,,,1,0,8192
+delft.city.jsonl,cityparquet,id-lookup,0.000000,0,0.002100,0.000100,380000,14600000,2,id-miss,,,1,1,8192
+delft.city.jsonl,cityparquet,feature-lookup,0.000896,2,0.004300,0.000100,395000,14700000,2,feature-50pct,,,1,0,8192
+delft.city.jsonl,cityparquet,feature-lookup,0.000000,0,0.002200,0.000100,381000,14600000,2,feature-miss,,,1,1,8192
+delft.city.jsonl,cityparquet+nobloom,write,,2231,1.150000,0.003000,181000000,224000000,2,,,,,,
+delft.city.jsonl,cityparquet+nobloom,id-lookup,0.000448,1,0.004000,0.000100,389000,14700000,2,id-50pct,,,1,0,0
+delft.city.jsonl,cityparquet+nobloom,id-lookup,0.000000,0,0.004900,0.000100,389000,14700000,2,id-miss,,,1,0,0
+delft.city.jsonl,cityparquet+nobloom,feature-lookup,0.000896,2,0.004200,0.000100,394000,14700000,2,feature-50pct,,,1,0,0
+delft.city.jsonl,cityparquet+nobloom,feature-lookup,0.000000,0,0.004800,0.000100,394000,14700000,2,feature-miss,,,1,0,0
 ```
 
 and `…/scaling_bloom_results/sizes.csv`:
@@ -4213,7 +4889,7 @@ def test_bloom_axis_keys_the_lookup_probes_and_carries_the_counters(tmp_path: Pa
         )
 
     on = record("cityparquet", "id-miss")
-    assert (on["row_groups_total"], on["bloom_pruned"], on["row_groups_read"]) == (1, 1, 0)
+    assert (on["row_groups_total"], on["bloom_pruned"]) == (1, 1)
     assert on["filter_bytes"] == 8192
     off = record("cityparquet+nobloom", "id-miss")
     assert (off["bloom_pruned"], off["filter_bytes"]) == (0, 0)
@@ -4336,7 +5012,7 @@ In `prep.py`:
 BLOOM_MEASURES = ("write", "id-50pct", "id-miss", "feature-50pct", "feature-miss")
 # The lookup counters a CityParquet lookup row carries, appended to the read
 # CSV after `http_requests`.
-LOOKUP_COLUMNS = ("row_groups_total", "bloom_pruned", "row_groups_read", "filter_bytes")
+LOOKUP_COLUMNS = ("row_groups_total", "bloom_pruned", "filter_bytes")
 ```
 
 - In `_scenario_key`, before the final `return scenario`, add:
@@ -4439,26 +5115,22 @@ which carries none — and times `id-lookup` (`id-50pct`, `id-miss`) and
 `feature-lookup` (`feature-50pct`, `feature-miss`) against both. Package bytes
 go to `sizes.csv`; the write rows carry write time and peak RSS, where the
 filters' memory shows (every filter is held until its file is closed). Every
-lookup row carries `row_groups_total`, `bloom_pruned`, `row_groups_read` and
-`filter_bytes`. Caveats that travel with every number:
+lookup row carries `row_groups_total`, `bloom_pruned` and `filter_bytes` (the
+bitset bytes of the filters examined). Caveats that travel with every number:
 
 1. **Only the multi-row-group inputs can prune.** At the default 65 536-row
    groups the small slices are one row group, where a filter can only save
    that one; the slices from `3dbag_n100000` upward are the informative ones.
-2. **A filter's positive is not a match.** At FPP 0.01 a miss can still open a
-   row group; `row_groups_read` on the `*-miss` rows shows how often.
-3. **Lookups open one reader per kept row group.** `id-lookup` reads each
-   surviving row group with a builder of its own (all sharing one parsed
-   footer), which is what makes `row_groups_read` exact and lets a hit stop
-   early; `feature-lookup` reads its survivors with one reader, to the end.
-   Both variants use the same code path.
-4. **The footer is read twice per lookup** — once for the decode metadata,
+2. **A filter's positive is not a match.** At FPP 0.01 a miss can still keep
+   a row group; `row_groups_total − bloom_pruned` on the `*-miss` rows is how
+   many the reader still scanned.
+3. **The footer is read twice per lookup** — once for the decode metadata,
    once inside the lookup — equally for both variants.
-5. **Single-table packages only.** The runner queries one object table; a
+4. **Single-table packages only.** The runner queries one object table; a
    multi-table corpus package is refused, never partially read.
-6. **`feature-50pct` is the `id-50pct` feature**, and `feature-miss` the same
+5. **`feature-50pct` is the `id-50pct` feature**, and `feature-miss` the same
    verified-absent string as `id-miss` (absent from both columns).
-7. **Requests are logical.** Over `--transport http`, `CountingObjectStore`
+6. **Requests are logical.** Over `--transport http`, `CountingObjectStore`
    counts the requests the reader made after object_store coalesced nearby
    ranges — not raw wire traffic, retries or connection reuse.
 ```
@@ -4496,13 +5168,13 @@ A `--variants` run over `--transport http` becomes a read-only run against the p
 
 - Modify: `benchmark/readbench/src/coordinator.rs` — module doc (38-50), `RunOptions::variants` doc (100-105), the validation (207-212), `variant_seq` and the variants block (452-488), the `write_sizes` call (714-719).
 - Modify: `benchmark/readbench/tests/variants.rs` — the `server-side write` rejection (294-307) and a new test.
-- Modify: `justfile` (root) — new `bloom-bench-http` after `bloom-bench`.
+- Modify: `justfile` (root) — `variant-bench` gains `BASE_URL` (no new input loop, so the four-stripper inventory pinned by `benchmark/readbench/tests/strip_extension.rs` is unchanged); new one-line `bloom-bench-http` after `bloom-bench`.
 - Modify: `benchmark/scripts/tests/bench_recipe_test.sh` — a new case.
 - Modify: `benchmark/formats/README.md` — the `## The bloom family` section (Task 9).
 
 **Interfaces:**
 
-- Consumes: `--variants`, the 17-column CSV and `feature-lookup` (Task 8); `bloom-bench`'s variant list and output layout (Task 9).
+- Consumes: `--variants`, the 16-column CSV and `feature-lookup` (Task 8); `bloom-bench`'s variant list and output layout (Task 9).
 - Produces: `cityparquet-readbench run --variants … --transport http --base-url URL` (read-only); `just bloom-bench-http FOLDER BASE_URL [OUT] [PREPARED] [REPEAT]` writing `benchmark/runs/formats/scaling_bloom_http_results/`.
 
 - [ ] **Step 1: Write the failing test**
@@ -4673,7 +5345,24 @@ Expected: PASS.
 
 - [ ] **Step 5: The recipe and its test**
 
-In the root `justfile`, after `bloom-bench`, add:
+The HTTP run reuses `variant-bench` rather than adding a recipe with its own input loop: `benchmark/readbench/tests/strip_extension.rs::the_justfile_has_exactly_one_stripper_repeated_verbatim` pins exactly four per-dataset stripper blocks (and four `KNOWN_INPUT_FIND` loops), and those four stay in the root `justfile` together.
+
+In the root `justfile`, give `variant-bench` a final parameter — its signature becomes
+
+```just
+variant-bench FOLDER OUT VARIANTS PREPARED=(BENCH / "runs/data/readbench") REPEAT='7' WRITE_REPEAT='3' SCENARIOS='full-read,bbox-query,id-lookup' ID_PROBES='id-50pct' FEATURE_PROBES='' BASE_URL='':
+```
+
+— and beside the `feature_args` block add
+
+```bash
+        transport_args=()
+        if [[ -n "{{BASE_URL}}" ]]; then
+            transport_args=(--transport http --base-url "{{BASE_URL}}")
+        fi
+```
+
+with `${transport_args[@]+"${transport_args[@]}"} \` on the line before `--variants "{{VARIANTS}}"`. Extend the recipe's comment block with: `# With BASE_URL the run is read-only over HTTP: it reads the variant packages a local run left in PREPARED, uploaded to BASE_URL, and WRITE_REPEAT is unused.` After `bloom-bench`, add:
 
 ```just
 # The bloom axis over HTTP: reads (never writes) the two packages a local
@@ -4683,64 +5372,34 @@ In the root `justfile`, after `bloom-bench`, add:
 [private]
 [doc("Bloom axis over HTTP, against uploaded bloom-bench packages")]
 bloom-bench-http FOLDER BASE_URL OUT=(BENCH / "runs/formats/scaling_bloom_http_results") PREPARED=(BENCH / "runs/data/readbench") REPEAT='7':
-    #!/usr/bin/env bash
-    set -euo pipefail
-    mkdir -p "{{OUT}}"
-    found=0
-    while IFS= read -r -d '' f; do
-        name="$(basename "$f")"
-        for ext in {{KNOWN_INPUT_EXTENSIONS}}; do
-            if [[ "$name" == *"$ext" ]]; then name="${name%"$ext"}"; break; fi
-        done
-        out="{{OUT}}/${name}.csv"
-        echo ">> ${f} -> ${out}"
-        rm -f "$out"
-        cargo run --release {{READBENCH_CARGO}} -- run \
-            --input "$f" \
-            --prepared-dir "{{PREPARED}}" \
-            --out "$out" \
-            --repeat {{REPEAT}} \
-            --transport http \
-            --base-url "{{BASE_URL}}" \
-            --scenarios "id-lookup,feature-lookup" \
-            --id-probes "id-50pct,id-miss" \
-            --feature-probes "feature-50pct,feature-miss" \
-            --variants "cityparquet,cityparquet+nobloom"
-        found=$((found + 1))
-    done < <(find "{{FOLDER}}" -type f \
-        \( {{KNOWN_INPUT_FIND}} \) ! -name 'metadata.json' -print0 \
-        | sort -z)
-    if [[ "$found" -eq 0 ]]; then
-        echo "bloom-bench-http: no city-model inputs found under {{FOLDER}}" >&2
-        exit 1
-    fi
-    ./{{BENCH_SCRIPTS}}/machine_record.sh > "{{OUT}}/MACHINE.md"
-    echo "bloom-bench-http: ${found} file(s) benchmarked into {{OUT}}"
+    just variant-bench "{{FOLDER}}" "{{OUT}}" "cityparquet,cityparquet+nobloom" "{{PREPARED}}" "{{REPEAT}}" "1" "id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"
 ```
 
 In `bench_recipe_test.sh`, add after `case_bloom_bench_list`:
 
 ```bash
 case_bloom_http_matches_the_local_pair() {
-  local name="bloom-bench-http reads the same pair, scenarios and probes as bloom-bench"
-  local body
-  body="$(sed -n '/^bloom-bench-http /,/^$/p' "$JUSTFILE")"
-  local want
-  for want in '--variants "cityparquet,cityparquet+nobloom"' \
-    '--scenarios "id-lookup,feature-lookup"' \
-    '--id-probes "id-50pct,id-miss"' \
-    '--feature-probes "feature-50pct,feature-miss"' \
-    '--transport http'; do
-    if [[ "$body" != *"$want"* ]]; then
-      fail "$name" "bloom-bench-http lacks: $want"
-      return
-    fi
-  done
+  local name="bloom-bench-http reads the same pair, scenarios and probes as bloom-bench, over HTTP"
+  local actual line
+  actual="$(recipe_variants bloom-bench-http)"
+  if [[ "$actual" != "cityparquet,cityparquet+nobloom" ]]; then
+    fail "$name" "bloom-bench-http passes '$actual'"
+    return
+  fi
+  line="$(sed -n '/^bloom-bench-http /,/^$/p' "$JUSTFILE" | grep 'just variant-bench')"
+  if [[ "$line" != *'"id-lookup,feature-lookup" "id-50pct,id-miss" "feature-50pct,feature-miss" "{{BASE_URL}}"'* ]]; then
+    fail "$name" "bloom-bench-http does not pass the lookups and its BASE_URL: $line"
+    return
+  fi
+  if ! sed -n '/^variant-bench /,/^$/p' "$JUSTFILE" | grep -q -- '--transport http --base-url "{{BASE_URL}}"'; then
+    fail "$name" "variant-bench does not turn BASE_URL into --transport http"
+    return
+  fi
   pass "$name"
 }
 ```
 
-and call `case_bloom_http_matches_the_local_pair` after `case_bloom_bench_list`. Note: `sed -n '/^bloom-bench /,…'` in `case_bloom_bench_list` matches `bloom-bench ` (with a space) only, so it does not pick up `bloom-bench-http`.
+and call `case_bloom_http_matches_the_local_pair` after `case_bloom_bench_list`. `sed -n '/^bloom-bench /,…'` in `case_bloom_bench_list` matches `bloom-bench ` (with a space) only, so it does not pick up `bloom-bench-http`. Run `cargo test --manifest-path benchmark/readbench/Cargo.toml --test strip_extension` to confirm the stripper inventory is unchanged.
 
 In `benchmark/formats/README.md`'s `## The bloom family`, before the caveat list, add:
 
@@ -5127,7 +5786,7 @@ just bench-run --families bloom --datasets 3dbag --smoke
 just bench-summary --families bloom --smoke
 ```
 
-Expected: `benchmark/runs/formats/smoke/scaling_bloom_results/3dbag_n1000.csv` holds 10 rows (a write and four lookups per variant) with the four counters on every lookup row, and `benchmark/runs/summary/smoke/` holds `bloom.svg` and `bloom-scaling.svg`. A smoke run is not a publication run.
+Expected: `benchmark/runs/formats/smoke/scaling_bloom_results/3dbag_n1000.csv` holds 10 rows (a write and four lookups per variant) with the three counters on every lookup row, and `benchmark/runs/summary/smoke/` holds `bloom.svg` and `bloom-scaling.svg`. A smoke run is not a publication run.
 
 - [ ] **Step 7: Acceptance 6 — the gates**
 
@@ -5189,3 +5848,4 @@ Then record in the pull-request description (or the review hand-off): the printe
 | Acceptance 1-6 | 11 (2, 3, 4, 4b also on fixtures in 3-5; 4c in 6) |
 | Out of scope (numeric, sidecars, page index, FPP sweep) | not implemented; sidecars pinned filter-free in 1 and 6 |
 | Superseding the 2026-08-25 out-of-scope note | 7 |
+| Review fixes: exact column names, dictionary-typed identifiers, column-typed probe eligibility, one reader per lookup, bitset `filter_bytes` | 3, 4, 5 |
