@@ -345,8 +345,9 @@ stamped into `notes` (`city-object-rows-added` on cjdb,
 > one-feature slice. The two sides of the stack disagree about the
 > package's schema, so the insert is refused before it begins. Until an
 > all-NULL placeholder column can be widened (or the writer and the reader
-> agree on its type), both DuckDB `append-object` rows are `error:
-BinderException` on this corpus and `citybench run` exits non-zero. The
+> agree on its type), both DuckDB `append-object` rows are
+> `error: BinderException` on this corpus and `citybench run` exits
+> non-zero. The
 > harness does **not** work around it: a system that cannot answer is a
 > result, and papering over a schema disagreement between this project's
 > own two implementations is exactly the kind of thing a benchmark must
