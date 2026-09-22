@@ -191,6 +191,12 @@ def prepare(manifest: dict, locations: dict[str, Path], families: list[str], dat
         just("fetch-tools")
     if any(family in {"sizes", "formats"} for family in families):
         command("cargo", "build", "--release", "--manifest-path", "lib/cityparquet-rs/Cargo.toml", "-p", "cityparquet-cli", "--bin", "cityparquet")
+        # `format_write.py`'s CityJSONSeq writer is a subcommand of the read
+        # harness, which lives in its own workspace — a second manifest, a
+        # second target directory. It is the write row every ratio divides by,
+        # so building it belongs in prep beside the converter, not in the
+        # timed run.
+        command("cargo", "build", "--release", "--manifest-path", "benchmark/readbench/Cargo.toml", "--bin", "cityparquet-readbench")
     locations["prepared"].mkdir(parents=True, exist_ok=True)
     for key in datasets:
         entry = manifest["datasets"][key]

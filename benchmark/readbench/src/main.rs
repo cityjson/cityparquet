@@ -3,7 +3,9 @@ mod coordinator;
 mod formats;
 mod scenario;
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{BufRead as _, BufReader, BufWriter, Write as _};
+use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 use std::time::Instant;
 
@@ -15,14 +17,16 @@ use scenario::{AttrPred, QueryParams, Scenario};
 
 /// Cross-format read benchmark for CityParquet (FlatCityBuf, GeoParquet, etc.).
 ///
-/// This binary has two entry points sharing one CLI surface: the `run`
+/// This binary has three entry points sharing one CLI surface: the `run`
 /// subcommand (the coordinator — drives a whole (format x scenario) matrix,
-/// medians the repeats, and writes the results CSV; see [`coordinator`]) and
+/// medians the repeats, and writes the results CSV; see [`coordinator`]);
 /// `--child` (a plain top-level flag, no subcommand keyword) — a
 /// single-scenario worker the coordinator spawns once per (format, scenario,
-/// dataset, repeat) measurement. `--child` resets the heap allocator, times
+/// dataset, repeat) measurement, which resets the heap allocator, times
 /// exactly one `FormatRunner::run` call, and prints one line to stdout:
-/// `time_s peak_heap_bytes ru_maxrss_bytes result_count`.
+/// `time_s peak_heap_bytes ru_maxrss_bytes result_count`; and
+/// `write-cityjsonseq` (see [`write_cityjsonseq`]) — the CityJSONSeq WRITER
+/// the cross-format write benchmark needs, which does no timing of its own.
 #[derive(Parser, Debug)]
 #[command(name = "cityparquet-readbench", version, about)]
 struct Cli {
@@ -124,6 +128,24 @@ enum Command {
     /// Drive a whole (format x scenario) benchmark matrix and write the
     /// results CSV (see [`coordinator::run`]).
     Run(RunArgs),
+
+    /// Re-serialise a canonical CityJSONSeq stream into a fresh one (see
+    /// [`write_cityjsonseq`]). The name is pinned because clap's derived
+    /// kebab-casing would otherwise split it into `write-city-json-seq`.
+    #[command(name = "write-cityjsonseq")]
+    WriteCityJsonSeq(WriteCityJsonSeqArgs),
+}
+
+/// `cityparquet-readbench write-cityjsonseq`'s own flags.
+#[derive(Args, Debug)]
+struct WriteCityJsonSeqArgs {
+    /// The canonical `.city.jsonl` stream to read.
+    #[arg(long)]
+    input: PathBuf,
+
+    /// Where the re-serialised stream is written (truncated if it exists).
+    #[arg(long)]
+    output: PathBuf,
 }
 
 /// `cityparquet-readbench run`'s own flags — the CLI-facing mirror of
@@ -207,6 +229,9 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    if let Some(Command::WriteCityJsonSeq(args)) = &cli.command {
+        return write_cityjsonseq(&args.input, &args.output);
+    }
     if let Some(Command::Run(run_args)) = cli.command {
         let transport = match run_args.transport.as_str() {
             "local" => coordinator::Transport::Local,
@@ -368,6 +393,97 @@ fn run_write_child(cli: Cli) -> Result<()> {
         "{time_s:.6} {peak_heap_bytes} {ru_maxrss_bytes} {}",
         report.object_count
     );
+    Ok(())
+}
+
+/// The CityJSONSeq **writer** of the cross-format write benchmark: reads a
+/// canonical `.city.jsonl` stream and writes an equivalent one out again.
+///
+/// It exists because the benchmark's cityjsonseq write row has to be the same
+/// KIND of work every other row is. Each of those parses the canonical stream
+/// into the target format's own typed model and serialises that model out
+/// (`cjseq collect` for cityjson, `+ citygml-tools` for citygml, `fcb ser -A`
+/// for flatcitybuf, `cityparquet convert` for cityparquet). The row that
+/// divides all of them — cityjsonseq — used to be a plain `cat`, which on a
+/// reflink-capable filesystem is a metadata-only extent clone: nothing is
+/// parsed, nothing is serialised, and the "write" costs milliseconds at any
+/// dataset size. This subcommand does for CityJSONSeq exactly what the other
+/// four writers do for their formats, and nothing more.
+///
+/// Streaming, by construction: the header line is parsed into a
+/// [`cityparquet::cjseq::CityJSON`] and every following line into a
+/// [`cityparquet::cjseq::CityJSONFeature`], each written straight back out
+/// through a [`BufWriter`] before the next is read, so at most one feature is
+/// ever live. Any line that does not parse is an error — the timing would be
+/// meaningless if malformed input were passed through untouched, which is what
+/// `cjseq filter` does (it parses to a `serde_json::Value` and writes the
+/// ORIGINAL line bytes back, so it is not a writer either).
+///
+/// Blank lines are dropped, matching every reader in `formats::cityjsonseq`.
+///
+/// Fidelity is that of cjseq's own model, and the model is the point: unknown
+/// keys survive on `CityJSON` and on every `CityObject` (both carry
+/// `#[serde(flatten)]`), but cjseq's typed `Metadata` names its keys and has
+/// no catch-all, so an unnamed one — `fullMetadataUrl` and `version` in the
+/// 3DBAG-derived streams — is dropped. That is confined to the single header
+/// line and never touches a feature's geometry or attributes; `cjseq collect`,
+/// the writer behind the benchmark's neighbouring `cityjson` row, parses
+/// through the same struct and drops the same keys, so the two rows are
+/// equally faithful by construction rather than by coincidence. See
+/// `tests/write_cityjsonseq.rs`, which pins the gap to exactly that.
+///
+/// **Allocator caveat.** This binary installs `peak_alloc` as its
+/// `#[global_allocator]` (see [`alloc`]), so every allocation here pays two
+/// atomics that `cjseq`, `fcb` and the `cityparquet` CLI do not. The
+/// cityjsonseq write row therefore carries a small, systematic overhead the
+/// four rows it divides do not — disclosed in
+/// `benchmark/formats/README.md`, not silently absorbed.
+fn write_cityjsonseq(input: &Path, output: &Path) -> Result<()> {
+    use cityparquet::cjseq::{CityJSON, CityJSONFeature};
+
+    let reader =
+        BufReader::new(File::open(input).with_context(|| format!("opening {}", input.display()))?);
+    let mut writer = BufWriter::new(
+        File::create(output).with_context(|| format!("creating {}", output.display()))?,
+    );
+
+    let mut lines = reader.lines();
+    let header_line = lines
+        .next()
+        .with_context(|| {
+            format!(
+                "{} is empty; a CityJSONSeq stream needs a header line",
+                input.display()
+            )
+        })?
+        .with_context(|| format!("reading the header line of {}", input.display()))?;
+    let header = CityJSON::from_str(&header_line)
+        .with_context(|| format!("invalid CityJSONSeq header in {}", input.display()))?;
+    serde_json::to_writer(&mut writer, &header)
+        .with_context(|| format!("writing the header line to {}", output.display()))?;
+    writer.write_all(b"\n")?;
+
+    for (index, line) in lines.enumerate() {
+        let line = line.with_context(|| format!("reading {}", input.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        // Line numbers are 1-based and the header is line 1.
+        let feature = CityJSONFeature::from_str(&line).with_context(|| {
+            format!(
+                "invalid CityJSONFeature on line {} of {}",
+                index + 2,
+                input.display()
+            )
+        })?;
+        serde_json::to_writer(&mut writer, &feature)
+            .with_context(|| format!("writing feature {} to {}", index + 1, output.display()))?;
+        writer.write_all(b"\n")?;
+    }
+
+    writer
+        .flush()
+        .with_context(|| format!("flushing {}", output.display()))?;
     Ok(())
 }
 

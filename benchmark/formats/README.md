@@ -74,6 +74,71 @@ when inspecting those files.
   _lossless_ encoding. `codec-bench` and `rowgroup-bench` run on the read
   harness and carry no such column.
 
+## The cross-format write rows
+
+The `formats` family's `write` rows come from
+`benchmark/scripts/format_write.py`, not from `write-bench`. Every row starts
+from the **same already-prepared canonical CityJSONSeq stream** and measures
+one thing: parsing that stream and serialising it into the row's own format.
+
+| Row                   | What is timed                                                              |
+| --------------------- | -------------------------------------------------------------------------- |
+| `cityjson`            | `cjseq collect`                                                              |
+| `citygml`             | `cjseq collect`, then `citygml-tools from-cityjson` — **two** sequential writers |
+| `cityjsonseq`         | `cityparquet-readbench write-cityjsonseq`                                    |
+| `flatcitybuf`         | `fcb ser -A`                                                                 |
+| `cityparquet-hilbert` | `cityparquet convert --ordering hilbert`                                     |
+
+The CityGML row is the only two-stage one: its time is the sum of both stages
+and its RSS the maximum of the two active processes, never an invented combined
+value. Each sample runs in a fresh temporary directory created outside the
+timed window.
+
+**The `cityjsonseq` row is a writer, and had to be made one.** It is the
+baseline divisor for every write ratio the figures quote, so what it measures
+sets the scale of all four others. It used to be `cat <canonical> > target`,
+which on a reflink-capable filesystem (XFS with `reflink=1`, coreutils ≥ 9.0)
+is a metadata-only extent clone: nothing is parsed, nothing is serialised, and
+the "write" costs a few milliseconds whatever the dataset's size. `cjseq
+filter` is no substitute — it parses each line to a `serde_json::Value` and
+writes the **original line bytes** back. The row is now
+`cityparquet-readbench write-cityjsonseq`, which reads the stream line by
+line, parses the header into cjseq's `CityJSON` and every following line into
+a `CityJSONFeature`, and serialises each straight back out, never holding more
+than one feature. **Committed CSVs whose `notes` column lacks
+`cityjsonseq=readbench-reserialise` carry the old `cat` row and their
+CityJSONSeq write time — and every ratio against it — is not a measurement of
+writing.**
+
+Two disclosures follow from that choice:
+
+- **The CityJSONSeq writer pays an allocator toll the other four do not.**
+  `cityparquet-readbench` installs `peak_alloc` as its global allocator, for
+  the read benchmark's heap accounting; `cjseq`, `fcb` and the `cityparquet`
+  CLI use the system allocator. This row therefore carries a small systematic
+  overhead, which makes it a slightly conservative divisor — the other formats'
+  ratios against it are if anything understated.
+- **cjseq's typed `Metadata` has no catch-all for unnamed keys**, so a header
+  key it does not model (`fullMetadataUrl`, `version` in the 3DBAG-derived
+  streams) is dropped. This is confined to the single header line and never
+  touches a feature's geometry or attributes, and `cjseq collect` — the
+  `cityjson` row's own writer — parses through the same struct and drops the
+  same keys, so the two rows stay equally faithful.
+
+**Completion contract.** The timer stops when the converter process exits, no
+`fsync` is issued, and the output is deleted immediately afterwards — so every
+row measures a write **into the page cache**, not a durable write to the
+device. That is the same contract for all five, which is what makes them
+comparable; it is not a measurement of storage throughput.
+
+**Peak RSS is read from `/usr/bin/time -f %M`, not from `os.wait4`.** Under
+CPython's `posix_spawn`/`vfork` launcher a child's `ru_maxrss` is at least the
+parent's own RSS — `/bin/true` under a parent holding 400 MB reports 433 MB —
+and plain `fork` does not help, because the child inherits the parent's
+copy-on-write pages. Committed CSVs showing a constant `peak_rss_bytes` of
+14 680 064 on every dataset are reporting the Python launcher's footprint, not
+a converter's.
+
 ## The codec levels are NOT matched
 
 `just codec-bench` sweeps zstd at levels **1, 3, 9 and 19**. Gzip and brotli
