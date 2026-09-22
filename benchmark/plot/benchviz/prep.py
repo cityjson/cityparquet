@@ -65,6 +65,10 @@ class Inputs:
         return self.bench_dir / "scaling_rowgroup_results"
 
     @property
+    def scaling_bloom_dir(self) -> Path:
+        return self.bench_dir / "scaling_bloom_results"
+
+    @property
     def sizes_csv(self) -> Path:
         return self.read_dir / SIZES_CSV_NAME
 
@@ -175,6 +179,7 @@ BBOX_NOTE_RE = re.compile(r"^bbox-\d+pct$")
 # the hit rows as three samples of a distribution, so they stay three scenarios
 # rather than being averaged into one.
 ID_NOTE_RE = re.compile(r"^id-(?:\d+pct|miss)$")
+FEATURE_NOTE_RE = re.compile(r"^feature-(?:\d+pct|miss)$")
 COLD_RE = re.compile(r"\bcold\b", re.IGNORECASE)
 
 CODEC_LEVEL_NOTE = (
@@ -186,6 +191,12 @@ CODEC_LEVEL_NOTE = (
 )
 AXIS_BASELINE = "cityparquet"
 AXIS_MEASURES = ("write", "full-read", "bbox-1pct", "bbox-5pct", "bbox-25pct", "id-50pct")
+# The bloom axis measures the identifier lookups only; every other query is
+# untouched by the filters.
+BLOOM_MEASURES = ("write", "id-50pct", "id-miss", "feature-50pct", "feature-miss")
+# The lookup counters a CityParquet lookup row carries, appended to the read
+# CSV after `http_requests`.
+LOOKUP_COLUMNS = ("row_groups_total", "bloom_pruned", "filter_bytes")
 MACHINE_MD_NAME = "MACHINE.md"
 
 
@@ -406,6 +417,10 @@ def _scenario_key(row: dict[str, str]) -> str:
         # not an error — those artefacts are not re-measured to suit a renderer.
         tag = _primary_tag(notes)
         if ID_NOTE_RE.match(tag):
+            return tag
+    if scenario == "feature-lookup":
+        tag = _primary_tag(notes)
+        if FEATURE_NOTE_RE.match(tag):
             return tag
     return scenario
 
@@ -693,8 +708,10 @@ def _measure_key(row: dict[str, str]) -> str:
     return "write" if row["scenario"] == "write" else _scenario_key(row)
 
 
-def load_scaling_axis(directory: Path, baseline: str = AXIS_BASELINE) -> dict:
-    """One configuration axis (codec or row group) from a `--variants` run.
+def load_scaling_axis(
+    directory: Path, baseline: str = AXIS_BASELINE, measures: tuple[str, ...] = AXIS_MEASURES
+) -> dict:
+    """One configuration axis (codec, row group or bloom) from a `--variants` run.
 
     Every ratio is variant over default, so values below 1x use less time,
     memory or disk. The
@@ -741,7 +758,7 @@ def load_scaling_axis(directory: Path, baseline: str = AXIS_BASELINE) -> dict:
             )
         )
         present = {v for bucket in by_measure.values() for v in bucket}
-        for key in AXIS_MEASURES:
+        for key in measures:
             bucket = by_measure.get(key)
             if not bucket:
                 continue
@@ -796,6 +813,7 @@ def load_scaling_axis(directory: Path, baseline: str = AXIS_BASELINE) -> dict:
                         ),
                         "status": status,
                         "notes": row.get("notes", ""),
+                        **{column: _int(row.get(column)) for column in LOOKUP_COLUMNS},
                     }
                 )
 
@@ -1073,6 +1091,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
     scaling = load_scaling(inputs)
     scaling["codec"] = load_scaling_axis(inputs.scaling_codec_dir)
     scaling["rowgroup"] = load_scaling_axis(inputs.scaling_rowgroup_dir)
+    scaling["bloom"] = load_scaling_axis(inputs.scaling_bloom_dir, measures=BLOOM_MEASURES)
 
     order = {d["id"]: i for i, d in enumerate(datasets)}
     read_records.sort(
@@ -1103,6 +1122,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
                 "scaling": inputs.label(inputs.scaling_read_dir),
                 "codec": inputs.label(inputs.scaling_codec_dir),
                 "rowgroup": inputs.label(inputs.scaling_rowgroup_dir),
+                "bloom": inputs.label(inputs.scaling_bloom_dir),
             },
             "caveats_read": read_caveats(inputs),
             "codec_level_note": CODEC_LEVEL_NOTE,
@@ -1117,6 +1137,7 @@ def build(inputs: Inputs | None = None) -> tuple[dict, list[str]]:
             "machine": {
                 "codec": read_machine(inputs.scaling_codec_dir),
                 "rowgroup": read_machine(inputs.scaling_rowgroup_dir),
+                "bloom": read_machine(inputs.scaling_bloom_dir),
             },
         },
         "datasets": datasets,
@@ -1140,6 +1161,7 @@ def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
         "formats": bool(data["read"] or data["sizes"]),
         "codec": bool(data["scaling"]["codec"]["records"]),
         "rowgroup": bool(data["scaling"]["rowgroup"]["records"]),
+        "bloom": bool(data["scaling"]["bloom"]["records"]),
         "databases": bool(data["databases"]["records"] or data["databases"]["sizes"]),
     }
     (out.parent / "completeness.json").write_text(
@@ -1152,6 +1174,7 @@ def main(inputs: Inputs | None = None, out_path: Path | None = None) -> Path:
         f"{len(data['sizes'])} size records, "
         f"{len(data['scaling']['codec']['records'])} codec records, "
         f"{len(data['scaling']['rowgroup']['records'])} row-group records, "
+        f"{len(data['scaling']['bloom']['records'])} bloom records, "
         f"{len(data['ordering'])} ordering records "
         f"({len({r['dataset'] for r in data['ordering']})} datasets), "
         f"{len(data['scaling']['read'])} scaling read records "

@@ -32,6 +32,14 @@ direction, variant order and `sizes.csv` join are all exercised on measured
 rows. One slice only: the trend strip is drawn from one point, which is a
 valid degenerate case, and nothing here is edited by hand.
 
+`scaling_bloom_results/` is the one exception to "nothing is edited by hand":
+its `delft.csv` and `sizes.csv` are renderer fixture values, NOT measurements,
+written in the coordinator's 16-column `--variants` shape (`cityparquet`
+against `cityparquet+nobloom`, `id-lookup` and `feature-lookup` at their middle
+and miss probes, with the three lookup counters) so the bloom axis's keying and
+counter pass-through are exercised before a measured run exists. Replace them
+with a measured run's rows once one does.
+
 The methodology documents are deliberately NOT copied here. `_bench_dir` in
 `tests/test_benchviz.py` takes them from the live `benchmark/formats/`
 directory: `READ_BENCHMARK.md` because the page quotes its fairness caveats

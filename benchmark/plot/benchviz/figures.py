@@ -48,6 +48,7 @@ DATABASE_FILL = {
 # are one sequential teal from small groups (light) to large (dark).
 CODEC_OTHER_COLOURS = ["#2A9D8F", "#5F6E7A", "#83919C", "#A3AEB7", "#C2CAD0"]
 ROWGROUP_HUE = "#2A9D8F"
+BLOOM_OFF_COLOUR = "#5F6E7A"  # the package without filters, against the accent default
 
 BAD_CELL = "#efeee6"
 # Cell separators. A black grid would fight the fills, which are the reading;
@@ -90,6 +91,8 @@ SCENARIO_LABELS = {
     "id-10pct": "Id 10%",
     "id-50pct": "Id 50%",
     "id-90pct": "Id 90%",
+    "feature-50pct": "Feature 50%",
+    "feature-miss": "Feature miss",
 }
 # Both the size and heatmap sheets read from the reference encodings to ours, so
 # CityParquet is the last bar/row and the eye lands on it.
@@ -181,10 +184,14 @@ def _axis_palette(key: str, variants: list[str]) -> dict[str, str]:
             palette[v] = _mix(ACCENT, 0.55 * (1 - i / max(len(zstd) - 1, 1)))
         for i, v in enumerate(others):
             palette[v] = CODEC_OTHER_COLOURS[i % len(CODEC_OTHER_COLOURS)]
-    else:
+    elif key == "rowgroup":
         ordered = sorted((v for v in variants if v != "cityparquet"), key=_rowgroup_size)
         for i, v in enumerate(ordered):
             palette[v] = _mix(ROWGROUP_HUE, 0.6 * (1 - i / max(len(ordered) - 1, 1)))
+    else:
+        for v in variants:
+            if v != "cityparquet":
+                palette[v] = BLOOM_OFF_COLOUR
     return palette
 
 
@@ -499,7 +506,17 @@ def _axis(data: dict[str, Any], key: str) -> tuple[list[dict], list[dict], list[
 
 
 def _axis_queries(records: list[dict]) -> list[str]:
-    wanted = ["full-read", "bbox-1pct", "bbox-5pct", "bbox-25pct", "id-50pct", "id-lookup"]
+    wanted = [
+        "full-read",
+        "bbox-1pct",
+        "bbox-5pct",
+        "bbox-25pct",
+        "id-50pct",
+        "id-miss",
+        "feature-50pct",
+        "feature-miss",
+        "id-lookup",
+    ]
     present = {r.get("measure") for r in records}
     return [q for q in wanted if q in present]
 
@@ -843,7 +860,7 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
         }
     )
     written = sizes(data, out) + format_heatmap(data, out)
-    for key in ("codec", "rowgroup"):
+    for key in ("codec", "rowgroup", "bloom"):
         written += _axis_main(data, key, out) + _axis_scaling(data, key, out)
     written += databases(data, out)
     print(f"benchviz figures -> {out}")

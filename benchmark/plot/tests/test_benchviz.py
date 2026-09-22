@@ -27,7 +27,7 @@ def test_preparation_and_paper_figure_set(tmp_path: Path):
     names = {p.name for p in output.glob("*")}
     expected = {
         f"{name}.{kind}"
-        for name in ("sizes", "heatmap", "codec", "codec-scaling", "rowgroup", "rowgroup-scaling")
+        for name in ("sizes", "heatmap", "codec", "codec-scaling", "rowgroup", "rowgroup-scaling", "bloom", "bloom-scaling")
         for kind in ("svg", "png")
     }
     assert expected <= names
@@ -142,3 +142,24 @@ def test_database_loader_uses_explicit_smoke_mode(tmp_path: Path):
     )
     (smoke / "smoke.params.json").write_text(json.dumps({"total_city_objects": 100}))
     assert prep.load_databases(prep.Inputs(root / "formats" / "smoke"))["dataset"] == "smoke"
+
+
+def test_bloom_axis_keys_the_lookup_probes_and_carries_the_counters(tmp_path: Path):
+    bench = fixture_bench(tmp_path)
+    data, _ = prep.build(prep.Inputs(bench))
+    axis = data["scaling"]["bloom"]
+    assert axis["variants"] == ["cityparquet", "cityparquet+nobloom"]
+    assert {r["measure"] for r in axis["records"]} == set(prep.BLOOM_MEASURES)
+
+    def record(variant: str, measure: str) -> dict:
+        return next(
+            r for r in axis["records"] if r["variant"] == variant and r["measure"] == measure
+        )
+
+    on = record("cityparquet", "id-miss")
+    assert (on["row_groups_total"], on["bloom_pruned"]) == (1, 1)
+    assert on["filter_bytes"] == 8192
+    off = record("cityparquet+nobloom", "id-miss")
+    assert (off["bloom_pruned"], off["filter_bytes"]) == (0, 0)
+    assert off["time_ratio"] == 0.0049 / 0.0021
+    assert record("cityparquet", "write")["row_groups_total"] is None

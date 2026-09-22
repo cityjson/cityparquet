@@ -16,7 +16,7 @@ what is committed. Absolute times are therefore not comparable across a
 directory that has a machine record and one that does not; what the figures
 cite is the ratios within a single directory. Nothing in this document quotes
 a number, so the methodology here cannot go stale against a re-run; the CSVs
-themselves can, and one caveat already applies.
+themselves can, and two caveats already apply.
 
 **The committed `results/` and `scaling_write_results/` CSVs predate the
 typed appearance columns.** They were measured while `material_lod*` /
@@ -24,9 +24,17 @@ typed appearance columns.** They were measured while `material_lod*` /
 `MAP`s, which the writer leaves at parquet's own defaults for dictionary
 encoding and statistics, so neither the committed bytes nor the committed
 write times describe the current writer until both families are re-run. The
-codec and row-group runs are measured on the current writer: each directory's
-`MACHINE.md` names the commit, and the 3DBAG slices carry no appearance data,
-so those columns are empty in every package they measured.
+codec and row-group runs postdate that change: each directory's `MACHINE.md`
+names the commit, and the 3DBAG slices carry no appearance data, so those
+columns are empty in every package they measured.
+
+**The committed codec and row-group CSVs predate bloom filters.** Every
+package they measured, the `cityparquet` baseline included, carries none, and
+their `id-50pct` rows read the `id` column without bloom pruning. The current
+writer puts filters on `id`, `feature_id` and high-cardinality string
+attributes by default, so its packages are larger and its lookups prune:
+re-run both families before comparing them with the `bloom` family, or with
+each other across that change.
 
 ## Running the suite
 
@@ -131,6 +139,33 @@ limit it measures writing attribute columns and no geometry at all. Keep the
 rows (deleting data from a measurement artefact is worse than disclosing it),
 and draw no cross-encoder byte or time comparison from them without saying
 which geometry each side actually wrote.
+
+## The bloom family
+
+`just bloom-bench` (via `just bench-run --families bloom`) writes each input
+twice — `cityparquet`, which carries bloom filters, and `cityparquet+nobloom`,
+which carries none — and times `id-lookup` (`id-50pct`, `id-miss`) and
+`feature-lookup` (`feature-50pct`, `feature-miss`) against both. Package bytes
+go to `sizes.csv`; the write rows carry write time and peak RSS, where the
+filters' memory shows (every filter is held until its file is closed). Every
+lookup row carries `row_groups_total`, `bloom_pruned` and `filter_bytes` (the
+bitset bytes of the filters examined). Caveats that travel with every number:
+
+1. **Only the multi-row-group inputs can prune.** At the default 65 536-row
+   groups the small slices are one row group, where a filter can only save
+   that one; the slices from `3dbag_n100000` upward are the informative ones.
+2. **A filter's positive is not a match.** At FPP 0.01 a miss can still keep
+   a row group; `row_groups_total − bloom_pruned` on the `*-miss` rows is how
+   many the reader still scanned.
+3. **The footer is read twice per lookup** — once for the decode metadata,
+   once inside the lookup — equally for both variants.
+4. **Single-table packages only.** The runner queries one object table; a
+   multi-table corpus package is refused, never partially read.
+5. **`feature-50pct` is the `id-50pct` feature**, and `feature-miss` the same
+   verified-absent string as `id-miss` (absent from both columns).
+6. **Requests are logical.** Over `--transport http`, `CountingObjectStore`
+   counts the requests the reader made after object_store coalesced nearby
+   ranges — not raw wire traffic, retries or connection reuse.
 
 ## Reproduce
 

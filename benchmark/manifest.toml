@@ -4,7 +4,7 @@
 
 [suite]
 version = 1
-families = ["sizes", "formats", "codec", "rowgroup", "databases"]
+families = ["sizes", "formats", "codec", "rowgroup", "bloom", "databases"]
 scaling_sizes = [1000, 5000, 10000, 50000, 100000, 500000, 1000000]
 largest_scaling_dataset = "3dbag_n1000000"
 

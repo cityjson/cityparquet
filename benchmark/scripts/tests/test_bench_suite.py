@@ -18,6 +18,16 @@ class SelectionTests(unittest.TestCase):
     def test_paths_are_under_data_root(self):
         root = bench_suite.DEFAULT_DATA_ROOT
         self.assertEqual(bench_suite.paths(root)["prepared"], root / "data/readbench")
+    def test_bloom_default_is_the_scaling_series_and_the_corpus(self):
+        selected = bench_suite.dataset_selection(self.manifest, ["bloom"], "", False)
+        self.assertEqual(len(selected), 12)
+        self.assertIn("rotterdam", selected)
+        self.assertIn("3dbag_n1000000", selected)
+    def test_bloom_results_have_their_own_directory(self):
+        locations = bench_suite.paths(bench_suite.DEFAULT_DATA_ROOT)
+        self.assertEqual(bench_suite.result_dir(locations, "bloom", False).name, "scaling_bloom_results")
+    def test_bloom_is_a_family(self):
+        self.assertIn("bloom", bench_suite.family_selection("all"))
 if __name__ == "__main__": unittest.main()
 
 class ProvenanceTests(unittest.TestCase):

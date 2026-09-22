@@ -1,0 +1,11 @@
+dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
+delft.city.jsonl,cityparquet,write,,2231,1.170000,0.003000,182000000,225000000,2,,,,,,
+delft.city.jsonl,cityparquet,id-lookup,0.000448,1,0.004100,0.000100,390000,14700000,2,id-50pct,,,1,0,8192
+delft.city.jsonl,cityparquet,id-lookup,0.000000,0,0.002100,0.000100,380000,14600000,2,id-miss,,,1,1,8192
+delft.city.jsonl,cityparquet,feature-lookup,0.000896,2,0.004300,0.000100,395000,14700000,2,feature-50pct,,,1,0,8192
+delft.city.jsonl,cityparquet,feature-lookup,0.000000,0,0.002200,0.000100,381000,14600000,2,feature-miss,,,1,1,8192
+delft.city.jsonl,cityparquet+nobloom,write,,2231,1.150000,0.003000,181000000,224000000,2,,,,,,
+delft.city.jsonl,cityparquet+nobloom,id-lookup,0.000448,1,0.004000,0.000100,389000,14700000,2,id-50pct,,,1,0,0
+delft.city.jsonl,cityparquet+nobloom,id-lookup,0.000000,0,0.004900,0.000100,389000,14700000,2,id-miss,,,1,0,0
+delft.city.jsonl,cityparquet+nobloom,feature-lookup,0.000896,2,0.004200,0.000100,394000,14700000,2,feature-50pct,,,1,0,0
+delft.city.jsonl,cityparquet+nobloom,feature-lookup,0.000000,0,0.004800,0.000100,394000,14700000,2,feature-miss,,,1,0,0
