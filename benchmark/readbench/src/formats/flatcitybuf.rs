@@ -262,7 +262,7 @@ fn scan_attribute(
     type_of: &dyn Fn(u16) -> Option<ColumnType>,
 ) -> Result<Option<serde_json::Value>> {
     /// `len` bytes at `offset`, or an error naming the truncation.
-    fn take<'b>(bytes: &'b [u8], offset: usize, len: usize) -> Result<&'b [u8]> {
+    fn take(bytes: &[u8], offset: usize, len: usize) -> Result<&[u8]> {
         bytes
             .get(offset..offset + len)
             .ok_or_else(|| anyhow!("attribute blob truncated at byte {offset} (wanted {len})"))

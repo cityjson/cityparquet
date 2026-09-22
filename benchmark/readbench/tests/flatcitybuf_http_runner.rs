@@ -139,8 +139,7 @@ async fn http_count_matches_local_count_and_reports_bytes_and_requests() {
 fn result_line(stdout: &str) -> Vec<String> {
     stdout
         .lines()
-        .filter(|l| !l.trim().is_empty())
-        .next_back()
+        .rfind(|l| !l.trim().is_empty())
         .unwrap_or_default()
         .split_whitespace()
         .map(str::to_string)
