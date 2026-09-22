@@ -247,7 +247,7 @@ def sql_for(scenario: str, params: Params, table: str,
         # this corpus that is 4 of 5 datasets (only `delft` carries
         # `geometry_lod1_2`), so the published `duckdb-cityparquet`
         # `lod-extract` timing on those four rows is not a measurement of
-        # projection pushdown or of anything else -- see README Caveat 17.
+        # projection pushdown or of anything else -- see README Caveat 15.
         if columns is not None and "geometry_lod1_2" not in columns:
             return f"SELECT id FROM {table} WHERE FALSE", ()
         # Returns IDS, as CJDB Q5 does — not `count(col)`, which on a

@@ -307,7 +307,7 @@ discover.
 
 | CJDB | ours | how ours differs |
 |---|---|---|
-| Q1 `h_dak_max > 20` | `attr-range` | The threshold is the column's own 0.8 quantile rather than a literal 20, so the selectivity carries across datasets; on 3DBAG the two land within a rounding error of each other. Q1 is implicitly Building-grained, and so is ours: the attribute exists only on Buildings. |
+| Q1 `h_dak_max > 20` | `attr-range` | The threshold is the column's own 0.8 quantile rather than a literal 20, so the selectivity carries across datasets; on 3DBAG the two land within a rounding error of each other (20.05 against 20). Q1 is implicitly Building-grained, and so is ours: the attribute exists only on Buildings — which means the 20 % is **20 % of the rows carrying the attribute**, and the CSV's `selectivity` column, whose denominator is every CityObject, therefore reads about 0.1 on 3DBAG. |
 | Q2 bbox | `bbox-fetch` (and `bbox-query` for the count alone) | **CJDB uses `ST_Contains(window, ground_geometry)` — containment. This harness uses `&&` overlap on every system**, which is what a bbox index answers natively on all three and what `bbox-query` already asked. Ours also restricts to `type = 'Building'`, which Q2 does not. |
 | Q3 point | `point-query` | None of substance: Q3 is a bbox overlap with a *point*, not a point-in-polygon test, and may return several objects. Ours adds the Building restriction and places the point at the median row centre. |
 | Q4 parts per building | `parts-per-building` | Adapted to cjdb 2.2.0's schema, where `city_object_relationships.parent_id` is the integer `city_object.id`, not the textual `object_id`. Childless Buildings are kept, as Q4's `LEFT JOIN` keeps them. `parts-per-building-join` is an extra DuckDB-only control with no CJDB counterpart. |
@@ -355,11 +355,13 @@ values the committed run read back with `current_setting()`:
 | `random_page_cost` | 1.1 | 1.1 |
 | `max_parallel_workers` | 16 | 16 |
 
-`max_parallel_workers_per_gather` is not a file setting here: it is set per
-run configuration on the benchmark session, and read back into the
-manifest's `execution` block along with `max_worker_processes` — the
-cluster-wide pool that bounds how many workers a query can *actually* get,
-whatever the per-gather cap asks for.
+`max_parallel_workers_per_gather` is deliberately absent from that table
+and from the manifest's `pg_settings` block: it is set per run
+configuration on the benchmark session, so reading it back from a fresh
+connection would report the file's value and contradict the `execution`
+block. That block records it while each configuration is live, along with
+`max_worker_processes` — the cluster-wide pool that bounds how many workers
+a query can *actually* get, whatever the per-gather cap asks for.
 
 ### The two thread configurations
 

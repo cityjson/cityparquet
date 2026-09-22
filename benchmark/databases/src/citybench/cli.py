@@ -500,6 +500,13 @@ def _srids(systems: list) -> dict[str, int]:
 def _pg_settings(ports: dict[str, int] | None = None) -> dict[str, str]:
     """Human-readable values for the manifest's ``pg_settings`` block.
 
+    The FILE settings only. Anything this harness sets per run
+    configuration on the benchmark session — currently
+    ``max_parallel_workers_per_gather`` — belongs in the manifest's
+    ``execution`` block instead, read back while that configuration is
+    live, and is excluded here so the two blocks cannot disagree.
+
+
     M1 (final whole-branch review): this used to concatenate
     ``pg_settings.setting`` (the raw stored integer) directly with
     ``pg_settings.unit`` (the GUC's OWN internal unit string, e.g.
@@ -526,16 +533,17 @@ def _pg_settings(ports: dict[str, int] | None = None) -> dict[str, str]:
                 cur.execute(
                     "SELECT name, current_setting(name) FROM pg_settings "
                     "WHERE name = ANY(%s)",
+                    # `max_parallel_workers_per_gather` is deliberately NOT
+                    # here any more. It is the setting that binds PER QUERY
+                    # (leader plus this many workers), and it is now set per
+                    # thread configuration on the benchmark session rather
+                    # than taken from the file. Reading it back on a FRESH
+                    # connection would report the file's value and
+                    # contradict `execution.postgresql_session_resolved`,
+                    # which records what each configuration's own session
+                    # actually resolved to. One manifest, one answer.
                     (["shared_buffers", "work_mem", "effective_cache_size",
-                      "random_page_cost", "max_parallel_workers",
-                      # I4 (final whole-branch review): this is the setting
-                      # that actually binds PER QUERY (leader + this many
-                      # workers) -- max_parallel_workers above is only the
-                      # cluster-wide pool it draws from. Omitting it let a
-                      # published manifest look "tuned identically" while
-                      # the per-query CPU budget silently differed from
-                      # DuckDB's own (see README "Tuning parity").
-                      "max_parallel_workers_per_gather"],),
+                      "random_page_cost", "max_parallel_workers"],),
                 )
                 settings[tag] = dict(cur.fetchall())
             conn.close()

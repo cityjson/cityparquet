@@ -367,10 +367,14 @@ def test_pg_settings_reports_the_pretty_printed_value_not_a_raw_concatenation(mo
     assert "10485768kB" not in settings["cjdb"].values()
 
 
-def test_pg_settings_queries_max_parallel_workers_per_gather(monkeypatch):
-    # I4 (final whole-branch review): the per-query-binding setting, not
-    # just the cluster-wide pool it draws from, must be captured so a
-    # published manifest can be cited against it.
+def test_pg_settings_leaves_the_per_session_setting_to_the_execution_block(monkeypatch):
+    """`max_parallel_workers_per_gather` binds per query and is now set per
+    thread configuration on the benchmark session. Reading it back here,
+    from a FRESH connection, would report the configuration FILE's value and
+    contradict `execution.postgresql_session_resolved`, which records what
+    each configuration's own session resolved to. One manifest, one answer.
+
+    The cluster-wide pool it draws from is a file setting and stays."""
     from citybench.systems import pg as pg_module
 
     fake_conn = _FakeSettingsConnection([])
@@ -382,7 +386,8 @@ def test_pg_settings_queries_max_parallel_workers_per_gather(monkeypatch):
     # share the fake connection here, so both entries are checked.
     assert fake_conn._cur.executed_args, "execute() was never called"
     for (queried_names,) in fake_conn._cur.executed_args:
-        assert "max_parallel_workers_per_gather" in queried_names
+        assert "max_parallel_workers_per_gather" not in queried_names
+        assert "max_parallel_workers" in queried_names
 
 
 def test_pg_settings_reports_an_error_string_when_the_connection_fails(monkeypatch):
