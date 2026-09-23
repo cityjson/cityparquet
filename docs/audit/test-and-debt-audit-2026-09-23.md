@@ -116,8 +116,8 @@ Slowest tests:
 **Wall-clock depends on the runner.** The gate is `just test`, which runs
 `cargo test --workspace --all-features`. It runs the test **binaries one after
 another**, each with its own threads, and took **10 min 10 s** wall-clock in
-the same session: 606 s of per-binary time, plus about 4 min of compiling and
-linking 50 test binaries. Per binary: `bench_smoke` 127 s, `roundtrip_real_data`
+the same session. That is almost exactly the 606 s sum of per-binary
+times: the build was warm, and the workspace has no doc-tests. Per binary: `bench_smoke` 127 s, `roundtrip_real_data`
 64 s, `cli` 31 s, `citygml_buildingparts` 29 s, `module_schema_real_data` 22 s,
 `bloom_real_data` 22 s, `lod0_synthesis` 22 s, and the whole core inline-unit
 binary (381 tests) **20 s**. So under the gate, removing slow integration
