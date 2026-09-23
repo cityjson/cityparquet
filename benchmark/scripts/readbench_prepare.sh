@@ -617,7 +617,22 @@ same_file() {
 #      all, and fcb/cityparquet/gz were derived from INPUT itself.
 #   2  the CityJSONSeq artefact is always materialised, and everything
 #      downstream derives from IT.
-CHAIN_VERSION=2
+CHAIN_VERSION=3
+# The chain version at which each STAGE last changed what it writes. An
+# artefact is stale when its stage changed after the version that built it,
+# so a bump that touches one stage does not force the hours-long stages it
+# left alone (the 1M CityGML synthesis runs for hours) to be rebuilt:
+#   3  `cityparquet convert` writes bloom filters by default (id, feature_id,
+#      high-cardinality string attributes). A package built before carries
+#      none, and every lookup row measured on it is a different artefact.
+#   2  the CityJSONSeq stage became a real artefact for every input kind
+#      (the gz baseline case above); FlatCityBuf and CityGML derive from it.
+stage_version() {
+  case "$1" in
+    "$PARQUET_OUT"|"$HILBERT_OUT") echo 3 ;;
+    *) echo 2 ;;
+  esac
+}
 CHAIN_DIR="$OUTDIR/.readbench-chain"
 CHAIN_STAMP="$CHAIN_DIR/$BASE"
 
@@ -633,12 +648,24 @@ if [[ -f "$CHAIN_STAMP" ]]; then
   STAMPED="$(cat "$CHAIN_STAMP")"
   STAMPED=${STAMPED%%$'\n'*}
 fi
-if [[ "$STAMPED" != "$CHAIN_VERSION" ]]; then
+# An absent or unparseable stamp is version 0: unknown provenance is stale
+# for every stage, exactly as before.
+STAMPED_NUM=0
+if [[ "$STAMPED" =~ ^[0-9]+$ ]]; then
+  STAMPED_NUM=$STAMPED
+fi
+if [[ "$STAMPED_NUM" != "$CHAIN_VERSION" ]]; then
   for out in "${ALL_OUTPUTS[@]}"; do
     # INPUT sitting in OUTDIR under an artefact's own name was not built by
     # any run of this script, so it is not evidence of an older chain (block
     # 1/2/3 each report it as "the input is already the artefact").
     if same_file "$INPUT" "$out"; then
+      continue
+    fi
+    # Only the stages that changed since the stamped version are stale; an
+    # artefact of an unchanged stage is byte-for-byte what this chain would
+    # write again.
+    if [[ "$(stage_version "$out")" -le "$STAMPED_NUM" ]]; then
       continue
     fi
     if file_is_valid "$out" || dir_is_valid "$out"; then
@@ -650,8 +677,9 @@ if [[ ${#STALE[@]} -gt 0 ]]; then
   echo "error: $OUTDIR holds artefacts for '$BASE' built by an older derivation chain" >&2
   echo "       (chain version ${STAMPED:-none recorded}; this script builds version $CHAIN_VERSION)." >&2
   echo "       Reusing them would measure a stage this chain no longer produces, and the" >&2
-  echo "       numbers would look entirely plausible. Delete them and re-run:" >&2
-  echo "         rm -rf ${STALE[*]} $CHAIN_STAMP" >&2
+  echo "       numbers would look entirely plausible. Delete them and re-run (the stamp is" >&2
+  echo "       rewritten by the run; artefacts of unchanged stages are kept):" >&2
+  echo "         rm -rf ${STALE[*]}" >&2
   exit 1
 fi
 
