@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
 
+from . import prep
 from .paths import DEFAULT_DATA_PATH, DEFAULT_FIGURES_DIR
 
 BG = "#fffff8"
@@ -39,6 +40,9 @@ FORMAT_FILL = {
 }
 DATABASE_FILL = {
     "duckdb-cityparquet": "#E4572E",
+    "duckdb-cityparquet-source": "#F3B199",
+    "cityparquet-hilbert": "#E4572E",
+    "cityparquet": "#F3B199",
     "cjdb": "#83919C",
     "3dcitydb": "#C2CAD0",
 }
@@ -71,28 +75,50 @@ LABELS = {
     "flatcitybuf": "FlatCityBuf",
     "3dcitydb": "3DCityDB",
     "cjdb": "cjdb",
-    "citylake": "CityParquet / DuckDB",
-    "duckdb-cityparquet": "CityParquet / DuckDB",
+    "citylake": "CityParquet (DuckDB)",
+    "duckdb-cityparquet": "CityParquet (DuckDB)",
+    "duckdb-cityparquet-source": "CityParquet (DuckDB, source order)",
+    "duckdb-cityparquet-writeback": "CityParquet (DuckDB, + package write-back)",
 }
-# Query keys read on the heatmap's row axis; a key without an entry falls back
-# to a title-cased key.
+# The database figures put the native readers beside the DuckDB tags, where the
+# format family's "CityParquet" would be ambiguous; column headers wrap.
+DATABASE_LABELS = {
+    "duckdb-cityparquet": "CityParquet\n(DuckDB)",
+    "duckdb-cityparquet-source": "CityParquet\n(DuckDB,\nsource order)",
+    "duckdb-cityparquet-writeback": "CityParquet\n(DuckDB, + package\nwrite-back)",
+    "cityparquet-hilbert": "CityParquet\n(native reader)",
+    "cityparquet": "CityParquet\n(native reader,\nsource order)",
+    "cjdb": "cjdb",
+    "3dcitydb": "3DCityDB",
+}
+# Query keys as the catalogue's plain-language questions
+# (notes/benchmark-queries.md); a key without an entry falls back to a
+# title-cased key.
 SCENARIO_LABELS = {
     "write": "Write",
-    "full-read": "Full read",
+    "full-read": "Read all",
+    "geometry-scan": "Read all (geometry)",
     "count": "Count",
-    "project": "Project",
     "id-lookup": "Id lookup",
-    "id-miss": "Id miss",
-    "attr-filter": "Attr filter",
-    "attr-stats": "Attr stats",
-    "bbox-1pct": "Spatial 1%",
-    "bbox-5pct": "Spatial 5%",
-    "bbox-25pct": "Spatial 25%",
-    "id-10pct": "Id 10%",
-    "id-50pct": "Id 50%",
-    "id-90pct": "Id 90%",
-    "feature-50pct": "Feature 50%",
-    "feature-miss": "Feature miss",
+    "id-miss": "Id lookup (miss)",
+    "attr-filter": "Attribute filter",
+    "attr-range": "Attribute range",
+    "attr-stats": "Attribute stats",
+    "bbox-1pct": "Spatial 1 %",
+    "bbox-5pct": "Spatial 5 %",
+    "bbox-25pct": "Spatial 25 %",
+    "id-10pct": "Id lookup (hit 10 %)",
+    "id-50pct": "Id lookup (hit 50 %)",
+    "id-90pct": "Id lookup (hit 90 %)",
+    "feature-50pct": "Feature lookup (hit 50 %)",
+    "feature-miss": "Feature lookup (miss)",
+    "lod-query": "LoD 1.2 rows",
+    "parts-per-building": "Parts per building",
+    "parts-per-building-join": "Parts per building (join)",
+    "attr-add": "Add attribute",
+    "attr-update": "Update attribute",
+    "attr-delete": "Delete attribute",
+    "append-object": "Append one building",
 }
 # Both the size and heatmap sheets read from the reference encodings to ours, so
 # CityParquet is the last bar/row and the eye lands on it.
@@ -108,7 +134,6 @@ QUERIES = [
     "bbox-25pct",
     "attr-filter",
     "attr-stats",
-    "project",
     "id-10pct",
     "id-50pct",
     "id-90pct",
@@ -851,35 +876,136 @@ def _missing(
     return _save(fig, name.lower().replace(" ", "-"), out)
 
 
+# Column order of the database figures: CityParquet first, the baseline last.
+DATABASE_READ_SYSTEMS = (
+    "duckdb-cityparquet",
+    "duckdb-cityparquet-source",
+    "cityparquet-hilbert",
+    "cityparquet",
+    "cjdb",
+    "3dcitydb",
+)
+DATABASE_WRITE_SYSTEMS = ("duckdb-cityparquet", "duckdb-cityparquet-writeback", "cjdb", "3dcitydb")
+THREAD_TITLES = {
+    "single": "threads=single (primary)",
+    "parallel": "threads=parallel (disclosed second pass)",
+    None: "threads unspecified",
+}
+
+
+def _db_label(system: str) -> str:
+    return DATABASE_LABELS.get(system) or _label(system)
+
+
+def _db_status_text(record: dict | None) -> str:
+    """What a cell says when it holds no citable number."""
+    if record is None:
+        return "n/a"
+    return record.get("status") or "missing"
+
+
+def _notes_axis(ax: Axes, lines: list[str]) -> None:
+    ax.axis("off")
+    ax.text(
+        0.0,
+        1.0,
+        "\n".join(lines),
+        ha="left",
+        va="top",
+        fontsize=6,
+        color=MUTED,
+        transform=ax.transAxes,
+        wrap=True,
+    )
+
+
 def databases(data: dict[str, Any], out: Path) -> list[Path]:
+    """The read comparison: storage, then time and memory per thread configuration.
+
+    Ratios are to 3DCityDB within ONE thread configuration; `single` is the
+    left, primary column and `parallel` the disclosed second pass beside it.
+    The write tier is a different figure (`databases_write`).
+    """
     db = data.get("databases") or {}
-    records, sizes = db.get("records", []), db.get("sizes", [])
+    records = [r for r in db.get("records", []) if r.get("tier", "read") == "read"]
+    sizes = db.get("sizes", [])
     if not records:
         return _missing("databases", out)
-    baseline = "3dcitydb"
-    systems = [
-        s
-        for s in ("duckdb-cityparquet", "cjdb", "3dcitydb")
-        if any(r.get("format") == s for r in records)
-    ]
-    queries = sorted({r.get("scenario") for r in records if r.get("scenario")})
-    index = {(r.get("format"), r.get("scenario")): r for r in records}
-    fig = plt.figure(figsize=(8.5, 7.0), constrained_layout=True)
-    grid = fig.add_gridspec(3, 1, height_ratios=(1.0, 1.45, 1.45))
-    storage = fig.add_subplot(grid[0])
-    time_ax = fig.add_subplot(grid[1])
-    rss_ax = fig.add_subplot(grid[2])
+    baseline = db.get("baseline") or prep.DB_BASELINE
+    present = {r.get("format") for r in records}
+    systems = [s for s in DATABASE_READ_SYSTEMS if s in present]
+    systems += sorted(s for s in present - set(systems) if s)
+    found = {r.get("scenario") for r in records if r.get("scenario")}
+    queries = [q for q in prep.DB_READ_SCENARIOS if q in found]
+    queries += sorted(found - set(queries))
+    configs = [t for t in prep.DB_THREADS if any(r.get("threads") == t for r in records)]
+    if any(r.get("threads") not in prep.DB_THREADS for r in records):
+        configs.append(None)
+    index = {(r.get("format"), r.get("scenario"), r.get("threads")): r for r in records}
+
+    footnotes: dict[tuple[str, str | None, str], int] = {}
+
+    def cell(system: str, query: str, config: str | None, field: str, formatter) -> tuple:
+        record = index.get((system, query, config))
+        base = index.get((baseline, query, config))
+        citable = record is not None and record.get("status") in prep.DB_CITABLE
+        metric = record.get(field) if citable else None
+        if metric is None:
+            return (None, "—" if citable else _db_status_text(record))
+        base_metric = (
+            base.get(field) if base is not None and base.get("status") in prep.DB_CITABLE else None
+        )
+        ratio = _ratio(metric, base_metric)
+        text = formatter(metric) + (f"\n{_ratio_short(ratio)}" if ratio else "")
+        if record.get("status") == "ok-deviation":
+            key = (query, config, record.get("deviation") or record.get("notes", ""))
+            number = footnotes.setdefault(key, len(footnotes) + 1)
+            text += f" *{number}"
+        return (ratio, text)
+
+    heat_specs = (
+        ("time_s", "Mean query time", _seconds),
+        ("peak_rss_bytes", "Peak execution-process RSS", _mib),
+    )
+    blocks = {
+        (field, config): [
+            [cell(system, query, config, field, formatter) for system in systems]
+            for query in queries
+        ]
+        for field, _title, formatter in heat_specs
+        for config in configs
+    }
+    bounds = {
+        field: _cell_bound(
+            [row for config in configs for row in blocks[(field, config)]], "diverging"
+        )
+        for field, _title, _formatter in heat_specs
+    }
+
+    n_cols = len(configs)
+    width = max(8.5, 1.1 * len(systems) * n_cols + 3.0)
+    row_height = 0.3 * len(queries) + 0.9
+    fig = plt.figure(figsize=(width, 1.9 + 2 * row_height + 1.2), layout="constrained")
+    grid = fig.add_gridspec(
+        4, n_cols, height_ratios=(1.9, row_height, row_height, 1.0), wspace=0.05
+    )
+    storage = fig.add_subplot(grid[0, :])
     by_size = {r.get("format"): r.get("size_bytes") for r in sizes}
     base_size = by_size.get(baseline)
-    values = [by_size.get(system) for system in systems]
+    size_systems = [s for s in systems if s in by_size] or systems
+    values = [by_size.get(system) for system in size_systems]
     bars = storage.bar(
-        range(len(systems)),
+        range(len(size_systems)),
         [float(v) / 1024**2 if v is not None else math.nan for v in values],
-        color=[DATABASE_FILL.get(s, MUTED) for s in systems],
+        color=[DATABASE_FILL.get(s, MUTED) for s in size_systems],
     )
     storage.set_title("Storage including indexes", loc="left", fontsize=9)
     storage.set_ylabel("MiB", fontsize=7)
-    storage.set_xticks(range(len(systems)), [_label(s) for s in systems], fontsize=7)
+    storage.set_xticks(
+        range(len(size_systems)),
+        [_db_label(s).replace("\n", " ") for s in size_systems],
+        fontsize=6.5,
+    )
     storage.tick_params(axis="y", labelsize=6)
     for x, (bar, value) in enumerate(zip(bars, values, strict=False)):
         if value is None:
@@ -888,59 +1014,124 @@ def databases(data: dict[str, Any], out: Path) -> list[Path]:
             ratio = _ratio(value, base_size)
             detail = _mib(value) + (f" · {ratio:.2g}×" if ratio else "")
             storage.text(x, bar.get_height(), detail, ha="center", va="bottom", fontsize=6)
-    heat_specs = (
-        (time_ax, "time_s", "Mean query time", _seconds),
-        (rss_ax, "peak_rss_bytes", "Peak execution-process RSS", _mib),
-    )
-    cell_blocks = []
-    for _ax, field, _title, formatter in heat_specs:
-        cells = []
-        for system in systems:
-            row = []
-            for query in queries:
-                value, base = index.get((system, query)), index.get((baseline, query))
-                valid = (
-                    value and base and value.get("status") == "ok" and base.get("status") == "ok"
-                )
-                metric = value.get(field) if value else None
-                base_metric = base.get(field) if base else None
-                if valid and metric is not None and base_metric not in (None, 0):
-                    ratio = _ratio(metric, base_metric)
-                    row.append((ratio, f"{formatter(metric)}\n{_ratio_short(ratio)}"))
-                else:
-                    row.append((None, (value or {}).get("status") or "missing"))
-            cells.append(row)
-        cell_blocks.append(cells)
-    bound = _cell_bound([row for block in cell_blocks for row in block], "diverging")
-    for (ax, _field, title, _formatter), cells in zip(heat_specs, cell_blocks, strict=True):
-        _heat(ax, cells, systems, queries, title, vmax=bound, scale="diverging")
-        for text in ax.texts:
-            text.set_fontsize(6)
-        ax.tick_params(axis="y", labelsize=6)
-        ax.tick_params(axis="x", labelsize=6)
-    cbar = fig.colorbar(
-        rss_ax.images[0],
-        ax=[time_ax, rss_ax],
-        orientation="vertical",
-        fraction=0.035,
-        pad=0.02,
-        aspect=28,
-    )
-    ticks = _heat_ticks(bound, "diverging")
-    cbar.set_ticks(ticks)
-    cbar.set_ticklabels([_ratio_from_log2(t) for t in ticks])
-    cbar.ax.tick_params(labelsize=6, length=0)
-    cbar.outline.set_visible(False)
-    cbar.set_label("Ratio to 3DCityDB; lower is better", fontsize=7)
-    fig.text(
-        0.01,
-        0.01,
-        "3DCityDB baseline. Cells with missing, failed, or invalid-baseline "
-        "measurements are not coloured.",
-        fontsize=6,
-        color=MUTED,
-    )
+
+    for mi, (field, title, _formatter) in enumerate(heat_specs):
+        axes = []
+        for ci, config in enumerate(configs):
+            ax = fig.add_subplot(grid[1 + mi, ci])
+            axes.append(ax)
+            _heat(
+                ax,
+                blocks[(field, config)],
+                queries,
+                systems,
+                f"{title} — {THREAD_TITLES.get(config, config)}",
+                vmax=bounds[field],
+                scale="diverging",
+                x_rotation=0,
+            )
+            ax.set_xticks(range(len(systems)), [_db_label(s) for s in systems], fontsize=5.5)
+            for text in ax.texts:
+                text.set_fontsize(5.5)
+            ax.tick_params(axis="y", labelsize=6.5)
+            if ci:
+                ax.set_yticks([])
+        cbar = fig.colorbar(
+            axes[-1].images[0], ax=axes, orientation="vertical", fraction=0.02, pad=0.01
+        )
+        ticks = _heat_ticks(bounds[field], "diverging")
+        cbar.set_ticks(ticks)
+        cbar.set_ticklabels([_ratio_from_log2(t) for t in ticks])
+        cbar.ax.tick_params(labelsize=6, length=0)
+        cbar.outline.set_visible(False)
+        cbar.set_label("Ratio to 3DCityDB; lower is better", fontsize=6)
+
+    notes = [
+        "Ratios to 3DCityDB within one thread configuration only; never read a "
+        "threads=single cell against a threads=parallel one.",
+        "Uncoloured: no citable baseline or no citable value. n/a: the system does not "
+        "run this scenario. error / skipped / mismatch: the row's status; not citable.",
+    ]
+    conditions = data.get("meta", {}).get("conditions", {}).get("databases", [])
+    notes += [line for line in conditions if line.startswith("Spatial windows")]
+    for (query, config, deviation), number in sorted(footnotes.items(), key=lambda kv: kv[1]):
+        notes.append(
+            f"*{number} ok-deviation, {_label(query)}, threads={config}: {deviation}"
+        )
+    _notes_axis(fig.add_subplot(grid[3, :]), notes)
+    title = f"Database comparison — {db.get('dataset', '')}"
+    if db.get("objects"):
+        title += f", {int(db['objects']):,} objects"
+    fig.suptitle(title, fontsize=12, x=0.01, ha="left")
     return _save(fig, "databases", out)
+
+
+def databases_write(data: dict[str, Any], out: Path) -> list[Path]:
+    """The write tier as a table of absolute values — never one ratio scale.
+
+    Caveat 19: the systems do different work for each request, so nothing is
+    coloured and nothing is divided by a baseline.
+    """
+    db = data.get("databases") or {}
+    records = [r for r in db.get("records", []) if r.get("tier") == "write"]
+    if not records:
+        return _missing("databases-write", out)
+    present = {r.get("format") for r in records}
+    systems = [s for s in DATABASE_WRITE_SYSTEMS if s in present]
+    systems += sorted(s for s in present - set(systems) if s)
+    found = {r.get("scenario") for r in records}
+    scenarios = [q for q in prep.DB_WRITE_SCENARIOS if q in found]
+    scenarios += sorted(found - set(scenarios))
+    index = {(r.get("format"), r.get("scenario")): r for r in records}
+    cells = []
+    for scenario in scenarios:
+        row = []
+        for system in systems:
+            record = index.get((system, scenario))
+            if record is None or record.get("status") not in prep.DB_CITABLE:
+                row.append(_db_status_text(record))
+                continue
+            lines = [_seconds(record.get("time_s"))]
+            rss = record.get("peak_rss_bytes")
+            lines.append(_mib(rss) if rss is not None else "RSS not sampled")
+            if record.get("result_count") is not None:
+                lines.append(f"{int(record['result_count']):,} rows")
+            row.append("\n".join(lines))
+        cells.append(row)
+    fig = plt.figure(
+        figsize=(max(7.0, 1.6 * len(systems) + 2.2), 0.75 * len(scenarios) + 2.4),
+        layout="constrained",
+    )
+    grid = fig.add_gridspec(2, 1, height_ratios=(0.75 * len(scenarios) + 0.6, 1.2))
+    ax = fig.add_subplot(grid[0])
+    ax.imshow(
+        [[0.0] * len(systems) for _ in scenarios],
+        cmap=colors.ListedColormap([BG]),
+        aspect="auto",
+    )
+    for x in range(1, len(systems)):
+        ax.axvline(x - 0.5, color=CELL_EDGE, linewidth=0.6)
+    for y in range(1, len(scenarios)):
+        ax.axhline(y - 0.5, color=CELL_EDGE, linewidth=0.6)
+    for y, row in enumerate(cells):
+        for x, text in enumerate(row):
+            ax.text(x, y, text, ha="center", va="center", fontsize=6, color=INK)
+    ax.set_xticks(range(len(systems)), [_db_label(s) for s in systems], fontsize=6.5)
+    ax.xaxis.tick_top()
+    ax.set_yticks(range(len(scenarios)), [_label(s) for s in scenarios], fontsize=7)
+    ax.tick_params(length=0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    notes = ["Cell: mean time over the samples; peak RSS of the executing process; rows touched."]
+    notes += data.get("meta", {}).get("conditions", {}).get("databases-write", [])
+    _notes_axis(fig.add_subplot(grid[1]), notes)
+    fig.suptitle(
+        "Database write tier — different operations, not one scale",
+        fontsize=12,
+        x=0.01,
+        ha="left",
+    )
+    return _save(fig, "databases-write", out)
 
 
 def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
@@ -967,7 +1158,7 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
     for key in ("codec", "rowgroup", "bloom"):
         written += _axis_main(data, key, out) + _axis_scaling(data, key, out)
         written += _axis_corpus(data, key, out)
-    written += databases(data, out)
+    written += databases(data, out) + databases_write(data, out)
     print(f"benchviz figures -> {out}")
     for path in written:
         print(f"  {path.name}")

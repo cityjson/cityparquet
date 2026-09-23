@@ -104,7 +104,8 @@ compression effort across codec families.
 | `codec`, `rowgroup`, `bloom`                         | Five metric panels for the largest measured scaling dataset                              |
 | `codec-scaling`, `rowgroup-scaling`, `bloom-scaling` | Absolute metrics against actual CityObject counts                                        |
 | `bloom-corpus`                                       | The bloom pair per corpus dataset, apart from the slice curves                           |
-| `databases`                                          | Storage bars and query time/memory heatmaps                                              |
+| `databases`                                          | Storage bars; read time/memory heatmaps, `threads=single` and `threads=parallel` apart   |
+| `databases-write`                                    | The database write tier as a table of absolute values, apart from the reads              |
 
 Heatmap colours encode measurement divided by baseline: **lower is better**,
 with 1× neutral. Cell labels show actual values and units. Format comparisons

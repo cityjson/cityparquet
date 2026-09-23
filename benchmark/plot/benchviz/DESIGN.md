@@ -14,8 +14,11 @@ Run `python -m benchviz summary --data-root ROOT`. A smoke run uses its own
 result and summary directories; it must never be combined with a full run.
 
 The static output set is `sizes`, `heatmap`, `codec`, `codec-scaling`,
-`rowgroup`, `rowgroup-scaling`, and `databases`, each as SVG and 300 dpi PNG.
-The HTML index embeds the same SVGs and has no external dependencies.
+`rowgroup`, `rowgroup-scaling`, `bloom`, `bloom-scaling`, `bloom-corpus`,
+`databases` and `databases-write`, each as SVG and 300 dpi PNG. The HTML index
+embeds the same SVGs, each followed by the conditions it was measured under
+(`meta.conditions`: attribute predicates, achieved window selectivities, the
+write baseline, thread configurations), and has no external dependencies.
 
 Format size panels use actual on-disk bytes (a GB unit once a bar clears a
 gigabyte, a MB unit otherwise), with a CityJSONSeq ratio in each bar label, and
@@ -36,7 +39,13 @@ queries down the side. CityParquet's Hilbert package is displayed as
 Configuration panels use the default CityParquet configuration as baseline and
 show the largest scaling dataset plus trends over observed object counts.
 Database panels use 3DCityDB as baseline; storage includes indexes and memory
-means peak execution-process RSS, not total database-server memory.
+means peak execution-process RSS, not total database-server memory. Every read
+cell is keyed by system, scenario and thread configuration: `threads=single`
+is the primary column, `threads=parallel` a separately labelled second column,
+and no ratio crosses the two. `ok-deviation` cells are citable and carry a
+`*n` marker whose footnote quotes the count decomposition. The write tier is
+its own uncoloured table (`databases-write`): different operations, not one
+scale, so it has absolute values and no ratios.
 
 Read comparisons retain the counting-grain caveat for full-read and bbox
 queries. Timings at or below 10 ms are shown but must not support a ranking

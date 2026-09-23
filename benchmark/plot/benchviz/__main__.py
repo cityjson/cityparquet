@@ -41,6 +41,14 @@ def _bench_dir(args: argparse.Namespace) -> Path:
     )
 
 
+def _drop_databases(payload: dict) -> None:
+    """Deselect the database family, its figure conditions included."""
+    payload["databases"] = {"baseline": "3dcitydb", "records": [], "sizes": []}
+    conditions = payload.get("meta", {}).get("conditions", {})
+    for name in ("databases", "databases-write"):
+        conditions.pop(name, None)
+
+
 def _cmd_prep(args: argparse.Namespace) -> None:
     data, _, _ = _resolved(args)
     prep.main(prep.Inputs(_bench_dir(args)), out_path=data)
@@ -66,7 +74,7 @@ def _cmd_prep(args: argparse.Namespace) -> None:
                 ]
                 axis["sizes"] = [r for r in axis.get("sizes", []) if r.get("dataset") in datasets]
         if payload["databases"].get("dataset") not in datasets:
-            payload["databases"] = {"baseline": "3dcitydb", "records": [], "sizes": []}
+            _drop_databases(payload)
     if families:
         if "formats" not in families:
             payload["read"] = []
@@ -76,7 +84,7 @@ def _cmd_prep(args: argparse.Namespace) -> None:
             if name not in families:
                 payload["scaling"][name] = {"records": [], "sizes": [], "gaps": [], "variants": []}
         if "databases" not in families:
-            payload["databases"] = {"baseline": "3dcitydb", "records": [], "sizes": []}
+            _drop_databases(payload)
     data.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     coverage = {
         "families": {
@@ -108,7 +116,14 @@ def _cmd_prep(args: argparse.Namespace) -> None:
             },
             "databases": {
                 "present": bool(payload["databases"]["records"] or payload["databases"]["sizes"]),
-                "metrics": sorted({r.get("scenario") for r in payload["databases"]["records"]}),
+                "metrics": sorted(
+                    {
+                        f"{r.get('scenario')} threads={r.get('threads')}"
+                        if r.get("tier") == "read"
+                        else str(r.get("scenario"))
+                        for r in payload["databases"]["records"]
+                    }
+                ),
             },
         }
     }

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .paths import DEFAULT_DATA_PATH, DEFAULT_FIGURES_DIR, DEFAULT_HTML_PATH
 
-ORDER = ("sizes", "heatmap", "codec", "codec-scaling", "rowgroup", "rowgroup-scaling", "bloom", "bloom-scaling", "bloom-corpus", "databases")
+ORDER = ("sizes", "heatmap", "codec", "codec-scaling", "rowgroup", "rowgroup-scaling", "bloom", "bloom-scaling", "bloom-corpus", "databases", "databases-write")
 TITLES = {
     "sizes": "File size on disk",
     "heatmap": "Format comparison",
@@ -21,6 +21,7 @@ TITLES = {
     "bloom-scaling": "Bloom-filter scaling",
     "bloom-corpus": "Bloom filters on the corpus",
     "databases": "Database comparison",
+    "databases-write": "Database write tier",
 }
 
 
@@ -35,13 +36,16 @@ def main(
     data = json.loads(data_path.read_text(encoding="utf-8"))
     completeness_path = data_path.parent / "completeness.json"
     completeness = json.loads(completeness_path.read_text()) if completeness_path.exists() else {}
+    conditions = data.get("meta", {}).get("conditions", {})
     sections = []
     for name in ORDER:
         path = figures_dir / f"{name}.svg"
         if path.exists():
             payload = base64.b64encode(path.read_bytes()).decode("ascii")
+            lines = "".join(f"<li>{html.escape(str(x))}</li>" for x in conditions.get(name, []))
+            listing = f"<h3>Conditions</h3><ul class='conditions'>{lines}</ul>" if lines else ""
             sections.append(
-                f"<section><h2>{TITLES[name]}</h2><img alt='{html.escape(TITLES[name])}' src='data:image/svg+xml;base64,{payload}'></section>"
+                f"<section><h2>{TITLES[name]}</h2><img alt='{html.escape(TITLES[name])}' src='data:image/svg+xml;base64,{payload}'>{listing}</section>"
             )
         else:
             sections.append(
@@ -51,7 +55,7 @@ def main(
     caveats = "".join(
         f"<li>{html.escape(str(x))}</li>" for x in data.get("meta", {}).get("caveats_read", [])
     )
-    page = f"""<!doctype html><meta charset='utf-8'><title>CityParquet benchmark figures</title><style>body{{max-width:1100px;margin:2rem auto;padding:0 1rem;background:#fffff8;color:#111;font:16px Georgia,serif}}h1,h2{{font-weight:normal}}section{{margin:3rem 0}}img{{width:100%;height:auto}}.missing,pre{{color:#666}}pre{{background:#f0eee6;padding:1rem}}</style><h1>CityParquet benchmark figures</h1><p>Self-contained paper figures. Colours encode ratios to the stated baseline; values remain printed.</p>{"".join(sections)}<section><h2>Coverage</h2><pre>{coverage}</pre></section><section><h2>Measurement caveats</h2><ul>{caveats}</ul></section>"""
+    page = f"""<!doctype html><meta charset='utf-8'><title>CityParquet benchmark figures</title><style>body{{max-width:1100px;margin:2rem auto;padding:0 1rem;background:#fffff8;color:#111;font:16px Georgia,serif}}h1,h2{{font-weight:normal}}section{{margin:3rem 0}}img{{width:100%;height:auto}}.missing,pre,.conditions{{color:#666}}.conditions{{font-size:14px}}h3{{font-weight:normal;font-size:16px}}pre{{background:#f0eee6;padding:1rem}}</style><h1>CityParquet benchmark figures</h1><p>Self-contained paper figures. Colours encode ratios to the stated baseline; values remain printed.</p>{"".join(sections)}<section><h2>Coverage</h2><pre>{coverage}</pre></section><section><h2>Measurement caveats</h2><ul>{caveats}</ul></section>"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(page, encoding="utf-8")
     print(f"benchviz html -> {out_path}")
