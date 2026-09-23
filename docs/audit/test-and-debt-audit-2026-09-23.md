@@ -1255,3 +1255,47 @@ Paths below use `core/` = `lib/cityparquet-rs/crates/core/src/` and `cli/` = `li
      local paths and drop its `require-env`. The HTTP variant stays in `cityjson_remote.test`.
 - **Effort:** S
 - **Related Part 1:** —
+
+## 7. Not covered
+
+The scope was set mid-task to three libraries, in this priority order:
+`lib/cityparquet-rs`, then `lib/duckdb-3d`, then `lib/duckdb-cityjson`.
+The audit did not look at the following:
+
+- `lib/citylake` (the Rust lakehouse and web API, a separate Cargo workspace), or its gate `just citylake-check`.
+- `benchmark/readbench`, `benchmark/plot`, `benchmark/scripts` and `benchmark/databases` (their own suites: `plot-test`, `scripts-test`). The one exception is D-RS-10, which touches readbench only where it copies core semantics.
+- `ai/mcp` (the MCP server and `mcp-check`) and `ai/plugin`.
+- `scripts/catalog2cityparquet` (261-test Python suite) and `scripts/3dbag2cityparquet`.
+- `documents/` (the specification site).
+- `lib/cityparquet-rs/vendor/` (the vendored `cjseq` and `city3d-stac-tool`).
+- The `test/wasm` smoke test and the opt-in `test/cpp/run_*_tests.sh` harnesses of duckdb-cityjson, which were read but not timed.
+- The six `#[ignore]` bloom tests in cityparquet-rs, which were not run.
+- duckdb-3d timings come from a build one source commit behind the submodule HEAD. Nothing was rebuilt.
+
+## 8. Open questions for you
+
+1. **Which runner should test cost be optimised for?** CI and `just test` use
+   `cargo test`, which took 10 min 10 s. `cargo nextest` took 2 min 46 s on
+   the same machine. Should the gate move to nextest? If so, the shared-fixture
+   proposals (T-RS-U-05, D-RS-08) need the on-disk cache variant, because an
+   in-memory `LazyLock` shares nothing across nextest's per-test processes.
+2. **Should the write benchmark leave the published crates?** D-RS-05 moves
+   `cli/bench.rs`, `variant.rs` and `counting_store.rs` into `benchmark/`, and
+   drops the `cityparquet bench` subcommand. Does anything outside the monorepo
+   (the paper's reproduction instructions, for example) invoke
+   `cityparquet bench`?
+3. **Sync or async for the query API (D-RS-13)?** One implementation over
+   `AsyncFileReader` makes `tokio` and `parquet/async` non-optional for every
+   `cityparquet` consumer, unless the sync API moves behind a feature. Which
+   cost do you prefer?
+4. **How independent must the comparator be (D-RS-09)?** The architecture
+   document says ring normalisation is re-implemented on purpose. Should the
+   same rule apply to `flatten_values` and `VertexPool` dequantisation? That
+   means duplicating them deliberately in `compare`, with a differential test.
+5. **Is the error text a contract?** Several findings (T-3D-07, D-RS-07) turn
+   exact-message assertions into error variants or substrings. Are any of these
+   messages relied on by users, CityLake or the MCP server?
+6. **Order of the duckdb-cityjson bug fixes.** D-CJ-01 (COPY drops the CRS
+   of a `read_cityjsonseq` source) and the silently ignored COPY options in
+   D-CJ-02 are reproduced bugs, not only debt. Should they go to the issue
+   tracker ahead of the rest of this report?
