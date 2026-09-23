@@ -46,7 +46,7 @@ use object_store::ObjectStoreExt;
 use object_store::http::HttpBuilder;
 use object_store::path::Path as ObjectPath;
 
-use super::{FormatRunner, IoStats, RunOutcome, Source as TransportSource};
+use super::{Answer, AttrAggregates, FormatRunner, IoStats, RunOutcome, Source as TransportSource};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// This runner's `--attr-column`/params error for a scenario missing a
@@ -286,6 +286,20 @@ pub(super) fn column_value(co: &CityObject, column: &str) -> Option<serde_json::
         .cloned()
 }
 
+/// Folds `co`'s value for `column` into `stats` when it is a JSON number —
+/// integer or float alike, via `as_f64` — and leaves `stats` untouched
+/// otherwise (absent, `null`, a string, a boolean, or the reserved
+/// `object_type` string).
+///
+/// `pub(super)` for the same reason as [`column_value`]: [`super::cityjson`]
+/// and [`super::citygml`] aggregate through this very function, so the three
+/// parsing runners' `attr-stats` answers agree by construction.
+pub(super) fn push_numeric(stats: &mut AttrAggregates, co: &CityObject, column: &str) {
+    if let Some(value) = column_value(co, column).and_then(|v| v.as_f64()) {
+        stats.push(value);
+    }
+}
+
 /// Total leaf (numeric) values in `value`'s nested-array tree — a
 /// geometry-type-agnostic stand-in for "how much boundary work would
 /// decoding this geometry take", used only to force [`Scenario::FullRead`]
@@ -372,7 +386,7 @@ impl CityJsonSeqRunner {
 /// branches of [`FormatRunner::run`]: everything below `Backend::open`
 /// (which itself only differs in WHERE the bytes come from) is
 /// transport-independent.
-fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> Result<u64> {
+fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> Result<Answer> {
     match scenario {
         Scenario::Count => {
             let mut feature_count = 0u64;
@@ -380,7 +394,7 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
                 feature?;
                 feature_count += 1;
             }
-            Ok(feature_count)
+            Ok(feature_count.into())
         }
         Scenario::FullRead => {
             let mut feature_count = 0u64;
@@ -404,7 +418,7 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
             // [`super::cityjson`]'s own `FullRead` needs for its coordinate
             // resolution.
             std::hint::black_box(boundary_work);
-            Ok(feature_count)
+            Ok(feature_count.into())
         }
         Scenario::BBoxQuery => {
             let query_bbox = *require(&params.bbox, "bbox", scenario)?;
@@ -418,7 +432,7 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
                     matched += 1;
                 }
             }
-            Ok(matched)
+            Ok(matched.into())
         }
         Scenario::AttrFilter => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
@@ -432,30 +446,31 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
                     }
                 }
             }
-            Ok(matched)
+            Ok(matched.into())
         }
         Scenario::AttrStats => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
-            let mut count = 0u64;
+            let mut stats = AttrAggregates::EMPTY;
             for feature in backend.features()? {
                 let feature = feature?;
                 for co in feature.city_objects.values() {
-                    if column_value(co, column).and_then(|v| v.as_f64()).is_some() {
-                        count += 1;
-                    }
+                    push_numeric(&mut stats, co, column);
                 }
             }
-            Ok(count)
+            // `black_box`, as `FullRead` pins its traversal: the aggregates
+            // are the scenario's answer, so the arithmetic must not be
+            // optimised down to the count.
+            Ok(std::hint::black_box(stats).into())
         }
         Scenario::IdLookup => {
             let id = require(&params.target_id, "target-id", scenario)?;
             for feature in backend.features()? {
                 let feature = feature?;
                 if feature.city_objects.contains_key(id) {
-                    return Ok(1);
+                    return Ok(1u64.into());
                 }
             }
-            Ok(0)
+            Ok(0u64.into())
         }
         Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
     }
@@ -500,14 +515,15 @@ async fn run_http(
     let stats = counting.tally();
 
     let backend = Backend::open(tmp.path(), gzip)?;
-    let result_count = run_scenario(&backend, scenario, params)?;
+    let answer = run_scenario(&backend, scenario, params)?;
     Ok(RunOutcome {
-        result_count,
+        result_count: answer.result_count,
         io: Some(IoStats {
             bytes: stats.bytes,
             requests: stats.requests,
         }),
         lookup: None,
+        attr_stats: answer.attr_stats,
     })
 }
 
@@ -521,11 +537,12 @@ impl FormatRunner for CityJsonSeqRunner {
         let (base_url, key) = match source {
             TransportSource::Local(path) => {
                 let backend = Backend::open(path, self.gzip)?;
-                let result_count = run_scenario(&backend, scenario, params)?;
+                let answer = run_scenario(&backend, scenario, params)?;
                 return Ok(RunOutcome {
-                    result_count,
+                    result_count: answer.result_count,
                     io: None,
                     lookup: None,
+                    attr_stats: answer.attr_stats,
                 });
             }
             TransportSource::Http { base_url, key } => (base_url, key),

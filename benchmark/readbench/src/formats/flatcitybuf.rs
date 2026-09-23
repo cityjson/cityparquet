@@ -42,8 +42,9 @@
 //!   matching CityObjects contributes its offset TWICE to the result.
 //! - [`Scenario::AttrStats`] has no B+-tree fallback
 //!   in FCB at all regardless of indexing (see below) — this runner's own
-//!   `select_all` walk deliberately flattens to CityObject level too (one
-//!   count per CityObject carrying the attribute, not one per feature),
+//!   `select_all` walk deliberately flattens to CityObject level too (every
+//!   CityObject's numeric value is folded into `(min, max, sum, count)`, not
+//!   one value per feature),
 //!   matching [`Scenario::AttrFilter`]'s own now-established granularity
 //!   and [`super::cityjsonseq`]'s convention for these same three
 //!   scenarios.
@@ -91,8 +92,8 @@
 //!   of the CityObject's packed attribute blob.
 //! - [`Scenario::IdLookup`]'s fallback compares `co.id()`, a borrowed
 //!   `&str`, and exits at the first hit.
-//! - [`Scenario::AttrStats`] decodes that one
-//!   attribute column and nothing else: no geometry at all.
+//! - [`Scenario::AttrStats`] decodes that one attribute column and nothing
+//!   else — no geometry at all — and aggregates it (`super::AttrAggregates`).
 //!
 //! The RESULT of every one of those is unchanged — same counting unit,
 //! same predicate semantics, same numbers — only the work behind it is.
@@ -132,7 +133,7 @@ use fcb_core::{
 };
 use http_range_client::{AsyncBufferedHttpRangeClient, AsyncHttpRangeClient};
 
-use super::{FormatRunner, IoStats, RunOutcome, Source};
+use super::{AttrAggregates, FormatRunner, IoStats, RunOutcome, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// The markers every index-fallback message below carries, and the exact
@@ -819,36 +820,46 @@ fn id_lookup(input: &Path, id: &str) -> Result<u64> {
 
 /// [`Scenario::AttrStats`]: always a full `select_all` walk (FCB's B+-tree
 /// has no columnar aggregation mechanism — see this module's own doc
-/// comment), counting every CityObject (across every feature) carrying a
-/// numeric value for `column` — CityObject level, matching [`attr_filter`]'s
-/// own granularity.
+/// comment), aggregating `(min, max, sum, count)` over every CityObject
+/// (across every feature) carrying a numeric value for `column` —
+/// CityObject level, matching [`attr_filter`]'s own granularity.
 ///
 /// Attributes only: no geometry is decoded, and only `column`'s own value
-/// is read out of each object's attribute blob. The reserved `object_type`
-/// column is a type STRING, whose `as_f64()` is `None`, so — exactly as
-/// before — it contributes nothing here.
-fn attr_stats(input: &Path, column: &str) -> Result<u64> {
+/// is read out of each object's attribute blob.
+fn attr_stats(input: &Path, column: &str) -> Result<AttrAggregates> {
     let reader = open(input)?;
     let root = owned_columns(&reader.header());
     let mut iter = reader.select_all()?;
-    let mut count = 0u64;
+    let mut stats = AttrAggregates::EMPTY;
     while let Some(feat) = iter.next()? {
         let Some(objects) = feat.cur_feature().objects() else {
             continue;
         };
         for co in objects.iter() {
-            // The reserved column shadows any same-named attribute, and a
-            // type string is never numeric — so it contributes nothing.
-            let numeric = column != "object_type"
-                && attribute_value(&co, root.as_deref(), column)?
-                    .and_then(|v| v.as_f64())
-                    .is_some();
-            if numeric {
-                count += 1;
-            }
+            push_numeric(&mut stats, &co, root.as_deref(), column)?;
         }
     }
-    Ok(count)
+    // Pinned so the aggregation cannot be reduced to the count.
+    Ok(std::hint::black_box(stats))
+}
+
+/// Folds `co`'s value for `column` into `stats` when it is numeric, with the
+/// same `as_f64` rule as [`super::cityjsonseq`]'s own `push_numeric`. The
+/// reserved `object_type` column shadows any same-named attribute and is a
+/// type STRING, never numeric — so it contributes nothing.
+fn push_numeric(
+    stats: &mut AttrAggregates,
+    co: &CityObject<'_>,
+    root: Option<&[ColumnMeta]>,
+    column: &str,
+) -> Result<()> {
+    if column == "object_type" {
+        return Ok(());
+    }
+    if let Some(value) = attribute_value(co, root, column)?.and_then(|v| v.as_f64()) {
+        stats.push(value);
+    }
+    Ok(())
 }
 
 /// Request count + bytes tally shared (via `Arc`) across every
@@ -1040,27 +1051,21 @@ async fn id_lookup_http(url: &str, tally: RangeTally, id: &str) -> Result<u64> {
 }
 
 /// The async, HTTP-sourced mirror of [`attr_stats`].
-async fn attr_stats_http(url: &str, tally: RangeTally, column: &str) -> Result<u64> {
+async fn attr_stats_http(url: &str, tally: RangeTally, column: &str) -> Result<AttrAggregates> {
     let reader = open_http(url, tally).await?;
     let root = owned_columns(&reader.header());
     let mut iter = reader.select_all().await?;
-    let mut count = 0u64;
+    let mut stats = AttrAggregates::EMPTY;
     while iter.next().await?.is_some() {
         let feature = iter.cur_feature().feature();
         let Some(objects) = feature.objects() else {
             continue;
         };
         for co in objects.iter() {
-            let numeric = column != "object_type"
-                && attribute_value(&co, root.as_deref(), column)?
-                    .and_then(|v| v.as_f64())
-                    .is_some();
-            if numeric {
-                count += 1;
-            }
+            push_numeric(&mut stats, &co, root.as_deref(), column)?;
         }
     }
-    Ok(count)
+    Ok(std::hint::black_box(stats))
 }
 
 /// Joins `base_url`/`key` into one URL via `Url::path_segments_mut`
@@ -1094,6 +1099,7 @@ async fn run_http(
     let url = join_url(base_url, key)?;
     let tally = RangeTally::default();
 
+    let mut aggregates = None;
     let result_count = match scenario {
         Scenario::Count => {
             let reader = open_http(&url, tally.clone()).await?;
@@ -1116,7 +1122,9 @@ async fn run_http(
         }
         Scenario::AttrStats => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
-            attr_stats_http(&url, tally.clone(), column).await?
+            let stats = attr_stats_http(&url, tally.clone(), column).await?;
+            aggregates = Some(stats);
+            stats.count
         }
         Scenario::IdLookup => {
             let id = require(&params.target_id, "target-id", scenario)?;
@@ -1130,6 +1138,7 @@ async fn run_http(
         result_count,
         io: Some(IoStats { bytes, requests }),
         lookup: None,
+        attr_stats: aggregates,
     })
 }
 
@@ -1142,6 +1151,7 @@ impl FormatRunner for FlatCityBufRunner {
         let (base_url, key) = match source {
             Source::Local(path) => {
                 let input = path.as_path();
+                let mut aggregates = None;
                 let result_count = match scenario {
                     Scenario::Count => {
                         let reader = open(input)?;
@@ -1165,7 +1175,9 @@ impl FormatRunner for FlatCityBufRunner {
                     }
                     Scenario::AttrStats => {
                         let column = require(&params.attr_column, "attr-column", scenario)?;
-                        attr_stats(input, column)?
+                        let stats = attr_stats(input, column)?;
+                        aggregates = Some(stats);
+                        stats.count
                     }
                     Scenario::IdLookup => {
                         let id = require(&params.target_id, "target-id", scenario)?;
@@ -1177,6 +1189,7 @@ impl FormatRunner for FlatCityBufRunner {
                     result_count,
                     io: None,
                     lookup: None,
+                    attr_stats: aggregates,
                 });
             }
             Source::Http { base_url, key } => (base_url, key),
@@ -1410,7 +1423,7 @@ mod tests {
             "b3_bouwlagen",
             "no_such_column",
         ] {
-            let raw = attr_stats(&input, column).unwrap();
+            let raw = attr_stats(&input, column).unwrap().count;
             let cj = cj_attr_stats(&input, column).unwrap();
             assert_eq!(
                 raw, cj,

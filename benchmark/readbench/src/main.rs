@@ -380,6 +380,18 @@ fn run(cli: Cli) -> Result<()> {
             lookup.filter_bytes
         );
     }
+    // After the timed line, like the lookup counters: the aggregates are what
+    // lets a test hold every format's `attr-stats` to the same four numbers.
+    if let Some(stats) = outcome.attr_stats {
+        eprintln!(
+            "{} {} {} {} {}",
+            formats::ATTR_STATS_MARKER,
+            stats.min,
+            stats.max,
+            stats.sum,
+            stats.count
+        );
+    }
     Ok(())
 }
 

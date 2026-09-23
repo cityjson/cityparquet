@@ -34,7 +34,7 @@ use cityparquet::reader::CityParquetReaderBuilder;
 use cityparquet::stac::properties::{PackageTables, table_names_from_manifest_bytes};
 use cityparquet_schema::CityMetadata;
 
-use super::{FormatRunner, IoStats, LookupCounters, RunOutcome, Source};
+use super::{AttrAggregates, FormatRunner, IoStats, LookupCounters, RunOutcome, Source};
 use crate::scenario::{AttrPred, QueryParams, Scenario};
 
 /// Locates the main CityObject table inside a CityParquet package:
@@ -177,6 +177,19 @@ impl<'a> ScenarioPlan<'a> {
     }
 }
 
+/// The library's [`query::AttrStats`] as the runner reports it. The
+/// aggregation itself stays the format's own mechanism — min and max from
+/// column-chunk statistics, sum and count from a one-column projected scan —
+/// and is not re-derived here.
+fn aggregates(stats: query::AttrStats) -> AttrAggregates {
+    AttrAggregates {
+        min: stats.min,
+        max: stats.max,
+        sum: stats.sum,
+        count: stats.count,
+    }
+}
+
 /// Opens `table` once, just far enough to read its embedded CityParquet
 /// key-value metadata — the `meta` argument `query::full_read`/
 /// `query::id_lookup` need to decode geometry/attributes.
@@ -248,6 +261,7 @@ async fn run_http(
     let dyn_store = || Arc::clone(&store) as Arc<dyn ObjectStore>;
 
     let plan = ScenarioPlan::resolve(scenario, params)?;
+    let mut attr_stats = None;
     let (result_count, lookup) = match plan {
         ScenarioPlan::Count => (
             query_async::count_async(dyn_store(), &table_path).await?,
@@ -266,12 +280,12 @@ async fn run_http(
             query_async::attr_filter_async(dyn_store(), &table_path, column, &pred).await?,
             None,
         ),
-        ScenarioPlan::AttrStats { column } => (
-            query_async::attr_stats_async(dyn_store(), &table_path, column)
-                .await?
-                .count,
-            None,
-        ),
+        ScenarioPlan::AttrStats { column } => {
+            let stats =
+                aggregates(query_async::attr_stats_async(dyn_store(), &table_path, column).await?);
+            attr_stats = Some(stats);
+            (stats.count, None)
+        }
         // The footer is read twice — here for the decode metadata, and again
         // inside the lookup — equally for every variant (disclosed caveat).
         ScenarioPlan::IdLookup { id } => {
@@ -302,6 +316,7 @@ async fn run_http(
             requests: stats.requests,
         }),
         lookup,
+        attr_stats,
     })
 }
 
@@ -318,6 +333,7 @@ impl FormatRunner for CityParquetRunner {
             Source::Local(path) => {
                 let table = locate_main_table(path)?;
                 let plan = ScenarioPlan::resolve(scenario, params)?;
+                let mut attr_stats = None;
                 let (result_count, lookup) = match plan {
                     ScenarioPlan::Count => (query::count(&table)?, None),
                     ScenarioPlan::FullRead => {
@@ -331,7 +347,9 @@ impl FormatRunner for CityParquetRunner {
                         (query::attr_filter(&table, column, &pred)?, None)
                     }
                     ScenarioPlan::AttrStats { column } => {
-                        (query::attr_stats(&table, column)?.count, None)
+                        let stats = aggregates(query::attr_stats(&table, column)?);
+                        attr_stats = Some(stats);
+                        (stats.count, None)
                     }
                     ScenarioPlan::IdLookup { id } => {
                         let meta = open_metadata(&table)?;
@@ -349,6 +367,7 @@ impl FormatRunner for CityParquetRunner {
                     result_count,
                     io: None,
                     lookup,
+                    attr_stats,
                 });
             }
             Source::Http { base_url, key } => (base_url, key),

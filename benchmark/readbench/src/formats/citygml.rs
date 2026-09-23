@@ -102,9 +102,10 @@ use object_store::http::HttpBuilder;
 use object_store::path::Path as ObjectPath;
 
 use super::cityjsonseq::{
-    column_value, count_boundary_leaves, feature_bbox, intersects, matches_predicate, require,
+    column_value, count_boundary_leaves, feature_bbox, intersects, matches_predicate, push_numeric,
+    require,
 };
-use super::{FormatRunner, IoStats, RunOutcome, Source as TransportSource};
+use super::{Answer, AttrAggregates, FormatRunner, IoStats, RunOutcome, Source as TransportSource};
 use crate::scenario::{QueryParams, Scenario};
 
 /// An opened CityGML 2.0 document: where its bytes are, what to call it in a
@@ -283,9 +284,9 @@ where
 /// else a format with no index can do, and pretending otherwise is exactly
 /// what this row exists to disprove. [`Scenario::IdLookup`] may stop at its
 /// hit (see [`stream_members_until`]); it still starts from the beginning.
-fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Result<u64> {
+fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Result<Answer> {
     match scenario {
-        Scenario::Count => stream_members(doc, |_| Ok(())),
+        Scenario::Count => stream_members(doc, |_| Ok(())).map(Answer::from),
         Scenario::FullRead => {
             let mut boundary_work = 0u64;
             let members = stream_members(doc, |feature| {
@@ -303,7 +304,7 @@ fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Res
             // module's own counting-grain ruling. `black_box` rather than
             // `let _ =`, so the walk cannot be optimised away as dead code.
             std::hint::black_box(boundary_work);
-            Ok(members)
+            Ok(members.into())
         }
         Scenario::BBoxQuery => {
             let query_bbox = *require(&params.bbox, "bbox", scenario)?;
@@ -321,7 +322,7 @@ fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Res
                 }
                 Ok(())
             })?;
-            Ok(matched)
+            Ok(matched.into())
         }
         Scenario::AttrFilter => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
@@ -335,20 +336,20 @@ fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Res
                 }
                 Ok(())
             })?;
-            Ok(matched)
+            Ok(matched.into())
         }
         Scenario::AttrStats => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
-            let mut count = 0u64;
+            let mut stats = AttrAggregates::EMPTY;
             stream_members(doc, |feature| {
                 for co in feature.city_objects.values() {
-                    if column_value(co, column).and_then(|v| v.as_f64()).is_some() {
-                        count += 1;
-                    }
+                    push_numeric(&mut stats, co, column);
                 }
                 Ok(())
             })?;
-            Ok(count)
+            // Pinned like `FullRead`'s traversal: the aggregates are the
+            // answer, so the arithmetic must not be reduced to a count.
+            Ok(std::hint::black_box(stats).into())
         }
         // Stops at the hit — the best a document with no index can do, and
         // what every other unindexed runner here already does. See
@@ -357,7 +358,7 @@ fn run_scenario(doc: &Document, scenario: Scenario, params: &QueryParams) -> Res
             let id = require(&params.target_id, "target-id", scenario)?;
             let found =
                 stream_members_until(doc, |feature| Ok(feature.city_objects.contains_key(id)))?;
-            Ok(found as u64)
+            Ok((found as u64).into())
         }
         Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
     }
@@ -411,14 +412,15 @@ async fn run_http(
     let stats = counting.tally();
 
     let doc = open_citygml(tmp.path(), key)?;
-    let result_count = run_scenario(&doc, scenario, params)?;
+    let answer = run_scenario(&doc, scenario, params)?;
     Ok(RunOutcome {
-        result_count,
+        result_count: answer.result_count,
         io: Some(IoStats {
             bytes: stats.bytes,
             requests: stats.requests,
         }),
         lookup: None,
+        attr_stats: answer.attr_stats,
     })
 }
 
@@ -438,11 +440,12 @@ impl FormatRunner for CityGmlRunner {
         let (base_url, key) = match source {
             TransportSource::Local(path) => {
                 let doc = open_citygml(path, &path.display().to_string())?;
-                let result_count = run_scenario(&doc, scenario, params)?;
+                let answer = run_scenario(&doc, scenario, params)?;
                 return Ok(RunOutcome {
-                    result_count,
+                    result_count: answer.result_count,
                     io: None,
                     lookup: None,
+                    attr_stats: answer.attr_stats,
                 });
             }
             TransportSource::Http { base_url, key } => (base_url, key),
