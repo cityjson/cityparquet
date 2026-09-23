@@ -13,6 +13,7 @@ def test_selection_filters_real_payload(tmp_path: Path, monkeypatch):
             "scaling": {
                 "codec": {"records": [], "sizes": []},
                 "rowgroup": {"records": [], "sizes": []},
+                "bloom": {"records": [], "sizes": []},
                 "datasets": [],
             },
             "databases": {

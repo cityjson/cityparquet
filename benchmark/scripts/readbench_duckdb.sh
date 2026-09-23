@@ -4,8 +4,8 @@
 # `cityparquet-readbench` coordinator (`benchmark/readbench`) owns,
 # using the EXACT header contract:
 #   dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,
-#   peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests
-# The last two are always emitted empty here (see `append_row` below).
+#   peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes
+# The last five are always emitted empty here (see `append_row` below).
 #
 # UNLIKE `benchmark/scripts/bench_duckdb.sh` (M5's write-side baseline, which reads
 # CityJSON/CityJSONSeq through the community `cityjson` extension's
@@ -131,9 +131,12 @@ DUCKDB=${DUCKDB:-duckdb}
 # Must stay identical to the coordinator's own `CSV_HEADER`
 # (`benchmark/readbench/src/coordinator.rs`), which is the single
 # authority on this contract — this script appends rows to CSVs the
-# coordinator wrote. `benchmark/plot/tests/test_csv_contract.py` reads both
-# literals out of their sources and asserts they agree.
-CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests"
+# coordinator wrote. `benchmark/plot/tests/test_csv_contract.py` (run by
+# `just plot-test`) reads this literal, the coordinator's, and
+# `benchmark/scripts/format_write.py`'s `HEADER` out of their own sources and
+# asserts all three agree, plus that `benchviz.prep.READ_COLUMNS` is still a
+# leading prefix of them.
+CSV_HEADER="dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,bloom_pruned,filter_bytes"
 
 usage() {
   cat >&2 <<EOF
@@ -352,14 +355,15 @@ print(f'{num / den:.6f}' if den > 0 else '')
 # request to count. Empty is an absence of measurement; a zero would be a
 # measurement claim, and a false one. The columns are still emitted so every
 # row in the CSV has the coordinator's shape — which is why the callers below
-# pass only the 11 fields they can actually measure.
+# pass only the 11 fields they can actually measure. The trailing lookup
+# counters are empty too: they belong to the CityParquet runner's own lookups.
 append_row() {
   local dataset="$1" format="$2" scenario="$3" selectivity="$4" result_count="$5" \
     time_s="$6" time_mad_s="$7" peak_heap_bytes="$8" peak_rss_bytes="$9" repeat="${10}" notes="${11}"
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$dataset" "$format" "$scenario" "$selectivity" "$result_count" \
     "$time_s" "$time_mad_s" "$peak_heap_bytes" "$peak_rss_bytes" "$repeat" "$notes" \
-    "" "" \
+    "" "" "" "" "" \
     >> "$OUT_CSV"
 }
 

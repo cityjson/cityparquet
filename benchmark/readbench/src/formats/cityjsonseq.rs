@@ -37,7 +37,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use cityparquet::cjseq::{CityJSON, CityJSONFeature, CityObject, SortingStrategy, Transform};
 use cityparquet::counting_store::CountingObjectStore;
 use cityparquet::source::Source;
@@ -457,6 +457,7 @@ fn run_scenario(backend: &Backend, scenario: Scenario, params: &QueryParams) -> 
             }
             Ok(0)
         }
+        Scenario::FeatureLookup => bail!("{}", super::FEATURE_LOOKUP_CITYPARQUET_ONLY),
         Scenario::Project => {
             let column = require(&params.attr_column, "attr-column", scenario)?;
             let mut count = 0u64;
@@ -519,6 +520,7 @@ async fn run_http(
             bytes: stats.bytes,
             requests: stats.requests,
         }),
+        lookup: None,
     })
 }
 
@@ -536,6 +538,7 @@ impl FormatRunner for CityJsonSeqRunner {
                 return Ok(RunOutcome {
                     result_count,
                     io: None,
+                    lookup: None,
                 });
             }
             TransportSource::Http { base_url, key } => (base_url, key),

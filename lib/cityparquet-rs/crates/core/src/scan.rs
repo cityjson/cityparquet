@@ -9,11 +9,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cityparquet_schema::{
-    AttributeInferer, CITYPARQUET_VERSION, CityColumnEntry, CityMetadata, CityParquetError,
-    CityParquetSchema, CrsState, ExtensionRegistry, GeoColumnEntry, GeoMetadata, GeometryEncoding,
-    Lod, ModuleKey, ModuleKeyResolver, Result, SourceFormat as SchemaSourceFormat,
-    geometry_column_name, normalise_attribute_name,
+    AttributeInferer, AttributeType, CITYPARQUET_VERSION, CityColumnEntry, CityMetadata,
+    CityParquetError, CityParquetSchema, CrsState, ExtensionRegistry, GeoColumnEntry, GeoMetadata,
+    GeometryEncoding, Lod, ModuleKey, ModuleKeyResolver, Result,
+    SourceFormat as SchemaSourceFormat, geometry_column_name, normalise_attribute_name,
 };
+
+use cardinality_estimator::CardinalityEstimator;
 
 use cjseq::GeometryType;
 
@@ -21,6 +23,34 @@ use crate::source::{Source, SourceFormat};
 use cityparquet_schema::crs::AxisOrder;
 
 use crate::wkb_write::{VertexPool, geometry_bbox};
+
+/// A scalar string attribute column gets a bloom filter when its estimated
+/// distinct count is at least this fraction of its non-null count
+/// (specification `05-metadata.mdx`, "Recommended writer defaults").
+pub const BLOOM_DISTINCT_RATIO: f64 = 0.2;
+
+/// Distinct-value sketch for one attribute column's JSON-string values: the
+/// non-null count and a HyperLogLog++ estimate (precision 12: exact below
+/// 129 distinct values, about 1.6 % standard error above, at most ~3 KiB
+/// whatever the row count).
+#[derive(Default)]
+struct StringCardinality {
+    non_null: u64,
+    distinct: CardinalityEstimator<str>,
+}
+
+impl StringCardinality {
+    fn observe(&mut self, value: &str) {
+        self.non_null += 1;
+        self.distinct.insert(value);
+    }
+
+    /// `estimated_distinct >= 0.2 × non_null`, never for an all-null column.
+    fn qualifies(&self) -> bool {
+        self.non_null > 0
+            && self.distinct.estimate() as f64 >= BLOOM_DISTINCT_RATIO * self.non_null as f64
+    }
+}
 
 /// Outcome of scanning a [`Source`] once: the inferred schema plus the
 /// dataset-level facts ([`CityParquetMetadata`] needs) that only a full scan
@@ -119,6 +149,15 @@ pub struct ScanResult {
     /// type sets — never a dataset-wide union stamped onto every file (spec
     /// "The footer describes the file it lives in").
     pub module_geo: BTreeMap<ModuleKey, BTreeMap<Lod, BTreeSet<String>>>,
+    /// The `String` attribute columns that get a bloom filter under an
+    /// enabled [`crate::recipe::BloomPolicy`]: those whose estimated distinct
+    /// count is at least [`BLOOM_DISTINCT_RATIO`] of their non-null count.
+    /// Always a subset of `schema.attributes` of type `String`: a diverted
+    /// name leaves it, both here and in
+    /// [`Self::add_synthesized_lod0_column`]. Decided dataset-wide — a
+    /// partitioned conversion stamps the whole-dataset set into every
+    /// partition (`crate::package::CanonicalSchema::bloom_attributes`).
+    pub bloom_attributes: BTreeSet<String>,
     source_format: SchemaSourceFormat,
     source_version: String,
 }
@@ -188,6 +227,7 @@ fn union_bbox(acc: &mut Option<[f64; 6]>, bbox: [f64; 6]) {
 pub fn scan(source: &Source) -> Result<ScanResult> {
     let header = source.header();
     let mut inferer = AttributeInferer::default();
+    let mut string_cardinality: BTreeMap<String, StringCardinality> = BTreeMap::new();
     let mut lod_strings: Vec<String> = Vec::new();
     let mut object_count = 0usize;
     let mut bbox_with_lod: Option<[f64; 6]> = None;
@@ -263,7 +303,21 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
 
             if let Some(attrs) = co.attributes.as_ref().and_then(|v| v.as_object()) {
                 for (name, value) in attrs {
-                    inferer.observe(&normalise_attribute_name(name), value);
+                    let name = normalise_attribute_name(name);
+                    // Only JSON strings: a column that ends up `String`
+                    // holds nothing else (numbers, booleans and arrays
+                    // promote it to another type).
+                    if let serde_json::Value::String(text) = value {
+                        match string_cardinality.get_mut(&name) {
+                            Some(sketch) => sketch.observe(text),
+                            None => {
+                                let mut sketch = StringCardinality::default();
+                                sketch.observe(text);
+                                string_cardinality.insert(name.clone(), sketch);
+                            }
+                        }
+                    }
+                    inferer.observe(&name, value);
                 }
             }
 
@@ -483,6 +537,20 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         }
     }
 
+    // The high-cardinality rule, decided on the FINAL attribute set: a
+    // diverted name has no column, and a column that inferred any type but
+    // `String` (a Date or Timestamp, a Json mix) is never a candidate.
+    let bloom_attributes: BTreeSet<String> = attributes
+        .iter()
+        .filter(|(name, ty)| {
+            *ty == AttributeType::String
+                && string_cardinality
+                    .get(name)
+                    .is_some_and(StringCardinality::qualifies)
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+
     let schema = CityParquetSchema {
         lods: lods.clone(),
         // Exactly the LoDs `geo` will declare, so the GEOMETRY annotation and
@@ -521,6 +589,7 @@ pub fn scan(source: &Source) -> Result<ScanResult> {
         synthesize_lod0: None,
         module_lods,
         module_geo,
+        bloom_attributes,
         source_format: to_schema_source_format(source.format()),
         source_version: header.version.clone(),
     })
@@ -593,6 +662,10 @@ impl ScanResult {
             }
         }
         self.schema.attributes = kept;
+        // A diverted attribute has no column any more, so no filter either.
+        let attributes = &self.schema.attributes;
+        self.bloom_attributes
+            .retain(|name| attributes.iter().any(|(kept, _)| kept == name));
 
         // The synthesised footprint is a `MultiPolygon Z`, which is inside
         // GeoParquet's legal subset, so it is declared like any other legal

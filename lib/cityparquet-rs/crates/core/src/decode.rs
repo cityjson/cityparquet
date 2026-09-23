@@ -476,9 +476,12 @@ fn attribute_value(col: &AttributeColumn<'_>, row: usize) -> Result<Option<Value
 pub fn decode_batch(batch: &RecordBatch, meta: &CityMetadata) -> Result<Vec<DecodedObject>> {
     let schema = batch.schema();
 
-    let id_col = downcast::<StringArray>(get_column(batch, "id")?.as_ref(), "id")?;
-    let feature_id_col =
-        downcast::<StringArray>(get_column(batch, "feature_id")?.as_ref(), "feature_id")?;
+    // Plain `Utf8` or `Dictionary<Int32, Utf8>`: a writer's physical choice
+    // (spec "Physical encoding and conformance").
+    let id_array = get_column(batch, "id")?;
+    let id_col = crate::arrow_compat::string_view(id_array.as_ref(), "id")?;
+    let feature_id_array = get_column(batch, "feature_id")?;
+    let feature_id_col = crate::arrow_compat::string_view(feature_id_array.as_ref(), "feature_id")?;
 
     let object_type_array = get_column(batch, "object_type")?;
     let object_type_view =

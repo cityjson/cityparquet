@@ -34,6 +34,11 @@ pub enum Scenario {
     IdLookup,
     /// One attribute column read across every row; non-null count.
     Project,
+    /// Every object of the feature with a given `feature_id` — the feature
+    /// and all its parts. CityParquet only: no other format stores the
+    /// column, so it is not in [`Scenario::ALL`] (the format-comparison set)
+    /// and a run names it explicitly.
+    FeatureLookup,
 }
 
 impl Scenario {
@@ -59,6 +64,7 @@ impl Scenario {
             Scenario::AttrStats => "attr-stats",
             Scenario::IdLookup => "id-lookup",
             Scenario::Project => "project",
+            Scenario::FeatureLookup => "feature-lookup",
         }
     }
 }
@@ -84,13 +90,15 @@ impl FromStr for Scenario {
             "attr-stats" | "attrstats" => Ok(Scenario::AttrStats),
             "id-lookup" | "idlookup" => Ok(Scenario::IdLookup),
             "project" => Ok(Scenario::Project),
+            "feature-lookup" | "featurelookup" => Ok(Scenario::FeatureLookup),
             other => Err(format!(
-                "unknown scenario '{other}'; expected one of: {}",
+                "unknown scenario '{other}'; expected one of: {}, {}",
                 Scenario::ALL
                     .iter()
                     .map(|s| s.as_str())
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(", "),
+                Scenario::FeatureLookup.as_str()
             )),
         }
     }
@@ -134,6 +142,8 @@ pub struct QueryParams {
     pub attr_pred: Option<AttrPred>,
     /// Target object id for [`Scenario::IdLookup`].
     pub target_id: Option<String>,
+    /// Target `feature_id` for [`Scenario::FeatureLookup`].
+    pub target_feature_id: Option<String>,
     /// Free-text label (e.g. `bbox-1pct`) the coordinator threads through
     /// to the results CSV's `notes` column; no runner reads this itself.
     pub selectivity_tag: Option<String>,
@@ -159,5 +169,17 @@ mod tests {
             Scenario::BBoxQuery
         );
         assert!("not-a-scenario".parse::<Scenario>().is_err());
+    }
+
+    #[test]
+    fn feature_lookup_parses_but_is_not_in_the_format_comparison_set() {
+        assert_eq!(
+            "feature-lookup".parse::<Scenario>().unwrap(),
+            Scenario::FeatureLookup
+        );
+        assert_eq!(Scenario::FeatureLookup.as_str(), "feature-lookup");
+        assert!(!Scenario::ALL.contains(&Scenario::FeatureLookup));
+        let err = "nope".parse::<Scenario>().unwrap_err();
+        assert!(err.contains("feature-lookup"), "{err}");
     }
 }

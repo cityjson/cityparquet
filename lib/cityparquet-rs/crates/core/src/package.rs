@@ -1288,6 +1288,12 @@ pub struct CanonicalSchema {
     /// See [`Self::crs`]: reported once per partition, from the whole-dataset
     /// answer rather than the partition's local one.
     pub crs_diagnostic: Option<String>,
+    /// The whole-dataset bloom-filtered attribute set (see
+    /// [`crate::scan::ScanResult::bloom_attributes`]), stamped into every
+    /// partition's scan like the column sets above: the high-cardinality
+    /// rule is a dataset property, and a partition's handful of rows would
+    /// otherwise select nearly every string column.
+    pub bloom_attributes: std::collections::BTreeSet<String>,
 }
 
 /// Convert an already-open `source` into a package at `opts.output_dir` —
@@ -1362,6 +1368,7 @@ pub(crate) fn convert_source_impl(
         // The tri-state CRS too — see `CanonicalSchema::crs`.
         scan_result.crs = canon.crs.clone();
         scan_result.crs_diagnostic = canon.crs_diagnostic.clone();
+        scan_result.bloom_attributes = canon.bloom_attributes.clone();
     } else if opts.generate_lod0 {
         // Non-partitioned convert: reserve the synthesised LoD0 column here (a
         // partitioned run does this once on the whole-dataset scan, so the
@@ -1393,7 +1400,9 @@ pub(crate) fn convert_source_impl(
     // table's own realised column set is settled, post-encode — see
     // `write_package` -> `TableWriters::finish`. `writer_properties` is now
     // purely the per-column compression/encoding recipe.
-    let props = opts.recipe.writer_properties(&scan_result.schema)?;
+    let props = opts
+        .recipe
+        .writer_properties(&scan_result.schema, &scan_result.bloom_attributes)?;
 
     // Everything above is fallible but never touches `opts.output_dir` at
     // all, so none of it needs any cleanup. From here on, every new file

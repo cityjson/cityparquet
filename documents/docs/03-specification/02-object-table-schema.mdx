@@ -167,6 +167,19 @@ and `children_roles` are all `LIST<VARCHAR>` — so a reader that trusted positi
 rather than name would misread a differently ordered file **silently**, producing
 plausible values attached to the wrong column.
 
+### Bloom filters
+
+Writers **MAY** include standard Parquet bloom filters. Writers targeting
+selective identifier lookups **SHOULD** include filters on `id` and
+`feature_id`. Filters **MUST** conform to the Parquet bloom-filter
+specification; writers **SHOULD** set `bloom_filter_length`. Readers **MUST**
+accept files without filters, **MUST NOT** depend on filter placement, and
+**MUST NOT** treat a positive bloom result as a match.
+
+The recommended column set, false-positive probability and placement are in
+[recommended writer defaults](/specification/metadata#recommended-writer-defaults-informative);
+the reasoning is in the [bloom-filter decision](/design-decisions/bloom-filters).
+
 ## Attribute types and promotion
 
 CityParquet stores **one typed column per attribute** where practical — not a single

@@ -48,6 +48,7 @@ DATABASE_FILL = {
 # are one sequential teal from small groups (light) to large (dark).
 CODEC_OTHER_COLOURS = ["#2A9D8F", "#5F6E7A", "#83919C", "#A3AEB7", "#C2CAD0"]
 ROWGROUP_HUE = "#2A9D8F"
+BLOOM_OFF_COLOUR = "#5F6E7A"  # the package without filters, against the accent default
 
 BAD_CELL = "#efeee6"
 # Cell separators. A black grid would fight the fills, which are the reading;
@@ -90,6 +91,8 @@ SCENARIO_LABELS = {
     "id-10pct": "Id 10%",
     "id-50pct": "Id 50%",
     "id-90pct": "Id 90%",
+    "feature-50pct": "Feature 50%",
+    "feature-miss": "Feature miss",
 }
 # Both the size and heatmap sheets read from the reference encodings to ours, so
 # CityParquet is the last bar/row and the eye lands on it.
@@ -181,10 +184,14 @@ def _axis_palette(key: str, variants: list[str]) -> dict[str, str]:
             palette[v] = _mix(ACCENT, 0.55 * (1 - i / max(len(zstd) - 1, 1)))
         for i, v in enumerate(others):
             palette[v] = CODEC_OTHER_COLOURS[i % len(CODEC_OTHER_COLOURS)]
-    else:
+    elif key == "rowgroup":
         ordered = sorted((v for v in variants if v != "cityparquet"), key=_rowgroup_size)
         for i, v in enumerate(ordered):
             palette[v] = _mix(ROWGROUP_HUE, 0.6 * (1 - i / max(len(ordered) - 1, 1)))
+    else:
+        for v in variants:
+            if v != "cityparquet":
+                palette[v] = BLOOM_OFF_COLOUR
     return palette
 
 
@@ -499,17 +506,57 @@ def _axis(data: dict[str, Any], key: str) -> tuple[list[dict], list[dict], list[
 
 
 def _axis_queries(records: list[dict]) -> list[str]:
-    wanted = ["full-read", "bbox-1pct", "bbox-5pct", "bbox-25pct", "id-50pct", "id-lookup"]
+    wanted = [
+        "full-read",
+        "bbox-1pct",
+        "bbox-5pct",
+        "bbox-25pct",
+        "id-50pct",
+        "id-miss",
+        "feature-50pct",
+        "feature-miss",
+        "id-lookup",
+    ]
     present = {r.get("measure") for r in records}
     return [q for q in wanted if q in present]
+
+
+def _scaling_points(source: list[dict], variant: str, measure: str | None) -> list[dict]:
+    """One variant's curve: the nested 3DBAG slices only, one point per dataset.
+
+    Keyed by dataset, never by object count, so two inputs of equal count both
+    stay; ordered by count (then id) for the x axis. Corpus rows are never
+    points on a curve — a different city model is not a larger slice.
+    """
+    points = [
+        r
+        for r in source
+        if r.get("series") == "scaling"
+        and r.get("variant") == variant
+        and (measure is None or r.get("measure") == measure)
+        and r.get("objects") is not None
+    ]
+    return sorted(points, key=lambda r: (r["objects"], r["dataset"]))
+
+
+def _corpus_datasets(records: list[dict]) -> list[str]:
+    """The corpus datasets an axis measured, smallest first."""
+    objects: dict[str, int] = {}
+    for r in records:
+        if r.get("series") == "corpus":
+            objects[r["dataset"]] = max(objects.get(r["dataset"], 0), r.get("objects") or 0)
+    return sorted(objects, key=lambda d: (objects[d], d))
 
 
 def _axis_main(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     records, sizes, variants = _axis(data, key)
     if not records:
         return _missing(key, out)
+    # The headline dataset is the largest SLICE when the axis has any: the
+    # scaling figure's right-hand end, not a corpus model of another city.
+    slices = [r for r in records if r.get("series") == "scaling"]
     largest = max(
-        {r["dataset"] for r in records},
+        {r["dataset"] for r in (slices or records)},
         key=lambda d: max(r.get("objects") or 0 for r in records if r["dataset"] == d),
     )
     selected = [r for r in records if r.get("dataset") == largest]
@@ -636,8 +683,13 @@ def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     records, sizes, variants = _axis(data, key)
     if not records:
         return _missing(f"{key}-scaling", out)
+    if not any(r.get("series") == "scaling" for r in records):
+        return _missing(
+            f"{key}-scaling",
+            out,
+            "Not rendered: no 3DBAG scaling slice was measured; corpus datasets are drawn apart.",
+        )
     queries = _axis_queries(records)
-    counts = sorted({r["objects"] for r in records if r.get("objects") is not None})
     palette = _axis_palette(key, variants)
     colours = {variant: palette.get(variant, MUTED) for variant in variants}
     markers = ["o", "s", "^", "D", "v", "P", "X", "<", ">"]
@@ -664,17 +716,12 @@ def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
             )
     for ax, title, source, field, measure in panels:
         for vi, variant in enumerate(variants):
-            by = {
-                r.get("objects"): r
-                for r in source
-                if r.get("variant") == variant and (measure is None or r.get("measure") == measure)
-            }
+            points = _scaling_points(source, variant, measure)
+            counts = [r["objects"] for r in points]
             divisor = 1024**2 if field in ("bytes", "rss_b") else 1
             values = [
-                float(by[count][field]) / divisor
-                if count in by and by[count].get(field) is not None
-                else float("nan")
-                for count in counts
+                float(r[field]) / divisor if r.get(field) is not None else float("nan")
+                for r in points
             ]
             ax.plot(
                 counts,
@@ -686,10 +733,7 @@ def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
                 label=variant.replace("cityparquet+", "").replace("cityparquet", "default"),
             )
             if field == "time_s":
-                spreads = [
-                    float(by[count].get("time_mad_s") or 0) if count in by else 0
-                    for count in counts
-                ]
+                spreads = [float(r.get("time_mad_s") or 0) for r in points]
                 ax.fill_between(
                     counts,
                     [v - spread for v, spread in zip(values, spreads, strict=True)],
@@ -714,14 +758,91 @@ def _axis_scaling(data: dict[str, Any], key: str, out: Path) -> list[Path]:
     return _save(fig, f"{key}-scaling", out)
 
 
-def _missing(name: str, out: Path) -> list[Path]:
+def _axis_corpus(data: dict[str, Any], key: str, out: Path) -> list[Path]:
+    """The corpus datasets of an axis, per dataset and apart from the curve.
+
+    Grouped bars, one group per corpus dataset and one bar per variant, for
+    the same metrics as the scaling figure. Nothing is written for an axis
+    that measured no corpus dataset (codec and row group run slices only), and
+    any `{key}-corpus` figure already in `out` is removed.
+    """
+    records, sizes, variants = _axis(data, key)
+    datasets = _corpus_datasets(records)
+    if not datasets:
+        # Remove a corpus figure an earlier run left in a re-used directory,
+        # so the summary page cannot embed it as if this run had measured it.
+        for suffix in ("svg", "png"):
+            (out / f"{key}-corpus.{suffix}").unlink(missing_ok=True)
+        return []
+    corpus = [r for r in records if r.get("series") == "corpus"]
+    corpus_sizes = [r for r in sizes if r.get("series") == "corpus"]
+    queries = _axis_queries(corpus)
+    palette = _axis_palette(key, variants)
+    metrics = [
+        ("File size (MiB)", corpus_sizes, "bytes", None),
+        ("Write time (s)", corpus, "time_s", "write"),
+        ("Write peak RSS (MiB)", corpus, "rss_b", "write"),
+    ] + [(f"Read time (s)\n{_label(q)}", corpus, "time_s", q) for q in queries]
+    columns = 3
+    rows = -(-len(metrics) // columns)
+    fig, axes = plt.subplots(
+        rows, columns, figsize=(10, 2.6 * rows), layout="constrained", squeeze=False
+    )
+    width = 0.8 / max(1, len(variants))
+    for ax, (title, source, field, measure) in zip(axes.flat, metrics, strict=False):
+        divisor = 1024**2 if field in ("bytes", "rss_b") else 1
+        for vi, variant in enumerate(variants):
+            by = {
+                r["dataset"]: r
+                for r in source
+                if r.get("variant") == variant and (measure is None or r.get("measure") == measure)
+            }
+            values = [
+                float(by[d][field]) / divisor
+                if d in by and by[d].get(field) is not None
+                else float("nan")
+                for d in datasets
+            ]
+            ax.bar(
+                [i + (vi - (len(variants) - 1) / 2) * width for i in range(len(datasets))],
+                values,
+                width=width,
+                color=palette.get(variant, MUTED),
+                label=variant.replace("cityparquet+", "").replace("cityparquet", "default"),
+            )
+        ax.set_title(title, fontsize=8)
+        ax.set_xticks(range(len(datasets)), datasets, rotation=30, ha="right", fontsize=6)
+        ax.tick_params(axis="y", labelsize=6)
+    for ax in list(axes.flat)[len(metrics) :]:
+        ax.axis("off")
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="outside lower center",
+        ncol=min(5, len(variants)),
+        fontsize=7,
+        frameon=False,
+    )
+    fig.suptitle(
+        f"{key.replace('rowgroup', 'row group').capitalize()} — corpus datasets",
+        fontsize=12,
+    )
+    return _save(fig, f"{key}-corpus", out)
+
+
+def _missing(
+    name: str,
+    out: Path,
+    reason: str = "Not rendered: this result family is absent from this run.",
+) -> list[Path]:
     fig, ax = plt.subplots(figsize=(6, 2.2))
     ax.axis("off")
     ax.text(0.5, 0.58, name, ha="center", va="center", fontsize=12)
     ax.text(
         0.5,
         0.35,
-        "Not rendered: this result family is absent from this run.",
+        reason,
         ha="center",
         va="center",
         color=MUTED,
@@ -843,8 +964,9 @@ def main(data_path: Path | None = None, out_dir: Path | None = None) -> Path:
         }
     )
     written = sizes(data, out) + format_heatmap(data, out)
-    for key in ("codec", "rowgroup"):
+    for key in ("codec", "rowgroup", "bloom"):
         written += _axis_main(data, key, out) + _axis_scaling(data, key, out)
+        written += _axis_corpus(data, key, out)
     written += databases(data, out)
     print(f"benchviz figures -> {out}")
     for path in written:

@@ -10,7 +10,8 @@ use std::process::{Command, Output};
 use cityparquet::package::{ConvertOptions, convert};
 
 const HEADER: &str = "dataset,format,scenario,selectivity,result_count,time_s,time_mad_s,\
-peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests";
+peak_heap_bytes,peak_rss_bytes,repeat,notes,bytes_read,http_requests,row_groups_total,\
+bloom_pruned,filter_bytes";
 
 fn fixture(name: &str) -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -292,19 +293,159 @@ fn variants_and_formats_are_exclusive_and_the_list_is_validated() {
         ),
         "unknown scenario 'write'",
     );
-    expect_rejection(
-        &with(
-            &base,
-            &[
-                "--variants",
-                "cityparquet",
-                "--transport",
-                "http",
-                "--base-url",
-                "http://localhost:1",
-            ],
-        ),
-        "server-side write",
-    );
     assert!(!out.exists(), "a rejected run writes no CSV");
+}
+
+/// The bloom pair: the same package with and without filters. Lookup rows
+/// carry counters — no filter bytes and nothing pruned without filters —
+/// and write rows carry none. delft is ONE row group, so the pruning the
+/// family exists to show is exactly visible: a `*-miss` probe rules that group
+/// out (`bloom_pruned` 1) with filters and cannot without them, and a hit
+/// probe never prunes on either side.
+#[test]
+fn a_bloom_pair_records_lookup_counters() {
+    let (prepared, input) = prepared_delft();
+    let out_csv = prepared.path().join("out.csv");
+    let output = run(&[
+        "--input",
+        input.to_str().unwrap(),
+        "--prepared-dir",
+        prepared.path().to_str().unwrap(),
+        "--out",
+        out_csv.to_str().unwrap(),
+        "--repeat",
+        "1",
+        "--write-repeat",
+        "1",
+        "--scenarios",
+        "id-lookup,feature-lookup",
+        "--id-probes",
+        "id-50pct,id-miss",
+        "--variants",
+        "cityparquet,cityparquet+nobloom",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = std::fs::read_to_string(&out_csv).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(lines.next().unwrap(), HEADER);
+    let rows: Vec<&str> = lines.collect();
+    // Per variant: write, id-50pct, id-miss, feature-50pct, feature-miss.
+    assert_eq!(rows.len(), 10, "{text}");
+    for row in &rows {
+        let (label, scenario, notes) = (field(row, 1), field(row, 2), field(row, 10));
+        let counters: Vec<&str> = (13..16).map(|i| field(row, i)).collect();
+        assert_eq!(row.split(',').count(), 16, "{row}");
+        if scenario == "write" {
+            assert_eq!(counters, vec!["", "", ""], "{row}");
+            continue;
+        }
+        assert_eq!(counters[0], "1", "delft is one row group: {row}");
+        let is_miss = notes.starts_with("id-miss") || notes.starts_with("feature-miss");
+        if label == "cityparquet+nobloom" {
+            assert_eq!(counters[1], "0", "{row}");
+            assert_eq!(counters[2], "0", "{row}");
+        } else {
+            assert_ne!(counters[2], "0", "{row}");
+            assert_eq!(
+                counters[1],
+                if is_miss { "1" } else { "0" },
+                "the pruning the bloom family exists to show: {row}"
+            );
+        }
+    }
+}
+
+async fn spawn_server(dir: PathBuf) -> std::net::SocketAddr {
+    let app = axum::Router::new().fallback_service(tower_http::services::ServeDir::new(dir));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
+/// Over HTTP a `--variants` run reads the packages a local run wrote and an
+/// operator uploaded — here, the prepared directory served as it is. No
+/// write rows, no sizes, and every lookup row carries its transport and
+/// lookup counters. `multi_thread`: `run` blocks on a child process while the
+/// server task must keep accepting.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_variants_run_over_http_reads_the_uploaded_packages_without_writing() {
+    let (prepared, input) = prepared_delft();
+    let common = |out: &PathBuf| -> Vec<String> {
+        [
+            "--input",
+            input.to_str().unwrap(),
+            "--prepared-dir",
+            prepared.path().to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+            "--repeat",
+            "1",
+            "--write-repeat",
+            "1",
+            "--scenarios",
+            "id-lookup",
+            "--id-probes",
+            "id-miss",
+            "--variants",
+            "cityparquet,cityparquet+nobloom",
+        ]
+        .map(String::from)
+        .to_vec()
+    };
+    let local_csv = prepared.path().join("local.csv");
+    let args = common(&local_csv);
+    let local = run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(
+        local.status.success(),
+        "{}",
+        String::from_utf8_lossy(&local.stderr)
+    );
+    let sizes = prepared.path().join("sizes.csv");
+    let sizes_before = std::fs::read_to_string(&sizes).unwrap();
+
+    let addr = spawn_server(prepared.path().to_path_buf()).await;
+    let http_csv = prepared.path().join("http.csv");
+    let mut args = common(&http_csv);
+    args.extend(["--transport".to_string(), "http".to_string()]);
+    args.extend(["--base-url".to_string(), format!("http://{addr}")]);
+    let output = run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let text = std::fs::read_to_string(&http_csv).unwrap();
+    let rows: Vec<&str> = text.lines().skip(1).collect();
+    assert_eq!(
+        rows.len(),
+        2,
+        "one id-miss row per variant, no write rows:\n{text}"
+    );
+    for row in &rows {
+        assert_eq!(field(row, 2), "id-lookup", "{row}");
+        assert!(!field(row, 11).is_empty(), "bytes_read: {row}");
+        assert!(!field(row, 12).is_empty(), "http_requests: {row}");
+        assert_eq!(field(row, 13), "1", "row_groups_total: {row}");
+        // The async path prunes exactly as the sync one does: delft's single
+        // row group is ruled out for the verified-absent probe with filters
+        // and cannot be without them.
+        assert_eq!(
+            field(row, 14),
+            if field(row, 1) == "cityparquet+nobloom" {
+                "0"
+            } else {
+                "1"
+            },
+            "bloom_pruned: {row}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&sizes).unwrap(), sizes_before);
 }

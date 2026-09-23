@@ -54,6 +54,10 @@ peak_alloc = "0.3.0"
 cityparquet-schema = { path = "crates/schema", version = "0.1.0" }
 city3d-stac-types = { git = "https://github.com/cityjson/city3d-stac-tool", rev = "743199c9b9ff566ec42c4023ce0968e9ac6af485" }
 jsonschema = "0.26"
+# HyperLogLog++ distinct counts for the bloom-filter high-cardinality rule
+# (`scan`). Deterministic WyHash default: the selected columns, and so the
+# package layout, are identical run to run.
+cardinality-estimator = "1.0.3"
 
 # vendor/cjseq carries a patched 0.4.1: upstream's `add_cjfeature`/
 # `update_texture` mis-base merged texture UV-vertex indices, corrupting

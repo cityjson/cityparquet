@@ -9,10 +9,13 @@
 
 use arrow_array::{
     Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, StructArray,
+    new_empty_array,
 };
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Schema};
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::{ArrowPredicateFn, RowFilter};
+use parquet::basic::{ConvertedType, LogicalType, Type as PhysicalType};
+use parquet::bloom_filter::Sbbf;
 use parquet::file::metadata::{ParquetMetaData, RowGroupMetaData};
 use parquet::file::statistics::Statistics;
 use parquet::schema::types::{ColumnPath, SchemaDescriptor};
@@ -66,6 +69,240 @@ pub struct BBoxQueryResult {
     /// count [`crate::reader::CityParquetReaderBuilder::with_bbox_row_groups`]
     /// keeps for the scan below).
     pub row_groups_touched: usize,
+}
+
+/// One candidate row group's bloom filter for the target column, located
+/// from footer metadata alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BloomTarget {
+    pub row_group: usize,
+    pub offset: u64,
+    /// `bloom_filter_length`, when the writer declared it.
+    pub length: Option<u64>,
+}
+
+/// Where the target column's filters are, per candidate row group.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BloomTargets {
+    /// The column's Parquet leaf index, resolved by path from the file
+    /// schema (never an Arrow field ordinal); `None` when the file has no
+    /// such leaf.
+    pub leaf: Option<usize>,
+    pub with_filter: Vec<BloomTarget>,
+    /// Candidates whose chunk carries no filter. They are always kept.
+    pub without_filter: Vec<usize>,
+}
+
+/// The outcome of probing a column's bloom filters for a set of values
+/// (IN semantics): which candidate row groups can still hold one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BloomPrune {
+    /// Row groups to read, ascending — for `with_row_groups`.
+    pub keep: Vec<usize>,
+    /// Candidates considered.
+    pub total: usize,
+    /// Candidates whose filter rejected every value.
+    pub pruned: usize,
+    /// Candidates kept unexamined: no filter on their chunk, or no probe made.
+    pub without_filter: usize,
+    /// Bitset bytes of every filter examined (32 per block), the same on the
+    /// sync and async paths. Header bytes and transport overhead are not
+    /// counted; `crate::counting_store::CountingObjectStore` reports the latter.
+    pub filter_bytes: u64,
+}
+
+impl BloomPrune {
+    /// Assembles the outcome from `targets` and one verdict per
+    /// `targets.with_filter` entry (`true`: keep).
+    pub(crate) fn from_verdicts(
+        targets: &BloomTargets,
+        candidates: &[usize],
+        verdicts: &[bool],
+        filter_bytes: u64,
+    ) -> Self {
+        let mut keep = targets.without_filter.clone();
+        keep.extend(
+            targets
+                .with_filter
+                .iter()
+                .zip(verdicts)
+                .filter(|(_, keep)| **keep)
+                .map(|(target, _)| target.row_group),
+        );
+        keep.sort_unstable();
+        Self {
+            keep,
+            total: candidates.len(),
+            pruned: verdicts.iter().filter(|keep| !**keep).count(),
+            without_filter: targets.without_filter.len(),
+            filter_bytes,
+        }
+    }
+
+    /// Every candidate kept, none examined — a predicate no filter answers.
+    pub(crate) fn unpruned(candidates: &[usize]) -> Self {
+        Self {
+            keep: candidates.to_vec(),
+            total: candidates.len(),
+            pruned: 0,
+            without_filter: candidates.len(),
+            filter_bytes: 0,
+        }
+    }
+}
+
+/// What the bloom filters did for one lookup or filter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LookupStats {
+    pub row_groups_total: usize,
+    pub bloom_pruned: usize,
+    /// [`BloomPrune::filter_bytes`].
+    pub filter_bytes: u64,
+}
+
+impl LookupStats {
+    pub(crate) fn from_prune(prune: &BloomPrune) -> Self {
+        Self {
+            row_groups_total: prune.total,
+            bloom_pruned: prune.pruned,
+            filter_bytes: prune.filter_bytes,
+        }
+    }
+}
+
+impl std::ops::AddAssign for LookupStats {
+    fn add_assign(&mut self, other: Self) {
+        self.row_groups_total += other.row_groups_total;
+        self.bloom_pruned += other.bloom_pruned;
+        self.filter_bytes += other.filter_bytes;
+    }
+}
+
+/// Resolves `column`'s leaf by path and, for each candidate row group, where
+/// its filter is — from footer metadata alone, no I/O. Shared verbatim by
+/// the sync and async pruners.
+pub fn bloom_targets(
+    meta: &ParquetMetaData,
+    column: &ColumnPath,
+    candidates: &[usize],
+) -> BloomTargets {
+    let leaf = meta
+        .file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .position(|descr| descr.path() == column);
+    let Some(leaf) = leaf else {
+        return BloomTargets {
+            leaf: None,
+            with_filter: Vec::new(),
+            without_filter: candidates.to_vec(),
+        };
+    };
+    let mut targets = BloomTargets {
+        leaf: Some(leaf),
+        ..BloomTargets::default()
+    };
+    for &row_group in candidates {
+        let chunk = meta.row_group(row_group).column(leaf);
+        match chunk
+            .bloom_filter_offset()
+            .and_then(|offset| u64::try_from(offset).ok())
+        {
+            Some(offset) => targets.with_filter.push(BloomTarget {
+                row_group,
+                offset,
+                length: chunk
+                    .bloom_filter_length()
+                    .and_then(|length| u64::try_from(length).ok()),
+            }),
+            None => targets.without_filter.push(row_group),
+        }
+    }
+    targets
+}
+
+/// A filter keeps its row group when ANY value may be present (IN
+/// semantics). Values are probed as their raw UTF-8 bytes, which is what
+/// the writer hashed.
+pub(crate) fn sbbf_matches_any(sbbf: &Sbbf, values: &[&str]) -> bool {
+    values.iter().any(|value| sbbf.check(*value))
+}
+
+/// The [`BloomPrune::filter_bytes`] one filter contributes.
+pub(crate) fn filter_bitset_bytes(sbbf: &Sbbf) -> u64 {
+    32 * sbbf.num_blocks() as u64
+}
+
+/// A top-level column's single-part leaf path.
+pub(crate) fn top_level_path(name: &str) -> ColumnPath {
+    ColumnPath::new(vec![name.to_string()])
+}
+
+/// The mask selecting top-level `column`, matched by its exact name.
+/// `ProjectionMask::columns` splits a name on `.`, so an attribute whose name
+/// holds a literal `.` would select no leaf at all.
+pub(crate) fn root_mask(parquet_schema: &SchemaDescriptor, column: &str) -> Result<ProjectionMask> {
+    let root = parquet_schema
+        .root_schema()
+        .get_fields()
+        .iter()
+        .position(|field| field.name() == column)
+        .ok_or_else(|| {
+            CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+        })?;
+    Ok(ProjectionMask::roots(parquet_schema, [root]))
+}
+
+/// The value `pred` probes `column`'s bloom filter with, or `None` when no
+/// probe applies. The predicate's type rules come first — checked on an
+/// empty array of the column's own type, so the error is the scan's own and
+/// never depends on whether the file carries filters. A probe is made only
+/// for string equality on a string column (`Utf8` or `Dictionary<Int32,
+/// Utf8>`) whose Parquet leaf is `BYTE_ARRAY` with a UTF-8 annotation: the
+/// numeric predicates compare through `f64` and never consult a filter.
+pub(crate) fn string_probe<'a>(
+    arrow_schema: &Schema,
+    parquet_schema: &SchemaDescriptor,
+    column: &str,
+    pred: &'a AttrPredicate,
+) -> Result<Option<&'a str>> {
+    let field = arrow_schema.field_with_name(column).map_err(|_| {
+        CityParquetError::Schema(format!("column '{column}' missing from the file's schema"))
+    })?;
+    evaluate_attr_predicate(column, new_empty_array(field.data_type()).as_ref(), pred)?;
+    let AttrPredicate::Eq(serde_json::Value::String(value)) = pred else {
+        return Ok(None);
+    };
+    let string_column = match field.data_type() {
+        DataType::Utf8 => true,
+        DataType::Dictionary(key, value) => {
+            key.as_ref() == &DataType::Int32 && value.as_ref() == &DataType::Utf8
+        }
+        _ => false,
+    };
+    if !string_column {
+        return Ok(None);
+    }
+    let root = parquet_schema
+        .root_schema()
+        .get_fields()
+        .iter()
+        .position(|f| f.name() == column);
+    let leaves: Vec<usize> = match root {
+        Some(root) => (0..parquet_schema.num_columns())
+            .filter(|&leaf| parquet_schema.get_column_root_idx(leaf) == root)
+            .collect(),
+        None => Vec::new(),
+    };
+    let [leaf] = leaves[..] else {
+        return Ok(None);
+    };
+    let descr = parquet_schema.column(leaf);
+    let utf8 = descr.physical_type() == PhysicalType::BYTE_ARRAY
+        && (matches!(descr.logical_type_ref(), Some(LogicalType::String))
+            || descr.converted_type() == ConvertedType::UTF8);
+    Ok(utf8.then_some(value.as_str()))
 }
 
 /// One row's `bbox` struct leaves at `row`, or `None` if the struct itself
@@ -302,14 +539,14 @@ pub(crate) fn collect_bbox_ids(
 }
 
 /// The single-column attribute-predicate [`RowFilter`] both transports
-/// install: `pred` evaluated by [`evaluate_attr_predicate`] over a
-/// `column`-only projection.
+/// install: `pred` evaluated by [`evaluate_attr_predicate`] over `column`
+/// alone, selected by exact name ([`root_mask`]).
 pub(crate) fn attr_predicate_row_filter(
     parquet_schema: &SchemaDescriptor,
     column: &str,
     pred: &AttrPredicate,
-) -> RowFilter {
-    let predicate_mask = ProjectionMask::columns(parquet_schema, [column]);
+) -> Result<RowFilter> {
+    let predicate_mask = root_mask(parquet_schema, column)?;
     let owned_column = column.to_string();
     let owned_pred = pred.clone();
     let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
@@ -317,28 +554,31 @@ pub(crate) fn attr_predicate_row_filter(
         evaluate_attr_predicate(&owned_column, array.as_ref(), &owned_pred)
             .map_err(arrow_schema::ArrowError::from)
     });
-    RowFilter::new(vec![Box::new(predicate_fn)])
+    Ok(RowFilter::new(vec![Box::new(predicate_fn)]))
 }
 
-/// The `id == <target>` [`RowFilter`] both transports install for
-/// `id_lookup`: the predicate's own projection is `id` alone; the output
-/// projection stays untouched (the full row is decoded on a hit).
-pub(crate) fn id_row_filter(parquet_schema: &SchemaDescriptor, id: &str) -> RowFilter {
-    let predicate_mask = ProjectionMask::columns(parquet_schema, ["id"]);
-    let owned_id = id.to_string();
+/// The `column == value` [`RowFilter`] both transports install for the
+/// identifier lookups (`id`, `feature_id`): the predicate's own projection is
+/// `column` alone; the output projection stays untouched (the full row is
+/// decoded on a hit). Accepts `Utf8` and `Dictionary<Int32, Utf8>` — a
+/// writer's physical choice a reader must not depend on. A positive bloom
+/// result is never a match: this filter decides every row.
+pub(crate) fn utf8_eq_row_filter(
+    parquet_schema: &SchemaDescriptor,
+    column: &str,
+    value: &str,
+) -> Result<RowFilter> {
+    let predicate_mask = root_mask(parquet_schema, column)?;
+    let owned_column = column.to_string();
+    let owned_value = value.to_string();
     let predicate_fn = ArrowPredicateFn::new(predicate_mask, move |batch: RecordBatch| {
-        let ids = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| {
-                arrow_schema::ArrowError::SchemaError("'id' column is not Utf8".to_string())
-            })?;
-        Ok(BooleanArray::from_iter((0..ids.len()).map(|i| {
-            Some(!ids.is_null(i) && ids.value(i) == owned_id)
+        let values = crate::arrow_compat::string_view(batch.column(0).as_ref(), &owned_column)
+            .map_err(arrow_schema::ArrowError::from)?;
+        Ok(BooleanArray::from_iter((0..batch.num_rows()).map(|i| {
+            Some(!values.is_null(i) && values.value(i) == owned_value)
         })))
     });
-    RowFilter::new(vec![Box::new(predicate_fn)])
+    Ok(RowFilter::new(vec![Box::new(predicate_fn)]))
 }
 
 /// Decode the first object of a (row-filtered, restamped) batch — `None`

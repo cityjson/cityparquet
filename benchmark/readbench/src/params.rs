@@ -447,6 +447,32 @@ pub fn id_probes(
     probes
 }
 
+/// The feature-lookup probe tags: the feature at the 50 % position of the
+/// canonical order, and a `feature_id` verified absent.
+pub const FEATURE_50PCT_TAG: &str = "feature-50pct";
+pub const FEATURE_MISS_TAG: &str = "feature-miss";
+
+/// The two feature-lookup probes, taken from the id probes: a CityJSONSeq
+/// feature's own id IS the `feature_id` of every row it contributes, so the
+/// `id-50pct` probe names the middle feature and the verified `id-miss` is
+/// absent from `feature_id` too (it is checked against every feature id).
+pub fn feature_probes(id_probes: &[IdProbe]) -> Vec<IdProbe> {
+    id_probes
+        .iter()
+        .filter_map(|probe| {
+            let tag = match probe.tag.as_str() {
+                "id-50pct" => FEATURE_50PCT_TAG,
+                ID_MISS_TAG => FEATURE_MISS_TAG,
+                _ => return None,
+            };
+            Some(IdProbe {
+                tag: tag.to_string(),
+                ..probe.clone()
+            })
+        })
+        .collect()
+}
+
 /// `array`'s Utf8 values as `Option<String>` per row (`None` for a null
 /// cell) — handles both a plain `Utf8` array and a `Dictionary<Int32,
 /// Utf8>` array. The reserved `object_type` column is ALWAYS
@@ -544,6 +570,9 @@ pub struct ResolvedParams {
     /// EMPTY when the CityJSONSeq artefact was not present to cut the
     /// deciles from — the caller then skips `id-lookup` and says so.
     pub id_probes: Vec<IdProbe>,
+    /// `feature-50pct` and `feature-miss`, from [`feature_probes`]; EMPTY
+    /// exactly when `id_probes` is.
+    pub feature_probes: Vec<IdProbe>,
     /// The most-frequent `object_type` value — the `attr-filter` predicate.
     pub object_type: String,
     pub object_type_count: u64,
@@ -607,6 +636,7 @@ pub fn resolve(
         }
     };
 
+    let feature_probes = feature_probes(&id_probes);
     let meta = open_metadata(cp_table)?;
     let schema = open_arrow_schema(cp_table)?;
     let (object_type, object_type_count) = most_frequent_object_type(cp_table)?;
@@ -622,6 +652,7 @@ pub fn resolve(
         dataset: dataset.to_string(),
         windows,
         id_probes,
+        feature_probes,
         object_type,
         object_type_count,
         numeric_attr,
@@ -822,5 +853,20 @@ mod tests {
             assert_eq!(w.window[2], FIELD[2], "{tag} must keep the dataset zmin");
             assert_eq!(w.window[5], FIELD[5], "{tag} must keep the dataset zmax");
         }
+    }
+
+    #[test]
+    fn feature_probes_reuse_the_middle_feature_and_the_verified_miss() {
+        let seq = ids(10);
+        let verifiable: HashSet<String> = seq.iter().cloned().collect();
+        let id_probes = id_probes(&seq, &verifiable);
+        let features = feature_probes(&id_probes);
+        let tags: Vec<&str> = features.iter().map(|p| p.tag.as_str()).collect();
+        assert_eq!(tags, vec![FEATURE_50PCT_TAG, FEATURE_MISS_TAG]);
+        let middle = id_probes.iter().find(|p| p.tag == "id-50pct").unwrap();
+        assert_eq!(features[0].id, middle.id);
+        assert!(features[0].present);
+        assert!(!features[1].present);
+        assert!(!seq.contains(&features[1].id));
     }
 }
