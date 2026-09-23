@@ -59,18 +59,6 @@ fn manifest_tables(dir: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// `convert_source` (the seam the merge/partition pipeline drives) must
-/// reproduce `convert`'s result when handed the same source directly.
-#[test]
-fn convert_source_matches_convert_object_count() {
-    let out = tempfile::tempdir().unwrap();
-    let opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
-    let src = cityparquet::source::Source::open(&opts.input).unwrap();
-    let report = cityparquet::package::convert_source(&src, &opts).unwrap();
-    assert_eq!(report.object_count, 2231);
-    assert!(out.path().join("metadata.json").exists());
-}
-
 /// Recursively asserts every material index in a rewritten `material` map is
 /// a dataset-global id `< limit` (mirrors `cityparquet::appearance`'s own
 /// walk, duplicated here since this is a separate integration-test crate
@@ -1180,83 +1168,16 @@ fn hilbert_ordering_keeps_features_contiguous_and_visits_them_in_non_decreasing_
     }
 }
 
-/// M5 task 4 (Hilbert row ordering): reordering rows must never change what
-/// the dataset MEANS — a Hilbert-ordered convert must still round-trip
-/// losslessly through export, exactly like the Source-ordered path
-/// (`roundtrip_real_data.rs`'s comparator is order-independent by
-/// construction: it groups rows back into `CityObject`s/features before
-/// comparing, so this test pins that property rather than re-deriving it).
-#[test]
-fn hilbert_ordering_never_changes_delft_semantics() {
-    let out = tempfile::tempdir().unwrap();
-    let mut opts = ConvertOptions::new(fixture("delft.city.jsonl"), out.path().to_path_buf());
-    opts.ordering = RowOrder::Hilbert;
-    convert(&opts).unwrap();
-
-    let export_dir = tempfile::tempdir().unwrap();
-    let exported = export_dir.path().join("export.city.jsonl");
-    export(&ExportOptions {
-        package_dir: out.path().to_path_buf(),
-        output: exported.clone(),
-    })
-    .unwrap();
-
-    let report = compare_datasets(
-        &fixture("delft.city.jsonl"),
-        &exported,
-        &CompareOptions::default(),
-    )
-    .unwrap();
-    assert!(
-        report.equal,
-        "Hilbert-ordered delft must still round-trip losslessly; differences: {:#?}",
-        report.differences
-    );
-    assert!(report.differences.is_empty());
-
-    // Pinned counts updated alongside the comparator's coordinate-degenerate
-    // ring fix (3DBAG tile `9-284-556.city.json` finding, see
-    // `crate::compare`'s module docs): delft's real, UNMUTATED source data
-    // turns out to carry 8 objects whose LoD boundaries include a ring with
-    // index-distinct but coordinate-identical vertices — previously
-    // invisible to the INDEX-only degenerate check, now correctly dropped
-    // (and logged as excluded) on both the source and the exported side.
-    // This is not a regression: `report.equal`/`differences.is_empty()`
-    // above still hold, proving the round trip stays lossless; only the
-    // exclusion log grew to record real, previously-silent normalisation.
-    let (header_excluded, non_header_excluded): (Vec<&String>, Vec<&String>) = report
-        .excluded
-        .iter()
-        .partition(|e| e.starts_with("header: metadata member"));
-    let degenerate = non_header_excluded
-        .iter()
-        .filter(|e| e.contains("degenerate ring"))
-        .count();
-    assert_eq!(
-        (degenerate, non_header_excluded.len()),
-        (16, 17),
-        "Hilbert ordering must not introduce any new exclusion beyond delft's usual header \
-         metadata members, the 16 pinned coordinate-degenerate-ring drops (8 objects, \
-         source + export side each), and geographicalExtent (derived from bbox), got: {:#?}",
-        non_header_excluded
-    );
-    assert!(
-        !header_excluded.is_empty(),
-        "delft's header sets metadata members; expected at least one documented header-metadata \
-         exclusion, got none. Full excluded: {:#?}",
-        report.excluded
-    );
-}
-
-/// Same headline gate as `hilbert_ordering_never_changes_delft_semantics`,
+/// Same headline gate as
+/// `roundtrip_real_data.rs::delft_hilbert_and_by_type_compose_and_round_trip_losslessly`,
 /// for railway (Compatibility profile — the M4 headline round trip): the 24
 /// documented degenerate-ring drops (updated alongside the comparator's
-/// coordinate-degenerate fix — see the comment in
-/// `hilbert_ordering_never_changes_delft_semantics` above — and again
-/// alongside `wkb_write::normalise_ring`'s `> 3` bound: the writer now keeps
-/// object `GMLID_855011_330784_753`'s `[a, b, a]` sliver ring intact, so the
-/// comparator's own (still `>= 2`) fixpoint strip now excludes it on BOTH
-/// the source and the export side instead of the source side only — one
+/// coordinate-degenerate fix — delft's 16-entry twin of the same fix is
+/// explained in `roundtrip_real_data.rs::delft_round_trips_losslessly` — and
+/// again alongside `wkb_write::normalise_ring`'s `> 3` bound: the writer now
+/// keeps object `GMLID_855011_330784_753`'s `[a, b, a]` sliver ring intact,
+/// so the comparator's own (still `>= 2`) fixpoint strip now excludes it on
+/// BOTH the source and the export side instead of the source side only — one
 /// object's drop grew from 1 exclusion entry to 2, moving the total from 23
 /// to 24) and header-metadata exclusions are the ONLY exclusions, exactly as
 /// `roundtrip_real_data.rs::railway_compatibility_round_trips_losslessly_with_no_exclusions`

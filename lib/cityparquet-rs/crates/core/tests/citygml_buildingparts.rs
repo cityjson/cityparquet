@@ -242,18 +242,62 @@ fn links(pkg: &Path) -> BTreeMap<String, (String, Vec<String>, Vec<String>)> {
         .collect()
 }
 
+/// A small, real slice of delft: the header, the first 20 feature lines, and
+/// the first feature carrying a Building with more than one BuildingPart
+/// child (delft's only multi-part Building). Selected by CONTENT, never by
+/// line number, so a fixture re-download cannot silently drop the multi-part
+/// case the test's precondition asserts.
+fn delft_slice_with_a_multi_part_building(dst: &Path) {
+    let text = std::fs::read_to_string(workspace_fixture("delft.city.jsonl")).unwrap();
+    let mut lines = text.lines();
+    let header = lines.next().expect("delft has a header line").to_string();
+
+    let features: Vec<&str> = lines.filter(|line| !line.trim().is_empty()).collect();
+    let mut chosen: Vec<&str> = features.iter().take(20).copied().collect();
+
+    let multi_part = features
+        .iter()
+        .find(|line| {
+            let feature: serde_json::Value = serde_json::from_str(line).unwrap();
+            feature["CityObjects"]
+                .as_object()
+                .map(|objects| {
+                    objects.values().any(|object| {
+                        object["type"] == "Building"
+                            && object["children"]
+                                .as_array()
+                                .map(|children| children.len() > 1)
+                                .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .copied()
+        .expect("delft must contain a Building with more than one BuildingPart");
+
+    if !chosen.contains(&multi_part) {
+        chosen.push(multi_part);
+    }
+
+    let mut out = header;
+    out.push('\n');
+    for line in chosen {
+        out.push_str(line);
+        out.push('\n');
+    }
+    std::fs::write(dst, out).unwrap();
+}
+
 #[test]
 fn delft_building_parts_round_trip() {
     let tmp = tempfile::tempdir().unwrap();
     let pkg = tmp.path().join("pkg");
     let out_gml = tmp.path().join("out.gml");
     let pkg2 = tmp.path().join("pkg2");
+    let input = tmp.path().join("delft_building_parts_slice.city.jsonl");
+    delft_slice_with_a_multi_part_building(&input);
 
-    convert(&ConvertOptions::new(
-        workspace_fixture("delft.city.jsonl"),
-        pkg.clone(),
-    ))
-    .unwrap();
+    convert(&ConvertOptions::new(input, pkg.clone())).unwrap();
     let before = objects(&pkg);
     let n_parts = before
         .values()
@@ -263,6 +307,16 @@ fn delft_building_parts_round_trip() {
     assert!(
         n_parts > 0 && n_buildings > 0,
         "delft has Buildings + BuildingParts"
+    );
+    // Precondition: the derived slice must keep a multi-part Building, or the
+    // nesting case this test exists for would have silently gone missing.
+    let multi_part_buildings = before
+        .values()
+        .filter(|o| o.thetype == "Building" && o.children.len() > 1)
+        .count();
+    assert!(
+        multi_part_buildings > 0,
+        "the derived delft slice must keep a Building with more than one BuildingPart"
     );
 
     let report = write_package(&WriteOptions {

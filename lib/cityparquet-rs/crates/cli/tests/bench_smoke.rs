@@ -36,13 +36,18 @@ fn bench_run_produces_the_default_nine_variant_matrix_for_delft() {
     let out_dir = tempfile::tempdir().unwrap();
     let out_csv = out_dir.path().join("bench.csv");
 
+    // `skip_roundtrip: true`: the core suite already proves each of these
+    // nine round trips (`roundtrip_real_data.rs`'s per-preset gates, the
+    // Hilbert gate), and running them here again dominated the whole binary's
+    // wall-clock. The bench→export→compare wiring stays proven once by
+    // `bench_run_passes_codec_and_level_suffixes_through_to_the_writer`.
     let opts = BenchOptions {
         input: fixture("delft.city.jsonl"),
         out_csv: out_csv.clone(),
         repeat: 1,
         variants: Vec::new(),
         window_frac: 0.05,
-        skip_roundtrip: false,
+        skip_roundtrip: true,
     };
 
     run(&opts).expect("bench::run should succeed against the delft fixture");
@@ -77,10 +82,12 @@ fn bench_run_produces_the_default_nine_variant_matrix_for_delft() {
     for row in &rows {
         let variant = row.get(&columns, "variant");
 
+        // With `skip_roundtrip: true` the round trip is not run, so the field
+        // must be empty on every row rather than carrying a stale value.
         let roundtrip_equal = row.get(&columns, "roundtrip_equal");
-        assert_eq!(
-            roundtrip_equal, "true",
-            "variant {variant}: roundtrip_equal must be true for a lossless real dataset, got: {csv_text}"
+        assert!(
+            roundtrip_equal.is_empty(),
+            "variant {variant}: roundtrip_equal must be empty when the round trip is skipped, got: {csv_text}"
         );
 
         let total_bytes: u64 = row.get(&columns, "total_bytes").parse().unwrap();
