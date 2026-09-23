@@ -1,11 +1,59 @@
 # Test-pruning and architecture-debt audit — 2026-09-23
 
-Scope, in priority order: `lib/cityparquet-rs`, `lib/duckdb-3d`,
-`lib/duckdb-cityjson`. This is an audit only: no test or source file is changed.
-
 ## 1. Summary
 
-_Written at wrap-up._
+Scope: `lib/cityparquet-rs`, `lib/duckdb-3d` and `lib/duckdb-cityjson`, in
+that priority order. This is an audit only: no test or source file is changed.
+Part 1 has 58 test candidates and Part 2 has 31 debt items; each gives
+followable steps. Every headline claim below was checked against the code.
+The two duckdb-cityjson bugs were reproduced against the existing release build.
+
+**Where test time goes.** In cityparquet-rs, the gate `just test`
+(`cargo test`) takes **10 min 10 s** wall-clock, because test binaries run one
+after another. A single run of `cargo nextest` takes 2 min 46 s wall-clock and
+3,318 s of summed test time. Most of that is repeated full
+convert → export → compare round trips on the delft and railway fixtures,
+plus an eager 13 MB EPSG-table parse in every process. The duckdb-3d suites
+take 4.6 s and the duckdb-cityjson suites 90 s. For both, the cost of keeping
+redundant tests is maintenance, not runtime.
+
+### Top 5 test changes (value ÷ effort)
+
+| #   | ID                   | Change                                                                                                                                                                                                                      | Gate wall saved          | Effort |
+| --- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ | ------ |
+| 1   | T-RS-I-07            | `bench_smoke` nine-variant test: set `skip_roundtrip: true`. Core already proves each of its nine round trips                                                                                                               | ≈ 45 s                   | S      |
+| 2   | T-RS-I-02            | Delete two byte-identical delft round trips (`_compatibility_`, `_by_type_`); split the sequential 63 s preset loop into one test per preset                                                                                | ≈ 45 s                   | S      |
+| 3   | T-RS-U-01…04         | Comparator unit tests: collapse eight whole-dataset "mutation is detected" tests into one table on a header + one-feature fixture; drop two unnecessary railway convert + export runs                                       | ≈ 155 s CPU              | S      |
+| 4   | T-RS-I-01, T-RS-I-16 | Delete `export_stac_roundtrip.rs` (a finished migration safety net, now a pure duplicate); run `citygml_buildingparts` on a slice of delft                                                                                  | ≈ 40 s                   | S      |
+| 5   | T-CJ-02              | Replace two duckdb-cityjson conversion files that check only counts on a fixture with no `vertices` (geometry silently reads as NULL) with `EXCEPT ALL` checks on real data, adding the uncovered FCB → CityJSON directions | ≈ 0 (fixes a false pass) | S      |
+
+### Top 5 debt items (value ÷ effort)
+
+| #   | ID      | Problem → fix                                                                                                                                                                                                                                        | Effort |
+| --- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| 1   | D-CJ-01 | **Reproduced bug.** `COPY (SELECT … FROM read_cityjsonseq(…))` reopens the source with format auto-detection and writes no `metadata`, so EPSG:7415 is lost. Route every reader open through the recorded reader kind                                | S      |
+| 2   | D-RS-15 | The first CRS lookup in each process parses the whole 13.2 MB EPSG → PROJJSON table (1.8 s measured, debug build). That costs up to ~1.5 min of the gate and ~750 s of nextest time. Parse per entry, or ship an indexed asset                       | S      |
+| 3   | D-RS-01 | Break the core crate's only dependency cycle, `{source, citygml, export, encode, scan, lod0, appearance}`: move the CityJSON boundary helpers out of `encode` and the reassembly helpers out of `export` into leaf modules, and add a layering guard | S      |
+| 4   | D-RS-05 | The write benchmark harness lives in the published CLI crate, and `variant`/`counting_store` in the library. Move them to `benchmark/`: that takes the 127 s `bench_smoke` binary out of the library gate                                            | S–M    |
+| 5   | D-RS-09 | The round-trip oracle (`compare`) reuses the writer's `flatten_values` and `VertexPool`, so a bug there passes every losslessness test. Give the comparator its own implementations, plus one differential test                                      | S–M    |
+
+The main interface work, all M-sized: `PackageSink` for the writer
+(D-RS-03, which removes a test-only flag from a production struct); one query
+implementation over a byte-source trait (D-RS-13, which deletes ~10 sync/async
+parity tests); a `CopyWriter` per format in duckdb-cityjson (D-CJ-02, which
+fixes unknown COPY options being silently ignored); and moving the transform
+maths into the duckdb-3d kernel (D-3D-01).
+
+### Estimated test runtime saved
+
+- **`cargo test` gate (cityparquet-rs, 610 s):** ≈ 145 s (≈ 24 %) from the
+  Part 1 integration changes alone. Adding D-RS-15 and D-RS-05 brings the
+  estimate to about half of the gate. These are estimates from per-test and
+  per-binary timings, not re-measured after the changes.
+- **nextest summed test time (3,318 s):** ≈ 620 s from integration changes
+  plus ≈ 250 s from unit changes. D-RS-15 removes a further ≈ 750 s, which
+  overlaps partly with both.
+- **duckdb-3d:** < 0.2 s of 4.6 s. **duckdb-cityjson:** ≈ 2–3 s of 90 s.
 
 ## 2. Architecture map
 
@@ -69,7 +117,7 @@ unit tests) and `test/sql` (SQLLogic, 33 files, ~400 records).
 
 ### `lib/duckdb-cityjson` (C++ DuckDB extension, ~22k lines excluding the generated 29k-line EPSG table)
 
-All code sits in one flat `src/cityjson/` namespace, with 49 headers. It handles
+Readers share one interface, `CityJSONReader`, with four implementations; writers share none (D-CJ-02). All code sits in one flat `src/cityjson/` namespace, with 49 headers. It handles
 format I/O for CityJSON, CityJSONSeq, FlatCityBuf, OBJ, glTF and GeoParquet,
 the CityParquet package write/insert/merge/delete/validate operations, WKB, and
 appearance. `copy_function.cpp` (1.7k lines) and `cityjson_types.cpp` (1k)
@@ -1652,6 +1700,78 @@ Paths below use `core/` = `lib/cityparquet-rs/crates/core/src/` and `cli/` = `li
      local paths and drop its `require-env`. The HTTP variant stays in `cityjson_remote.test`.
 - **Effort:** S
 - **Related Part 1:** —
+
+## 6. Suggested order of execution
+
+Arrows mean "do first". Items in the same step are independent of each other.
+
+**Step 0: bugs, independent of everything else**
+
+- D-CJ-01 (COPY drops the CRS), with its regression test.
+- The unknown-option rejection from D-CJ-02. It is a few lines, ahead of that
+  item's writer interface.
+- D-3D-05 (the SOLID_3D payload is written in host byte order). Fold it into
+  the shared byte I/O.
+
+**Step 1: cheap test deletions that need no production change (cityparquet-rs)**
+
+- T-RS-I-07, T-RS-I-02 (together with T-RS-U-18: see the reconciliation note
+  in 3.1), T-RS-I-01, T-RS-I-16 and T-RS-I-03/-04/-06/-11/-15/-17/-24.
+- T-RS-U-03, -10, -13, -14, -15, -16, -17 and -18.
+- Invariant to preserve: keep `delft_round_trips_losslessly`,
+  `railway_compatibility_round_trips_losslessly_with_no_exclusions` and the
+  2231/1116 count pins. Several unit-test deletions rely on them.
+- D-RS-15 (lazy EPSG parse) and D-RS-11 (dead dependencies) are S-sized. Land
+  them here, then re-time the gate before step 3, so that later savings are
+  measured rather than estimated.
+
+**Step 2: break the cycle and add the cheap seams**
+
+- D-RS-01 together with D-RS-02 step 4 → D-RS-09. Once the helpers sit in
+  leaf modules, it is clear which ones the comparator must not share.
+- D-RS-06 step 6 (`compare_sources`) → T-RS-U-01, -02 and -04. The comparator
+  tests then need no files.
+
+**Step 3: move the benchmark out, and share fixtures**
+
+- D-RS-05 supersedes T-RS-I-07 and T-RS-I-08: `bench_smoke` moves with the
+  harness. If D-RS-05 is scheduled soon, skip T-RS-I-08.
+- D-RS-08 step 1 (an on-disk package cache) → T-RS-I-12, -14, -21, T-RS-U-07
+  and T-RS-U-11. Decide first which runner the gate uses (open question 1).
+
+**Step 4: interface work (M)**
+
+- D-RS-03 (`PackageSink`, `TableRouter`) → delete `force_identity_projection`
+  and the routing tests that depend on it.
+- D-RS-13 (one query implementation over a `TableSource`) → deletes most of
+  `query_async::tests`. If D-RS-13 is near, skip T-RS-U-05's merge, because
+  those tests are deleted outright. Decide on sync or async first (open
+  question 3).
+- D-RS-14 (`AppearanceCatalog`) → T-RS-U-07 and T-RS-U-09 (sidecar tests stop
+  importing `package`).
+- D-RS-02 (package read seam; its sync half pairs with D-RS-13's trait) →
+  D-RS-04 (shrink the public API last, once the seams exist that let
+  integration tests stop importing internals). D-RS-07 (error variants) can go
+  at any point; it lets tests assert variants instead of messages.
+
+**duckdb-3d**
+
+- D-3D-05 → T-3D-02 (one WKB fixture builder).
+- D-3D-02 (`ShellPartition`) → D-3D-04 (one `BuildSolidModel`) → D-3D-03 (one
+  WKB parser) → T-3D-05 and T-3D-01.
+- D-3D-01 (transform maths into the kernel, with C++ tests) → trim the
+  transform SQL files listed under "Kept".
+- D-3D-06 (payload-view seam) → T-3D-04's contract test.
+- T-3D-03, -06, -07 and -08 are independent.
+
+**duckdb-cityjson**
+
+- D-CJ-01 → D-CJ-02 → D-CJ-03. Writers get an interface before
+  `copy_function.cpp` is split.
+- D-CJ-05 (one schema assembly) → T-CJ-03 and T-CJ-07.
+- D-CJ-04 → T-CJ-06.
+- D-CJ-07 → T-CJ-02. Make missing `vertices` an error, then fix the fixture.
+- T-CJ-01, -04, -05 and -08 are independent.
 
 ## 7. Not covered
 
