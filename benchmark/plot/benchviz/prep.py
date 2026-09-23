@@ -1102,9 +1102,12 @@ def load_databases(inputs: Inputs) -> dict:
         except ValueError:
             return None
 
-    smoke = inputs.bench_dir.name == "smoke"
-    data_root = inputs.bench_dir.parent.parent if smoke else inputs.bench_dir.parent
-    directory = data_root / "databases" / ("smoke" if smoke else "results")
+    # A profile run keeps its formats under `formats/<profile>/` and its
+    # databases under `databases/<profile>/` (bench_suite.py's `short` and
+    # `smoke`); the full run uses `formats/` and `databases/results/`.
+    profile = inputs.bench_dir.name if inputs.bench_dir.name in {"smoke", "short"} else ""
+    data_root = inputs.bench_dir.parent.parent if profile else inputs.bench_dir.parent
+    directory = data_root / "databases" / (profile or "results")
     if not directory.exists():
         return _db_empty()
     candidates = sorted(
